@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **11bd14c** — *feat(app): compare shows what changed — every word the two steps disagree about, lit on both sides (Wave 57)* |
+| Source sha | **f1d1eb0** — *fix(app): an EPUB pressed on a promised step waits behind it — the mint dialog now plans with the aim and queues a deferred export* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive 11bd14c app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive f1d1eb0 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -983,3 +983,11 @@ not the engine's (foundry docs/COMPARE-CHANGES.md argues why): works for any pai
 stale, no engine release. A translation shows as whole-block changes by a rewrite guard. Not
 built: hover-shows-original (the other column IS the original). 2 new files + 2 changed; 141
 blobs hash-verified; no IPC change, no dep movement; nothing on the host side.
+**f1d1eb0 (copied 2026-09-08) — Export EPUB on a GREYED clean waits behind it.** Owen (Mac, Shift):
+"instead of queuing it to create after the cleaning finished, it just created the epub above the
+cleaning." The export dialog hands a bare project (no mint block) to the mint-meta dialog, which
+planned twice with NO aim, so the export was made from the landed parent, never deferred, no
+`after`. Both of its planExport calls now pass `ledger.aimedAt(projectDir)` and a deferred plan is
+ENQUEUED (the export dialog's own branch): the row carries `after`, the tree greys it under the
+clean, and the confirmed filename survives the spawn (materializeDeferred leaves outputPath alone).
+1 file, 141 blobs hash-verified, no IPC change, no dep movement, nothing on the host side.

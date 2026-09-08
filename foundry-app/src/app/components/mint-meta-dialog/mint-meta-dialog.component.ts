@@ -8,6 +8,7 @@ import type { MintContributor, MintMeta } from '@shared/mint-meta';
 import { carriedFromPlan } from '@shared/pipeline';
 import type { JobRequest, WorkspacePlan } from '@shared/types';
 
+import { LedgerService } from '../../core/ledger.service';
 import { NoticeService } from '../../core/notice.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { QueueService } from '../../core/queue.service';
@@ -297,6 +298,7 @@ export class MintMetaDialogComponent {
   protected readonly ui = inject(UiService);
   private readonly documents = inject(OpenDocumentsService);
   private readonly queue = inject(QueueService);
+  private readonly ledger = inject(LedgerService);
   private readonly notices = inject(NoticeService);
 
   protected readonly title = signal('');
@@ -434,7 +436,19 @@ export class MintMetaDialogComponent {
       });
       let planLanguage: string | undefined;
       if (ask.mode === 'mint') {
-        this.plan = await api.workspace.planExport(ask.inputPath, 'epub');
+        /*
+         * WITH THE AIM, WHICH THE EXPORT DIALOG PASSES AND THIS ONE DID NOT.
+         * Standing on a promised (greyed) step, `aimedAt` names the step that
+         * is still being made, and the plan comes back DEFERRED — chained
+         * behind that row — instead of being cut from the landed position.
+         * Without it, Owen pressed Export EPUB on a running clean and the card
+         * appeared ABOVE the clean, made from "Applied changes": "that kind of
+         * defeats the purpose" (2026-09-08, Shift). Every project he has goes
+         * through this dialog, so the export dialog's own aim never reached
+         * the plan at all. Asked of the ledger here, at the moment the form
+         * opens, which is the same instant the export dialog asked it.
+         */
+        this.plan = await api.workspace.planExport(ask.inputPath, 'epub', this.ledger.aimedAt(ask.projectDir));
         planLanguage = this.plan.language ?? undefined;
       }
       const inherited = inheritMintMeta(stored, host);
@@ -506,7 +520,8 @@ export class MintMetaDialogComponent {
         return;
       }
 
-      const plan = this.plan ?? await api.workspace.planExport(ask.inputPath, 'epub');
+      const plan = this.plan
+        ?? await api.workspace.planExport(ask.inputPath, 'epub', this.ledger.aimedAt(ask.projectDir));
       /*
        * THE NAME THE PERSON CONFIRMED, in the folder the plan named — the
        * override or the generated one, ASCII-folded for the disk. The plan's
@@ -539,6 +554,24 @@ export class MintMetaDialogComponent {
         // (Owen, 2026-09-05).
         ...carriedFromPlan(plan),
       };
+      /*
+       * A DEFERRED EXPORT GOES IN THE QUEUE, exactly as the export dialog's
+       * does: it waits behind the step it is made from (`Job.after`), the tree
+       * draws it greyed under that promise, and the person is told so rather
+       * than shown a proof sheet of nothing. The name they confirmed survives
+       * the spawn — `materializeDeferred` re-plans the words and the receipt
+       * and keeps the request's own outputPath.
+       */
+      if (plan.deferred !== undefined) {
+        const added = await this.queue.enqueue(request);
+        this.notices.notice.set(
+          added === 'already'
+            ? `${filed} is already queued.`
+            : `Queued ${filed} — it will be made when the step it comes from finishes.`,
+        );
+        this.ui.closeMintMeta();
+        return;
+      }
       const job = await this.queue.run(request);
       if (job === null) return;
       if (job.state === 'held' || job.state === 'queued' || job.state === 'running') {
