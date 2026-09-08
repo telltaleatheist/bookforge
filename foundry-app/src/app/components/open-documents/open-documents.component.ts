@@ -762,6 +762,7 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
             [class.before]="before() === row.key"
             [class.pending]="row.dot === 'queued'"
             [class.running]="row.dot === 'running'"
+            [class.locked]="row.planned && row.dot === 'running'"
             [class.failed]="row.dot === 'failed'"
             [title]="row.tooltip"
           >
@@ -1597,6 +1598,27 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
     .card.pending .name { color: var(--text-secondary); font-weight: 500; }
     .card.pending .kind { background: transparent; border: 1px dashed var(--border-default); color: var(--text-tertiary); }
     .card.running { border-color: var(--accent-soft); }
+    /*
+      A RUNNING PROMISE IS RED AND LOCKED — Owen, 2026-09-08: *"maybe we turn it
+      red while its running and lock it. the user has to remove it from the queue
+      itself."* The card is the one thing on this tree that cannot be deleted
+      where it stands (\`refuseRunningGhost\`, electron/ipc.ts, which is the
+      sentence the press gets), so it says so before the press rather than after:
+      the warm border and the tinted mark are the difference between a plan that
+      can still be called off here and one that has started and belongs to the
+      queue. NOT the failure red (\`.card.failed\` fills with \`--error-soft\`) —
+      this is a run in good health, and a card that looked failed while it was
+      working would be the worse lie of the two.
+    */
+    .card.locked {
+      border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+      border-style: solid;
+    }
+    .card.locked .kind {
+      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+      color: var(--warn);
+    }
+    .card.locked .state { color: var(--warn); }
     .card.failed { border-color: rgba(248, 113, 113, 0.45); background: var(--error-soft); }
     .card.failed .state { color: var(--error); }
 
@@ -2571,7 +2593,16 @@ export class OpenDocumentsComponent {
           // rides underneath when the run failed.
           tooltip: `${state} — this is not a step of this book yet. It is here because the queue is `
             + 'going to make it, and if that work leaves the queue this card and everything under '
-            + `it go with it.${promise.error === undefined ? '' : `\n${promise.error}`}`,
+            + 'it go with it.'
+            // A RUNNING PROMISE SAYS WHERE ITS DOOR IS. It cannot be deleted from
+            // the tree (Owen's lock, 2026-09-08 — see `.card.locked` in the
+            // styles and `refuseRunningGhost` in electron/ipc.ts), and a card
+            // that is refusing a gesture should say so before the gesture.
+            + (promise.state === 'running'
+              ? ' It has started, so it can only be stopped in the queue — which takes everything '
+                + 'queued behind it with it.'
+              : '')
+            + `${promise.error === undefined ? '' : `\n${promise.error}`}`,
           why: promise.state === 'failed' ? promise.error ?? null : null,
           depth,
           dir: project.dir,

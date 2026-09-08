@@ -325,6 +325,32 @@ function rowsIn(projectDir: string): Job[] {
 }
 
 /**
+ * A RUNNING GHOST IS LOCKED, and the tree is not the door — Owen's ruling
+ * (2026-09-08): *"maybe we turn it red while its running and lock it. the user
+ * has to remove it from the queue itself. again, if it's removed as a ghost,
+ * everything under it is removed as well. that simplifies the logic so it doesnt
+ * hit a bug where narration is trying to run on the wrong thing, or nothing at
+ * all."*
+ *
+ * THE LAST CLAUSE IS THE REASON AND IT IS NOT TIDINESS. Stopping a run from here
+ * means deciding, at the moment the work is half done, what becomes of everything
+ * chained under it — and the two queues answer that differently (a host's remove
+ * drops the subtree, this app's cancel marks it). One door, the queue's own, is
+ * one answer; two doors is where a narration ends up pointed at a step nobody is
+ * going to make. A QUEUED ghost is untouched by this: nothing has begun, and its
+ * delete is still the removal `promisedDeletion` describes.
+ */
+function refuseRunningGhost(row: Job): void {
+  if (row.state !== 'running') return;
+  const label = row.title ?? path.basename(row.outputPath);
+  throw new Error(
+    `“${label}” is running, so it cannot be removed from here. Stop it in the queue, which takes `
+    + 'everything queued behind it away in the same gesture — the one place that can end a run and '
+    + 'settle what happens to the work waiting on it.',
+  );
+}
+
+/**
  * A DELETE PRESSED ON A GHOST — the id is minted by a live row, not held by the
  * ledger, and `stepOf` would refuse it by name ("This ledger has no step called
  * …", which is what Owen saw, 2026-09-08). A promise is a queue row, so the
@@ -338,6 +364,7 @@ function promisedDeletion(projectDir: string, stepId: string): StepDeletion | nu
   const rows = rowsIn(projectDir);
   const row = rowMinting(rows, stepId);
   if (row === null) return null;
+  refuseRunningGhost(row);
   // The chain behind it, transitively, by `after` — the cascade's own edge.
   const going: Job[] = [row];
   const seen = new Set<string>([row.id]);
@@ -2605,26 +2632,16 @@ export function registerIpc(): void {
     const promised = rowMinting(rowsIn(projectDir), stepId);
     if (promised !== null) {
       /*
-       * `remove` FIRST AND ALWAYS, because Owen's ruling is that the thing is
-       * GONE: *"if that item is removed from the queue, anything under it also
-       * disappears."* A host's remove stops a running row and drops it with its
-       * whole subtree (BookForge's `queue-engine.removeStep`, confirmed by that
-       * session 2026-09-08), so hosted this is the whole gesture for a running
-       * ghost as much as for a waiting one.
-       *
-       * AND `cancel` IS THE FALLBACK, NOT THE RULE. Foundry's own `remove`
-       * refuses a row that is already running — it splices `held` and `queued`
-       * only — so standalone a running ghost would survive the press in silence.
-       * Cancelling it stops the work and leaves the row on the shelf as
-       * `cancelled`, which is a dead row where Owen asked for none; it is still
-       * the better of the two, because the alternative is a button that does
-       * nothing. The ghost CARD goes either way (`PENDING_IN` excludes a
-       * cancelled row), which is what the tree draws.
+       * `remove`, WHICH TAKES THE SUBTREE — a host's own removal stops nothing
+       * because nothing has begun, and drops every row chained behind it
+       * (BookForge's `queue-engine.removeStep`); this app's does the same to its
+       * own list. A RUNNING one never reaches this line: `refuseRunningGhost`
+       * above turned the press into a sentence, because ending a run and
+       * settling what happens to the work waiting on it is the queue's own door
+       * and must not be two doors (Owen, 2026-09-08).
        */
+      refuseRunningGhost(promised);
       queue.remove(promised.id);
-      if (queue.shelfJobsFor(projectDir).some((row) => row.id === promised.id && row.state === 'running')) {
-        queue.cancel(promised.id);
-      }
       const view = await readStepLedger(projectDir);
       if (view === null) throw new Error(`${projectDir} has no history to show after the removal.`);
       return view;

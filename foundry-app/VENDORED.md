@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **b381122** — *fix(queue): removing a ghost step calls remove even when it is running — cancel is only the standalone fallback* |
+| Source sha | **ffee3b8** — *fix(tree): a running ghost is red and locked — only the queue can end a run* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive b381122 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ffee3b8 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1054,3 +1054,17 @@ abort) and then drops the rows — so `remove` is now the whole gesture. `cancel
 fallback for Foundry's STANDALONE queue, whose own `remove` splices held/queued rows only; it is
 guarded on the row still being `running` afterwards, so hosted it never fires. 1 file (ipc.ts), 141
 blobs hash-verified, no IPC change, no dep movement.
+**ffee3b8 (copied 2026-09-08) — A RUNNING GHOST IS LOCKED; SUPERSEDES b381122's remove-in-every-state.**
+Owen, 2026-09-08: *"maybe we turn it red while its running and lock it. the user has to remove it from
+the queue itself. again, if it's removed as a ghost, everything under it is removed as well. that
+simplifies the logic so it doesnt hit a bug where narration is trying to run on the wrong thing, or
+nothing at all."* So `refuseRunningGhost(row)` throws from BOTH `ledger:describe-delete` (the confirm
+card never opens) and `ledger:delete` (nothing races between the question and the press): "<label> is
+running, so it cannot be removed from here. Stop it in the queue…". Nothing is removed or cancelled
+from the tree, and their standalone `cancel` fallback is gone with it. A QUEUED promise is unchanged
+(2b1bcd1: `queue.remove(row.id)` = our `removeStep`, subtree with it). DRAWN: `.card.locked` on a
+promise whose row is running — `--warn` ink on the border and the kind chip, border solid rather than
+the queued card's dashed — deliberately NOT the failure red (`.card.failed` fills with `--error-soft`),
+because a card that looked failed while the work was healthy would be the worse lie. Reads `row.state`
+off the rows we push, so nothing new crosses the seam. 2 files, 141 blobs hash-verified, no IPC change,
+no dep movement.
