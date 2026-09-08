@@ -69,7 +69,14 @@ export const foundryExportLandingStep: StepModule = {
   // Chained under a Foundry row, which produces no artifact the engine models.
   consumes: null,
   produces: 'epub',
-  resource: () => 'cpu',
+  /*
+   * NOT A WORKER. This step waits — for Foundry's queue to write an implied
+   * export, or for a landing to be recorded — and holds no card and no core
+   * while it does (`StepResource`, shared/queue/engine-types.ts). It declared
+   * `cpu` until 2026-09-08, when Owen watched one hold a slot of two for two
+   * minutes while the export it was waiting for never started.
+   */
+  resource: () => 'wait',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as FoundryExportLandingConfig;

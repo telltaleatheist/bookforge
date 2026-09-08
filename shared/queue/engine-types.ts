@@ -156,12 +156,39 @@ export const TERMINAL_STEP_STATUSES: ReadonlySet<StepStatus> =
  * wait behind a nine-hour narration was the queue punishing a job for the
  * company it kept.
  */
-export type StepResource = 'gpu' | 'cpu';
+/**
+ * WHICH BENCH A STEP OCCUPIES WHILE IT RUNS.
+ *
+ * `gpu` and `cpu` are WORKERS: a step holding one is doing arithmetic nobody
+ * else can do at the same time, which is why there are so few of them.
+ *
+ * `wait` is not a worker and does not belong on the bench. A step declares it
+ * when its whole job is to sit until something outside this queue happens —
+ * today, `foundry-export-landing` waiting for an EPUB Foundry's own queue is
+ * writing. Owen, 2026-09-08, watching one of those hold a CPU slot: *"the epub
+ * generation step is supposed to be rapid. it happens in seconds. but its
+ * sitting in the cpu slot doing nothing for two minutes now"*. The waiting was
+ * a symptom of a bug on the other side of the seam; holding a worker WHILE
+ * waiting was this side's own, and it would have starved a real render behind
+ * it even when the wait is the second it is meant to be.
+ *
+ * `benchLanes` draws `gpu` and `cpu` only, so a waiting step is absent from the
+ * bench and present in the queue's own list — which is the truth: it is queued
+ * work that is using nothing.
+ */
+export type StepResource = 'gpu' | 'cpu' | 'wait';
 
 /** How many steps of each resource may run at once. */
 export const RESOURCE_SLOTS: Readonly<Record<StepResource, number>> = {
   gpu: 1,
   cpu: 2,
+  /*
+   * A CAP RATHER THAN NO LIMIT. Waiting costs a promise and a timer, so this is
+   * not a worker count — but an unbounded lane would let a runaway chain admit
+   * thousands of steps at once, and a number nobody can exceed by accident is
+   * cheaper to reason about than Infinity. Raise it if a real chain ever nears it.
+   */
+  wait: 32,
 };
 
 /**
