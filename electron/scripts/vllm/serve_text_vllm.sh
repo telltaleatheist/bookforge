@@ -1,0 +1,97 @@
+#!/bin/bash
+# Launch the TEXT-PASS model (Qwen3.5-9B, bf16) under vLLM — the batched server
+# behind Foundry's clean-text / translate / simplify passes.
+#
+# WHY THIS EXISTS. Owen, 2026-09-08: "lets build in vllm batching. ollama
+# batching doesnt work. its an unfinished feature ollama tried to implement but
+# isnt accessible on the mac or pc. cuda graphs/vllm would probably be the best
+# for all three features." Measured before that ruling: Ollama 0.33.3 refuses to
+# decode the qwen35 architecture in parallel on its llama.cpp backend
+# (sched.go:509), so OLLAMA_NUM_PARALLEL=4 and Foundry's four-in-flight pool
+# bought nothing — every text pass ran one request at a time on a 24 GB card.
+# vLLM's continuous batching + CUDA graphs + prefix caching is what those passes
+# were shaped for: the same ~6 kB system prompt on every request (prefix-cached
+# once), one block of prose per request, temperature 0.
+#
+# THE CONTRACT, in the shape of serve_higgs_sgl.sh: configured entirely through
+# the environment, `exec`s the server so a signal reaches it, and exports
+# VLLM_TEXT_OWNER so BookForge's teardown can find the listener by scanning
+# /proc — BookForge OWNS THIS SERVER'S LIFETIME (starts it before a text pass,
+# stops it after; a render never shares the card with it). Foundry only speaks
+# to the endpoint; it starts and stops nothing.
+#
+# TEXT ONLY. Qwen3.5-9B is a multimodal checkpoint (config architecture
+# Qwen3_5ForConditionalGeneration); the vision tower is never used by a text
+# pass, so the multimodal limits are set to zero and vLLM skips loading and
+# profiling it. The served NAME is the string Foundry sends as `model`; it is
+# pinned here so the client and the server can never disagree about it.
+#
+# Nothing below is measured yet (2026-09-08): the card is busy. The first start
+# records --max-num-seqs / --gpu-memory-utilization / --max-model-len against
+# a real clean-text pass, and those numbers replace these defaults with their
+# provenance in this header.
+set -euo pipefail
+
+VLLM_TEXT_ENV="${VLLM_TEXT_ENV:-$HOME/anaconda3/envs/higgs3}"
+VLLM_TEXT_MODEL_DIR="${VLLM_TEXT_MODEL_DIR:-$HOME/models/Qwen3.5-9B}"
+# The name Foundry's passes send as `model`. ONE string, stated here and in
+# BookForge's settings; a request naming anything else is an HTTP 404 from vLLM,
+# which is the right answer to a client and a server that disagree.
+VLLM_TEXT_MODEL_NAME="${VLLM_TEXT_MODEL_NAME:-qwen3.5-9b-bf16}"
+VLLM_TEXT_HOST="${VLLM_TEXT_HOST:-127.0.0.1}"
+# 8300: clear of Higgs on 8095 (vllm-omni) and 8200 (SGLang-Omni), and of Ollama
+# on 11434, so a stale listener on any of those can never be mistaken for this.
+VLLM_TEXT_PORT="${VLLM_TEXT_PORT:-8300}"
+# Requests in flight. Foundry's pool sends 4 today (cd89ee7, --concurrency 4);
+# the server admits more so a wider pool needs no server change.
+VLLM_TEXT_MAX_NUM_SEQS="${VLLM_TEXT_MAX_NUM_SEQS:-16}"
+# The context per request. Foundry pins num_ctx 12288 on Ollama (its longest
+# system prompt + block + answer); 16384 covers that with headroom for a long
+# block. Prefix caching makes the shared system prompt cost one prefill.
+VLLM_TEXT_MAX_MODEL_LEN="${VLLM_TEXT_MAX_MODEL_LEN:-16384}"
+# 9B bf16 weights are ~19 GB; 0.90 of a 24.5 GB card leaves ~3 GB for KV cache
+# at 16 sequences x 16k tokens with prefix sharing. UNMEASURED — see the header.
+VLLM_TEXT_GPU_MEM_UTIL="${VLLM_TEXT_GPU_MEM_UTIL:-0.90}"
+
+if [ ! -d "$VLLM_TEXT_MODEL_DIR" ]; then
+  echo "VLLM_TEXT_MODEL_DIR '$VLLM_TEXT_MODEL_DIR' does not exist." >&2
+  echo "Download Qwen/Qwen3.5-9B into it (bf16 safetensors) before starting the text server." >&2
+  exit 2
+fi
+if [ ! -x "$VLLM_TEXT_ENV/bin/python" ]; then
+  echo "VLLM_TEXT_ENV '$VLLM_TEXT_ENV' has no python; it must be the conda env that holds vllm." >&2
+  exit 3
+fi
+case "$VLLM_TEXT_GPU_MEM_UTIL" in
+  0.[0-9]*) ;;
+  *) echo "VLLM_TEXT_GPU_MEM_UTIL must be a fraction in (0, 1); got '$VLLM_TEXT_GPU_MEM_UTIL'" >&2; exit 4 ;;
+esac
+for pair in "VLLM_TEXT_MAX_NUM_SEQS=$VLLM_TEXT_MAX_NUM_SEQS" \
+            "VLLM_TEXT_MAX_MODEL_LEN=$VLLM_TEXT_MAX_MODEL_LEN" \
+            "VLLM_TEXT_PORT=$VLLM_TEXT_PORT"; do
+  case "${pair#*=}" in
+    ''|*[!0-9]*|0) echo "${pair%%=*} must be a positive integer; got '${pair#*=}'" >&2; exit 4 ;;
+  esac
+done
+
+# The ownership marker every BookForge teardown path finds by scanning
+# /proc/<pid>/environ — exported, so it is in the server's environment and not
+# merely a shell variable here.
+export VLLM_TEXT_OWNER="${VLLM_TEXT_OWNER:-bookforge}"
+export PATH="$VLLM_TEXT_ENV/bin:$PATH"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
+
+echo "[serve_text_vllm] $VLLM_TEXT_MODEL_DIR as '$VLLM_TEXT_MODEL_NAME' on $VLLM_TEXT_HOST:$VLLM_TEXT_PORT" >&2
+echo "[serve_text_vllm] max-num-seqs $VLLM_TEXT_MAX_NUM_SEQS, max-model-len $VLLM_TEXT_MAX_MODEL_LEN, gpu-mem $VLLM_TEXT_GPU_MEM_UTIL" >&2
+
+exec "$VLLM_TEXT_ENV/bin/python" -m vllm.entrypoints.openai.api_server \
+  --model "$VLLM_TEXT_MODEL_DIR" \
+  --served-model-name "$VLLM_TEXT_MODEL_NAME" \
+  --host "$VLLM_TEXT_HOST" --port "$VLLM_TEXT_PORT" \
+  --dtype bfloat16 \
+  --max-model-len "$VLLM_TEXT_MAX_MODEL_LEN" \
+  --max-num-seqs "$VLLM_TEXT_MAX_NUM_SEQS" \
+  --gpu-memory-utilization "$VLLM_TEXT_GPU_MEM_UTIL" \
+  --enable-prefix-caching \
+  --limit-mm-per-prompt '{"image":0,"video":0}' \
+  --no-enable-log-requests
