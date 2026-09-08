@@ -67,7 +67,7 @@ const BF_DIST = path.join(REPO, 'dist', 'electron');
 const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
-                     [--model <tag>] [--ollama <url>] [--concurrency <n>]
+                     [--server ollama|vllm] [--model <tag>] [--ollama <url>] [--concurrency <n>]
                      [--keep-model] [--library <root>] [--foundry-dist <dir>] [--dry-run]`;
 
 function parseArgs(argv) {
@@ -213,8 +213,25 @@ async function main() {
   }
 
   const settings = readAppSettings();
-  const model = said(args.model) ?? settings.cleanTextModel;
-  const ollama = said(args.ollama) ?? settings.ollamaUrl;
+  /*
+   * WHICH SERVER, and therefore which URL and which model field. Foundry 19f5e70
+   * (Owen, 2026-09-08: "lets build in vllm batching. ollama batching doesnt
+   * work"): the three text acts take `--server ollama|vllm`, declared and never
+   * sniffed from a URL, and the app keeps BOTH servers' settings so switching
+   * back costs no retyping — `llmServer` picks, `vllmUrl`/`vllmModel` are the
+   * vLLM pair, `ollamaUrl`/`cleanTextModel` the Ollama pair. This door mirrors
+   * `clean-dialog.add()` field for field, so under vLLM the model is
+   * `vllmModel`, which is EMPTY by default and means "whatever the server is
+   * serving" — the engine asks /v1/models and records the served id. An empty
+   * model is therefore a real value here, not a missing one, and `argsFor`
+   * omits `--model` for it rather than sending an empty name.
+   */
+  const server = said(args.server) ?? settings.llmServer;
+  if (server !== 'ollama' && server !== 'vllm') {
+    throw new Error(`--server ${server} is not a server kind this door knows; it is ollama or vllm.`);
+  }
+  const model = said(args.model) ?? (server === 'vllm' ? settings.vllmModel : settings.cleanTextModel);
+  const ollama = said(args.ollama) ?? (server === 'vllm' ? settings.vllmUrl : settings.ollamaUrl);
   let concurrency;
   if (args.concurrency !== undefined && args.concurrency !== true) {
     concurrency = Number(args.concurrency);
@@ -241,6 +258,7 @@ async function main() {
     ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
     model,
     ollama,
+    ...(server === 'vllm' ? { server: 'vllm' } : {}),
     ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
     ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
     stepId: plan.stepId,
@@ -278,8 +296,10 @@ async function main() {
     : `${standing.id}  ${standing.action} — ${standing.label}`}`);
   console.log(`[clean] parentStep       ${parentStep ?? '(none)'}`);
   console.log(`[clean] mints step       ${plan.stepId ?? '(none)'}`);
-  console.log(`[clean] model            ${model}${said(args.model) ? ' (--model)' : ' (app-settings cleanTextModel)'}`);
-  console.log(`[clean] endpoint         ${ollama}${said(args.ollama) ? ' (--ollama)' : ' (app-settings ollamaUrl)'}`);
+  console.log(`[clean] server           ${server}${said(args.server) ? ' (--server)' : ' (app-settings llmServer)'}`);
+  console.log(`[clean] model            ${model.length > 0 ? model : '(none — the served model, resolved and recorded by the engine)'}`
+    + `${said(args.model) ? ' (--model)' : server === 'vllm' ? ' (app-settings vllmModel)' : ' (app-settings cleanTextModel)'}`);
+  console.log(`[clean] endpoint         ${ollama}${said(args.ollama) ? ' (--ollama)' : server === 'vllm' ? ' (app-settings vllmUrl)' : ' (app-settings ollamaUrl)'}`);
   console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default (4)"}`);
   console.log(`[clean] keep model       ${request.keepModel === true
     ? 'yes — --keep-model, the weights stay resident'

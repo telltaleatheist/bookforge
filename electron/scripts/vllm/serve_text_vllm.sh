@@ -15,8 +15,8 @@
 #
 # THE CONTRACT, in the shape of serve_higgs_sgl.sh: configured entirely through
 # the environment, `exec`s the server so a signal reaches it, and exports
-# VLLM_TEXT_OWNER so BookForge's teardown can find the listener by scanning
-# /proc — BookForge OWNS THIS SERVER'S LIFETIME (starts it before a text pass,
+# BOOKFORGE_TEXT_SERVER_OWNER so BookForge's teardown can find the listener by
+# scanning /proc — BookForge OWNS THIS SERVER'S LIFETIME (starts it before a text pass,
 # stops it after; a render never shares the card with it). Foundry only speaks
 # to the endpoint; it starts and stops nothing.
 #
@@ -34,10 +34,15 @@ set -euo pipefail
 
 VLLM_TEXT_ENV="${VLLM_TEXT_ENV:-$HOME/anaconda3/envs/higgs3}"
 VLLM_TEXT_MODEL_DIR="${VLLM_TEXT_MODEL_DIR:-$HOME/models/Qwen3.5-9B}"
-# The name Foundry's passes send as `model`. ONE string, stated here and in
-# BookForge's settings; a request naming anything else is an HTTP 404 from vLLM,
-# which is the right answer to a client and a server that disagree.
-VLLM_TEXT_MODEL_NAME="${VLLM_TEXT_MODEL_NAME:-qwen3.5-9b-bf16}"
+# THE SERVED NAME IS THE RECORD. Foundry (19f5e70) resolves the model by asking
+# /v1/models and writes THAT id into the bank key, the records key and the
+# narration stamp - it carries no separate precision field because a server
+# cannot report its dtype. So this name must say what it is, never mimic an
+# Ollama tag: two books cleaned at two precisions would otherwise be
+# byte-indistinguishable in their records. "Qwen3.5-9B-bf16" = the checkpoint
+# and the dtype it is served at. A request naming anything else is an HTTP 404
+# from vLLM, which is the right answer to a client and a server that disagree.
+VLLM_TEXT_MODEL_NAME="${VLLM_TEXT_MODEL_NAME:-Qwen3.5-9B-bf16}"
 VLLM_TEXT_HOST="${VLLM_TEXT_HOST:-127.0.0.1}"
 # 8300: clear of Higgs on 8095 (vllm-omni) and 8200 (SGLang-Omni), and of Ollama
 # on 11434, so a stale listener on any of those can never be mistaken for this.
@@ -76,9 +81,31 @@ done
 
 # The ownership marker every BookForge teardown path finds by scanning
 # /proc/<pid>/environ — exported, so it is in the server's environment and not
-# merely a shell variable here.
-export VLLM_TEXT_OWNER="${VLLM_TEXT_OWNER:-bookforge}"
-export PATH="$VLLM_TEXT_ENV/bin:$PATH"
+# merely a shell variable here. NOT a VLLM_* name: vLLM treats that prefix as
+# its own namespace and warns about every unknown one at startup.
+export BOOKFORGE_TEXT_SERVER_OWNER="${BOOKFORGE_TEXT_SERVER_OWNER:-bookforge}"
+
+# THE CUDA 13 TOOLKIT THAT SHIPS INSIDE THE PIP WHEEL, exactly as
+# serve_higgs_v3.sh finds it for the same env. MEASURED on the first start
+# (2026-09-08): without it the engine core died in the sampler warm-up with
+# "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist"
+# — the model had loaded (16.8 GiB) and the failure came ninety seconds later.
+export CUDA_HOME="$VLLM_TEXT_ENV/lib/python3.11/site-packages/nvidia/cu13"
+export CUDA_PATH="$CUDA_HOME"
+export PATH="$CUDA_HOME/bin:$VLLM_TEXT_ENV/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
+if [ ! -x "$CUDA_HOME/bin/nvcc" ]; then
+  echo "No nvcc at $CUDA_HOME/bin — the env's pip CUDA toolkit is missing; vLLM's sampler warm-up needs it." >&2
+  exit 5
+fi
+
+# FlashInfer is unavailable on sm_86 with torch 2.13+cu130 (its bundled CCCL
+# headers reject the wheel's CUDA 13 nvcc) — the same three lines the Higgs
+# vllm-omni launcher uses to route around it: torch-native sampler, vLLM's
+# prebuilt FA2. Speed only; correctness is unaffected.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
+export VLLM_DISABLE_FLASHINFER_PREFILL=1
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 
 echo "[serve_text_vllm] $VLLM_TEXT_MODEL_DIR as '$VLLM_TEXT_MODEL_NAME' on $VLLM_TEXT_HOST:$VLLM_TEXT_PORT" >&2

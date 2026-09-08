@@ -203,18 +203,42 @@ if (fixture === null) {
      * `app.getPath('userData')` and plain node has no `app` — it would answer with
      * the declared default and this test would pass against a setting nobody has.
      */
-    const stored = execFileSync(
+    const stored = JSON.parse(execFileSync(
       process.execPath,
       ['--require', STUB, '-e',
-        `process.stdout.write(require(${JSON.stringify(path.join(FOUNDRY_DIST, 'electron', 'app-settings.js'))}).readAppSettings().cleanTextModel)`],
+        `const s = require(${JSON.stringify(path.join(FOUNDRY_DIST, 'electron', 'app-settings.js'))}).readAppSettings();`
+        + `process.stdout.write(JSON.stringify({ llmServer: s.llmServer, cleanTextModel: s.cleanTextModel, vllmModel: s.vllmModel }))`],
       { encoding: 'utf8' },
-    ).trim();
+    ).trim());
     const out = dryRun([]);
-    assert.ok(
-      out.includes(`[clean] model            ${stored} (app-settings cleanTextModel)`),
-      `expected the stored ${stored}; got:\n${out.split('\n').filter((l) => l.includes('model')).join('\n')}`,
-    );
-    if (typeof raw.defaultLlmModel === 'string' && raw.defaultLlmModel !== stored) {
+    /*
+     * WHICH PAIR THE MACHINE IS SET TO decides the line (foundry 19f5e70,
+     * 2026-09-08): under `llmServer: 'vllm'` the model is `vllmModel`, empty by
+     * default and meaning "whatever the server serves" - the engine records the
+     * served id - and the spawn carries `--server vllm` with NO `--model`. Under
+     * ollama it is `cleanTextModel`, as it always was. This keeper reads the REAL
+     * settings file, so it asserts whichever the machine is on rather than one.
+     */
+    if (stored.llmServer === 'vllm') {
+      const modelLine = out.split('\n').find((l) => l.startsWith('[clean] model  '));
+      assert.ok(modelLine && modelLine.includes('(app-settings vllmModel)'),
+        `expected the vllmModel line; got:\n${modelLine}`);
+      if (stored.vllmModel === '') {
+        assert.ok(modelLine.includes('(none'), `an empty vllmModel must say the served model is used; got: ${modelLine}`);
+        assert.ok(!/--model\s/.test(out), 'an empty served-model field must OMIT --model, never send an empty name');
+      } else {
+        assert.ok(modelLine.includes(stored.vllmModel), `expected ${stored.vllmModel}; got: ${modelLine}`);
+      }
+      assert.ok(out.includes('--server vllm'), 'the spawn must declare --server vllm');
+      assert.ok(out.includes('[clean] server           vllm (app-settings llmServer)'), 'the server line must name the setting');
+    } else {
+      assert.ok(
+        out.includes(`[clean] model            ${stored.cleanTextModel} (app-settings cleanTextModel)`),
+        `expected the stored ${stored.cleanTextModel}; got:\n${out.split('\n').filter((l) => l.includes('model')).join('\n')}`,
+      );
+      assert.ok(!out.includes('--server'), 'an ollama run must not declare a server kind foundry defaults to');
+    }
+    if (typeof raw.defaultLlmModel === 'string' && raw.defaultLlmModel !== stored.cleanTextModel) {
       assert.ok(!out.includes(`--model ${raw.defaultLlmModel} `), 'the door reached for defaultLlmModel');
     }
   });
