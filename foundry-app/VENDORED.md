@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **74f933c** — *fix(queue): a host’s push wakes the scheduler — a deferred export stopped waiting on nothing* |
+| Source sha | **98acf5a** — *feat: the spine is translated but never rewritten, and a text pass offers Compare* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 74f933c app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 98acf5a app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1106,3 +1106,22 @@ sharper case. BookForge’s half of that same screenshot was its own bug, fixed 
 whose whole job is waiting no longer holds one of two CPU slots (`StepResource` gains `wait`). The
 two were compounding — a waiting narration was starving the very export it waited for. 141 blobs
 hash-verified, no IPC change, no dep movement.
+**8969762 + 98acf5a (copied 2026-09-08).** `8969762`: the ALIGNED pair lights its own diff — the
+real answer to Owen’s “cleanup didn’t highlight anything”, which was the aligned view rather than
+the compare column. Wave 57 passed an empty map to the aligned source sheet on the reasoning that it
+is “a third book”: true of the compare column, false of the aligned pair, which is one pass’s own two
+sides matched by block id inside one component. Removals now draw on the source sheet, additions on
+the bench.
+
+`98acf5a` is **Owen’s spine ruling**: *“for translate, we need it to translate the epub spine … for
+translate, it will. simplify/cleanup, no.”* `clean-text` no longer sends chapter titles at all;
+`translate` skips them when the run carries a rewrite mode. NO version constant moved — this changes
+which targets are ASKED, not the transform — so nothing re-stales and no cleaned book needs redoing.
+A text-pass card also offers **Compare**, standing on the pass and opening its parent beside it with
+the changes lit, so the picker no longer has to be aimed by hand.
+
+**THE NARRATION CONSEQUENCE, which is BookForge’s to weigh:** a spine title asked about on its own is
+now pinned to what the book printed, so anything that reads a chapter title aloud gets the printed
+form — “4. 2110: Silo 1” rather than words. A title that is a provable COPY of a heading is still
+derived from that heading and therefore still moves when a cleanup cleans the heading; only the
+standalone spine is pinned. 141 blobs hash-verified, no IPC change, no dep movement.

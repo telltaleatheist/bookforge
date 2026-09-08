@@ -30,7 +30,7 @@ import { INLINE_DROPPED, INLINE_ITALIC, INLINE_STRONG, inlineEmphasis } from '@s
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
 // The compare column's light: which characters went and which came, per block,
 // drawn through the same walk as the analysis's — see `cut`.
-import type { ChangeRange } from '@shared/word-diff';
+import { wordDiff, type ChangeRange, type WordDiff } from '@shared/word-diff';
 
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
@@ -4233,7 +4233,84 @@ export class BookViewComponent {
    * this pane's is the service's decision (`liveRanges`/`comparedRanges` —
    * the ledger says which side is older), never this component's.
    */
+  /**
+   * ── THE ALIGNED PAIR'S OWN DIFF — what this pass did, lit on both sheets ────
+   *
+   * Owen, 2026-09-08, with the Aligned view open on a cleaned book: *"theres an
+   * 'aligned' button at the top. i expected it to highlight the left and right
+   * side of the aligned view so the user can see what changed on each side."*
+   *
+   * IT WAS BUILT AND THEN DELIBERATELY WITHHELD, which is the part worth
+   * naming. Wave 57 lit the COMPARE column and left the aligned source sheet
+   * dark on the reasoning that "the source sheet is a third book" — true of the
+   * compare column, which draws some OTHER step, and false here: the aligned
+   * pair is one pass's own two sides, the very rows it read on the left and the
+   * very rows it wrote on the right, matched by block id in a single component.
+   * There is no third book anywhere in it. So the light belongs here more
+   * plainly than where it was first put.
+   *
+   * ONE DIFF, TWO HALVES, and the halves cannot drift because they come out of
+   * one `wordDiff` per block: what the pass took out is drawn on the SOURCE
+   * sheet, what it put in on the BENCH. Memoised on the pair of strings, so
+   * scrolling, hovering a twin and every unrelated repaint cost a map lookup
+   * rather than a diff of the book.
+   *
+   * ONLY WHILE THE PAIR IS DRAWN. `aligned()` is false in every other state and
+   * this answers two empty maps, so a book nobody is comparing pays nothing.
+   */
+  private alignedMemo = new Map<string, { before: string; after: string; diff: WordDiff }>();
+
+  private readonly alignedDiff = computed<{
+    removed: ReadonlyMap<string, readonly ChangeRange[]>;
+    added: ReadonlyMap<string, readonly ChangeRange[]>;
+  }>(() => {
+    if (!this.aligned()) return NO_ALIGNED_DIFF;
+    const source = this.book()?.translation?.source ?? null;
+    if (source === null || !source.ok) return NO_ALIGNED_DIFF;
+    const after = this.view()?.rows ?? null;
+    if (after === null) return NO_ALIGNED_DIFF;
+
+    const before = new Map<string, string>();
+    for (const row of source.rows) {
+      if (row.shelf === undefined) before.set(row.id, row.text);
+    }
+    const removed = new Map<string, readonly ChangeRange[]>();
+    const added = new Map<string, readonly ChangeRange[]>();
+    const kept = new Map<string, { before: string; after: string; diff: WordDiff }>();
+    for (const row of after) {
+      /*
+       * A STRUCK ROW IS NOT LIT, on `litRanges`' own rule: a strike is a
+       * decision to remove and a highlight is an observation, and two marks
+       * arguing about one paragraph is the outcome neither is worth.
+       */
+      if (row.shelf !== undefined || row.struck === true) continue;
+      const was = before.get(row.id);
+      // A block the pass INVENTED has no older side to have changed from, and a
+      // string compare answers the ordinary case — most of a book — for free.
+      if (was === undefined || was === row.text) continue;
+      const held = this.alignedMemo.get(row.id);
+      const diff = held !== undefined && held.before === was && held.after === row.text
+        ? held.diff
+        : wordDiff(was, row.text);
+      kept.set(row.id, { before: was, after: row.text, diff });
+      if (diff.removed.length > 0) removed.set(row.id, diff.removed);
+      if (diff.added.length > 0) added.set(row.id, diff.added);
+    }
+    this.alignedMemo = kept;
+    return { removed, added };
+  });
+
   private readonly changeLight = computed<ReadonlyMap<string, readonly ChangeRange[]>>(() => {
+    /*
+     * THE PAIR'S OWN DIFF WINS WHERE THERE IS ONE. Aligned, this sheet is the
+     * pass's OUTPUT and the sheet beside it is the pass's INPUT — the closest
+     * relationship two columns in this app can have — so what it lights is what
+     * this pass did. The compare column's diff is about some other step and
+     * answers everywhere else. Both can be true at once (a compared pane may
+     * also be aligned); the nearer question is the one drawn.
+     */
+    const pair = this.alignedDiff();
+    if (pair.added.size > 0) return pair.added;
     const party = this.party();
     if (party === null) return NO_CHANGE_MAP;
     return party === 'live' ? this.changes.liveRanges() : this.changes.comparedRanges();
@@ -4402,9 +4479,13 @@ export class BookViewComponent {
        * it from this report would put the marker pen on words nobody measured.
        */
       lit: new Map(),
-      // And no changes, for the identical reason: the diff is between the two
-      // COLUMNS' books by block id, and the source sheet is a third book.
-      changes: NO_CHANGE_MAP,
+      /*
+       * AND WHAT THIS PASS TOOK OUT, which is the half of the diff this sheet
+       * owns. It was `NO_CHANGE_MAP` on the reasoning that the source sheet is a
+       * third book — true of the compare column and false of this pair, which is
+       * one pass's own two sides (`alignedDiff`, where Owen's ruling is quoted).
+       */
+      changes: this.alignedDiff().removed,
     });
   });
 
@@ -7236,6 +7317,11 @@ const NO_LIT: readonly LitRange[] = [];
 /** No comparison open, or this block unchanged by it — the same near-always. */
 const NO_CHANGES: readonly ChangeRange[] = [];
 const NO_CHANGE_MAP: ReadonlyMap<string, readonly ChangeRange[]> = new Map();
+/** No pair drawn, no source, no book — three ways of having nothing to align. */
+const NO_ALIGNED_DIFF: {
+  removed: ReadonlyMap<string, readonly ChangeRange[]>;
+  added: ReadonlyMap<string, readonly ChangeRange[]>;
+} = { removed: NO_CHANGE_MAP, added: NO_CHANGE_MAP };
 
 /**
  * THE PAPER'S TINT FOR A CATEGORY — the panel's hue, mixed for cream.

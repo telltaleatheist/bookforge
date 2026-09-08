@@ -16,7 +16,7 @@ import {
 } from '@shared/stages';
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
-import { mintedFromPhotographs } from '@shared/ledger';
+import { isTextPass, mintedFromPhotographs } from '@shared/ledger';
 import { pendingStepOf } from '@shared/pending';
 import type {
   HostNode,
@@ -2967,6 +2967,56 @@ export class OpenDocumentsComponent {
         out.push({ id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
           form: false, ...after('Make the finished book from this node') });
       }
+      /*
+       * ── AND THE ONE ACT HERE THAT MAKES NOTHING: COMPARE ─────────────────────
+       *
+       * Owen ordered a cleanup, waited for it, opened the book and expected to be
+       * shown what had changed. Nothing was lit. The highlights had existed since
+       * Wave 57 (docs/COMPARE-CHANGES.md) — they are simply only drawn INSIDE a
+       * comparison, and reaching one meant finding the compare picker in the
+       * book's head row and then aiming it, by hand, at the step this pass was
+       * made from. That is a person being asked to reconstruct a fact the row
+       * already knows.
+       *
+       * SO THE DOOR GOES WHERE THE ACT IS. A text pass is the one kind of step
+       * whose whole product is a difference from its parent (`TEXT_PASS_ACTIONS`
+       * — translate, simplify, clean), and its parent is written on the row. One
+       * press puts the two side by side with every change lit, and there is
+       * nothing left to aim.
+       *
+       * ── Three conditions, each for its own reason ────────────────────────────
+       *
+       * IT IS A TEXT PASS. A curation, a read, an export and a metadata row are
+       * not "the same book, said differently" — a diff against their parent is
+       * either meaningless or is the tree itself.
+       *
+       * THE PARENT IS STILL IN THE LEDGER. `step.parent` is an id captured when
+       * the step landed, and a step somebody has since removed leaves it naming
+       * nothing. Offering a comparison against a step that is gone would be a
+       * tile that opens an empty column.
+       *
+       * AND NOT ON A PROMISE. `waiting` means this row is a pending node — the
+       * work is queued and nothing has been made yet (Wave 56), so there is no
+       * text on this side of the comparison to draw. Every other act here is
+       * DEFERRED when the row is promised, which is honest for a make-act: it
+       * will be run when the promise lands. A comparison is not made, it is
+       * LOOKED AT, so "later" is not a thing it can be — the tile is simply
+       * absent until there is something to look at.
+       *
+       * IT CONSUMES NOTHING AND MAKES NOTHING, which is why `pressed` leaves
+       * `made` null for it: two views of what already exists cannot have been
+       * produced without somebody's unapplied changes, so the card that asks
+       * about those has nothing to warn about here.
+       */
+      if (!waiting && at !== null && isTextPass(at.action) && at.parent !== null) {
+        const held = this.ledger.historyFor(dir);
+        const parent = at.parent;
+        if (held !== null && held.ledger.steps.some((one) => one.id === parent)) {
+          out.push({ id: 'compare', label: 'Compare', icon: 'ft-book', audio: false, host: null,
+            form: false,
+            ...after('Show this beside the step it was made from, with every change lit') });
+        }
+      }
     }
     /*
      * A ROW THAT PRODUCES NOTHING HAS NO HOST ACTS, which is where the old
@@ -3351,7 +3401,30 @@ export class OpenDocumentsComponent {
       else if (act.id === 'translate') this.ui.openTranslate();
       else if (act.id === 'simplify') this.ui.openSimplify();
       else if (act.id === 'clean') this.ui.openClean();
-      else this.ui.openExport();
+      else if (act.id === 'compare') {
+        /*
+         * ── AND STANDING FIRST IS NOT A COST HERE, IT IS THE GESTURE ───────────
+         *
+         * Every other act above stands on the row and then opens a dialog, and
+         * the standing is a means: the dialog needs a position to act FROM.
+         * Compare is different in kind and lands in the same place for a better
+         * reason. The comparison is drawn BETWEEN the position and the compared
+         * step — the live column is wherever the book is standing and the second
+         * column is the step named here (`StageService.startCompare`, which
+         * takes the project off what is on screen) — so somebody who pressed
+         * Compare on a cleanup must end up STANDING ON THE CLEANUP, looking back
+         * at the step it was made from. Standing on the row is the half of the
+         * gesture that decides what the left-hand column is.
+         *
+         * WHICH IS ALSO WHY THE PARENT IS RE-READ FROM THE ROW rather than
+         * carried on the act: `Act` is a description of a tile, and an id
+         * captured when the footer was computed would be a second opinion about
+         * a ledger that may have moved under it. The guard that offered this
+         * tile already proved the parent is in the history.
+         */
+        const parent = row.step?.parent ?? null;
+        if (parent !== null) this.stage.startCompare(parent);
+      } else this.ui.openExport();
     });
   }
 
