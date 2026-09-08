@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ffee3b8** — *fix(tree): a running ghost is red and locked — only the queue can end a run* |
+| Source sha | **ca0bf1c** — *fix(tree): a press that throws says so — no act in this panel can fail silently* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive ffee3b8 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ca0bf1c app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1068,3 +1068,13 @@ the queued card's dashed — deliberately NOT the failure red (`.card.failed` fi
 because a card that looked failed while the work was healthy would be the worse lie. Reads `row.state`
 off the rows we push, so nothing new crosses the seam. 2 files, 141 blobs hash-verified, no IPC change,
 no dep movement.
+**ca0bf1c (copied 2026-09-08) — a press that throws says so.** Owen pressed Narrate on a RUNNING
+ghost and NOTHING happened: no notice in the Foundry window, no terminal line, no queue row, no
+implied-export directory. The whole act press is now wrapped, so anything it throws reaches the
+notice strip as "“Narrate” could not be started: <message>" and the console. WHY IT WAS
+INVISIBLE IS OURS, not theirs: every refusal `invokeFoundryNarrate` raises goes out through
+`sayToUser` (main.ts), which broadcasts `jobs:notice` — a channel only BOOKFORGE's renderer listens
+on; the Foundry window is not subscribed to it and cannot be, so a host refusal for an act pressed
+in THAT window lands in a strip nobody was looking at, and nothing logs it. The door does re-throw,
+so with this wrap the message now surfaces where the press was made. 1 file, 141 blobs
+hash-verified, no IPC change, no dep movement.

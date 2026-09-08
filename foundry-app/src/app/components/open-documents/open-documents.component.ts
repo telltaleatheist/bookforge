@@ -3200,6 +3200,36 @@ export class OpenDocumentsComponent {
     // fire while a dialog was opening over the top.
     event.stopPropagation();
     /*
+     * ── AND NOTHING THIS PRESS CAN THROW IS ALLOWED TO BE SILENT ──────────────
+     *
+     * *"a button that appears to do nothing is the one outcome this socket must
+     * not have"* is written twice in this file about the HOST's refusals, and it
+     * was true of everything except an exception raised on the way to them: an
+     * uncaught throw in a click handler reaches the hosted window's devtools
+     * console, which is a place nobody is looking, and Angular abandons the rest
+     * of the handler. Owen pressed Narrate on a running promise and got no card,
+     * no notice and no line in the terminal (2026-09-08) — which is the exact
+     * signature of that, whatever the throw turns out to be.
+     *
+     * So the whole press is wrapped and the sentence goes on the notice strip.
+     * This is not a repair layer over a known defect: the refusals a press can
+     * legitimately meet already return quietly by their own design, and what is
+     * left for this to catch is a program error, which the person in front of it
+     * should be told about rather than left to infer from a button that did
+     * nothing.
+     */
+    try {
+      await this.pressed(row, act);
+    } catch (err) {
+      this.notices.notice.set(
+        `“${act.label}” could not be started: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      console.error('[tree] the act press threw', err);
+    }
+  }
+
+  private async pressed(row: Row, act: Act): Promise<void> {
+    /*
      * ── AND FIRST, THE CARD ABOUT WORK NOBODY APPLIED ─────────────────────────
      *
      * Every act this footer offers is a MAKE-ACT — an export, a translation, a
