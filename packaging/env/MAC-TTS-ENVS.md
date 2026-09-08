@@ -75,6 +75,39 @@ recipe with `mlx-audio` (Voxtral) / the Orpheus MLX deps. Keep the **8 GB Voxtra
 out of the tarball** — pull `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` (~2.5 GB) from HF at
 runtime.
 
+### `qwen-align` — the Qwen3 forced aligner (built + packed 2026-09-08)
+
+Not TTS: this is the GPU forced-alignment env behind `narrator align --backend
+qwen3` (component `electron/components/qwen-align-env.ts`). It gets its OWN env
+for two hard reasons — `qwen-asr` pins transformers 4.57.6, which would
+downgrade narrator-mlx, and it drags gradio/flask along, which have no business
+in the deliberately-small CPU-only `whisperx-env`.
+
+```bash
+conda create -n qwen-align python=3.11 -y
+conda activate qwen-align
+pip install torch                  # 2.14, MPS — the Apple GPU is the whole point
+pip install qwen-asr               # 0.0.6; PINS transformers 4.57.6, pulls gradio/flask
+pip install soundfile librosa accelerate
+pip install conda-pack
+
+# smoke-test an alignment BEFORE packing (see §3): the model
+# Qwen/Qwen3-ForcedAligner-0.6B (~1.2 GB) downloads from HF on first use and is
+# deliberately NOT baked into the tarball.
+python -c "import qwen_asr, torch, soundfile; print(torch.backends.mps.is_available())"
+
+conda-pack -n qwen-align -o qwen-align-env-macos-arm64.tar.gz --format tar.gz
+```
+
+Asset: **`qwen-align-env-macos-arm64.tar.gz`** under the `assets` release tag —
+499,191,377 bytes, sha256
+`69b4bb14c644fa94cf7b243de071758d2197b5b1c248bf887c062db9fda415f2`.
+
+**darwin-arm64 only.** There is no Windows twin: the PC reaches a WSL conda env
+also named `qwen-align`, through the `qwenAlignEnv` tool-path setting. Measured
+on the M1 Ultra: 97x realtime warm on MPS in bfloat16 (33 s cold, model load
+included, for 95 s of audio).
+
 ---
 
 ## 3. Verify BEFORE packing (and before deciding §0)

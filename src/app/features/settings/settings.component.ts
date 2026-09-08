@@ -1146,7 +1146,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 </div>
                 <div class="addons-group">
                   <h3 class="addons-group-title">Ebook Alignment</h3>
-                  <p class="addons-group-sub">Aligns your ebook's text to the narration for perfectly-spelled, accurately-timed read-along sentences ("Align to my ebook").</p>
+                  <p class="addons-group-sub">Aligns your ebook's text to the narration for perfectly-spelled, accurately-timed read-along sentences ("Align to my ebook"). The Qwen3 aligner is a much faster Apple-Silicon alternative and only appears on an Apple-Silicon Mac.</p>
                   <app-add-ons-panel [only]="alignAddOnIds"></app-add-ons-panel>
                 </div>
               </div>
@@ -2457,7 +2457,7 @@ export class SettingsComponent implements OnInit {
   // Component-id filters for the per-engine pages' embedded add-ons panels.
   readonly orpheusAddOnIds = ['orpheus'];
   readonly whisperAddOnIds = ['whisper'];
-  readonly alignAddOnIds = ['whisperx-env'];
+  readonly alignAddOnIds = ['whisperx-env', 'qwen-align-env'];
   /**
    * The cross-cutting tools, plus every downloadable task model that has no
    * picker panel of its own — today that is the page-layout model. Those are
