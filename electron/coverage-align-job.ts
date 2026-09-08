@@ -45,13 +45,27 @@
  * second copy of that ladder is a second answer, of which the copy is always the
  * one that goes stale. It is imported.
  *
- * ── CPU, and deliberately not the card ──────────────────────────────────────
+ * ── THE DEVICE IS THE USER'S CHOICE, MADE WHEN THE ROW WAS QUEUED ───────────
  *
- * `--device cpu`, always. `align/aligner.py` refuses CUDA by name while
- * BookForge's `external-gpu-job.lock` exists, and the measurement says it does
- * not need it: 213.5 s of wall clock for 2,615 s of audio, RTF 0.082 (median
- * 1.72 s a chunk). A guard that queued behind a nine-hour narration for a card it
- * cannot use would make every book slower to prove every book was read.
+ * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
+ * queue. GPU or CPU? defaults to CPU."
+ *
+ * It was `--device cpu`, always, and the argument for that is still the argument
+ * for the DEFAULT: the aligner is 213.5 s of wall clock for 2,615 s of audio on
+ * CPU (RTF 0.082, median 1.72 s a chunk), it runs in the second cpu slot beside
+ * the assembly, and a book that had to wait for a card behind a nine-hour
+ * narration would be slower for the privilege. What was wrong was making that
+ * argument for everyone: a Mac with the GPU free aligns at ~49x realtime, and an
+ * operator who knows the card is idle should be able to say so.
+ *
+ * 'gpu' IS RESOLVED TO A DEVICE NAME HERE, on the machine that runs the row —
+ * `mps` on Apple Silicon, `cuda` where CUDA is present, and a machine with
+ * neither refuses BY NAME rather than quietly aligning on the CPU the user did
+ * not choose. The queue file is carried between machines; the name is not.
+ *
+ * The GPU row waits its turn like a render: the queue gives it the single gpu
+ * slot through `gpuAdmission` (`queue-steps/align.ts`), and `align/aligner.py`
+ * refuses cuda AND mps by name while BookForge's `external-gpu-job.lock` exists.
  */
 
 import { app, BrowserWindow } from 'electron';
@@ -64,6 +78,8 @@ import { buildNarratorSpawn } from './narrator-spawn';
 import { resolveWhisperxEnvRoot, whisperxEnvPython } from './whisperx-align-bridge';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
 import { seedSessionAuthorship } from './session-authorship';
+// The machine's own capability answer — see `resolveAlignDevice`.
+import { systemProbe } from './components/system-probe';
 
 export interface CoverageAlignConfig {
   /**
@@ -78,6 +94,14 @@ export interface CoverageAlignConfig {
   processDir: string;
   /** The language the wav2vec2 checkpoint is loaded for. Never defaulted here. */
   language: string;
+  /**
+   * WHICH PROCESSOR — the user's answer, carried from the queue row.
+   *
+   * A NAME FOR A KIND OF DEVICE, not a torch device string: 'gpu' becomes `mps`
+   * or `cuda` below, on the machine that actually runs it. Every caller states
+   * it; the CLI door states 'cpu', which is what the CLI has always done.
+   */
+  device: 'cpu' | 'gpu';
   /**
    * The book's authorship, written into the session before the spawn — see
    * session-authorship.ts. `narrator align` builds the session manifest, author
@@ -246,6 +270,40 @@ export function coverageAlignPython(): string | null {
 }
 
 /**
+ * THE TORCH DEVICE THIS MACHINE CAN GIVE THE ALIGNER, for a row that asked for
+ * the GPU — or a refusal naming what is missing.
+ *
+ * ONE DETECTOR, NOT A SECOND ONE. `systemProbe.profile()` is the same probe the
+ * add-on catalog evaluates compatibility against and the same one the renderer
+ * draws its Add-ons panel from (`appleSilicon`, `cuda.available`), cached after
+ * the first call. Asking torch here — importing it in a subprocess to see what
+ * it can see — would be a second answer to a question this app already answers,
+ * and the two would disagree the day one of them is fixed.
+ *
+ * NO SILENT DOWNGRADE. A machine with neither card refuses by name: the operator
+ * chose the GPU, the row waited for the single GPU slot to get it, and quietly
+ * aligning on the CPU instead would spend that wait for nothing and report
+ * success.
+ */
+async function resolveAlignDevice(
+  device: 'cpu' | 'gpu',
+): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  if (device !== 'gpu') return { ok: true, name: 'cpu' };
+  const profile = await systemProbe.profile();
+  // Apple Silicon first: on a Mac that reports both (it cannot today), Metal is
+  // the card that is actually there.
+  if (profile.appleSilicon) return { ok: true, name: 'mps' };
+  if (profile.cuda.available) return { ok: true, name: 'cuda' };
+  return {
+    ok: false,
+    error:
+      'This alignment was queued to run on the GPU, and this machine has no GPU the aligner can '
+      + 'use — no CUDA card and no Apple Silicon. Queue it on CPU instead: the aligner is '
+      + 'seconds a chunk there, and it runs beside the assembly rather than waiting for a card.',
+  };
+}
+
+/**
  * Run the coverage alignment for one session. Progress flows out-of-band via
  * 'coverage-align:progress', as the denoise and reassembly jobs do.
  */
@@ -285,6 +343,15 @@ export async function runCoverageAlign(
     return { success: false, error };
   }
 
+  const resolved = await resolveAlignDevice(config.device);
+  if (!resolved.ok) {
+    sendProgress(mainWindow, stepId, {
+      phase: 'error', percentage: 0, error: resolved.error, message: resolved.error,
+    });
+    return { success: false, error: resolved.error };
+  }
+  const device = resolved.name;
+
   const reportPath = coverageReportPath(config.processDir);
 
   /*
@@ -301,10 +368,10 @@ export async function runCoverageAlign(
     '--session-dir', config.processDir,
     '--report', reportPath,
     '--language', config.language,
-    // CPU by contract — see the header. Stated rather than left to the CLI's
-    // own default so a reader of the job log can see which device measured the
+    // The resolved device NAME. Stated rather than left to the CLI's own
+    // default so a reader of the job log can see which processor measured the
     // book without going to look up what narrator defaults to.
-    '--device', 'cpu',
+    '--device', device,
     // The whisperx interpreter. Absent, narrator refuses BY NAME rather than
     // picking one, which is the behaviour we want everywhere else and the one
     // thing this door must not leave to chance.
@@ -322,8 +389,9 @@ export async function runCoverageAlign(
   });
   console.log('[COVERAGE-ALIGN] →', plan.describe());
 
+  const startedAt = Date.now();
   sendProgress(mainWindow, stepId, {
-    phase: 'preparing', percentage: 0, message: 'Loading the aligner…',
+    phase: 'preparing', percentage: 0, message: `Loading the aligner (${device})…`,
   });
 
   return new Promise<CoverageAlignResult>((resolve) => {
@@ -361,7 +429,7 @@ export async function runCoverageAlign(
         total = Number(totalHit[1]);
         sendProgress(mainWindow, stepId, {
           phase: 'aligning', percentage: 0, processed: 0, total,
-          message: `Aligning ${total} chunk(s) against the book…`,
+          message: `Aligning ${total} chunk(s) against the book on ${device}…`,
         });
         return;
       }
@@ -425,9 +493,12 @@ export async function runCoverageAlign(
          * the step can put them in its artifact detail.
          */
         const found = summarizeCoverageReport(reportPath);
+        // WHICH PROCESSOR, AND HOW LONG — the two facts an operator deciding
+        // where to queue the NEXT one needs, and the reason the choice exists.
+        const ran = `on ${device} in ${Math.max(1, Math.round((Date.now() - startedAt) / 60000))} min`;
         const message = found
-          ? `Alignment complete — ${found.line}`
-          : `Alignment complete — ${aligned} chunk(s) checked.`;
+          ? `Alignment complete ${ran} — ${found.line}`
+          : `Alignment complete ${ran} — ${aligned} chunk(s) checked.`;
         console.log(`[COVERAGE-ALIGN] ${message}`);
         sendProgress(mainWindow, stepId, {
           phase: 'complete', percentage: 100, processed: aligned, total, message,

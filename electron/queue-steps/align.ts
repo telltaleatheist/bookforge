@@ -30,12 +30,21 @@
  * what makes an Align chained behind an enhancement a COMPOSE-time refusal
  * instead of a plausible-looking wrong answer.
  *
- * ── CPU, one of two slots ───────────────────────────────────────────────────
+ * ── CPU OR GPU, AND THE ROW SAYS WHICH ─────────────────────────────────────
  *
- * `align/aligner.py` refuses CUDA by name while BookForge's external-gpu-job.lock
- * exists, and the measurement says it does not want it: RTF 0.082 on CPU, a book
- * in minutes. Declaring 'gpu' would make every guarded book wait for a card it
- * will not use.
+ * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
+ * queue. GPU or CPU? defaults to CPU."
+ *
+ * CPU is the default and the ordinary answer: RTF 0.082, a book in minutes, in
+ * the second cpu slot BESIDE the assembly it belongs to. A row that asks for the
+ * GPU claims the single gpu slot and goes through `gpuAdmission` exactly as a
+ * render does — never beside a render, never under BookForge's own
+ * external-gpu-job.lock (`align/aligner.py` refuses cuda and mps by name while
+ * that file exists, which is the second half of the same rule).
+ *
+ * So the resource is the CONFIG's, not this module's, the same shape
+ * `queue-steps/reassembly.ts` uses. A row restored from a queue file written
+ * before tonight has no `device` and is CPU, which is what it was.
  */
 import { onBridgeEvent } from '../bridge-events';
 import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
@@ -58,6 +67,16 @@ interface AlignStepConfig {
   processDir?: string;
   /** The language the aligner loads its checkpoint for. See the refusal below. */
   language?: string;
+  /**
+   * 'cpu' (the default) or 'gpu' — the user's choice at queue time.
+   *
+   * OPTIONAL ON THE TYPE and required on a new row: the composer always writes
+   * it (`NarrationAlignConfig.device`), and absent means a row queued before
+   * 2026-09-07, when every align was CPU by construction. That is a real answer
+   * rather than a missing one, so it is read as 'cpu' — and the row says so on
+   * the card, once, rather than quietly.
+   */
+  device?: 'cpu' | 'gpu';
   /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */
   metadata?: { title?: string; bookTitle?: string; author?: string; year?: string };
 }
@@ -72,7 +91,13 @@ export const alignStep: StepModule = {
    * `run` returns the input ref unchanged so the runtime half agrees with it.
    */
   produces: 'audio-session',
-  resource: () => 'cpu',
+  /*
+   * THE ROW'S OWN ANSWER, read off the config at compose time and stored on the
+   * step — so a queue restored later claims the slot it was queued for. Anything
+   * that is not 'gpu' is cpu, which is what makes a pre-2026-09-07 row (no
+   * `device` at all) the CPU row it has always been.
+   */
+  resource: (config: Record<string, unknown>) => (config['device'] === 'gpu' ? 'gpu' : 'cpu'),
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as AlignStepConfig;
@@ -118,6 +143,21 @@ export const alignStep: StepModule = {
       );
     }
 
+    /*
+     * WHERE IT RUNS. The row was queued for a slot (`resource` above) and this
+     * has to agree with that, so it reads the same field the same way. A row
+     * with no `device` is one the queue has carried since before the choice
+     * existed: it is CPU, and the card says so once rather than leaving an
+     * operator to wonder which processor measured the book.
+     */
+    const device: 'cpu' | 'gpu' = config.device === 'gpu' ? 'gpu' : 'cpu';
+    if (config.device === undefined) {
+      ctx.report({
+        percent: 0,
+        message: 'Aligning on CPU — this row was queued before the processor was a choice.',
+      });
+    }
+
     const unsubscribe = onBridgeEvent<AlignProgressEvent>('coverage-align:progress', (event) => {
       if (event.jobId !== ctx.stepId) return;
       const p = event.progress;
@@ -140,6 +180,7 @@ export const alignStep: StepModule = {
         {
           processDir,
           language,
+          device,
           // The BOOK's title, never the act label the row also carries.
           metadata: {
             title: config.metadata?.bookTitle,

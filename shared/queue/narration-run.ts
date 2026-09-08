@@ -277,6 +277,17 @@ export interface NarrationRunSettings {
    * thirty-three".
    */
   readonly textCleanup: NarrationTextCleanupChoice;
+  /**
+   * WHERE THE ALIGNMENT RUNS, when this run carries one (`stages.align`).
+   *
+   * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
+   * queue. GPU or CPU? defaults to CPU." Stated always rather than defaulted
+   * downstream, for the reason every other field here is: the answer decides
+   * which queue slot the row claims, and a run that could not say it would claim
+   * whichever slot some `??` leaned towards — the GPU one, in front of a render.
+   * See {@link NarrationAlignConfig.device}.
+   */
+  readonly alignDevice: NarrationAlignDevice;
 }
 
 /**
@@ -419,7 +430,38 @@ export interface NarrationAlignConfig {
    * word badly and the guard then refuses a book that was read correctly.
    */
   readonly language: string;
+  /**
+   * WHICH PROCESSOR ALIGNS THIS BOOK — the user's choice at queue time.
+   *
+   * Owen, 2026-09-07: *"make it an option the user can pick when adding it to
+   * the queue. GPU or CPU? defaults to CPU."*
+   *
+   * 'cpu' is the default and what every row before today was, by construction:
+   * the aligner is seconds a chunk there (RTF 0.082) and a CPU align runs in the
+   * second cpu slot BESIDE the assembly. 'gpu' is faster still (~49x realtime on
+   * this Mac's Metal) and costs what a render costs: the row takes the single
+   * GPU slot and waits for it through the same admission as any other GPU step,
+   * so it never runs beside a render or under an external GPU lock.
+   *
+   * WRITTEN AS A NAME, NOT A DEVICE. 'gpu' becomes `mps` or `cuda` where the row
+   * runs (`electron/coverage-align-job.ts`), because which of those a machine has
+   * is a fact about that machine and not about the run — and a queue file is
+   * carried between them.
+   */
+  readonly device: NarrationAlignDevice;
 }
+
+/**
+ * The two answers to "where does the alignment run", spelled once.
+ *
+ * Deliberately NOT the render's `'auto' | 'gpu' | 'mps' | 'cpu'`: there is no
+ * 'auto' here because the answer decides which QUEUE SLOT the row claims, and a
+ * row that resolved its own device at run time would have claimed the wrong one
+ * hours earlier. `mps` and `cuda` are not offered because they are the same
+ * choice — "the card this machine has" — said in a way that is wrong on the
+ * other machine the queue file might be opened on.
+ */
+export type NarrationAlignDevice = 'cpu' | 'gpu';
 
 /** Combine the rendered sentences into the M4B. */
 export interface NarrationReassemblyConfig {
@@ -762,6 +804,19 @@ export function narrationAlignStep(
   settings: NarrationRunSettings,
 ): NarrationStepPlan {
   requireNarrationRun(book, settings);
+  /*
+   * CHECKED AT RUNTIME as well as in the types, for `textCleanup`'s reason: one
+   * caller is an IPC door, and a field that arrived undefined there would decide
+   * — by whichever way a `??` leaned — whether this row waits for the GPU in
+   * front of a nine-hour render.
+   */
+  if (settings.alignDevice !== 'cpu' && settings.alignDevice !== 'gpu') {
+    throw new Error(
+      'This run aligns the narration but does not say where — on the CPU (beside the assembly) '
+      + `or on the GPU (in the render's slot). Got ${JSON.stringify(settings.alignDevice)}. `
+      + 'This is a bug in the run that composed it.'
+    );
+  }
   return {
     type: 'align',
     bfpPath: book.projectDir,
@@ -779,6 +834,9 @@ export function narrationAlignStep(
       // Filled at run time by session discovery — see `NarrationAlignConfig`.
       sessionId: '', sessionDir: '', processDir: '',
       language: settings.language,
+      // The user's answer, carried onto the row: it decides which queue slot
+      // this claims, so it cannot be resolved when the row finally runs.
+      device: settings.alignDevice,
     },
   };
 }

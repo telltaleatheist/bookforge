@@ -159,6 +159,35 @@ check('the align queue step succeeds on a report full of failures', () => {
     'the row must say the counts');
 });
 
+check('the align row claims the slot its DEVICE names, and the job resolves the name', () => {
+  // Owen, 2026-09-07: "make it an option the user can pick when adding it to the
+  // queue. GPU or CPU? defaults to CPU." Two halves, and both are silent if they
+  // drift: a row that declared 'cpu' and then ran on the card would align beside
+  // a render, and a row that declared 'gpu' and ran on the CPU would have waited
+  // for a card it never used.
+  const step = read('electron/queue-steps/align.ts');
+  assert.ok(/resource:\s*\(config[^)]*\)\s*=>\s*\(config\['device'\] === 'gpu' \? 'gpu' : 'cpu'\)/.test(step),
+    "the align step must take its resource from the row's own device");
+  const job = read('electron/coverage-align-job.ts');
+  assert.ok(/'--device', device/.test(job),
+    'the spawn must pass the RESOLVED device, not a hard-coded one');
+  assert.ok(/appleSilicon/.test(job) && /cuda\.available/.test(job),
+    "'gpu' is resolved to mps or cuda from the machine profile the app already probes");
+  assert.ok(/no GPU the aligner can/.test(job),
+    'a machine with neither refuses by name rather than aligning on the CPU nobody chose');
+});
+
+check('the aligner refuses BOTH gpu device names while a BookForge job owns the card', () => {
+  // On the Mac "align on GPU" is `mps` — the same silicon and the same Metal
+  // queue the render uses — so a lock that stopped cuda and waved mps through
+  // would be a rule that protects the machine nobody is running on.
+  const aligner = read('python/narrator/align/aligner.py');
+  assert.ok(/GPU_DEVICES = \('cuda', 'mps'\)/.test(aligner),
+    'aligner.check_device must treat mps as a GPU device');
+  assert.ok(/if device not in GPU_DEVICES/.test(aligner),
+    'and gate the lock check on that list rather than on cuda alone');
+});
+
 check('both assembly spawns pass the report when the FILE exists, not by engine', () => {
   for (const file of ['electron/reassembly-bridge.ts', 'electron/parallel-tts-bridge.ts']) {
     const source = read(file);

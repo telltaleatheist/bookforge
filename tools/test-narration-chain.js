@@ -88,6 +88,10 @@ function settings(over = {}) {
     applyDeRing: false,
     rvc: null,
     startFresh: false,
+    // WHERE AN ALIGN ROW WOULD RUN. Stated on every settings object because the
+    // description refuses an align it cannot place: the answer decides which
+    // queue slot the row claims, hours before it runs.
+    alignDevice: 'cpu',
     // STATED, because the description refuses a run that cannot say it — and it
     // was missing here, which had this whole file failing 17 of its 22 cases
     // against a refusal that has nothing to do with what it tests. 'required' is
@@ -474,6 +478,25 @@ test('a narrate-only run can still align — tonight, not next week', () => {
   const steps = buildNarrationSteps(
     BOOK, higgs(), stages({ narrate: true, enhance: false, assemble: false, align: true }));
   assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'align']);
+});
+
+test('THE ALIGN ROW SAYS WHERE IT RUNS, and cpu is the default (Owen, 2026-09-07)', () => {
+  const onCpu = buildNarrationSteps(BOOK, settings(), stages({ align: true }));
+  assert.strictEqual(find(onCpu, 'align').config.device, 'cpu');
+  const onGpu = buildNarrationSteps(
+    BOOK, settings({ alignDevice: 'gpu' }), stages({ align: true }));
+  assert.strictEqual(find(onGpu, 'align').config.device, 'gpu',
+    'the user asked for the card, so the row claims the gpu slot');
+  // Neither answer is inferable downstream: the row is queued into a slot long
+  // before it runs, so a run that cannot say where is refused rather than placed.
+  assert.throws(
+    () => buildNarrationSteps(BOOK, settings({ alignDevice: undefined }), stages({ align: true })),
+    /does not say where/);
+  assert.throws(
+    () => buildNarrationSteps(BOOK, settings({ alignDevice: 'mps' }), stages({ align: true })),
+    /does not say where/);
+  // And a run that does not align is not asked the question at all.
+  buildNarrationSteps(BOOK, settings({ alignDevice: undefined }), stages({ align: false }));
 });
 
 test('the align row carries the language and blank session fields', () => {

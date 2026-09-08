@@ -217,6 +217,44 @@ class DeviceTest(unittest.TestCase):
                 else:
                     os.environ[A.GPU_LOCK_ENV] = old
 
+    def test_mps_is_refused_by_the_same_lock_as_cuda(self):
+        """The Mac case, and it is not a courtesy: `mps` IS the render's device.
+
+        BookForge started offering "align on GPU" on 2026-09-07, which on this
+        Mac resolves to `mps` - the same unified memory and the same Metal queue
+        an Orpheus render is using. A lock that stops CUDA and waves MPS through
+        would be a rule that protects the machine nobody is running on.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, 'external-gpu-job.lock')
+            open(lock, 'w').close()
+            old = os.environ.get(A.GPU_LOCK_ENV)
+            os.environ[A.GPU_LOCK_ENV] = lock
+            try:
+                with self.assertRaises(A.AlignerError) as caught:
+                    A.check_device('mps')
+                self.assertIn(lock, str(caught.exception))
+                self.assertIn('MPS', str(caught.exception))
+                # And the way out is still named.
+                self.assertIn('device=cpu', str(caught.exception))
+            finally:
+                if old is None:
+                    del os.environ[A.GPU_LOCK_ENV]
+                else:
+                    os.environ[A.GPU_LOCK_ENV] = old
+
+    def test_mps_is_allowed_when_no_job_owns_the_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get(A.GPU_LOCK_ENV)
+            os.environ[A.GPU_LOCK_ENV] = os.path.join(tmp, 'absent.lock')
+            try:
+                self.assertEqual(A.check_device('mps'), 'mps')
+            finally:
+                if old is None:
+                    del os.environ[A.GPU_LOCK_ENV]
+                else:
+                    os.environ[A.GPU_LOCK_ENV] = old
+
     def test_cuda_is_allowed_when_no_job_owns_the_card(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = os.environ.get(A.GPU_LOCK_ENV)

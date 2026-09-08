@@ -39,6 +39,7 @@ import {
  * second answer to what a narration run is described by.
  */
 export type {
+  NarrationAlignDevice,
   NarrationEnhancementOrder,
   NarrationEnhancementPass,
   NarrationRunBook,

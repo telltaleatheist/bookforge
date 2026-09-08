@@ -364,22 +364,34 @@ def gpu_lock_path() -> Optional[str]:
     return None
 
 
-def check_device(device: str) -> str:
-    """Refuse a CUDA alignment while another job owns the GPU.
+#: Every device name that means "the machine's graphics processor". `mps` is on
+#: this list because on a Mac it is THE SAME PIECE OF SILICON the render uses -
+#: unified memory, one Metal queue - so a lock that means "a BookForge GPU job
+#: owns the card" means exactly as much there as it does over CUDA. It was
+#: missing until 2026-09-07, when the app started offering the GPU as a choice
+#: for the alignment and `mps` became a device this function actually sees.
+GPU_DEVICES = ('cuda', 'mps')
 
-    The aligner is a CPU tool - seconds per chunk - and taking the card from a
-    render or a training run to save two seconds is not a trade narrator makes
-    on its own. Named refusal, never a silent downgrade to CPU: a caller that
-    asked for CUDA gets told why it cannot have it.
+
+def check_device(device: str) -> str:
+    """Refuse a GPU alignment while another job owns the card.
+
+    The aligner runs perfectly well on CPU - seconds per chunk - and taking the
+    card from a render or a training run is not a trade narrator makes on its
+    own. Named refusal, never a silent downgrade to CPU: a caller that asked for
+    the GPU gets told why it cannot have it.
+
+    The device NAME is the caller's (BookForge resolves its user-facing "on GPU"
+    to `mps` or `cuda` per machine); what this owns is whether the card is free.
     """
-    if device != 'cuda':
+    if device not in GPU_DEVICES:
         return device
     lock = gpu_lock_path()
     if lock and os.path.exists(lock):
         raise AlignerError(
-            f'refusing to align on CUDA: {lock} exists, so another BookForge '
-            f'GPU job owns the card. Align on CPU (device=cpu) - a chunk takes '
-            f'seconds there - or wait for that job to finish.')
+            f'refusing to align on {device.upper()}: {lock} exists, so another '
+            f'BookForge GPU job owns the card. Align on CPU (device=cpu) - a '
+            f'chunk takes seconds there - or wait for that job to finish.')
     return device
 
 

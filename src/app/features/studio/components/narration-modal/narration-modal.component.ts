@@ -118,6 +118,7 @@ import {
   buildNarrationJobs,
   type NarrationEnhancementOrder,
   type NarrationRunBook,
+  type NarrationAlignDevice,
   type NarrationRunSettings,
   type NarrationTextCleanupChoice,
 } from '../../../queue/jobs/narration-run';
@@ -612,6 +613,32 @@ function fileName(fullPath: string): string {
                 @if (!alignerInstalled()) {
                   <span class="nm-hint warn">{{ alignerUnavailableNote }}</span>
                 }
+
+                <!-- WHERE IT RUNS — Owen, 2026-09-07: "make it an option the
+                     user can pick when adding it to the queue. GPU or CPU?
+                     defaults to CPU." The label says what the GPU option COSTS,
+                     because it is not free: the row joins the single GPU queue
+                     and waits there like a render. -->
+                @if (alignNarration()) {
+                  <div class="nm-field nm-align-where">
+                    <label class="nm-label">Align on</label>
+                    <desktop-select
+                      [options]="alignDeviceOptions()"
+                      [disabled]="!alignerInstalled()"
+                      [ngModel]="alignDevice()"
+                      (ngModelChange)="alignDevice.set($event)"
+                    />
+                    <span class="nm-hint">
+                      @if (alignDevice() === 'gpu') {
+                        Faster, and it waits for a free GPU exactly as a narration does —
+                        it will not start while anything is rendering.
+                      } @else {
+                        Seconds a sentence, in the second CPU slot, at the same time as
+                        the assembly. {{ gpuAlignNote() }}
+                      }
+                    </span>
+                  </div>
+                }
               </div>
 
               @if (!assemble()) {
@@ -1031,6 +1058,18 @@ export class NarrationModalComponent {
   readonly alignNarration = signal(true);
 
   /**
+   * WHERE THE ALIGNMENT RUNS — CPU by default (Owen, 2026-09-07: "GPU or CPU?
+   * defaults to CPU").
+   *
+   * CPU is the default because it is the answer that costs nothing: the row
+   * takes the second cpu slot and runs BESIDE the assembly, so the alignment is
+   * free in wall-clock terms. The GPU is faster per chunk and claims the single
+   * GPU slot to get it — behind whatever is rendering — which is a trade only
+   * the person queuing it can make.
+   */
+  readonly alignDevice = signal<NarrationAlignDevice>('cpu');
+
+  /**
    * A video beside the M4B — seeded from Pipeline Defaults, as the wizard's
    * own check was (`generateVideo`).
    *
@@ -1338,6 +1377,39 @@ export class NarrationModalComponent {
    * time would stay greyed out on a machine that has it.
    */
   readonly alignerInstalled = computed(() => this.components.isInstalled('whisperx-env'));
+
+  /**
+   * IS THERE A GPU THE ALIGNER COULD USE — asked of the machine profile the app
+   * already probes, never of torch from here.
+   *
+   * `ComponentService.profile` is the same `systemProbe.profile()` answer
+   * `coverage-align-job.ts` resolves the device NAME from when the row runs, so
+   * the picker cannot offer a card that the run will then refuse by name. Null
+   * means the probe has not answered yet (it is slower than the add-on list);
+   * the option is disabled until it does, rather than offered on a guess.
+   */
+  readonly alignGpuAvailable = computed(() => {
+    const profile = this.components.profile();
+    if (profile === null) return false;
+    return profile.appleSilicon || profile.cuda.available;
+  });
+
+  /** Why the GPU option is not offered, or '' when it is. */
+  readonly gpuAlignNote = computed(() =>
+    this.alignGpuAvailable()
+      ? ''
+      : 'This machine has no GPU the aligner can use, so CPU is the only choice here.');
+
+  readonly alignDeviceOptions = computed<DesktopSelectItems>(() => [
+    { value: 'cpu', label: 'CPU' },
+    {
+      value: 'gpu',
+      label: 'GPU',
+      ...(this.alignGpuAvailable()
+        ? {}
+        : { disabled: true, title: this.gpuAlignNote() }),
+    },
+  ]);
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
     this.voices.rvcVoices().map((v) => ({ value: v.value, label: v.label })));
 
@@ -1905,6 +1977,12 @@ export class NarrationModalComponent {
          * the offer and pressed "No, narrate as printed".
          */
         textCleanup,
+        /*
+         * WHERE THE ALIGNMENT RUNS. Stated always, even when this run does not
+         * align — the description refuses a run that cannot say it, and the
+         * value decides which queue slot the row would claim.
+         */
+        alignDevice: this.alignDevice(),
       };
 
       /*

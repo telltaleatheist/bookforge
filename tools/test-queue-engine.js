@@ -462,6 +462,55 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
 });
 
+test('AN ALIGN QUEUED ON THE GPU takes the card\'s slot and waits like a render', async () => {
+  /*
+   * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
+   * queue. GPU or CPU? defaults to CPU."
+   *
+   * The align module reads its resource off the ROW (`queue-steps/align.ts`:
+   * `config['device'] === 'gpu' ? 'gpu' : 'cpu'`), which is what makes the
+   * choice real: a CPU align runs in the second cpu slot beside the assembly,
+   * and a GPU align joins the single-slot GPU queue and is held by the same
+   * admission a render is. The alternative — a row that resolved its device
+   * when it finally ran — would have claimed the wrong slot hours earlier.
+   */
+  const align = fakeModule('align', {
+    consumes: 'audio-session',
+    produces: 'audio-session',
+    resource: (config) => (config['device'] === 'gpu' ? 'gpu' : 'cpu'),
+  });
+  await fresh('align-device', [align]);
+  engine.setGpuLockProbe(() => 'orpheus fine-tune, epoch 3');
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [
+      { type: 'align', label: 'Align (GPU)', config: { device: 'gpu' }, sourceRef: { kind: 'audio-session' } },
+      { type: 'align', label: 'Align (CPU)', config: { device: 'cpu' }, sourceRef: { kind: 'audio-session' } },
+      // A row queued before the choice existed: no device at all, and cpu is
+      // what it has always been.
+      { type: 'align', label: 'Align (old row)', config: {}, sourceRef: { kind: 'audio-session' } },
+    ],
+  });
+  engine.start();
+  await settle();
+
+  const steps = stepsOf(job.id);
+  assert.strictEqual(steps[0].resource, 'gpu', 'the row asked for the card');
+  assert.strictEqual(steps[1].resource, 'cpu');
+  assert.strictEqual(steps[2].resource, 'cpu', 'no device on the row is the CPU it always was');
+  assert.strictEqual(align.runs.length, 2, 'the two cpu rows took the two cpu slots');
+  assert.strictEqual(steps[0].status, 'queued', 'and the gpu row is waiting for the card');
+  assert.match(steps[0].progress.message, /orpheus fine-tune, epoch 3/,
+    'saying whose card it is, exactly as a render would');
+
+  engine.setGpuLockProbe(() => null);
+  align.runs[0].resolve({ kind: 'audio-session' });
+  align.runs[1].resolve({ kind: 'audio-session' });
+  await settle();
+  assert.strictEqual(align.runs.length, 3, 'and it starts the moment the lock is gone');
+});
+
 test('a persisted step is re-asked what resource it needs; a finished one is not', async () => {
   // A build that changes its mind about a step type must be able to say so
   // about work already queued — assembly moved from 'gpu' to 'cpu' for plain

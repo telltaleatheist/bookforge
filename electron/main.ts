@@ -2212,6 +2212,13 @@ function chainCoverageAlign(job: QueueJob, narrate: QueueStep): void {
       // session from the parent's OUTPUT when it lands.
       sessionId: '', sessionDir: '', processDir: '',
       language,
+      /*
+       * CPU, and stated. The Assembly tab offers the choice (Owen, 2026-09-07)
+       * because there is a person there to make it; this door has no form, and
+       * the default is CPU — the second cpu slot, beside the assembly, rather
+       * than the single GPU slot in front of whatever renders next.
+       */
+      device: 'cpu',
     } as unknown as Record<string, unknown>,
   });
 }

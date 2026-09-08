@@ -104,7 +104,12 @@ async function main() {
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
 
   const t0 = Date.now();
-  const result = await job.runCoverageAlign(stepId, { processDir, language }, null);
+  // CPU, said out loud. The app's Assembly tab offers the GPU as a choice
+  // (Owen, 2026-09-07) because the queue can hold a GPU row until the card is
+  // free; this door has no queue behind it, so it takes the default the choice
+  // defaults to rather than competing with whatever is rendering.
+  const result = await job.runCoverageAlign(
+    stepId, { processDir, language, device: 'cpu' }, null);
   off();
   // FAILURE HERE MEANS THE RUN COULD NOT HAPPEN — no session, no aligner, a dead
   // worker. A pass that measured every chunk and doubted some of them succeeded
