@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from ..manifest import Manifest, validate
 from . import coverage_gate
 from . import encode as encode_mod
-from .chapters import ChapterPlan, plan_chapters, total_duration
+from .chapters import ChapterPlan, chunk_total, plan_chapters, total_duration
 from .ffmpeg_tools import FfmpegError, probe_duration, resolve_binary
 from .sentence_vtt import (SENTENCE_VTT_SUFFIX, SentenceVttError,
                            estimated_cues_for_manifest, write_sentence_vtt)
@@ -280,7 +280,20 @@ def assemble(
     log(f"[ASSEMBLE] Assembling all {len(manifest.chapters)} chapters...")
     # work_dir is where an unpadded engine's faded chunks and generated
     # silence go; a padded engine never touches it.
-    plans = plan_chapters(manifest, work_dir, log)
+    #
+    # TIMED HERE, not inside plan_chapters, because this is the wall clock the
+    # operator is staring at. On a library over SMB this step read and rewrote
+    # ~1,700 files for a 25-chapter book and took four to five minutes, and the
+    # only thing anybody could see was a card that had not moved. The
+    # `Preparing sentences N/M` lines below it come from plan_chapters; this one
+    # is the total, and electron/reassembly-bridge.ts closes its `prepare` stage
+    # on it.
+    prepare_started = time.monotonic()
+    plans = plan_chapters(manifest, work_dir, log, workers=workers)
+    log(
+        f"[ASSEMBLE] Prepared {chunk_total(manifest)} sentences in "
+        f"{time.monotonic() - prepare_started:.1f}s"
+    )
     for plan in plans:
         log(
             f"[ASSEMBLE] Chapter {plan.index}: sentences "

@@ -37,11 +37,44 @@ still true - and it is no longer a problem, because on the unpadded path EVERY
 chunk is rewritten through `edges.py` as well, so the entire list is written by
 one encoder with one setting and is homogeneous by construction. The guard below
 still runs on whatever actually goes into the list.
+
+PREPARING THE SENTENCES IS I/O, SO IT RUNS ON A POOL (2026-09-07). Measured on
+Mutineer's Moon - 847 chunks, 25 chapters, the library on an SMB share - the
+unpadded path read every sentence FLAC over the wire and wrote a faded copy plus
+its gap silences back, one chunk at a time: about 5.6 files a second, roughly
+1,700 files, four to five minutes in which the assembly card showed nothing at
+all. Every one of those units is INDEPENDENT - distinct source, distinct
+destination, no shared state - and every second of it is spent waiting on a
+socket or inside libsndfile, both of which drop the GIL. They now run on a
+`ThreadPoolExecutor` bounded by the same `workers` that sizes the encoder pool.
+
+Two properties are not negotiable and are pinned by
+`tests/test_assemble_prepare_parallel.py`:
+
+  - THE ORDER IS THE SERIAL ORDER. Each chunk's unit returns its own little
+    list - gapBefore, the faded chunk, gapAfter - and those lists are stitched
+    together in chunk order, so `paths`/`infos` are byte-for-byte the list the
+    serial version built.
+  - THE FILES ARE BIT-IDENTICAL. Nothing about a fade or a silence depends on
+    what any other chunk did, so workers=1 and workers=8 write the same bytes.
+
+Errors keep the serial order too: `Executor.map` re-raises the FIRST failing
+unit in iteration order, so the message a broken book fails with is the one it
+failed with before. Later units may have run by then; everything they wrote is
+inside the assembly's own work dir, which is thrown away or kept as evidence.
+
+PROGRESS. The chunk total is known before any file is touched (`chunk_total`),
+so preparation reports `[ASSEMBLE] Preparing sentences <done>/<total>` at 0, at
+the total, and at most about once a second in between. That line is what the
+reassembly card's `prepare` bar is driven from.
 """
 
 from __future__ import annotations
 
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..manifest import Chapter, Manifest, chunk_path
@@ -82,6 +115,68 @@ class ChapterPlan:
 
     def duration(self, sample_rate: int) -> float:
         return self.samples / sample_rate
+
+
+def chunk_total(manifest: Manifest) -> int:
+    """Every chunk the book will prepare, known before a file is touched.
+
+    The denominator of the prepare bar. It is a manifest fact, not a directory
+    scan, so it is available at the top of the run and cannot drift from what
+    `plan_chapters` actually walks.
+    """
+    return sum(len(chapter.chunks) for chapter in manifest.chapters)
+
+
+#: How often the prepare bar is allowed to say something, in seconds. The point
+#: is "this is moving", not a frame-accurate count: 847 chunks at one line each
+#: would be 847 lines through the bridge's stdout parser for no extra
+#: information, and the bridge throttles its own publishing anyway.
+PREPARE_LOG_INTERVAL_S = 1.0
+
+
+class PrepareProgress:
+    """Counts prepared chunks across the whole book and says so, ~once a second.
+
+    Shared by every worker thread, so every read-modify-write of the counter -
+    AND the log call itself - happens under one lock. Logging under the lock is
+    deliberate: `log` is a plain callable (print, a list append, the bridge's
+    stdout), none of which promise anything about concurrent callers, and a torn
+    progress line is worse than a slightly serialized one.
+    """
+
+    def __init__(self, total: int, log) -> None:
+        self._total = total
+        self._log = log
+        self._lock = threading.Lock()
+        self._done = 0
+        self._last_line_at = 0.0
+
+    def start(self) -> None:
+        self._last_line_at = time.monotonic()
+        self._log(f"[ASSEMBLE] Preparing sentences 0/{self._total}")
+
+    def step(self) -> None:
+        with self._lock:
+            self._done += 1
+            done = self._done
+            now = time.monotonic()
+            if done < self._total and now - self._last_line_at < PREPARE_LOG_INTERVAL_S:
+                return
+            self._last_line_at = now
+            self._log(f"[ASSEMBLE] Preparing sentences {done}/{self._total}")
+
+
+def _map_ordered(fn, items, workers: int) -> list:
+    """`[fn(i) for i in items]`, on `workers` threads, results IN ORDER.
+
+    One thread is not a pool: a single-worker run must be exactly the serial
+    code path, so `workers <= 1` never touches the executor at all.
+    """
+    if workers <= 1 or len(items) <= 1:
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="narrator-prepare") as pool:
+        return list(pool.map(fn, items))
 
 
 def _resolve_profile(manifest: Manifest) -> EngineProfile:
@@ -154,13 +249,19 @@ def _normalize_mixed(paths: list[str], infos: list[StreamInfo], chapter_index: i
 
 
 def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
-                 log) -> tuple[list[str], list[StreamInfo]]:
+                 log, progress: PrepareProgress) -> tuple[list[str], list[StreamInfo]]:
     """The original path: the session's own FLACs, untouched.
 
     The ONE exception is a set that mixes bit depth or blocksize because the
     book was rendered across machines - see `_normalize_mixed`. A homogeneous
     set (every book rendered on one machine, which is all of them today) never
     reaches it and nothing is written at all.
+
+    THIS PATH STAYS SERIAL. It writes nothing and reads 42 bytes per chunk (see
+    `render/flac_header.py`), so there is no minutes-long stall here to spread
+    across threads - only the same open/read/close the unpadded path pays on top
+    of a full read and two writes. It still COUNTS, so a padded book's prepare
+    bar moves for exactly the same reason.
     """
     paths: list[str] = []
     infos: list[StreamInfo] = []
@@ -185,6 +286,7 @@ def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
                 f"{chunk.samples} samples but the file holds {infos[-1].samples} - the "
                 f"audio changed after the manifest was built ({path})"
             )
+        progress.step()
 
     # A sample-rate or channel mismatch says the audio is not what the session
     # claims; no rewrite can reconcile that, so it still refuses.
@@ -203,22 +305,25 @@ def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
 
 
 def _plan_unpadded(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
-                   work_dir: str) -> tuple[list[str], list[StreamInfo]]:
+                   work_dir: str, workers: int,
+                   progress: PrepareProgress) -> tuple[list[str], list[StreamInfo]]:
     """Fade every chunk and realize every gap, into `work_dir`.
 
     The session's files are read and never written. What comes back is the
     concat list for this chapter: silence and faded chunks interleaved, all
     written by one encoder so the list is homogeneous.
+
+    One chunk's files are one INDEPENDENT unit of work (see the module
+    docstring), so the units run on `workers` threads and their results are
+    stitched back together in chunk order.
     """
     out_dir = edges.edge_dir(work_dir, chapter.index)
     rate = manifest.sampleRate
-    paths: list[str] = []
-    infos: list[StreamInfo] = []
 
-    def add_gap(seconds: float, tag: str) -> None:
+    def gap(seconds: float, tag: str) -> tuple[str, StreamInfo] | None:
         frames = edges.gap_frames(seconds, rate)
         if frames <= 0:
-            return
+            return None
         path = os.path.join(out_dir, f"{tag}.flac")
         edges.write_silence(path, frames, rate, channels=1)
         info = read_streaminfo(path)
@@ -226,10 +331,10 @@ def _plan_unpadded(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
             raise AssertionError(
                 f"silence file {path} holds {info.samples} samples, expected {frames}"
             )
-        paths.append(path)
-        infos.append(info)
+        return path, info
 
-    for chunk in chapter.chunks:
+    def prepare(chunk) -> list[tuple[str, StreamInfo]]:
+        """Everything this chunk contributes to the concat list, in order."""
         src = _check_chunk(manifest, chapter, chunk)
         source = read_expected(src, rate, channels=1)
         if chunk.samples is not None and source.samples != chunk.samples:
@@ -239,7 +344,10 @@ def _plan_unpadded(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
                 f"audio changed after the manifest was built ({src})"
             )
 
-        add_gap(chunk.gapBefore, f"{chunk.index}b")
+        unit: list[tuple[str, StreamInfo]] = []
+        before = gap(chunk.gapBefore, f"{chunk.index}b")
+        if before is not None:
+            unit.append(before)
 
         dst = os.path.join(out_dir, f"{chunk.index}.flac")
         written = edges.write_faded_chunk(
@@ -256,11 +364,21 @@ def _plan_unpadded(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
                 f"faded chunk {chunk.index} holds {faded.samples} samples, the source "
                 f"held {source.samples}"
             )
-        paths.append(dst)
-        infos.append(faded)
+        unit.append((dst, faded))
 
-        add_gap(chunk.gapAfter, f"{chunk.index}a")
+        after = gap(chunk.gapAfter, f"{chunk.index}a")
+        if after is not None:
+            unit.append(after)
 
+        progress.step()
+        return unit
+
+    paths: list[str] = []
+    infos: list[StreamInfo] = []
+    for unit in _map_ordered(prepare, chapter.chunks, workers):
+        for path, info in unit:
+            paths.append(path)
+            infos.append(info)
     return paths, infos
 
 
@@ -279,7 +397,8 @@ def _check_chunk(manifest: Manifest, chapter: Chapter, chunk) -> str:
 
 
 def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
-              work_dir: str | None, log) -> ChapterPlan:
+              work_dir: str | None, log, workers: int,
+              progress: PrepareProgress) -> ChapterPlan:
     if profile.needs_processing:
         if not work_dir:
             raise ValueError(
@@ -287,9 +406,11 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
                 f"their edges and realize their gaps into a working directory - but "
                 f"plan_chapters() was given none"
             )
-        paths, infos = _plan_unpadded(manifest, chapter, profile, work_dir)
+        paths, infos = _plan_unpadded(
+            manifest, chapter, profile, work_dir, workers, progress
+        )
     else:
-        paths, infos = _plan_padded(manifest, chapter, work_dir, log)
+        paths, infos = _plan_padded(manifest, chapter, work_dir, log, progress)
 
     # ffmpeg's concat demuxer drops every FLAC frame whose blocksize exceeds the
     # FIRST list entry's STREAMINFO max-blocksize AND STILL EXITS 0, so a mixed
@@ -309,7 +430,7 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
 
 
 def plan_chapters(manifest: Manifest, work_dir: str | None = None,
-                  log=None) -> list[ChapterPlan]:
+                  log=None, workers: int = 1) -> list[ChapterPlan]:
     """Resolve every chapter to files + sample counts, running all the guards.
 
     This happens BEFORE a single ffmpeg is spawned: a book that is going to fail
@@ -319,15 +440,24 @@ def plan_chapters(manifest: Manifest, work_dir: str | None = None,
     `work_dir` is REQUIRED for an engine that does not pad its chunks - that is
     where the faded copies and the generated silence go. It is unused, and may be
     None, for a padded engine, whose files go into the concat list untouched.
+
+    `workers` bounds the per-chunk prepare pool on the unpadded path; `assemble()`
+    passes the same number it sizes the encoder pool with. It DEFAULTS TO 1 -
+    serial, exactly as this function has always behaved - so a caller that has not
+    thought about concurrency does not silently acquire it.
     """
     if not manifest.chapters:
         raise ValueError("plan_chapters(): the manifest has no chapters")
+    if workers < 1:
+        raise ValueError(f"plan_chapters(): workers must be >= 1, got {workers}")
     profile = _resolve_profile(manifest)
     if log is None:
         def log(line):
             print(line, flush=True)
+    progress = PrepareProgress(chunk_total(manifest), log)
+    progress.start()
     return [
-        _plan_one(manifest, chapter, profile, work_dir, log)
+        _plan_one(manifest, chapter, profile, work_dir, log, workers, progress)
         for chapter in manifest.chapters
     ]
 

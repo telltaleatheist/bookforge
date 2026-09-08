@@ -527,6 +527,18 @@ class MixedEncodingCase(unittest.TestCase):
         os.makedirs(self.work)
         self.lines = []
 
+    def notices(self) -> list[str]:
+        """Everything planning SAID, minus the prepare bar.
+
+        `plan_chapters` reports `[ASSEMBLE] Preparing sentences N/M` on every
+        book (that bar is the whole point of the prepare stage). What these tests
+        are about is the exceptional notice - "this chapter mixes FLAC
+        encodings" - so the assertion "it said exactly one thing, or nothing at
+        all" is made against the notices, not against the bar.
+        """
+        return [l for l in self.lines
+                if not l.startswith("[ASSEMBLE] Preparing sentences ")]
+
     def write_chunk(self, index: int, seconds: float, subtype: str,
                     blocksize: int | None = None, rate: int = RATE,
                     channels: int = 1) -> int:
@@ -642,8 +654,9 @@ class TestMixedEncodingIsRewritten(MixedEncodingCase):
     def test_exactly_one_log_line_names_the_mix(self):
         counts = self.build_mixed()
         plan_chapters(self.manifest_for(counts), self.work, self.lines.append)
-        self.assertEqual(len(self.lines), 1, self.lines)
-        line = self.lines[0]
+        notices = self.notices()
+        self.assertEqual(len(notices), 1, notices)
+        line = notices[0]
         self.assertIn("Chapter 1", line)
         self.assertIn("mixed FLAC encodings", line)
         self.assertIn("bit depth", line)
@@ -669,8 +682,9 @@ class TestMixedEncodingIsRewritten(MixedEncodingCase):
         ]
         plan = plan_chapters(self.manifest_for(counts), self.work,
                              self.lines.append)[0]
-        self.assertEqual(len(self.lines), 1)
-        self.assertIn("bit depth", self.lines[0])
+        notices = self.notices()
+        self.assertEqual(len(notices), 1, notices)
+        self.assertIn("bit depth", notices[0])
         self.assertEqual(plan.samples, sum(counts))
 
     def test_a_missing_work_dir_is_refused_by_name(self):
@@ -686,7 +700,7 @@ class TestHomogeneousSetsNeverRewrite(MixedEncodingCase):
         m = self.manifest_for(counts)
         plan = plan_chapters(m, self.work, self.lines.append)[0]
         self.assertEqual(os.listdir(self.work), [])
-        self.assertEqual(self.lines, [])
+        self.assertEqual(self.notices(), [])
         # and the concat list is still the session's own files
         self.assertEqual(
             plan.paths,
@@ -712,7 +726,7 @@ class TestFatalMismatchesStillRefuse(MixedEncodingCase):
         # read_expected catches the rate before the homogeneity question arises
         with self.assertRaisesRegex(ValueError, "sample rate is 48000"):
             plan_chapters(m, self.work, self.lines.append)
-        self.assertEqual(self.lines, [])
+        self.assertEqual(self.notices(), [])
 
     def test_a_channel_mismatch_refuses(self):
         self.write_chunk(0, 0.5, "PCM_16")
@@ -721,7 +735,7 @@ class TestFatalMismatchesStillRefuse(MixedEncodingCase):
             os.path.join(self.session, f"{i}.flac")).samples for i in range(2)])
         with self.assertRaisesRegex(ValueError, "2 channel"):
             plan_chapters(m, self.work, self.lines.append)
-        self.assertEqual(self.lines, [])
+        self.assertEqual(self.notices(), [])
 
     def test_the_fatal_and_fixable_split(self):
         from narrator.render import flac_header as FH
