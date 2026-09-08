@@ -41,9 +41,9 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import { CLEAN_TEXT_MODELS, type LlmServerKind } from '@shared/pipeline';
+import { cleanTextModelsFor, type LlmServerKind } from '@shared/pipeline';
 import type { SetupState } from '@shared/types';
-import { api } from '../../core/foundry';
+import { api, ollamaRunsMlx } from '../../core/foundry';
 import { UiService } from '../../core/ui.service';
 
 @Component({
@@ -208,8 +208,13 @@ export class LlmCardComponent {
   protected readonly saved = signal(false);
   protected readonly state = signal<SetupState | null>(null);
 
-  /** The tags the cleanup offers — the Clean text dialog's own list, verbatim. */
-  protected readonly cleanModels = CLEAN_TEXT_MODELS;
+  /**
+   * The tags the cleanup offers — the Clean text dialog's own list, verbatim,
+   * resolved for the same machine: the 16-bit row is the MLX build on Apple
+   * Silicon and the GGUF elsewhere (`cleanTextModelsFor`). Both pickers ask the
+   * one function, so a tag saved here is a tag that dialog will show.
+   */
+  protected readonly cleanModels = cleanTextModelsFor(ollamaRunsMlx);
 
   /**
    * The stored cleanup model when the list does not contain it, so the box shows
@@ -219,7 +224,7 @@ export class LlmCardComponent {
   protected readonly unlistedClean = computed(() => {
     const chosen = this.cleanModel().trim();
     if (chosen.length === 0) return null;
-    return CLEAN_TEXT_MODELS.some((choice) => choice.tag === chosen) ? null : chosen;
+    return this.cleanModels.some((choice) => choice.tag === chosen) ? null : chosen;
   });
 
   constructor() {

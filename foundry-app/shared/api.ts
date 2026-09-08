@@ -130,6 +130,15 @@ export interface FoundryApi {
   platform: string;
 
   /**
+   * process.arch, and it is here for exactly one question: whether ollama on
+   * this machine has an MLX runner under it, which is `darwin` + `arm64` and
+   * nothing else. It decides which build of one model the Clean text picker
+   * offers (`cleanTextModelsFor`, shared/pipeline.ts) — the same weights on
+   * llama.cpp are pinned to one slot and run at half the rate.
+   */
+  arch: string;
+
+  /**
    * Whether this window is standing inside another app.
    *
    * ── What the answer changes, and what it must not ───────────────────────────

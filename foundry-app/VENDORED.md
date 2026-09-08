@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **5c53cb7** — *docs(vllm): the first measurement, and the reason the batch depth is not what either of us assumed* (app tree = eb69b7a, analyze joins the vLLM side) |
+| Source sha | **2b44cc7** — *fix(app): the Clean text picker's 16-bit entry is the MLX tag on Apple Silicon* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 5c53cb7 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 2b44cc7 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1181,3 +1181,8 @@ byte-identical to `19f5e70:docs/`; no dep movement.
 second dialect.** App half of eb69b7a (job-queue.ts, shared/types.ts, analysis-dialog); 5c53cb7 is docs-only
 on the engine side. Tree diff-verified against foundry/app, no IPC change beyond what 34cd9258 recorded, no
 dep movement.
+
+**2b44cc7 (copied 2026-09-08, Mac) — the Clean text picker's 16-bit entry is the MLX tag on Apple Silicon.**
+`cleanTextModelsFor(mlx)`; preload exposes `arch` beside `platform` (a preload field, not a channel —
+IPC-CHANNELS unchanged). Measured 32 vs 61 blocks/min, llama.cpp vs MLX runner, same weights. Tree
+diff-verified, no dep movement.

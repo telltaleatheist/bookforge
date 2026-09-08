@@ -121,11 +121,44 @@ export const DEFAULT_CLEAN_TEXT_MODEL = 'qwen3.5:9b-q8_0';
  * a field that disagrees with the job is worse than a field with four rows in
  * it (Owen, 2026-09-08).
  */
-export const CLEAN_TEXT_MODELS: readonly { tag: string; label: string }[] = [
-  { tag: 'qwen3.5:9b-q8_0', label: 'Qwen 3.5 9B · 8-bit (default)' },
-  { tag: 'qwen3.5:9b-bf16', label: 'Qwen 3.5 9B · 16-bit' },
-  { tag: 'qwen3.8:27b', label: 'Qwen 3.8 27B · 4-bit' },
-];
+export interface CleanTextModelChoice {
+  readonly tag: string;
+  readonly label: string;
+}
+
+/**
+ * The same three choices, with the 16-bit one named for the RUNNER this machine
+ * has — which is the difference between 32 and 61 blocks/min for identical
+ * weights at identical precision.
+ *
+ * `qwen3.5:9b-bf16` is a GGUF, so ollama runs it on its llama.cpp path, and
+ * ollama pins that path to a single slot for this architecture ("model
+ * architecture does not currently support parallel requests",
+ * architecture=qwen35). The cleanup sends blocks in parallel, so one slot is the
+ * whole cost: 32 blocks/min measured on the M1 Ultra, against 61 for
+ * `qwen3.5:9b-mlx-bf16` — the SAME weights at the SAME precision on ollama's MLX
+ * runner, which batches (measured 2026-09-08; Owen picked the 16-bit row that
+ * day and got the slow half of it).
+ *
+ * So the row means "16-bit" and the tag under it means "16-bit HERE": the MLX
+ * build on Apple Silicon, the GGUF everywhere else, where there is no MLX runner
+ * to pull the tag for. Nothing else about the list moves — the default is still
+ * the 8-bit first row (`DEFAULT_CLEAN_TEXT_MODEL`), and a stored tag outside the
+ * list still rides above it as itself, which is what keeps a Mac that already
+ * saved `qwen3.5:9b-bf16` showing the thing it will actually run.
+ */
+export function cleanTextModelsFor(mlx: boolean): readonly CleanTextModelChoice[] {
+  return [
+    { tag: 'qwen3.5:9b-q8_0', label: 'Qwen 3.5 9B · 8-bit (default)' },
+    mlx
+      ? { tag: 'qwen3.5:9b-mlx-bf16', label: 'Qwen 3.5 9B · 16-bit (MLX)' }
+      : { tag: 'qwen3.5:9b-bf16', label: 'Qwen 3.5 9B · 16-bit' },
+    { tag: 'qwen3.8:27b', label: 'Qwen 3.8 27B · 4-bit' },
+  ];
+}
+
+/** The list as a machine with no MLX runner sees it — `cleanTextModelsFor(false)`. */
+export const CLEAN_TEXT_MODELS: readonly CleanTextModelChoice[] = cleanTextModelsFor(false);
 
 /** Ollama's own default port, and where it is unless somebody moved it. */
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';

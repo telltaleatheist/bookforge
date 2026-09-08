@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { fold } from '@shared/original';
 import { canCleanFrom } from '@shared/stages';
 import {
-  CLEAN_TEXT_MODELS,
+  cleanTextModelsFor,
   DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
   type LlmServerKind,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
@@ -18,7 +18,7 @@ import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
-import { api } from '../../core/foundry';
+import { api, ollamaRunsMlx } from '../../core/foundry';
 
 /**
  * Clean text — say the book again in the words it already has, punctuated and
@@ -316,8 +316,13 @@ export class CleanDialogComponent {
 
   protected readonly model = signal(DEFAULT_MODEL);
 
-  /** The three tags a cleanup is offered, in their declared order. */
-  protected readonly models = CLEAN_TEXT_MODELS;
+  /**
+   * The three tags a cleanup is offered, in their declared order — the 16-bit
+   * one named for the runner THIS machine has, which on Apple Silicon is the
+   * MLX build and everywhere else the GGUF (`cleanTextModelsFor`). A machine
+   * cannot change architecture while the dialog is open, so it is a constant.
+   */
+  protected readonly models = cleanTextModelsFor(ollamaRunsMlx);
 
   /**
    * The stored model when it is NOT one of the three — the extra row at the top
@@ -330,7 +335,7 @@ export class CleanDialogComponent {
   protected readonly unlisted = computed(() => {
     const chosen = this.model().trim();
     if (chosen.length === 0) return null;
-    return CLEAN_TEXT_MODELS.some((choice) => choice.tag === chosen) ? null : chosen;
+    return this.models.some((choice) => choice.tag === chosen) ? null : chosen;
   });
   protected readonly ollama = signal(DEFAULT_OLLAMA);
   /**

@@ -92,6 +92,7 @@ async function ask<Answer extends string>(
 
 const api: FoundryApi = {
   platform: process.platform,
+  arch: process.arch,
 
   hosted: () => ipcRenderer.invoke('app:hosted'),
 
