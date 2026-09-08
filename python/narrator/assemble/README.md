@@ -386,7 +386,10 @@ exact substrings matter as much as the regexes.
 
 | Line narrator emits | Bridge matcher | Effect |
 |---|---|---|
-| `[ASSEMBLE] Assembling all N chapters...` | `line.includes('Assembling all')` then `/Assembling (?:all \|audiobook from )(\d+) chapters/` (L1805-1806) | sets `totalChapters` |
+| `[ASSEMBLE] Assembling all N chapters...` | `line.includes('Assembling all')` then `/Assembling (?:all \|audiobook from )(\d+) chapters/` (L1805-1806) | sets `totalChapters`; starts the **prepare** stage (NOT combine - see below) |
+| `[ASSEMBLE] Preparing sentences D/T` | `parseAssemblyPrepare()` (`shared/queue/assembly-prepare.ts`) | prepare bar, `D/T` |
+| `[ASSEMBLE] Prepared T sentences in Ss` | the same parser | prepare -> 100 % |
+| `[assembly] Working directory: PATH` | none; informational | log only - where a failed run's evidence is |
 | `[ASSEMBLE] Chapter N: sentences A-B` | `/(?:\[ASSEMBLE\] Chapter\|Combining chapter)\s*(\d+)/` (L1817) | `chaptersStarted++`, combine bar |
 | `Assemble completed!` | `line.includes('Assemble completed!')` (L1799) | combine -> 100 % |
 | `[ASSEMBLE] Creating VTT subtitle file...` | `line.includes('Creating VTT subtitle file')` (L1839) | subtitles stage |
@@ -405,6 +408,20 @@ writes a chapter FLAC. Emitting it after each chapter encode would drive
 
 `Audiobook saved to:` (bridge L1941) is also not emitted - e2a does not emit it
 either, and the bridge's `*.m4b` glob is its tested path.
+
+**Why `Assembling all N chapters...` starts `prepare` and not `combine`.**
+narrator prints it BEFORE it prepares a single sentence, and `StageTracker`
+completes every EARLIER stage when a later one advances - so starting `combine`
+there would fill and retire the prepare bar at the exact moment the minutes it
+measures begin. `combine` starts on the first `[ASSEMBLE] Chapter N` line, which
+is when a chapter is genuinely being combined.
+
+**The prepare lines must survive the bridge's byte prefilter.** It drops
+high-frequency stdout during a throttle window unless the chunk carries a "rare"
+marker, and `[ASSEMBLE] Preparing sentences 412/847` carries none of the old
+ones - so `Prepar` is named in BOTH guards.
+`tools/test-assembly-prepare-progress.js` asserts that, asserts these two format
+strings against narrator's own source, and asserts the mapper in between.
 
 The final JSON is printed with `indent=2`, exactly as e2a's handlers.py does.
 That means the bridge's single-line `/\{.*"success":\s*true.*\}/` does NOT match

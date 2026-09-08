@@ -130,6 +130,7 @@ const SUITES = [
   // The assembly seals THIS RUN'S transcript, chosen by stem, and its finalize
   // resolves whatever the body does. Both halves of the 2026-09-07 hang.
   'test-assembly-transcript-seal',
+  'test-assembly-prepare-progress',
   'test-narration-chain',
   'test-text-normalization',
   'test-narration-reading-law',

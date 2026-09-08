@@ -28,6 +28,7 @@ import { StageTracker, type StageSpec, type JobStageProgress } from './job-stage
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
 import { chooseSentenceTranscript, SENTENCE_VTT_SUFFIX } from '../shared/queue/sentence-transcript';
+import { parseAssemblyPrepare } from '../shared/queue/assembly-prepare';
 
 /**
  * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
@@ -390,6 +391,18 @@ function formatClock(seconds: number): string {
  * Shares are relative and normalized, so these need not sum to anything in particular.
  */
 const STAGE_ALWAYS: StageSpec[] = [
+  /*
+   * `prepare` is the step that reads every sentence FLAC and — for an unpadded
+   * engine — writes its faded copy and gap silences. On a local library it is
+   * seconds. With the library on an SMB share it was FOUR MINUTES on Mutineer's
+   * Moon (847 chunks) with no bar and no message, which is the report that
+   * created this stage: "if its actually doing something, it needs to show the
+   * user that its working so they dont think its stalled." Priced beside
+   * `combine`, and it MUST precede it — StageTracker completes every earlier
+   * stage when a later one advances, so the order here is the order on screen
+   * and the order in time.
+   */
+  { name: 'prepare', label: 'Preparing sentences', weight: 6 },
   { name: 'combine', label: 'Combining chapters', weight: 6 },
   { name: 'subtitles', label: 'Building subtitles', weight: 13 },
   { name: 'encode', label: 'Encoding M4B', weight: 70 },
@@ -404,6 +417,7 @@ const STAGE_ALWAYS: StageSpec[] = [
 const STAGE_PHASE: Record<string, ReassemblyProgress['phase']> = {
   gap: 'preparing',
   rvc: 'preparing',
+  prepare: 'preparing',
   combine: 'combining',
   subtitles: 'combining',
   encode: 'encoding',
@@ -1557,7 +1571,7 @@ export async function startReassembly(
   console.log(`[REASSEMBLY] Created staging dir: ${stagingDir}`);
 
   // Send initial progress
-  emitStage('combine', null, 'Preparing reassembly...');
+  emitStage('prepare', null, 'Preparing reassembly...');
 
   // De-ring (OPT-IN): the per-voice post-render ffmpeg filter chain (notch/comb that
   // strips SNAC tonal ringing), resolved from the session's PROVENANCE (the engine +
@@ -1839,6 +1853,7 @@ export async function startReassembly(
           // Check if the chunk ALSO contains a rare phase-transition pattern.
           // These are infrequent (per-chapter / per-phase) and must be processed.
           const hasRare =
+            data.includes('Prepar') ||       // "Preparing sentences N/M" / "Prepared N sentences"
             data.includes('completed!') ||   // "Assemble completed!"
             data.includes('Assembling') ||   // "Assembling all N chapters"
             data.includes('[ASSEMBLE]') ||   // "[ASSEMBLE] Chapter N"
@@ -1856,7 +1871,12 @@ export async function startReassembly(
         }
         // Lines with no known pattern at all: still skip during throttle to avoid
         // toString() on unknown high-frequency output (ffmpeg stats, debug logs).
-        if (!hasHighFreq && !data.includes('Chapter') && !data.includes('success') &&
+        // 'Prepar' is listed in BOTH guards on purpose: "[ASSEMBLE] Preparing
+        // sentences 412/847" contains none of the high-frequency markers, so
+        // without it here the prepare bar would be dropped for the whole of every
+        // throttle window — which is the stall this stage exists to answer.
+        if (!hasHighFreq && !data.includes('Prepar') &&
+            !data.includes('Chapter') && !data.includes('success') &&
             !data.includes('saved to') && !data.includes('Output') && !data.includes('metadata') &&
             !data.includes('Adding') && !data.includes('Creating') && !data.includes('.m4b')) {
           return;
@@ -1914,13 +1934,33 @@ export async function startReassembly(
         emitStage('combine', 100, 'Chapters combined, preparing export...');
       }
 
+      // ── The prepare stage ────────────────────────────────────────────────
+      // Its own `if`, ahead of the phase chain: a single stdout chunk can carry
+      // both a prepare line and the line that follows it, and both must land.
+      // Reported by shared/queue/assembly-prepare.ts, which is where the two
+      // line formats are understood and where they are tested.
+      const preparing = parseAssemblyPrepare(line);
+      if (preparing) {
+        emitStage('prepare', preparing.pct, preparing.message, {
+          currentChapter: 0,
+          totalChapters: totalChapters || undefined,
+        });
+      }
+
       // Phase 1: Get total chapters from "Assembling all N chapters..." or "Assembling audiobook from X chapters..."
       if (line.includes('Assembling all') || line.includes('Assembling audiobook from')) {
         const totalMatch = line.match(/Assembling (?:all |audiobook from )(\d+) chapters/);
         if (totalMatch) {
           totalChapters = parseInt(totalMatch[1], 10);
           currentPhase = 'combining';
-          emitStage('combine', null, `Combining sentences into ${totalChapters} chapters...`, {
+          // REPORTED UNDER `prepare`, NOT `combine`. narrator prints this line
+          // BEFORE it prepares a single sentence, and `combine` sits after
+          // `prepare` in the stage list — StageTracker completes every earlier
+          // stage when a later one advances, so starting `combine` here would
+          // fill and retire the prepare bar at the exact moment the minutes it
+          // measures begin. `combine` starts on the first "[ASSEMBLE] Chapter N"
+          // line below, which is when a chapter is genuinely being combined.
+          emitStage('prepare', null, `Preparing sentences for ${totalChapters} chapters...`, {
             currentChapter: 0,
             totalChapters,
           });
