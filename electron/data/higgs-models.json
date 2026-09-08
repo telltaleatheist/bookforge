@@ -210,30 +210,30 @@
       "engineVersion": "v3",
       "voice": {
         "checkpoint": {
-          "wsl": "/home/telltale/higgs_v3_merged/mb_v3_prod",
-          "darwin": "runtime/higgs-models/mb_v3_prod"
+          "wsl": "/home/telltale/higgs_v3_merged/mb_h2lm_prod",
+          "darwin": "runtime/higgs-models/mb_h2lm_prod"
         }
       },
-      "_checkpointArmNote": "TWO ARMS, TWO COPIES. wsl: /home/telltale/higgs_v3_merged/mb_v3_prod -- the merged HF directory the training session wrote on the PC (mb_v3 train: 26.5 h paragraph runs + 3.8 h single sentences from Final Empire / Well of Ascension / Hero of Ages / Alloy of Law, 2120 rows; early stop at step 3564 (best holdout 3.5839 @3168); ladder pick ckpt-3564; 8.5 GB; generation_config.json written at run creation, overridden per request by the engine-level 0.8/0.95/50). darwin: the SAME directory rsynced to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/mb_v3_prod), sha-verified on the 2026-09-08 promotion. The previous mistborn Higgs directory mb_h2lm_prod was erased on both machines (Owen: 'erase it and replace it with the definitive one').",
-      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/mb_v3_prod is what the served arm renders; darwin: runtime/higgs-models/mb_v3_prod is what the MLX arm renders. The served assertion and the mlx block bind to THESE directories; a re-merge under the same name is a different model and re-measures.",
+      "_checkpointArmNote": "TWO ARMS, TWO COPIES. wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod -- the merged HF directory re-made on 2026-09-08 from night2/runs/mb_h2lm/ckpt-920 (the dip; holdout 3.73813; 746 train rows, long tier 536 clips 15-149 s + 210 short + 45 micro). darwin: the SAME directory rsynced to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/mb_h2lm_prod), sha-verified. This is a RESTORATION: mb_v3_prod held this slot 2026-09-08 01:2x-14:xx and was retired by ear.",
+      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod is what the served arm renders; darwin: runtime/higgs-models/mb_h2lm_prod is what the MLX arm renders. A re-merge under the same name is a different model and re-measures; this one is byte-identical in provenance to the 2026-09-06 promotion (same ckpt-920, same merge script), so its 2026-09-06/07 measurements still stand.",
       "license": "boson-higgs-tts-3-research-noncommercial",
       "commercialUse": false,
       "sampleRate": 24000,
       "addedAt": "2026-09-06",
       "backends": {
         "served": {
-          "maxChars": 1679,
+          "maxChars": 1200,
           "maxCharsSource": "catalog",
           "targetChars": 1000,
-          "targetCharsSource": "Owen 2026-09-07: 'target is 1000, same as deathstalker' (the chunk the prep packs to); recorded at promotion as part of deployment",
-          "_maxCharsNote": "1679, the LONGEST TRAINING ROW of mb_v3_prod's corpus (Owen's rule: max chunk is what the model trained on); no length sweep yet.",
+          "targetCharsSource": "Owen's standing target, 1000 chars, as for deathstalker / owen / thirdreich. Lowered from the 1200 this entry carried on 2026-09-06 (target == max was aggressive) and safely inside this checkpoint's measured self-termination ceiling.",
+          "_maxCharsNote": "1200. NOTE THE DEVIATION FROM 'max == the longest training row': mb_h2lm's longest training row is 2268 chars / 149 s, but this checkpoint ENDS ITSELF at ~1,980 frames (~79-82 s) whatever the server ceiling -- a 2,173-char render on the Mac returned 79 s with the middle skipped (coverage 0.306), measured 2026-09-05. At the measured pace of 15.01 chars/s, 82 s is ~1,230 chars, so 1200 is the empirical ceiling and 2268 would ship a config the model cannot honour. The rule is 'the max chunk is what the model trained on' only where the model can render it.",
           "edgeFadeMs": {
             "in": 10,
             "out": 25
           },
           "referenceSecondsCap": 30,
           "allowedControls": [],
-          "_maxCharsSourceNote": "'catalog' = declared here from the training data, not measured by a length sweep. mb_v3 mix (build.log): 2120 train rows, chars p50 638 / p75 858 / p90 1120 / MAX 1679; seconds p50 44 / p90 77 / max 100; served cap 1000 non-strict (332 rows, 15.7%, at or above it). Ladder evidence on this directory at 0.8/0.95/50: shape bank PS 0.261 [0.156,0.403] (ckpt-3564; the lowest-loss ckpt-3168 ranked below 3564/3036/2640 on the bank); served-shape prose bank: see pace. Owen's ear on two served-shape renders (2026-09-08 01:15): 'They sound flawless.'"
+          "_maxCharsSourceNote": "'catalog' = declared here, backed by the training session's mb2 measurement on SGLang-Omni at 16 wide (50 Fuhrer chunks packed at 1200: 0 early stops, 0 gibberish, 6/50 damaged) plus the self-termination measurement above; not a length sweep."
         },
         "mlx": {
           "_comment": "THE MAC'S OWN BLOCK FOR THIS FINE-TUNE, UNMEASURED on mb_v3_prod: 900 mirrors deathstalker's MLX certificate as the conservative number for the same architecture; `placeholder` says nobody has measured THIS voice on this arm. Replace both numbers and the source after a Mac sweep.",
@@ -251,25 +251,25 @@
         }
       },
       "pace": {
-        "median": 15.12,
-        "mean": 15.15,
-        "p05": 13.76,
-        "p95": 16.61,
-        "p99": 16.76,
-        "n": 34,
+        "median": 15.01,
+        "mean": 14.95,
+        "p05": 13.6,
+        "p95": 16.15,
+        "p99": 16.78,
+        "n": 56,
         "method": "as deathstalker",
-        "measuredOn": "2026-09-08",
-        "source": "served arm at 0.8/0.95/50: night3/mb3/para (Fuhrer-49 prose bank, 50 renders, 34 clean) -> pace_mistborn_served.json (higgs_shape_ladder verdict --pace-json): p1 12.96 / p5 13.76 / median 15.12 / mean 15.15 / p95 16.61 / p99 16.76, clean_rule and band_rule inside. Replaces the mb_h2lm_prod block (median 15.01, p99 16.78)."
+        "measuredOn": "2026-09-07",
+        "source": "served arm at temperature 0.8: night3/pace08/mistborn/t08 (100 renders, 56 clean), measured on THIS directory (mb_h2lm_prod). All six numbers are the ladder's own (p1 12.72 / p5 13.60 / median 15.01 / mean 14.95 / p95 16.15 / p99 16.78, clean_rule and band_rule inside); BookForge's recomputation matched p99 to the hundredth. Restored 2026-09-08 with the checkpoint."
       },
       "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S SEED BAND IS DERIVED FROM THE MEDIAN AND THEN RE-CENTRED ON THE BOOK (2026-09-08): paceCharsPerSec = median = 15.12, maxCharsPerSec = median x 1.2 = 18.14 (above it a take is too SHORT - an early stop) and minCharsPerSec = median / 1.3 = 11.63 (below it a take RAN ON - a babble tail). ALL THREE ARE A SEED, NOT A CEILING: narrator keeps only the band's RATIOS and re-centres them on the running median of the book's own shipped takes once ten guarded chunks are in (truncation.PaceTracker), which is what actually answers Owen's worry - 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11' - because a book that averages 17.6 BECOMES the reference and both edges move with it. The rule this replaces (the ladder's p99 x 1.15 and p05 / 1.15) could not do that, and MEASURED on the first full book rendered under it (Shift, mistborn, 1,313 chunks, 16.38 h, 2026-09-08) it was the wrong shape: the ladder bank is uniform nonfiction and Shift is fiction with dialogue, so the book's clean chunks paced 14.09 chars/s against the bank's 15.12 - the fixed long edge (11.97) fired on 340 healthy chunks at take 0 and the ladder re-rolled or split every one of them, while the short edge (19.27) sat at 1.37x the book's own pace and shipped 8 spot-aligned truncations (13-52 % of the words dropped, all at >= 1.23x the book's pace). The factors 1.2 and 1.3 are BookForge's PACE_GUARD_SHORT_FACTOR and PACE_GUARD_LONG_FACTOR. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker). NOTE: mistborn paces 11 % slower than deathstalker (p05 13.38 sits UNDER the 14.5 default long edge), which is why the band is per voice.",
-      "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train; dip checkpoint 920). Promoted 2026-09-06 on Owen's ruling ('promote the mistborn model to the catalog'): Owen judged all three mistborn renders flawless by ear; on paper mb2 is the best (damaged 6/50 vs 11 for the first train, run-ons 3 vs 8, 0 early stops, 0 gibberish on SGLang at 16 wide, the 50 Fuhrer chunks packed at 1200 chars). Served exactly like deathstalker ckpt-1080: same launcher, max_running_requests 16, max_new_tokens 7500. No eosFloor tuning.",
+      "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train, dip checkpoint 920), cut from the ADOBE-ENHANCED, DIALOGUE-FREE Kramer narration spans. Restored 2026-09-08 as the definitive voice after mb_v3 -- a 27 h corpus that mixed those Adobe masters with roformer-denoised full books -- was rejected on long-form listening: Owen, 'prosody is good but the voices/clips we used definitely werent normalized via adobe. i can hear quality differences between them.' More data did not smooth the source step out, so the dataset rule for this voice is now Adobe-cleaned material only, narration only, text AI-cleaned with the BookForge CLI, then aligned.",
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field.",
       "source": {
         "type": "hf",
         "ref": "owenmorgan/mistborn-higgs-v3"
       },
-      "_sourceNote": "WHERE A MACHINE DOWNLOADS THIS CHECKPOINT FROM (Settings -> Higgs -> Download): a PRIVATE HuggingFace repo under Owen's account, uploaded from the WSL directory on the 2026-09-08 promotion (see _promotionNote for the sha256 a downloaded copy must match).",
-      "_promotionNote": "2026-09-08 01:xx (overnight, Owen 2026-09-07 23:0x: 'run the mistborn ladder. pick a definitive model and install it on mac, hf, and local ... if theres [an existing one], erase it and replace it with the definitive one'). Ladder over the 4 lowest-holdout checkpoints of mb_v3 (2640/3036/3168/3564): pick ckpt-3564 by primary score 0.261 (3036 0.283, 2640 0.304). Record: night3/mb3/ (pick_ckpt.log, shape/, para/, sent/, pace_mistborn_served.json, train.log). model.safetensors sha256 ad101d7862460869aebd27bb4da23458d672e583404ac7eb75c6680b5f837a00 (merge_sha256.txt). Installed: WSL /home/telltale/higgs_v3_merged/mb_v3_prod; Mac runtime/higgs-models/mb_v3_prod (rsync, sha-verified); HF owenmorgan/mistborn-higgs-v3 (private). mb_h2lm_prod erased from WSL and the Mac."
+      "_sourceNote": "WHERE A MACHINE DOWNLOADS THIS CHECKPOINT FROM (Settings -> Higgs -> Download): a PRIVATE HuggingFace repo under Owen's account. Re-uploaded 2026-09-08 with the mb_h2lm weights, replacing the mb_v3 weights that briefly held the repo; see _promotionNote for the sha256 a downloaded copy must match.",
+      "_promotionNote": "2026-09-08 (Owen: 'take the last good checkpoint (not the last run - that one was proven faulty. the one before that) and promote it to the definitive model on hf, mac, local, and clear away all the other higgs mistborn checkpoints and models'). mb_h2lm ckpt-920, re-merged from the surviving LoRA; model.safetensors sha256 17042d2f3673d4a52abd561ee047794e34c4f084f2585fe90539278856ca2ce9 (night3/mb3/merge_sha256_h2lm.txt -- a different sha from the 2026-09-06 merge is expected, the merge is not bit-reproducible, the SOURCE checkpoint is identical). Installed: WSL /home/telltale/higgs_v3_merged/mb_h2lm_prod; Mac runtime/higgs-models/mb_h2lm_prod (rsync, sha-verified); HF owenmorgan/mistborn-higgs-v3 (private). RETIRED and deleted the same day: mb_v3_prod (local, Mac, HF), mb_tri_sent_prod, and the mb_v3 / mb_tri_sent / mb_h1lm checkpoint sets."
     },
     {
       "id": "owen",

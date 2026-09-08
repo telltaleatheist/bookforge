@@ -2333,16 +2333,22 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
 });
 
 check('a darwin checkpoint the catalog names but the disk lacks is offered DISABLED, naming the dir', () => {
-  // (dir re-pointed 2026-09-08: mistborn is mb_v3_prod now) bookforge-mac-1, 2026-09-06: mistborn was offered as available on the Mac
-  // while runtime/higgs-models/mb_v3_prod had not landed — the picker checked
+  // bookforge-mac-1, 2026-09-06: mistborn was offered as available on the Mac
+  // while its runtime/higgs-models/<dir> had not landed — the picker checked
   // that the catalog names a path and never that the directory exists.
+  // The directory NAME is read from the catalog, not written here: this check
+  // failed on three promotions in two days (ds_ad4lm_prod_ckpt1080 -> mb_h2lm_prod
+  // -> mb_v3_prod -> mb_h2lm_prod) purely because a voice was re-pointed, which
+  // is a keeper test failing on a fact it was not keeping.
   const bare = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-bare-userdata-'));
   try {
     const m = higgs.listHiggsModels().find((v) => v.id === 'mistborn');
+    const darwinDir = path.basename(m.voice.checkpoint.darwin);
+    assert.ok(darwinDir, 'the mistborn entry names no darwin checkpoint dir');
     const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, bare));
     assert.ok(reason, 'a fine-tune with no directory on this machine was reported as available');
     assert.match(reason, /has not landed/);
-    assert.ok(reason.includes(path.join(bare, 'runtime', 'higgs-models', 'mb_v3_prod')),
+    assert.ok(reason.includes(path.join(bare, 'runtime', 'higgs-models', darwinDir)),
       'the refusal does not name the directory it looked at: ' + reason);
     const row = onArm('darwin', () => higgs.higgsNarrationVoices(bare)).find((v) => v.value === 'mistborn');
     assert.ok(row.unavailable, 'the dropdown row is not disabled');
