@@ -114,10 +114,13 @@ import {
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
-// Which engines' books are force-aligned after every render — the one table,
-// shared with the run description and the narration dialog. (The assembly spawns
-// no longer ask: they pass the report whenever the file exists.)
-import { coverageAuditedFor } from '../shared/queue/coverage-policy';
+// IS THE ALIGNER ON THIS MACHINE — the same question the narration dialog asks
+// through the component registry, asked here as "is there an interpreter to run
+// it with". The Foundry doors have no form to ask the user with, so this decides
+// whether they chain an Align row at all. (Which engines narrator AUDITS by
+// policy is a different question and no longer one this file asks:
+// shared/queue/coverage-policy.ts.)
+import { coverageAlignPython } from './coverage-align-job';
 import { setNarratorScratchRoot, narratorScratchRoot } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -2140,13 +2143,25 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * narration asked for one. See the note at that branch.
  */
 /**
- * THE COVERAGE GUARD'S ROW, WHEN A FOUNDRY PRESS CHAINS ONTO A GUARDED RUN.
+ * THE ALIGN ROW, WHEN A FOUNDRY PRESS CHAINS ONTO A NARRATION.
  *
  * Both follow-on doors below build a chain behind a narration, and both of them
- * end — sooner or later — at an assembly that `assemble/coverage_gate.py` will
- * refuse without a report. The narration dialog composes the Align row itself
- * (`shared/queue/narration-run.ts`); a run chained together from Foundry's tree
- * never went through it, so this is where the same row gets added.
+ * end — sooner or later — at an assembly. The narration dialog composes the
+ * Align row itself (`shared/queue/narration-run.ts`, `NarrationRunStages.align`,
+ * ticked by default); a run chained together from Foundry's tree never went
+ * through that dialog, so this is where the same row gets added.
+ *
+ * UNCONDITIONAL SINCE 2026-09-07, whatever the engine. It asked
+ * `coverageAuditedFor` until then and skipped every Orpheus run, which meant a
+ * Foundry Assemble press shipped an audiobook whose sentence cues were estimated
+ * from sentence length. Owen: "that should be part of the assembly process, and
+ * should automatically happen." There is no form on this door to ask, so the
+ * answer is the dialog's default.
+ *
+ * TWO THINGS STILL STOP IT, and both say so. A job that already carries an align
+ * row gets no second one; and a machine with no "Ebook Alignment (WhisperX)"
+ * add-on gets no row at all — queueing one there would fail a step on every
+ * assembly, on a door with nobody to ask, to say what the log now says once.
  *
  * IT RETURNS NOTHING, and that is the point: an align row is a LEAF. Nothing
  * hangs off it — the enhancement and the assembly hang off the NARRATION, which
@@ -2174,20 +2189,14 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * thresholds were calibrated on raw engine output. That is why this takes the
  * narration step rather than "the step that was pressed".
  */
-function coverageGuardedRun(narrate: QueueStep): boolean {
-  const engine = narrate.config['ttsEngine'];
-  if (typeof engine !== 'string' || engine.trim() === '') {
-    throw new Error(
-      'That narration does not record which engine rendered it, so BookForge cannot say whether '
-      + 'the book is force-aligned after the render. Assemble it from BookForge\'s '
-      + 'own narration dialog, where the engine is known.');
-  }
-  return coverageAuditedFor(engine);
-}
-
 function chainCoverageAlign(job: QueueJob, narrate: QueueStep): void {
   if (job.steps.some((s) => s.type === 'align')) return;
-  if (!coverageGuardedRun(narrate)) return;
+  if (coverageAlignPython() === null) {
+    console.log('[QUEUE] Not aligning this run: the "Ebook Alignment (WhisperX)" add-on is not '
+      + 'installed, so the audiobook gets a transcript estimated from sentence length. '
+      + 'Install it under Settings → Add-ons.');
+    return;
+  }
   const language = narrate.config['language'];
   if (typeof language !== 'string' || language.trim() === '') {
     throw new Error(
@@ -2262,10 +2271,10 @@ async function invokeFoundryEnhance(
    * this door can infer (the narration's config records that a denoise was
    * wanted, not where in the chain the user would have put it).
    */
-  // The coverage guard, when this run's engine is guarded. It hangs off the
-  // narration because it measures the RENDER — and nothing hangs off IT, so this
-  // pass does not wait for twenty CPU minutes of forced alignment before it can
-  // start. See `chainCoverageAlign`.
+  // The alignment, on every run this door builds. It hangs off the narration
+  // because it measures the RENDER — and nothing hangs off IT, so this pass does
+  // not wait for twenty CPU minutes of forced alignment before it can start.
+  // See `chainCoverageAlign`.
   chainCoverageAlign(job, narrate);
   const enhanceParent = narrate.id;
   const wantsDenoise = narrate.config['finalDenoise'] === true;
@@ -2355,10 +2364,11 @@ async function invokeFoundryAssemble(
       + 'Assemble it from BookForge\'s versions page, where the book\'s details are known.');
   }
   /*
-   * THE COVERAGE AUDIT, when this run's engine is audited and nothing in the run
-   * has already queued it. It hangs off the NARRATION wherever this was pressed,
-   * because that is the audio it measures — `alignStep` reads an audio-session,
-   * and its thresholds were calibrated on raw engine output.
+   * THE ALIGNMENT, unless the run already has one. It hangs off the NARRATION
+   * wherever this was pressed, because that is the audio it measures —
+   * `alignStep` reads an audio-session, and its thresholds were calibrated on
+   * raw engine output. Every assembly gets one now (Owen, 2026-09-07), which is
+   * what puts MEASURED sentence cues in a book assembled from this door.
    *
    * PRESSED ON AN ENHANCEMENT, THAT IS NOW A SECOND BRANCH RATHER THAN A
    * REFUSAL. This door used to refuse the whole assembly here: a row hung off

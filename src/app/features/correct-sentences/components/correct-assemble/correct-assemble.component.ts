@@ -168,6 +168,21 @@ export class CorrectAssembleComponent implements OnInit {
     if (this.showGap()) {
       config.sentenceGap = this.gapValue();
     }
+    /*
+     * NO ALIGN ROW RIDES WITH THIS ONE, and that is a stated exception.
+     *
+     * Every other assembly door carries one since 2026-09-07 (Owen: "that should
+     * be part of the assembly process") — the narration dialog through its
+     * pre-checked box, the Foundry doors through `chainCoverageAlign`. This door
+     * cannot: `alignStep` refuses a row that does not say which LANGUAGE the book
+     * was rendered in, deliberately (a wav2vec2 model pointed at the wrong
+     * language scores every word badly and reads as a book that was read wrong),
+     * and `CorrectSentencesSession` does not carry one — it knows the session's
+     * engine, voice and sample format and nothing about its words. Guessing 'en'
+     * here would be exactly the fallback that refusal exists to prevent. To align
+     * a corrected book, assemble it from the narration dialog, where the run
+     * states its language.
+     */
     try {
       await this.queue.addJob({
         type: 'reassembly',
