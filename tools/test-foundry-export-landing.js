@@ -81,8 +81,15 @@ const tick = () => new Promise((r) => setImmediate(r));
   });
 
   await test('the run description admits an EMPTY version only when a landing step is named', () => {
-    const settings = { language: 'en', ttsEngine: 'higgs-v3', voice: 'deathstalker', device: 'auto', speed: 1,
-      workers: 1, textCleanup: 'required', rvc: null, finalDenoise: false, sentenceGap: 0 };
+    // 'higgs' — BookForge's PICKER id, which is the only spelling a
+    // `NarrationRunSettings` ever carries (the modal's engine signal is one).
+    // This fixture said 'higgs-v3', narrator's model-generation spelling, and
+    // passed only because the coverage table aliased the two; the run
+    // description now asks the ENGINE table, which knows what this build renders
+    // and refuses anything else by name.
+    const settings = { language: 'en', ttsEngine: 'higgs', voice: 'deathstalker', device: 'auto', speed: 1,
+      workers: 1, textCleanup: 'required', rvc: null, finalDenoise: false, sentenceGap: 0,
+      alignDevice: 'cpu' };
     const book = { epubPath: 'Z:\\p\\final\\Book.epub', projectDir: 'Z:\\lib\\Book', variantId: '',
       title: 'Book', author: 'A', year: '', coverPath: '', outputFilename: 'Book.m4b', isArticle: false };
     assert.throws(() => run.requireNarrationRun(book, settings), /which version/);

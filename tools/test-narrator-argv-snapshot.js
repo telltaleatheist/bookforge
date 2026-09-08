@@ -67,6 +67,19 @@
  * on both sides and required the remainder to compare EQUAL, so a second change
  * riding along would have failed the re-baseline instead of being absorbed by it.
  * That is the only way a snapshot survives being regenerated.
+ *
+ * 2026-09-07, THE ALIGN DOOR's `flags` literal, for Owen's ruling of that day
+ * ("make it an option the user can pick when adding it to the queue. GPU or
+ * CPU? defaults to CPU"). One token:
+ *
+ *     '--device', 'cpu'   ->   '--device', device
+ *
+ * where `device` is the row's own choice resolved to a name on the machine that
+ * runs it — `cpu`, `mps` or `cuda` (`coverage-align-job.resolveAlignDevice`).
+ * The three PLAN arms are unchanged and were not regenerated: they drive the
+ * door with a CPU row, which is what every row before that day was. Checked, not
+ * assumed: the regeneration masked the device literal on both sides and required
+ * every other door to compare byte-equal, and exactly one line of the file moved.
  */
 'use strict';
 const assert = require('assert');
