@@ -9,14 +9,17 @@ needs torch and the whisperx env, and assembly runs on a machine with neither.
 Assembly reads the coverage REPORT this package writes, never this package.
 """
 
-from .aligner import (BACKENDS, DEFAULT_BACKEND, AlignedWord, Alignment,
-                      AlignerError, AudioSpan, TextSpan, align_chunk,
-                      decode_audio, detect_silences)
+from .aligner import (BACKENDS, DEFAULT_BACKEND, SCORE_SOURCE_BY_BACKEND,
+                      SCORE_SOURCES, AlignedWord, Alignment, AlignerError,
+                      AudioSpan, TextSpan, align_chunk, decode_audio,
+                      detect_silences)
 from .coverage import (ChunkCoverage, CoverageRefusal, coverage_document,
                        evaluate_chunk, report_failures)
-from .sentences import (SentenceCue, build_sentence_vtt, proportional_cues,
-                        sentence_cues, split_chunk_sentences,
-                        write_sentence_vtt)
+from .sentences import (QUALITY_NOTE_KEYS, SentenceCue, build_sentence_vtt,
+                        proportional_cues, sentence_cues,
+                        split_chunk_sentences, write_sentence_vtt)
+# The corpus cutter's door: one window of audio, one piece of text, no session.
+from .window import align_text_window
 
 __all__ = [
     'AlignedWord',
@@ -27,9 +30,13 @@ __all__ = [
     'ChunkCoverage',
     'CoverageRefusal',
     'DEFAULT_BACKEND',
+    'QUALITY_NOTE_KEYS',
+    'SCORE_SOURCES',
+    'SCORE_SOURCE_BY_BACKEND',
     'SentenceCue',
     'TextSpan',
     'align_chunk',
+    'align_text_window',
     'build_sentence_vtt',
     'coverage_document',
     'decode_audio',

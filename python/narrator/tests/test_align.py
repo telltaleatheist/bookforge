@@ -269,15 +269,29 @@ class DeviceTest(unittest.TestCase):
 
 
 class BackendSelectionTest(unittest.TestCase):
-    """Owen's ruling, 2026-09-05: ONE aligner ships. There is no second backend
-    in the package to switch to, and a failing one raises."""
+    """Two aligners ship (2026-09-08) and BOTH arrive by name. There is still no
+    runtime guess and no retry: a failing backend raises."""
 
-    def test_exactly_one_aligner_ships_and_it_is_whisperx(self):
-        self.assertEqual(A.BACKENDS, ('whisperx',))
+    def test_both_aligners_ship_and_the_default_is_still_whisperx(self):
+        """The DEFAULT is the contract. qwen3 is 22x faster and tighter on
+        Shift's chunk starts, but its scores are derived against coverage
+        thresholds calibrated on whisperx's model scores, so moving the app onto
+        it is a separate decision with its own calibration behind it."""
+        self.assertEqual(A.BACKENDS, ('whisperx', 'qwen3'))
         self.assertEqual(A.DEFAULT_BACKEND, 'whisperx')
-        self.assertEqual(sorted(A._BACKEND_FUNCTIONS), ['whisperx'])
-        self.assertEqual(sorted(A._BACKEND_LOADERS), ['whisperx'])
-        self.assertEqual(sorted(E.BACKEND_MODULES), ['whisperx'])
+        self.assertEqual(sorted(A._BACKEND_FUNCTIONS), ['qwen3', 'whisperx'])
+        self.assertEqual(sorted(A._BACKEND_LOADERS), ['qwen3', 'whisperx'])
+        self.assertEqual(sorted(E.BACKEND_MODULES), ['qwen3', 'whisperx'])
+        # Every shipped backend says what its `score` field means, and there is
+        # exactly one table saying it.
+        self.assertEqual(sorted(A.SCORE_SOURCE_BY_BACKEND), sorted(A.BACKENDS))
+        self.assertTrue(set(A.SCORE_SOURCE_BY_BACKEND.values())
+                        <= set(A.SCORE_SOURCES))
+        self.assertEqual(A.SCORE_SOURCE_BY_BACKEND['whisperx'], 'model')
+        self.assertEqual(A.SCORE_SOURCE_BY_BACKEND['qwen3'], 'derived')
+
+    def test_the_qwen3_backend_module_is_named_for_env_discovery(self):
+        self.assertEqual(E.BACKEND_MODULES['qwen3'], 'qwen_asr')
 
     def test_no_torchaudio_aligner_is_shipped(self):
         """The measurement that rejected it lives in align/README.md and in
@@ -391,14 +405,384 @@ class BackendSelectionTest(unittest.TestCase):
 
 
 # =============================================================================
+# Pure: the qwen3 backend, on a fake qwen_asr
+# =============================================================================
+
+class _FakeItem:
+    """One of Qwen3ForcedAligner's own units: text plus two seconds."""
+
+    def __init__(self, text, start, end):
+        self.text = text
+        self.start_time = start
+        self.end_time = end
+
+
+class _FakeQwen3Module:
+    """A `qwen_asr` for `sys.modules`.
+
+    NO MODEL, NO GPU, NO DOWNLOAD. `from_pretrained` records what it was handed
+    (so the dtype and device rules can be asserted) and `align` returns whatever
+    the test scripted. Everything between here and `align_chunk` - the language
+    table, the 5-minute cap, the temp wav, the item mapping, the derived scores -
+    is the shipped code.
+    """
+
+    def __init__(self):
+        self.loads = []
+        self.calls = []
+        self.items = []
+        module = self
+
+        class Qwen3ForcedAligner:
+            @classmethod
+            def from_pretrained(cls, model_id, dtype=None, device_map=None):
+                module.loads.append({'model': model_id, 'dtype': dtype,
+                                     'device': device_map})
+                return cls()
+
+            def align(self, audio, text, language):
+                module.calls.append({'audio': audio, 'text': text,
+                                     'language': language})
+                return [list(module.items)]
+
+        self.Qwen3ForcedAligner = Qwen3ForcedAligner
+
+
+class Qwen3BackendTest(unittest.TestCase):
+    """Qwen3-ForcedAligner-0.6B, the backend added 2026-09-08.
+
+    THE MEASUREMENT THAT BOUGHT IT (Shift, 1,083 chunks, RTX 3090 Ti in WSL):
+    395x realtime against whisperx's 18x, 890 chunk starts inside 0.1 s against
+    39/61. What it does NOT give is a per-word confidence, which is why the
+    scores here are DERIVED and why every one of these tests is really about
+    saying so honestly.
+    """
+
+    def setUp(self):
+        import sys
+        self.qwen = _FakeQwen3Module()
+        self._saved = sys.modules.get('qwen_asr')
+        sys.modules['qwen_asr'] = self.qwen
+        self.addCleanup(self._restore)
+        # A cold cache per test: the loader keys on (backend, language, device)
+        # and a model left over from another test would hide a load bug.
+        for key in [k for k in A._MODEL_CACHE if k[0] == 'qwen3']:
+            del A._MODEL_CACHE[key]
+        self.addCleanup(lambda: [A._MODEL_CACHE.pop(k) for k in
+                                 [k for k in A._MODEL_CACHE if k[0] == 'qwen3']])
+
+    def _restore(self):
+        import sys
+        if self._saved is None:
+            sys.modules.pop('qwen_asr', None)
+        else:
+            sys.modules['qwen_asr'] = self._saved
+
+    def _audio(self, seconds=1.0, silent_from=None):
+        """Speech-shaped noise, optionally going quiet part way through."""
+        import numpy as np
+        n = int(A.SAMPLE_RATE * seconds)
+        audio = (np.random.RandomState(0).randn(n) * 0.2).astype('float32')
+        if silent_from is not None:
+            audio[int(A.SAMPLE_RATE * silent_from):] = 0.0
+        return audio
+
+    # ---- the item mapping ---------------------------------------------------
+
+    def test_items_that_MERGE_and_SPLIT_our_words_still_map_one_to_one(self):
+        """Qwen tokenizes the text itself - measured 2026-09-08 in the
+        `qwen-align` env, 665 items for a 668-word window - so its units merge
+        and split against a whitespace split. Both are mapped by walking the
+        normalized characters, and every one of OUR words comes back."""
+        items = [_FakeItem('the quick', 0.0, 0.5),   # merged over two words
+                 _FakeItem('bro', 0.5, 0.7),          # split across one word
+                 _FakeItem('wn', 0.7, 0.8),
+                 _FakeItem('fox', 0.9, 1.1)]
+        mapped = A._map_items_onto_words(items, ('the', 'quick', 'brown', 'fox'))
+        self.assertEqual([m[0] for m in mapped],
+                         ['the', 'quick', 'brown', 'fox'])
+        # A MERGED item gives both its words the merged span - that is all the
+        # model said about either, and leaving the second untimed would make
+        # `sentence_cues` refuse a chunk for a merge the model may make.
+        self.assertEqual(mapped[0][1:3], (0.0, 0.5))
+        self.assertEqual(mapped[1][1:3], (0.0, 0.5))
+        # A SPLIT word spans the first piece's start to the last piece's end.
+        self.assertEqual(mapped[2][1:3], (0.5, 0.8))
+        self.assertEqual(mapped[3][1:3], (0.9, 1.1))
+        # No score comes back from the model, and none is invented here.
+        self.assertEqual([m[3] for m in mapped], [None] * 4)
+
+    def test_a_word_no_item_covers_is_UNTIMED_rather_than_guessed(self):
+        items = [_FakeItem('the', 0.0, 0.3), _FakeItem('fox', 0.4, 0.7)]
+        mapped = A._map_items_onto_words(items, ('the', '--', 'fox'))
+        self.assertEqual([m[0] for m in mapped], ['the', '--', 'fox'])
+        self.assertEqual(mapped[1][1:3], (None, None))
+
+    def test_a_model_that_REWROTE_the_text_is_refused_by_name(self):
+        items = [_FakeItem('the', 0.0, 0.3), _FakeItem('cat', 0.4, 0.7)]
+        with self.assertRaises(A.AlignerError) as caught:
+            A._map_items_onto_words(items, ('the', 'fox'))
+        message = str(caught.exception)
+        self.assertIn('qwen3', message)
+        self.assertIn('not the text it was given', message)
+        self.assertIn('thefox', message)
+        self.assertIn('thecat', message)
+
+    def test_no_items_at_all_is_refused_rather_than_read_as_a_rewrite(self):
+        with self.assertRaises(A.AlignerError) as caught:
+            A._map_items_onto_words([], ('the', 'fox'))
+        self.assertIn('returned no items for 2 word(s)', str(caught.exception))
+
+    # ---- the language table -------------------------------------------------
+
+    def test_the_iso_code_becomes_the_models_english_language_NAME(self):
+        self.assertEqual(A.qwen3_language_name('en'), 'English')
+        self.assertEqual(A.qwen3_language_name('de'), 'German')
+        self.assertEqual(A.qwen3_language_name('yue'), 'Cantonese')
+        self.assertEqual(len(A.QWEN3_LANGUAGES), 11)
+
+    def test_a_language_the_model_does_not_speak_is_refused_by_name(self):
+        """It does not fall back to English for a language it was not trained
+        on - it just places the words badly, which is a silently mis-aligned
+        book."""
+        for bad in ('sv', 'nl', 'eng', 'EN'):
+            with self.assertRaises(A.AlignerError) as caught:
+                A.qwen3_language_name(bad)
+            message = str(caught.exception)
+            self.assertIn(repr(bad), message)
+            self.assertIn('whisperx', message)
+        # ...and the loader refuses BEFORE a model is fetched, so an unsupported
+        # code costs a refusal rather than a load plus a bad book.
+        with self.assertRaises(A.AlignerError):
+            A._load_qwen3('sv', 'cpu')
+        self.assertEqual(self.qwen.loads, [])
+
+    # ---- the loader ---------------------------------------------------------
+
+    def test_the_checkpoint_the_dtype_and_the_device_are_what_was_measured(self):
+        import torch
+        A._load_qwen3('en', 'cpu')
+        self.assertEqual(self.qwen.loads[-1]['model'],
+                         'Qwen/Qwen3-ForcedAligner-0.6B')
+        # float32 on CPU: bfloat16 matmuls are emulated there.
+        self.assertIs(self.qwen.loads[-1]['dtype'], torch.float32)
+        self.assertEqual(self.qwen.loads[-1]['device'], 'cpu')
+        # bfloat16 on the accelerators, which is what the bake-off ran. NO GPU
+        # IS TOUCHED: the model is the fake above and this only records a dtype.
+        A._load_qwen3('en', 'cuda:0')
+        self.assertIs(self.qwen.loads[-1]['dtype'], torch.bfloat16)
+        self.assertEqual(self.qwen.loads[-1]['device'], 'cuda:0')
+
+    def test_the_model_is_cached_per_backend_language_and_device(self):
+        A._load_qwen3('en', 'cpu')
+        A._load_qwen3('en', 'cpu')
+        self.assertEqual(len(self.qwen.loads), 1)
+        A._load_qwen3('de', 'cpu')
+        self.assertEqual(len(self.qwen.loads), 2)
+        self.assertIn(('qwen3', 'en', 'cpu'), A._MODEL_CACHE)
+
+    # ---- the five-minute cap ------------------------------------------------
+
+    def test_audio_past_five_minutes_is_refused_BY_NAME(self):
+        """The model card's own limit: it places timestamps "within up to 5
+        minutes". Narrator chunks are <= ~90 s and the corpus cutter windows to
+        5 minutes itself, so anything longer is a caller's bug."""
+        import numpy as np
+        audio = np.zeros(int(A.SAMPLE_RATE * 301), dtype='float32')
+        with self.assertRaises(A.AlignerError) as caught:
+            A.align_chunk('long.flac', 'one two', backend='qwen3', audio=audio)
+        message = str(caught.exception)
+        self.assertIn('long.flac', message)
+        self.assertIn('301.0s of audio', message)
+        self.assertIn('300s', message)
+        self.assertEqual(self.qwen.calls, [])
+
+    def test_five_minutes_exactly_is_allowed(self):
+        self.assertEqual(A.QWEN3_MAX_AUDIO_S, 300.0)
+
+    # ---- what a qwen3 alignment SAYS ---------------------------------------
+
+    def test_a_qwen3_alignment_is_marked_derived_and_names_its_pace_source(self):
+        self.qwen.items = [_FakeItem('one', 0.0, 0.4),
+                           _FakeItem('two', 0.5, 0.9)]
+        audio = self._audio(1.0)
+
+        measured = A.align_chunk('c.flac', 'one two', backend='qwen3',
+                                 audio=audio)
+        self.assertEqual(measured.score_source, 'derived')
+        self.assertEqual(measured.pace_source, 'chunk')
+        # The chunk's own printed characters over its own audio seconds.
+        self.assertAlmostEqual(measured.pace_chars_per_sec, 7.0, places=6)
+        self.assertEqual(measured.backend, 'qwen3')
+        # It hands the model a PATH and the ENGLISH NAME, and cleans the wav up.
+        call = self.qwen.calls[-1]
+        self.assertEqual(call['language'], 'English')
+        self.assertEqual(call['text'], 'one two')
+        self.assertTrue(call['audio'].endswith('.wav'))
+        self.assertFalse(os.path.exists(call['audio']))
+
+        given = A.align_chunk('c.flac', 'one two', backend='qwen3', audio=audio,
+                              pace_chars_per_sec=15.0)
+        self.assertEqual(given.pace_source, 'given')
+        self.assertEqual(given.pace_chars_per_sec, 15.0)
+
+    def test_a_whisperx_alignment_carries_no_pace_at_all(self):
+        """A model score was never measured against a pace, so reporting one
+        would be a number nobody chose."""
+        raw = [('one', 0.0, 0.4, 0.9), ('two', 0.5, 0.9, 0.8)]
+        saved = A._BACKEND_FUNCTIONS['whisperx']
+        A._BACKEND_FUNCTIONS['whisperx'] = lambda audio, text, language, device: raw
+        try:
+            alignment = A.align_chunk('c.flac', 'one two', audio=self._audio(),
+                                      pace_chars_per_sec=15.0)
+        finally:
+            A._BACKEND_FUNCTIONS['whisperx'] = saved
+        self.assertEqual(alignment.score_source, 'model')
+        self.assertIsNone(alignment.pace_source)
+        self.assertIsNone(alignment.pace_chars_per_sec)
+        self.assertEqual([w.score for w in alignment.words], [0.9, 0.8])
+
+
+class DerivedScoreTest(unittest.TestCase):
+    """The three factors that stand in for a confidence the model never gives.
+
+    THEY ARE FIRST ESTIMATES, NOT MEASUREMENTS - the calibration data is the
+    Shift coverage run and it has not been scored against them yet. What these
+    tests pin is that each factor is WIRED and that the product is the score, so
+    a later calibration moves numbers rather than discovering that one of the
+    three was never applied.
+    """
+
+    #: 14 chars/sec - the middle of the measured Higgs band (deathstalker 16.73,
+    #: mistborn 15.01 at the standing 0.8/0.95/50 sampling), rounded to make the
+    #: arithmetic in these tests readable.
+    PACE = 14.0
+
+    def _score(self, words, silences=()):
+        return [w.score for w in A._derive_scores(words, silences, self.PACE)]
+
+    def test_a_word_placed_entirely_inside_a_pause_scores_zero(self):
+        words = (_word(0, 'hello', 1.0, 1.4, None),)
+        self.assertEqual(self._score(words, silences=((0.9, 1.5),)), [0.0])
+
+    def test_a_normal_word_scores_about_one(self):
+        # 5 letters in 0.36 s is 13.9 chars/sec - dead on the pace.
+        words = (_word(0, 'hello', 0.0, 0.36, None),)
+        self.assertAlmostEqual(self._score(words)[0], 1.0, places=6)
+
+    def test_an_implausibly_fast_word_scores_low(self):
+        """A 0.02 s span carrying a 9-character word is not a word the model
+        found; it is a word the model had nowhere to put."""
+        fast = self._score((_word(0, 'certainly', 0.0, 0.02, None),))[0]
+        self.assertLess(fast, 0.1)
+        # ...and past 6x the pace it is zero, not merely small.
+        self.assertEqual(self._score((_word(0, 'certainly', 0.0, 0.01, None),))[0],
+                         0.0)
+
+    def test_an_implausibly_slow_word_scores_low_too(self):
+        # One letter over four seconds is 0.25 chars/sec, well under pace/6.
+        self.assertEqual(self._score((_word(0, 'a', 0.0, 4.0, None),))[0], 0.0)
+
+    def test_a_word_that_goes_BACKWARDS_scores_zero(self):
+        """Forced alignment is monotonic; a word starting before the previous
+        one ended is not a placement. 50 ms of slack, because adjacent word
+        boundaries touch."""
+        words = (_word(0, 'hello', 0.00, 0.36, None),
+                 _word(1, 'there', 0.34, 0.70, None),   # 20 ms back: allowed
+                 _word(2, 'again', 0.10, 0.46, None))   # 600 ms back: not
+        scores = self._score(words)
+        self.assertAlmostEqual(scores[0], 1.0, places=6)
+        self.assertAlmostEqual(scores[1], 1.0, places=6)
+        self.assertEqual(scores[2], 0.0)
+
+    def test_the_score_is_the_PRODUCT_of_the_three(self):
+        """Half the word in silence and a plausible rate and order: 0.5."""
+        words = (_word(0, 'hello', 0.0, 0.36, None),)
+        self.assertAlmostEqual(self._score(words, silences=((0.18, 0.36),))[0],
+                               0.5, places=6)
+
+    def test_an_untimed_word_keeps_score_None_the_stronger_signal(self):
+        words = (A.AlignedWord(0, 'gone', None, None, None),)
+        self.assertEqual(self._score(words), [None])
+
+    def test_a_pace_of_zero_is_refused_rather_than_divided_by(self):
+        with self.assertRaises(A.AlignerError) as caught:
+            A._derive_scores((_word(0, 'x', 0.0, 0.1, None),), (), 0.0)
+        self.assertIn('characters per second', str(caught.exception))
+
+
+class AlignmentWireTest(unittest.TestCase):
+    """`as_dict` / `alignment_from_dict` - the cross-interpreter worker's wire.
+
+    `scoreSource` is REQUIRED there and has no default, because the one thing a
+    default could mean is "the model scored this", which is exactly what a qwen3
+    document must never be read as.
+    """
+
+    def _alignment(self, **kw):
+        words = (_word(0, 'one', 0.0, 0.4), _word(1, 'two', 0.5, 0.9))
+        return A.Alignment(audio_path='c.flac', text='one two', language='en',
+                           backend='whisperx', device='cpu', duration_s=1.0,
+                           words=words, elapsed_s=0.25, **kw)
+
+    def test_a_model_scored_alignment_round_trips(self):
+        original = self._alignment(score_source='model')
+        back = A.alignment_from_dict(json.loads(json.dumps(original.as_dict())))
+        self.assertEqual(back.score_source, 'model')
+        self.assertIsNone(back.pace_chars_per_sec)
+        self.assertIsNone(back.pace_source)
+        self.assertEqual([w.score for w in back.words], [0.9, 0.9])
+
+    def test_a_derived_alignment_round_trips_with_its_pace(self):
+        original = self._alignment(score_source='derived',
+                                   pace_chars_per_sec=14.0,
+                                   pace_source='chunk')
+        back = A.alignment_from_dict(json.loads(json.dumps(original.as_dict())))
+        self.assertEqual(back.score_source, 'derived')
+        self.assertEqual(back.pace_chars_per_sec, 14.0)
+        self.assertEqual(back.pace_source, 'chunk')
+
+    def test_a_document_with_no_scoreSource_is_REFUSED_not_defaulted(self):
+        document = self._alignment(score_source='model').as_dict()
+        del document['scoreSource']
+        with self.assertRaises(A.AlignerError) as caught:
+            A.alignment_from_dict(document)
+        message = str(caught.exception)
+        self.assertIn('scoreSource', message)
+        self.assertIn('2026-09-08', message)
+
+    def test_a_document_with_an_unknown_scoreSource_is_refused(self):
+        document = self._alignment(score_source='model').as_dict()
+        document['scoreSource'] = 'vibes'
+        with self.assertRaises(A.AlignerError) as caught:
+            A.alignment_from_dict(document)
+        self.assertIn("'vibes'", str(caught.exception))
+
+    def test_the_pace_keys_are_required_too(self):
+        for key in ('paceCharsPerSecond', 'paceSource'):
+            document = self._alignment(score_source='derived',
+                                       pace_chars_per_sec=14.0,
+                                       pace_source='given').as_dict()
+            del document[key]
+            with self.assertRaises(A.AlignerError) as caught:
+                A.alignment_from_dict(document)
+            self.assertIn(key, str(caught.exception))
+
+
+# =============================================================================
 # Pure: sentence cues
 # =============================================================================
 
-def _alignment(text, words, duration, silences=()):
+def _alignment(text, words, duration, silences=(), score_source='model',
+               pace=None, pace_source=None):
     """A hand-built Alignment with its spans DERIVED, not declared.
 
     `_spans` is what `align_chunk` runs; deriving them here means a coverage
     test cannot pass by being handed spans the real path would not have drawn.
+
+    `score_source` has no default on `Alignment` itself (a derived score must
+    never reach `coverage.py` wearing the model's clothes), so every fixture
+    states it. 'model' here, because these fixtures' scores are whisperx-shaped.
     """
     words = tuple(words)
     silences = tuple(silences)
@@ -406,8 +790,9 @@ def _alignment(text, words, duration, silences=()):
     return A.Alignment(
         audio_path='chunk.flac', text=text, language='en', backend='whisperx',
         device='cpu', duration_s=duration, words=words,
+        score_source=score_source,
         unaligned_text_spans=text_spans, unaligned_audio_spans=audio_spans,
-        silences=silences)
+        silences=silences, pace_chars_per_sec=pace, pace_source=pace_source)
 
 
 class SentenceCueTest(unittest.TestCase):
@@ -530,6 +915,240 @@ class SentenceCueTest(unittest.TestCase):
             SV.proportional_cues(chunk_index=2, chunk_start_s=0.0,
                                  chunk_end_s=1.0, text='[break]'),
             ())
+
+
+class CueQualityTest(unittest.TestCase):
+    """Every MEASURED cue's report card, and the NOTE line that carries it.
+
+    WHY IT EXISTS. The qwen3 backend PLACES a window whose printed text differs
+    from the speech instead of refusing it - that is what 116 of Shift's 1,083
+    chunk-start misses were, headings like "2110." and the prose right after
+    them. A consumer picking alignment-clean sentences out of a book needs the
+    evidence, so each cue carries six measurements and the VTT writes them in a
+    fixed, parseable form.
+
+    NOTHING IN THIS PACKAGE ACTS ON THEM. No cue is dropped, re-timed or
+    reclassified on a quality number; the thresholds belong to whoever reads the
+    file. These tests assert the MEASUREMENT and the FORMAT, and nothing else.
+    """
+
+    def setUp(self):
+        # The same fixture SentenceCueTest uses, so the seam is the known one:
+        # the pause runs 0.95..2.05 and the seam lands on its midpoint, 1.50.
+        self.text = 'One two. Three four.'
+        self.words = [
+            _word(0, 'One', 0.00, 0.40, 0.95), _word(1, 'two.', 0.40, 0.90, 0.90),
+            _word(2, 'Three', 2.10, 2.50, 0.80), _word(3, 'four.', 2.50, 3.00, 0.99),
+        ]
+        self.al = _alignment(self.text, self.words, 3.20,
+                             silences=((0.95, 2.05),), score_source='derived',
+                             pace=10.0, pace_source='given')
+
+    def _cues(self):
+        return S.sentence_cues(self.al, chunk_index=7, chunk_start_s=0.0,
+                               chunk_end_s=3.2)
+
+    def test_every_measured_cue_carries_the_six_measurements(self):
+        for cue in self._cues():
+            self.assertEqual(
+                sorted(cue.quality),
+                ['boundary_silence_s', 'chars_per_sec', 'monotonic',
+                 'pace_ratio', 'score_source', 'worst_word_score'])
+            self.assertEqual(cue.quality['score_source'], 'derived')
+            self.assertTrue(cue.quality['monotonic'])
+
+    def test_the_numbers_are_measured_off_the_cue_and_the_silence_map(self):
+        first, second = self._cues()
+        # Cue 0: 8 characters over the 1.50 s up to the seam.
+        self.assertAlmostEqual(first.end_s, 1.50, places=6)
+        self.assertAlmostEqual(first.quality['chars_per_sec'], 8 / 1.5, places=6)
+        self.assertAlmostEqual(first.quality['pace_ratio'], 8 / 1.5 / 10.0,
+                               places=6)
+        # It STARTS IN SPEECH (0.0 is before the pause), so there is no
+        # boundary silence to report - 0.0, not "unknown".
+        self.assertEqual(first.quality['boundary_silence_s'], 0.0)
+        self.assertAlmostEqual(first.quality['worst_word_score'], 0.90, places=6)
+        # Cue 1 starts at 1.50, inside the 0.95..2.05 pause: 1.10 s of it.
+        self.assertAlmostEqual(second.quality['boundary_silence_s'], 1.10,
+                               places=6)
+        self.assertAlmostEqual(second.quality['worst_word_score'], 0.80,
+                               places=6)
+
+    def test_a_model_scored_alignment_reports_no_pace_ratio(self):
+        """None, not 1.0: a whisperx alignment never measured a pace, and a
+        ratio against a number nobody chose would be invented at write time."""
+        model = _alignment(self.text, self.words, 3.20,
+                           silences=((0.95, 2.05),))
+        cues = S.sentence_cues(model, chunk_index=7, chunk_start_s=0.0,
+                               chunk_end_s=3.2)
+        self.assertIsNone(cues[0].quality['pace_ratio'])
+        self.assertEqual(cues[0].quality['score_source'], 'model')
+
+    def test_the_VTT_NOTE_line_is_the_exact_documented_format(self):
+        document = S.build_sentence_vtt(self._cues())
+        lines = document.splitlines()
+        notes = [l for l in lines if l.startswith('NOTE quality')]
+        self.assertEqual(len(notes), 2)
+        self.assertEqual(
+            notes[0],
+            'NOTE quality monotonic=1 cps=5.3 pace_ratio=0.53 '
+            'boundary_silence=0.00 worst=0.90 source=derived')
+        self.assertEqual(
+            notes[1],
+            'NOTE quality monotonic=1 cps=6.5 pace_ratio=0.65 '
+            'boundary_silence=1.10 worst=0.80 source=derived')
+        # It sits IMMEDIATELY BEFORE its cue, with the blank line every WebVTT
+        # block ends on between them.
+        self.assertEqual(lines[lines.index(notes[0]) + 1], '')
+        self.assertIn('-->', lines[lines.index(notes[0]) + 2])
+
+    def test_a_none_valued_field_is_written_as_a_parseable_none(self):
+        """Not a missing pair: a reader splitting the line on spaces would
+        otherwise read the NEXT pair's value into this field's slot."""
+        model = _alignment(self.text, self.words, 3.20,
+                           silences=((0.95, 2.05),))
+        cues = S.sentence_cues(model, chunk_index=7, chunk_start_s=0.0,
+                               chunk_end_s=3.2)
+        note = [l for l in S.build_sentence_vtt(cues).splitlines()
+                if l.startswith('NOTE quality')][0]
+        self.assertIn('pace_ratio=none', note)
+        self.assertIn('source=model', note)
+        self.assertEqual(len(note.split(' ')), 2 + len(S.QUALITY_NOTE_KEYS))
+
+    def test_an_ESTIMATED_cue_carries_no_quality_line_at_all(self):
+        """It was never measured. The `NOTE estimated chunk` block is still
+        exactly where it was."""
+        from narrator.assemble import sentence_vtt as SV
+        estimated = SV.proportional_cues(
+            chunk_index=1, chunk_start_s=3.2, chunk_end_s=5.2,
+            text='One two three. Four five six.')
+        self.assertTrue(all(c.quality is None for c in estimated))
+        document = S.build_sentence_vtt([*self._cues(), *estimated])
+        self.assertEqual(document.count('NOTE estimated chunk 1'), 1)
+        # Two measured cues, two quality lines - and none for the estimates.
+        self.assertEqual(document.count('NOTE quality'), 2)
+
+    def test_a_cue_that_claims_to_be_both_estimated_and_measured_is_refused(self):
+        bad = S.SentenceCue(0, 0, 0.0, 1.0, 'a', estimated=True,
+                            quality=dict(self._cues()[0].quality))
+        with self.assertRaises(S.SentenceVttError) as caught:
+            S.build_sentence_vtt([bad])
+        self.assertIn('estimated AND carries a quality', str(caught.exception))
+
+    def test_a_quality_dict_missing_a_key_is_refused_not_written_short(self):
+        quality = dict(self._cues()[0].quality)
+        del quality['worst_word_score']
+        bad = S.SentenceCue(0, 0, 0.0, 1.0, 'a', quality=quality)
+        with self.assertRaises(S.SentenceVttError) as caught:
+            S.build_sentence_vtt([bad])
+        self.assertIn('worst_word_score', str(caught.exception))
+
+
+class AlignTextWindowTest(unittest.TestCase):
+    """`align/window.align_text_window` - the corpus cutter's door.
+
+    It holds a decoded five-minute window of an existing audiobook and the book
+    text it believes belongs to it. It has no session, no manifest and no FLAC
+    per chunk, and minting a fake session per window to reach `align_chunk`
+    would be a lie told to a schema. So: one function, one window, JSON-safe out.
+    """
+
+    TEXT = 'One two. Three four.'
+    SECONDS = 3.2
+
+    def setUp(self):
+        import sys
+        self.qwen = _FakeQwen3Module()
+        self.qwen.items = [_FakeItem('One', 0.0, 0.4),
+                           _FakeItem('two.', 0.4, 0.9),
+                           _FakeItem('Three', 2.1, 2.5),
+                           _FakeItem('four.', 2.5, 3.0)]
+        self._saved = sys.modules.get('qwen_asr')
+        sys.modules['qwen_asr'] = self.qwen
+        self.addCleanup(self._restore)
+        for key in [k for k in A._MODEL_CACHE if k[0] == 'qwen3']:
+            del A._MODEL_CACHE[key]
+
+    def _restore(self):
+        import sys
+        for key in [k for k in A._MODEL_CACHE if k[0] == 'qwen3']:
+            del A._MODEL_CACHE[key]
+        if self._saved is None:
+            sys.modules.pop('qwen_asr', None)
+        else:
+            sys.modules['qwen_asr'] = self._saved
+
+    def _samples(self):
+        import numpy as np
+        return (np.random.RandomState(0).randn(
+            int(A.SAMPLE_RATE * self.SECONDS)) * 0.2).astype('float32')
+
+    def _check(self, window):
+        self.assertEqual(sorted(window),
+                         ['alignment', 'backend', 'cues', 'score_source'])
+        self.assertEqual(window['backend'], 'qwen3')
+        self.assertEqual(window['score_source'], 'derived')
+        self.assertEqual([c['text'] for c in window['cues']],
+                         ['One two.', 'Three four.'])
+        # WINDOW-RELATIVE SECONDS. The cutter knows where the window sits in the
+        # book; this does not, so cue 0 starts at 0 and the last ends on the
+        # window's own duration.
+        self.assertEqual(window['cues'][0]['start'], 0.0)
+        self.assertAlmostEqual(window['cues'][-1]['end'], self.SECONDS, places=3)
+        self.assertEqual(window['cues'][0]['quality']['score_source'],
+                         'derived')
+        # It crosses a pipe: every value has to be JSON.
+        json.loads(json.dumps(window))
+
+    def test_an_already_decoded_array_is_aligned_and_cued(self):
+        from narrator.align import window as W
+        self._check(W.align_text_window(
+            self._samples(), self.TEXT, backend='qwen3', language='en',
+            device='cpu', sample_rate=A.SAMPLE_RATE))
+
+    def test_a_path_is_decoded_here_and_aligned(self):
+        from narrator.align import window as W
+        if shutil.which('ffmpeg') is None:
+            raise unittest.SkipTest('ffmpeg is not on PATH; a path window is '
+                                    'decoded through it')
+        import soundfile
+        tmp = tempfile.mkdtemp(prefix='narrator-window-')
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = os.path.join(tmp, 'window.wav')
+        soundfile.write(path, self._samples(), A.SAMPLE_RATE, subtype='PCM_16')
+        self._check(W.align_text_window(path, self.TEXT, backend='qwen3',
+                                        language='en', device='cpu'))
+
+    def test_an_array_at_the_wrong_rate_is_REFUSED_not_resampled(self):
+        """A resampler hidden in an alignment library would silently change the
+        signal the timings are measured against."""
+        from narrator.align import window as W
+        with self.assertRaises(A.AlignerError) as caught:
+            W.align_text_window(self._samples(), self.TEXT, backend='qwen3',
+                                language='en', device='cpu', sample_rate=22050)
+        message = str(caught.exception)
+        self.assertIn('22050 Hz', message)
+        self.assertIn('nothing here resamples', message)
+
+    def test_an_array_with_no_rate_is_refused(self):
+        from narrator.align import window as W
+        with self.assertRaises(A.AlignerError) as caught:
+            W.align_text_window(self._samples(), self.TEXT, backend='qwen3',
+                                language='en', device='cpu')
+        self.assertIn('no sample_rate', str(caught.exception))
+
+    def test_a_path_AND_a_rate_is_two_claims_about_one_audio(self):
+        from narrator.align import window as W
+        with self.assertRaises(A.AlignerError) as caught:
+            W.align_text_window('w.wav', self.TEXT, backend='qwen3',
+                                language='en', device='cpu', sample_rate=16000)
+        self.assertIn('two different claims', str(caught.exception))
+
+    def test_it_is_exported_from_the_package(self):
+        import narrator.align as pkg
+        from narrator.align.window import align_text_window
+        self.assertIs(pkg.align_text_window, align_text_window)
+        self.assertIn('align_text_window', pkg.__all__)
 
 
 # =============================================================================
@@ -842,14 +1461,35 @@ class ReportSchemaTest(unittest.TestCase):
                                       HIGGS_V3_COVERAGE, index=0)]
         document = C.coverage_document(
             coverages, engine_id='higgs-v3', policy=HIGGS_V3_COVERAGE,
-            backend='whisperx', language='en', session_id='sid',
-            process_dir='/p', chunks_in_manifest=1)
+            backend='whisperx', language='en', score_source='model',
+            session_id='sid', process_dir='/p', chunks_in_manifest=1)
         self.assertEqual(document['version'],
                          coverage_gate.SUPPORTED_REPORT_VERSION)
         self.assertTrue(document['audited'])
         self.assertEqual(document['summary']['chunksAligned'], 1)
         self.assertEqual(document['summary']['chunksSkipped'], 0)
         # It must survive a JSON round trip: assembly reads it off disk.
+        json.loads(json.dumps(document))
+
+    def test_the_document_says_what_its_scores_MEAN(self):
+        """A `alignedRatio` of 0.93 means two different things depending on
+        whether the scores behind it are whisperx's CTC posterior or the qwen3
+        estimate this package derives. The report says which, at the top and on
+        every chunk - and the schema VERSION does not move for it, because the
+        gate requires `engine`/`summary`/`chunks` and an added key keeps every
+        older report readable."""
+        words = [_word(i, start=i * 0.5, end=i * 0.5 + 0.45) for i in range(10)]
+        alignment = _alignment('t', words, 5.0, score_source='derived',
+                               pace=14.0, pace_source='chunk')
+        coverages = [C.evaluate_chunk(alignment, HIGGS_V3_COVERAGE, index=0)]
+        document = C.coverage_document(
+            coverages, engine_id='higgs-v3', policy=HIGGS_V3_COVERAGE,
+            backend='qwen3', language='en', score_source='derived',
+            session_id='sid', process_dir='/p', chunks_in_manifest=1)
+        self.assertEqual(document['scoreSource'], 'derived')
+        self.assertEqual(document['chunks'][0]['scoreSource'], 'derived')
+        self.assertEqual(document['version'],
+                         coverage_gate.SUPPORTED_REPORT_VERSION)
         json.loads(json.dumps(document))
 
 
@@ -1168,11 +1808,21 @@ class CliTest(unittest.TestCase):
              '--report', 'c.json'])
         self.assertEqual(args.command, 'align')
         self.assertEqual(args.device, 'cpu')
-        # ONE aligner ships, so there is nothing to choose and no flag for it.
-        self.assertFalse(hasattr(args, 'backend'))
-        with self.assertRaises(SystemExit):
-            build_parser().parse_args(
-                ['align', '--session-dir', 'D', '--backend', 'torchaudio'])
+
+    def test_the_backend_is_chosen_by_name_and_defaults_to_whisperx(self):
+        """Two aligners ship, so there IS a flag - and it takes only the two
+        that ship. torchaudio was measured and rejected in 2026-09-05 and is
+        still not a choice."""
+        from narrator.cli import build_parser
+        default = build_parser().parse_args(['align', '--session-dir', 'D'])
+        self.assertEqual(default.backend, 'whisperx')
+        chosen = build_parser().parse_args(
+            ['align', '--session-dir', 'D', '--backend', 'qwen3'])
+        self.assertEqual(chosen.backend, 'qwen3')
+        for bad in ('torchaudio', 'gentle', 'whisper'):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(
+                    ['align', '--session-dir', 'D', '--backend', bad])
 
     def test_continue_on_error_is_still_accepted_and_is_a_no_op(self):
         """The pass always audits the whole book now. The flag stays parseable
@@ -1469,11 +2119,76 @@ class AlignSessionTest(unittest.TestCase):
         args = argparse.Namespace(
             indices=None, out=os.path.join(self.tmp, 'out.sentences.vtt'),
             report=os.path.join(self.tmp, 'coverage.json'), language='en',
-            device='cpu', python=None, ffmpeg=None, continue_on_error=False,
-            workers=1)
+            backend='whisperx', device='cpu', python=None, ffmpeg=None,
+            continue_on_error=False, workers=1)
         self.assertEqual(_run_align(args, self._manifest(texts)), 0)
         self.assertTrue(os.path.isfile(args.out))
         self.assertTrue(os.path.isfile(args.report))
+
+    def test_the_cli_backend_flag_REACHES_align_session(self):
+        """The plumbing, end to end: `--backend qwen3` on the command line has
+        to arrive as `backend='qwen3'` in `align_session`, and from there in
+        every job. A flag the parser accepts and the body drops would run
+        whisperx while the operator read qwen3 on their own command line."""
+        import argparse
+        from unittest import mock
+
+        from narrator.cli import _run_align, build_parser
+
+        parsed = build_parser().parse_args(
+            ['align', '--session-dir', 'D', '--backend', 'qwen3'])
+        self.assertEqual(parsed.backend, 'qwen3')
+
+        seen = {}
+
+        def capture(manifest, **kw):
+            seen.update(kw)
+            return {'cues': [S.SentenceCue(0, 0, 0.0, 1.0, 'One two.')],
+                    'document': {
+                        'summary': {'chunksAligned': 1, 'chunksFailed': 0,
+                                    'errors': 0, 'failedIndices': [],
+                                    'errorIndices': []}}}
+
+        args = argparse.Namespace(
+            indices=None, out=None, report=os.path.join(self.tmp, 'c.json'),
+            language='en', backend='qwen3', device='cuda', python=None,
+            ffmpeg=None, continue_on_error=False, workers=1)
+        with mock.patch('narrator.align.run.align_session', capture):
+            self.assertEqual(_run_align(args, self._manifest(['One two.'])), 0)
+        self.assertEqual(seen['backend'], 'qwen3')
+        self.assertEqual(seen['device'], 'cuda')
+
+    def test_a_qwen3_run_records_derived_scores_all_the_way_to_the_report(self):
+        """The backend chosen by name reaches the jobs, the alignments and the
+        coverage document - which is where a reader learns that a 0.93 aligned
+        ratio is derived rather than whisperx's own."""
+        import sys
+
+        qwen = _FakeQwen3Module()
+        qwen.items = [_FakeItem('One', 0.0, 0.25), _FakeItem('two.', 0.25, 0.5),
+                      _FakeItem('Three', 0.5, 0.75), _FakeItem('four.', 0.75, 1.0)]
+        saved = sys.modules.get('qwen_asr')
+        sys.modules['qwen_asr'] = qwen
+        self.addCleanup(lambda: sys.modules.__setitem__('qwen_asr', saved)
+                        if saved is not None
+                        else sys.modules.pop('qwen_asr', None))
+        for key in [k for k in A._MODEL_CACHE if k[0] == 'qwen3']:
+            del A._MODEL_CACHE[key]
+        self.addCleanup(lambda: [A._MODEL_CACHE.pop(k) for k in
+                                 [k for k in A._MODEL_CACHE if k[0] == 'qwen3']])
+        # setUp already fakes `decode_audio` (one second) and `detect_silences`
+        # (no pauses), which is what a derived score's SPEECH PRESENCE factor
+        # reads - no silences means every word is fully in speech, so what these
+        # scores test is the plumbing rather than the audio.
+        result = R.align_session(self._manifest(['One two. Three four.']),
+                                 backend='qwen3', progress=lambda line: None)
+        document = result['document']
+        self.assertEqual(document['backend'], 'qwen3')
+        self.assertEqual(document['scoreSource'], 'derived')
+        self.assertEqual(document['chunks'][0]['scoreSource'], 'derived')
+        # ...and every cue's quality note says the same thing.
+        self.assertTrue(all(c.quality['score_source'] == 'derived'
+                            for c in result['cues']))
 
     def test_the_written_vtt_and_report_are_what_the_run_produced(self):
         texts = ['One two. Three four.', 'Five six.']

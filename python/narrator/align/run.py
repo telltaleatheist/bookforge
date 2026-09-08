@@ -53,8 +53,8 @@ from ..assemble.vtt import chunk_spans
 from ..manifest import Manifest
 from ..text.paragraph_packer import spoken
 from . import env as align_env
-from .aligner import (DEFAULT_BACKEND, AlignerError, align_chunk,
-                      alignment_from_dict, load_backend)
+from .aligner import (DEFAULT_BACKEND, SCORE_SOURCE_BY_BACKEND, AlignerError,
+                      align_chunk, alignment_from_dict, load_backend)
 from .coverage import coverage_document, evaluate_chunk
 from .sentences import sentence_cues, write_sentence_vtt
 
@@ -86,6 +86,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   ffmpeg: Optional[str] = None,
                   indices: Optional[Sequence[int]] = None,
                   workers: int = 1,
+                  pace_chars_per_sec: Optional[float] = None,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -98,6 +99,17 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     It is a property of the OUT-OF-PROCESS route only: 1, the default, is the
     single process the app has always spawned, and asking for more without
     `python_exe` is refused by name rather than silently ignored.
+
+    `pace_chars_per_sec` is the voice's measured speaking rate, used only by the
+    RATE factor of a DERIVED word score (`aligner._derive_scores`, i.e. the
+    qwen3 backend). IT IS NOT READ OFF THE MANIFEST, because the manifest has no
+    such field: `Manifest.voice` carries `engine`/`fineTuned`/the model
+    directories and `Manifest.engine` carries `pads`/`edgeFadeMs` - a pace lives
+    in BookForge's voice catalog and has never been written into a render
+    manifest. So a caller that knows it passes it; everybody else passes None
+    and every chunk measures its own, which the Alignment records as
+    `pace_source='chunk'`. Inventing a manifest field for it here would be
+    inventing the number.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
@@ -130,11 +142,13 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         aligned_spans.append((chunk, start, end))
         jobs.append({'index': chunk.index, 'audioPath': path, 'text': text,
                      'language': language, 'backend': backend,
-                     'device': device, 'ffmpeg': ffmpeg})
+                     'device': device, 'ffmpeg': ffmpeg,
+                     'paceCharsPerSecond': pace_chars_per_sec})
 
+    score_source = SCORE_SOURCE_BY_BACKEND[backend]
     log(f'[align] {len(jobs)} chunk(s) to align, {len(skipped)} marker-only '
         f'chunk(s) skipped; engine {engine}, backend {backend}, '
-        f'device {device}, audited={policy.audited}')
+        f'device {device}, scores {score_source}, audited={policy.audited}')
     if not jobs:
         raise AlignerError('every selected chunk is marker-only; there is '
                            'nothing to align')
@@ -169,7 +183,8 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
 
     document = coverage_document(
         coverages, engine_id=engine, policy=policy, backend=backend,
-        language=language, session_id=manifest.source.sessionId,
+        language=language, score_source=score_source,
+        session_id=manifest.source.sessionId,
         process_dir=manifest.source.processDir,
         chunks_in_manifest=sum(len(c.chunks) for c in manifest.chapters),
         errors=errors, skipped=skipped)
@@ -270,10 +285,20 @@ def _run(jobs, python_exe, backend, log, workers=1):
             f'here.')
 
     if not align_env.backend_importable(backend):
-        found = align_env.discover_align_python()
-        hint = (f'Pass --python {found}' if found else
-                'Install "Ebook Alignment (WhisperX)" from Settings -> Add-ons, '
-                'then pass --python <that env>/python')
+        if backend == 'qwen3':
+            # There is no BookForge component for this one: `qwen-asr` needs a
+            # CUDA torch env, and the whisperx component is CPU-only by design.
+            # So the hint names the install rather than a discovered path - and
+            # `discover_align_python()` would have named the WHISPERX env, which
+            # cannot import qwen_asr either.
+            hint = ('`pip install qwen-asr` into a CUDA torch env and pass '
+                    '--python <that env>/python; on this PC the WSL env '
+                    '`qwen-align` has it')
+        else:
+            found = align_env.discover_align_python()
+            hint = (f'Pass --python {found}' if found else
+                    'Install "Ebook Alignment (WhisperX)" from Settings -> '
+                    'Add-ons, then pass --python <that env>/python')
         raise AlignerError(
             f'this interpreter cannot import the {backend!r} backend, and no '
             f'--python was given. narrator will not pick an interpreter for '
@@ -289,7 +314,8 @@ def _run(jobs, python_exe, backend, log, workers=1):
             alignment = align_chunk(
                 job['audioPath'], job['text'], language=job['language'],
                 backend=job['backend'], device=job['device'],
-                ffmpeg=job['ffmpeg'])
+                ffmpeg=job['ffmpeg'],
+                pace_chars_per_sec=job['paceCharsPerSecond'])
             out.append({'ok': True, 'index': job['index'],
                         'alignment': alignment.as_dict()})
         except AlignerError as refused:

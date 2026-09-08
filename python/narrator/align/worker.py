@@ -6,7 +6,8 @@ drive one that has it without either side importing the other's dependencies.
 
     stdin   one JSON job per line:
             {"audioPath": "...", "text": "...", "language": "en",
-             "backend": "whisperx", "device": "cpu", "index": 12}
+             "backend": "whisperx", "device": "cpu", "index": 12,
+             "ffmpeg": null, "paceCharsPerSecond": null}
     stdout  one JSON result per line, IN THE SAME ORDER:
             {"ok": true, "index": 12, "alignment": {...}}
             {"ok": false, "index": 12, "error": "..."}
@@ -103,10 +104,18 @@ def main(argv=None) -> int:
                 language=job['language'],
                 backend=job['backend'],
                 device=job['device'],
-                # `ffmpeg` is the one genuinely optional field: absent means
-                # "resolve it from PATH", which `resolve_ffmpeg` does and
-                # refuses by name when it cannot.
+                # `ffmpeg` is genuinely optional: absent means "resolve it from
+                # PATH", which `resolve_ffmpeg` does and refuses by name when it
+                # cannot.
                 ffmpeg=job.get('ffmpeg'),
+                # So is `paceCharsPerSecond`, and for the same kind of reason -
+                # absent is a REAL, RECORDED state and not a papered-over one.
+                # It means "measure this chunk's own chars/sec", which the
+                # Alignment stamps as `paceSource: 'chunk'` and the VTT's
+                # quality note repeats. It is not in REQUIRED_JOB_FIELDS because
+                # only a caller that HAS a voice's measured pace can send it,
+                # and most do not.
+                pace_chars_per_sec=job.get('paceCharsPerSecond'),
             )
             result = {'ok': True, 'index': index,
                       'alignment': alignment.as_dict()}

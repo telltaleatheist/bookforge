@@ -18,6 +18,13 @@ So there are two ways to run an alignment and they are the SAME CODE:
                narrator code runs on both sides. Nothing is installed; nothing
                is copied.
 
+THE QWEN3 BACKEND HAS NO COMPONENT (2026-09-08). `qwen-asr` wants a CUDA torch
+env and the whisperx component is CPU-only by design, so there is nothing on
+disk for `discover_align_python` to find and it does not pretend otherwise: a
+qwen3 run is always `--python <a CUDA torch env>/python`, and `align/run.py`'s
+refusal for that backend names the pip line instead of a discovered path. On
+this PC that env is WSL's `qwen-align`.
+
 NO SILENT ROUTING. An interpreter that cannot import the backend and was given
 no `--python` REFUSES, and the refusal names the interpreter it found on disk so
 the operator can paste it back. Guessing which interpreter to spawn would make a
@@ -113,8 +120,12 @@ def discover_align_python() -> Optional[str]:
     return None
 
 
-#: The module each backend needs importable. One row, because one aligner ships.
-BACKEND_MODULES = {'whisperx': 'whisperx'}
+#: The module each backend needs importable. `whisperx` lives in BookForge's
+#: managed CPU-only whisperx-env component; `qwen_asr` is `pip install qwen-asr`
+#: into a CUDA torch env, which on this PC is the WSL env `qwen-align` and is NOT
+#: a BookForge component - so a qwen3 run is always `--python <that env>/python`
+#: until somebody packages it.
+BACKEND_MODULES = {'whisperx': 'whisperx', 'qwen3': 'qwen_asr'}
 
 
 def backend_importable(backend: str) -> bool:

@@ -5,8 +5,9 @@ Points 3 and 4 of `docs/NARRATOR_PLAN.md` -> "Higgs v3 path design points"
 
 ```
 narrator align --session-dir <hash dir> [--out sentences.vtt] [--report coverage.json]
-               [--backend whisperx|torchaudio] [--language en] [--device cpu]
-               [--python <whisperx env python>] [--indices 3,4,5] [--ffmpeg PATH]
+               [--backend whisperx|qwen3] [--language en] [--device cpu]
+               [--python <backend env python>] [--indices 3,4,5] [--ffmpeg PATH]
+               [--workers N]
 ```
 
 Two things come out of ONE forced alignment of each rendered chunk, and BOTH
@@ -72,13 +73,190 @@ same guards. Its coverage policy is `audited=False` - which now means only that 
 narration run of that engine carries no Align row, not that its report would be
 treated differently. A report that exists is read out whatever wrote it.
 
-## The aligner: WhisperX ships, and it is the only one in the package
+## 2026-09-08: the qwen3 backend
 
-ONE ALIGNER SHIPS (Owen's ruling, 2026-09-05). There is no `--backend` flag,
-no second implementation in `align/`, and nothing to switch to. What follows
-is the MEASUREMENT that chose it, kept because a rejected candidate with its
-numbers is worth more than a sentence saying one was rejected - but the loser
-lives in this table and nowhere else in the tree, and
+A second aligner ships as of today: **Qwen3-ForcedAligner-0.6B**, via the
+`qwen_asr` package, chosen by name with `--backend qwen3`. `DEFAULT_BACKEND`
+does not move - see "Why the default did not move" below.
+
+### The bake-off that bought it
+
+Shift (Higgs `mistborn` render, 16.56 h, RTX 3090 Ti in WSL), scored against the
+exact chunk starts of **1,083 chunks** in the assembled m4b. Both arms ran on
+identical 5-minute windows with identical text.
+
+| | qwen3 | whisperx (wav2vec2) |
+|---|---|---|
+| speed | **395x realtime** - 151 s for the whole book | 18x realtime (first hour, same GPU) |
+| chunk starts within 0.1 s | **890 / 1083** | 39 / 61 |
+| chunk starts within 0.5 s | 947 / 1083 | 44 / 61 |
+| boundaries over 0.5 s | - | 17, parked ~0.9 s **early** into the inter-chunk gap |
+
+(Both scored after subtracting each chunk's own ~0.27 s of head silence.)
+
+The 116 qwen3 misses over 1 s decompose, and the decomposition is the important
+part: **59** are headings and tiny chunks whose PRINTED text differs from the
+spoken words (`"2110."`, `"* Silo one *."`), **22** are prose chunks directly
+after such a heading, **3** sit beside a truncated chunk, and **~32 (3 %)** are
+unexplained.
+
+The paper (arXiv 2601.21337) measures the same shape independently: accumulated
+average shift **42.9 ms** against WhisperX 133 ms and NeMo 130 ms, and over 300 s
+concatenations WhisperX drifts to 2.7 s where Qwen holds 53 ms.
+
+Owen's ruling:
+
+> lets build that in instead then ... run it as a gpu job after tts finishes ...
+> as long as its faster than assembly, we can do the proper job.
+
+### What qwen3 CANNOT see
+
+**It has no confidence and it never refuses.** The model returns word times and
+nothing else, and a window whose text does not match the speech is **PLACED, not
+refused** - which is exactly what the 59 heading misses on Shift are. The tell is
+not an error; it is a **boundary error over 1 s at a chunk whose printed text
+differs from what was said**. Anything downstream that needs "was this window
+really this text" has to look at the quality numbers below, because the aligner
+will not tell it.
+
+It also cannot see past **five minutes**: the model card places timestamps
+"within up to 5 minutes", so audio longer than `QWEN3_MAX_AUDIO_S` (300 s) is
+refused by name rather than truncated. Narrator chunks are <= ~90 s and the
+corpus cutter windows to 5 minutes itself.
+
+### Derived scores, and the three factors
+
+`AlignedWord.score` is what `_spans` and `coverage.py` use to say "this word is
+not credibly in the audio". Qwen publishes none. The two dishonest answers were
+`None` on every word (which reads as UNPLACED everywhere, making every chunk one
+enormous dropped-text span) and a flat `1.0` (which reads as certainty the model
+never expressed). So the score is DERIVED from three things this package can
+actually measure, multiplied together:
+
+| factor | what it measures | 0 when |
+|---|---|---|
+| **a - speech presence** | the fraction of the word's span that is NOT in the chunk's silence map (`detect_silences`, already computed per chunk) | the word sits entirely inside a pause |
+| **b - rate plausibility** | the word's normalized chars over its duration, against a pace: 1.0 inside `[pace/3, pace*3]`, falling linearly to 0 at `pace/6` and `pace*6` | a 0.02 s "word" of 9 characters |
+| **c - order** | 1.0 when the word starts at or after the previous timed word's end less 0.05 s | the word goes backwards |
+
+`score = a * b * c`. An UNTIMED word keeps `score = None` - the stronger signal,
+and the same one whisperx gives.
+
+**The pace** is a keyword on `align_chunk` (`pace_chars_per_sec`). When it is
+None the chunk's own printed chars over its own audio seconds is used, and the
+`Alignment` records which in `pace_source` (`'given'` / `'chunk'`) so nobody has
+to guess. Note that a word's numerator is NORMALIZED characters while the
+chunk-derived pace counts printed ones - punctuation and spaces make the two
+differ by ~15-20 %, which is inside the 3x band by a wide margin.
+
+> **THESE NUMBERS ARE FIRST ESTIMATES, NOT MEASUREMENTS.** The 3x/6x band, the
+> 50 ms order slack and the plain product are chosen to be defensible, not
+> because anything was measured at them. **The calibration data is the Shift
+> coverage run** - 1,083 chunks with known-good chunk starts - and until that has
+> been scored against these scores, a derived 0.62 does not mean what a whisperx
+> 0.62 means. `engine_profiles.py`'s `min_word_score = 0.4` was calibrated on
+> whisperx's CTC posterior and is NOT yet calibrated on this.
+
+**Every document says which it is holding.** `Alignment.score_source` is a
+required field with no default; it rides the worker wire (`scoreSource`, and
+`alignment_from_dict` REFUSES a document without it), and it appears in
+`coverage.json` twice - at the top and on every chunk. The report **version does
+not move** for it: `assemble/coverage_gate.py` requires `engine`, `summary` and
+`chunks` and reads nothing else structurally, so an old report still loads and a
+new one still satisfies an old reader.
+
+### The quality NOTE: what a measured cue says about itself
+
+Every MEASURED `SentenceCue` now carries a `quality` dict, written into
+`<stem>.sentences.vtt` as a `NOTE` line immediately before its cue. **This is
+the contract** (`assemble/sentence_vtt.QUALITY_NOTE_KEYS`): one line, `key=value`
+pairs separated by single spaces, in exactly this order.
+
+```
+NOTE quality monotonic=1 cps=14.1 pace_ratio=1.00 boundary_silence=0.32 worst=0.91 source=derived
+
+00:03:11.480 --> 00:03:14.200
+He said nothing at all.
+```
+
+| key | dict field | meaning |
+|---|---|---|
+| `monotonic` | `monotonic` | `1` when the cue's own words run forward AND it starts at/after the previous cue ended |
+| `cps` | `chars_per_sec` | the cue's characters over its span, 1 decimal |
+| `pace_ratio` | `pace_ratio` | that over the pace the alignment used; `none` for a model-scored alignment, which never measured one |
+| `boundary_silence` | `boundary_silence_s` | the length of the silence-map gap the cue START sits in; `0.00` when it starts inside speech |
+| `worst` | `worst_word_score` | the lowest score among the cue's words |
+| `source` | `score_source` | `model` or `derived` - what `worst` means |
+
+A `None` value is written as the literal `none`, never as a missing pair: a
+reader splitting on spaces would otherwise read the next pair's value into this
+field's slot. An **estimated** cue carries no quality line at all (it was never
+measured) and keeps its existing `NOTE estimated chunk <i>` block; a cue that
+claimed to be both is refused.
+
+**The thresholds are the reader's, not ours.** Nothing in `align/` drops,
+re-times or reclassifies a cue on a quality number. The training side that picks
+alignment-clean sentences out of a book chooses where to cut.
+
+### Languages
+
+qwen3 takes an English language NAME, so narrator maps an ISO code to it. **This
+is the whole supported list** and anything else is refused by name - the model
+does not fall back to English for a language it was not trained on, it just
+places the words badly:
+
+| | | | |
+|---|---|---|---|
+| `en` English | `de` German | `fr` French | `es` Spanish |
+| `it` Italian | `pt` Portuguese | `ru` Russian | `ja` Japanese |
+| `ko` Korean | `zh` Chinese | `yue` Cantonese | |
+
+### Installing it
+
+```
+pip install qwen-asr        # into a CUDA torch env; soundfile too
+```
+
+There is **no BookForge component** for this one - the whisperx component is
+CPU-only by design and `qwen-asr` wants CUDA torch - so a qwen3 run is always
+`--python <that env>/python`. On this PC the WSL env **`qwen-align`** has it, and
+that is where the API above was verified on 2026-09-08. Device follows the same
+rule as whisperx: `cpu` / `cuda` / `cuda:N` / `mps` through `check_device`, and a
+GPU request is refused by name while `external-gpu-job.lock` exists. dtype is
+bfloat16 on cuda/mps, float32 on cpu.
+
+### Why the default did not move
+
+`DEFAULT_BACKEND` is still `whisperx`. An unchanged default is the contract, and
+switching the app onto derived scores that the coverage thresholds have never
+been calibrated against would change what "this chunk failed coverage" means
+without anybody measuring it. That is a separate decision with the Shift
+calibration behind it.
+
+### `align_text_window` - the corpus cutter's door
+
+`align/window.py` exports ONE function, for a caller that has a window of audio
+and the text it says and no session at all:
+
+```python
+align_text_window(audio, text, *, backend, language, device,
+                  pace_chars_per_sec=None, sample_rate=None, ffmpeg=None) -> dict
+```
+
+`audio` is a path (decoded here through ffmpeg) or a 1-D float32 numpy array,
+which MUST come with `sample_rate` and that rate must already be 16 kHz -
+**nothing here resamples**, because a resampler hidden in an alignment library
+would silently change the signal the timings are measured against. It returns
+`{'alignment': <as_dict>, 'cues': [{'text','start','end','quality'}...],
+'backend', 'score_source'}`, with cue times in the WINDOW's own seconds.
+
+## The aligner: how WhisperX was chosen
+
+WhisperX was the ONE aligner from 2026-09-05 to 2026-09-08 (Owen's ruling), and
+it is still the default. What follows is the MEASUREMENT that chose it over
+torchaudio's `forced_align`, kept because a rejected candidate with its numbers
+is worth more than a sentence saying one was rejected - but the loser lives in
+this table and nowhere else in the tree, and
 `test_no_torchaudio_aligner_is_shipped` asserts that against the module with
 its docstrings stripped.
 
@@ -281,8 +459,9 @@ the sample.
 
 | file | what |
 |---|---|
-| `aligner.py` | `align_chunk`, `Alignment`/`AlignedWord`/`TextSpan`/`AudioSpan`, the two backends, audio decode, the silence map, the CUDA refusal |
-| `sentences.py` | the MEASURED cues: sentence -> word ranges, seam snapping. The cue type, the estimated cue and the `<stem>.sentences.vtt` writer live in `assemble/sentence_vtt.py` (assembly writes that file too and may not import this package) and are re-exported here |
+| `aligner.py` | `align_chunk`, `Alignment`/`AlignedWord`/`TextSpan`/`AudioSpan`, the two backends (whisperx, qwen3), the derived scores, audio decode, the silence map, the CUDA refusal |
+| `window.py` | `align_text_window` - one window of audio + one piece of text, no session. The corpus cutter's door |
+| `sentences.py` | the MEASURED cues: sentence -> word ranges, seam snapping, the per-cue `quality` dict. The cue type, the estimated cue, the quality NOTE format and the `<stem>.sentences.vtt` writer live in `assemble/sentence_vtt.py` (assembly writes that file too and may not import this package) and are re-exported here |
 | `coverage.py` | `evaluate_chunk`, the report document |
 | `run.py` | `narrator align`'s body: manifest -> jobs -> cues + report |
 | `env.py` | finding the whisperx interpreter, and driving it |

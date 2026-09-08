@@ -141,9 +141,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--report", metavar="FILE",
         help="the coverage report. Default: <processDir>/coverage.json",
     )
-    # No --backend: ONE aligner ships (Owen, 2026-09-05). The measurement that
-    # chose it, against torchaudio's forced_align, is the table in
-    # python/narrator/align/README.md.
+    # TWO aligners ship as of 2026-09-08, so there is a flag and it is named
+    # rather than guessed. It defaults to whisperx - the app's contract is
+    # unchanged, and qwen3's word scores are DERIVED (that model publishes no
+    # confidence) against coverage thresholds calibrated on whisperx's. The
+    # bake-off that bought qwen3 (395x realtime, 890/1083 Shift chunk starts
+    # inside 0.1 s, against whisperx's 18x and 39/61) is in align/README.md,
+    # along with the older table that rejected torchaudio's forced_align.
+    p_align.add_argument(
+        "--backend", default="whisperx", choices=["whisperx", "qwen3"],
+        help="which forced aligner (default: whisperx, CPU, model-scored). "
+             "qwen3 is Qwen3-ForcedAligner-0.6B: ~22x faster on a GPU and "
+             "tighter on chunk starts, but its word scores are DERIVED, not "
+             "the model's, and it needs `pip install qwen-asr` in a CUDA "
+             "torch env reached with --python",
+    )
     p_align.add_argument("--language", default="en", metavar="CODE")
     p_align.add_argument(
         "--device", default="cpu", metavar="NAME",
@@ -499,9 +511,9 @@ def _run_align(args, manifest) -> int:
 
     try:
         result = align_session(
-            manifest, language=args.language, device=args.device,
-            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices,
-            workers=args.workers)
+            manifest, backend=args.backend, language=args.language,
+            device=args.device, python_exe=args.python, ffmpeg=args.ffmpeg,
+            indices=indices, workers=args.workers)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)

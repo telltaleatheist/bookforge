@@ -67,6 +67,12 @@ class ChunkCoverage:
     elapsed_s: float
     failed: bool
     reasons: Tuple[str, ...]
+    #: What this chunk's word scores ARE - 'model' or 'derived'
+    #: (`aligner.SCORE_SOURCE_BY_BACKEND`). Per chunk and not only per report,
+    #: because `--indices` can align part of a book with one backend and the
+    #: rest with another, and a reader comparing two chunks' `alignedRatio`
+    #: needs to know whether it is comparing like with like.
+    score_source: str
 
     def as_dict(self) -> dict:
         return {
@@ -78,6 +84,7 @@ class ChunkCoverage:
             'elapsedSeconds': round(self.elapsed_s, 3),
             'failed': self.failed,
             'reasons': list(self.reasons),
+            'scoreSource': self.score_source,
             'droppedText': [
                 {'firstWord': s.first_word, 'lastWord': s.last_word,
                  'words': s.words, 'text': s.text,
@@ -115,6 +122,15 @@ def evaluate_chunk(alignment: Alignment, policy: CoveragePolicy, *,
       somebody was speaking (`speech_fraction` above
       `max_inserted_speech_fraction`). AUDIO WITH NO TEXT. The silence map is
       what keeps an ordinary pause out of this list.
+
+    THE POLICY'S `min_word_score` WAS CALIBRATED ON WHISPERX'S MODEL SCORES
+    (kershaw, 2026-09-05: 2 % of a correct chunk's words fall under 0.4, 91-100 %
+    of dropped text does). A qwen3 alignment's scores are DERIVED - three
+    factors this package computes because that model publishes no confidence -
+    and they have NOT been calibrated against these thresholds. The number is
+    carried through to `ChunkCoverage.score_source` and into the report so a
+    reader knows which it is holding; re-calibrating the policy for derived
+    scores is owed and is `engine_profiles.py`'s business, not this module's.
     """
     words = alignment.words
     credible = [w for w in words
@@ -157,11 +173,13 @@ def evaluate_chunk(alignment: Alignment, policy: CoveragePolicy, *,
         elapsed_s=alignment.elapsed_s,
         failed=bool(reasons),
         reasons=tuple(reasons),
+        score_source=alignment.score_source,
     )
 
 
 def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
                       policy: CoveragePolicy, backend: str, language: str,
+                      score_source: str,
                       session_id: Optional[str] = None,
                       process_dir: Optional[str] = None,
                       chunks_in_manifest: Optional[int] = None,
@@ -183,6 +201,16 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
     RETAKE LIST and they are different failures - one chunk said the wrong words,
     the other could not be placed at all - and BookForge's Align row quotes both
     on the queue card.
+
+    `scoreSource` is REQUIRED of the caller and appears twice - once at the top
+    and once per chunk - because every `alignedRatio`, `minWordScore` and
+    `worstScore` in this document is meaningless without it: 'model' is
+    whisperx's CTC posterior, 'derived' is the estimate `aligner._derive_scores`
+    computes for a backend that publishes none. The report VERSION does not move
+    for it: `assemble/coverage_gate.py` requires `engine`, `summary` and
+    `chunks` and reads nothing else structurally, so an old report still loads
+    and a new one still satisfies an old reader. Bumping the version would have
+    made every report written before today unreadable to buy nothing.
     """
     failed = [c for c in coverages if c.failed]
     ratios = sorted(c.aligned_ratio for c in coverages)
@@ -191,6 +219,7 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
         'version': REPORT_VERSION,
         'engine': engine_id,
         'backend': backend,
+        'scoreSource': score_source,
         'language': language,
         'sessionId': session_id,
         'processDir': process_dir,

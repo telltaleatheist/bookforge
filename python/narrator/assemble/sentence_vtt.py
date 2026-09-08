@@ -82,6 +82,13 @@ class SentenceCue:
     because there was no alignment to place it with. It is written into the file
     (see the module docstring) rather than kept in memory, because the operator
     reading the transcript is the person who needs to know.
+
+    `quality` is the MEASURED cue's own report card - see
+    `align/sentences.sentence_cues`, which is the only thing that fills it in,
+    and `QUALITY_NOTE_KEYS` below for the shape. None on an estimated cue,
+    because there is nothing measured to report; None also on a cue built by
+    hand (the tests, the retake tooling), which is why it is a plain field with
+    no default value read into it.
     """
 
     chunk_index: int
@@ -91,6 +98,7 @@ class SentenceCue:
     text: str
     is_heading: bool = False
     estimated: bool = False
+    quality: Optional[dict] = None
 
 
 def split_chunk_sentences(text: str) -> Tuple[str, ...]:
@@ -191,6 +199,53 @@ def _estimated_note(chunk_index: int) -> str:
         f"chunk's real audio.")
 
 
+#: The first words of the NOTE block that carries a MEASURED cue's quality.
+QUALITY_NOTE_PREFIX = 'NOTE quality'
+
+#: THE QUALITY NOTE CONTRACT, and it is a contract: one line, `key=value` pairs
+#: separated by single spaces, IN THIS ORDER, immediately before the cue it
+#: describes. The training side thresholds on these to pick alignment-clean
+#: sentences out of a book; nothing here drops or reclassifies a cue on them,
+#: because the thresholds are the reader's and the measurement is ours.
+#:
+#:     NOTE quality monotonic=1 cps=14.1 pace_ratio=1.00 boundary_silence=0.32 worst=0.91 source=derived
+#:
+#: `(key, quality-dict field, format)`. A field whose value is None is written
+#: as the literal `none` - a parseable "not measurable here" rather than a
+#: missing key that would shift every later pair for a positional reader.
+QUALITY_NOTE_KEYS = (
+    ('monotonic', 'monotonic', 'flag'),
+    ('cps', 'chars_per_sec', '.1f'),
+    ('pace_ratio', 'pace_ratio', '.2f'),
+    ('boundary_silence', 'boundary_silence_s', '.2f'),
+    ('worst', 'worst_word_score', '.2f'),
+    ('source', 'score_source', 'text'),
+)
+
+
+def _quality_note(quality: dict) -> str:
+    """One cue's quality dict -> the one NOTE line. Refuses a dict missing a
+    key rather than writing a short line: a reader splitting on `=` would
+    silently read the next pair's value into the missing field's slot."""
+    parts = []
+    for name, field_name, how in QUALITY_NOTE_KEYS:
+        if field_name not in quality:
+            raise SentenceVttError(
+                f'a cue quality dict is missing {field_name!r}; the quality '
+                f'NOTE is a fixed set of keys in a fixed order '
+                f'({", ".join(k for k, _f, _h in QUALITY_NOTE_KEYS)})')
+        value = quality[field_name]
+        if value is None:
+            parts.append(f'{name}=none')
+        elif how == 'flag':
+            parts.append(f'{name}={1 if value else 0}')
+        elif how == 'text':
+            parts.append(f'{name}={value}')
+        else:
+            parts.append(f'{name}={value:{how}}')
+    return f'{QUALITY_NOTE_PREFIX} ' + ' '.join(parts)
+
+
 def build_sentence_vtt(cues: Sequence[SentenceCue]) -> str:
     """The `.sentences.vtt` document, as a string.
 
@@ -204,6 +259,11 @@ def build_sentence_vtt(cues: Sequence[SentenceCue]) -> str:
     estimated cues (module docstring). It is emitted ONCE per run rather than per
     cue: an unplaceable chunk of nine sentences is one fact about one chunk, and
     nine identical notes would bury the transcript it is annotating.
+
+    THE SECOND ADDITION (2026-09-08) is the `NOTE quality ...` line before each
+    MEASURED cue that carries one - `QUALITY_NOTE_KEYS` is the format. That one
+    IS per cue, because it is a measurement OF THAT CUE and not a fact about its
+    chunk. An estimated cue never has one: it was never measured.
     """
     if not cues:
         raise SentenceVttError('build_sentence_vtt(): no cues to write')
@@ -226,6 +286,15 @@ def build_sentence_vtt(cues: Sequence[SentenceCue]) -> str:
             previous_note = cue.chunk_index
         elif not cue.estimated:
             previous_note = None
+        if cue.quality is not None:
+            if cue.estimated:
+                # An estimate is not a measurement, so it cannot carry one.
+                # Writing both would tell a reader that a proportional guess had
+                # a measured 0.91 worst-word score.
+                raise SentenceVttError(
+                    f'chunk {cue.chunk_index} sentence {cue.sentence_index} is '
+                    f'marked estimated AND carries a quality measurement')
+            blocks.append(_quality_note(cue.quality) + '\n')
         text = f'<b>{cue.text}</b>' if cue.is_heading and cue.text else cue.text
         blocks.append(
             f'{format_timestamp(cue.start_s)} --> {format_timestamp(cue.end_s)}'

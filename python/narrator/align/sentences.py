@@ -28,6 +28,18 @@ the CTC frame where it thinks the last phone ended, which lands a couple of
 hundred milliseconds early or late, while the narrator's actual pause is a
 silence and its middle is the safest place to cut.
 
+EVERY MEASURED CUE CARRIES ITS OWN REPORT CARD (2026-09-08). `SentenceCue.quality`
+is six numbers about THIS cue - is it in order, how fast it reads, how that
+compares to the pace the alignment scored against, how long the pause it starts
+in is, its worst word score, and whether those scores are the model's or
+derived - written into the VTT as a `NOTE quality ...` line
+(`assemble/sentence_vtt.QUALITY_NOTE_KEYS` is the format). It exists because the
+qwen3 backend PLACES a window whose text differs from the speech rather than
+refusing it (see `aligner.py` - 116 of Shift's 1,083 chunk starts), so a
+consumer picking training-clean sentences needs the evidence. NOTHING HERE ACTS
+ON IT: no cue is dropped, re-timed or reclassified on a quality number. The
+thresholds belong to whoever reads the file.
+
 THIS MODULE IS THE MEASURED HALF ONLY. The cue TYPE, the file writer and the
 ESTIMATED cue - expected text laid over the chunk's real audio when there is no
 alignment to measure with (Owen, 2026-09-05) - live in
@@ -40,7 +52,8 @@ from __future__ import annotations
 
 from typing import Optional, Sequence, Tuple
 
-from ..assemble.sentence_vtt import (SentenceCue, SentenceVttError,  # noqa: F401
+from ..assemble.sentence_vtt import (QUALITY_NOTE_KEYS,  # noqa: F401
+                                     SentenceCue, SentenceVttError,
                                      build_sentence_vtt, proportional_cues,
                                      split_chunk_sentences, write_sentence_vtt)
 from .aligner import Alignment, AlignerError
@@ -129,6 +142,50 @@ def _snap(raw: float, low: float, high: float,
     return best[1]
 
 
+def _boundary_silence_s(start: float,
+                        silences: Sequence[Tuple[float, float]]) -> float:
+    """The length of the silence-map gap the cue START sits in; 0.0 in speech.
+
+    A cue that begins in the middle of a 0.32 s pause began where the narrator
+    stopped talking - the safest boundary there is. One that begins inside
+    speech began in the middle of a word, which is what a boundary error looks
+    like from the outside. The number, not the verdict: the training side
+    thresholds on it.
+    """
+    for a, b in silences:
+        if a <= start <= b:
+            return b - a
+    return 0.0
+
+
+def _cue_quality(alignment: Alignment, words: Sequence, start: float,
+                 end: float, sentence: str, monotonic: bool) -> dict:
+    """One measured cue's report card. `start`/`end` are CHUNK-relative, which
+    is the timeline `alignment.silences` is in.
+
+    Every field is a MEASUREMENT and none of them is a judgement: nothing in
+    this package drops, reclassifies or re-times a cue on them. The training
+    side that consumes the sentence VTT picks its own thresholds, because it is
+    the one that knows what it is training.
+    """
+    span = end - start
+    chars = len(sentence.strip())
+    cps = (chars / span) if span > 0 else 0.0
+    pace = alignment.pace_chars_per_sec
+    scores = [w.score for w in words if w.score is not None]
+    return {
+        'monotonic': monotonic,
+        'chars_per_sec': cps,
+        # None, not 1.0, when the alignment used no pace: a 'model' score source
+        # never measured one, and a ratio against a number nobody chose would be
+        # a fact invented at write time.
+        'pace_ratio': (cps / pace) if (pace is not None and pace > 0) else None,
+        'boundary_silence_s': _boundary_silence_s(start, alignment.silences),
+        'worst_word_score': min(scores) if scores else None,
+        'score_source': alignment.score_source,
+    }
+
+
 def sentence_cues(alignment: Alignment, *, chunk_index: int,
                   chunk_start_s: float, chunk_end_s: float,
                   is_heading: bool = False,
@@ -207,9 +264,22 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
         seams.append(_snap(raw, low, high, alignment.silences))
 
     cues = []
+    previous_end = None
     for position, sentence in enumerate(sentences):
         start = 0.0 if position == 0 else seams[position - 1]
         end = span if position == len(sentences) - 1 else seams[position]
+        first, last = ranges[position]
+        words = alignment.words[first:last + 1]
+        timed = [w for w in words if w.timed]
+        # MONOTONIC means both halves of "in order": this cue's own words run
+        # forward, AND the cue starts at or after the previous cue ended. The
+        # seam arithmetic above guarantees the second for a chunk it did not
+        # refuse, so a False here is the FIRST half - a backend that placed a
+        # word backwards - which is exactly the thing worth flagging.
+        starts = [w.start_s for w in timed]
+        monotonic = (starts == sorted(starts)
+                     and (previous_end is None or start >= previous_end - 1e-9))
+        previous_end = end
         cues.append(SentenceCue(
             chunk_index=chunk_index,
             sentence_index=position,
@@ -217,6 +287,8 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
             end_s=chunk_start_s + end,
             text=sentence,
             is_heading=is_heading,
+            quality=_cue_quality(alignment, words, start, end, sentence,
+                                 monotonic),
         ))
     return tuple(cues)
 
