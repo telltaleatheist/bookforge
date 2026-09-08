@@ -86,6 +86,7 @@
     "test:version-family": "npx tsc -p tsconfig.electron.json && node tools/test-version-family.js",
     "test:family-lifecycle": "npx tsc -p tsconfig.electron.json && node tools/test-family-lifecycle.js",
     "test:component-upgrades": "npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js",
+    "test:qwen-align-env": "npx tsc -p tsconfig.electron.json && node tools/test-qwen-align-env.js",
     "test:epub-container": "npx tsc -p tsconfig.electron.json && node tools/test-epub-container.js",
     "test:exploded-working-copy": "npx tsc -p tsconfig.electron.json && node tools/test-exploded-working-copy.js",
     "test:artifact-movement": "npx tsc -p tsconfig.electron.json && node tools/test-artifact-movement.js",

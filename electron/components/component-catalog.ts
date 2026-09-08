@@ -22,6 +22,7 @@ import { whisperEnvComponent } from './whisper-env';
 import { rvcEnvComponent } from './rvc-env';
 import { resembleEnvComponent } from './resemble-env';
 import { whisperxEnvComponent } from './whisperx-env';
+import { qwenAlignEnvComponent } from './qwen-align-env';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -244,6 +245,7 @@ export function getCatalog(): OptionalComponent[] {
     rvcEnvComponent(),
     resembleEnvComponent(),
     whisperxEnvComponent(),
+    qwenAlignEnvComponent(),
     ...rvcVoiceComponents(),
     ...whisperModelComponents(),
     foundryCliComponent(),
