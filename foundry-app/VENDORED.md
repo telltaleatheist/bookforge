@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **2f7376a** — *feat(app): cleanTextModel — Clean text has its own stored model, read by both doors* |
+| Source sha | **a279c5d** — *feat(app): the Clean text model is a list of three — 9B 8-bit, 9B 16-bit, 27B — in the dialog and in Settings* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 2f7376a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive a279c5d app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1025,3 +1025,8 @@ refreshed here in step). Hosted, BookForge's userData IS Foundry's, so BookForge
 (4f190253) reads the same key out of the same file — one file, one model. Per-machine by
 construction: userData never syncs. 7 files + the IPC doc, tree diff-verified, one new channel
 (BookForge owns nothing on `llm:`), no dep movement.
+
+**a279c5d (copied 2026-09-08) — the Clean text model is a LIST of three.** Owen: a dropdown, not a
+text box. `CLEAN_TEXT_MODELS` (shared/pipeline.ts) — 9B 8-bit (default), 9B 16-bit, 27B — in the
+Clean dialog and the Settings card; a stored tag outside the list rides at the top as itself.
+3 files, tree diff-verified, no IPC change, no dep movement.

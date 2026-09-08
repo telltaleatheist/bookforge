@@ -23,9 +23,10 @@
  * "the analysis worker was skipped" is something a person can act on, and
  * "setup was not completed" is not.
  */
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
+import { CLEAN_TEXT_MODELS } from '@shared/pipeline';
 import type { SetupState } from '@shared/types';
 import { api } from '../../core/foundry';
 import { UiService } from '../../core/ui.service';
@@ -50,10 +51,23 @@ import { UiService } from '../../core/ui.service';
         <input type="text" placeholder="qwen3.5:4b" name="model"
                [ngModel]="model()" (ngModelChange)="model.set($event)">
       </label>
+      <!--
+        THE PICKER THE CLEAN TEXT DIALOG SHOWS, same list, same rule about a tag
+        that is not on it: a stored model from another day rides at the top as
+        itself rather than being silently replaced by the default when this card
+        is saved.
+      -->
       <label class="field">
         <span class="label">Clean text model</span>
-        <input type="text" placeholder="qwen3.5:9b-q8_0" name="cleanModel"
-               [ngModel]="cleanModel()" (ngModelChange)="cleanModel.set($event)">
+        <select name="cleanModel"
+                [ngModel]="cleanModel()" (ngModelChange)="cleanModel.set($event)">
+          @if (unlistedClean(); as stored) {
+            <option [value]="stored">{{ stored }}</option>
+          }
+          @for (choice of cleanModels; track choice.tag) {
+            <option [value]="choice.tag">{{ choice.label }}</option>
+          }
+        </select>
       </label>
       <p class="small">
         Clean text runs its own model: the narration cleanup is a different job from
@@ -131,6 +145,20 @@ export class LlmCardComponent {
   protected readonly saving = signal(false);
   protected readonly saved = signal(false);
   protected readonly state = signal<SetupState | null>(null);
+
+  /** The tags the cleanup offers — the Clean text dialog's own list, verbatim. */
+  protected readonly cleanModels = CLEAN_TEXT_MODELS;
+
+  /**
+   * The stored cleanup model when the list does not contain it, so the box shows
+   * what is actually saved. Null while nothing is loaded yet, because an empty
+   * option would be a row with no name in it.
+   */
+  protected readonly unlistedClean = computed(() => {
+    const chosen = this.cleanModel().trim();
+    if (chosen.length === 0) return null;
+    return CLEAN_TEXT_MODELS.some((choice) => choice.tag === chosen) ? null : chosen;
+  });
 
   constructor() {
     if (!api) return;

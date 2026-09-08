@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { fold } from '@shared/original';
 import { canCleanFrom } from '@shared/stages';
 import {
+  CLEAN_TEXT_MODELS,
   DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
 } from '@shared/pipeline';
@@ -85,18 +86,31 @@ import { api } from '../../core/foundry';
             <input type="text" [value]="name()" readonly [title]="input">
           </label>
 
+          <!--
+            A LIST RATHER THAN A TEXT BOX, because the cleanup's models are three
+            and the field was a place to mistype one of them. The stored setting
+            is still the seed and is still whatever Settings holds, so an unlisted
+            tag rides at the top of the list as itself — see the unlisted() field.
+          -->
           <label class="field">
             <span class="label">Model</span>
-            <input type="text" [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
+            <select [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
+              @if (unlisted(); as stored) {
+                <option [value]="stored">{{ stored }}</option>
+              }
+              @for (choice of models; track choice.tag) {
+                <option [value]="choice.tag">{{ choice.label }}</option>
+              }
+            </select>
           </label>
           <!--
             The same measured trade the other two dialogs state, because it is the
             same model doing the same per-block work for the same hours.
           -->
           <p class="note">
-            <strong>qwen3:32b</strong> is the most faithful of the models measured and is slow —
-            hours for a full book. <strong>qwen2.5:14b</strong> is roughly twice as fast and good
-            for a draft, but drops the occasional clause.
+            The <strong>8-bit</strong> 9B is the measured default — about fifty blocks a minute.
+            The <strong>16-bit</strong> twin is the same model at full precision and somewhat
+            slower; the <strong>27B</strong> runs at roughly a fifth of the 9B's rate.
           </p>
 
           <label class="field">
@@ -300,6 +314,23 @@ export class CleanDialogComponent {
   });
 
   protected readonly model = signal(DEFAULT_MODEL);
+
+  /** The three tags a cleanup is offered, in their declared order. */
+  protected readonly models = CLEAN_TEXT_MODELS;
+
+  /**
+   * The stored model when it is NOT one of the three — the extra row at the top
+   * of the list, and null when the setting names something the list already has.
+   *
+   * A `<select>` whose value matches no option shows an empty box, and an empty
+   * box here would be this window disagreeing with the job it is about to queue:
+   * `add()` sends `model()` whatever the list contains.
+   */
+  protected readonly unlisted = computed(() => {
+    const chosen = this.model().trim();
+    if (chosen.length === 0) return null;
+    return CLEAN_TEXT_MODELS.some((choice) => choice.tag === chosen) ? null : chosen;
+  });
   protected readonly ollama = signal(DEFAULT_OLLAMA);
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */

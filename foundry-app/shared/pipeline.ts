@@ -109,6 +109,24 @@ export const DEFAULT_TRANSLATE_MODEL = 'qwen3.8:27b';
  */
 export const DEFAULT_CLEAN_TEXT_MODEL = 'qwen3.5:9b-q8_0';
 
+/**
+ * The tags a machine can PICK for the narration cleanup, in the order a picker
+ * offers them, first entry the default.
+ *
+ * IT IS NOT THE SET OF LEGAL VALUES. The stored `cleanTextModel` may name
+ * something else entirely — typed into Settings on another day, or written by a
+ * newer build — and a dialog that met one of those had two ways to behave: show
+ * the list and silently run something the person never chose, or show what will
+ * actually run. It shows what will run, as an extra option above these, because
+ * a field that disagrees with the job is worse than a field with four rows in
+ * it (Owen, 2026-09-08).
+ */
+export const CLEAN_TEXT_MODELS: readonly { tag: string; label: string }[] = [
+  { tag: 'qwen3.5:9b-q8_0', label: 'Qwen 3.5 9B · 8-bit (default)' },
+  { tag: 'qwen3.5:9b-bf16', label: 'Qwen 3.5 9B · 16-bit' },
+  { tag: 'qwen3.8:27b', label: 'Qwen 3.8 27B · 4-bit' },
+];
+
 /** Ollama's own default port, and where it is unless somebody moved it. */
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
