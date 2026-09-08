@@ -86,9 +86,10 @@ const SUITES = [
   'test-narrator-log-strings',
   'test-no-e2a-doors',
   // The coverage policy is declared in two languages — narrator's
-  // engine_profiles.py and shared/queue/coverage-policy.ts — and a divergence is
-  // silent in the direction that matters: BookForge queues no Align row and
-  // nothing ever measures a book whose engine has no duration guard.
+  // engine_profiles.py and shared/queue/coverage-policy.ts. It stopped deciding
+  // whether a run aligns on 2026-09-07 (that is a stage of the run now), and
+  // still says which engines narrator considers AUDITED — the flag stamped into
+  // every report, and a divergence means the same card reads two ways.
   'test-coverage-policy-mirror',
   // The audit REPORTS and never blocks (Owen, 2026-09-05). A regression here is
   // silent in the worst way: a book with 36 minutes of good audio becomes

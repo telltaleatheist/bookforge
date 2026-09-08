@@ -512,7 +512,21 @@ export class QueueService {
         });
         QueueService.settle(created, 'Queueing this run');
         composition.jobId = created.data!.id;
-        composition.lastStepId = created.data!.steps[0].id;
+        /*
+         * A SIDE BRANCH AT THE HEAD OF THE RUN DOES NOT BECOME THE PARENT OF
+         * WHAT FOLLOWS — it branches off the SOURCE, and so does the next step.
+         *
+         * The assemble-only run with Align ticked is that shape: `[align,
+         * reassembly]`, nothing rendered, both reading the project's cached
+         * session. Leaving `lastStepId` unset is what makes the assembly the
+         * align's SIBLING (it is appended at SOURCE_PARENT with its own
+         * sourceRef, which the run description gave it) instead of its child —
+         * twenty CPU minutes of alignment in front of a four-minute encode with
+         * a CPU slot standing free. The same rule
+         * `narrationStepParentIndex` states for the composer that sees the whole
+         * list at once.
+         */
+        if (request.sideBranch !== true) composition.lastStepId = created.data!.steps[0].id;
         return this.rowFor(created.data!.steps[0].id) ?? projectStep(created.data!, created.data!.steps[0], false);
       }
       const appended = await bridge.appendStep(composition.jobId, {
@@ -534,13 +548,13 @@ export class QueueService {
        * it. So it hangs off the step in front of it and the NEXT step hangs off
        * that same step, which is what `CreateJobRequest.sideBranch` says.
        *
-       * Only when there IS a step in front of it. A side branch appended as the
-       * run's head has nothing to branch from and stays the head — the same
-       * answer `narrationStepParentIndex` gives with its `return 0`.
+       * NEVER, not even at the head of the run. A side branch with nothing in
+       * front of it roots at the SOURCE and the next step roots there too, as
+       * its sibling — see the branch above, where the run's first step is
+       * created. `narrationStepParentIndex` answers null for both of them, which
+       * is the same rule said for the composer that can see the whole list.
        */
-      if (!(request.sideBranch === true && composition.lastStepId)) {
-        composition.lastStepId = appended.data!.id;
-      }
+      if (request.sideBranch !== true) composition.lastStepId = appended.data!.id;
       return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
     }
 

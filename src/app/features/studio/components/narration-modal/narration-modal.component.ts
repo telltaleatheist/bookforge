@@ -975,6 +975,24 @@ export class NarrationModalComponent {
   readonly applyDeRing = signal(false);
 
   /**
+   * ALIGN THE NARRATION TO THE TEXT — on by default, on every run.
+   *
+   * Owen, 2026-09-07: *"put a pre-checked checkbox in the assembly modal that
+   * creates the alignment step and the assembly step. alignment and assembly
+   * should happen in tandem."* So it opens ticked whichever door was pressed,
+   * and it is what puts MEASURED word timings in the finished M4B instead of
+   * narrator's proportional estimates.
+   *
+   * PER-RUN, not seeded from Pipeline Defaults. This dialog reads defaults for
+   * the settings Settings actually stores (engine, voice, device, speed, the
+   * conversion) and writes none of them back; `applyDeRing` and the video
+   * resolution are per-run in exactly the same way. A saved "never align" would
+   * be a new Settings field nobody has asked for, and the answer it saved would
+   * be invisible on the screen that acted on it.
+   */
+  readonly alignNarration = signal(true);
+
+  /**
    * A video beside the M4B — seeded from Pipeline Defaults, as the wizard's
    * own check was (`generateVideo`).
    *
@@ -1804,29 +1822,30 @@ export class NarrationModalComponent {
       };
 
       /*
-       * THE COVERAGE ALIGNER, CHECKED BEFORE ANYTHING IS QUEUED.
+       * THE ALIGNER, CHECKED BEFORE ANYTHING IS QUEUED.
        *
-       * An audited engine's book (Higgs v3) is force-aligned after the render so
-       * the queue can say which chunks came out wrong, and the run description
-       * therefore carries an Align row. That row spawns
-       * `narrator align --python <the whisperx env>`, which is the "Ebook
-       * Alignment (WhisperX)" add-on — and a machine without it can render the
-       * whole book, spend the enhancement's GPU, and have nothing to check it
-       * with.
+       * The Align row spawns `narrator align --python <the whisperx env>`, which
+       * is the "Ebook Alignment (WhisperX)" add-on — and a machine without it
+       * can render the whole book, spend the enhancement's GPU, and have nothing
+       * to measure it with.
        *
-       * `requireCoverageAligner` throws with the add-on named and the remedy in
-       * it. It is a no-op for an engine that is not audited, so an Orpheus run
-       * never sees this question. The step is NOT skipped when the answer is
-       * no — a run that quietly dropped its own audit would be an unchecked book
-       * reported as a checked one.
+       * `requireCoverageAligner` throws with the add-on named and both remedies
+       * in it (install it, or untick Align). It asks the STAGES now rather than
+       * the engine — aligning is the user's choice per run since 2026-09-07 — so
+       * a run with the box unticked never sees this question, and the box itself
+       * is disabled with the same fact on it when the add-on is missing. The row
+       * is never silently dropped: a run that quietly skipped its own alignment
+       * would ship an estimated transcript reported as a measured one.
        */
-      requireCoverageAligner(settings, this.components.isInstalled('whisperx-env'));
-
-      const jobs = buildNarrationJobs(book, settings, {
+      const stages = {
         narrate: this.narrate(),
         enhance: this.enhance(),
         assemble: this.assemble(),
-      });
+        align: this.alignNarration(),
+      };
+      requireCoverageAligner(stages, this.components.isInstalled('whisperx-env'));
+
+      const jobs = buildNarrationJobs(book, settings, stages);
 
       /*
        * The video is appended AFTER the run, not built into it.

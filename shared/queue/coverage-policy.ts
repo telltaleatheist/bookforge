@@ -18,26 +18,33 @@
  *     on the expected text and the actual real length of the audio.
  *
  * So `coverageAuditedFor` no longer answers "will assembly refuse this book
- * without a report" — nothing refuses it. It answers "does a run of this engine
- * carry an Align row", which is the question BookForge actually has to act on: a
- * v3 book is measured as a matter of course, an Orpheus book is measured when
- * somebody asks.
+ * without a report" — nothing refuses it.
+ *
+ * ── AND IT NO LONGER DECIDES WHETHER A RUN ALIGNS (2026-09-07) ────────────
+ *
+ * Owen: *"is it going to generate a VTT for it as well? that should be part of
+ * the assembly process, and should automatically happen... put a pre-checked
+ * checkbox in the assembly modal that creates the alignment step and the
+ * assembly step."* So the align is a stage of the RUN now
+ * (`NarrationRunStages.align`), ticked by default on every assembly whatever the
+ * engine — the aligner is whisperx CTC over the book's own text and is
+ * engine-agnostic; the gate here was ever only about Higgs's missing duration
+ * guard, not about what the aligner can measure.
+ *
+ * What this table still says is what narrator says: which engines' books are
+ * AUDITED as a matter of policy. That is the `audited` field narrator stamps
+ * into every coverage report (`align/run.py`, `coverage_gate.py`), which is what
+ * makes a report readable as "this engine is checked every time" versus "somebody
+ * asked for this one". BookForge no longer gates anything on it, and the mirror
+ * below is what keeps its knowledge of narrator's profiles from going stale.
  *
  * ── Why the table is HERE ────────────────────────────────────────
  *
- * Three programs need the same answer and none of them can ask the others:
- *
- *   - the run description (`narration-run.ts`) decides whether a run carries an
- *     Align step at all — it is `shared/`, compiled into main AND the renderer,
- *     and it can import nothing from `electron/`;
- *   - the narration dialog refuses a run whose aligner is not installed;
- *   - `main.ts` answers the same question for the renderer.
- *
- * A hard-coded `=== 'higgs-v3'` in each of those is three answers to one
- * question, and they drift the day a third engine lands. This is the one answer,
- * and it is a MIRROR of `assemble/engine_profiles.py` — the Python side owns the
- * thresholds; this owns only the yes/no that BookForge has to act on, kept honest
- * by `tools/test-coverage-policy-mirror.js`, which reads the Python table and
+ * It is `shared/` — compiled into main AND the renderer, importing nothing from
+ * `electron/` and touching no disk — and it is a MIRROR of
+ * `assemble/engine_profiles.py`: the Python side owns the thresholds and the
+ * policy; this owns only the yes/no, kept honest by
+ * `tools/test-coverage-policy-mirror.js`, which reads the Python table and
  * asserts the two agree.
  *
  * THE ASSEMBLY SPAWNS NO LONGER ASK. They pass `--coverage_report` whenever the
@@ -88,13 +95,17 @@ const ENGINE_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Is this engine's book force-aligned after every render?
+ * Does NARRATOR consider this engine's books audited as a matter of policy?
  *
- * NO FALLBACK, for `profile_for`'s reason: answering `false` for an id we do not
- * recognise ships an audiobook that nobody checked under an audit that was
- * supposed to check it, and answering `true` spends CPU aligning an engine that
- * has no policy at all. Neither is a thing to decide silently on the strength of
- * a string.
+ * NOT "does this run align" any more — the run says that for itself
+ * (`NarrationRunStages.align`, ticked by default on every assembly since
+ * 2026-09-07). This is the mirror of `engine_profiles.PROFILES[...].coverage
+ * .audited`: the flag narrator stamps into the report it writes, and the thing
+ * `tools/test-coverage-policy-mirror.js` holds the two sides to.
+ *
+ * NO FALLBACK, for `profile_for`'s reason: answering for an id we do not
+ * recognise would be BookForge inventing a policy narrator has not declared, on
+ * the strength of a string.
  *
  * XTTS reaches here from a session-state.json written by a retired build and is
  * refused with the rest: it cannot render and cannot be assembled by narrator
@@ -124,8 +135,8 @@ export function coverageAuditedFor(engineId: string): boolean {
 export const COVERAGE_REPORT_NAME = 'coverage.json';
 
 /**
- * The refusal a run gets when its engine is audited and the aligner is not on
- * this machine.
+ * The refusal a run gets when it is set to align and the aligner is not on this
+ * machine.
  *
  * A SENTENCE RATHER THAN A SKIP. The alternative — queue the run and let the
  * Align step fail hours later — spends the GPU first and says so afterwards,
@@ -138,13 +149,18 @@ export const COVERAGE_REPORT_NAME = 'coverage.json';
  * transcript would be proportional estimates instead of real word timings — and
  * that is what this sentence has to say, because a user who reads a threat that
  * never happens stops reading the ones that do.
+ *
+ * NO ENGINE IN IT ANY MORE. Aligning is the user's choice per run rather than a
+ * property of the engine (2026-09-07), so the remedy is now two doors wide:
+ * install the add-on, or untick Align and accept the estimated transcript.
  */
-export function alignerMissingRefusal(engineId: string): string {
+export function alignerMissingRefusal(): string {
   return (
-    `${engineId} books are checked after the render: every rendered chunk is force-aligned `
-    + 'against its own text, so the queue can tell you which ones came out wrong. The aligner '
-    + 'is the "Ebook Alignment (WhisperX)" add-on and it is not installed on this machine, so '
-    + 'this run would render for hours and nothing would check it. Install it from '
-    + 'Settings → Add-ons and queue the run again.'
+    'This run is set to align the narration to the text: every rendered chunk is force-aligned '
+    + 'against its own words, which is what produces the word-timed transcript and the report '
+    + 'saying which chunks came out wrong. The aligner is the "Ebook Alignment (WhisperX)" '
+    + 'add-on and it is not installed on this machine. Install it from Settings → Add-ons, or '
+    + 'untick Align — the audiobook is then assembled with an estimated transcript and nothing '
+    + 'measuring the render.'
   );
 }

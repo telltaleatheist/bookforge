@@ -331,6 +331,42 @@ test('AN ALIGN LEAF AND THE ASSEMBLY RUN AT THE SAME TIME, and the assembly can 
   assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).steps.every((s) => s.status === 'done'), true);
 });
 
+test('ASSEMBLE-ONLY: an align and an assembly ROOTED AT THE SOURCE are siblings, not a line', async () => {
+  /*
+   * The Assembly tab with Align ticked and nothing to render (Owen, 2026-09-07:
+   * "put a pre-checked checkbox in the assembly modal that creates the alignment
+   * step and the assembly step... each taking up one of the free cpu slots").
+   * There is no narration in this run for them to hang off, so BOTH root at the
+   * source — each with its own `sourceRef`, both cpu, both queued at once. If
+   * the assembly waited on the align instead, the tandem would be a straight
+   * line again: twenty CPU minutes in front of a four-minute encode.
+   */
+  const align = fakeModule('align', { consumes: 'audio-session', produces: 'report', resource: () => 'cpu' });
+  const asm = fakeModule('reassembly', { consumes: null, produces: 'm4b', resource: () => 'cpu' });
+  await fresh('align-source-siblings', [align, asm]);
+  const job = engine.enqueue({
+    title: "Mutineer's Moon",
+    steps: [
+      { type: 'align', label: 'Align', config: {}, sourceRef: { kind: 'audio-session' } },
+      { type: 'reassembly', label: 'Assemble', config: {}, sourceRef: { kind: 'audio-session' } },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(align.runs.length, 1, 'the align took a cpu slot');
+  assert.strictEqual(asm.runs.length, 1, 'and the assembly took the other one, at the same time');
+
+  const alignStepId = stepsOf(job.id)[0].id;
+  assert.strictEqual(engine.peekStep(alignStepId).status, 'running',
+    'and the assembly can still ask the engine what the align is doing');
+  align.runs[0].resolve({ kind: 'report', path: '/coverage.json' });
+  asm.runs[0].resolve({ kind: 'm4b', path: '/book.m4b' });
+  await settle();
+  assert.strictEqual(
+    engine.snapshot().jobs.find((j) => j.id === job.id).steps.every((s) => s.status === 'done'),
+    true);
+});
+
 // ── Lineage ─────────────────────────────────────────────────────────────────
 
 test('a step waits for its parent and is handed the parent OUTPUT', async () => {

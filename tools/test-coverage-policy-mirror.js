@@ -11,18 +11,22 @@
  * force-aligned after every render. Assembly reads the report and REPORTS on it;
  * since 2026-09-05 it refuses nothing on coverage.
  *
- * BookForge has to know the same yes/no BEFORE any of that happens — the run
- * description decides whether a run carries an Align row at all, and the
- * narration dialog refuses an audited run whose aligner is not installed. None
- * of those can import a Python module, and `shared/queue/` may not even touch a
- * disk.
+ * BookForge keeps the same yes/no on its own side, in a file that can import no
+ * Python module and may not touch a disk (`shared/queue/coverage-policy.ts`).
+ *
+ * IT NO LONGER DECIDES WHETHER A RUN ALIGNS. That was its job until 2026-09-07;
+ * aligning is a STAGE of the run now, ticked by default on every assembly
+ * whatever the engine (Owen: "alignment and assembly should happen in tandem").
+ * What the table still says is what narrator says — which engines' books are
+ * audited AS A MATTER OF POLICY, the `audited` flag stamped into every coverage
+ * report — and this is what keeps BookForge's copy of that from going stale.
  *
  * ── What a divergence costs ─────────────────────────────────────────────────
  *
- * It is silent in the direction that matters. If Python audits an engine that
- * TypeScript thinks is unaudited, BookForge queues no Align row, nothing ever
- * measures a book whose engine has no duration guard worth the name, and the
- * first anybody hears of a truncated chunk is a listener.
+ * A report read as "this engine is checked every time" when narrator considers
+ * it checked only on request, or the reverse: the same words on a card meaning
+ * two different things depending on which side of the process boundary wrote
+ * them.
  *
  * So the mirror is asserted rather than trusted. This reads the Python source
  * (no interpreter needed — it is a table of literals) and compares it with the

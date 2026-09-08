@@ -51,7 +51,8 @@
  */
 
 import type { ArtifactRef } from './engine-types';
-import { alignerMissingRefusal, coverageAuditedFor } from './coverage-policy';
+import { alignerMissingRefusal } from './coverage-policy';
+import { assertRunnableTtsEngine } from '../tts/engine-caps';
 
 /** The RVC pass, when the user asked for one. */
 export interface NarrationRvcSettings {
@@ -112,6 +113,31 @@ export interface NarrationRunStages {
   readonly enhance: boolean;
   /** Combine the sentences into the M4B. */
   readonly assemble: boolean;
+  /**
+   * FORCE-ALIGN THE RENDERED SENTENCES TO THE BOOK'S TEXT — the word-timed
+   * transcript and the coverage report. It runs BESIDE the assembly.
+   *
+   * Owen's ruling, 2026-09-07: *"is it going to generate a VTT for it as well?
+   * that should be part of the assembly process, and should automatically
+   * happen. thats normally the alignment step right? if so, put a pre-checked
+   * checkbox in the assembly modal that creates the alignment step and the
+   * assembly step. alignment and assembly should happen in tandem, each taking
+   * up one of the free cpu slots."*
+   *
+   * So it is a STAGE, not a property of the engine. It was
+   * `coverageAuditedFor(settings.ttsEngine)` until tonight — Higgs yes, Orpheus
+   * no — which is why an assemble-only run got a lone `reassembly` row and
+   * sealed narrator's ESTIMATED sentence transcript (proportional guesses) over
+   * a book nothing had measured. The aligner is whisperx CTC over the book's own
+   * text and knows nothing about which engine spoke it; the old gate was about
+   * Higgs's missing duration guard, not about what the aligner can do.
+   *
+   * True with `narrate: false` is a real run and the ordinary one: it reads the
+   * session this project has cached, exactly as the assembly beside it does.
+   * True with neither `narrate` nor `assemble` is refused by name — see
+   * `requireNarrationStages`.
+   */
+  readonly align: boolean;
 }
 
 /**
@@ -517,9 +543,12 @@ export interface NarrationStepPlan {
    * assembly take two CPU slots at once (Owen, 2026-09-07: "i would like them to
    * run concurrently in available cpu slots, for sure").
    *
-   * It is only meaningful behind another step. A side branch that is FIRST has
-   * nothing to branch from, so it becomes the run's head and the next step waits
-   * on it — which is exactly what `narrationStepParentIndex`'s `return 0` says.
+   * A SIDE BRANCH THAT IS FIRST BRANCHES OFF THE SOURCE. It has nothing to hang
+   * from, so it roots at the source — and the next step roots there too rather
+   * than waiting on it, which is what keeps the assemble-only shape (`[align,
+   * reassembly]`, the Assembly tab with nothing to render) a tandem instead of a
+   * straight line. `narrationStepParentIndex` says the same thing by answering
+   * null for both of them.
    */
   readonly sideBranch?: boolean;
 }
@@ -564,6 +593,18 @@ export function requireNarrationRun(
   if (!settings.ttsEngine) {
     throw new Error('No TTS engine is selected, so there is nothing to render this book with.');
   }
+  /*
+   * AN ENGINE THIS BUILD CANNOT RENDER IS REFUSED HERE, BY THE TABLE THAT OWNS
+   * THE QUESTION.
+   *
+   * It used to be refused by accident: `coverageAuditedFor` had no row for
+   * 'xtts' and threw about a missing COVERAGE POLICY, which is a true sentence
+   * about the wrong thing. That call left this file on 2026-09-07 when aligning
+   * became the run's choice rather than the engine's, and a retired engine would
+   * otherwise have reached the render door with nothing having said so. This is
+   * the same refusal the render door raises, one composition earlier.
+   */
+  assertRunnableTtsEngine(settings.ttsEngine);
   // Checked at RUNTIME as well as in the types, because one caller is an IPC
   // door (main's `bookforge.narrate`, ordered from the hosted Foundry window)
   // and a field that arrived as undefined there would reach the render door as
@@ -659,23 +700,30 @@ export function narrationTtsStep(
 }
 
 /**
- * PROVE THE RENDER SAID THE BOOK — the coverage guard's own row.
+ * ALIGN THE NARRATION TO THE TEXT — the word-timed transcript and the report.
  *
- * NULL FOR AN ENGINE WHOSE POLICY IS NOT ENFORCED, which today is Orpheus. Its
- * chars/sec guard and its resplit ladder already work, its coverage thresholds
- * have never been swept over its corpus, and aligning it would spend CPU minutes
- * a book to write a report `coverage_gate.check` reads for a log line. The
- * decision is `coverage-policy.ts`'s, once, for every caller that has to make it.
+ * COMPOSED WHENEVER THE RUN SAYS SO (`NarrationRunStages.align`), for every
+ * engine. It returned null for an engine whose coverage policy was not enforced
+ * until 2026-09-07; the checkbox on the Assembly tab is the answer now, and it
+ * is ticked by default, because what this row produces is not only an audit —
+ * it is the audiobook's SENTENCE TRANSCRIPT. Without it the assembly seals
+ * narrator's estimated cues (text length spread over the chunk's duration);
+ * with it, the M4B carries measured word timings. See `NarrationRunStages.align`
+ * for the ruling.
  *
  * ── Why the row exists at all ───────────────────────────────────────────────
  *
- * Higgs v3 has no duration guard worth the name: a chunk measured a duration
- * ratio of 0.99 while dropping 22 % of its text. `assemble/coverage_gate.py`
- * therefore refuses a v3 book unless a coverage report says every chunk was
- * measured — and refuses just as loudly when there is no report, because
- * "nobody checked" and "it is fine" are the same book and only one of them is
- * honest. Until this step existed, every app-driven Higgs book reached that
- * refusal and quoted a command line nobody had run.
+ * Two things, and only the second is engine-specific.
+ *
+ * THE TRANSCRIPT. `narrator align` writes `<stem>.sentences.vtt` with measured
+ * timings, over the estimate assembly wrote at its start. Every book wants that
+ * — it is what a reader follows along with.
+ *
+ * THE AUDIT. Higgs v3 has no duration guard worth the name: a chunk measured a
+ * duration ratio of 0.99 while dropping 22 % of its text, so a v3 book nobody
+ * aligned is a book nobody checked. `assemble/coverage_gate.py` reads the report
+ * and says which chunks to retake. Orpheus keeps its own chars/sec guard, so for
+ * an Orpheus book this half is a second opinion rather than the only one.
  *
  * ── Where it sits, and why THERE ────────────────────────────────────────────
  *
@@ -712,17 +760,18 @@ export function narrationTtsStep(
 export function narrationAlignStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
-): NarrationStepPlan | null {
+): NarrationStepPlan {
   requireNarrationRun(book, settings);
-  if (!coverageAuditedFor(settings.ttsEngine)) return null;
   return {
     type: 'align',
     bfpPath: book.projectDir,
     variantId: book.variantId,
-    // A LEAF: it hangs off the render and nothing hangs off it, so the assembly
-    // behind it does not wait for twenty CPU minutes of forced alignment to
-    // finish. See `sideBranch` and `narrationStepParentIndex` — one rule, said
-    // twice for the two shapes of composer.
+    // A LEAF: it hangs off whatever is in front of it and nothing hangs off it,
+    // so the assembly does not wait for twenty CPU minutes of forced alignment
+    // to finish — the two take a CPU slot each and run in tandem (Owen,
+    // 2026-09-07). First in a run, it branches off the SOURCE and the assembly
+    // is its sibling there too. See `sideBranch` and `narrationStepParentIndex`
+    // — one rule, said twice for the two shapes of composer.
     sideBranch: true,
     metadata: actMetadata(book, 'Align'),
     config: {
@@ -735,8 +784,12 @@ export function narrationAlignStep(
 }
 
 /**
- * REFUSE A GUARDED RUN WHOSE ALIGNER IS NOT ON THIS MACHINE, before anything is
- * queued.
+ * REFUSE A RUN THAT IS SET TO ALIGN WHEN THE ALIGNER IS NOT ON THIS MACHINE,
+ * before anything is queued.
+ *
+ * IT ASKS THE STAGES, NOT THE ENGINE (2026-09-07). Aligning is the user's
+ * choice per run now, so the question is "did this run ask for it", and the
+ * refusal's remedy is two doors wide: install the add-on, or untick Align.
  *
  * `installed` is a PARAMETER because this file is `shared/` — it is compiled
  * into main and into the renderer and it may not touch a disk, a component
@@ -750,12 +803,12 @@ export function narrationAlignStep(
  * no machine behind it.
  */
 export function requireCoverageAligner(
-  settings: NarrationRunSettings,
+  stages: NarrationRunStages,
   installed: boolean,
 ): void {
-  if (!coverageAuditedFor(settings.ttsEngine)) return;
+  if (!stages.align) return;
   if (installed) return;
-  throw new Error(alignerMissingRefusal(settings.ttsEngine));
+  throw new Error(alignerMissingRefusal());
 }
 
 /**
@@ -977,10 +1030,25 @@ export function requireNarrationStages(
   stages: NarrationRunStages,
   settings: NarrationRunSettings,
 ): void {
-  if (!stages.narrate && !stages.enhance && !stages.assemble) {
+  if (!stages.narrate && !stages.enhance && !stages.assemble && !stages.align) {
     throw new Error(
       'There is nothing to queue: this run neither reads the book, nor enhances its sentences, '
       + 'nor assembles an audiobook. Turn one of them on.'
+    );
+  }
+  /*
+   * ALIGN ON ITS OWN IS NOT A RUN. The align is the audiobook's transcript and
+   * the render's audit — it rides with the thing it describes (Owen,
+   * 2026-09-07: "alignment and assembly should happen in tandem"). Ticked
+   * against neither a render nor an assembly it would spend twenty CPU minutes
+   * writing a report beside a session, with no audiobook to carry the cues into
+   * and nothing on screen that asked for one.
+   */
+  if (stages.align && !stages.narrate && !stages.assemble) {
+    throw new Error(
+      'This run would align the narration and do nothing else — no reading, no audiobook. The '
+      + 'alignment writes the word-timed transcript INTO the audiobook the assembly seals, so '
+      + 'turn on the assembly (or the narration) as well, or untick Align.'
     );
   }
   if (stages.enhance && !stages.assemble) {
@@ -1054,25 +1122,22 @@ export function buildNarrationSteps(
    */
   if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
   /*
-   * THE COVERAGE GUARD, FOR AN ENGINE THAT IS GUARDED — right here, behind the
-   * render and in front of everything else.
+   * THE ALIGNMENT — right here, behind the render and in front of everything
+   * else, whenever the run asked for it.
    *
-   * `narrationAlignStep` returns null for an engine whose policy is not enforced,
-   * so an Orpheus run is byte-for-byte the run it always was. For Higgs v3 the
-   * row is unconditional: not "when the run renders", because a run that
-   * assembles sentences it did not render still needs a report and may have none
-   * (the render may have come from the CLI, or from a build before this row
-   * existed); and not "when the run assembles", because a narrate-only run that
-   * dropped a fifth of a chunk's text should say so tonight rather than at the
-   * assembly somebody queues next week.
+   * IT IS THE STAGE'S ANSWER NOW, not the engine's (Owen, 2026-09-07). The
+   * checkbox on the Assembly tab is ticked by default, so an assembly of any
+   * engine's book carries this row and the finished M4B carries MEASURED
+   * sentence cues instead of narrator's proportional estimates.
    *
-   * WHY NOT BEHIND THE ENHANCEMENT — the full argument is on the step builder.
-   * In one line: it measures the RENDER, its thresholds were calibrated on raw
-   * engine output, and a defect found before an hour of GPU is worth more than
-   * the same defect found after it.
+   * The position is unchanged and the reasons for it are unchanged: it measures
+   * the RENDER, its thresholds were calibrated on raw engine output, and a
+   * defect found before an hour of GPU is worth more than the same defect found
+   * after it. In an assemble-only run there is no render in front of it, so it
+   * becomes the run's first step — reading the project's cached session by kind,
+   * exactly as the assembly beside it does.
    */
-  const align = narrationAlignStep(book, settings);
-  if (align !== null) steps.push(align);
+  if (stages.align) steps.push(narrationAlignStep(book, settings));
   /*
    * THE ENHANCEMENT IS ONE ROW PER PASS, IN THE USER'S ORDER.
    *
@@ -1117,16 +1182,28 @@ export function buildNarrationSteps(
     ));
   }
   /*
-   * The first step reads something nothing in this run produced, and the queue
-   * checks that at compose time. A run that begins by narrating reads the
-   * document (the TTS step says so itself); a run that begins with a conversion
-   * or an assembly reads the session this project has cached — named by KIND
-   * with no path, because which session that is, is a question about the disk at
-   * the moment the step runs.
+   * EVERY STEP ROOTED AT THE SOURCE SAYS WHAT IT READS — usually one, and TWO
+   * when an align leads an assemble-only run.
+   *
+   * A step whose parent is the source reads something nothing in this run
+   * produced, and the queue checks that at compose time (`buildStep` refuses a
+   * source-rooted step with no `sourceRef` at all). A run that begins by
+   * narrating reads the document (the TTS step says so itself); a run that
+   * begins with an alignment, a conversion or an assembly reads the session this
+   * project has cached — named by KIND with no path, because which session that
+   * is, is a question about the disk at the moment the step runs.
+   *
+   * WHICH steps those are is `narrationStepParentIndex`'s answer, asked here
+   * rather than re-derived, so the two can never disagree about who the head of
+   * the run is. In `[align, reassembly]` both of them are: the align is a side
+   * branch with nothing in front of it, so the assembly is its SIBLING off the
+   * source rather than its child, and the pair takes the two CPU slots at once.
    */
-  const first = steps[0]!;
-  if (first.sourceRef === undefined) {
-    steps[0] = { ...first, sourceRef: { kind: 'audio-session' } };
+  const types = steps.map((s) => s.type);
+  for (const [index, step] of steps.entries()) {
+    if (narrationStepParentIndex(types, index) !== null) continue;
+    if (step.sourceRef !== undefined) continue;
+    steps[index] = { ...step, sourceRef: { kind: 'audio-session' } };
   }
   return steps;
 }
@@ -1152,7 +1229,17 @@ export function buildNarrationSteps(
  * retakes, and a retake re-assembles anyway.
  *
  * `types` is the run's step types in order; the answer is the parent's index
- * for step `index`, or null for the first step (which has no parent).
+ * for step `index`, or NULL for a step with no parent — the first step, and any
+ * step with nothing but align rows in front of it.
+ *
+ * THAT SECOND NULL IS THE ASSEMBLE-ONLY SHAPE (2026-09-07): `[align,
+ * reassembly]`, which is what the Assembly tab queues with Align ticked and
+ * nothing to render. The align has nothing to branch from, so it roots at the
+ * source — and if the assembly waited on it (this used to `return 0`) the tandem
+ * would be a straight line again, twenty CPU minutes in front of a four-minute
+ * encode, with a CPU slot free the whole time. So the assembly roots at the
+ * source too and they are siblings. `buildNarrationSteps` gives both of them the
+ * `sourceRef` that makes that legal.
  *
  * THE SAME RULE AS `NarrationStepPlan.sideBranch`, for the composer that can
  * see the whole list. A composer that appends one step at a time reads the flag
@@ -1164,5 +1251,5 @@ export function narrationStepParentIndex(types: readonly string[], index: number
   for (let i = index - 1; i >= 0; i--) {
     if (types[i] !== 'align') return i;
   }
-  return 0;
+  return null;
 }
