@@ -173,17 +173,69 @@ if (fixture === null) {
     },
   );
 
+  /**
+   * What this machine's app-settings say, asked UNDER THE SHIM.
+   *
+   * `readAppSettings` reads `app.getPath('userData')` and plain node has no `app`
+   * — it would answer with the declared defaults and every assertion below would
+   * be about a setting nobody has.
+   */
+  const storedSettings = () => JSON.parse(execFileSync(
+    process.execPath,
+    ['--require', STUB, '-e',
+      `const s = require(${JSON.stringify(path.join(FOUNDRY_DIST, 'electron', 'app-settings.js'))}).readAppSettings();`
+      + `process.stdout.write(JSON.stringify({ llmServer: s.llmServer, cleanTextModel: s.cleanTextModel, vllmModel: s.vllmModel }))`],
+    { encoding: 'utf8' },
+  ).trim());
+
+  /**
+   * A model this machine will accept on `--model`.
+   *
+   * Under vLLM that is THE PROFILE'S SERVED NAME and nothing else: the door asserts
+   * it (Owen, 2026-09-08 — "verify that when i run translate/simplify in foundry,
+   * they will correctly use the 27b model in vllm and not the 9b"), and a tag from
+   * the ollama world is refused by name. Under ollama any tag is a tag.
+   */
+  const acceptableModel = () => (storedSettings().llmServer === 'vllm'
+    ? require(path.join(REPO, 'dist', 'electron', 'text-server.js')).profileForKind('clean').servedName
+    : 'qwen3.5:9b-mlx-bf16');
+
   test('the dry run resolves the project and prints the clean-text argv', () => {
-    const out = dryRun(['--model', 'qwen3.5:9b-mlx-bf16', '--concurrency', '8']);
+    const model = acceptableModel();
+    const out = dryRun(['--model', model, '--concurrency', '8']);
     const spawn = out.split('\n').find((line) => line.startsWith('[clean] spawn'));
     assert.ok(spawn, `no spawn line in:\n${out}`);
     for (const flag of ['clean-text', '--book', '--records', '--stamp', '--model', '--endpoint']) {
       assert.ok(spawn.includes(flag), `${flag} missing from: ${spawn}`);
     }
     assert.ok(spawn.includes('--concurrency 8'), `--concurrency 8 missing from: ${spawn}`);
-    assert.ok(spawn.includes('--model qwen3.5:9b-mlx-bf16'), spawn);
+    assert.ok(spawn.includes(`--model ${model}`), spawn);
     assert.ok(out.includes('DRY RUN'), 'the run did not say it spawned nothing');
     assert.ok(/position\s+\S+\s+\S+/.test(out), 'the position was not printed');
+  });
+
+  test('under vLLM a --model that is not the profile\'s served name is REFUSED by name', () => {
+    /*
+     * THE FIRST OF THE TWO BELTS. Foundry proves the served id itself by asking
+     * /v1/models — but only when the request NAMED a model, and `vllmModel` is
+     * empty by default, which is exactly the case where a translation against a
+     * 9B server would run and be recorded as a translation. So the host names it
+     * first, and refuses anything else BEFORE a model is loaded.
+     */
+    if (storedSettings().llmServer !== 'vllm') {
+      console.log('       skipped by name — this machine is set to ollama, where any tag is a tag.');
+      return;
+    }
+    let out = '';
+    try {
+      dryRun(['--model', 'qwen3.5:9b-q8_0']);
+      assert.fail('the door accepted a model this machine\'s profile does not serve');
+    } catch (err) {
+      out = `${err.stdout || ''}${err.stderr || ''}`;
+    }
+    assert.ok(/qwen3\.5:9b-q8_0/.test(out), out);
+    assert.ok(/Qwen3\.5-9B-bf16/.test(out), out);
+    assert.ok(/nothing was started/i.test(out), out);
   });
 
   test('the model is released by default, and --keep-model is the opt-in', () => {
@@ -203,34 +255,32 @@ if (fixture === null) {
      * `app.getPath('userData')` and plain node has no `app` — it would answer with
      * the declared default and this test would pass against a setting nobody has.
      */
-    const stored = JSON.parse(execFileSync(
-      process.execPath,
-      ['--require', STUB, '-e',
-        `const s = require(${JSON.stringify(path.join(FOUNDRY_DIST, 'electron', 'app-settings.js'))}).readAppSettings();`
-        + `process.stdout.write(JSON.stringify({ llmServer: s.llmServer, cleanTextModel: s.cleanTextModel, vllmModel: s.vllmModel }))`],
-      { encoding: 'utf8' },
-    ).trim());
+    const stored = storedSettings();
     const out = dryRun([]);
     /*
      * WHICH PAIR THE MACHINE IS SET TO decides the line (foundry 19f5e70,
-     * 2026-09-08): under `llmServer: 'vllm'` the model is `vllmModel`, empty by
-     * default and meaning "whatever the server serves" - the engine records the
-     * served id - and the spawn carries `--server vllm` with NO `--model`. Under
-     * ollama it is `cleanTextModel`, as it always was. This keeper reads the REAL
-     * settings file, so it asserts whichever the machine is on rather than one.
+     * 2026-09-08): under `llmServer: 'vllm'` the model is THE TEXT-SERVER
+     * PROFILE'S SERVED NAME — `vllmModel` is empty by default, meaning "whatever
+     * the server serves", and the host fills that in from the profile it is about
+     * to start rather than leaving the engine to find out (Owen, 2026-09-08:
+     * "verify that ... they will correctly use the 27b model in vllm and not the
+     * 9b"). Under ollama it is `cleanTextModel`, as it always was. This keeper
+     * reads the REAL settings file, so it asserts whichever the machine is on.
      */
     if (stored.llmServer === 'vllm') {
+      const served = require(path.join(REPO, 'dist', 'electron', 'text-server.js'))
+        .profileForKind('clean').servedName;
       const modelLine = out.split('\n').find((l) => l.startsWith('[clean] model  '));
-      assert.ok(modelLine && modelLine.includes('(app-settings vllmModel)'),
-        `expected the vllmModel line; got:\n${modelLine}`);
-      if (stored.vllmModel === '') {
-        assert.ok(modelLine.includes('(none'), `an empty vllmModel must say the served model is used; got: ${modelLine}`);
-        assert.ok(!/--model\s/.test(out), 'an empty served-model field must OMIT --model, never send an empty name');
-      } else {
-        assert.ok(modelLine.includes(stored.vllmModel), `expected ${stored.vllmModel}; got: ${modelLine}`);
-      }
+      assert.ok(modelLine && modelLine.includes('(text-server profile '),
+        `expected the profile line; got:\n${modelLine}`);
+      assert.ok(modelLine.includes(served), `expected ${served}; got: ${modelLine}`);
+      assert.ok(out.includes(`--model ${served}`),
+        'the served model the host is about to start must be ON the line');
+      assert.ok(!/--model\s+["']?\s*(?:$|["'])/m.test(out), 'never an empty --model');
       assert.ok(out.includes('--server vllm'), 'the spawn must declare --server vllm');
       assert.ok(out.includes('[clean] server           vllm (app-settings llmServer)'), 'the server line must name the setting');
+      // And WHOSE server the endpoint is, said before anything is started.
+      assert.ok(/\[clean\] text server/.test(out), `the text-server route must be printed:\n${out}`);
     } else {
       assert.ok(
         out.includes(`[clean] model            ${stored.cleanTextModel} (app-settings cleanTextModel)`),

@@ -133,6 +133,13 @@ const SERVE_VLLM = 101;     // its engine core — its cmdline says nothing abou
 const SERVE_VLLM_GC = 102;  // and ITS child, to prove the walk is transitive
 const ORPHAN_VLLM = 200;    // a genuinely orphaned vLLM from a crashed batch worker
 const ORPHAN_WORKER = 201;  // and a genuinely orphaned batch worker
+// THE SECOND THING `|vllm` WOULD CATCH (2026-09-08): BookForge's own text-pass
+// server, cleaning or translating a book while a narration runs. It has its own
+// cooperative teardown (electron/text-server.ts — the arbiter stops it on drain,
+// on a GPU yield and at quit), so a batch job ending must not SIGTERM it: that is
+// a book's cleanup dying halfway for a reason nobody can see.
+const TEXT_SERVER = 300;
+const TEXT_SERVER_CORE = 301;  // its engine core, which says nothing about the entrypoint either
 
 const PY = '/home/telltale/anaconda3/envs/orpheus_tts/bin/python';
 
@@ -147,13 +154,41 @@ function table() {
     { pid: SERVE_VLLM_GC, ppid: SERVE_VLLM, args: `${PY} -m vllm.worker.worker_base` },
     { pid: ORPHAN_VLLM, ppid: 1, args: `${PY} -m vllm.v1.engine.core` },
     { pid: ORPHAN_WORKER, ppid: 1, args: `${PY} -m narrator.compat.worker --session abc` },
+    {
+      pid: TEXT_SERVER,
+      ppid: 1,
+      args: '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server '
+        + '--model /home/telltale/models/Qwen3.5-9B --served-model-name Qwen3.5-9B-bf16 '
+        + '--host 127.0.0.1 --port 8300',
+    },
+    { pid: TEXT_SERVER_CORE, ppid: TEXT_SERVER, args: `${PY} -m vllm.v1.engine.core` },
   ];
 }
 
 const bridgeJs = fs.readFileSync(BRIDGE, 'utf-8');
 const SERVE_RE = 'narrator\\.serve';
+
+/**
+ * The text server's own pattern, READ OUT OF THE COMPILED MODULE rather than
+ * retyped — a copy here could drift from the constant the sweep actually uses,
+ * and the failure mode of a stale exclusion is silent.
+ *
+ * Extracted from the text rather than `require`d because this keeper runs under
+ * bare node with no Electron shim, and the module reaches tool-paths on import.
+ */
+const TEXT_SERVER_RE = (() => {
+  const source = fs.readFileSync(path.join(DIST, 'text-server.js'), 'utf-8');
+  const found = source.match(/TEXT_SERVER_PROTECT_RE = ('(?:[^'\\]|\\.)*')/);
+  if (!found) {
+    throw new Error('TEXT_SERVER_PROTECT_RE is not in the compiled text-server module — did it move?');
+  }
+  return JSON.parse(found[1].replace(/^'|'$/g, '"'));
+})();
+
 const GLOBAL_PATTERN = 'narrator\\.compat\\.(?:worker|app)|vllm';
-const OPTS = { graceMs: 2000, pollMs: 1, excludeRe: SERVE_RE };
+/** What `cleanupWslOrphanedProcesses` composes: both resident servers, spared. */
+const EXCLUDE_RE = `${SERVE_RE}|${TEXT_SERVER_RE}`;
+const OPTS = { graceMs: 2000, pollMs: 1, excludeRe: EXCLUDE_RE };
 
 async function main() {
   console.log('the global sweep spares the Listen server and takes the orphans');
@@ -183,6 +218,30 @@ async function main() {
       'a descendant two levels below narrator.serve was killed — the walk is not transitive');
   });
 
+  await check('nor BookForge\'s own text server, nor its engine core', async () => {
+    const guest = makeGuest(table());
+    const { fn } = liftPkill(guest.execWsl);
+    await fn(GLOBAL_PATTERN, OPTS);
+    assert.ok(!guest.killed.includes(String(TEXT_SERVER)),
+      'the sweep SIGTERM’d the text server — a book\'s cleanup dies halfway with nothing logged');
+    assert.ok(!guest.killed.includes(String(TEXT_SERVER_CORE)),
+      'it killed the text server\'s engine core — the same dead pass by a longer route');
+  });
+
+  await check('the text-server exclusion does NOT depend on a field `ps` may truncate', () => {
+    // `excludeRe` is tested against `ps -eo args` output, and ps truncates long
+    // command lines where pgrep does not. `--port 8300` sits at the END of this
+    // server's argv, so an exclusion that demanded it would fail on a truncated
+    // row — and a failed exclusion is a kill of the thing it protects.
+    assert.ok(!TEXT_SERVER_RE.includes('--port'), TEXT_SERVER_RE);
+    const truncated = '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_';
+    assert.ok(!new RegExp(TEXT_SERVER_RE).test(truncated),
+      'a row truncated mid-module is not this server and must not be protected by accident');
+    assert.ok(new RegExp(TEXT_SERVER_RE).test(
+      '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server --model x'),
+      'a row truncated after the module name must still be protected');
+  });
+
   await check('a sweep matching ONLY protected processes is "none", not a kill of nothing', async () => {
     const guest = makeGuest(table().filter((r) => r.pid !== ORPHAN_VLLM && r.pid !== ORPHAN_WORKER));
     const { fn } = liftPkill(guest.execWsl);
@@ -206,18 +265,27 @@ async function main() {
 
   console.log('the caller actually asks for the exclusion');
 
-  await check('cleanupWslOrphanedProcesses passes excludeRe: SERVE_PROCESS_RE', () => {
+  await check('cleanupWslOrphanedProcesses passes an exclusion built from BOTH servers', () => {
     // A helper CAPABLE of excluding is worth nothing if the one caller that needs it
     // does not ask. Read from the compiled bridge, so this matches what ships.
     const call = bridgeJs.match(/wslPkillGraceful\)\(pattern, \{[\s\S]{0,400}?\}\)/);
     assert.ok(call, 'the sweep no longer calls wslPkillGraceful(pattern, {...}) — did it move?');
-    assert.match(call[0], /excludeRe:\s*(?:\w+\.)?SERVE_PROCESS_RE/,
-      `the global sweep does not exclude the Listen server:\n${call[0]}`);
+    const named = call[0].match(/excludeRe:\s*([A-Za-z_$][\w$]*)/);
+    assert.ok(named, `the global sweep passes no excludeRe at all:\n${call[0]}`);
+    // The exclusion is composed from the two protected servers, either inline or
+    // through a local. Whichever, BOTH constants must be in what the sweep builds.
+    const composed = named[1] === 'SERVE_PROCESS_RE'
+      ? 'SERVE_PROCESS_RE'
+      : (bridgeJs.match(new RegExp(`const ${named[1]} = [^;]+;`)) || [''])[0];
+    assert.match(composed, /(?:\w+\.)?SERVE_PROCESS_RE/,
+      `the global sweep does not exclude the Listen server:\n${composed}`);
+    assert.match(composed, /(?:\w+\.)?TEXT_SERVER_PROTECT_RE/,
+      `the global sweep does not exclude the text server:\n${composed}`);
   });
 
   console.log('the assertions are real');
 
-  await check('MUTATION: without excludeRe the serve tree dies', async () => {
+  await check('MUTATION: without excludeRe the serve tree AND the text server die', async () => {
     // If this passes with the exclusion dropped, every row above proves nothing.
     const guest = makeGuest(table());
     const { fn } = liftPkill(guest.execWsl);
@@ -225,10 +293,12 @@ async function main() {
     assert.ok(guest.killed.includes(String(SERVE_VLLM)),
       'dropping excludeRe left the serve vLLM alive — the checks above cannot see the '
       + 'regression they exist for');
+    assert.ok(guest.killed.includes(String(TEXT_SERVER)),
+      'dropping excludeRe left the text server alive — its check above proves nothing');
   });
 
   console.log(failures === 0
-    ? '\nThe global sweep leaves the Listen server alone.'
+    ? '\nThe global sweep leaves the Listen server and the text server alone.'
     : `\n${failures} check(s) FAILED.`);
   process.exitCode = failures === 0 ? 0 : 1;
 }

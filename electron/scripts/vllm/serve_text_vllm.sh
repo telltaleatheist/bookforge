@@ -54,9 +54,31 @@ VLLM_TEXT_MAX_NUM_SEQS="${VLLM_TEXT_MAX_NUM_SEQS:-16}"
 # system prompt + block + answer); 16384 covers that with headroom for a long
 # block. Prefix caching makes the shared system prompt cost one prefill.
 VLLM_TEXT_MAX_MODEL_LEN="${VLLM_TEXT_MAX_MODEL_LEN:-16384}"
-# 9B bf16 weights are ~19 GB; 0.90 of a 24.5 GB card leaves ~3 GB for KV cache
-# at 16 sequences x 16k tokens with prefix sharing. UNMEASURED — see the header.
+# 9B bf16 weights are ~19 GB; 0.90 of a 24.5 GB card leaves ~3 GB for the cache
+# pool. MEASURED on the first run (Pokemon, 2026-09-08): 18.26 GiB of weights,
+# a pool of 22,420 tokens, 7 requests decoding with 3 queued "capacity" out of
+# foundry's 12 — and 458 blocks/min against Ollama's 110.
 VLLM_TEXT_GPU_MEM_UTIL="${VLLM_TEXT_GPU_MEM_UTIL:-0.90}"
+# THE DEPTH KNOBS, exposed and UNMEASURED. Both Qwen3.5-9B and Qwen3.8-27B are
+# HYBRID models: three of every four layers are Gated DeltaNet with a FIXED
+# recurrent state per sequence (~50 MB on the 9B, ~148 MB on the 27B at fp32),
+# one in four is full attention with a tiny KV (kv_heads 4, head_dim 256:
+# 32 KB / 64 KB per token). vLLM pads the attention page to the state's size,
+# so a sequence costs pages of ~1,600 tokens — which is why 3.3 GB reported
+# only 22,420 tokens and admitted 7. The state dtype is therefore the knob that
+# buys depth (float16 halves the state and the page); the KV dtype buys little
+# here. "auto" = vLLM's own default; a value is passed through verbatim and
+# vLLM refuses one it does not know.
+VLLM_TEXT_MAMBA_CACHE_DTYPE="${VLLM_TEXT_MAMBA_CACHE_DTYPE:-auto}"
+VLLM_TEXT_KV_CACHE_DTYPE="${VLLM_TEXT_KV_CACHE_DTYPE:-auto}"
+# THE ACTIVATION DTYPE, a variable because the SECOND profile is not bf16. The 9B
+# is served bfloat16 because its weights are; the 27B is
+# cyankiwi/Qwen3.8-27B-AWQ-INT4 — compressed-tensors, pack-quantized, 4 bits —
+# where vLLM picks the activation dtype out of the checkpoint's own
+# quantization_config, and naming one here would be this launcher having an
+# opinion about somebody else's weights. `auto` is that. The DEFAULT stays
+# bfloat16, so a hand-run of this script for the 9B is byte-identical to before.
+VLLM_TEXT_DTYPE="${VLLM_TEXT_DTYPE:-bfloat16}"
 
 if [ ! -d "$VLLM_TEXT_MODEL_DIR" ]; then
   echo "VLLM_TEXT_MODEL_DIR '$VLLM_TEXT_MODEL_DIR' does not exist." >&2
@@ -109,16 +131,19 @@ export VLLM_DISABLE_FLASHINFER_PREFILL=1
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 
 echo "[serve_text_vllm] $VLLM_TEXT_MODEL_DIR as '$VLLM_TEXT_MODEL_NAME' on $VLLM_TEXT_HOST:$VLLM_TEXT_PORT" >&2
-echo "[serve_text_vllm] max-num-seqs $VLLM_TEXT_MAX_NUM_SEQS, max-model-len $VLLM_TEXT_MAX_MODEL_LEN, gpu-mem $VLLM_TEXT_GPU_MEM_UTIL" >&2
+echo "[serve_text_vllm] max-num-seqs $VLLM_TEXT_MAX_NUM_SEQS, max-model-len $VLLM_TEXT_MAX_MODEL_LEN, gpu-mem $VLLM_TEXT_GPU_MEM_UTIL, mamba-cache $VLLM_TEXT_MAMBA_CACHE_DTYPE, kv-cache $VLLM_TEXT_KV_CACHE_DTYPE" >&2
 
 exec "$VLLM_TEXT_ENV/bin/python" -m vllm.entrypoints.openai.api_server \
   --model "$VLLM_TEXT_MODEL_DIR" \
   --served-model-name "$VLLM_TEXT_MODEL_NAME" \
   --host "$VLLM_TEXT_HOST" --port "$VLLM_TEXT_PORT" \
-  --dtype bfloat16 \
+  --dtype "$VLLM_TEXT_DTYPE" \
   --max-model-len "$VLLM_TEXT_MAX_MODEL_LEN" \
   --max-num-seqs "$VLLM_TEXT_MAX_NUM_SEQS" \
   --gpu-memory-utilization "$VLLM_TEXT_GPU_MEM_UTIL" \
   --enable-prefix-caching \
+  --mamba-cache-dtype "$VLLM_TEXT_MAMBA_CACHE_DTYPE" \
+  --mamba-ssm-cache-dtype "$VLLM_TEXT_MAMBA_CACHE_DTYPE" \
+  --kv-cache-dtype "$VLLM_TEXT_KV_CACHE_DTYPE" \
   --limit-mm-per-prompt '{"image":0,"video":0}' \
   --no-enable-log-requests

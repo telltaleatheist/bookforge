@@ -63,6 +63,7 @@ import {
   getWslDistro,
   getWslHiggsCondaEnv,
   shouldUseWsl2ForHiggs,
+  wslCondaEnvPrefix,
 } from './tool-paths';
 import { higgsDoctor } from './higgs-doctor';
 import { windowsToWslPath } from './narrator-paths';
@@ -303,9 +304,8 @@ export function higgsEnvExtras(
   // drift from it.
   const stack = higgsServingStack(serving);
   const sglang = stack === 'sglang-omni' ? higgsSglangFor(serving) : null;
-  const higgsEnvGuestPrefix =
-    `${wslCondaBase(getWslCondaPath())}/envs/`
-    + `${sglang ? sglang.condaEnvName : getWslHiggsCondaEnv()}`;
+  const higgsEnvGuestPrefix = wslCondaEnvPrefix(
+    getWslCondaPath(), sglang ? sglang.condaEnvName : getWslHiggsCondaEnv());
   const serveScriptGuestPath =
     `${higgsEnvGuestPrefix}/bin/${sglang ? sglang.launchScript : serving.launchScript}`;
 
@@ -435,7 +435,10 @@ function checkpointArmForSpawn(viaWsl: boolean): HiggsCheckpointArm {
   );
 }
 
-/** `<base>/bin/conda` -> `<base>`. The same derivation the doctor makes. */
-function wslCondaBase(condaPath: string): string {
-  return condaPath.replace(/\/bin\/conda$/, '');
-}
+/*
+ * `wslCondaBase` was here — `<base>/bin/conda` -> `<base>`, the same derivation
+ * the doctor makes. It moved to `tool-paths.wslCondaEnvPrefix` (2026-09-08) when
+ * `text-server.ts` needed the identical answer for the env holding vllm: two
+ * spellings of where a conda root keeps its envs is one that can be fixed while
+ * the other is not.
+ */

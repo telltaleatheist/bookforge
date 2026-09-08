@@ -338,6 +338,94 @@ test('BOTH halves are the hosted press\'s, out of the one settings file', async 
   assert.strictEqual(clamped.endpoint, 'http://localhost:11434');
 });
 
+test('under vLLM it reads the OTHER pair of keys, and empty is a real model', async () => {
+  /*
+   * Foundry 19f5e70 (Owen, 2026-09-08: "lets build in vllm batching. ollama
+   * batching doesnt work") keeps BOTH servers' settings side by side so flipping
+   * back costs no retyping: `llmServer` picks, `vllmUrl`/`vllmModel` are the vLLM
+   * pair, `ollamaUrl`/`cleanTextModel` the Ollama pair. This door mirrors
+   * `clean-dialog.add()` field for field, exactly as cli/clean-step.js does.
+   */
+  const dir = path.join(ROOT, 'settings-vllm');
+  fs.mkdirSync(dir, { recursive: true });
+
+  // The DEFAULT shape: server chosen, model left empty. Empty means "whatever it
+  // is serving", which the engine resolves from /v1/models and records.
+  fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
+    llmServer: 'vllm',
+    vllmUrl: 'http://localhost:8300/v1/',
+    vllmModel: '',
+    // The Ollama pair is still there and must NOT be read under vllm.
+    cleanTextModel: 'qwen3.5:9b-q8_0', ollamaUrl: 'http://localhost:11434',
+  }), 'utf8');
+  const chosen = await door.cleanTextEngineSettingsIn(dir);
+  assert.strictEqual(chosen.server, 'vllm');
+  assert.strictEqual(chosen.model, '', 'an empty vllmModel is a VALUE, not a missing one');
+  // The trailing slash goes, exactly as `clampOllamaUrl` drops it there.
+  assert.strictEqual(chosen.endpoint, 'http://localhost:8300/v1');
+  assert.ok(/whatever it is serving/.test(chosen.source), chosen.source);
+
+  // NEVER `--model ""`. The engine would take an empty name as a name.
+  const argv = door.cleanTextArgs('/in.epub', '/out.epub', chosen);
+  assert.deepStrictEqual(argv, [
+    'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
+    '--endpoint', 'http://localhost:8300/v1', '--server', 'vllm',
+  ]);
+  assert.strictEqual(argv.includes('--model'), false, 'an empty model is OMITTED');
+
+  // A served name typed into the field IS passed, and only ADDS a check.
+  fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
+    llmServer: 'vllm', vllmUrl: 'http://localhost:8300/v1', vllmModel: 'Qwen3.5-9B-bf16',
+  }), 'utf8');
+  const named = await door.cleanTextEngineSettingsIn(dir);
+  assert.strictEqual(named.model, 'Qwen3.5-9B-bf16');
+  assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', named).slice(-4),
+    ['--server', 'vllm', '--model', 'Qwen3.5-9B-bf16']);
+
+  // A name with a space in it is a name no server has: `clampServedModel` reads it
+  // as empty rather than as a tag default — the one place it must NOT behave like
+  // `clampModelTag`.
+  fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
+    llmServer: 'vllm', vllmModel: 'two words',
+  }), 'utf8');
+  const clamped = await door.cleanTextEngineSettingsIn(dir);
+  assert.strictEqual(clamped.model, '');
+  // Foundry's OWN default vLLM endpoint, mirrored — port 8000, which on this
+  // machine is its READING server. BookForge says so rather than substituting.
+  assert.strictEqual(clamped.endpoint, 'http://localhost:8000/v1');
+});
+
+test('under OLLAMA the argv is byte-identical to what it was before vLLM existed', async () => {
+  const dir = path.join(ROOT, 'settings-ollama-argv');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
+    cleanTextModel: 'qwen3.5:9b-bf16', ollamaUrl: 'http://titan:11434',
+  }), 'utf8');
+  const settings = await door.cleanTextEngineSettingsIn(dir);
+  assert.strictEqual(settings.server, 'ollama', 'an absent llmServer is ollama');
+  // NO `--server ollama`: an engine that predates the flag still runs this door.
+  assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', settings), [
+    'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
+    '--endpoint', 'http://titan:11434', '--model', 'qwen3.5:9b-bf16',
+  ]);
+});
+
+test('the keep-warm minutes are Foundry\'s key, with Foundry\'s ceiling', async () => {
+  const dir = path.join(ROOT, 'settings-warm');
+  fs.mkdirSync(dir, { recursive: true });
+  const read = async (value) => {
+    fs.writeFileSync(path.join(dir, 'app-settings.json'),
+      JSON.stringify({ keepServerWarmMinutes: value }), 'utf8');
+    return (await door.cleanTextEngineSettingsIn(dir)).keepWarmMinutes;
+  };
+  assert.strictEqual(await read(undefined), 0, '0 — stop as soon as the work drains');
+  assert.strictEqual(await read(5), 5);
+  assert.strictEqual(await read(-3), 0);
+  // "Never indefinite" needs a number to be true: KEEP_WARM_MAX_MINUTES is 240.
+  assert.strictEqual(await read(10_000), 240);
+  assert.strictEqual(await read('an hour'), 0);
+});
+
 test('--out equal to --epub is refused HERE, before any spawn', async () => {
   const book = path.join(ROOT, 'same.epub');
   writeFixtureEpub(book, 'Nothing happens.');

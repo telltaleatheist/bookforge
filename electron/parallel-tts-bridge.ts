@@ -207,6 +207,8 @@ import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
+/* The text server's own command line, so the global `|vllm` sweep spares it. */
+import { TEXT_SERVER_PROTECT_RE } from './text-server';
 import { ownBatchPids, parseWmicProcessCsv } from '../shared/gpu/own-batch-processes';
 import {
   HIGGS_VOICE_FLAG,
@@ -1844,14 +1846,23 @@ function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
   // exclusion covers `narrator.serve` AND its descendants, because vLLM's engine-core
   // children are separate processes that do not carry `narrator.serve` in their own
   // command lines.
+  //
+  // THE TEXT SERVER IS THE SECOND THING `|vllm` WOULD CATCH (2026-09-08). It is
+  // `python -m vllm.entrypoints.openai.api_server` inside the same distro
+  // (electron/text-server.ts), it is cleaning or translating a book while a
+  // narration runs, and it has its OWN cooperative teardown — the arbiter stops
+  // it on drain, on a GPU yield and at quit. A batch job ending and SIGTERMing it
+  // is a book's cleanup dying halfway for a reason nobody can see, which is
+  // exactly what the Listen server's exclusion already exists to prevent.
   const pattern = scoped ? wslSessionPattern(sessionId) : `${NARRATOR_BATCH_RE}|vllm`;
+  const spare = `${SERVE_PROCESS_RE}|${TEXT_SERVER_PROTECT_RE}`;
   console.log(`[PARALLEL-TTS] Cleaning up orphaned WSL processes (${scoped ? `session ${sessionId}` : 'global'})...`);
   // Fire-and-forget async SIGTERM: best-effort reap of zombies from a crashed worker.
   // Verification that the guest/VRAM is actually clear happens in the spawn preflight.
   void wslPkillGraceful(pattern, {
     graceMs: 8000,
     label: scoped ? `orphan-cleanup ${sessionId}` : 'orphan-cleanup global',
-    excludeRe: SERVE_PROCESS_RE,
+    excludeRe: spare,
   })
     .catch((err) => console.warn('[PARALLEL-TTS] WSL orphan cleanup failed:', err));
 }

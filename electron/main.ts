@@ -12793,6 +12793,24 @@ app.on('before-quit', async (event) => {
     }
   });
 
+  // ── The TEXT server goes with it, and for the same reason ────────────────
+  //
+  // BookForge's own vLLM behind Foundry's clean/translate/simplify passes
+  // (electron/text-server.ts). It holds ~22 GB of the card and a keep-warm
+  // window can legitimately outlive the last pass, so quit must stop it rather
+  // than leave a windowless guest process holding the GPU. HERE — before the
+  // global WSL sweep below — for `stopFoundry`'s reason exactly: the sweep is a
+  // pattern kill in the same distro, and letting it take a CUDA-holding process
+  // out from under its own cooperative SIGTERM is the shape that wedges the VM.
+  await quitStepWithDeadline('stop the text server', 45_000, async () => {
+    try {
+      const { stopTextServer } = await import('./text-server.js');
+      await stopTextServer('BookForge is quitting');
+    } catch (err) {
+      console.error('[MAIN] Stopping the text server failed:', (err as Error).message);
+    }
+  });
+
   // Every open quire document owns an offscreen BrowserWindow and a session
   // partition. Neither outlives the app, so both are closed by name.
   await quitStepWithDeadline('close quire documents', 15_000, async () => {

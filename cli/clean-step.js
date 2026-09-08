@@ -68,7 +68,8 @@ const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
                      [--server ollama|vllm] [--model <tag>] [--ollama <url>] [--concurrency <n>]
-                     [--keep-model] [--library <root>] [--foundry-dist <dir>] [--dry-run]`;
+                     [--keep-model] [--keep-server] [--library <root>] [--foundry-dist <dir>]
+                     [--dry-run]`;
 
 function parseArgs(argv) {
   const a = {};
@@ -230,8 +231,24 @@ async function main() {
   if (server !== 'ollama' && server !== 'vllm') {
     throw new Error(`--server ${server} is not a server kind this door knows; it is ollama or vllm.`);
   }
-  const model = said(args.model) ?? (server === 'vllm' ? settings.vllmModel : settings.cleanTextModel);
   const ollama = said(args.ollama) ?? (server === 'vllm' ? settings.vllmUrl : settings.ollamaUrl);
+  /*
+   * THE MODEL, AND UNDER vLLM IT IS THE PROFILE'S SERVED NAME.
+   *
+   * Owen, 2026-09-08: *"verify that when i run translate/simplify in foundry,
+   * they will correctly use the 27b model in vllm and not the 9b."* Foundry
+   * proves the served id itself by asking /v1/models — but only when the request
+   * NAMED one, and `vllmModel` is empty by default. So the host names it:
+   * `servedModelForRequest` answers with the profile's served id for an empty
+   * field, and REFUSES BY NAME when the field asks for a different model. A
+   * `--model` typed on this line goes through the same check, so a dev run cannot
+   * quietly record a cleanup against a model that did not do it.
+   */
+  const textServer = require(path.join(BF_DIST, 'text-server.js'));
+  const profile = server === 'vllm' ? textServer.profileForKind('clean') : null;
+  const model = profile === null
+    ? (said(args.model) ?? settings.cleanTextModel)
+    : textServer.servedModelForRequest(said(args.model) ?? settings.vllmModel, profile, 'clean');
   let concurrency;
   if (args.concurrency !== undefined && args.concurrency !== true) {
     concurrency = Number(args.concurrency);
@@ -298,8 +315,14 @@ async function main() {
   console.log(`[clean] mints step       ${plan.stepId ?? '(none)'}`);
   console.log(`[clean] server           ${server}${said(args.server) ? ' (--server)' : ' (app-settings llmServer)'}`);
   console.log(`[clean] model            ${model.length > 0 ? model : '(none — the served model, resolved and recorded by the engine)'}`
-    + `${said(args.model) ? ' (--model)' : server === 'vllm' ? ' (app-settings vllmModel)' : ' (app-settings cleanTextModel)'}`);
+    + `${said(args.model) ? ' (--model)' : profile !== null ? ` (text-server profile ${profile.id})` : ' (app-settings cleanTextModel)'}`);
   console.log(`[clean] endpoint         ${ollama}${said(args.ollama) ? ' (--ollama)' : server === 'vllm' ? ' (app-settings vllmUrl)' : ' (app-settings ollamaUrl)'}`);
+  if (profile !== null) {
+    const route = textServer.textServerRoute(ollama);
+    console.log(`[clean] text server      ${route.manage
+      ? `BookForge starts and stops it (${profile.servedName}, ~/${profile.modelDir})`
+      : route.note}`);
+  }
   console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default (4)"}`);
   console.log(`[clean] keep model       ${request.keepModel === true
     ? 'yes — --keep-model, the weights stay resident'
@@ -337,18 +360,51 @@ async function main() {
     controller.abort();
   });
 
+  /*
+   * ── THE ARBITER'S BRACKET, for a dev run ────────────────────────────────────
+   *
+   * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
+   * Foundry starts no server, and "the CLI mirrors the app's code path" — so this
+   * door brings the same profile up that `queue-steps/foundry-job.ts` would, and
+   * takes it down again unless `--keep-server` says somebody is making several
+   * runs back to back. The seconds are printed because that is the number a dev
+   * run exists to measure (~110 s on this PC, 2026-09-08).
+   */
+  let startedServer = null;
+  if (profile !== null && textServer.textServerRoute(ollama).manage) {
+    textServer.noteTextQueueBusy();
+    const readyAt = Date.now();
+    const up = await textServer.ensureTextServer(profile.id, (line) => console.log(`[clean] ${line}`));
+    startedServer = profile;
+    console.log(`[clean] text server      ${up.servedName} at ${up.url} `
+      + `(${((Date.now() - readyAt) / 1000).toFixed(1)}s to be ready)`);
+  }
+
   const startedAt = Date.now();
   let last = null;
-  const row = await jobQueue.runJob(request, {
-    parentStep,
-    signal: controller.signal,
-    onProgress: (line) => {
-      const counted = parseFoundryProgressLine(line);
-      if (counted === null) { console.log(`[clean] ${line}`); return; }
-      last = counted;
-      console.log(`clean-text: ${counted.page}/${counted.total}`);
-    },
-  });
+  let row;
+  try {
+    row = await jobQueue.runJob(request, {
+      parentStep,
+      signal: controller.signal,
+      onProgress: (line) => {
+        const counted = parseFoundryProgressLine(line);
+        if (counted === null) { console.log(`[clean] ${line}`); return; }
+        last = counted;
+        console.log(`clean-text: ${counted.page}/${counted.total}`);
+      },
+    });
+  } finally {
+    // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
+    // stay.
+    if (startedServer !== null) {
+      if (args['keep-server'] === true) {
+        console.log(`[clean] --keep-server: ${startedServer.servedName} is left running on the card.`);
+      } else {
+        await textServer.stopTextServer('the clean run finished');
+      }
+    }
+  }
 
   const seconds = (Date.now() - startedAt) / 1000;
   const blocks = last === null ? null : last.total;

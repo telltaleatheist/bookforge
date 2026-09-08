@@ -44,6 +44,27 @@ if (!fs.existsSync(path.join(DIST, 'foundry-host-queue.js'))) {
   process.exit(1);
 }
 
+/*
+ * A MACHINE FOR THE STEP TO READ, and it is this keeper's own temp folder.
+ *
+ * `queue-steps/foundry-job.ts` asks a language-model row which server this machine
+ * speaks to before it runs — `cleanTextEngineSettings()`, out of
+ * `<userData>/app-settings.json` — because that is what decides whether BookForge
+ * starts its text server for the row (electron/text-server.ts, 2026-09-08). Under
+ * bare node that read has no Electron app to ask for `userData`, so the shim is
+ * loaded, and APPDATA is pointed HERE first so the answer is this run's empty
+ * settings file rather than the developer's real one. Empty reads as ollama, which
+ * is the arrangement every test below assumes: nothing is started, nothing is
+ * stopped, and the row is exactly what it was.
+ */
+const SETTINGS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-hostq-userdata-'));
+fs.mkdirSync(path.join(SETTINGS_ROOT, 'BookForge'), { recursive: true });
+if (process.platform === 'win32') process.env.APPDATA = SETTINGS_ROOT;
+else if (process.platform === 'darwin') process.env.HOME = SETTINGS_ROOT;
+else process.env.XDG_CONFIG_HOME = SETTINGS_ROOT;
+process.env.BOOKFORGE_USERDATA_DIR = path.join(SETTINGS_ROOT, 'BookForge');
+require(path.join(REPO, 'cli', 'electron-stub.js'));
+
 const engine = require(path.join(DIST, 'queue-engine.js'));
 const host = require(path.join(DIST, 'foundry-host-queue.js'));
 

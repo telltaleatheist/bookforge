@@ -214,13 +214,29 @@ async function runCleanLines(opts, deps) {
   const receiptPath = `${recordsPath}.receipt.json`;
   fs.writeFileSync(bookPath, bookFileFor(parsed.items, { engine: installed.version, language }), 'utf8');
 
+  /*
+   * WHICH SERVER, AND THEREFORE WHICH TWO FLAGS. Foundry 19f5e70 (Owen,
+   * 2026-09-08: "lets build in vllm batching. ollama batching doesnt work") gave
+   * `clean-text` a `--server ollama|vllm`, declared and never sniffed from a URL.
+   * This door gets exactly what the bare-EPUB door gets, and by the same rules:
+   *
+   *   · `--server vllm` is WRITTEN and `--server ollama` is NOT, so the ollama
+   *     line is byte-identical to what it was before vLLM existed;
+   *   · `--model` is OMITTED when the model is empty — never `--model ""` —
+   *     because empty is vLLM's meaningful default ("whatever it is serving"),
+   *     which the engine resolves from /v1/models and RECORDS.
+   *
+   * `--keep-model` is untouched and stays what it was: an ollama word (keep the
+   * weights resident), meaningless under vLLM and harmless there.
+   */
   const args = [
     'clean-text',
     '--book', bookPath,
     '--records', recordsPath,
     '--stamp', stampPath,
     '--endpoint', settings.endpoint,
-    '--model', settings.model,
+    ...(settings.server === 'vllm' ? ['--server', 'vllm'] : []),
+    ...(settings.model.length > 0 ? ['--model', settings.model] : []),
     ...(opts.keepModel ? ['--keep-model'] : []),
   ];
   log(
@@ -230,19 +246,58 @@ async function runCleanLines(opts, deps) {
   const resumed = fs.existsSync(recordsPath);
   if (resumed) log(`[clean-lines] ${recordsPath} exists; the engine asks only about lines it has no answer for.`);
 
+  /*
+   * ── THE ARBITER'S BRACKET ───────────────────────────────────────────────────
+   *
+   * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
+   * Foundry starts no server; BookForge does, and a dev run through this door is
+   * no different from a queued one — "the CLI mirrors the app's code path".
+   *
+   * Only under vLLM, and only when the endpoint is the server this machine
+   * manages: any other URL is somebody else's and is used exactly as given. The
+   * stop is unconditional on the way out unless `--keep-server` was asked for,
+   * which is the flag for somebody about to make several runs back to back.
+   */
+  let started = null;
+  if (settings.server === 'vllm' && d.textServerRoute(settings.endpoint).manage) {
+    d.noteTextQueueBusy();
+    const profile = d.profileForKind('clean');
+    const startedAt = Date.now();
+    const up = await d.ensureTextServer(profile.id, (line) => log(`[clean-lines] ${line}`));
+    started = profile;
+    log(
+      `[clean-lines] the text server is serving ${up.servedName} at ${up.url} `
+      + `(${((Date.now() - startedAt) / 1000).toFixed(1)}s to be ready)`);
+  } else if (settings.server === 'vllm') {
+    log(`[clean-lines] ${d.textServerRoute(settings.endpoint).note}`);
+  }
+
   const t0 = Date.now();
-  const result = await d.runFoundry(args, {
-    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-    onProgress: (line) => {
-      const counted = d.parseCleanTextProgress(line);
-      if (counted !== null) {
-        log(`[clean-lines] ${counted.done}/${counted.total}`);
-        return;
+  let result;
+  try {
+    result = await d.runFoundry(args, {
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      onProgress: (line) => {
+        const counted = d.parseCleanTextProgress(line);
+        if (counted !== null) {
+          log(`[clean-lines] ${counted.done}/${counted.total}`);
+          return;
+        }
+        const trimmed = line.trim();
+        if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
+      },
+    });
+  } finally {
+    // Success or failure alike: a failed run must hand the card back exactly as a
+    // finished one does.
+    if (started !== null) {
+      if (opts.keepServer === true) {
+        log(`[clean-lines] --keep-server: ${started.servedName} is left running on the card.`);
+      } else {
+        await d.stopTextServer('the clean-lines run finished');
       }
-      const trimmed = line.trim();
-      if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
-    },
-  });
+    }
+  }
   if (result.code !== 0) {
     throw new Error(
       `foundry clean-text exited ${result.code}. What it said:\n${(result.stderr || '').slice(-4000)}`);
@@ -287,6 +342,10 @@ function defaultDeps() {
   const bridge = require('../dist/electron/foundry-bridge.js');
   const hostQueue = require('../dist/electron/foundry-host-queue.js');
   const bank = require('../dist/shared/vlm/readings-bank.js');
+  // The arbiter. Its five doors are named individually rather than the module
+  // being handed over, so a keeper replacing one of them replaces a function and
+  // not a namespace.
+  const textServer = require('../dist/electron/text-server.js');
   return {
     foundryVersion: bridge.foundryVersion,
     runFoundry: bridge.runFoundry,
@@ -294,6 +353,11 @@ function defaultDeps() {
     parseCleanTextProgress: door.parseCleanTextProgress,
     foundryVersionAtLeast: bank.foundryVersionAtLeast,
     FOUNDRY_VERSION_FOR_CLEAN_TEXT: hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT,
+    textServerRoute: textServer.textServerRoute,
+    profileForKind: textServer.profileForKind,
+    ensureTextServer: textServer.ensureTextServer,
+    noteTextQueueBusy: textServer.noteTextQueueBusy,
+    stopTextServer: textServer.stopTextServer,
   };
 }
 

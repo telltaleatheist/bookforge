@@ -52,6 +52,26 @@ import { foundryVersion } from '../foundry-bridge';
  * answer to.
  */
 import { foundryVersionAtLeast } from '../../shared/vlm/readings-bank';
+/*
+ * THE ARBITER, and the ONE reader of the machine's language-model settings.
+ *
+ * `cleanTextEngineSettings` is BookForge's mirror of Foundry's `readAppSettings`
+ * (electron/narration-clean-text.ts explains why it is MIRRORED and not
+ * imported: `foundry-app/` is built output of a separate program with its own
+ * tsconfig, and importing into it is the subtree merge the seal exists to
+ * prevent). Reading it here rather than writing a second reader is what keeps
+ * this step and the bare-EPUB door from ever disagreeing about which server this
+ * machine speaks to.
+ */
+import { cleanTextEngineSettings } from '../narration-clean-text';
+import {
+  ensureTextServer,
+  noteTextQueueBusy,
+  noteTextQueueIdle,
+  profileForKind,
+  servedModelForRequest,
+  textServerRoute,
+} from '../text-server';
 
 /**
  * Which pool a Foundry job contends for.
@@ -140,63 +160,142 @@ export const foundryJobStep: StepModule = {
       }
     }
     /*
+     * ── THE TEXT SERVER, STARTED BEFORE THE ACT AND STOPPED AFTER IT ──────────
+     *
+     * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
+     * Foundry speaks `--server vllm` and starts nothing (their VENDORED.md's last
+     * paragraph); this is the moment BookForge owns.
+     *
+     * Under `llmServer: 'ollama'` NOTHING BELOW HAPPENS and the row is exactly
+     * what it was. Under vLLM, and only when the endpoint is the server this
+     * machine manages, the profile for this act is brought up first — staged if
+     * its weights are absent, swapped if the wrong model is serving — and
+     * released in the `finally`, success or failure alike, so a refused row never
+     * leaves twenty gigabytes reserved against nothing.
+     *
+     * AND THE MODEL IS ASSERTED ONTO THE REQUEST. Owen, same day: *"verify that
+     * when i run translate/simplify in foundry, they will correctly use the 27b
+     * model in vllm and not the 9b."* Foundry's own guard is its `/v1/models`
+     * proof, but that runs INSIDE the engine, after the spawn, and only when the
+     * request named a model at all — `vllmModel` is EMPTY by default and means
+     * "whatever it is serving", which is precisely the case where a translation
+     * against a 9B server would run and be recorded as a translation. So the host
+     * names the profile's served id first (`servedModelForRequest`, which refuses
+     * by name when the request asks for a different one), and Foundry's proof is
+     * the second belt.
+     *
+     * The request is COPIED rather than mutated: `FoundryJobRequest` is stored
+     * "VERBATIM and never normalised on the way in" (foundry-host-queue.ts), and
+     * writing a run-time decision back into the saved row would make the board
+     * claim Foundry composed something it did not.
+     */
+    const kind = config.request.kind;
+    /*
+     * THE THREE THAT ASK A LANGUAGE MODEL, as a narrowed value rather than a
+     * boolean: `read` is the VISION model and has its own server
+     * (electron/vlm-page-server.ts), and a rendering asks nothing at all. Written
+     * this way so `profileForKind` is handed a kind the type system has already
+     * agreed is a language act — the day a fourth arrives, this line is the
+     * compile error.
+     */
+    const act: 'clean' | 'translate' | 'simplify' | null =
+      kind === 'clean' || kind === 'translate' || kind === 'simplify' ? kind : null;
+    // Read only for the rows it can possibly govern: a read and a rendering have
+    // no business opening the language-model settings.
+    const settings = act === null ? null : await cleanTextEngineSettings();
+    let request = config.request;
+    let bracketed = false;
+    let keepWarmMinutes = 0;
+    if (act !== null && settings !== null && settings.server === 'vllm') {
+      const route = textServerRoute(settings.endpoint);
+      if (route.manage) {
+        noteTextQueueBusy();
+        bracketed = true;
+        keepWarmMinutes = settings.keepWarmMinutes;
+        const profile = profileForKind(act);
+        request = {
+          ...config.request,
+          model: servedModelForRequest(config.request['model'], profile, act),
+        };
+        const up = await ensureTextServer(profile.id, (line) => {
+          ctx.report({ message: line, detail: line });
+        });
+        console.log(`[foundry-job] ${act} runs against ${up.servedName} at ${up.url}`);
+      } else {
+        // Not ours to start. Said on the row, because "the endpoint is somebody
+        // else's" is the difference between a slow start and a wrong model.
+        ctx.report({ message: route.note, detail: route.note });
+      }
+    }
+
+    /*
      * SAID, NOT SUBSTITUTED. `runJob` arrives with the Foundry seam; a subtree
      * that predates it cannot execute this row, and the honest outcome is a
      * failed row naming the reason — not a silent skip, and certainly not a quiet
      * fall back to Foundry's own queue, which is the exact thing the ruling
      * removed. `foundryRunner()` throws that sentence.
      */
-    const row = await foundryRunner()(config.request, {
-      parentStep: config.parentStep,
-      signal: ctx.signal,
+    let row;
+    try {
+      row = await foundryRunner()(request, {
+        parentStep: config.parentStep,
+        signal: ctx.signal,
+        /*
+         * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
+         *
+         * This callback used to be declared as taking a parsed `{done, total}`
+         * object, which Foundry has never sent — so `progress.done ?? 0` read a
+         * property off a string, every count was 0, `total > 0` never became
+         * true, and no hosted read reported anything at all between the seam
+         * landing and 2026-08-21. Their `Job` has always been built by parsing
+         * these same strings; there is no parsed-progress door for a host.
+         */
+        onProgress: (line) => {
+          const counted = parseFoundryProgressLine(line);
+          if (counted === null) {
+            /*
+             * NOT A COUNT, so it BECOMES the note — the line the shelf shows when
+             * the fraction cannot move: a block the model is arguing with, a page
+             * refused for a cap, a retry. It is what a person watching decides
+             * whether to kill a run on, and a frozen bar with nothing beside it is
+             * indistinguishable from a wedge.
+             *
+             * `message` takes it too, because their `Job.message` is the job log
+             * one line deep — every line, counted or not.
+             */
+            ctx.report({ message: line, detail: line });
+            return;
+          }
+          ctx.report({
+            percent: counted.total > 0
+              ? Math.min(100, Math.round((counted.page / counted.total) * 100))
+              : 0,
+            message: line,
+            /*
+             * A COUNT CLEARS THE NOTE, and that is what makes the note mean
+             * "since". Their rule, kept exactly: a note that lingered would still
+             * be on screen ten pages later, which is the same lie in the other
+             * direction. Null erases; omitting the field would leave it standing.
+             */
+            detail: null,
+            foundryPhase: counted.phase,
+            /*
+             * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
+             * renders them back as "Reading 41 / 317 pages", and a percentage
+             * cannot be un-divided, so the round trip has to carry the originals.
+             */
+            metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
+          });
+        },
+      });
+    } finally {
       /*
-       * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
-       *
-       * This callback used to be declared as taking a parsed `{done, total}`
-       * object, which Foundry has never sent — so `progress.done ?? 0` read a
-       * property off a string, every count was 0, `total > 0` never became
-       * true, and no hosted read reported anything at all between the seam
-       * landing and 2026-08-21. Their `Job` has always been built by parsing
-       * these same strings; there is no parsed-progress door for a host.
+       * SUCCESS OR FAILURE ALIKE. A row that threw must hand the card back
+       * exactly as a finished one does; `noteTextQueueIdle(0)` — the default —
+       * stops the server now, and a keep-warm window always has an end.
        */
-      onProgress: (line) => {
-        const counted = parseFoundryProgressLine(line);
-        if (counted === null) {
-          /*
-           * NOT A COUNT, so it BECOMES the note — the line the shelf shows when
-           * the fraction cannot move: a block the model is arguing with, a page
-           * refused for a cap, a retry. It is what a person watching decides
-           * whether to kill a run on, and a frozen bar with nothing beside it is
-           * indistinguishable from a wedge.
-           *
-           * `message` takes it too, because their `Job.message` is the job log
-           * one line deep — every line, counted or not.
-           */
-          ctx.report({ message: line, detail: line });
-          return;
-        }
-        ctx.report({
-          percent: counted.total > 0
-            ? Math.min(100, Math.round((counted.page / counted.total) * 100))
-            : 0,
-          message: line,
-          /*
-           * A COUNT CLEARS THE NOTE, and that is what makes the note mean
-           * "since". Their rule, kept exactly: a note that lingered would still
-           * be on screen ten pages later, which is the same lie in the other
-           * direction. Null erases; omitting the field would leave it standing.
-           */
-          detail: null,
-          foundryPhase: counted.phase,
-          /*
-           * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
-           * renders them back as "Reading 41 / 317 pages", and a percentage
-           * cannot be un-divided, so the round trip has to carry the originals.
-           */
-          metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
-        });
-      },
-    });
+      if (bracketed) noteTextQueueIdle(keepWarmMinutes);
+    }
 
     /*
      * A STOP IS NOT A FAILURE, and the row is what lets this side tell them

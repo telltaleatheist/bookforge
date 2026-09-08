@@ -135,6 +135,11 @@ const SUITES = [
   'test-narration-chain',
   'test-text-normalization',
   'test-narration-reading-law',
+  // The arbiter that starts and stops the text-pass vLLM (Owen, 2026-09-08:
+  // "build that piece"). Every branch is driven through the module's injected
+  // deps — no GPU, no WSL, no weights — plus the agreements it cannot fake: the
+  // launcher's port and dtype knobs, and the doors that bracket their spawns.
+  'test-text-server',
   'test-narration-clean-text-door',
   'test-narration-text-readiness',
   'test-prompt-examples',

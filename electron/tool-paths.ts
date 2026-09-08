@@ -2083,6 +2083,28 @@ export function getWslCondaPath(): string {
   return state.config.wslCondaPath || '/home/$USER/miniconda3/bin/conda';
 }
 
+/**
+ * `<conda root>/envs/<name>` inside the guest — a conda env's PREFIX, which is
+ * what a launcher needs when it must build `CUDA_HOME`, `PATH` and a `bin/python`
+ * out of the environment rather than merely activate it.
+ *
+ * ONE derivation, here beside `getWslCondaPath` because that is the thing it
+ * derives from. `higgs-spawn.ts` had it as a private `wslCondaBase` and
+ * `text-server.ts` needs the identical answer; two spellings of "where does
+ * `<root>/bin/conda` say the envs live" is one that can be fixed while the other
+ * is not.
+ *
+ * THE CONDA PATH IS AN ARGUMENT, NOT A CALL, and that is not fussiness: reading
+ * it inside this function would put it past the seam `tools/test-serve-spawn-env.js`
+ * uses — that keeper stubs `getWslCondaPath` on this module to assert the exact
+ * environment a Higgs spawn exports, and a derivation that called it internally
+ * answered with the unconfigured placeholder instead of the stub (caught by that
+ * keeper, 2026-09-08). Callers pass `getWslCondaPath()`.
+ */
+export function wslCondaEnvPrefix(condaPath: string, envName: string): string {
+  return `${condaPath.replace(/\/bin\/conda$/, '')}/envs/${envName}`;
+}
+
 /** The default guest sessions directory name, under the guest's home. */
 const WSL_SESSIONS_DIRNAME = 'bookforge-sessions';
 

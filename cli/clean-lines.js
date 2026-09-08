@@ -34,7 +34,9 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.input || args.input === true) {
-    throw new Error('usage: clean-lines.js --input <lines.txt> [--output <cleaned.txt>] --language <en> [--keep-model]');
+    throw new Error(
+      'usage: clean-lines.js --input <lines.txt> [--output <cleaned.txt>] --language <en> '
+      + '[--keep-model] [--keep-server]');
   }
   if (!args.language || args.language === true) {
     throw new Error('--language is required (the plain primary subtag the lines are in, e.g. en)');
@@ -53,6 +55,15 @@ async function main() {
     outputPath,
     language: String(args.language),
     keepModel: args['keep-model'] === true,
+    /*
+     * `--keep-server` IS NOT `--keep-model`. The latter is an ollama word — leave
+     * the weights resident for its keep_alive window — and it is meaningless
+     * under vLLM. This one says: leave BookForge's OWN text server up when the
+     * run ends, for somebody about to make several runs back to back, because
+     * starting it again costs ~110 s (measured 2026-09-08). Unsaid, the server is
+     * stopped and the card goes back to whatever is queued for it.
+     */
+    keepServer: args['keep-server'] === true,
   });
   console.log(JSON.stringify({
     output: result.outputPath,
