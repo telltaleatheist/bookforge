@@ -1286,6 +1286,31 @@ function ourRow(id: string): boolean {
 export function setHostQueueRows(projectDir: string, rows: readonly FoundryJobRow[]): void {
   hostRowsByProject.set(fold(projectDir), rows.map(copyOf));
   changed();
+  /*
+   * ── AND THE PUSH IS NEWS, WHICH MEANS IT IS A REASON TO LOOK ───────────────
+   *
+   * `changed()` NOTIFIES; it does not schedule. So a row of ours waiting on one
+   * of the host's — which is every deferred export ordered from a promised step
+   * — sat in `queued` after its parent went `done`, because the only thing that
+   * had happened was a push, and nothing in this module wakes on one. It would
+   * start on the next unrelated thing that pumped: a press in the window, or one
+   * of our own jobs settling. For somebody who pressed Narrate and walked away
+   * that is never, and Owen watched an EPUB that takes seconds sit for two
+   * minutes and stopped it (2026-09-08).
+   *
+   * A HOST'S PUSH IS THE ONE ANNOUNCEMENT THAT A DEPENDENCY MAY HAVE SETTLED, so
+   * it is exactly the moment to reconsider. `pump` re-runs `reconcileChains`
+   * first, which is what re-reads `chainVerdict` against the rows that just
+   * arrived — and that is also what frees a row whose parent has finished AND
+   * been cleared away, and cancels one whose parent is never coming.
+   *
+   * ONLY WHEN WE ARE HOLDING SOMETHING, because a push arrives for every progress
+   * tick of every row the host owns, and `reconcileChains` reads a manifest per
+   * waiting row it cannot decide from memory. With nothing of ours queued there
+   * is nothing for a pass to start or to cancel, so the guard costs one array
+   * scan and saves a disk read on news that cannot concern us.
+   */
+  if (jobs.some((job) => job.state === 'queued')) void pump();
 }
 
 /**
@@ -1336,6 +1361,11 @@ export function seedHostQueueRows(projectDir: string): void {
  */
 export function hostQueueDrained(): void {
   noteQueueIdle(readAppSettings().keepServerWarmMinutes);
+  // AND IT IS NEWS TOO, on `setHostQueueRows`' reasoning and more sharply: the
+  // host having nothing left means every parent a row of ours was waiting on has
+  // either landed or gone, which is precisely the pair `reconcileChains` exists
+  // to tell apart. Same guard, and drained is rare enough that it hardly matters.
+  if (jobs.some((job) => job.state === 'queued')) void pump();
 }
 
 function changed(): void {
