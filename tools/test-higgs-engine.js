@@ -2410,9 +2410,9 @@ check('a measured pace becomes the length band in the document; a malformed pace
   // THE DOCUMENT'S PACE IS THE MEDIAN — the reference the two edges are ratios
   // of, and the number narrator's tracker starts centred on.
   assert.strictEqual(doc.paceCharsPerSec, 17.2);
-  assert.strictEqual(higgs.PACE_GUARD_SHORT_FACTOR, 1.2);
+  assert.strictEqual(higgs.PACE_GUARD_SHORT_FACTOR, 1.3);
   assert.strictEqual(higgs.PACE_GUARD_LONG_FACTOR, 1.3);
-  assert.strictEqual(doc.maxCharsPerSec, Math.round(17.2 * 1.2 * 100) / 100);
+  assert.strictEqual(doc.maxCharsPerSec, Math.round(17.2 * 1.3 * 100) / 100);
   assert.strictEqual(doc.minCharsPerSec, Math.round(17.2 / 1.3 * 100) / 100);
   assert.deepStrictEqual(higgs.higgsLengthBand(pace), {
     paceCharsPerSec: doc.paceCharsPerSec,

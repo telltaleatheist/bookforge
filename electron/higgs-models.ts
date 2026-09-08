@@ -369,8 +369,22 @@ export interface HiggsPace {
  * and over every clean take. The rule this replaces — the ladder's p99 × 1.15 —
  * put mistborn's short edge at 19.27, which is 1.37× Shift's own pace: it
  * missed all 8 and shipped takes at 0.76× of their expected length.
+ *
+ * RAISED 1.2 → 1.3 (Owen, 2026-09-08, "loosen it to a reasonable number").
+ * MEASURED on the Mac, Shift (mistborn, MLX arm, batches of 32): the run's
+ * TRACKED pace settled at 13.1 chars/s — 7 % under the book's shipped median of
+ * 14.09, because the slow opening chunks seed it — so the 1.2 edge landed at
+ * 15.7 and re-rolled healthy brisk prose at 15.75–16.15 chars/s (four of ~28
+ * chunks in one slice, each a serial solo render; the re-rolled takes came back
+ * only 3–8 % longer with the same words — fast speech, not a truncation). Every
+ * REAL truncation measured above sat at ≥ 17.3 chars/s absolute. 1.3 × 13.1 =
+ * 17.0: still under the mildest real truncation, clear of every false alarm.
+ * A tracked pace that converges to the book's median (14.09 × 1.3 = 18.3)
+ * would sit ABOVE the 17.3–18.6 truncation band — so this edge now leans on
+ * the tracker starting low; if the tracker is ever re-seeded from the shipped
+ * median, revisit the factor with the numbers above.
  */
-export const PACE_GUARD_SHORT_FACTOR = 1.2;
+export const PACE_GUARD_SHORT_FACTOR = 1.3;
 
 /**
  * THE LONG EDGE: below `pace ÷ 1.3` a take ran on — it kept talking past the
