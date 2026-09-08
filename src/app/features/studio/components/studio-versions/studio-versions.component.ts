@@ -273,20 +273,13 @@ const AUDIO_EXTS = new Set([
                       @if (isTtsVariant(v)) {
                         <span class="chip on good" title="Narration reads this version">TTS file</span>
                       }
-                      <!-- Owen, 2026-08-18: "change add to archive to something
-                           like 'keep file'… the user is being asked if this should
-                           be a definitive, final version of a file or if it's a
-                           throwaway after tts is done."
-
-                           So the chip says which it IS. output/ is cleared when a
-                           book's output is deleted, so a Foundry export lives
-                           there until the user says it is one of the book's own
-                           files; pressing moves it into the protected archive/ and
-                           un-nests the row. -->
-                      @if (isFoundryExport(v)) {
-                        <button class="chip warn" (click)="addToArchive(v); $event.stopPropagation()"
-                                title="Temporary: this export lives in output/, which is cleared when this book's output is deleted. Press to keep it for good — the file moves into the archive as one of the book's own versions.">Temporary — keep</button>
-                      }
+                      <!-- The "Temporary — keep" chip stood here until 2026-09-08.
+                           Owen: "the assumption if they generate one is that they
+                           want to keep an epub from that specific configuration …
+                           remove the temporary/keep button - it can sit under its
+                           parent chain." An export is one of the book's versions
+                           from the moment it lands, nested under what it was made
+                           from, and delete-output leaves it alone. -->
                     </div>
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
@@ -1390,9 +1383,6 @@ export class StudioVersionsComponent {
   });
 
   /** Was this version landed by a Foundry export? (Cleared by "Add to archive".) */
-  isFoundryExport(v: ProjectVariant): boolean {
-    return !!v.foundrySource;
-  }
 
   /** The version the user marked as this book's TTS file. */
   isTtsVariant(v: ProjectVariant): boolean {
@@ -1406,36 +1396,6 @@ export class StudioVersionsComponent {
    * marked before today still narrates the file it was pointed at.
    */
 
-  /**
-   * "Keep permanently" (called "Add to archive" until 2026-08-18): promote a
-   * Foundry export to a top-level version.
-   *
-   * Owen, 2026-08-17: "an 'add to archive' button or something that moves it to
-   * the top level." Renamed to say what it ASKS (Owen, 2026-08-18: "the user is
-   * being asked if this should be a definitive, final version of a file or if
-   * it's a throwaway after tts is done"); the act is unchanged. It MOVES the file out of output/ — which delete-output wipes
-   * — into the protected archive/, and the version stops being drawn nested
-   * because its provenance is cleared. No confirm: it is a move within the
-   * project, Delete is still there, and the row does not go anywhere.
-   */
-  async addToArchive(v: ProjectVariant): Promise<void> {
-    const pid = this.projectId();
-    if (!pid) return;
-    const res = await this.electron.variantPromoteToArchive(pid, v.id);
-    if (!res.success) {
-      await this.electron.showMessageDialog({
-        title: 'Could not add this to the archive',
-        message: res.error || 'The file was not moved. Nothing was changed — try again.',
-        type: 'error',
-      });
-      return;
-    }
-    this.notices.notify(
-      `“${this.variantTitle(v)}” is now one of this book's own files. It moved out of output/, `
-      + 'which is cleared when you delete a book\'s output.');
-    await this.loadVariants();
-    this.changed.emit();
-  }
 
   /** Audio section: the audiobook editions — the single home for every M4B,
    *  whether uploaded via "+ Add version" or produced by TTS. */

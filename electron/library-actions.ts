@@ -848,93 +848,73 @@ export async function addFoundryOutputVariant(
 }
 
 /**
- * "Add to archive": promote a Foundry export to a top-level version of the book.
+ * DELETE A BOOK'S OUTPUT — records first, files last, and a Foundry export is
+ * not output.
  *
- * Owen, 2026-08-17: "maybe we have an option to make it an archive file if we
- * want. Like an 'add to archive' button or something that moves it to the top
- * level."
+ * Owen, 2026-09-08: *"the assumption if they generate one is that they want to
+ * keep an epub from that specific configuration … remove the temporary/keep
+ * button - it can sit under its parent chain."* Until then an export Foundry
+ * made lived in `output/` "on loan": this act wiped it with the audiobooks, and
+ * a "Temporary — keep" button moved it into `archive/` and severed its nesting.
+ * The button is gone. An export the person asked for IS one of the book's
+ * versions from the moment it lands, nested under the version it was made
+ * from, and this act leaves it — file and record — exactly where it is.
  *
- * A MOVE, not a copy — the file leaves `output/` (where `delete-output` may wipe
- * it) for the protected `archive/` folder, under a name unique THERE. One file
- * before, one file after; the version keeps its id, so nothing pointing at it
- * (the TTS mark above all) is disturbed.
- *
- * ── Why the provenance is CLEARED ──────────────────────────────────────────
- *
- * `foundrySource` is what makes a row render nested under its parent, and
- * promotion is the user saying this is their own file at the top level. Keeping
- * the provenance would leave it drawn as a derivative of another version while
- * living in the folder reserved for originals — the record and the picture
- * disagreeing. Clearing it also releases the (projectKey, fileName) pair, which
- * is the deliberate consequence: the NEXT export of that same file lands as a
- * fresh version in output/ rather than overwriting the copy the user just chose
- * to keep. That is the behaviour promotion is for.
+ * RECORDS FIRST, FILES LAST, and it throws rather than proceeding: a failed
+ * write leaves the audiobook where it is instead of deleting it out from under
+ * a manifest that still points at it (the "CRITICAL ORDERING" rule
+ * `audiobook:delete-output` states in as many words). Only `output/` is
+ * cleared. A professionally-read upload lives in `archive/` and is not this
+ * act's to forget.
  */
-export async function promoteVariantToArchive(
-  projectId: string,
-  variantId: string,
-): Promise<{ success: boolean; path?: string; error?: string }> {
-  try {
-    const projectDir = manifestService.getProjectPath(projectId);
-    const got0 = await manifestService.getManifest(projectId);
-    if (!got0.manifest) return { success: false, error: 'Project not found' };
-    const variant = manifestService.getVariants(got0.manifest).variants.find((v) => v.id === variantId);
-    if (!variant) return { success: false, error: `Version ${variantId} not found` };
-    if (!variant.foundrySource) {
-      return {
-        success: false,
-        error: 'That version is already one of this book\'s own files, so there is nothing to add to '
-          + 'the archive. Only a version Foundry exported can be promoted.',
-      };
-    }
-    const from = normalizeFsPath(path.join(projectDir, ...variant.path.split('/')));
-    if (!fsSync.existsSync(from)) {
-      return {
-        success: false,
-        error: `${path.basename(from)} is not on disk, so there is nothing to move into the archive. `
-          + 'It may have been deleted, or output/ may have been cleared.',
-      };
-    }
-    const archiveDir = path.join(projectDir, 'archive');
-    await fs.mkdir(archiveDir, { recursive: true });
-    const name = uniqueArchiveName(archiveDir, path.basename(from));
-    const to = path.join(archiveDir, name);
-    // Same project directory, so the same volume: a rename is atomic and leaves
-    // no window in which the file is in both folders or neither.
-    await fs.rename(from, to);
-
-    const saved = await manifestService.modifyManifest(projectId, (mf) => {
-      const cur = manifestService.getVariants(mf);
-      mf.variants = cur.variants.map((v) => {
-        if (v.id !== variantId) return v;
-        /*
-         * THE PROVENANCE MOVES RATHER THAN DYING. `foundrySource` has to go — it
-         * is what draws "Temporary — keep" and what nests the row under its
-         * parent, and neither is true of a file that is now one of the book's
-         * own. But the EXPORT SWEEP builds its already-landed set from that same
-         * field, so simply deleting it told the sweep that the file still sitting
-         * in Foundry's tray had never been taken: the next sweep landed it again
-         * as a SECOND version, in the position the user had just cleared. That is
-         * what Owen hit on 2026-08-19, and his Pokemon project was carrying two
-         * archive versions and a re-landed export when it was found.
-         */
-        const promoted = { ...v, path: `archive/${name}`, promotedFrom: v.foundrySource };
-        delete promoted.foundrySource;
-        return promoted;
-      });
+export async function deleteProjectOutput(
+  projectDir: string,
+): Promise<{ deletedFiles: string[]; keptExports: string[] }> {
+  const outputDir = path.join(projectDir, 'output');
+  if (!fsSync.existsSync(outputDir)) return { deletedFiles: [], keptExports: [] };
+  const projectId = path.basename(projectDir);
+  const inOutput = (p?: string): boolean =>
+    (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().startsWith('output/');
+  const keptExports: string[] = [];
+  if (manifestService.projectExists(projectId)) {
+    const saved = await manifestService.modifyManifest(projectId, (m) => {
+      if (m.outputs) {
+        if (inOutput(m.outputs.audiobook?.path)) delete m.outputs.audiobook;
+        for (const [pair, out] of Object.entries(m.outputs.bilingualAudiobooks || {})) {
+          if (inOutput((out as { path?: string })?.path)) {
+            delete m.outputs.bilingualAudiobooks![pair];
+          }
+        }
+      }
+      if (Array.isArray(m.variants)) {
+        m.variants = m.variants.filter((v) => {
+          if (!inOutput(v.path)) return true;
+          if (v.foundrySource !== undefined) {
+            keptExports.push(path.basename(v.path.replace(/\\/g, '/')));
+            return true;
+          }
+          return false;
+        });
+        if (m.primaryVariantId && !m.variants.some((v) => v.id === m.primaryVariantId)) {
+          m.primaryVariantId = m.variants[0]?.id;
+        }
+      }
     });
-    if (!saved?.success) {
-      // The file moved but the record still names output/. Put it back rather
-      // than leaving the manifest pointing at a path with nothing on it.
-      try { await fs.rename(to, from); } catch { /* the move below is now the report */ }
-      return {
-        success: false,
-        error: saved?.error || 'Failed to update project — the version was not moved into the archive.',
-      };
+    if (!saved.success) {
+      throw new Error(
+        `Nothing was deleted: ${projectId}'s records of its output files could not be cleared `
+        + `(${saved.error}), and removing the files first would leave the project naming an `
+        + 'audiobook that is gone.');
     }
-    return { success: true, path: `archive/${name}` };
-  } catch (err) {
-    console.error('[library-actions] promoteVariantToArchive:', err);
-    return { success: false, error: (err as Error).message };
   }
+  const kept = new Set(keptExports.map((name) => name.toLowerCase()));
+  const deletedFiles: string[] = [];
+  for (const file of await fs.readdir(outputDir)) {
+    if (kept.has(file.toLowerCase())) continue;
+    await fs.rm(path.join(outputDir, file), { recursive: true, force: true });
+    deletedFiles.push(file);
+  }
+  // The directory itself, when nothing kept is left in it.
+  try { await fs.rmdir(outputDir); } catch { /* an export still lives here */ }
+  return { deletedFiles, keptExports };
 }

@@ -1140,8 +1140,6 @@ export interface ElectronAPI {
     setProfessional: (projectId: string, variantId: string, value: boolean) => Promise<{ success: boolean; error?: string }>;
     /** Mark ONE version as this book's TTS file, or clear the mark with `null`. */
     setTts: (projectId: string, variantId: string | null) => Promise<{ success: boolean; error?: string }>;
-    /** Move a Foundry export from output/ into archive/, as a top-level version. */
-    promoteToArchive: (projectId: string, variantId: string) => Promise<{ success: boolean; path?: string; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -2501,7 +2499,6 @@ const electronAPI: ElectronAPI = {
     sendToPipeline: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:send-to-pipeline', projectId, variantId),
     setProfessional: (projectId, variantId, value) => ipcRenderer.invoke('variant:set-professional', projectId, variantId, value),
     setTts: (projectId: string, variantId: string | null) => ipcRenderer.invoke('variant:set-tts', projectId, variantId),
-    promoteToArchive: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:promote-to-archive', projectId, variantId),
   },
   epub: {
     parse: (epubPath: string) =>

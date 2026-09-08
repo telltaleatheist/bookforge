@@ -1484,11 +1484,6 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.variant.setTts(projectId, variantId);
     return { success: false, error: 'Not running in Electron' };
   }
-  /** "Add to archive": move a Foundry export into the protected folder, top level. */
-  async variantPromoteToArchive(projectId: string, variantId: string): Promise<{ success: boolean; path?: string; error?: string }> {
-    if (this.isElectron) return (window as any).electron.variant.promoteToArchive(projectId, variantId);
-    return { success: false, error: 'Not running in Electron' };
-  }
   async variantPullMetadata(projectId: string, fromId: string, toId: string, fields: string[]): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.pullMetadata(projectId, fromId, toId, fields);
     return { success: false, error: 'Not running in Electron' };

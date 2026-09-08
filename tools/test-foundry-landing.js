@@ -567,44 +567,50 @@ test('sweeping twice changes nothing the second time', run(async (p) => {
 
 // ── Add to archive ─────────────────────────────────────────────────────────
 
-test('"Add to archive" MOVES the file and clears the provenance', run(async (p) => {
-  const src = p.exportFile('Test Book.epub', 'BYTES');
-  const landed = await land(p, src);
-  const before = p.variants().find((x) => x.id === landed.variantId).path;
 
-  const res = await actions.promoteVariantToArchive(PROJECT_ID, landed.variantId);
-  assert.ok(res.success, res.error);
 
-  const v = p.variants().find((x) => x.id === landed.variantId);
-  assert.ok(v.path.startsWith('archive/'), `promoted into archive/, not ${v.path}`);
-  assert.strictEqual(v.foundrySource, undefined,
-    'promotion severs the nesting on purpose — it is the user\'s own file now');
-  assert.strictEqual(fs.readFileSync(p.abs(v.path), 'utf-8'), 'BYTES');
-  assert.ok(!fs.existsSync(p.abs(before)), 'a MOVE leaves nothing behind in output/');
-  assert.strictEqual(landed.variantId, v.id, 'the id is stable, so the TTS mark survives');
-}));
-
-test('a promoted version is not overwritten by the next export of that file', run(async (p) => {
-  const src = p.exportFile('Test Book.epub', 'FIRST');
-  const landed = await land(p, src);
-  await actions.promoteVariantToArchive(PROJECT_ID, landed.variantId);
-
-  fs.writeFileSync(src, 'SECOND');
-  const again = await land(p, src);
-
-  assert.strictEqual(again.replaced, false,
-    'the promoted copy is the user\'s to keep; the new export is a new version');
-  assert.strictEqual(fs.readFileSync(p.abs(
-    p.variants().find((x) => x.id === landed.variantId).path), 'utf-8'), 'FIRST');
-}));
-
-test('promoting a version that is not an export is refused by name', run(async (p) => {
-  const res = await actions.promoteVariantToArchive(PROJECT_ID, 'parent-1');
-  assert.strictEqual(res.success, false);
-  assert.match(res.error, /already one of this book/);
-}, [ebookVariant('parent-1', 'orig.epub')]));
 
 // ── The TTS mark ───────────────────────────────────────────────────────────
+
+test('DELETE-OUTPUT KEEPS A FOUNDRY EXPORT — file and record — and wipes the rest (Owen, 2026-09-08)', run(async (p) => {
+  const landed = await land(p, p.exportFile('Test Book.epub', 'BYTES'));
+  const kept = p.variants().find((x) => x.id === landed.variantId);
+  assert.ok(kept.path.startsWith('output/'), 'precondition: the export lands in output/');
+  fs.writeFileSync(p.abs('output/junk.m4b'), 'AUDIO');
+  fs.writeFileSync(p.abs('output/junk.vtt'), 'WEBVTT');
+  const withAudio = p.read();
+  withAudio.variants.push({
+    id: 'audio-1', kind: 'audiobook', format: 'm4b', path: 'output/junk.m4b',
+    metadata: { title: 'Test Book' }, addedAt: '2026-01-01T00:00:00.000Z',
+  });
+  withAudio.outputs = { audiobook: { path: 'output/junk.m4b', vttPath: 'output/junk.vtt' } };
+  fs.writeFileSync(path.join(p.projectDir, 'manifest.json'), JSON.stringify(withAudio, null, 2));
+
+  const res = await actions.deleteProjectOutput(p.projectDir);
+  assert.deepStrictEqual(res.deletedFiles.sort(), ['junk.m4b', 'junk.vtt']);
+  assert.deepStrictEqual(res.keptExports, [path.basename(kept.path)]);
+  assert.ok(fs.existsSync(p.abs(kept.path)), 'the export file is still there');
+  const after = p.read();
+  assert.ok(after.variants.some((x) => x.id === landed.variantId), 'the export record is still there');
+  assert.ok(!after.variants.some((x) => x.id === 'audio-1'), 'the audiobook record went with its file');
+  assert.strictEqual(after.outputs?.audiobook, undefined, 'the output pointer went too');
+  assert.ok(!fs.existsSync(p.abs('output/junk.m4b')));
+}));
+
+test('delete-output on a book with no output/ deletes nothing and keeps nothing', run(async (p) => {
+  const res = await actions.deleteProjectOutput(p.projectDir);
+  assert.deepStrictEqual(res, { deletedFiles: [], keptExports: [] });
+}));
+
+test('delete-output removes the folder only when nothing kept is left in it', run(async (p) => {
+  fs.mkdirSync(p.abs('output'), { recursive: true });
+  fs.writeFileSync(p.abs('output/stale.m4b'), 'X');
+  await actions.deleteProjectOutput(p.projectDir);
+  assert.ok(!fs.existsSync(p.abs('output')), 'an emptied output/ is gone');
+  await land(p, p.exportFile('Test Book.epub', 'BYTES'));
+  await actions.deleteProjectOutput(p.projectDir);
+  assert.ok(fs.existsSync(p.abs('output')), 'an output/ holding a kept export stays');
+}));
 
 test('marking a second version clears the first — one slot, one answer', run(async (p) => {
   await actions.setTtsVariant(PROJECT_ID, 'a');
@@ -686,38 +692,18 @@ test('the NEWEST export wins among several', run(async (p) => {
   assert.notStrictEqual(t.variantId, older.variantId);
 }));
 
-test('KEEPING the export does not take the Process button away with it', run(async (p) => {
-  // Promotion moves the provenance from `foundrySource` to `promotedFrom`. The
-  // newest-export rung read only the first spelling, so pressing Keep deleted
-  // the only thing that rung could see — and `sole-epub` cannot cover for it,
-  // because a book that has been through Foundry has at least two EPUBs. The
-  // button simply vanished. Same class as e4f238d8, one resolver further in.
+
+
+test('DELETE-OUTPUT does not take the Process button away: the export is still the target', run(async (p) => {
   fs.writeFileSync(p.abs('archive/orig.epub'), 'X');
   const landed = await land(p, p.exportFile('Test Book.epub', 'CLEANED'));
   assert.strictEqual((await target(p)).rule, 'newest-export', 'precondition');
-
-  await actions.promoteVariantToArchive(PROJECT_ID, landed.variantId);
-
+  await actions.deleteProjectOutput(p.projectDir);
   const t = await target(p);
-  assert.ok(t, 'keeping a file must not remove the button that narrates it');
+  assert.ok(t, 'clearing the audiobooks must not remove the button that narrates the export');
   assert.strictEqual(t.variantId, landed.variantId);
-  assert.strictEqual(t.rule, 'newest-export', 'a kept export is still an export');
+  assert.strictEqual(t.rule, 'newest-export');
 }, [ebookVariant('parent-1', 'orig.epub')]));
-
-test('a KEPT export still outranks an older one still on loan', run(async (p) => {
-  // The silent half, and the worse one: with the newer export invisible, the
-  // rung did not go quiet — it chose the OLDER file and narrated that instead.
-  const older = await land(p, p.exportFile('Older.epub', 'A'));
-  await new Promise((r) => setTimeout(r, 5));
-  const newer = await land(p, p.exportFile('Newer.epub', 'B'));
-
-  await actions.promoteVariantToArchive(PROJECT_ID, newer.variantId);
-
-  const t = await target(p);
-  assert.ok(t, 'the button is still there');
-  assert.strictEqual(t.variantId, newer.variantId,
-    `the kept newer export must win; got ${t.variantId === older.variantId ? 'the OLDER one' : t.variantId}`);
-}));
 
 test('a marked version outranks everything', run(async (p) => {
   fs.writeFileSync(p.abs('archive/orig.epub'), 'X');

@@ -64,7 +64,7 @@ import { chapterOpeningRefusal } from '../shared/document/chapter-opening-report
 // A block's element key says which DOCUMENT it is in, which is the identity a
 // chapter is listed, renamed and struck by.
 import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
-import { addVariant, importAudiobookProject, promoteVariantToArchive, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
+import { addVariant, importAudiobookProject, deleteProjectOutput, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
 import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
@@ -1430,10 +1430,12 @@ async function foundryBookDirFor(projectDir: string): Promise<{ key: string; boo
  * THE PENDING EXPORT a Narrate press was made on, or null when the press was on
  * something that exists.
  *
- * Two shapes reach here (foundry@688c888): a press on a PENDING EXPORT NODE
- * carries `context.pendingRow`, the export's row in our queue; a press on a
- * PROMISED STEP — a clean-up whose row is queued but has not landed — carries
- * the step id alone, and there is no export yet at all. For the second, the
+ * Three shapes reach here (foundry@688c888, third since 2026-09-08): a press on a
+ * PENDING EXPORT NODE carries `context.pendingRow`, the export's row in our queue;
+ * a press on a PROMISED STEP — a clean-up whose row is queued but has not landed —
+ * carries the step id alone, or carries that text pass's own row as
+ * `context.pendingRow` (the greyed card), and there is no export yet at all. For
+ * the second and third, the
  * export is ASKED FOR exactly as a landed step's would be (`exportEpubFromStep`),
  * which now plans it deferred: the row is minted in our queue under the promised
  * step's row and the promise settles only when the export lands. THE PROMISE IS
@@ -1456,13 +1458,33 @@ async function pendingExportRowFor(
         + 'in the queue any more — it was removed, or landed and was cleared. Press Narrate on the '
         + 'export row itself once it is listed.');
     }
-    if (row.kind !== 'epub') {
-      throw new Error(
-        `Narrate was pressed on a pending row that is a ${row.kind}, not an EPUB export; a `
-        + 'narration reads a book. Press it on the export.');
+    if (row.kind === 'epub') {
+      if (!live(row)) return null;   // it landed meanwhile: the ordinary arm reads the file
+      return row;
     }
-    if (!live(row)) return null;   // it landed meanwhile: the ordinary arm reads the file
-    return row;
+    /*
+     * A GREYED TEXT PASS — a clean, a simplify, a translate that has not landed.
+     * Owen, 2026-09-08: "any time the user narrates it should imply an epub
+     * export … any step that actually requires an epub where one doesnt exist
+     * should generate one first and then narrate from that." The row mints the
+     * very step this press stands on, so the export is asked for below exactly
+     * as a press on a landed step with no export asks: Foundry plans it deferred
+     * under this row, and the narration chains under that. Until 2026-09-08 this
+     * refused and told the person to press the export — which they could not,
+     * because the export did not exist yet (Owen, the Shift chain).
+     */
+    if (row.kind === 'read') {
+      throw new Error(
+        'Narrate was pressed on a pending reading. A reading lands pages, not a step of the '
+        + 'book, so there is no text to make a book from yet. Press Narrate on a step once the '
+        + 'pages are read.');
+    }
+    if (row.mints !== nodeId || !live(row)) {
+      throw new Error(
+        `Narrate was pressed on a pending ${row.kind} row (${row.id}) that does not mint the step `
+        + `it was pressed on (${nodeId}), so no book can be implied from it. Press Narrate on the `
+        + 'greyed step itself.');
+    }
   }
   const promised = rows().find((r) => r.mints === nodeId && live(r));
   if (!promised) return null;
@@ -1499,10 +1521,10 @@ async function foundryNarrationTarget(
    * before the export that was made to change it.
    *
    * BOTH SPELLINGS of "Foundry made this file" are read: `foundrySource` is an
-   * export on loan, and `promotedFrom` is the SAME provenance after the user
-   * pressed Keep — promotion moves the record rather than killing it, precisely
-   * so the file's history survives (library-actions.ts, the 2026-08-19 sweep
-   * lesson). Reading only the first was the bug Owen hit on 2026-08-24: he
+   * export as it lands, and `promotedFrom` is the SAME provenance on a version the
+   * user moved into archive/ with the "Temporary — keep" button that existed until
+   * 2026-09-08 (an export is kept at landing now, and the button is gone; the
+   * records it wrote are still real). Reading only the first was the bug Owen hit on 2026-08-24: he
    * minted the English epub, pressed Keep, pressed Narrate on that very file in
    * Foundry — and was told the project had never exported anything. A KEPT
    * export is the strongest possible "narrate this one"; it must not vanish
@@ -1755,8 +1777,8 @@ async function readFoundryLedgerSteps(foundryProjectDir: string): Promise<Ledger
  * filed under the book's descriptive name — so the variant's own file name is
  * the wrong string here, and the provenance's `fileName` is the tray spelling
  * kept for exactly this kind of join — read from `foundrySource` for an export
- * on loan and from `promotedFrom` for one the user KEPT, which are the same
- * record before and after the Keep press.
+ * as it landed and from `promotedFrom` for one moved into archive/ by the Keep
+ * button that existed until 2026-09-08, which are the same record.
  */
 function narrationTargetOf(bookDir: string, variant: ProjectVariant): FoundryNarrationTarget {
   return {
@@ -9096,9 +9118,6 @@ function setupIpcHandlers(): void {
    * archive/, as a top-level version of the book. Body lives in
    * library-actions.promoteVariantToArchive, shared with cli/library.js.
    */
-  ipcMain.handle('variant:promote-to-archive', async (_event, projectId: string, variantId: string) => {
-    return promoteVariantToArchive(projectId, variantId);
-  });
 
   ipcMain.handle('variant:pull-metadata', async (_event, projectId: string, fromId: string, toId: string, fields: string[]) => {
     try {
@@ -11343,80 +11362,13 @@ ipcMain.handle('narration:text-readiness', async (
     }
   });
 
-  /**
-   * Forget every record that names a file in `output/`, in ONE transaction.
-   *
-   * The record half of emptying that folder. `audiobook:delete-output` does this
-   * for one key at a time and states the rule in as many words ("CRITICAL
-   * ORDERING… never delete a file while the manifest still lists it"); the two
-   * handlers below deleted the whole folder first and left `outputs.audiobook`,
-   * the bilingual pointers and every audiobook variant naming files that were
-   * gone — the exact inversion their own sibling forbids.
-   *
-   * Only `output/` is cleared. A professionally-read upload lives in `archive/`
-   * and is not this act's to forget.
-   */
-  const forgetOutputFolderRecords = async (projectPath: string): Promise<void> => {
-    const projectId = path.basename(projectPath);
-    if (!manifestService.projectExists(projectId)) return;
-    const inOutput = (p?: string): boolean =>
-      (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().startsWith('output/');
-    const saved = await manifestService.modifyManifest(projectId, (m) => {
-      if (m.outputs) {
-        if (inOutput(m.outputs.audiobook?.path)) delete m.outputs.audiobook;
-        for (const [pair, out] of Object.entries(m.outputs.bilingualAudiobooks || {})) {
-          if (inOutput((out as { path?: string })?.path)) {
-            delete m.outputs.bilingualAudiobooks![pair];
-          }
-        }
-      }
-      if (Array.isArray(m.variants)) {
-        m.variants = m.variants.filter((v) => !inOutput(v.path));
-        if (m.primaryVariantId && !m.variants.some((v) => v.id === m.primaryVariantId)) {
-          m.primaryVariantId = m.variants[0]?.id;
-        }
-      }
-    });
-    if (!saved.success) {
-      throw new Error(
-        `Nothing was deleted: ${path.basename(projectPath)}'s records of its output files could not `
-        + `be cleared (${saved.error}), and removing the files first would leave the project naming `
-        + 'an audiobook that is gone.'
-      );
-    }
-  };
-
-  // Delete output files (audiobook.m4b, audiobook.vtt, bilingual outputs)
+  // Delete output files (audiobook.m4b, audiobook.vtt, bilingual outputs). A
+  // Foundry export in output/ is NOT output and stays — see deleteProjectOutput.
   ipcMain.handle('pipeline:delete-output', async (_event, projectPath: string) => {
     try {
-      const outputDir = path.join(projectPath, 'output');
-
-      if (!fsSync.existsSync(outputDir)) {
-        return { success: true, message: 'No output directory found' };
-      }
-
-      // RECORDS FIRST, FILES LAST — and it throws rather than proceeding, so a
-      // failed write leaves the audiobook where it is instead of deleting it out
-      // from under a manifest that still points at it.
-      await forgetOutputFolderRecords(projectPath);
-
-      const files = await fs.readdir(outputDir);
-      const deletedFiles: string[] = [];
-
-      for (const file of files) {
-        const filePath = path.join(outputDir, file);
-        await fs.rm(filePath, { recursive: true, force: true });
-        deletedFiles.push(file);
-      }
-
-      // Remove the directory itself
-      try {
-        await fs.rmdir(outputDir);
-      } catch {
-        // Directory not empty, that's fine
-      }
-
-      console.log('[PIPELINE] Deleted output files:', deletedFiles);
+      const { deletedFiles, keptExports } = await deleteProjectOutput(projectPath);
+      console.log('[PIPELINE] Deleted output files:', deletedFiles,
+        keptExports.length > 0 ? `(kept ${keptExports.length} Foundry export(s))` : '');
       broadcastToAllWindows('project:files-changed', projectPath);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} output files` };
     } catch (err) {
