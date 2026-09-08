@@ -96,6 +96,19 @@ export { cleanupInEffect, textPassInEffect };
  */
 export const DEFAULT_TRANSLATE_MODEL = 'qwen3.8:27b';
 
+/**
+ * The model the narration cleanup is asked of when nobody chose one — a mirror
+ * of the engine's own `DEFAULT_NORMALIZER_MODEL` (src/clean/tts-number-normalizer.ts).
+ *
+ * IT IS A SECOND COPY OF A MODEL ID for exactly the reason the note above
+ * DEFAULT_TRANSLATE_MODEL gives, plus one more: app/shared cannot import src/,
+ * so the value has to be written twice and the two MUST move together. Clean
+ * text does NOT follow the translate default (Owen, 2026-09-02): the 27b runs
+ * this pass at ~9 blocks/min against ~50 on the 9b-q8_0, and it is chosen by
+ * typing it into Settings, not by inheriting it.
+ */
+export const DEFAULT_CLEAN_TEXT_MODEL = 'qwen3.5:9b-q8_0';
+
 /** Ollama's own default port, and where it is unless somebody moved it. */
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 

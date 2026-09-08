@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ceaad53** — *feat(mount): exportEpubFromStep takes `to` — an EPUB written where the host says, and nowhere this app keeps* |
-| Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive ceaad53 app | tar -x --strip-components=1` |
+| Source sha | **f1a494a** — *fix(clean): Clean text defaults to DEFAULT_NORMALIZER_MODEL (qwen3.5:9b-q8_0), not the translate default* |
+| Copied on | 2026-09-08 |
+| Copied by | `git -C <foundry> archive f1a494a app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1005,3 +1005,13 @@ crosses with `outputPath` = the host's path and `home` set; the host copies it v
 BookForge's implied-export wave (narrator-paths.ts `mintImpliedExportPath`, the landing step's
 `unfiledPath` mode, `impliedExportPathFor` in main.ts). 3 files, 141 blobs hash-verified, no IPC
 change, no dep movement.
+**ceaad53 + f1a494a (copied 2026-09-08) — `exportEpubFromStep` takes `to`; Clean text opens on its
+OWN model.** `ceaad53` (PC): `exportEpubFromStep(projectDir, stepId, { to? })` — an EPUB written
+where the host says; the option is additive and BookForge's two-argument call at
+electron/main.ts:1470 stands (types.ts, mount.ts, job-queue.ts). `f1a494a` (Mac): the Clean dialog
+seeds only its Ollama URL from `defaultLlmModel` and opens on `DEFAULT_CLEAN_TEXT_MODEL`
+(`qwen3.5:9b-q8_0`, the mirror of the engine's `DEFAULT_NORMALIZER_MODEL`) — the 27b that setting
+names ran Shift at 8.7 blocks/min against ~50 on the 9b-q8_0 (pipeline.ts, clean-dialog,
+llm-defaults `seedOllamaDefault`). BookForge's own press moved the same way in 77d00744
+(`ttsNumberNormalizerModel`, never `defaultLlmModel`). 6 files, tree diff-verified against
+foundry/app, no IPC change, no dep movement.

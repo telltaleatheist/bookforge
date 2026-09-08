@@ -4,13 +4,13 @@ import { FormsModule } from '@angular/forms';
 import { fold } from '@shared/original';
 import { canCleanFrom } from '@shared/stages';
 import {
+  DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
-  DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
 } from '@shared/pipeline';
 import type { CleanRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedLlmDefaults } from '../../core/llm-defaults';
+import { seedOllamaDefault } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -306,9 +306,12 @@ export class CleanDialogComponent {
   protected readonly busy = signal(false);
 
   constructor() {
-    // The model and the URL are the app's own settings, written by first-run
-    // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    // THE URL ONLY. `defaultLlmModel` seeds translate, simplify and analyse;
+    // this pass opens on its own declared default (DEFAULT_CLEAN_TEXT_MODEL,
+    // mirroring the engine's DEFAULT_NORMALIZER_MODEL) because the 27b that
+    // setting names runs the cleanup at a fifth of the 9b-q8_0's rate — Owen,
+    // 2026-09-02. See core/llm-defaults.ts.
+    seedOllamaDefault(this.ollama);
     // A complaint about the last book is cleared when the book changes.
     effect(() => {
       this.source();
