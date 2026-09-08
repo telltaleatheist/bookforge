@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **a279c5d** — *feat(app): the Clean text model is a list of three — 9B 8-bit, 9B 16-bit, 27B — in the dialog and in Settings* |
+| Source sha | **2b1bcd1** — *fix(queue): a chain waits on the shelf it was composed from, and a ghost step is deleted off the queue* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive a279c5d app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 2b1bcd1 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1030,3 +1030,19 @@ construction: userData never syncs. 7 files + the IPC doc, tree diff-verified, o
 text box. `CLEAN_TEXT_MODELS` (shared/pipeline.ts) — 9B 8-bit (default), 9B 16-bit, 27B — in the
 Clean dialog and the Settings card; a stored tag outside the list rides at the top as itself.
 3 files, tree diff-verified, no IPC change, no dep movement.
+**2b1bcd1 (copied 2026-09-08) — the two ghost-row bugs Owen hit on his first press of the promised
+chain.** (A) Narrate on a greyed clean refused "The step this was to be made from never landed, and
+nothing in the queue is going to make it" while the clean was queued on the HOST: `chainedBehind`
+composed `after` from `shelfJobs()` (host rows included) but `chainVerdict` resolved the parent from
+Foundry's own `jobs` array, which never holds a host row — undefined, verdict 'unknown', the ledger
+asked, the row cancelled. It now resolves from `shelfJobs()`, the same shelf, and reads only `state`,
+which our rows carry. (B) Delete on a ghost hit `ledger:describe-delete` → "This ledger has no step
+called <id>" — a promise is a QUEUE ROW, not a ledger step. `describe-delete` now asks
+`rowMinting(shelfJobsFor(dir), stepId)` first and answers a StepDeletion with a new optional
+`queued: true`, casualties = the row plus every row transitively chained behind it by `after`, no
+files, no belongings; `ledger:delete` on a ghost calls `queue.remove(row.id)` (or `cancel` when it is
+already running), which forward to BookForge's `remove`/`cancel` hosted, so our `queue-engine
+.removeStep` cascade is what takes the promised subtree. The confirm card reads "Remove <label> from
+the queue?" and names the chained rows — the labels are OUR `Job.title` (`labelFor`,
+foundry-host-queue.ts: "Clean text — <file>", "Simplify — <file>", …). 4 files, 141 blobs
+hash-verified, no IPC channel added (IPC-CHANNELS.md wording only), no dep movement.

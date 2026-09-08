@@ -4281,6 +4281,17 @@ export interface StepDeletion {
    * from numbers would arrive at "and 3 other items" within a month.
    */
   belongings: string | null;
+  /**
+   * THIS IS NOT A STEP YET — the id names a PROMISE, a queued row that will land
+   * it, and "delete" means "take that row off the queue" (Owen, 2026-09-08:
+   * *"i should be able to delete the ghost step in vendored foundry, which
+   * would remove it from the queue"*). Nothing on disk goes; the casualties are
+   * the rows chained behind it, which leave the queue with it (the cascade the
+   * tree already draws). The card reads this and says "remove", never "delete":
+   * an "it really deletes" sentence over a queue row would be the card lying
+   * about the gesture. Absent for every real step.
+   */
+  queued?: true;
 }
 
 /**

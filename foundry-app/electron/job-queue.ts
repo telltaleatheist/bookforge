@@ -2991,7 +2991,18 @@ function nextStartable(): Job | null {
  */
 function chainVerdict(job: Job): 'go' | 'wait' | 'lost' | 'unknown' {
   if (job.after === undefined) return 'go';
-  const parent = jobs.find((row) => row.id === job.after);
+  /*
+   * THE SAME SHELF `chainedBehind` COMPOSED `after` FROM — `shelfJobs()`, which
+   * hosted is the HOST's rows and standalone is our own. This read `jobs`, our
+   * own list only, and hosted that list never holds the row a chain waits on:
+   * the clean was queued on BookForge's engine, its row crossed as a host row,
+   * `after` named that row's id, and this lookup answered undefined → 'unknown'
+   * → the ledger was asked → "never landed" → the export was cancelled with
+   * "nothing in the queue is going to make it" while the queue was making it
+   * (Owen, the Mac, 2026-09-08). A host row carries `state`, which is all the
+   * verdict reads.
+   */
+  const parent = shelfJobs().find((row) => row.id === job.after);
   if (parent === undefined) return 'unknown';
   if (parent.state === 'done') return 'go';
   if (parent.state === 'failed' || parent.state === 'cancelled') return 'lost';

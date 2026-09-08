@@ -148,6 +148,7 @@ import type {
   ReReadAnswer,
   RewriteMode,
   SetupRequest,
+  StepDeletion,
   TextPassRequest,
   AnalyzeRequest,
   UnappliedAnswer,
@@ -321,6 +322,51 @@ async function cleanupAtNode(projectDir: string, nodeId: string): Promise<boolea
  */
 function rowsIn(projectDir: string): Job[] {
   return queue.shelfJobsFor(projectDir);
+}
+
+/**
+ * A DELETE PRESSED ON A GHOST — the id is minted by a live row, not held by the
+ * ledger, and `stepOf` would refuse it by name ("This ledger has no step called
+ * …", which is what Owen saw, 2026-09-08). A promise is a queue row, so the
+ * question is answered from the queue: what goes is the row and every row chained
+ * behind it, and the removal is the queue's own — which hosted forwards to the
+ * host's `remove`, whose cascade is the same one the tree draws.
+ *
+ * NULL FOR A REAL STEP, and the ordinary delete goes on exactly as it did.
+ */
+function promisedDeletion(projectDir: string, stepId: string): StepDeletion | null {
+  const rows = rowsIn(projectDir);
+  const row = rowMinting(rows, stepId);
+  if (row === null) return null;
+  // The chain behind it, transitively, by `after` — the cascade's own edge.
+  const going: Job[] = [row];
+  const seen = new Set<string>([row.id]);
+  for (let i = 0; i < going.length; i += 1) {
+    for (const other of rows) {
+      if (other.after === going[i]!.id && !seen.has(other.id)) {
+        seen.add(other.id);
+        going.push(other);
+      }
+    }
+  }
+  const nameOf = (one: Job): string => one.title ?? path.basename(one.outputPath);
+  const label = nameOf(row);
+  return {
+    stepId,
+    label,
+    queued: true,
+    casualties: going.map((one, at) => ({
+      id: one.mints ?? one.id,
+      label: nameOf(one),
+      cost: at === 0
+        ? `“${nameOf(one)}” is ${one.state === 'running' ? 'running' : 'queued'} and has made nothing yet — `
+          + 'removing it makes nothing and destroys nothing.'
+        : `“${nameOf(one)}” was to be made from it, and leaves the queue with it.`,
+      stale: false,
+    })),
+    belongings: null,
+    files: [],
+  };
 }
 
 /**
@@ -2538,12 +2584,32 @@ export function registerIpc(): void {
     },
   );
   ipcMain.handle('ledger:describe-delete', async (_event, projectDir: string, stepId: string) => {
+    // A ghost first: a promise is a queue row, and the ledger would refuse the
+    // id by name (`promisedDeletion`).
+    const promised = promisedDeletion(projectDir, stepId);
+    if (promised !== null) return promised;
     // Proven BEFORE the card is composed, so a warning is never put on screen for
     // something the delete would refuse a click later.
     await refuseBusyStepDelete(projectDir, stepId);
     return describeStepDelete(projectDir, stepId);
   });
   ipcMain.handle('ledger:delete', async (_event, projectDir: string, stepId: string) => {
+    /*
+     * A GHOST IS REMOVED FROM THE QUEUE, not deleted from a ledger it is not in.
+     * A row still waiting leaves by `remove`; one already running leaves by
+     * `cancel`, which is the only door a running row has. Hosted, both forward
+     * to the host's queue, whose cascade takes the promised subtree with it; the
+     * view that comes back is the ledger as it was, because nothing in it moved
+     * — the tree's ghosts are derived from the rows and go with the next push.
+     */
+    const promised = rowMinting(rowsIn(projectDir), stepId);
+    if (promised !== null) {
+      if (promised.state === 'running') queue.cancel(promised.id);
+      else queue.remove(promised.id);
+      const view = await readStepLedger(projectDir);
+      if (view === null) throw new Error(`${projectDir} has no history to show after the removal.`);
+      return view;
+    }
     // Proven again, never trusted from the describe: a job can be queued between
     // the question and the answer, and this is the call that unlinks something.
     await refuseBusyStepDelete(projectDir, stepId);

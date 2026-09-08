@@ -530,7 +530,29 @@ export class LedgerService {
     const deletion = await api.ledger.describeDelete(projectDir, stepId);
     const casualties = deletion.casualties;
     const named = casualties.map((one) => `“${one.label}”`).join(', ');
-    const answered = await this.confirm.ask({
+    /*
+     * A GHOST'S CARD SAYS "REMOVE", because that is the gesture: the id names a
+     * queued row, not a step, and the delete takes the row off the queue with
+     * everything chained behind it (`StepDeletion.queued`). The ordinary card's
+     * "it really deletes" sentence is exactly the wrong thing to say over a row
+     * that has made nothing yet — Owen, 2026-09-08: *"i should be able to delete
+     * the ghost step … which would remove it from the queue."*
+     */
+    const answered = deletion.queued === true
+      ? await this.confirm.ask({
+        message: casualties.length > 1
+          ? `Remove “${deletion.label}” from the queue, and everything queued behind it?`
+          : `Remove “${deletion.label}” from the queue?`,
+        detail: [
+          ...(casualties.length > 1
+            ? [`This takes ${casualties.length - 1} more queued ${casualties.length === 2 ? 'item' : 'items'} `
+              + `with it, because each was to be made from it: ${casualties.slice(1).map((one) => `“${one.label}”`).join(', ')}.`]
+            : []),
+          ...casualties.map((one) => one.cost),
+        ],
+        confirm: casualties.length > 1 ? `Remove these ${casualties.length}` : 'Remove from queue',
+      })
+      : await this.confirm.ask({
       message: casualties.length > 1
         ? `Delete “${deletion.label}” and everything made from it?`
         : `Delete “${deletion.label}”?`,
