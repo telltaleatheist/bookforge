@@ -1157,10 +1157,17 @@ export interface AnalyzeRequest {
    * a calibrated question.
    */
   categories: readonly { name: string; enabled: boolean; description?: string; label?: string }[];
-  /** `--model`: the Ollama model the verifier is asked of. */
+  /** `--model`: the model the verifier is asked of. Empty under vLLM means "what it serves". */
   model: string;
   /** `--ollama`: the server's URL. Used, never started. */
   ollama: string;
+  /**
+   * `--server`: which kind of server answers, when it is not the default Ollama.
+   *
+   * `TranslateRequest.server`'s arrangement and its reason — the kind, the URL
+   * and the model name have to be the ONE set the dialog was looking at.
+   */
+  server?: LlmServerKind;
   /**
    * THE STEP THIS REPORT BELONGS TO, minted with it and travelling with it.
    *

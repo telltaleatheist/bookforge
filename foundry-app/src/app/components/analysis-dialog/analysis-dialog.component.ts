@@ -14,6 +14,7 @@ import { canTranslateFrom } from '@shared/stages';
 import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
+  type LlmServerKind,
 } from '@shared/pipeline';
 import type { AnalyzeRequest } from '@shared/types';
 
@@ -573,6 +574,14 @@ export class AnalysisDialogComponent {
 
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
+  /**
+   * WHICH KIND OF SERVER this machine runs, from Settings and never typed here —
+   * the other three language dialogs' field, for their reason (it is a property
+   * of the machine, not of a book). Verification is hundreds of tiny closed
+   * questions over one loaded model, which is the shape a batching server gains
+   * most on.
+   */
+  protected readonly server = signal<LlmServerKind>('ollama');
   protected readonly problem = signal<string | null>(null);
   /** The plan hashes the whole book to key it, and materialises one. Not instant. */
   protected readonly busy = signal(false);
@@ -580,7 +589,7 @@ export class AnalysisDialogComponent {
   constructor() {
     // The model and the URL are the app's own settings, written by first-run
     // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults(this.model, this.ollama, this.server);
     // The Translate dialog's rule: a complaint about the last book is cleared when
     // the book changes, and nothing else resets. The checklist in particular is
     // the user's careful answer and survives switching tabs.
@@ -780,8 +789,11 @@ export class AnalysisDialogComponent {
           // shows, a custom category's exactly as its author typed them.
           label: one.name,
         })),
-        model: this.model().trim() || DEFAULT_MODEL,
+        // Empty stays empty under vLLM, where it means "whatever that server is
+        // serving" — the three other dialogs' rule, in their words.
+        model: this.model().trim() || (this.server() === 'vllm' ? '' : DEFAULT_MODEL),
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        ...(this.server() === 'vllm' ? { server: 'vllm' as const } : {}),
         // Main's answer travelling back to main: the step the report is named
         // after, minted at the plan so the file and the row agree hours later.
         stepId: plan.stepId,

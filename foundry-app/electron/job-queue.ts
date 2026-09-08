@@ -2545,7 +2545,7 @@ export function argsFor(
        */
       '--book', request.bookPath,
       '--out', request.outputPath,
-      '--model', request.model,
+      ...modelArgs(request),
       '--ollama', request.ollama,
     ];
     /*

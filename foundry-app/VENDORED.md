@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **19f5e70** — *feat(engine,app): the three text acts speak vLLM, and the pool finally has something to batch into* |
+| Source sha | **5c53cb7** — *docs(vllm): the first measurement, and the reason the batch depth is not what either of us assumed* (app tree = eb69b7a, analyze joins the vLLM side) |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 19f5e70 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 5c53cb7 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1176,3 +1176,8 @@ server per machine. BookForge’s half (weights, WSL launcher on 8300, the arbit
 server before a text pass and stops it after, and its own bare-EPUB Clean text door learning the
 flag) is BookForge’s. 141 blobs hash-verified with `git hash-object`; IPC-CHANNELS.md refreshed
 byte-identical to `19f5e70:docs/`; no dep movement.
+
+**eb69b7a / 5c53cb7 (copied 2026-09-08, Mac) — analyze joins the vLLM side; its closed question learns the
+second dialect.** App half of eb69b7a (job-queue.ts, shared/types.ts, analysis-dialog); 5c53cb7 is docs-only
+on the engine side. Tree diff-verified against foundry/app, no IPC change beyond what 34cd9258 recorded, no
+dep movement.
