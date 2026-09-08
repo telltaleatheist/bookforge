@@ -2333,8 +2333,8 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
 });
 
 check('a darwin checkpoint the catalog names but the disk lacks is offered DISABLED, naming the dir', () => {
-  // bookforge-mac-1, 2026-09-06: mistborn was offered as available on the Mac
-  // while runtime/higgs-models/mb_h2lm_prod had not landed — the picker checked
+  // (dir re-pointed 2026-09-08: mistborn is mb_v3_prod now) bookforge-mac-1, 2026-09-06: mistborn was offered as available on the Mac
+  // while runtime/higgs-models/mb_v3_prod had not landed — the picker checked
   // that the catalog names a path and never that the directory exists.
   const bare = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-bare-userdata-'));
   try {
@@ -2342,7 +2342,7 @@ check('a darwin checkpoint the catalog names but the disk lacks is offered DISAB
     const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, bare));
     assert.ok(reason, 'a fine-tune with no directory on this machine was reported as available');
     assert.match(reason, /has not landed/);
-    assert.ok(reason.includes(path.join(bare, 'runtime', 'higgs-models', 'mb_h2lm_prod')),
+    assert.ok(reason.includes(path.join(bare, 'runtime', 'higgs-models', 'mb_v3_prod')),
       'the refusal does not name the directory it looked at: ' + reason);
     const row = onArm('darwin', () => higgs.higgsNarrationVoices(bare)).find((v) => v.value === 'mistborn');
     assert.ok(row.unavailable, 'the dropdown row is not disabled');
