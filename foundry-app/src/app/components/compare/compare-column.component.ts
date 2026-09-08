@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, u
 
 import { BookViewComponent } from '../book-view/book-view.component';
 import { PdfViewComponent } from '../pdf-view/pdf-view.component';
+import { ChangesService } from '../../core/changes.service';
 import { LedgerService } from '../../core/ledger.service';
 import { StageService } from '../../core/stage.service';
 import type { Tab } from '../../core/documents.service';
@@ -55,6 +56,17 @@ import { api } from '../../core/foundry';
  * Compare. `app-pdf-view` gets `readOnly`, which is smaller because a PDF viewer
  * has nothing to edit — what it hides is the two view-mode toggles, which write
  * through a tab id this column's synthetic tab does not have.
+ *
+ * ── And, since 2026-09-08, the head says WHAT CHANGED ──────────────────────
+ *
+ * Owen: *"I want to be able to compare what changed side-by-side in ai cleanup.
+ * It should highlight the changes on each side, like in analysis."* The
+ * highlight itself is the book view's (`cut()`, and `ChangesService` for the
+ * diff — docs/COMPARE-CHANGES.md); what this head adds is the three things a
+ * person reading two columns needs from the bar between them: HOW MANY blocks
+ * differ, a way to put the light OUT without closing the comparison, and ↑↓ to
+ * walk the differences with both columns following. All three are drawn only
+ * when the target is a book — a scan compared with a scan has no words to diff.
  */
 @Component({
   selector: 'app-compare-column',
@@ -69,6 +81,44 @@ import { api } from '../../core/foundry';
     <header class="head">
       <span class="tag">Comparing</span>
       <span class="name" [title]="label()">{{ label() }}</span>
+      @if (target()?.path === null) {
+        <!--
+          THE COUNT, THE LIGHT AND THE WALK — docs/COMPARE-CHANGES.md. The chip
+          says nothing until both sheets have published their rows
+          (\`ready\`): "no changes" over a column still loading would be a claim
+          about a book nobody has read yet. The toggle is a checkbox because it
+          is a state and not a verb — the light is on or it is off — and the
+          two arrows are disabled rather than hidden when there is nothing to
+          walk, so the bar keeps its shape between one comparison and the next.
+        -->
+        @if (changes.ready()) {
+          <span class="chip">{{ said() }}</span>
+        }
+        <label class="light" title="Highlight what changed between the two columns">
+          <input
+            type="checkbox"
+            [checked]="changes.enabled()"
+            (change)="light($event)"
+          />
+          Changes
+        </label>
+        <button
+          type="button"
+          class="step"
+          title="Previous change"
+          aria-label="Previous change"
+          [disabled]="changes.changedBlocks() === 0"
+          (click)="changes.step(-1)"
+        >↑</button>
+        <button
+          type="button"
+          class="step"
+          title="Next change"
+          aria-label="Next change"
+          [disabled]="changes.changedBlocks() === 0"
+          (click)="changes.step(1)"
+        >↓</button>
+      }
       <button
         type="button"
         class="x"
@@ -154,6 +204,42 @@ import { api } from '../../core/foundry';
     }
     .x:hover { background: var(--bg-hover); color: var(--text-primary); }
 
+    /*
+      THE CHANGES' CHROME, IN THE TAG'S OWN MONO. The chip is a fact and wears
+      the tag's face at the tag's size, in the secondary ink so it does not
+      compete with the step's name; the toggle and the arrows are the row's
+      only other controls and are kept as quiet as the ✕ — no fills, no
+      borders, hover alone says they are live.
+    */
+    .chip {
+      flex: 0 0 auto;
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .light {
+      flex: 0 0 auto;
+      display: inline-flex; align-items: center; gap: 4px;
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-secondary);
+      cursor: pointer; user-select: none;
+    }
+    .light input { margin: 0; accent-color: var(--accent); }
+    .step {
+      flex: 0 0 auto;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 10px;
+      padding: 3px 4px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .step:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .step:disabled { opacity: 0.35; cursor: default; }
+
     app-book-view, app-pdf-view { flex: 1; min-height: 0; }
     .waiting { flex: 1; min-height: 0; background: var(--bg-sunken); }
   `],
@@ -161,6 +247,21 @@ import { api } from '../../core/foundry';
 export class CompareColumnComponent {
   protected readonly stage = inject(StageService);
   private readonly ledger = inject(LedgerService);
+  /** The diff between the two columns — the head reads its count and drives its walk. */
+  protected readonly changes = inject(ChangesService);
+
+  /** The chip's sentence: how many blocks differ, or that none do. */
+  protected readonly said = computed<string>(() => {
+    const n = this.changes.changedBlocks();
+    if (!this.changes.enabled()) return 'changes off';
+    if (n === 0) return 'no changes';
+    return n === 1 ? '1 block changed' : `${n} blocks changed`;
+  });
+
+  /** The toggle — `ConfirmDialogComponent.tick`'s shape, for the same input. */
+  protected light(event: Event): void {
+    this.changes.enabled.set((event.target as HTMLInputElement).checked);
+  }
 
   /**
    * What this step resolves to, once main has answered — `null` path means the

@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c8808f3** — *docs(seam): Job.outputPath is the row's identity, and a host's mirrored row must carry the product there* |
+| Source sha | **11bd14c** — *feat(app): compare shows what changed — every word the two steps disagree about, lit on both sides (Wave 57)* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive c8808f3 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 11bd14c app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -973,3 +973,13 @@ readingsPath, text pass incl. clean → recordsPath, analysis → report; `shelf
 files rows by `projectDirOf(job.outputPath)`. Host side: BookForge 1b91d85d (a text pass's row
 reports its records file — before it, every promised card was dead). 1 file, 139 blobs
 hash-verified, no IPC change, no dep movement.
+**11bd14c (copied 2026-09-08) — WAVE 57, Owen's "show what changed" (app-only):** stand on a
+cleaned/simplified step, press Compare, pick the parent (or any step) — both columns light at WORD
+granularity (shared/word-diff.ts; core/changes.service.ts): removed words red-and-struck on the
+older side, added words green-washed on the newer, the ledger deciding which side is older; the
+compare head reads "N blocks changed", has a Changes toggle, and ↑↓ walk the changed blocks in
+both columns. Computed on demand from the two sheets' rows and memoised — NOT a stored diff and
+not the engine's (foundry docs/COMPARE-CHANGES.md argues why): works for any pair of steps, never
+stale, no engine release. A translation shows as whole-block changes by a rewrite guard. Not
+built: hover-shows-original (the other column IS the original). 2 new files + 2 changed; 141
+blobs hash-verified; no IPC change, no dep movement; nothing on the host side.

@@ -28,10 +28,15 @@ import { REWRITE_LABELS } from '@shared/ledger';
 // The model's inline dialect, mirrored from the emitter's — see `cut`.
 import { INLINE_DROPPED, INLINE_ITALIC, INLINE_STRONG, inlineEmphasis } from '@shared/inline';
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
+// The compare column's light: which characters went and which came, per block,
+// drawn through the same walk as the analysis's — see `cut`.
+import type { ChangeRange } from '@shared/word-diff';
 
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
 import { AnalysisViewService } from '../../core/analysis-view.service';
+import { ChangesService } from '../../core/changes.service';
+import { StageService } from '../../core/stage.service';
 import type { LitRange } from '../../core/analysis';
 import { AnalysisPickerComponent } from '../analysis-panel/analysis-picker.component';
 import { ComparePickerComponent } from '../compare/compare-picker.component';
@@ -211,8 +216,23 @@ interface Piece {
    * The two are separate because they answer different questions: this one is
    * about the VERDICT (a flag or a rejection, which is the same distinction on
    * every category) and that one is about the CATEGORY.
+   *
+   * ── AND THE COMPARISON'S TWO INKS RIDE THE SAME FIELD (2026-09-08) ─────────
+   *
+   * `'removed'` is a stretch of the OLDER column's words that the newer step
+   * dropped; `'added'` is a stretch of the NEWER column's words the older step
+   * did not have (`ChangesService`, docs/COMPARE-CHANGES.md). They are values of
+   * `hit` and not a fifth field because they are the same KIND of fact — "these
+   * characters are lit, and this is how" — drawn by the same walk closing runs
+   * at the same boundaries; a second field would be a second cursor in `cut()`
+   * comparing a second thing at every character for a light that can never be
+   * on at the same time as the first (the stage holds ONE second column, so an
+   * analysis and a comparison are never both open). Where both somehow cover a
+   * character the analysis wins, and `hitInk`/`hitDeep`/`hitKey` are null on a
+   * change run: the change inks are two tokens, not twelve, and the stylesheet
+   * knows them by class.
    */
-  hit: 'lit' | 'ghost' | null;
+  hit: 'lit' | 'ghost' | 'added' | 'removed' | null;
   /**
    * THE TINT THIS RUN IS WASHED IN — the category's own colour, or null where the
    * run is not lit.
@@ -566,13 +586,24 @@ const OP_GESTURE: Gesture = { kind: 'op' };
             its own hue — \`--hit-deep\` rides beside the resting wash so the
             animation has both ends of the breath (Owen's second ruling; the
             styles carry it in full).
+
+            \`added\` AND \`removed\` ARE THE COMPARISON'S LIGHT (Owen,
+            2026-09-08: *"highlight the changes on each side, like in analysis,
+            so I can see what it was before and what it is now"*) — the same
+            mechanism exactly: \`cut()\` closed the run where the change begins
+            and ends, and a class on it is the whole of the drawing. \`hit\` is
+            kept to the ANALYSIS's two values, so the analysis's geometry rule
+            and its pulse never reach a change run and the two lights cannot
+            wear each other's clothes.
           -->
           <span
             class="run"
             [class.bold]="piece.strong"
             [class.italic]="piece.italic"
-            [class.hit]="piece.hit !== null"
+            [class.hit]="piece.hit === 'lit' || piece.hit === 'ghost'"
             [class.hit-ghost]="piece.hit === 'ghost'"
+            [class.added]="piece.hit === 'added'"
+            [class.removed]="piece.hit === 'removed'"
             [class.on]="piece.hitKey !== null && chosenHit() === piece.hitKey"
             [style.background]="piece.hitInk"
             [style.--hit-deep]="piece.hitDeep"
@@ -1643,6 +1674,21 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       --ink-flag:     #b98a1c;
       --ink-edit:     #2f7d4f;
       /*
+        \`--ink-added\` IS THE COMPARISON'S SECOND INK (2026-09-08), and the first
+        is \`--ink-strike\` above, borrowed rather than minted. Owen asked for the
+        changes *"on each side, like in analysis"*: what the newer step DROPPED
+        is drawn on the older column in the strike's own red, because a dropped
+        word and a struck block are the same statement about words leaving the
+        book and one colour should say it; what the newer step ADDED is drawn on
+        the newer column in this green. It is a shade beside \`--ink-edit\` and
+        \`--ink-chapter\` (the paper's two greens, both "something was made
+        here") but a touch deeper and cooler, so that at the 22% wash the run
+        wears it reads as a highlighter and not as the chapter rule's mint —
+        and it is never the glyph colour, on the same alpha rule every ink on
+        this sheet is under (\`.run.added\`, in the styles).
+      */
+      --ink-added:    #3a7d44;
+      /*
         \`--ink-hit\` DIED HERE (2026-08-25), AND THE GRAVESTONE IS THE RULING.
 
         There was one highlight ink on this paper — an amber, #d9a441, laid at
@@ -2593,6 +2639,51 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       50% { background-color: var(--hit-deep); }
     }
 
+    /*
+      ── THE COMPARISON'S LIGHT — what went, and what came ────────────────────
+
+      Owen, 2026-09-08: *"It should highlight the changes on each side, like in
+      analysis, so I can see what it was before and what it is now."* Two rules
+      beside the analysis's one, and the same mechanism under them: a run
+      wearing a class, closed by \`cut()\` where the change begins and ends
+      (docs/COMPARE-CHANGES.md). No extra element, no \`innerHTML\`, no overlay,
+      for the reasons the analysis rule gives above and this surface's header
+      gives at length.
+
+      REMOVED IS DRAWN ON THE OLDER COLUMN, in the strike's red with a line
+      through it — the words are still there to be read (that is the whole
+      point of the older column) and the mark says the newer step took them
+      out. ADDED IS DRAWN ON THE NEWER COLUMN, in \`--ink-added\`, a wash and
+      nothing else. Which column is which is the ledger's to say
+      (\`ChangesService.order\`), never the layout's: the live sheet is the
+      older one whenever somebody compares a row with the cleanup made from it.
+
+      A WASH, NEVER THE GLYPHS — the standing alpha rule, Owen's own sentence
+      about the analysis (*"the text shouldn't be a different color, just a
+      light highlight color difference"*) applied to the second light exactly as
+      to the first. 22% and 18% are the tints' alphas; the strike-through is
+      the one extra mark, at the same 70% the struck body's own line wears.
+
+      THEY ARE UNDER THE EDITION AS WELL, and deliberately: the compare column's
+      pane is always in the finished-book register (\`viewing()\` puts it there),
+      so a rule that only drew on the bench would draw on one column of two.
+      The edition strips \`.body\`'s tints and the rails and leaves the runs'
+      backgrounds alone — the analysis light already survives the register flip
+      by the same omission, and these ride with it.
+    */
+    .run.added {
+      background: color-mix(in srgb, var(--ink-added) 22%, transparent);
+      border-radius: 2px;
+      padding: 0 0.05em;
+    }
+    .run.removed {
+      background: color-mix(in srgb, var(--ink-strike) 18%, transparent);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--ink-strike) 70%, transparent);
+      border-radius: 2px;
+      padding: 0 0.05em;
+    }
+
     /* ── The one verb on this surface, on the bench beside the paper ──────── */
 
     .tray {
@@ -2890,6 +2981,19 @@ export class BookViewComponent {
    * and this viewer never writes to it.
    */
   private readonly analysis = inject(AnalysisViewService);
+  /**
+   * The open comparison's diff, read for one thing and written for one thing:
+   * which characters of which blocks changed against the other column (read,
+   * `changeLight`), and what this sheet's rows ARE so that diff can be made
+   * (written, the publishing effect in the constructor). Only a pane that is a
+   * PARTY to the comparison touches it either way — see `party`.
+   */
+  private readonly changes = inject(ChangesService);
+  /**
+   * The stage, asked two questions and nothing more: is there a comparison, and
+   * is the document in front of the person this one. Both go into `party`.
+   */
+  private readonly stage = inject(StageService);
   private readonly notices = inject(NoticeService);
   private readonly ledger = inject(LedgerService);
   /** For `afterNextRender` from an event handler — see `edit`. */
@@ -3541,6 +3645,78 @@ export class BookViewComponent {
     });
 
     /*
+     * ── THIS SHEET'S ROWS, PUBLISHED TO THE COMPARISON WHILE IT IS A PARTY ───
+     *
+     * The diff between the two columns is made in one place from both sheets'
+     * OWN replayed rows (`ChangesService`, docs/COMPARE-CHANGES.md), and the
+     * rows get there from here: the live pane writes `live`, the compare
+     * column's pane writes `compared`, and each writes its `view()` — the chain
+     * and the pending stack already replayed — so the light agrees with the
+     * paper, strike by strike. The registry cannot carry this for the compare
+     * column because that pane registers no stack, on purpose (the registration
+     * effect above says why), so the publication runs from the pane outward.
+     *
+     * A PANE CLEARS ONLY WHAT IT WROTE. Two panes can be the live party in one
+     * session (the viewer reuses this component across book tabs, and a compare
+     * column is destroyed and rebuilt between steps), and a pane that nulled the
+     * side on the way out would take out the rows its successor had just put
+     * there. So the clear is conditional on the side still holding THIS pane's
+     * last publication — identity against the array — and a stranger's rows are
+     * left alone. `untracked`, because the write is to a signal a computed this
+     * pane draws from depends on, and an effect that reads its own writes is a
+     * loop.
+     */
+    let published: { side: 'live' | 'compared'; rows: readonly ReplayedRow[] | null } | null = null;
+    const withdraw = (): void => {
+      if (published === null) return;
+      const held = this.changes[published.side];
+      if (held() === published.rows) held.set(null);
+      published = null;
+    };
+    effect(() => {
+      const party = this.party();
+      const rows = party === null ? null : this.view()?.rows ?? null;
+      untracked(() => {
+        if (published !== null && published.side !== party) withdraw();
+        if (party === null) return;
+        this.changes[party].set(rows);
+        published = { side: party, rows };
+      });
+    });
+    destroy.onDestroy(withdraw);
+
+    /*
+     * ── AND BOTH PARTIES TRAVEL TOGETHER when the head's ↑↓ are pressed ──────
+     *
+     * The compare column's head walks the changed blocks and stamps
+     * `ChangesService.reveal`; each party sees the stamp and scrolls ITSELF to
+     * the block, through the same `scrollTo` a panel's jump uses. It is an
+     * effect on the stamp's tick and not on its id, on `pointedAt`'s rule: the
+     * same block pressed twice is a second journey. The tick is adopted on the
+     * first run without travelling, so a pane built while a stamp is standing
+     * (a compare column rebuilt between steps) does not set off toward a block it
+     * has not loaded yet.
+     */
+    let seenTick: number | null = null;
+    effect(() => {
+      const wish = this.changes.reveal();
+      const party = this.party();
+      untracked(() => {
+        if (wish === null) {
+          seenTick = null;
+          return;
+        }
+        if (seenTick === null) {
+          seenTick = wish.tick;
+          return;
+        }
+        if (wish.tick === seenTick) return;
+        seenTick = wish.tick;
+        if (party !== null) this.scrollTo(wish.id);
+      });
+    });
+
+    /*
      * ── THE SCROLL LOCK'S LISTENERS, AND WHY THEY ARE NOT TEMPLATE BINDINGS ───
      *
      * An Angular event binding marks this view dirty every time it fires, and this
@@ -4024,6 +4200,46 @@ export class BookViewComponent {
   );
 
   /**
+   * WHICH SIDE OF THE OPEN COMPARISON THIS PANE IS — or neither, which is
+   * every pane nearly always.
+   *
+   * THE COMPARED PARTY is the pane locked to the compared step: `atStep` names
+   * the row and the stage names the comparison, and they must agree, because a
+   * compare column being rebuilt between two steps has, for a frame, a pane
+   * about the row just left. THE LIVE PARTY is the ordinary pane (no `atStep`)
+   * drawing the document in front of the person — the viewer only ever draws the
+   * active one, but asking the stage rather than assuming it is what keeps this
+   * true of the component and not of the way its host happens to be written.
+   *
+   * NULL WHEN THERE IS NO COMPARISON, so the live pane publishes nothing and
+   * reads nothing on every ordinary day: the light is an apparatus a person
+   * summons by opening the column, never a recolouring of the book.
+   */
+  private readonly party = computed<'live' | 'compared' | null>(() => {
+    const where = this.stage.compare();
+    if (where === null) return null;
+    const at = this.atStep();
+    if (at !== null) return at === where.stepId ? 'compared' : null;
+    return this.tab().id === this.stage.activeDocument()?.id ? 'live' : null;
+  });
+
+  /**
+   * WHICH CHARACTERS OF WHICH BLOCKS CHANGED AGAINST THE OTHER COLUMN — this
+   * side's half of the diff, empty for every pane that is not a party.
+   *
+   * `hitLight`'s twin, on its argument: one diff in the service, read as a
+   * computed by both sheets, so the removal on one column and the addition on
+   * the other are halves of the same alignment and cannot drift. Which half is
+   * this pane's is the service's decision (`liveRanges`/`comparedRanges` —
+   * the ledger says which side is older), never this component's.
+   */
+  private readonly changeLight = computed<ReadonlyMap<string, readonly ChangeRange[]>>(() => {
+    const party = this.party();
+    if (party === null) return NO_CHANGE_MAP;
+    return party === 'live' ? this.changes.liveRanges() : this.changes.comparedRanges();
+  });
+
+  /**
    * WHICH FINDING IS SELECTED — the key whose runs pulse, or null.
    *
    * Owen, 2026-08-25: *"have it pulse as long as it's selected."* NAMED
@@ -4093,6 +4309,14 @@ export class BookViewComponent {
        * (`SecondColumn`, core/stage.service.ts).
        */
       lit: this.hitLight(),
+      /*
+       * AND THE COMPARISON'S, on the same terms and through the same walk — this
+       * pane's half of the diff, or nothing. Both parties' sheets go through
+       * this computed (the compare column's pane is this very component with
+       * `atStep` set), which is what puts the removals on one column and the
+       * additions on the other out of one `linesOf`.
+       */
+      changes: this.changeLight(),
     });
   });
 
@@ -4178,6 +4402,9 @@ export class BookViewComponent {
        * it from this report would put the marker pen on words nobody measured.
        */
       lit: new Map(),
+      // And no changes, for the identical reason: the diff is between the two
+      // COLUMNS' books by block id, and the source sheet is a third book.
+      changes: NO_CHANGE_MAP,
     });
   });
 
@@ -6683,6 +6910,13 @@ function linesOf(
      * source column passes an empty map and gets the walk it has always had.
      */
     lit: ReadonlyMap<string, readonly LitRange[]>;
+    /**
+     * WHICH CHARACTERS CHANGED AGAINST THE OTHER COLUMN of an open comparison,
+     * by block — this sheet's half of the diff (`ChangesService`), and empty for
+     * every sheet that is not a party to one. It rides beside `lit` for `lit`'s
+     * reason, and is walked by `cut` on the same cursor.
+     */
+    changes: ReadonlyMap<string, readonly ChangeRange[]>;
   },
 ): Line[] {
   const out: Line[] = [];
@@ -6716,6 +6950,9 @@ function linesOf(
       && (previous.category === 'Title' || previous.category === 'Section-header');
     const markers = marks.printed.get(row.id) ?? [];
     const litHere = marks.lit.get(row.id) ?? NO_LIT;
+    // A struck row is never in the map — `ChangesService.changes` skips it at
+    // the source, exactly as `litRanges` does — so there is nothing to undo here.
+    const changesHere = marks.changes.get(row.id) ?? NO_CHANGES;
     let ordinal: number | null = null;
     if (marks.chrome && row.category === 'Footnote') {
       ordinal = (notesOnPage.get(page) ?? 0) + 1;
@@ -6723,7 +6960,7 @@ function linesOf(
     }
     out.push({
       row,
-      pieces: cut(row.text, markers, litHere),
+      pieces: cut(row.text, markers, litHere, changesHere),
       /*
        * THE FIRST FINDING IN THIS BLOCK, for the scroll's following. The ranges
        * arrive in the book's own order (`litRanges`), so the first of them is the
@@ -6850,10 +7087,33 @@ function sizeOf(book: BookLoad, category: string): number {
  * THE RANGES ARRIVE MERGED AND NON-OVERLAPPING (`litRanges`, core/analysis.ts),
  * so this walk has nothing to decide at a character two findings both claimed.
  * That decision belongs where the findings are, and it is made there.
+ *
+ * ── AND THE COMPARISON'S CHANGES ARE THE FOURTH, ON THE SAME CURSOR ────────
+ *
+ * Owen, 2026-09-08: *"highlight the changes on each side, like in analysis."*
+ * "Like in analysis" is taken literally: a change is a `[start, end)` span into
+ * this block's text (`wordDiff`, shared/word-diff.ts — the older column's
+ * removals indexed into its own text, the newer column's additions into its),
+ * so it joins the cursor below as a second sorted list walked exactly as `lit`
+ * is, and a run closes where the change begins and ends because `hit` changes
+ * there. One walk, one more comparison per character, and no second pass that
+ * could disagree about where character forty is.
+ *
+ * THE ANALYSIS WINS WHERE BOTH COVER, which is a rule for a case that cannot
+ * arise — the stage holds one second column, so a report and a comparison are
+ * never open together — stated so the walk has an answer rather than an
+ * accident if that ever changes. The change ranges arrive merged and sorted
+ * too (`wordDiff` joins neighbours as it emits them), so the discipline is the
+ * same: nothing to decide here at a character two ranges both claimed.
  */
-function cut(text: string, markers: readonly Marker[], lit: readonly LitRange[]): Piece[] {
+function cut(
+  text: string,
+  markers: readonly Marker[],
+  lit: readonly LitRange[],
+  changes: readonly ChangeRange[],
+): Piece[] {
   const codes = inlineEmphasis(text);
-  if (markers.length === 0 && codes === null && lit.length === 0) {
+  if (markers.length === 0 && codes === null && lit.length === 0 && changes.length === 0) {
     return [{
       text, marker: null, strong: false, italic: false, hit: null, hitInk: null, hitDeep: null, hitKey: null,
     }];
@@ -6907,6 +7167,8 @@ function cut(text: string, markers: readonly Marker[], lit: readonly LitRange[])
    * were.
    */
   let nextLit = 0;
+  /** And which change range does — the third sorted list, the same cursor. */
+  let nextChange = 0;
   for (let i = 0; i < text.length; i += 1) {
     while (next < markers.length && markers[next]!.at + markers[next]!.len <= i) next += 1;
     const over = markers[next];
@@ -6914,7 +7176,10 @@ function cut(text: string, markers: readonly Marker[], lit: readonly LitRange[])
     while (nextLit < lit.length && lit[nextLit]!.end <= i) nextLit += 1;
     const range = lit[nextLit];
     const covering = range !== undefined && range.start <= i ? range : null;
-    const hit: Piece['hit'] = covering === null ? null : (covering.solid ? 'lit' : 'ghost');
+    while (nextChange < changes.length && changes[nextChange]!.end <= i) nextChange += 1;
+    const change = changes[nextChange];
+    const changed = change !== undefined && change.start <= i ? change.kind : null;
+    const hit: Piece['hit'] = covering === null ? changed : (covering.solid ? 'lit' : 'ghost');
     /*
      * AND WHICH FINDING IT IS, off the same range. `litRanges` put the earliest
      * covering finding's key on the merged run and made the key a thing two
@@ -6968,6 +7233,9 @@ function cut(text: string, markers: readonly Marker[], lit: readonly LitRange[])
 
 /** No report open over this book, which is nearly every book, nearly always. */
 const NO_LIT: readonly LitRange[] = [];
+/** No comparison open, or this block unchanged by it — the same near-always. */
+const NO_CHANGES: readonly ChangeRange[] = [];
+const NO_CHANGE_MAP: ReadonlyMap<string, readonly ChangeRange[]> = new Map();
 
 /**
  * THE PAPER'S TINT FOR A CATEGORY — the panel's hue, mixed for cream.
