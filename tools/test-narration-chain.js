@@ -41,7 +41,6 @@ if (!fs.existsSync(MODULE)) {
 const {
   buildNarrationSteps,
   narrationEnhancementPasses,
-  requireCoverageAligner,
   requireNarrationStages,
 } = require(MODULE);
 
@@ -88,10 +87,6 @@ function settings(over = {}) {
     applyDeRing: false,
     rvc: null,
     startFresh: false,
-    // WHERE AN ALIGN ROW WOULD RUN. Stated on every settings object because the
-    // description refuses an align it cannot place: the answer decides which
-    // queue slot the row claims, hours before it runs.
-    alignDevice: 'cpu',
     // STATED, because the description refuses a run that cannot say it — and it
     // was missing here, which had this whole file failing 17 of its 22 cases
     // against a refusal that has nothing to do with what it tests. 'required' is
@@ -101,14 +96,13 @@ function settings(over = {}) {
 }
 
 /*
- * `align` DEFAULTS TO FALSE HERE and is ticked by the cases that are about it.
- *
- * The dialog opens with it TICKED (Owen, 2026-09-07) — that default belongs to
- * the modal, not to the description, and pinning it here would make every one of
- * the enhancement-shape cases below carry an align row it is not testing.
+ * THREE STAGES, and there is no fourth. `align` was one for a day and Owen
+ * removed it on 2026-09-08 — "remove the align the narration checkbox. lets just
+ * have it permanently do it that way" — so a narration run composes no align
+ * row and the cases that pinned its shape went with it.
  */
 const stages = (over = {}) =>
-  Object.assign({ narrate: true, enhance: false, assemble: true, align: false }, over);
+  Object.assign({ narrate: true, enhance: false, assemble: true }, over);
 
 /** The step types of a run, in order — the shape, said in one line. */
 const shapeOf = (steps) => steps.map((s) => s.type);
@@ -252,7 +246,7 @@ test('a checked Enhance with neither pass on is refused BY NAME', () => {
 test('enhancement with no assembly is refused', () => {
   assert.throws(
     () => requireNarrationStages(
-      { narrate: true, enhance: true, assemble: false, align: false },
+      { narrate: true, enhance: true, assemble: false },
       settings({ finalDenoise: true })),
     /leave nothing to listen to/);
 });
@@ -260,20 +254,8 @@ test('enhancement with no assembly is refused', () => {
 test('a run with no stage at all is refused', () => {
   assert.throws(
     () => requireNarrationStages(
-      { narrate: false, enhance: false, assemble: false, align: false }, settings()),
+      { narrate: false, enhance: false, assemble: false }, settings()),
     /nothing to queue/);
-});
-
-test('ALIGN ON ITS OWN is refused by name — it rides with what it describes', () => {
-  assert.throws(
-    () => requireNarrationStages(
-      { narrate: false, enhance: false, assemble: false, align: true }, settings()),
-    /align the narration and do nothing else/);
-  // With either of the two things it can describe, it is a run.
-  requireNarrationStages(
-    { narrate: false, enhance: false, assemble: true, align: true }, settings());
-  requireNarrationStages(
-    { narrate: true, enhance: false, assemble: false, align: true }, settings());
 });
 
 test('a conversion with no voice is refused before anything is built', () => {
@@ -334,193 +316,18 @@ test('a run that narrates reads the DOCUMENT it names', () => {
   assert.deepStrictEqual(steps[0].sourceRef, { kind: 'epub', path: BOOK.epubPath });
 });
 
-// ── the align row ───────────────────────────────────────────────────────────
+// ── the align row is GONE (Owen, 2026-09-08) ────────────────────────────────
 //
-// It was composed for an ENGINE until 2026-09-07 (`coverageAuditedFor`: Higgs
-// yes, Orpheus no), which meant an assemble-only run got a lone `reassembly`
-// row and the finished M4B carried narrator's ESTIMATED sentence cues. Owen:
-// "put a pre-checked checkbox in the assembly modal that creates the alignment
-// step and the assembly step. alignment and assembly should happen in tandem,
-// each taking up one of the free cpu slots." So it is a STAGE now, and these
-// pin what that means for the shape of the run.
-
-const higgs = (over = {}) => settings(Object.assign({ ttsEngine: 'higgs' }, over));
-
-test('ALIGN IS A STAGE: narrate + align ⇒ narrate → align → assemble', () => {
-  const steps = buildNarrationSteps(BOOK, settings(), stages({ align: true }));
-  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'align', 'reassembly']);
-});
-
-test('THE ENGINE NO LONGER DECIDES: orpheus aligns when the run says so', () => {
-  // The whole point of the 2026-09-07 ruling. The aligner is whisperx CTC over
-  // the book's own text; it knows nothing about which engine spoke it.
-  for (const engine of ['orpheus', 'higgs']) {
-    const steps = buildNarrationSteps(BOOK, settings({ ttsEngine: engine }), stages({ align: true }));
-    assert.ok(shapeOf(steps).includes('align'), `${engine} did not get an align row`);
-  }
-});
-
-test('ALIGN UNTICKED ⇒ no align row, in any shape or engine', () => {
-  for (const engine of ['orpheus', 'higgs']) {
-    for (const order of ['denoise-first', 'rvc-first']) {
-      for (const finalDenoise of [false, true]) {
-        for (const rvc of [null, RVC]) {
-          for (const narrate of [true, false]) {
-            const enhance = finalDenoise || rvc !== null;
-            if (!narrate && !enhance) continue; // not a run; refused elsewhere
-            const steps = buildNarrationSteps(
-              BOOK,
-              settings({ ttsEngine: engine, finalDenoise, rvc, enhancementOrder: order }),
-              stages({ narrate, enhance, align: false }));
-            assert.ok(!shapeOf(steps).includes('align'),
-              `${engine}/${order}/denoise=${finalDenoise}/rvc=${rvc !== null}/narrate=${narrate} `
-              + 'grew an align row the run did not ask for');
-            for (const step of steps) {
-              assert.strictEqual(step.sideBranch, undefined,
-                `${step.type} carries sideBranch in a run that has no align row`);
-            }
-          }
-        }
-      }
-    }
-  }
-});
-
-test('the align row sits BEHIND the render and IN FRONT of every enhancement', () => {
-  // Both orders, both passes: the guard measures the RENDER, its thresholds were
-  // calibrated on raw engine output, and it must fail before an hour of GPU.
-  for (const order of ['denoise-first', 'rvc-first']) {
-    const steps = buildNarrationSteps(
-      BOOK,
-      higgs({ finalDenoise: true, rvc: RVC, enhancementOrder: order }),
-      stages({ enhance: true, align: true }));
-    assert.strictEqual(shapeOf(steps)[0], 'tts-conversion', order);
-    assert.strictEqual(shapeOf(steps)[1], 'align',
-      `${order}: the guard must not measure what a pass made of the render`);
-    assert.strictEqual(shapeOf(steps).filter((t) => t === 'align').length, 1,
-      `${order}: exactly one align row`);
-  }
-});
-
-test('ASSEMBLE-ONLY + ALIGN: two steps, SIBLINGS off the source (Owen, 2026-09-07)', () => {
-  // Tonight's shape: the Assembly tab of the cached-session door, Align ticked,
-  // nothing to render. Both rows are cpu and both root at the source, so they
-  // take the two CPU slots at once — the assembly's tail joins on the align
-  // before it seals the transcript (queue-steps/reassembly.ts `awaitCoverage`).
-  const steps = buildNarrationSteps(
-    BOOK, settings(), stages({ narrate: false, assemble: true, align: true }));
-  assert.deepStrictEqual(shapeOf(steps), ['align', 'reassembly']);
-  const { narrationStepParentIndex } = require(MODULE);
-  assert.deepStrictEqual(
-    shapeOf(steps).map((_t, i) => narrationStepParentIndex(shapeOf(steps), i)),
-    [null, null],
-    'the assembly must NOT wait on the align: they are siblings off the source');
-  for (const step of steps) {
-    assert.deepStrictEqual(step.sourceRef, { kind: 'audio-session' },
-      `${step.type} roots at the source and must say what it reads`);
-  }
-  assert.strictEqual(find(steps, 'align').sideBranch, true);
-  assert.strictEqual(find(steps, 'reassembly').sideBranch, undefined);
-});
-
-test('ALIGN IS A LEAF: assembly and every pass wait on the nearest non-align step (Owen, 2026-09-07)', () => {
-  const { narrationStepParentIndex } = require(MODULE);
-  const parents = (types) => types.map((_, i) => narrationStepParentIndex(types, i));
-  assert.deepStrictEqual(parents(['tts-conversion', 'align', 'reassembly']), [null, 0, 0],
-    'assembly hangs off the render, beside the align — two CPU slots at once');
-  assert.deepStrictEqual(
-    parents(['tts-conversion', 'align', 'final-denoise', 'rvc-enhancement', 'reassembly']),
-    [null, 0, 0, 2, 3],
-    'passes and the assembly chain through each other; none of them waits on the audit');
-  assert.deepStrictEqual(parents(['tts-conversion', 'reassembly']), [null, 0], 'a run with no align row is the straight line it was');
-  assert.deepStrictEqual(parents(['simplify', 'tts-conversion', 'align', 'reassembly']), [null, 0, 1, 1],
-    'a text pass in front is still the render\'s parent');
-  assert.deepStrictEqual(parents(['align', 'reassembly']), [null, null],
-    'nothing in front of the align: both root at the source and run in tandem');
-});
-
-test('THE ALIGN ROW SAYS IT IS A LEAF, for the composer that appends one step at a time', () => {
-  // `narrationStepParentIndex` is the same rule for a composer that can see the
-  // whole list (main's processing:submit-chain). QueueService.addJob cannot —
-  // it is called once per step and knows only the run so far — so the step
-  // itself carries the flag, and the two must never disagree about which type
-  // is a leaf.
-  const steps = buildNarrationSteps(BOOK, higgs(), stages({ align: true }));
-  for (const step of steps) {
-    const isLeaf = step.type === 'align';
-    assert.strictEqual(step.sideBranch === true, isLeaf,
-      `${step.type}: sideBranch must be set on the align row and on nothing else`);
-  }
-  const types = shapeOf(steps);
-  const { narrationStepParentIndex } = require(MODULE);
-  types.forEach((type, i) => {
-    const parent = narrationStepParentIndex(types, i);
-    // NOTHING is ever parented to a step the plan marked as a side branch.
-    if (parent === null) return;
-    assert.notStrictEqual(types[parent], 'align',
-      `${type} waits on an align row; the two rules disagree`);
-  });
-});
-
-test('a cache-only run that aligns and converts reads the session by kind', () => {
-  const steps = buildNarrationSteps(
-    BOOK, higgs({ rvc: RVC }), stages({ narrate: false, enhance: true, align: true }));
-  assert.strictEqual(shapeOf(steps)[0], 'align');
-  assert.deepStrictEqual(steps[0].sourceRef, { kind: 'audio-session' },
-    'named by kind with no path, like every other cache-run first step');
-  assert.deepStrictEqual(steps[1].sourceRef, { kind: 'audio-session' },
-    'the conversion is the align\'s sibling off the source, so it says so too');
-  assert.strictEqual(steps[2].sourceRef, undefined,
-    'the assembly waits on the conversion, so it reads what that wrote');
-});
-
-test('a narrate-only run can still align — tonight, not next week', () => {
-  const steps = buildNarrationSteps(
-    BOOK, higgs(), stages({ narrate: true, enhance: false, assemble: false, align: true }));
-  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'align']);
-});
-
-test('THE ALIGN ROW SAYS WHERE IT RUNS, and cpu is the default (Owen, 2026-09-07)', () => {
-  const onCpu = buildNarrationSteps(BOOK, settings(), stages({ align: true }));
-  assert.strictEqual(find(onCpu, 'align').config.device, 'cpu');
-  const onGpu = buildNarrationSteps(
-    BOOK, settings({ alignDevice: 'gpu' }), stages({ align: true }));
-  assert.strictEqual(find(onGpu, 'align').config.device, 'gpu',
-    'the user asked for the card, so the row claims the gpu slot');
-  // Neither answer is inferable downstream: the row is queued into a slot long
-  // before it runs, so a run that cannot say where is refused rather than placed.
-  assert.throws(
-    () => buildNarrationSteps(BOOK, settings({ alignDevice: undefined }), stages({ align: true })),
-    /does not say where/);
-  assert.throws(
-    () => buildNarrationSteps(BOOK, settings({ alignDevice: 'mps' }), stages({ align: true })),
-    /does not say where/);
-  // And a run that does not align is not asked the question at all.
-  buildNarrationSteps(BOOK, settings({ alignDevice: undefined }), stages({ align: false }));
-});
-
-test('the align row carries the language and blank session fields', () => {
-  const steps = buildNarrationSteps(BOOK, higgs({ language: 'de' }), stages({ align: true }));
-  const align = find(steps, 'align');
-  assert.strictEqual(align.metadata.title, 'Align');
-  assert.strictEqual(align.config.type, 'align');
-  assert.strictEqual(align.config.language, 'de',
-    'the aligner loads a per-language model; a guess refuses a book that was read right');
-  assert.strictEqual(align.config.sessionId, '');
-  assert.strictEqual(align.config.sessionDir, '');
-  assert.strictEqual(align.config.processDir, '',
-    'resolved at run time from the parent step, like the denoise and the assembly');
-});
-
-test('the align row never states a sentence gap', () => {
-  // It transforms no audio, so a gap on it would be a knob with no hand on it —
-  // and the "exactly once" invariant above counts every non-render step.
-  const steps = buildNarrationSteps(
-    BOOK, higgs({ finalDenoise: true, sentenceGap: 0.4 }), stages({ enhance: true, align: true }));
-  assert.strictEqual('sentenceGap' in find(steps, 'align').config, false);
-  assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4,
-    'the align row must not shift the gap off the first pass that reads raw audio');
-});
+// A dozen cases lived here from 2026-09-07 to 2026-09-08: that align is a STAGE
+// rather than an engine property, that its row is a LEAF the assembly does not
+// wait on, that it states cpu or gpu and is refused when it cannot, and that the
+// aligner add-on is demanded by name before anything is queued. Owen removed the
+// checkbox they all describe — "remove the align the narration checkbox. lets
+// just have it permanently do it that way. if the user wants an exact alignment
+// they can hit generate sentences on the bookforge library" — so the shape they
+// pinned is not a shape a narration run can have. What replaced the measurement
+// is assembly's own proportional estimate, which is narrator's to test
+// (python/narrator/assemble/sentence_vtt.py), not this file's.
 
 test('AN ENGINE THIS BUILD CANNOT RENDER is refused before anything is queued', () => {
   // It was refused by the COVERAGE table until 2026-09-07 — a true sentence
@@ -532,18 +339,6 @@ test('AN ENGINE THIS BUILD CANNOT RENDER is refused before anything is queued', 
   assert.throws(
     () => buildNarrationSteps(BOOK, settings({ ttsEngine: 'nosuchengine' }), stages()),
     /Unknown TTS engine "nosuchengine"/);
-});
-
-test('the aligner add-on is required BY NAME when the run aligns, and only then', () => {
-  assert.throws(
-    () => requireCoverageAligner(stages({ align: true }), false),
-    /Ebook Alignment \(WhisperX\)[\s\S]*Settings → Add-ons/);
-  assert.throws(
-    () => requireCoverageAligner(stages({ align: true }), false),
-    /untick Align/);
-  // Installed, or not aligning: nothing to say.
-  requireCoverageAligner(stages({ align: true }), true);
-  requireCoverageAligner(stages({ align: false }), false);
 });
 
 // ── run ─────────────────────────────────────────────────────────────────────

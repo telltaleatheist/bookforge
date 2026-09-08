@@ -118,15 +118,10 @@ import {
   buildNarrationJobs,
   type NarrationEnhancementOrder,
   type NarrationRunBook,
-  type NarrationAlignDevice,
   type NarrationRunSettings,
   type NarrationTextCleanupChoice,
 } from '../../../queue/jobs/narration-run';
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
-// The plan-time refusal for a guarded engine with no aligner installed. Imported
-// from the shared description rather than from the local mapping door, because
-// the sentence must be the same one main raises for a Foundry-pressed run.
-import { requireCoverageAligner } from '@shared/queue/narration-run';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
 import {
   engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
@@ -585,62 +580,20 @@ function fileName(fullPath: string): string {
 
             <!-- ── Assembly ─────────────────────────────────────────────── -->
             @if (tab() === 'assembly') {
-              <!-- THE ALIGNMENT, FIRST AND TICKED (Owen, 2026-09-07): "that
-                   should be part of the assembly process, and should
-                   automatically happen... alignment and assembly should happen
-                   in tandem, each taking up one of the free cpu slots."
+              <!-- THE ALIGN CHECKBOX IS GONE (Owen, 2026-09-08): "remove the
+                   align the narration checkbox. lets just have it permanently do
+                   it that way. if the user wants an exact alignment they can hit
+                   generate sentences on the bookforge library."
 
-                   NOT disabled by an unticked Assembly, unlike everything below
-                   it: the alignment measures the RENDER and writes its report
-                   beside the session, so a read-and-stop run can carry it too.
-                   What it needs is the add-on, and a box that says so before the
-                   press beats a refusal after it. -->
-              <div class="nm-field nm-pass">
-                <label class="nm-check">
-                  <input type="checkbox" [checked]="alignNarration()"
-                         [disabled]="!alignerInstalled()"
-                         [title]="alignerInstalled() ? '' : alignerUnavailableNote"
-                         (change)="alignNarration.set($any($event.target).checked)" />
-                  <span class="nm-pass-name">Align the narration to the text</span>
-                </label>
-                <span class="nm-hint">
-                  Force-aligns every rendered sentence against its own words, which is
-                  what puts a word-timed transcript in the finished audiobook instead of
-                  timings estimated from sentence length — and writes the report saying
-                  which sentences came out wrong. It runs BESIDE the assembly, in the
-                  other CPU slot, and the assembly waits for it only at the very end.
-                </span>
-                @if (!alignerInstalled()) {
-                  <span class="nm-hint warn">{{ alignerUnavailableNote }}</span>
-                }
-
-                <!-- WHERE IT RUNS — Owen, 2026-09-07: "make it an option the
-                     user can pick when adding it to the queue. GPU or CPU?
-                     defaults to CPU." The label says what the GPU option COSTS,
-                     because it is not free: the row joins the single GPU queue
-                     and waits there like a render. -->
-                @if (alignNarration()) {
-                  <div class="nm-field nm-align-where">
-                    <label class="nm-label">Align on</label>
-                    <desktop-select
-                      [options]="alignDeviceOptions()"
-                      [disabled]="!alignerInstalled()"
-                      [ngModel]="alignDevice()"
-                      (ngModelChange)="alignDevice.set($event)"
-                    />
-                    <span class="nm-hint">
-                      @if (alignDevice() === 'gpu') {
-                        Faster, and it waits for a free GPU exactly as a narration does —
-                        it will not start while anything is rendering.
-                      } @else {
-                        Seconds a sentence, in the second CPU slot, at the same time as
-                        the assembly. {{ gpuAlignNote() }}
-                      }
-                    </span>
-                  </div>
-                }
-              </div>
-
+                   It stood here for a day, ticked by default, with a CPU/GPU
+                   picker beside it. What it bought was a MEASURED sentence
+                   transcript; what it cost was a two-hour CPU align holding the
+                   assembly's second CPU slot after the m4b was already written,
+                   which read as a frozen 99 % row. "That way" is the
+                   proportional estimate assembly writes for itself — each
+                   chunk's real audio span split among its sentences by character
+                   count — and the measurement is the library's "Generate
+                   sentences" button. -->
               @if (!assemble()) {
                 <p class="nm-hint">
                   This run does not assemble an audiobook, so nothing else on this tab
@@ -930,14 +883,6 @@ export class NarrationModalComponent {
   readonly rvcUnavailableNote =
     'The voice-conversion engine is not installed, so this run cannot re-render the '
     + 'sentences through another voice. Install it under Settings → Add-ons.';
-  /**
-   * WHY THE ALIGN BOX IS GREYED OUT — the same fact `requireCoverageAligner`
-   * would refuse the run on, said before the press instead of after it.
-   */
-  readonly alignerUnavailableNote =
-    'The "Ebook Alignment (WhisperX)" add-on is not installed, so nothing on this machine '
-    + 'can align the narration. Install it under Settings → Add-ons; without it the '
-    + 'audiobook gets a transcript estimated from sentence length.';
 
   /**
    * The engines that can be chosen right now — the registry's own gate, so an
@@ -1040,36 +985,6 @@ export class NarrationModalComponent {
   readonly applyDeRing = signal(false);
 
   /**
-   * ALIGN THE NARRATION TO THE TEXT — on by default, on every run.
-   *
-   * Owen, 2026-09-07: *"put a pre-checked checkbox in the assembly modal that
-   * creates the alignment step and the assembly step. alignment and assembly
-   * should happen in tandem."* So it opens ticked whichever door was pressed,
-   * and it is what puts MEASURED word timings in the finished M4B instead of
-   * narrator's proportional estimates.
-   *
-   * PER-RUN, not seeded from Pipeline Defaults. This dialog reads defaults for
-   * the settings Settings actually stores (engine, voice, device, speed, the
-   * conversion) and writes none of them back; `applyDeRing` and the video
-   * resolution are per-run in exactly the same way. A saved "never align" would
-   * be a new Settings field nobody has asked for, and the answer it saved would
-   * be invisible on the screen that acted on it.
-   */
-  readonly alignNarration = signal(true);
-
-  /**
-   * WHERE THE ALIGNMENT RUNS — CPU by default (Owen, 2026-09-07: "GPU or CPU?
-   * defaults to CPU").
-   *
-   * CPU is the default because it is the answer that costs nothing: the row
-   * takes the second cpu slot and runs BESIDE the assembly, so the alignment is
-   * free in wall-clock terms. The GPU is faster per chunk and claims the single
-   * GPU slot to get it — behind whatever is rendering — which is a trade only
-   * the person queuing it can make.
-   */
-  readonly alignDevice = signal<NarrationAlignDevice>('cpu');
-
-  /**
    * A video beside the M4B — seeded from Pipeline Defaults, as the wizard's
    * own check was (`generateVideo`).
    *
@@ -1140,11 +1055,12 @@ export class NarrationModalComponent {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
     /*
-     * THE ADD-ON LIST, for the two boxes that are disabled without one — the
-     * conversion and the alignment. Deduped inside the service (`ensureLoaded`),
-     * so a dialog opened in a window that has already asked costs nothing, and a
-     * window that has NOT asked no longer draws Align greyed out on a machine
-     * that has the aligner.
+     * THE ADD-ON LIST, for the box that is disabled without one — the voice
+     * conversion. (The Align box was the other, until Owen removed it on
+     * 2026-09-08.) Deduped inside the service (`ensureLoaded`), so a dialog
+     * opened in a window that has already asked costs nothing, and a window that
+     * has NOT asked no longer draws that box greyed out on a machine that has
+     * the engine.
      */
     void this.components.ensureLoaded();
     // Whether a Higgs run could start, asked once while the dialog is opening.
@@ -1169,25 +1085,6 @@ export class NarrationModalComponent {
       this.finalDenoise.set(plan.denoise);
       this.rvcEnabled.set(plan.convert);
       this.assemble.set(plan.assemble);
-    });
-
-    /*
-     * THE ALIGN DEFAULT BOWS TO THE MACHINE — once the machine has answered.
-     *
-     * The box opens ticked (Owen's ruling), and a machine with no aligner cannot
-     * honour that: the run would be refused at the press for a choice the user
-     * never made. So the tick is dropped as soon as the add-on list SAYS the
-     * aligner is missing — with the reason printed under the disabled box, which
-     * is what makes it a statement rather than a silent downgrade.
-     *
-     * `components()` empty means the list has not answered yet (it loads
-     * asynchronously), and unticking on that would leave the box off on a
-     * machine that does have the aligner — the default undone by a race.
-     */
-    effect(() => {
-      if (this.components.components().length === 0) return;
-      if (this.alignerInstalled()) return;
-      this.alignNarration.set(false);
     });
 
     effect(() => {
@@ -1369,47 +1266,6 @@ export class NarrationModalComponent {
     })));
 
   readonly rvcInstalled = computed(() => this.components.isInstalled('rvc-env'));
-  /**
-   * The aligner add-on, asked the same way every other add-on is.
-   *
-   * A COMPUTED, not a constructor read: `ComponentService.components` fills in
-   * asynchronously (`ensureLoaded`), and a box that latched "missing" at open
-   * time would stay greyed out on a machine that has it.
-   */
-  readonly alignerInstalled = computed(() => this.components.isInstalled('whisperx-env'));
-
-  /**
-   * IS THERE A GPU THE ALIGNER COULD USE — asked of the machine profile the app
-   * already probes, never of torch from here.
-   *
-   * `ComponentService.profile` is the same `systemProbe.profile()` answer
-   * `coverage-align-job.ts` resolves the device NAME from when the row runs, so
-   * the picker cannot offer a card that the run will then refuse by name. Null
-   * means the probe has not answered yet (it is slower than the add-on list);
-   * the option is disabled until it does, rather than offered on a guess.
-   */
-  readonly alignGpuAvailable = computed(() => {
-    const profile = this.components.profile();
-    if (profile === null) return false;
-    return profile.appleSilicon || profile.cuda.available;
-  });
-
-  /** Why the GPU option is not offered, or '' when it is. */
-  readonly gpuAlignNote = computed(() =>
-    this.alignGpuAvailable()
-      ? ''
-      : 'This machine has no GPU the aligner can use, so CPU is the only choice here.');
-
-  readonly alignDeviceOptions = computed<DesktopSelectItems>(() => [
-    { value: 'cpu', label: 'CPU' },
-    {
-      value: 'gpu',
-      label: 'GPU',
-      ...(this.alignGpuAvailable()
-        ? {}
-        : { disabled: true, title: this.gpuAlignNote() }),
-    },
-  ]);
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
     this.voices.rvcVoices().map((v) => ({ value: v.value, label: v.label })));
 
@@ -1555,19 +1411,6 @@ export class NarrationModalComponent {
     if (!this.narrate() && !this.enhance() && !this.assemble()) {
       return 'No tab is checked, so there is nothing to queue. Check at least one of the three '
         + 'above.';
-    }
-    /*
-     * TICKED, AND THE ADD-ON IS NOT HERE.
-     *
-     * Ordinarily unreachable: the effect in the constructor unticks the box the
-     * moment the add-on list has ANSWERED that the aligner is missing. What is
-     * left for this to catch is the list never answering at all — a failed probe
-     * leaves it empty, the box disabled, and the default still ticked — and in
-     * that state the sentence belongs on screen rather than in a refusal thrown
-     * after the press.
-     */
-    if (this.alignNarration() && !this.alignerInstalled()) {
-      return this.alignerUnavailableNote + ' Or untick Align on the Assembly tab.';
     }
     if (this.enhance() && !this.assemble()) {
       return 'Enhancing the sentences without assembling them would spend the whole pass on the '
@@ -1977,37 +1820,23 @@ export class NarrationModalComponent {
          * the offer and pressed "No, narrate as printed".
          */
         textCleanup,
-        /*
-         * WHERE THE ALIGNMENT RUNS. Stated always, even when this run does not
-         * align — the description refuses a run that cannot say it, and the
-         * value decides which queue slot the row would claim.
-         */
-        alignDevice: this.alignDevice(),
       };
 
       /*
-       * THE ALIGNER, CHECKED BEFORE ANYTHING IS QUEUED.
-       *
-       * The Align row spawns `narrator align --python <the whisperx env>`, which
-       * is the "Ebook Alignment (WhisperX)" add-on — and a machine without it
-       * can render the whole book, spend the enhancement's GPU, and have nothing
-       * to measure it with.
-       *
-       * `requireCoverageAligner` throws with the add-on named and both remedies
-       * in it (install it, or untick Align). It asks the STAGES now rather than
-       * the engine — aligning is the user's choice per run since 2026-09-07 — so
-       * a run with the box unticked never sees this question, and the box itself
-       * is disabled with the same fact on it when the add-on is missing. The row
-       * is never silently dropped: a run that quietly skipped its own alignment
-       * would ship an estimated transcript reported as a measured one.
+       * NO ALIGN STAGE, AND NOTHING TO CHECK FOR ONE (Owen, 2026-09-08): "remove
+       * the align the narration checkbox. lets just have it permanently do it
+       * that way." The dialog used to send `align` here and call
+       * `requireCoverageAligner` first, so a machine with no "Ebook Alignment
+       * (WhisperX)" add-on was refused at the press instead of failing a row
+       * hours later. There is no row to fail now: the audiobook's sentence
+       * transcript is the estimate assembly writes for itself, and the aligner
+       * is only wanted by the library's "Generate sentences" door.
        */
       const stages = {
         narrate: this.narrate(),
         enhance: this.enhance(),
         assemble: this.assemble(),
-        align: this.alignNarration(),
       };
-      requireCoverageAligner(stages, this.components.isInstalled('whisperx-env'));
 
       const jobs = buildNarrationJobs(book, settings, stages);
 

@@ -85,6 +85,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   python_exe: Optional[str] = None,
                   ffmpeg: Optional[str] = None,
                   indices: Optional[Sequence[int]] = None,
+                  workers: int = 1,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -92,6 +93,11 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     `align/worker.py`'s protocol - the whisperx env, from a narrator that has no
     torch. None means "in this process", and the caller is refused by name if
     this process cannot import the backend.
+
+    `workers` is how many of those interpreters run at once (`env.run_jobs`).
+    It is a property of the OUT-OF-PROCESS route only: 1, the default, is the
+    single process the app has always spawned, and asking for more without
+    `python_exe` is refused by name rather than silently ignored.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
@@ -133,7 +139,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         raise AlignerError('every selected chunk is marker-only; there is '
                            'nothing to align')
 
-    results = _run(jobs, python_exe, backend, log)
+    results = _run(jobs, python_exe, backend, log, workers)
 
     cues = []
     coverages = []
@@ -230,7 +236,7 @@ def _progress_reporter(log):
     return report
 
 
-def _run(jobs, python_exe, backend, log):
+def _run(jobs, python_exe, backend, log, workers=1):
     """Align every job, here or in another interpreter.
 
     EVERY JOB, EITHER WAY. The out-of-process worker was always a batch protocol
@@ -238,11 +244,30 @@ def _run(jobs, python_exe, backend, log):
     chunk, which is the half of the old stop-on-failure design that lived here.
     Both now audit the whole book: a failed chunk is a RESULT with `ok: False`,
     and `align_session` turns it into a named error plus estimated cues.
+
+    THE POOL IS THE SPAWNED ROUTE'S. `workers` > 1 spawns that many worker
+    interpreters (Owen, 2026-09-08, on Shift: "align is taking way too long...
+    3x slower than the TTS render" - 11.4 chunks/min, 115 min against a
+    37-minute render). In process there is ONE interpreter and ONE loaded model,
+    so there is nothing to spread the chunks over; asking for a pool here is
+    refused by name rather than quietly aligning at 1, because the caller who
+    asked for four workers would otherwise wait out the same 115 minutes and be
+    told nothing.
     """
     progress = _progress_reporter(log)
     if python_exe:
-        log(f'[align] running the aligner in {python_exe}')
-        return align_env.run_jobs(python_exe, jobs, on_result=progress)
+        log(f'[align] running the aligner in {python_exe} with {workers} '
+            f'worker process(es)')
+        return align_env.run_jobs(python_exe, jobs, on_result=progress,
+                                  workers=workers)
+
+    if workers != 1:
+        raise AlignerError(
+            f'--workers {workers} asks for a pool of aligner processes, but this '
+            f'run has no --python: in-process alignment is one interpreter with '
+            f'one loaded model and cannot be spread over several. Pass --python '
+            f'<the whisperx env>/python to use a pool, or --workers 1 to align '
+            f'here.')
 
     if not align_env.backend_importable(backend):
         found = align_env.discover_align_python()

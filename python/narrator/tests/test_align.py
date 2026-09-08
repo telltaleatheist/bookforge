@@ -982,6 +982,183 @@ class WorkerProtocolTest(unittest.TestCase):
         self.assertEqual(seen[-1], (self.JOBS, self.JOBS))
 
 
+#: A worker that is NOT the aligner, so a pool can be driven without a model.
+#:
+#: It speaks the same JSON-lines protocol, records the job indices IT was dealt
+#: (a file named by its own pid, under `FAKE_ALIGN_OUT`) and can be told to die
+#: mid-list. It is reached the way the real one is - `python -m
+#: narrator.align.worker` with `package_root()` on PYTHONPATH - by pointing
+#: `package_root` at a temp tree, so the SHIPPED spawn, dealing, threading and
+#: refusal code all run. Nothing is faked between here and `subprocess`.
+FAKE_ALIGN_WORKER = r"""
+import json, os, sys
+
+out_dir = os.environ['FAKE_ALIGN_OUT']
+die_on = os.environ.get('FAKE_ALIGN_DIE_ON_INDEX')
+seen = []
+
+
+def record():
+    with open(os.path.join(out_dir, '%d.json' % os.getpid()), 'w') as handle:
+        json.dump(seen, handle)
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    job = json.loads(line)
+    if die_on is not None and not seen and str(job['index']) == die_on:
+        record()
+        sys.stderr.write('the fake worker died on job %s\n' % job['index'])
+        sys.stderr.flush()
+        os._exit(3)
+    seen.append(job['index'])
+    sys.stdout.write(json.dumps({'ok': True, 'index': job['index']}) + '\n')
+    sys.stdout.flush()
+record()
+"""
+
+
+class WorkerPoolTest(unittest.TestCase):
+    """`run_jobs(workers=N)` - N worker processes over one job list.
+
+    WHY THE POOL EXISTS. Owen, 2026-09-08, on the Shift book: "align is taking
+    way too long... 3x slower than the TTS render. we have to find a more
+    efficient way of handling this." Measured there: 11.4 chunks/min, 115 min of
+    CPU for a book whose render took 37 (RTF ~0.08, one process, sharing the
+    machine with the assembly encode).
+
+    THREE THINGS ARE ASSERTED, because three things can silently go wrong when
+    one stream of results becomes N: the results can come back in ARRIVAL order
+    instead of job order (a transcript cued against the wrong chunks), a dead
+    worker can be counted as a finished one (a third of the book missing and the
+    run reporting success), and the dealing can pile the long chunks onto one
+    worker.
+    """
+
+    JOBS = 7
+    POOL = 3
+
+    def _jobs(self, count=None):
+        text = 'the quick brown fox jumps over the lazy dog. '
+        return [{'index': i, 'audioPath': f'/nope/{i}.flac', 'text': text,
+                 'language': 'en', 'backend': 'no-such-backend', 'device': 'cpu'}
+                for i in range(self.JOBS if count is None else count)]
+
+    def _fake_root(self, root):
+        """A `narrator.align.worker` that is `FAKE_ALIGN_WORKER`, under a root
+        `package_root()` can be pointed at."""
+        pkg = os.path.join(root, 'narrator', 'align')
+        os.makedirs(pkg)
+        open(os.path.join(root, 'narrator', '__init__.py'), 'w').close()
+        open(os.path.join(pkg, '__init__.py'), 'w').close()
+        with open(os.path.join(pkg, 'worker.py'), 'w', encoding='utf-8') as handle:
+            handle.write(FAKE_ALIGN_WORKER)
+        return root
+
+    def test_three_workers_over_seven_jobs_answer_in_JOB_order(self):
+        """The REAL worker module, three of it. Every job fails (the backend
+        does not exist) and a failure is still a result line, so this proves the
+        counts and the ORDER without a model - result k answers job k however
+        the seven were split across the three processes."""
+        import sys
+        seen = []
+        results = E.run_jobs(sys.executable, self._jobs(), timeout=300,
+                             on_result=lambda done, total: seen.append((done, total)),
+                             workers=self.POOL)
+        self.assertEqual([r['index'] for r in results], list(range(self.JOBS)))
+        self.assertTrue(all(r['ok'] is False for r in results))
+        self.assertIn('no-such-backend', results[0]['error'])
+        # One callback per result, and the last one is the whole book. The
+        # counts are the POOL's progress, so they are monotonic even though the
+        # results arrive from three processes at once.
+        self.assertEqual(len(seen), self.JOBS)
+        self.assertEqual(seen[-1], (self.JOBS, self.JOBS))
+        self.assertEqual([done for done, _total in seen],
+                         list(range(1, self.JOBS + 1)))
+
+    def test_the_jobs_are_dealt_ROUND_ROBIN_across_the_workers(self):
+        """Job i goes to worker i % N, so a run of long chunks and a run of
+        one-line headings land on different processes. Blocking (worker 1 gets
+        the first third) would put the whole slow half of a book on one worker
+        and finish no earlier than one process does."""
+        import sys
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._fake_root(os.path.join(tmp, 'tree'))
+            out = os.path.join(tmp, 'out')
+            os.makedirs(out)
+            with mock.patch.object(E, 'package_root', lambda: root), \
+                    mock.patch.dict(os.environ, {'FAKE_ALIGN_OUT': out}):
+                results = E.run_jobs(sys.executable, self._jobs(), timeout=300,
+                                     workers=self.POOL)
+            self.assertEqual([r['index'] for r in results], list(range(self.JOBS)))
+            dealt = sorted(
+                json.load(open(os.path.join(out, name), encoding='utf-8'))
+                for name in os.listdir(out))
+            self.assertEqual(dealt, [[0, 3, 6], [1, 4], [2, 5]])
+
+    def test_a_worker_that_dies_is_refused_BY_WHICH_WORKER(self):
+        """Six jobs over three workers; the one dealt job 1 exits 3 before
+        answering anything. The refusal has to say WHICH of the three, because
+        "the align worker exited 3" leaves an operator no way to tell which
+        third of the book is missing."""
+        import sys
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._fake_root(os.path.join(tmp, 'tree'))
+            out = os.path.join(tmp, 'out')
+            os.makedirs(out)
+            with mock.patch.object(E, 'package_root', lambda: root), \
+                    mock.patch.dict(os.environ, {'FAKE_ALIGN_OUT': out,
+                                                 'FAKE_ALIGN_DIE_ON_INDEX': '1'}):
+                with self.assertRaises(RuntimeError) as caught:
+                    E.run_jobs(sys.executable, self._jobs(6), timeout=300,
+                               workers=self.POOL)
+        message = str(caught.exception)
+        self.assertIn('align worker 2 of 3', message)
+        self.assertIn('exited 3', message)
+        # ...and the worker's own stderr rides along, so the reason is in the
+        # same sentence as the name.
+        self.assertIn('the fake worker died on job 1', message)
+
+    def test_workers_below_one_is_refused_before_anything_is_spawned(self):
+        import sys
+        for bad in (0, -1):
+            with self.assertRaises(ValueError) as caught:
+                E.run_jobs(sys.executable, self._jobs(2), workers=bad)
+            self.assertIn('1 or more', str(caught.exception))
+
+    def test_the_default_is_one_worker_which_is_the_old_route(self):
+        import inspect
+        self.assertEqual(
+            inspect.signature(E.run_jobs).parameters['workers'].default, 1)
+
+    def test_a_pool_divides_the_torch_thread_budget_and_an_EXPLICIT_value_wins(self):
+        """N processes that each open `cpu_count()` intra-op threads spend the
+        pool's win on context switches. The single-worker route says nothing at
+        all, and an operator who exported the variables has already decided."""
+        divided = E.worker_environment({}, threads=5)
+        for name in E.THREAD_ENV_VARS:
+            self.assertEqual(divided[name], '5')
+        untouched = E.worker_environment({})
+        for name in E.THREAD_ENV_VARS:
+            self.assertNotIn(name, untouched)
+        explicit = E.worker_environment({'OMP_NUM_THREADS': '2'}, threads=5)
+        self.assertEqual(explicit['OMP_NUM_THREADS'], '2')
+
+    def test_a_pool_without_an_interpreter_to_spawn_is_REFUSED(self):
+        """In process there is ONE interpreter and ONE loaded model, so there is
+        nothing to spread the chunks over. Quietly aligning at 1 would make a
+        caller who asked for four workers wait out the same 115 minutes and be
+        told nothing."""
+        with self.assertRaises(A.AlignerError) as caught:
+            R._run([{'index': 0}], None, 'whisperx', lambda line: None, 4)
+        self.assertIn('--workers 4', str(caught.exception))
+        self.assertIn('--python', str(caught.exception))
+
+
 class CliTest(unittest.TestCase):
 
     def test_align_is_a_subcommand_with_the_documented_flags(self):
@@ -1010,6 +1187,22 @@ class CliTest(unittest.TestCase):
         import inspect
         self.assertNotIn('continue_on_error',
                          inspect.signature(R.align_session).parameters)
+
+    def test_the_align_worker_pool_is_a_flag_and_zero_is_refused(self):
+        """`--workers` defaults to the one process the app has always spawned;
+        0 is refused at parse time rather than clamped, because it is a caller
+        whose arithmetic came out empty and a silent 1 would hide that behind a
+        two-hour run."""
+        from narrator.cli import build_parser
+        self.assertEqual(
+            build_parser().parse_args(['align', '--session-dir', 'D']).workers, 1)
+        self.assertEqual(
+            build_parser().parse_args(
+                ['align', '--session-dir', 'D', '--workers', '4']).workers, 4)
+        for bad in ('0', '-2', 'four'):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(
+                    ['align', '--session-dir', 'D', '--workers', bad])
 
     def test_assemble_takes_the_coverage_report(self):
         from narrator.cli import build_parser
@@ -1276,7 +1469,8 @@ class AlignSessionTest(unittest.TestCase):
         args = argparse.Namespace(
             indices=None, out=os.path.join(self.tmp, 'out.sentences.vtt'),
             report=os.path.join(self.tmp, 'coverage.json'), language='en',
-            device='cpu', python=None, ffmpeg=None, continue_on_error=False)
+            device='cpu', python=None, ffmpeg=None, continue_on_error=False,
+            workers=1)
         self.assertEqual(_run_align(args, self._manifest(texts)), 0)
         self.assertTrue(os.path.isfile(args.out))
         self.assertTrue(os.path.isfile(args.report))

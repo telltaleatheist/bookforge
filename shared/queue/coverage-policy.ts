@@ -25,11 +25,22 @@
  * Owen: *"is it going to generate a VTT for it as well? that should be part of
  * the assembly process, and should automatically happen... put a pre-checked
  * checkbox in the assembly modal that creates the alignment step and the
- * assembly step."* So the align is a stage of the RUN now
- * (`NarrationRunStages.align`), ticked by default on every assembly whatever the
- * engine — the aligner is whisperx CTC over the book's own text and is
- * engine-agnostic; the gate here was ever only about Higgs's missing duration
- * guard, not about what the aligner can measure.
+ * assembly step."* So the align became a stage of the RUN, ticked by default on
+ * every assembly whatever the engine — the aligner is whisperx CTC over the
+ * book's own text and is engine-agnostic; the gate here was ever only about
+ * Higgs's missing duration guard, not about what the aligner can measure.
+ *
+ * ── AND THEN NOTHING DECIDES IT, BECAUSE NARRATION DOES NOT ALIGN (2026-09-08) ─
+ *
+ * Owen, after a two-hour CPU align held a finished 16-hour book's assembly at
+ * 99 %: *"remove the align the narration checkbox. lets just have it permanently
+ * do it that way. if the user wants an exact alignment they can hit generate
+ * sentences on the bookforge library."* A narration run composes no Align row
+ * at all now; the audiobook's sentence transcript is the proportional estimate
+ * assembly writes for itself (`assemble/sentence_vtt.proportional_cues`). A
+ * report can still appear beside a session — the CLI's `narrator align` writes
+ * one — and assembly still reads it out when it does, which is exactly what the
+ * `--coverage_report`-when-the-file-exists rule below already said.
  *
  * What this table still says is what narrator says: which engines' books are
  * AUDITED as a matter of policy. That is the `audited` field narrator stamps
@@ -97,9 +108,9 @@ const ENGINE_ALIASES: Readonly<Record<string, string>> = {
 /**
  * Does NARRATOR consider this engine's books audited as a matter of policy?
  *
- * NOT "does this run align" any more — the run says that for itself
- * (`NarrationRunStages.align`, ticked by default on every assembly since
- * 2026-09-07). This is the mirror of `engine_profiles.PROFILES[...].coverage
+ * NOT "does this run align" any more — no narration run aligns (Owen,
+ * 2026-09-08; see the header). This is the mirror of
+ * `engine_profiles.PROFILES[...].coverage
  * .audited`: the flag narrator stamps into the report it writes, and the thing
  * `tools/test-coverage-policy-mirror.js` holds the two sides to.
  *
@@ -134,33 +145,11 @@ export function coverageAuditedFor(engineId: string): boolean {
  */
 export const COVERAGE_REPORT_NAME = 'coverage.json';
 
-/**
- * The refusal a run gets when it is set to align and the aligner is not on this
- * machine.
- *
- * A SENTENCE RATHER THAN A SKIP. The alternative — queue the run and let the
- * Align step fail hours later — spends the GPU first and says so afterwards,
- * which is the shape this whole description exists to prevent ("everything that
- * can fail, fails before anything is queued").
- *
- * IT IS NOT "THE BOOK WOULD BE REFUSED" ANY MORE. Assembly assembles whatever
- * was rendered (Owen, 2026-09-05). What a missing aligner costs is the
- * MEASUREMENT — nothing would say which chunks came out wrong, and the sentence
- * transcript would be proportional estimates instead of real word timings — and
- * that is what this sentence has to say, because a user who reads a threat that
- * never happens stops reading the ones that do.
- *
- * NO ENGINE IN IT ANY MORE. Aligning is the user's choice per run rather than a
- * property of the engine (2026-09-07), so the remedy is now two doors wide:
- * install the add-on, or untick Align and accept the estimated transcript.
+/*
+ * `alignerMissingRefusal()` WENT WITH THE CHECKBOX (Owen, 2026-09-08). It was
+ * the sentence a run got when it was set to align on a machine with no
+ * "Ebook Alignment (WhisperX)" add-on, and no narration run is set to align any
+ * more — so there is nothing left to refuse before the press. The add-on is
+ * still what the library's "Generate sentences" door needs, and that door says
+ * so for itself.
  */
-export function alignerMissingRefusal(): string {
-  return (
-    'This run is set to align the narration to the text: every rendered chunk is force-aligned '
-    + 'against its own words, which is what produces the word-timed transcript and the report '
-    + 'saying which chunks came out wrong. The aligner is the "Ebook Alignment (WhisperX)" '
-    + 'add-on and it is not installed on this machine. Install it from Settings → Add-ons, or '
-    + 'untick Align — the audiobook is then assembled with an estimated transcript and nothing '
-    + 'measuring the render.'
-  );
-}

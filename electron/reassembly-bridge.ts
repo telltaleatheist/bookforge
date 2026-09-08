@@ -304,32 +304,18 @@ export interface ReassemblyConfig {
    * NAMED: its variant id, its filename and its narrator tag all come from here.
    */
   rvcVoiceId?: string;
-  /**
-   * JOIN ON THE COVERAGE ALIGNMENT BEFORE SEALING THE TRANSCRIPT.
+  /*
+   * THERE IS NO `awaitCoverage` ANY MORE (Owen, 2026-09-08): "remove the align
+   * the narration checkbox. lets just have it permanently do it that way."
    *
-   * The align row is a LEAF of the run (`chainCoverageAlign`, and
-   * `NarrationStepPlan.sideBranch`): nothing waits on it, so it and this
-   * assembly take a CPU slot each and run at the same time. The audio work needs
-   * nothing from it — but the TAIL does, because `narrator align` rewrites
-   * `<stem>.sentences.vtt` with MEASURED word timings over the estimated one
-   * assembly wrote at its start, and whichever file is on disk when this seals
-   * is the one the audiobook carries forever.
-   *
-   * So a caller that HAS a sibling align hands over a wait, and the finalize
-   * calls it once — after the rename, before the transcript is chosen. `onWait`
-   * is called with a line for the progress bar each time round.
-   *
-   * ABSENT MEANS THERE IS NOTHING TO WAIT FOR — a standalone assembly, the CLI's
-   * `--assemble` door, an unaudited engine. It is never a wait this file decides
-   * to skip.
-   *
-   * Every answer PROCEEDS (Owen, 2026-09-05: the audit reports, it does not
-   * gate): 'done' seals the measured transcript, 'failed' / 'cancelled' / 'none'
-   * seal whatever is beside the session and say so.
+   * A caller with a sibling align row used to hand over a wait, and the finalize
+   * called it once — after the rename, before the transcript was chosen — so the
+   * m4b sealed `narrator align`'s MEASURED `<stem>.sentences.vtt` instead of the
+   * estimate. No run composes that row now, and the one measurement it bought
+   * cost a two-hour CPU align holding a finished book's assembly at 99 %. The
+   * transcript this seals is whatever is beside the session: narrator's
+   * proportional estimate, or a measured file if somebody aligned it by hand.
    */
-  awaitCoverage?: (
-    onWait: (message: string) => void,
-  ) => Promise<'done' | 'failed' | 'cancelled' | 'none'>;
 }
 
 export interface ReassemblyProgress {
@@ -2323,43 +2309,6 @@ export async function startReassembly(
         }
 
         mark('rename');
-
-        /*
-         * ── The join: the alignment, if one is running beside this assembly ──
-         *
-         * Here and nowhere else. The audio is built and named; everything below
-         * this line reads or writes the TRANSCRIPT, and the transcript is the one
-         * thing the align row changes (`narrator align` rewrites
-         * `<stem>.sentences.vtt` with measured word timings over the estimated one
-         * assembly wrote at its start). Waiting earlier would spend the
-         * concurrency this branch exists for; waiting later would seal an
-         * estimate over a measurement that had already landed.
-         *
-         * It never refuses the book. Owen, 2026-09-05: the audit reports and the
-         * assembly proceeds — so every outcome falls through to the scan below,
-         * and the outcome is LOGGED, because "these cues are estimates" is a fact
-         * about the audiobook somebody asks about later.
-         */
-        if (config.awaitCoverage) {
-          emitStage('metadata', 70, 'Waiting for alignment…');
-          const outcome = await config.awaitCoverage(
-            (message) => emitStage('metadata', 70, message),
-          );
-          if (outcome === 'done') {
-            reassemblyLog.info('Alignment settled before the transcript was sealed', { jobId });
-          } else {
-            reassemblyLog.warn('Sealing the transcript without a finished alignment', {
-              jobId, outcome,
-            });
-            console.warn(
-              `[REASSEMBLY] The alignment did not finish (${outcome}); the transcript sealed into `
-              + 'this audiobook is whichever one is beside the session — the estimated cues, if the '
-              + 'align never wrote its measured ones. Assemble again to pick them up.',
-            );
-          }
-        }
-
-        mark('wait for alignment');
 
         // Locate the transcript produced in THIS reassembly run so we can SEAL it into
         // the m4b below.

@@ -95,8 +95,7 @@ const tick = () => new Promise((r) => setImmediate(r));
     // description now asks the ENGINE table, which knows what this build renders
     // and refuses anything else by name.
     const settings = { language: 'en', ttsEngine: 'higgs', voice: 'deathstalker', device: 'auto', speed: 1,
-      workers: 1, textCleanup: 'required', rvc: null, finalDenoise: false, sentenceGap: 0,
-      alignDevice: 'cpu' };
+      workers: 1, textCleanup: 'required', rvc: null, finalDenoise: false, sentenceGap: 0 };
     const book = { epubPath: 'Z:\\p\\final\\Book.epub', projectDir: 'Z:\\lib\\Book', variantId: '',
       title: 'Book', author: 'A', year: '', coverPath: '', outputFilename: 'Book.m4b', isArticle: false };
     assert.throws(() => run.requireNarrationRun(book, settings), /which version/);

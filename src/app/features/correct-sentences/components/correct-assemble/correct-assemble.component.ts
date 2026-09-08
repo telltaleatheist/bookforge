@@ -169,19 +169,20 @@ export class CorrectAssembleComponent implements OnInit {
       config.sentenceGap = this.gapValue();
     }
     /*
-     * NO ALIGN ROW RIDES WITH THIS ONE, and that is a stated exception.
+     * NO ALIGN ROW RIDES WITH THIS ONE — and since 2026-09-08 that is no longer
+     * an exception, it is the rule everywhere.
      *
-     * Every other assembly door carries one since 2026-09-07 (Owen: "that should
-     * be part of the assembly process") — the narration dialog through its
-     * pre-checked box, the Foundry doors through `chainCoverageAlign`. This door
-     * cannot: `alignStep` refuses a row that does not say which LANGUAGE the book
-     * was rendered in, deliberately (a wav2vec2 model pointed at the wrong
-     * language scores every word badly and reads as a book that was read wrong),
-     * and `CorrectSentencesSession` does not carry one — it knows the session's
-     * engine, voice and sample format and nothing about its words. Guessing 'en'
-     * here would be exactly the fallback that refusal exists to prevent. To align
-     * a corrected book, assemble it from the narration dialog, where the run
-     * states its language.
+     * For one day every other assembly door carried one (Owen, 2026-09-07: "that
+     * should be part of the assembly process"), and this door was the stated
+     * exception because `alignStep` refuses a row that does not say which
+     * LANGUAGE the book was rendered in — deliberately, a wav2vec2 model pointed
+     * at the wrong language scores every word badly and reads as a book that was
+     * read wrong — while `CorrectSentencesSession` does not carry one. Owen then
+     * removed the row from every door: "remove the align the narration checkbox.
+     * lets just have it permanently do it that way. if the user wants an exact
+     * alignment they can hit generate sentences on the bookforge library." So
+     * this door is now the same as the rest, and the measured transcript for a
+     * corrected book is that library button.
      */
     try {
       await this.queue.addJob({

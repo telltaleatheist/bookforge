@@ -45,6 +45,20 @@
  * So the resource is the CONFIG's, not this module's, the same shape
  * `queue-steps/reassembly.ts` uses. A row restored from a queue file written
  * before tonight has no `device` and is CPU, which is what it was.
+ *
+ * ── NOTHING COMPOSES THIS ROW ANY MORE, AND IT IS STILL HERE ────────────────
+ *
+ * Owen, 2026-09-08: *"remove the align the narration checkbox. lets just have it
+ * permanently do it that way. if the user wants an exact alignment they can hit
+ * generate sentences on the bookforge library."* The narration run's Align row
+ * and the Foundry doors' unconditional one both went with that ruling — a
+ * two-hour CPU align was holding a finished 16-hour book's assembly at 99 %.
+ *
+ * The MODULE stays, because rows do. A queue file saved before the ruling can
+ * still hold an align row (one was running on Owen's PC when it landed), and the
+ * CLI still queues one against a session on purpose (`cli/coverage-align.js`,
+ * `bookforge-tts.py --align`). A step type the engine could not run would fail
+ * every one of those by name for a reason that has nothing to do with them.
  */
 import { onBridgeEvent } from '../bridge-events';
 import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
@@ -70,11 +84,12 @@ interface AlignStepConfig {
   /**
    * 'cpu' (the default) or 'gpu' — the user's choice at queue time.
    *
-   * OPTIONAL ON THE TYPE and required on a new row: the composer always writes
-   * it (`NarrationAlignConfig.device`), and absent means a row queued before
-   * 2026-09-07, when every align was CPU by construction. That is a real answer
-   * rather than a missing one, so it is read as 'cpu' — and the row says so on
-   * the card, once, rather than quietly.
+   * OPTIONAL ON THE TYPE, and every source of a row now leaves it out or says
+   * 'cpu': the run description that used to write it went with the checkbox
+   * (Owen, 2026-09-08), and what is left composing align rows is the CLI. Absent
+   * also means a row queued before 2026-09-07, when every align was CPU by
+   * construction. Both are real answers rather than missing ones, so absent is
+   * read as 'cpu' — and the row says so on the card, once, rather than quietly.
    */
   device?: 'cpu' | 'gpu';
   /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */
@@ -129,9 +144,9 @@ export const alignStep: StepModule = {
      * NOT DEFAULTED TO 'en'. The aligner loads a per-language wav2vec2 checkpoint,
      * and one pointed at the wrong language scores every word badly — which this
      * guard reads as "the audio did not say the text" and refuses a book that was
-     * read correctly. The run description states it on every align config
-     * (`NarrationAlignConfig.language`), so an absent one is a composition bug and
-     * says so.
+     * read correctly. Every door that composes an align row states it — the CLI
+     * demands `--align-language` and refuses without it — so an absent one is a
+     * composition bug and says so.
      */
     const language = config.language;
     if (!language) {

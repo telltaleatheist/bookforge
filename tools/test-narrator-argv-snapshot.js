@@ -80,6 +80,21 @@
  * door with a CPU row, which is what every row before that day was. Checked, not
  * assumed: the regeneration masked the device literal on both sides and required
  * every other door to compare byte-equal, and exactly one line of the file moved.
+ *
+ * 2026-09-08, THE ALIGN DOOR's `flags` literal again, for the worker pool
+ * (`narrator align --workers`; Owen, on Shift: "align is taking way too long...
+ * 3x slower than the TTS render"). Two tokens appended:
+ *
+ *     '--workers', String(device === 'cpu' ? ALIGN_CPU_WORKERS : 1)
+ *
+ * `ALIGN_CPU_WORKERS` is 1 until measured (two rungs on this PC: 40 chunks in
+ * 266 s at 1, 168 s at 2; the 4- and 8-worker rungs topped the box's 32 GB and
+ * were abandoned), and a GPU row says 1 out loud. Checked, not assumed:
+ * `narrator-argv-extract.js flags` was diffed door by door against the file and
+ * `align` was the only key that moved; the three PLAN arms are unchanged. The
+ * same day the narration run stopped composing this row at all (the checkbox is
+ * gone; the estimate is the transcript), so this door is now the CLI's and a
+ * restored queue file's only.
  */
 'use strict';
 const assert = require('assert');

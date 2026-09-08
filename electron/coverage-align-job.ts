@@ -148,6 +148,22 @@ export interface CoverageAlignResult {
   wasStopped?: boolean;
 }
 
+/**
+ * How many aligner PROCESSES a CPU alignment runs at once (`narrator align
+ * --workers`).
+ *
+ * ONE, UNTIL IT IS MEASURED. The pool exists because of Shift (2026-09-08):
+ * 11.4 chunks/min, 115 minutes of CPU for a book whose render took 37 — Owen,
+ * "align is taking way too long… 3x slower than the TTS render. we have to find
+ * a more efficient way of handling this." But the number that is actually
+ * fastest on this machine is a measurement, not arithmetic: the aligner shares
+ * the box with the assembly encode, torch's own intra-op threads already spread
+ * one chunk over the cores, and the pool divides those threads between workers.
+ * That measurement is Owen's, on a free CPU, and HE sets this number when it is
+ * in. Until then the app spawns exactly what it has always spawned.
+ */
+const ALIGN_CPU_WORKERS = 1;
+
 /** Live align children, keyed by step id, so a queue cancel can reach them. */
 const activeAligns = new Map<string, ChildProcess>();
 /** Step ids whose child was killed by a user stop, so the exit reads as one. */
@@ -376,6 +392,11 @@ export async function runCoverageAlign(
     // picking one, which is the behaviour we want everywhere else and the one
     // thing this door must not leave to chance.
     '--python', python,
+    // THE POOL IS A CPU THING. A GPU row holds the single GPU slot for one
+    // model on one card, and N processes there would fight over the same
+    // memory rather than over spare cores — so it says 1 out loud rather than
+    // leaning on the CLI default.
+    '--workers', String(device === 'cpu' ? ALIGN_CPU_WORKERS : 1),
   ];
 
   const plan = buildNarratorSpawn({

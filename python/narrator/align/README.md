@@ -193,13 +193,20 @@ narrator's own flag. Both spawns pass it **whenever the report file EXISTS**,
 whatever the engine: it is an audit to be read out, not a gate to be satisfied,
 so the question is "did anybody measure this book" and the disk answers it.
 
-**THE APP-SIDE STEP LANDED 2026-09-05** (it was owed here until then, and every
-app-driven Higgs v3 book hit `CoverageRefusal` quoting a command line nobody had
-run). BookForge composes an **Align** queue row into every narration run whose engine
-is audited — `shared/queue/narration-run.ts:narrationAlignStep`, decided by
-`shared/queue/coverage-policy.ts:coverageAuditedFor`, which mirrors `audited` out
-of `assemble/engine_profiles.py` and is asserted against it by
-`tools/test-coverage-policy-mirror.js`. The row REPORTS: it succeeds whenever the
+**THE APP-SIDE STEP LANDED 2026-09-05, AND LEFT THE NARRATION RUN 2026-09-08.**
+From 09-05 BookForge composed an **Align** queue row into every narration run whose
+engine is audited (`coverageAuditedFor` in `shared/queue/coverage-policy.ts`, which
+mirrors `audited` out of `assemble/engine_profiles.py` and is asserted against it
+by `tools/test-coverage-policy-mirror.js`), and the assembly joined on it at its
+tail to seal the measured transcript. Measured on Shift (mistborn, 1,313 chunks,
+16.4 h): the render took 37 min, the m4b was built 8 min into assembly, and the
+align took ~2 h on CPU while the assembly held the second CPU slot waiting — Owen
+read that as a freeze twice and ruled: *"remove the align the narration checkbox.
+lets just have it permanently do it that way [the proportional estimate]. if the
+user wants an exact alignment they can hit generate sentences on the bookforge
+library."* So no narration run composes this row any more; the only doors left are
+the CLI (`narrator align`, `bookforge-tts --align`) and a queue file restored from
+before that date. Where it does run, the row REPORTS: it succeeds whenever the
 run happened and puts the counts and the retake list on its card
 (`tools/test-coverage-audit-reports.js`), and the assembly behind it repeats that
 list once on the finished book.

@@ -516,15 +516,16 @@ export class QueueService {
          * A SIDE BRANCH AT THE HEAD OF THE RUN DOES NOT BECOME THE PARENT OF
          * WHAT FOLLOWS — it branches off the SOURCE, and so does the next step.
          *
-         * The assemble-only run with Align ticked is that shape: `[align,
-         * reassembly]`, nothing rendered, both reading the project's cached
-         * session. Leaving `lastStepId` unset is what makes the assembly the
-         * align's SIBLING (it is appended at SOURCE_PARENT with its own
-         * sourceRef, which the run description gave it) instead of its child —
-         * twenty CPU minutes of alignment in front of a four-minute encode with
-         * a CPU slot standing free. The same rule
-         * `narrationStepParentIndex` states for the composer that sees the whole
-         * list at once.
+         * Leaving `lastStepId` unset is what makes the NEXT step a SIBLING of
+         * this one (it is appended at SOURCE_PARENT with its own sourceRef,
+         * which its composer must give it) instead of its child.
+         *
+         * NOTHING SETS THIS TODAY. Its one caller was the narration run's align
+         * row — an audit beside the assembly — and Owen removed that row on
+         * 2026-09-08 ("remove the align the narration checkbox"). The rule stays
+         * here because it is the queue's own vocabulary for a leaf step, not the
+         * narration's; the branch is simply never taken until something asks for
+         * one again.
          */
         if (request.sideBranch !== true) composition.lastStepId = created.data!.steps[0].id;
         return this.rowFor(created.data!.steps[0].id) ?? projectStep(created.data!, created.data!.steps[0], false);
@@ -541,18 +542,15 @@ export class QueueService {
        * A SIDE BRANCH DOES NOT BECOME THE NEXT STEP'S PARENT.
        *
        * The composition is a straight line by default — each step waits on the
-       * one appended before it — and that put the assembly behind the align row
-       * with a CPU slot free (Owen, 2026-09-07: "i would like them to run
-       * concurrently in available cpu slots, for sure"). The align is an audit:
-       * it scores the render, changes no audio, and nothing downstream consumes
-       * it. So it hangs off the step in front of it and the NEXT step hangs off
-       * that same step, which is what `CreateJobRequest.sideBranch` says.
+       * one appended before it. A step that says `sideBranch` hangs off the step
+       * in front of it and the NEXT step hangs off that same step, so the two
+       * run in tandem instead of in series.
        *
-       * NEVER, not even at the head of the run. A side branch with nothing in
-       * front of it roots at the SOURCE and the next step roots there too, as
-       * its sibling — see the branch above, where the run's first step is
-       * created. `narrationStepParentIndex` answers null for both of them, which
-       * is the same rule said for the composer that can see the whole list.
+       * NEVER, not even at the head of the run: see the branch above, where the
+       * run's first step is created.
+       *
+       * NOTHING SETS IT TODAY — the align row was its one user and it is gone
+       * (Owen, 2026-09-08). Kept as the queue's own vocabulary for a leaf.
        */
       if (request.sideBranch !== true) composition.lastStepId = appended.data!.id;
       return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);

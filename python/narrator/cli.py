@@ -29,6 +29,26 @@ from .text.lang import default_language_code, default_output_format
 from .text.normalize import ORPHEUS
 
 
+def _align_pool_size(value: str) -> int:
+    """`--workers` for `align`: a whole number of aligner PROCESSES, 1 or more.
+
+    Refused at parse time rather than clamped, because 0 (or -2) is a caller who
+    meant something - a computed `cpu_count() // n` that came out empty, most
+    likely - and silently aligning at 1 would hide it behind a run that took
+    two hours.
+    """
+    try:
+        workers = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--workers must be a whole number of processes, got {value!r}")
+    if workers < 1:
+        raise argparse.ArgumentTypeError(
+            f"--workers must be 1 or more (one aligner process at least), "
+            f"got {workers}")
+    return workers
+
+
 def _add_session_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--session-dir",
@@ -135,6 +155,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the aligner in this interpreter (BookForge's whisperx-env "
              "python). Absent: align in THIS interpreter, refusing by name if "
              "it cannot import the backend",
+    )
+    p_align.add_argument(
+        "--workers", type=_align_pool_size, default=1, metavar="N",
+        help="aligner PROCESSES to run at once, each with its own model "
+             "(default: 1). Only with --python: in process there is one "
+             "interpreter and one model, and a pool there is refused. The "
+             "pool divides OMP_NUM_THREADS/MKL_NUM_THREADS between the "
+             "workers unless the environment already names them",
     )
     p_align.add_argument("--ffmpeg", metavar="PATH")
     p_align.add_argument(
@@ -472,7 +500,8 @@ def _run_align(args, manifest) -> int:
     try:
         result = align_session(
             manifest, language=args.language, device=args.device,
-            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices)
+            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices,
+            workers=args.workers)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)

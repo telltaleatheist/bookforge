@@ -114,13 +114,6 @@ import {
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
-// IS THE ALIGNER ON THIS MACHINE — the same question the narration dialog asks
-// through the component registry, asked here as "is there an interpreter to run
-// it with". The Foundry doors have no form to ask the user with, so this decides
-// whether they chain an Align row at all. (Which engines narrator AUDITS by
-// policy is a different question and no longer one this file asks:
-// shared/queue/coverage-policy.ts.)
-import { coverageAlignPython } from './coverage-align-job';
 import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath, impliedExportDirOf } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -2285,87 +2278,6 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * IT MAY QUEUE TWO STEPS, not one — a denoise in front of the conversion when the
  * narration asked for one. See the note at that branch.
  */
-/**
- * THE ALIGN ROW, WHEN A FOUNDRY PRESS CHAINS ONTO A NARRATION.
- *
- * Both follow-on doors below build a chain behind a narration, and both of them
- * end — sooner or later — at an assembly. The narration dialog composes the
- * Align row itself (`shared/queue/narration-run.ts`, `NarrationRunStages.align`,
- * ticked by default); a run chained together from Foundry's tree never went
- * through that dialog, so this is where the same row gets added.
- *
- * UNCONDITIONAL SINCE 2026-09-07, whatever the engine. It asked
- * `coverageAuditedFor` until then and skipped every Orpheus run, which meant a
- * Foundry Assemble press shipped an audiobook whose sentence cues were estimated
- * from sentence length. Owen: "that should be part of the assembly process, and
- * should automatically happen." There is no form on this door to ask, so the
- * answer is the dialog's default.
- *
- * TWO THINGS STILL STOP IT, and both say so. A job that already carries an align
- * row gets no second one; and a machine with no "Ebook Alignment (WhisperX)"
- * add-on gets no row at all — queueing one there would fail a step on every
- * assembly, on a door with nobody to ask, to say what the log now says once.
- *
- * IT RETURNS NOTHING, and that is the point: an align row is a LEAF. Nothing
- * hangs off it — the enhancement and the assembly hang off the NARRATION, which
- * is the audio they actually read — so the two take a CPU slot each and run at
- * the same time (Owen, 2026-09-07: "i would like them to run concurrently in
- * available cpu slots, for sure"). It used to return the align's id as the chain
- * head, which is what put a 4-minute assembly behind 20 minutes of forced
- * alignment.
- *
- * Nothing is lost by the branch. The report is an AUDIT (Owen, 2026-09-05), the
- * audio encode never read it, and the assembly's TAIL joins on the align row
- * before it seals the transcript (`queue-steps/reassembly.ts` `awaitCoverage`),
- * so the book still ships the MEASURED sentence cues whenever the alignment
- * produced any. The one thing a side branch could have raced — "the report might
- * or might not exist when ffmpeg starts" — is a question the assembly no longer
- * asks at that moment.
- *
- * Idempotent by inspection — a job that already carries an align row gets no
- * second one, which is what lets Enhance and Assemble be pressed in either order
- * on the same run.
- *
- * IT MUST SIT DIRECTLY BEHIND THE NARRATION. `alignStep` declares
- * `consumes: 'audio-session'`, so a row queued behind an enhancement is refused
- * at compose time — deliberately, because the guard measures the RENDER and its
- * thresholds were calibrated on raw engine output. That is why this takes the
- * narration step rather than "the step that was pressed".
- */
-function chainCoverageAlign(job: QueueJob, narrate: QueueStep): void {
-  if (job.steps.some((s) => s.type === 'align')) return;
-  if (coverageAlignPython() === null) {
-    console.log('[QUEUE] Not aligning this run: the "Ebook Alignment (WhisperX)" add-on is not '
-      + 'installed, so the audiobook gets a transcript estimated from sentence length. '
-      + 'Install it under Settings → Add-ons.');
-    return;
-  }
-  const language = narrate.config['language'];
-  if (typeof language !== 'string' || language.trim() === '') {
-    throw new Error(
-      'That narration does not record the language it was rendered in, and the aligner loads a '
-      + 'different acoustic model for each. Assemble it from BookForge\'s own narration dialog.');
-  }
-  queueEngine.appendStep(job.id, {
-    type: 'align',
-    label: 'Align',
-    parentStepId: narrate.id,
-    config: {
-      // Blank on purpose, exactly as the rows below: the engine resolves the
-      // session from the parent's OUTPUT when it lands.
-      sessionId: '', sessionDir: '', processDir: '',
-      language,
-      /*
-       * CPU, and stated. The Assembly tab offers the choice (Owen, 2026-09-07)
-       * because there is a person there to make it; this door has no form, and
-       * the default is CPU — the second cpu slot, beside the assembly, rather
-       * than the single GPU slot in front of whatever renders next.
-       */
-      device: 'cpu',
-    } as unknown as Record<string, unknown>,
-  });
-}
-
 async function invokeFoundryEnhance(
   _projectDir: string,
   nodeId: string,
@@ -2421,11 +2333,12 @@ async function invokeFoundryEnhance(
    * this door can infer (the narration's config records that a denoise was
    * wanted, not where in the chain the user would have put it).
    */
-  // The alignment, on every run this door builds. It hangs off the narration
-  // because it measures the RENDER — and nothing hangs off IT, so this pass does
-  // not wait for twenty CPU minutes of forced alignment before it can start.
-  // See `chainCoverageAlign`.
-  chainCoverageAlign(job, narrate);
+  /*
+   * NO ALIGN ROW RIDES WITH THIS ONE ANY MORE (Owen, 2026-09-08): "remove the
+   * align the narration checkbox. lets just have it permanently do it that way."
+   * This door added one unconditionally, to match the dialog's pre-checked box;
+   * the dialog has no box now, so there is nothing here to match.
+   */
   const enhanceParent = narrate.id;
   const wantsDenoise = narrate.config['finalDenoise'] === true;
   const conversionParent = wantsDenoise
@@ -2514,27 +2427,19 @@ async function invokeFoundryAssemble(
       + 'Assemble it from BookForge\'s versions page, where the book\'s details are known.');
   }
   /*
-   * THE ALIGNMENT, unless the run already has one. It hangs off the NARRATION
-   * wherever this was pressed, because that is the audio it measures —
-   * `alignStep` reads an audio-session, and its thresholds were calibrated on
-   * raw engine output. Every assembly gets one now (Owen, 2026-09-07), which is
-   * what puts MEASURED sentence cues in a book assembled from this door.
+   * NO ALIGN ROW ANY MORE (Owen, 2026-09-08): "remove the align the narration
+   * checkbox. lets just have it permanently do it that way. if the user wants an
+   * exact alignment they can hit generate sentences on the bookforge library."
    *
-   * PRESSED ON AN ENHANCEMENT, THAT IS NOW A SECOND BRANCH RATHER THAN A
-   * REFUSAL. This door used to refuse the whole assembly here: a row hung off
-   * the narration "would race the assembly it is supposed to gate — the report
-   * might or might not exist when ffmpeg starts". Two things retired that
-   * sentence. The report GATES NOTHING (Owen, 2026-09-05: the audit reports and
-   * the book is assembled), and the assembly's tail now JOINS on the align row
-   * before it seals the transcript (`queue-steps/reassembly.ts` `awaitCoverage`),
-   * so the order is deterministic where it matters — the audio encode never
-   * needed the report, and the sentence cues are read after the alignment has
-   * settled.
+   * This door composed one on every assembly, unconditionally, to match the
+   * dialog's pre-checked box — which is what put MEASURED sentence cues in a
+   * book assembled from here. The book now gets the proportional estimate
+   * assembly writes for itself (`assemble/sentence_vtt.proportional_cues`), the
+   * same as every other door, and the measurement lives behind the library's
+   * "Generate sentences" button.
    */
-  chainCoverageAlign(job, narrate);
   // The assembly reads the audio: the narration's session when it was pressed
-  // there, the enhanced set otherwise. Never the align row — see
-  // `chainCoverageAlign`.
+  // there, the enhanced set otherwise.
   const chainHead = step.type === 'tts-conversion' ? narrate.id : step.id;
   /*
    * The denoise goes in FRONT of the assembly, on its own row, and only when the
@@ -10051,13 +9956,14 @@ ipcMain.handle('narration:text-readiness', async (
             : { parentIndex: steps.length - 1 }),
         });
       });
-      // THE FOLLOW-ON STEPS ARE NOT A STRAIGHT LINE. An align row is a leaf, and
-      // every other row waits on the nearest earlier non-align step — see
-      // narrationStepParentIndex, the one rule for it (Owen, 2026-09-07: align and
-      // assembly run concurrently in available CPU slots).
-      const { narrationStepParentIndex } = await import('../shared/queue/narration-run.js');
+      // THE FOLLOW-ON STEPS ARE A STRAIGHT LINE — each waits on the one queued
+      // before it, and the first waits on the last pass (or reads the source when
+      // there are no passes). It went through `narrationStepParentIndex` while an
+      // align row could be among them: that row was a leaf, so the step behind it
+      // had to skip it and wait on the render instead. No narration run composes
+      // one now (Owen, 2026-09-08), so there is nothing to skip.
       for (const spec of followOn) {
-        const parentIndex = narrationStepParentIndex(steps.map((s) => s.type), steps.length);
+        const parentIndex = steps.length === 0 ? null : steps.length - 1;
         steps.push({
           ...spec,
           ...(parentIndex === null

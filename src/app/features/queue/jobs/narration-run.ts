@@ -39,7 +39,6 @@ import {
  * second answer to what a narration run is described by.
  */
 export type {
-  NarrationAlignDevice,
   NarrationEnhancementOrder,
   NarrationEnhancementPass,
   NarrationRunBook,
@@ -73,9 +72,10 @@ function asJobRequest(plan: NarrationStepPlan): CreateJobRequest {
     // starts by reading the document it names", which is what every other kind
     // of job in this app queues.
     ...(plan.sourceRef === undefined ? {} : { sourceRef: plan.sourceRef }),
-    // A leaf of the run: the step queued after this one waits on this one's
-    // PARENT, not on this one. Carried verbatim — the description owns the rule.
-    ...(plan.sideBranch === undefined ? {} : { sideBranch: plan.sideBranch }),
+    // NO `sideBranch` IS CARRIED ANY MORE (Owen, 2026-09-08). The align row was
+    // the only leaf a narration run ever described, and the run describes none;
+    // every step waits on the one queued before it, which is what
+    // `QueueService.addJob` does when nothing says otherwise.
     metadata: { ...plan.metadata },
     config: plan.config as CreateJobRequest['config'],
   };

@@ -980,10 +980,14 @@ export interface CreateJobRequest {
    * THIS STEP HANGS OFF THE ONE BEFORE IT AND NOTHING HANGS OFF IT.
    *
    * A composition appends its steps one at a time and each waits on the last, so
-   * a run is a straight line unless a step says otherwise. An align row says
-   * otherwise: it is an audit of the render, nothing downstream consumes it, and
-   * the assembly behind it must not wait twenty CPU minutes for it. See
-   * `NarrationStepPlan.sideBranch`, which is where the rule is decided.
+   * a run is a straight line unless a step says otherwise.
+   *
+   * NO COMPOSER SAYS OTHERWISE TODAY. The one that did was the narration run's
+   * align row — an audit of the render that nothing downstream consumed, so the
+   * assembly behind it must not wait twenty CPU minutes for it — and Owen
+   * removed that row on 2026-09-08 ("remove the align the narration checkbox").
+   * The field stays because "this step is a leaf" is the queue's own idea, not
+   * the narration's, and `QueueService.addJob` is where it is honoured.
    *
    * Only meaningful on a step that HAS a parent in the composition; a side
    * branch queued first becomes the run's head like any other first step.

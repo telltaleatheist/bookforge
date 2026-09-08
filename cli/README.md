@@ -169,7 +169,16 @@ re-derive an hour of roformer nobody asked for or silently assemble the raw set.
 
 ## Coverage alignment — `--align`
 
-The queue row between render and assembly. It force-aligns every rendered chunk
+**This door is now the ONLY one that queues an align row (2026-09-08.)** It was
+the CLI's copy of a row the app composed into every narration run; Owen removed
+that row — *"remove the align the narration checkbox. lets just have it
+permanently do it that way. if the user wants an exact alignment they can hit
+generate sentences on the bookforge library"* — after a two-hour CPU align held a
+finished 16-hour book's assembly at 99 %. An app-rendered book now ships the
+sentence cues assembly estimates for itself; measuring one is this command, or
+the library's **Generate sentences** button on the finished m4b.
+
+It force-aligns every rendered chunk
 and writes `<processDir>/coverage.json`: text with no aligned audio is a
 truncation, audio with no text is an insertion. It audits the WHOLE book and
 always writes both outputs — a chunk it cannot place is recorded by name and its
@@ -200,8 +209,9 @@ measurement. The app's own step refuses an absent language for the same reason.
 CPU only, by design: `align/aligner.py` refuses CUDA by name while
 `%APPDATA%\BookForge\external-gpu-job.lock` exists, and it does not want it —
 RTF 0.082, a book in minutes. The whisperx add-on must be installed
-(Settings → Add-ons); an absent one is refused here **before** the job starts,
-which is the same plan-time check the narration dialog makes.
+(Settings → Add-ons); an absent one is refused here **before** the job starts.
+(The narration dialog used to make the same plan-time check; it has nothing to
+check since the align row left it on 2026-09-08.)
 
 ## The two enhancement passes — `--denoise`, `--rvc-enhance`
 
