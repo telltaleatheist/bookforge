@@ -25,6 +25,8 @@ import {
   DEFAULT_CLEAN_TEXT_MODEL,
   DEFAULT_OLLAMA_ENDPOINT,
   DEFAULT_TRANSLATE_MODEL,
+  DEFAULT_VLLM_TEXT_ENDPOINT,
+  type LlmServerKind,
 } from '../shared/pipeline';
 import {
   ANALYSIS_CATEGORY_IDS,
@@ -126,6 +128,43 @@ export interface AppSettings {
    * every run. This is the app remembering what to hand it.
    */
   ollamaUrl: string;
+  /**
+   * WHICH KIND OF SERVER the three language acts speak to — `--server`.
+   *
+   * Owen, 2026-09-08: *"lets build in vllm batching. ollama batching doesnt
+   * work."* A vLLM runs the requests in flight TOGETHER, which is what makes the
+   * pools in translate and the cleanup worth having; Ollama runs them one behind
+   * another on this machine. The engine takes the choice as a flag and never
+   * guesses it from a URL (src/translate/model-server.ts), and this is the app
+   * remembering which to pass.
+   *
+   * IT IS A PROPERTY OF THE MACHINE, NOT OF A BOOK, which is why it is a setting
+   * and not a field on the three dialogs. One card in Settings, one flag on
+   * every job.
+   */
+  llmServer: LlmServerKind;
+  /**
+   * Where that vLLM is. Its own default port and mount unless somebody moved it.
+   *
+   * SEPARATE FROM `ollamaUrl` RATHER THAN REPLACING IT, so that flipping the
+   * server back and forth does not make somebody retype a URL they already gave.
+   * The two are different servers on different ports and both may be up.
+   */
+  vllmUrl: string;
+  /**
+   * The served id — what `vllm serve --served-model-name` was given.
+   *
+   * EMPTY IS MEANINGFUL AND IS THE DEFAULT: a vLLM process serves exactly one
+   * model, and an empty field means "whatever it is serving", which the engine
+   * resolves by asking the server and then records (the bank key, the stamp) so
+   * nothing about the run is anonymous. Typing a name here only ADDS a check
+   * that the server is serving what this machine expects.
+   *
+   * AND IT IS A DIFFERENT SHAPE FROM AN OLLAMA TAG — `Qwen/Qwen3.5-9B` rather
+   * than `qwen3.5:9b-q8_0` — which is why it cannot share `defaultLlmModel`'s
+   * key: a machine that switches server would otherwise lose the other's name.
+   */
+  vllmModel: string;
   /**
    * TRUE ONCE SOMEBODY HAS BEEN THROUGH FIRST-RUN SETUP — finished OR dismissed.
    *
@@ -303,6 +342,24 @@ export function clampModelTag(value: unknown, fallback = DEFAULT_TRANSLATE_MODEL
   return trimmed;
 }
 
+/** One of the two kinds, or ollama. A word this build does not know is not one. */
+export function clampServerKind(value: unknown): LlmServerKind {
+  return value === 'vllm' ? 'vllm' : 'ollama';
+}
+
+/**
+ * A served model id, WHICH MAY BE EMPTY — see `AppSettings.vllmModel`.
+ *
+ * `clampModelTag` cannot serve here: it turns an empty string into a default
+ * model tag, and empty is the value that means "ask the server". Whitespace is
+ * still refused, because a name with a space in it is a name no server has.
+ */
+export function clampServedModel(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  return /\s/.test(trimmed) ? '' : trimmed;
+}
+
 /** An http(s) origin, or ollama's own. Anything unparsable is the default. */
 export function clampOllamaUrl(value: unknown, fallback = DEFAULT_OLLAMA_ENDPOINT): string {
   if (typeof value !== 'string') return fallback;
@@ -340,6 +397,9 @@ export function readAppSettings(): AppSettings {
     defaultLlmModel: clampModelTag(raw?.['defaultLlmModel']),
     cleanTextModel: clampModelTag(raw?.['cleanTextModel'], DEFAULT_CLEAN_TEXT_MODEL),
     ollamaUrl: clampOllamaUrl(raw?.['ollamaUrl']),
+    llmServer: clampServerKind(raw?.['llmServer']),
+    vllmUrl: clampOllamaUrl(raw?.['vllmUrl'], DEFAULT_VLLM_TEXT_ENDPOINT),
+    vllmModel: clampServedModel(raw?.['vllmModel']),
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
   };
@@ -364,6 +424,15 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   }
   if (patch.ollamaUrl !== undefined) {
     root['ollamaUrl'] = clampOllamaUrl(patch.ollamaUrl);
+  }
+  if (patch.llmServer !== undefined) {
+    root['llmServer'] = clampServerKind(patch.llmServer);
+  }
+  if (patch.vllmUrl !== undefined) {
+    root['vllmUrl'] = clampOllamaUrl(patch.vllmUrl, DEFAULT_VLLM_TEXT_ENDPOINT);
+  }
+  if (patch.vllmModel !== undefined) {
+    root['vllmModel'] = clampServedModel(patch.vllmModel);
   }
   if (patch.setupCompleted !== undefined) {
     root['setupCompleted'] = patch.setupCompleted === true;

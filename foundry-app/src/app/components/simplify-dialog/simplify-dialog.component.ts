@@ -6,6 +6,7 @@ import { canSimplifyFrom } from '@shared/stages';
 import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
+  type LlmServerKind,
 } from '@shared/pipeline';
 import type { RewriteMode, SimplifyRequest } from '@shared/types';
 
@@ -422,6 +423,15 @@ export class SimplifyDialogComponent {
   protected readonly mode = signal<RewriteMode>('dejargon');
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
+  /**
+   * WHICH KIND OF SERVER this machine runs, from Settings and never typed here.
+   *
+   * It is not a per-book choice — a machine has one language server up — so it
+   * is seeded and carried rather than shown. It rides on the request with the
+   * model and the URL because the three have to agree (`TranslateRequest.server`).
+   */
+  protected readonly server = signal<LlmServerKind>('ollama');
+
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */
@@ -430,7 +440,7 @@ export class SimplifyDialogComponent {
   constructor() {
     // The model and the URL are the app's own settings, written by first-run
     // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults(this.model, this.ollama, this.server);
     // A complaint about the last book is cleared when the book changes, and
     // nothing else resets — the instructions in particular are somebody's careful
     // answer and survive switching tabs.
@@ -510,8 +520,15 @@ export class SimplifyDialogComponent {
         // spawn when the promised chain could not say it — see above.
         ...(to.length === 0 ? {} : { to, from: to }),
         rewrite,
-        model: this.model().trim() || DEFAULT_MODEL,
+        /*
+         * AN EMPTY MODEL IS KEPT EMPTY UNDER vLLM, where it means "whatever that
+         * server is serving" and the engine resolves it against the server and
+         * records what answered. Falling back to the Ollama tag here would put a
+         * name on the job that no vLLM has ever heard of.
+         */
+        model: this.model().trim() || (this.server() === 'vllm' ? '' : DEFAULT_MODEL),
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        ...(this.server() === 'vllm' ? { server: 'vllm' as const } : {}),
         // Where the answers go, and the whole of what this run makes. Named after
         // the mode as well as the language, so a plain-terms rewrite and an
         // easy-language one of one book are two files and two rows.

@@ -8,6 +8,7 @@ import { canTranslateFrom } from '@shared/stages';
 import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
+  type LlmServerKind,
 } from '@shared/pipeline';
 import type { TranslateRequest } from '@shared/types';
 
@@ -580,6 +581,15 @@ export class TranslateDialogComponent {
   });
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
+  /**
+   * WHICH KIND OF SERVER this machine runs, from Settings and never typed here.
+   *
+   * It is not a per-book choice — a machine has one language server up — so it
+   * is seeded and carried rather than shown. It rides on the request with the
+   * model and the URL because the three have to agree (`TranslateRequest.server`).
+   */
+  protected readonly server = signal<LlmServerKind>('ollama');
+
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
   /** The workspace plan hashes the whole book to key it. Not instant. */
@@ -589,7 +599,7 @@ export class TranslateDialogComponent {
     // The model and the URL come from the app's own settings, which first-run
     // setup wrote after measuring the machine. The constants above are the
     // floor for a renderer with no bridge under it — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults(this.model, this.ollama, this.server);
     // Same rule as the OCR dialog: a complaint about the last book is cleared
     // when the book changes, and nothing else resets. The instructions in
     // particular are the user's careful answer and survive switching tabs.
@@ -631,8 +641,15 @@ export class TranslateDialogComponent {
         // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
         ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
-        model: this.model().trim() || DEFAULT_MODEL,
+        /*
+         * AN EMPTY MODEL IS KEPT EMPTY UNDER vLLM, where it means "whatever that
+         * server is serving" and the engine resolves it against the server and
+         * records what answered. Falling back to the Ollama tag here would put a
+         * name on the job that no vLLM has ever heard of.
+         */
+        model: this.model().trim() || (this.server() === 'vllm' ? '' : DEFAULT_MODEL),
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        ...(this.server() === 'vllm' ? { server: 'vllm' as const } : {}),
         /*
          * WHERE THE ANSWERS GO, AND THE WHOLE OF WHAT THIS RUN MAKES. Every
          * accepted block lands there the moment it is accepted, so a run that is

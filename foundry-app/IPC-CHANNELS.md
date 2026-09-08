@@ -23,6 +23,17 @@ standing rule it states is unchanged: regenerate this file in the same commit th
 touches `ipcMain.handle`, not on the next wave. The per-family tables below are
 the authority for the NAMES; where a total contradicts them, the tables win.
 
+**TWO MORE DOORS ON 2026-09-08 — `llm:servers` and `llm:set-servers`, so the
+count is 111.** The three language acts can now run against a vLLM instead of an
+Ollama (`--server`, docs/VLLM.md), which is a property of the MACHINE rather than
+of a book: which kind, both URLs, and the served model id. `llm:defaults` — again
+unrenamed — now also answers `server` and RESOLVES the model and URL for
+whichever kind is chosen, so the four dialogs keep asking one question and none
+of them learns there was a choice. The new pair answers what is STORED, where
+both servers exist at once and neither is in effect; it is a second channel
+rather than more fields on `defaults` because `defaults` would otherwise have to
+return the same URL twice under two names.
+
 **ONE DOOR ADDED ON 2026-09-08 — `llm:set-clean-model`, so the count is 109.**
 Clean text got its own persisted model setting (`cleanTextModel`,
 app/electron/app-settings.ts, defaulting to `DEFAULT_CLEAN_TEXT_MODEL`) rather
@@ -476,7 +487,9 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
-| `llm:defaults` | What the language dialogs open with: `model` (translate/simplify/analyse), `cleanModel` (Clean text's own `cleanTextModel`) and the ollama URL. |
+| `llm:defaults` | What the language dialogs open with: `model` (translate/simplify/analyse), `cleanModel` (Clean text's own `cleanTextModel`), the server URL and `server` — all four already resolved for the kind of server this machine is set to. |
+| `llm:servers` | What is STORED about both servers at once: kind, ollama URL, vLLM URL, served model. The settings card's read. |
+| `llm:set-servers` | Write any of those four. Answers with the whole stored set, never with what was sent. |
 | `llm:set-clean-model` | Set the Clean text model. Answers with the tag AS STORED, same rule. |
 | `llm:set-model` | Set the default model. Answers with the tag AS STORED — a name main clamped comes back changed. |
 | `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone; a host that throws REJECTS in its own words so the form can say so. |

@@ -16,6 +16,21 @@
  * whatever is in it, so a different model for one book stays a per-run choice
  * and does not quietly become a new default.
  *
+ * ── AND WHICH KIND OF SERVER ANSWERS ───────────────────────────────────────
+ *
+ * Owen, 2026-09-08: *"lets build in vllm batching. ollama batching doesnt work.
+ * its an unfinished feature ollama tried to implement but isnt accessible on the
+ * mac or pc."* A vLLM runs the requests in flight TOGETHER — which is what makes
+ * the pools in Translate, Simplify and Clean text worth having — so this card
+ * carries the choice, and it is a choice about the MACHINE rather than about a
+ * book: one server is up, and the three dialogs open against whichever it is.
+ *
+ * BOTH SERVERS' SETTINGS ARE KEPT AT ONCE and only one is in effect, so trying
+ * vLLM for an evening and going back costs nobody a retyped address. The Ollama
+ * URL is still setup's to write (it can install and pull); the vLLM pair is
+ * typed here, because nothing in this app starts a vLLM — BookForge's arbiter
+ * owns that server's life, and foundry only ever uses what it is pointed at.
+ *
  * ── AND THE BUTTON THAT RE-OPENS SETUP ──────────────────────────────────────
  *
  * Every step of the first-run wizard is skippable, which is only a real offer
@@ -26,7 +41,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import { CLEAN_TEXT_MODELS } from '@shared/pipeline';
+import { CLEAN_TEXT_MODELS, type LlmServerKind } from '@shared/pipeline';
 import type { SetupState } from '@shared/types';
 import { api } from '../../core/foundry';
 import { UiService } from '../../core/ui.service';
@@ -45,6 +60,37 @@ import { UiService } from '../../core/ui.service';
         What Translate, Simplify and Analyse open with. Each of those still has its own field, so
         a different model for one book stays a choice about that book.
       </p>
+
+      <label class="field">
+        <span class="label">Server</span>
+        <select name="server" [ngModel]="server()" (ngModelChange)="server.set($event)">
+          <option value="ollama">Ollama — one request at a time</option>
+          <option value="vllm">vLLM — batches the requests in flight</option>
+        </select>
+      </label>
+      <p class="small">
+        vLLM runs the requests together instead of one behind another, which is where the speed in
+        Translate, Simplify and Clean text is. Foundry never starts or stops either server.
+      </p>
+
+      @if (server() === 'vllm') {
+        <label class="field">
+          <span class="label">vLLM URL</span>
+          <input type="text" placeholder="http://localhost:8000/v1" name="vllmUrl"
+                 [ngModel]="vllmUrl()" (ngModelChange)="vllmUrl.set($event)">
+        </label>
+        <label class="field">
+          <span class="label">Served model</span>
+          <input type="text" placeholder="leave empty to use whatever it is serving"
+                 name="vllmModel"
+                 [ngModel]="vllmModel()" (ngModelChange)="vllmModel.set($event)">
+        </label>
+        <p class="small">
+          A vLLM serves one model. Leave the name empty and the run asks the server what it is
+          serving, uses that and records it; type one and the run also checks that it is what this
+          machine expected.
+        </p>
+      }
 
       <label class="field">
         <span class="label">Default model</span>
@@ -73,7 +119,20 @@ import { UiService } from '../../core/ui.service';
         Clean text runs its own model: the narration cleanup is a different job from
         translating a book, and a bigger model is slower at it rather than better.
       </p>
-      <p class="small mono">Ollama: {{ ollama() }}</p>
+      @if (server() === 'ollama') {
+        <p class="small mono">Ollama: {{ ollama() }}</p>
+      } @else {
+        <!--
+          SAID PLAINLY RATHER THAN HIDDEN. The two fields above are Ollama tags
+          and a vLLM has never heard of either; blanking them would lose what
+          this machine goes back to, and leaving them looking live would be the
+          card claiming a model that will not run.
+        -->
+        <p class="small">
+          The two model names above are Ollama's and are kept for when this machine goes back to
+          it. While the server is vLLM, every language job uses the served model.
+        </p>
+      }
 
       <div class="actions">
         <button class="primary" [disabled]="saving()" (click)="save()">
@@ -142,6 +201,9 @@ export class LlmCardComponent {
   protected readonly model = signal('');
   protected readonly cleanModel = signal('');
   protected readonly ollama = signal('');
+  protected readonly server = signal<LlmServerKind>('ollama');
+  protected readonly vllmUrl = signal('');
+  protected readonly vllmModel = signal('');
   protected readonly saving = signal(false);
   protected readonly saved = signal(false);
   protected readonly state = signal<SetupState | null>(null);
@@ -167,10 +229,25 @@ export class LlmCardComponent {
 
   private async load(): Promise<void> {
     if (!api) return;
-    const [defaults, state] = await Promise.all([api.llm.defaults(), api.setup.state()]);
-    this.model.set(defaults.model);
-    this.cleanModel.set(defaults.cleanModel);
-    this.ollama.set(defaults.ollama);
+    /*
+     * `llm.servers()` AND NOT `llm.defaults()` FOR THE URLS. `defaults` answers
+     * what a JOB opens with and has already resolved the choice away — under
+     * vLLM its `ollama` field is the vLLM's URL and its two models are the one
+     * served id. This card edits what is STORED, where both servers exist at
+     * once, so it reads the stored set; `defaults` still answers for the two
+     * Ollama model fields, which is the only thing it is asked for here.
+     */
+    const [defaults, servers, state] = await Promise.all([
+      api.llm.defaults(),
+      api.llm.servers(),
+      api.setup.state(),
+    ]);
+    this.server.set(servers.server);
+    this.ollama.set(servers.ollamaUrl);
+    this.vllmUrl.set(servers.vllmUrl);
+    this.vllmModel.set(servers.vllmModel);
+    this.model.set(servers.server === 'vllm' ? '' : defaults.model);
+    this.cleanModel.set(servers.server === 'vllm' ? '' : defaults.cleanModel);
     this.state.set(state);
   }
 
@@ -185,8 +262,23 @@ export class LlmCardComponent {
     this.saving.set(true);
     this.saved.set(false);
     try {
-      this.model.set(await api.llm.setModel(this.model()));
-      this.cleanModel.set(await api.llm.setCleanModel(this.cleanModel()));
+      /*
+       * THE OLLAMA TAGS ARE ONLY WRITTEN WHILE OLLAMA IS THE SERVER. Under vLLM
+       * the two fields are blank by construction (see `load`), and `setModel`
+       * answers a blank with the standing default — so saving from here would
+       * quietly overwrite whatever this machine goes back to with a constant.
+       */
+      if (this.server() === 'ollama') {
+        this.model.set(await api.llm.setModel(this.model()));
+        this.cleanModel.set(await api.llm.setCleanModel(this.cleanModel()));
+      }
+      const servers = await api.llm.setServers({
+        server: this.server(),
+        vllmUrl: this.vllmUrl(),
+        vllmModel: this.vllmModel(),
+      });
+      this.vllmUrl.set(servers.vllmUrl);
+      this.vllmModel.set(servers.vllmModel);
       this.saved.set(true);
     } finally {
       this.saving.set(false);

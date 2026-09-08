@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **79a3c3a** — *fix(tree): a promise whose step has landed is not drawn — one act, one card* |
+| Source sha | **19f5e70** — *feat(engine,app): the three text acts speak vLLM, and the pool finally has something to batch into* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 79a3c3a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 19f5e70 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1153,3 +1153,26 @@ window, deleting a REAL step was refused as “that promise is running”. The w
 the gap between the engine settling and the next `setHostQueueRows`; nothing changes on this side.
 Two files (`electron/ipc.ts`, `shared/pending.ts`); 141 blobs hash-verified, no IPC change, no dep
 movement.
+**19f5e70 (copied 2026-09-08) — the three text acts speak vLLM.** Owen: *“lets build in vllm
+batching. ollama batching doesnt work. its an unfinished feature ollama tried to implement but isnt
+accessible on the mac or pc. cuda graphs/vllm would probably be the best for all three features.”*
+Measured first: Ollama 0.33.3 refuses to decode the qwen35 architecture in parallel on llama.cpp, so
+the four-in-flight pools bought nothing. The ENGINE half (`--server ollama|vllm` on `translate`,
+simplify and `clean-text`; `/v1/models` proof; `/v1/chat/completions` with byte-identical prompts;
+`chat_template_kwargs.enable_thinking=false` plus a defensive leading-`<think>` strip; `--model`
+optional under vLLM and the SERVED id recorded in bank key, records key and stamp; `--concurrency`
+default 12; `release()` a declared no-op; no stampVersion bump and NO precision field — a server
+cannot report its dtype, so the served name must be honest, `Qwen3.5-9B-bf16` on this PC) reaches
+BookForge as `dist/foundry-windows-x64.exe`, not through this subtree. The APP half is what this
+copy carries: Settings → Language model gains a Server select, a vLLM URL and a served-model
+field, kept beside the Ollama ones so switching back costs no retyping; `llm:defaults` answers
+`server` and resolves model/URL for the chosen kind; TWO NEW CHANNELS `llm:servers` /
+`llm:set-servers` (count 111); `TranslateRequest.server` / `CleanRequest.server` ride on the
+request; the queue writes `--server vllm` and OMITS `--model` when the field is blank. app-settings
+keys: `llmServer`, `vllmUrl`, `vllmModel` (empty = “whatever it is serving”). Consequence for
+Owen: the model name is part of the records/bank key, so a book cleaned through
+`qwen3.5:9b-q8_0` re-asks every block through vLLM — two precisions are two answers; pick one
+server per machine. BookForge’s half (weights, WSL launcher on 8300, the arbiter that starts the
+server before a text pass and stops it after, and its own bare-EPUB Clean text door learning the
+flag) is BookForge’s. 141 blobs hash-verified with `git hash-object`; IPC-CHANNELS.md refreshed
+byte-identical to `19f5e70:docs/`; no dep movement.

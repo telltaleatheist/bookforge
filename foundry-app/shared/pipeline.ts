@@ -131,6 +131,23 @@ export const CLEAN_TEXT_MODELS: readonly { tag: string; label: string }[] = [
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
 /**
+ * Where a vLLM serving the TEXT model is, when nobody said otherwise — a mirror
+ * of the engine's `DEFAULT_VLLM_ENDPOINT` (src/translate/vllm.ts), written twice
+ * for `DEFAULT_TRANSLATE_MODEL`'s reason: app/shared cannot import src/.
+ *
+ * NOT THE READING SERVER. `backend.endpointUrl` in the engine's settings.json
+ * points at whatever vLLM reads PAGES, and this points at whatever vLLM answers
+ * about TEXT. They are two different models and often two different machines;
+ * one of them can be up while the other is not, and a single field for both
+ * would be a setting that is wrong for one act whenever it is right for the
+ * other.
+ */
+export const DEFAULT_VLLM_TEXT_ENDPOINT = 'http://localhost:8000/v1';
+
+/** What kind of server the three language acts speak to. Mirrors `ServerKind`. */
+export type LlmServerKind = 'ollama' | 'vllm';
+
+/**
  * What a rendering at the position is made of: one run of `vlm-convert`, and the
  * three answers the ancestry decides about it.
  *

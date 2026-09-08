@@ -203,6 +203,7 @@ import type {
   AnalyzeRequest, ConversionKind, DeferredPlan, EnvInstallRequest, ExportLanding, ExportMintMetadata,
   FoundryJobRow, Job, JobKind, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
+import type { LlmServerKind } from '../shared/pipeline';
 
 /**
  * The three things that become an engine child.
@@ -2463,6 +2464,32 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
 }
 
 /**
+ * `--model` AND `--server`, composed together because they are one decision.
+ *
+ * ── Why the model can be missing ────────────────────────────────────────────
+ *
+ * Under Ollama it never is: the dialogs fall back to a declared default and the
+ * server holds a library, so a run must say which model it means. Under vLLM a
+ * blank field is the ANSWER — a vLLM process serves exactly one model, and an
+ * empty `--model` tells the engine to ask the server, use what it is serving and
+ * record that name (src/translate/vllm.ts). Passing `--model ""` would be this
+ * file inventing an empty name; leaving the flag off says what is meant.
+ *
+ * ── And `--server` only when it is not the default ──────────────────────────
+ *
+ * `ollama` is the engine's default and every job in this app's history has run
+ * under it. Writing the flag out for it would put a new word on thousands of
+ * command lines to say what they already said.
+ */
+function modelArgs(request: { model: string; server?: LlmServerKind }): string[] {
+  const model = request.model.trim();
+  return [
+    ...(model.length > 0 ? ['--model', model] : []),
+    ...(request.server === 'vllm' ? ['--server', 'vllm'] : []),
+  ];
+}
+
+/**
  * EXPORTED FOR ONE CALLER AND ONE PURPOSE: a headless door that wants to print the
  * command line a request WOULD spawn without spawning it (BookForge's
  * `cli/clean-step.js --dry-run`). A dry run that composed its own argv would be a
@@ -2581,7 +2608,7 @@ export function argsFor(
       '--book', bookOf(request),
       '--records', request.recordsPath,
       '--stamp', request.stampPath,
-      '--model', request.model,
+      ...modelArgs(request),
       '--endpoint', request.ollama,
     ];
     /*
@@ -2658,7 +2685,7 @@ export function argsFor(
       '--book', bookOf(request),
       '--records', request.recordsPath,
       '--to', languageOf(request),
-      '--model', request.model,
+      ...modelArgs(request),
       '--ollama', request.ollama,
     ];
     /*

@@ -28,27 +28,50 @@
  */
 import type { WritableSignal } from '@angular/core';
 
+import type { LlmServerKind } from '@shared/pipeline';
 import { api } from './foundry';
+
+/*
+ * AND THE THIRD FACT: WHICH KIND OF SERVER. It arrives on the same answer
+ * because it is the same decision — under vLLM the model is a served id and the
+ * URL is a different port, and a dialog that took two of the three from Settings
+ * and guessed the third would compose a job that cannot run. The signal is
+ * OPTIONAL because Analyse has no vLLM route yet and passes none; every dialog
+ * that puts `server` on its request passes one.
+ *
+ * A MODEL THAT COMES BACK EMPTY IS SET ANYWAY WHEN THE SERVER IS vLLM, which is
+ * the one place this differs from the two lines above it: empty MEANS something
+ * there — "whatever that server is serving" — and leaving the constant in the
+ * field would put an Ollama tag on a vLLM job (`AppSettings.vllmModel`).
+ */
+function seed(
+  chosen: (defaults: { model: string; cleanModel: string }) => string,
+  model: WritableSignal<string>,
+  ollama: WritableSignal<string>,
+  server?: WritableSignal<LlmServerKind>,
+): void {
+  if (!api) return;
+  void api.llm.defaults().then((defaults) => {
+    const wanted = chosen(defaults);
+    if (wanted.trim().length > 0 || defaults.server === 'vllm') model.set(wanted);
+    if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
+    server?.set(defaults.server);
+  });
+}
 
 export function seedLlmDefaults(
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
+  server?: WritableSignal<LlmServerKind>,
 ): void {
-  if (!api) return;
-  void api.llm.defaults().then((defaults) => {
-    if (defaults.model.trim().length > 0) model.set(defaults.model);
-    if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
-  });
+  seed((defaults) => defaults.model, model, ollama, server);
 }
 
 /** The same read, taking `cleanTextModel` — for the Clean text dialog alone. */
 export function seedCleanDefaults(
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
+  server?: WritableSignal<LlmServerKind>,
 ): void {
-  if (!api) return;
-  void api.llm.defaults().then((defaults) => {
-    if (defaults.cleanModel.trim().length > 0) model.set(defaults.cleanModel);
-    if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
-  });
+  seed((defaults) => defaults.cleanModel, model, ollama, server);
 }

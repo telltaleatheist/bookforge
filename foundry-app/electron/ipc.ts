@@ -3020,16 +3020,76 @@ export function registerIpc(): void {
    */
   ipcMain.handle('llm:defaults', () => {
     const settings = readAppSettings();
+    /*
+     * ── ANSWERED FOR THE SERVER THIS MACHINE ACTUALLY RUNS ────────────────────
+     *
+     * A vLLM serves one model under an id of its own shape (`Qwen/Qwen3.5-9B`),
+     * and it is not on the same port as an ollama. So when the machine is set to
+     * vLLM the dialogs open with THAT pair rather than with ollama tags a vLLM
+     * has never heard of — one answer, four dialogs, and none of them needs to
+     * know there was a choice.
+     *
+     * BOTH CLEAN AND TRANSLATE GET THE SAME NAME under vLLM, and that is not the
+     * two models collapsing into one: it is one SERVER serving one model, which
+     * is what a vLLM is. The two ollama tags are untouched underneath and come
+     * back the moment the machine is set back.
+     *
+     * AN EMPTY MODEL IS A REAL ANSWER HERE — see `AppSettings.vllmModel`. It
+     * means "whatever that server is serving", the engine resolves it against
+     * the server and records what answered, and a dialog showing an empty field
+     * is showing the truth: nobody on this machine has named one.
+     */
+    const vllm = settings.llmServer === 'vllm';
     return {
-      model: settings.defaultLlmModel,
-      cleanModel: settings.cleanTextModel,
-      ollama: settings.ollamaUrl,
+      model: vllm ? settings.vllmModel : settings.defaultLlmModel,
+      cleanModel: vllm ? settings.vllmModel : settings.cleanTextModel,
+      ollama: vllm ? settings.vllmUrl : settings.ollamaUrl,
+      server: settings.llmServer,
     };
   });
   ipcMain.handle('llm:set-model', (_event, model: string) =>
     writeAppSettings({ defaultLlmModel: model }).defaultLlmModel);
   ipcMain.handle('llm:set-clean-model', (_event, model: string) =>
     writeAppSettings({ cleanTextModel: model }).cleanTextModel);
+
+  /*
+   * WHAT IS STORED, rather than what a dialog opens with — the settings card's
+   * own read, and the reason it is not `llm:defaults` with more fields on it.
+   * `defaults` answers ONE question ("what does this job start from") and
+   * resolves the choice away; this one answers the other ("what has this machine
+   * been told"), where both servers' URLs exist at once and neither is in
+   * effect. A single handler doing both would have to return the same URL twice
+   * under two names.
+   */
+  ipcMain.handle('llm:servers', () => {
+    const settings = readAppSettings();
+    return {
+      server: settings.llmServer,
+      ollamaUrl: settings.ollamaUrl,
+      vllmUrl: settings.vllmUrl,
+      vllmModel: settings.vllmModel,
+    };
+  });
+  /** Answered with what was STORED, never with what was sent — `llm:set-model`'s rule. */
+  ipcMain.handle('llm:set-servers', (_event, patch: {
+    server?: 'ollama' | 'vllm';
+    ollamaUrl?: string;
+    vllmUrl?: string;
+    vllmModel?: string;
+  }) => {
+    const settings = writeAppSettings({
+      ...(patch.server === undefined ? {} : { llmServer: patch.server }),
+      ...(patch.ollamaUrl === undefined ? {} : { ollamaUrl: patch.ollamaUrl }),
+      ...(patch.vllmUrl === undefined ? {} : { vllmUrl: patch.vllmUrl }),
+      ...(patch.vllmModel === undefined ? {} : { vllmModel: patch.vllmModel }),
+    });
+    return {
+      server: settings.llmServer,
+      ollamaUrl: settings.ollamaUrl,
+      vllmUrl: settings.vllmUrl,
+      vllmModel: settings.vllmModel,
+    };
+  });
 
   /*
    * The whole list on every mutation — and hosted, the whole list is the HOST's

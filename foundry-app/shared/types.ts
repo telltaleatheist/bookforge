@@ -11,6 +11,7 @@
  * describe, and this file re-uses rather than re-declares them.
  */
 import type { MintContributor, MintMeta } from './mint-meta';
+import type { LlmServerKind } from './pipeline';
 
 export type { MintContributor, MintMeta };
 
@@ -766,10 +767,24 @@ export interface TranslateRequest {
    * had since amendments could outlive the blocks they name.
    */
   generation?: string;
-  /** `--model`: the Ollama model that translates. */
+  /** `--model`: the model that translates. Empty under vLLM means "what it serves". */
   model: string;
   /** `--ollama`: the server's URL. Used, never started. */
   ollama: string;
+  /**
+   * `--server`: which kind of server answers, when it is not the default Ollama.
+   *
+   * CARRIED ON THE REQUEST RATHER THAN READ AT SPAWN, so that the three things
+   * that must agree — the kind, the URL and the model name — are the ONE set the
+   * dialog was looking at. They are stored together in Settings and answered
+   * together (`llm:defaults`); reading the kind again at spawn would mean a
+   * queue filled before somebody flipped the setting runs an Ollama tag against
+   * a vLLM, which fails at the first block with a message about a model nobody
+   * typed.
+   *
+   * Absent is `ollama` and is what every job carried before this existed.
+   */
+  server?: LlmServerKind;
   /** `--instructions`: appended to the system prompt verbatim, per book. */
   instructions?: string;
   /**
@@ -970,6 +985,20 @@ export interface CleanRequest {
    */
   model: string;
   ollama: string;
+  /**
+   * `--server`: which kind of server answers, when it is not the default Ollama.
+   *
+   * CARRIED ON THE REQUEST RATHER THAN READ AT SPAWN, so that the three things
+   * that must agree — the kind, the URL and the model name — are the ONE set the
+   * dialog was looking at. They are stored together in Settings and answered
+   * together (`llm:defaults`); reading the kind again at spawn would mean a
+   * queue filled before somebody flipped the setting runs an Ollama tag against
+   * a vLLM, which fails at the first block with a message about a model nobody
+   * typed.
+   *
+   * Absent is `ollama` and is what every job carried before this existed.
+   */
+  server?: LlmServerKind;
   /**
    * `--concurrency`: blocks in flight at once. Absent means the engine's own
    * (`DEFAULT_CLEAN_CONCURRENCY`, 4) — a number is never filled in here, because a
@@ -1726,6 +1755,23 @@ export interface EnvInstallResult {
 // ─────────────────────────────────────────────────────────────────────────────
 // First run — electron/system-probe.ts, electron/ollama.ts, electron/llm-catalog.ts
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * WHAT THIS MACHINE HAS BEEN TOLD ABOUT ITS LANGUAGE SERVERS — the settings
+ * card's read and write, in one shape (electron/app-settings.ts owns the rules).
+ *
+ * BOTH URLS EXIST AT ONCE and only one is in effect, which is deliberate: a
+ * person who tries vLLM for an evening and switches back must not have to retype
+ * an address they already gave. `vllmModel` may be empty, and empty MEANS
+ * something — "whatever that server is serving", resolved by the engine against
+ * the server and then recorded, because a vLLM process serves exactly one model.
+ */
+export interface LlmServers {
+  server: LlmServerKind;
+  ollamaUrl: string;
+  vllmUrl: string;
+  vllmModel: string;
+}
 
 /** The NVIDIA card, if there is one. Every unknown is null, never zero. */
 export interface CudaFacts {

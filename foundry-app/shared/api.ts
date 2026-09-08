@@ -13,11 +13,13 @@ import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './hos
 import type { ReadAsk } from './ledger';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { ReReadPrompt } from './reread';
+import type { LlmServerKind } from './pipeline';
 import type {
   AnalysisPlan,
   AnalysisReading,
   AnalyzeRequest,
   AppQuestion,
+  LlmServers,
   BackendSettingsPatch,
   CaptureCreated,
   CaptureIntaken,
@@ -1310,11 +1312,26 @@ export interface FoundryApi {
    * because the narration cleanup declares its own default.
    */
   llm: {
-    defaults(): Promise<{ model: string; cleanModel: string; ollama: string }>;
+    /**
+     * What a language dialog OPENS with, already resolved for the server this
+     * machine is set to (electron/ipc.ts). Under vLLM `model` and `cleanModel`
+     * are the one served id — which may be empty, meaning "whatever that server
+     * is serving" — and `ollama` is the vLLM's URL.
+     */
+    defaults(): Promise<{
+      model: string;
+      cleanModel: string;
+      ollama: string;
+      server: LlmServerKind;
+    }>;
     /** Answers with the tag AS STORED — a name main refused comes back changed. */
     setModel(model: string): Promise<string>;
     /** The Clean text model, same rule: answered with what was stored. */
     setCleanModel(model: string): Promise<string>;
+    /** What is stored for BOTH servers at once — the settings card's read. */
+    servers(): Promise<LlmServers>;
+    /** Whatever is named is written; answered with the whole stored set. */
+    setServers(patch: Partial<LlmServers>): Promise<LlmServers>;
   };
 
   backendSetup: {
