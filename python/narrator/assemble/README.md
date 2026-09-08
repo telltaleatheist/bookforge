@@ -55,7 +55,8 @@ the VTT's float running sum agree to within half a sample, and
 guard and the pre-encoded duration check alike.
 
 **Nothing in the session is ever modified.** Faded copies and generated silence
-go into the assembly's own working directory (`.nw<pid>/e<chapter>/`). The
+go into the assembly's own working directory (`<temp>/narrator-asm-XXXX/e<chapter>/`,
+§10). The
 session's chunk FLACs are the render's cache; Studio retakes, training exports
 and any later re-assembly read them expecting the bytes the engine wrote.
 
@@ -611,28 +612,42 @@ nothing left to encode.
 
 ## 10. THE WORKING DIRECTORY
 
-`<output_dir>/.nw<pid>/` holds the per-chapter `.m4a` files, their concat lists
-and `metadata.txt`. It is removed once the finished m4b passes the export
-duration guard, and KEPT when anything fails, because then it is the evidence.
+`tempfile.mkdtemp(prefix='narrator-asm-')` - **LOCAL SCRATCH, not `output_dir`**
+(moved 2026-09-07) - holds the faded chunks and generated silence, the
+per-chapter `.m4a` files, their concat lists and `metadata.txt`. It is removed
+once the finished m4b passes the export duration guard, and KEPT when anything
+fails, because then it is the evidence; `assemble()` logs
+`[assembly] Working directory: <path>` when it creates it, which is how that
+evidence is found now that it is not beside the audiobook.
 
-Two properties, both learned the hard way:
+**Why it is not under `output_dir` any more.** `output_dir` is the reassembly
+bridge's staging directory under the project, and the library is on a network
+share. Preparing Mutineer's Moon wrote ~1,700 small files there at ~80 ms a
+create - four to five minutes of SMB round trips for files deleted minutes
+later. Nothing is ever renamed out of the work dir (ffmpeg writes the m4b
+straight to `out_path`, and the concat lists carry absolute paths under
+`-safe 0`), so there is no same-filesystem requirement to honour.
 
-- **A subdirectory**, so `reassembly-bridge.ts`'s promotion loop (which promotes
-  every regular FILE in the staging directory) skips it.
-- **Named for the process that owns it.** It used to be the fixed
-  `.narrator-work`, and the first thing `assemble()` does is `rmtree(work_dir)` -
+The two properties the old location was chosen for are both better served here:
+
+- **Short paths.** Windows caps the path chain at 260 characters for the APIs
+  ffmpeg uses, and `output_dir` is often already deep under the Z: library.
+  `%TEMP%\narrator-asm-ab12cd34\7.m4a` is shorter than the same file under a
+  staging directory, not longer - which is also why the names inside stay terse
+  (`7.m4a`, not `parallel_encode/00007.m4a`).
+- **No two assemblies sharing a directory.** The name used to be the fixed
+  `.narrator-work`, and the first thing `assemble()` did was `rmtree(work_dir)` -
   so a second assembly writing into the same `output_dir` deleted the first's
   concat list and half-written chapter files out from under a running ffmpeg.
   The symptom is `Error opening input file ...concat_list_encoded.txt` from an
-  assembly that did nothing wrong. Two variants of one book staged into a single
-  directory, or one test suite run by several agents at once, is enough. With the
-  pid in the name, the start-of-run rmtree can only remove our own leftovers.
+  assembly that did nothing wrong. A pid suffix fixed that; `mkdtemp` retires the
+  problem, because the OS creates the directory fresh and exclusively and there
+  is no start-of-run `rmtree` left to get wrong.
+
+`tempfile` honours `TMPDIR`/`TMP`/`TEMP`, so a machine whose temp volume is too
+small for a book's worth of scratch can be pointed elsewhere without a code
+change.
 
 Concat lists are flushed and `fsync`ed before the handle closes, and their size
 is checked back off the filesystem, because the next thing that happens to one is
 that a separate ffmpeg process opens it by name.
-
-The names are short on purpose (`.nw<pid>/7.m4a`, not
-`.narrator-work/parallel_encode/00007.m4a`): `output_dir` is often already deep
-under the Z: library, and Windows still caps the path at 260 characters for the
-APIs ffmpeg uses.

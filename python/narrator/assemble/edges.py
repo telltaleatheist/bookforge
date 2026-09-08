@@ -195,8 +195,9 @@ def gap_frames(seconds: float, sample_rate: int) -> int:
 
 
 def edge_dir(work_dir: str, chapter_index: int) -> str:
-    """Where a chapter's processed chunks go. Short, because these paths sit
-    under an already-deep staging directory (see run.py's WORK_DIRNAME)."""
+    """Where a chapter's processed chunks go. Short, because Windows still caps
+    the path chain at 260 characters for the APIs ffmpeg uses (see run.py's
+    WORK_DIR_PREFIX)."""
     path = os.path.join(work_dir, f"e{chapter_index}")
     os.makedirs(path, exist_ok=True)
     return path

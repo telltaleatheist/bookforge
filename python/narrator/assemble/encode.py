@@ -502,7 +502,7 @@ def encode_chapters_parallel(
 
     Returns the chapter audio paths in chapter order, ready for a stream copy.
     """
-    # Short names: see WORK_DIRNAME in run.py. e2a uses parallel_encode/NNNNN.m4a
+    # Short names: see WORK_DIR_PREFIX in run.py. e2a uses parallel_encode/NNNNN.m4a
     # in the session directory; nothing reads these but the concat list we write
     # beside them, so they cost nothing but path length.
     chunk_dir = work_dir

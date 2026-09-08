@@ -15,7 +15,7 @@ its staging directory into the user's output folder (L2316-2360):
 The shared stem is load-bearing: the bridge pairs the sidecar to the audiobook by
 stem (`stemOf(s.wanted) === m4bStem`, L2392) and renames them together. A VTT with
 a different stem is promoted under its own name and never binds to the book.
-Working files go in a SUBDIRECTORY, which the bridge's `isFile()` filter skips.
+Working files are not in `output_dir` AT ALL any more - see `WORK_DIR_PREFIX`.
 
 THE SENTENCE TRANSCRIPT IS NOT AN output_dir FILE, for exactly that reason: a
 third file at the top level would be promoted into the user's audiobook folder
@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 
@@ -43,33 +44,47 @@ from .sentence_vtt import (SENTENCE_VTT_SUFFIX, SentenceVttError,
                            estimated_cues_for_manifest, write_sentence_vtt)
 from .vtt import write_vtt
 
-#: The work subdirectory inside output_dir. A directory, so the reassembly
-#: bridge's promotion loop skips it; removed on success, kept on failure because
-#: then it is the evidence.
+#: Prefix of the assembly's working directory, which lives in the MACHINE'S OWN
+#: TEMP SPACE and not beside the audiobook.
 #:
-#: DELIBERATELY SHORT. output_dir is often already deep - a staging directory
-#: under a project on the Z: library - and Windows still caps a path COMPONENT
-#: chain at 260 characters for the APIs ffmpeg uses.
-#: ".narrator-work/parallel_encode/00007.m4a" is 40 characters of pure overhead
-#: per chapter file; ".nw<pid>/7.m4a" is about 14. The ffprobe guard would catch
-#: the resulting failure rather than shipping a silent zero, but a refused
-#: assembly is still a failure.
+#: WHAT GOES IN IT is scratch, all of it: the faded chunk copies and generated
+#: silences an unpadded engine needs, the per-chapter .m4a files, the concat
+#: lists, the ffmpeg metadata file. Only the finished m4b and its VTT belong in
+#: `output_dir`, and both are written there directly by ffmpeg - nothing is ever
+#: renamed out of the work dir, so there is no same-filesystem requirement to
+#: honour (verified: `encode.py` passes `out_path` straight to ffmpeg, and the
+#: concat lists carry absolute paths under `-safe 0`).
 #:
-#: AND DELIBERATELY PER-PROCESS. This used to be the fixed name ".narrator-work",
-#: which made the first thing assemble() does - rmtree(work_dir) - destructive to
-#: ANOTHER assembly writing into the same output_dir: process B deleted process
-#: A's concat list and half-written chapter .m4a files out from under a running
-#: ffmpeg, and A died with "Error opening input file ...concat_list_encoded.txt".
-#: Two variants of one book staged into a single directory, or one suite run by
-#: several agents at once, is enough to hit it. The pid makes the directory
-#: unique to the assembly that owns it, so the start-of-run rmtree can only ever
-#: remove OUR OWN leftovers.
-WORK_DIRNAME = ".nw"
+#: WHY IT MOVED (2026-09-07). `output_dir` is the bridge's staging directory
+#: under the project, and the library is on a network share. Every one of those
+#: ~1,700 small writes was a round trip over SMB at ~80 ms a create, for files
+#: that are deleted minutes later. The temp dir is local on every platform.
+#:
+#: THE TWO REASONS IT WAS UNDER output_dir ARE BOTH BETTER SERVED HERE.
+#:  - SHORT PATHS. output_dir is often already deep - a staging directory under a
+#:    project on the Z: library - and Windows still caps the path chain at 260
+#:    characters for the APIs ffmpeg uses. `%TEMP%\narrator-asm-ab12cd34\7.m4a`
+#:    is far shorter than the same file under a staging directory, not longer.
+#:  - NO TWO ASSEMBLIES SHARING A DIRECTORY. The name used to be the fixed
+#:    ".narrator-work", so the first thing assemble() did - rmtree(work_dir) -
+#:    destroyed ANOTHER assembly's concat list and half-written .m4a files out
+#:    from under its running ffmpeg ("Error opening input file
+#:    ...concat_list_encoded.txt"). A pid suffix fixed that; `mkdtemp` fixes it
+#:    outright, because the directory is created fresh and exclusively by the OS
+#:    and there is no start-of-run rmtree to get wrong at all.
+#:
+#: `tempfile` honours TMPDIR/TMP/TEMP, so an operator whose temp volume is too
+#: small for a book's worth of scratch can point it elsewhere.
+#:
+#: LIFETIME IS UNCHANGED: removed on success, KEPT ON FAILURE because then it is
+#: the evidence. assemble() logs the path when it creates the directory, which is
+#: how that evidence is found now that it is not sitting beside the audiobook.
+WORK_DIR_PREFIX = "narrator-asm-"
 
 
-def work_dir_for(output_dir: str) -> str:
-    """This process's working directory inside `output_dir`."""
-    return os.path.join(output_dir, f"{WORK_DIRNAME}{os.getpid():x}")
+def make_work_dir() -> str:
+    """A fresh, exclusively-owned working directory for THIS assembly."""
+    return tempfile.mkdtemp(prefix=WORK_DIR_PREFIX)
 
 
 @dataclass
@@ -265,13 +280,11 @@ def assemble(
 
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    work_dir = work_dir_for(output_dir)
-    if os.path.isdir(work_dir):
-        # Only ever a leftover from a PREVIOUS run of this same process (a crash
-        # or a kept-as-evidence failure). It cannot belong to a live assembly:
-        # the name carries our pid.
-        shutil.rmtree(work_dir)
-    os.makedirs(work_dir)
+    # Local scratch, never the share - see WORK_DIR_PREFIX. Named in the log
+    # because on a failure this directory is deliberately left behind as the
+    # evidence, and it is no longer sitting next to the audiobook to be noticed.
+    work_dir = make_work_dir()
+    log(f"[assembly] Working directory: {work_dir}")
 
     # ------------------------------------------------------------------
     # Resolve every chapter to real files with real sample counts, running

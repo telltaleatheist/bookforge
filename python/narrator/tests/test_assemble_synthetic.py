@@ -33,6 +33,20 @@ SKIP_REASON = "ffmpeg/ffprobe are not on PATH; assembly cannot be exercised"
 EXPECTED_SECONDS = sum(synthetic.CHUNK_SECONDS)  # 10.75
 
 
+def work_dir_named_in(lines: list[str]) -> str:
+    """The working directory `assemble()` announced.
+
+    Since 2026-09-07 the work dir is `tempfile.mkdtemp()` in local scratch, so
+    its path is not derivable from output_dir any more - the ONE place it is
+    stated is the line assemble() logs when it creates it, which is also how an
+    operator finds the evidence a failed run leaves behind.
+    """
+    named = [l for l in lines if l.startswith("[assembly] Working directory: ")]
+    if len(named) != 1:
+        raise AssertionError(f"expected exactly one working-directory line, got {named}")
+    return named[0].split(": ", 1)[1]
+
+
 def probe_json(path: str) -> dict:
     out = subprocess.run(
         [FFPROBE, "-v", "error", "-show_format", "-show_chapters", "-show_streams",
@@ -162,18 +176,29 @@ class TestAssembleSynthetic(unittest.TestCase):
                     os.path.basename(self.result.vtt_path)]),
         )
 
-    def test_work_dir_is_named_for_this_process(self):
-        # Two assemblies sharing one output_dir must not share a work dir: the
-        # start-of-run rmtree would delete the other one's live concat list.
-        self.assertIn(f"{os.getpid():x}", os.path.basename(R.work_dir_for(self.out_dir)))
-        self.assertNotEqual(R.work_dir_for(self.out_dir),
-                            os.path.join(self.out_dir, R.WORK_DIRNAME))
+    def test_the_work_dir_is_local_scratch_not_the_share(self):
+        # Every faded chunk, silence, chapter .m4a and concat list used to be
+        # written into output_dir - a staging directory on the Syncthing/SMB
+        # library. They are scratch; only the m4b and the VTT belong there.
+        work = work_dir_named_in(self.lines)
+        self.assertTrue(os.path.basename(work).startswith(R.WORK_DIR_PREFIX), work)
+        self.assertEqual(
+            os.path.normcase(os.path.realpath(os.path.dirname(work))),
+            os.path.normcase(os.path.realpath(tempfile.gettempdir())),
+        )
+        self.assertFalse(
+            os.path.normcase(work).startswith(os.path.normcase(self.out_dir)), work
+        )
 
     def test_work_dir_is_removed_on_success(self):
-        self.assertFalse(os.path.isdir(R.work_dir_for(self.out_dir)))
-        # and nothing else calling itself a work dir either
+        self.assertFalse(os.path.isdir(work_dir_named_in(self.lines)))
+
+    def test_output_dir_has_no_subdirectories_at_all(self):
+        # The bridge promotes every regular FILE here and skips directories, so a
+        # leftover work dir was invisible rather than harmless. Now there is none.
         self.assertEqual(
-            [e for e in os.listdir(self.out_dir) if e.startswith(R.WORK_DIRNAME)],
+            [e for e in os.listdir(self.out_dir)
+             if os.path.isdir(os.path.join(self.out_dir, e))],
             [],
         )
 
@@ -515,10 +540,18 @@ class TestAssembleGuards(unittest.TestCase):
     def test_work_dir_survives_a_failure_as_evidence(self):
         out = os.path.join(self.tmp, "o2")
         self.manifest.chapters[0].title = "Bad; title"
+        lines: list[str] = []
         with self.assertRaises(ValueError):
             R.assemble(self.manifest, out, ffmpeg=FFMPEG, ffprobe=FFPROBE,
-                       progress=lambda _l: None)
-        self.assertTrue(os.path.isdir(R.work_dir_for(out)))
+                       progress=lines.append)
+        work = work_dir_named_in(lines)
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        self.assertTrue(os.path.isdir(work))
+        # nothing was left beside the (never written) audiobook either
+        self.assertFalse(
+            os.path.normcase(work).startswith(os.path.normcase(os.path.abspath(out))),
+            work,
+        )
 
 
 class TestFinalName(unittest.TestCase):
