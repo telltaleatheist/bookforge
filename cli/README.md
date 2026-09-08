@@ -489,6 +489,47 @@ python cli/bookforge-tts.py --ai-simplify --input book.epub --provider claude \
 - `--test-mode` / `--test-chunks <n>` — process only the first N chunks (default 5).
   `--test-chunks` without `--test-mode` errors (never silently ignored).
 
+## Clean lines — a training corpus through the narration text cleanup (`--clean-lines`)
+
+One transcript per line in, the same lines cleaned out **by position** — the three stages
+the app's **Clean text** step runs on a book (punctuation spec, the number rules, the model on
+every block), over a file of thousands of short items, in ONE process: the model loads once,
+the context window is pinned once from the longest line, every line is asked at temperature 0,
+and the model unloads at the end (Owen, 2026-09-07: *"model is loaded on start and unloaded on
+completion"*). It is `foundry clean-text --book` behind a text file — BookForge writes a book
+file with one paragraph block per line, spawns the same binary the hosted press spawns, with
+the same model and endpoint out of `app-settings.json`, and zips the records back.
+
+```bash
+# lines.txt: one item per line. Output defaults to lines.cleaned.txt beside it.
+python cli/bookforge-tts.py --clean-lines --input lines.txt --language en
+python cli/bookforge-tts.py --clean-lines --input lines.txt --output cleaned.txt --language en
+# Leave the model loaded afterwards (an Ollama shared with other work):
+python cli/bookforge-tts.py --clean-lines --input lines.txt --language en --keep-model
+
+# The node adapter directly:
+node --require ./cli/electron-stub.js cli/clean-lines.js --input lines.txt --language en
+```
+
+What comes out:
+
+- `<output>` — exactly as many lines as the input; blank lines stay blank, so line N out is line
+  N in and a caller can zip it against an audio list by position.
+- `<stem>.clean-lines/lines.records.jsonl` — the engine's records, one row per line keyed by
+  the line's text and the model. **A killed run keeps them**: the next run finds the file and
+  the engine asks only about the lines it has no answer for.
+- `<stem>.clean-lines/lines.records.jsonl.receipt.json` — the receipt: model, spec versions,
+  how many blocks were asked, how many answers failed to parse, and every edit's disposition
+  (`APPLIED`, `APPLIED_RULE`, `NOT_A_READING`, ...). The summary line prints the counts.
+
+Refusals, by name: a line the engine wrote no answer for is **never copied through** as if it
+had been cleaned (the run fails naming the line numbers; run again); an answer holding a line
+break cannot be written by position; a foundry older than 1.1.0 has no `--book` door;
+`--model` is ignored with a note, because the pass takes its model from the app's settings so a
+corpus and a book are cleaned by one setting. The number rules are deterministic: `1994`
+becomes `nineteen ninety-four` whether or not the narrator said it that way — that is the
+corpus doctrine, and the reason this door exists.
+
 ## Sentence generation (`--generate-sentences`)
 
 Audio → sentence-level **VTT** through the app's real machinery. Two modes:

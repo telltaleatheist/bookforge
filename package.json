@@ -52,6 +52,7 @@
     "test:text-normalization": "npx tsc -p tsconfig.electron.json && node tools/test-text-normalization.js",
     "test:listen-text": "npx tsc -p tsconfig.electron.json && node tools/test-listen-text.js",
     "test:session-authorship": "npx tsc -p tsconfig.electron.json && node tools/test-session-authorship.js",
+    "test:clean-lines": "node tools/test-clean-lines.js",
     "test:assembly-transcript-seal": "npx tsc -p tsconfig.electron.json && node tools/test-assembly-transcript-seal.js",
     "test:render-beside-recording": "npx tsc -p tsconfig.electron.json && node tools/test-render-beside-recording.js",
     "test:retired-passes": "npx tsc -p tsconfig.electron.json && node tools/test-retired-passes.js",

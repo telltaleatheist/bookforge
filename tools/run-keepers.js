@@ -172,6 +172,9 @@ const SUITES = [
   'test-foundry-landing',
   'test-foundry-adopt',
   'test-foundry-export-landing',
+  // cli/clean-lines-step.js — a file of training lines through `foundry clean-text`
+  // in one process, written back by position. Drives an injected engine; no foundry needed.
+  'test-clean-lines',
   'test-legacy-migration',
   'test-legacy-bilingual-manifest',
   'test-retired-engine-settings',

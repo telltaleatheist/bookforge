@@ -46,6 +46,7 @@ ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batc
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door: cut + numbers
 NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"        # the persisted text cleanup
+CLEAN_LINES = REPO_ROOT / "cli" / "clean-lines.js"              # a file of lines through clean-text, by position
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
@@ -592,6 +593,40 @@ def cmd_narration_text(args):
         _require(Path(args.input).is_file(), f"input file not found: {args.input}")
 
     print("[bookforge-tts] narration text cleanup ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_clean_lines(args):
+    """A FILE OF LINES through the narration text cleanup, written back by position.
+
+    One training transcript per line in, the same lines cleaned out, in ONE process:
+    the model loads once, every line is asked at temperature 0, the model unloads
+    at the end. Behind it is `foundry clean-text --book` - BookForge writes a book
+    file with one block per line and spawns the same binary, model and endpoint the
+    hosted Clean text press uses. A killed run keeps its records; the next run asks
+    only about the lines with no answer. See cli/clean-lines-step.js.
+    """
+    _require(bool(args.input), "--clean-lines needs --input <lines.txt>")
+    _require(bool(args.language), "--clean-lines needs --language <subtag> (e.g. en)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(CLEAN_LINES.is_file(), f"missing adapter {CLEAN_LINES}")
+    _require((REPO_ROOT / "dist" / "electron" / "narration-clean-text.js").is_file(),
+             "BookForge is not built - run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/narration-clean-text.js missing)")
+    cmd = ["node", "--require", str(NODE_STUB), str(CLEAN_LINES),
+           "--input", str(Path(args.input).resolve()), "--language", args.language]
+    if args.output:
+        cmd += ["--output", str(Path(args.output).resolve())]
+    if args.keep_model:
+        cmd += ["--keep-model"]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN - clean lines, no model loaded")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    _require(Path(args.input).is_file(), f"input file not found: {args.input}")
+    print("[bookforge-tts] clean lines ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
@@ -1211,6 +1246,8 @@ COMMANDS = {
     # run it themselves when a book has not been through it; this is the door for
     # running it deliberately, on its own.
     "narration-text": cmd_narration_text,
+    # A corpus of lines through the same cleanup, by position (cli/clean-lines.js).
+    "clean-lines": cmd_clean_lines,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
@@ -1253,6 +1290,9 @@ def build_parser():
                    "text file to stream (--tts --mode streaming); EPUB override (--audiobook); "
                    "the .epub or .txt to prep (--prep)")
     p.add_argument("--text", help="literal text to stream (--mode streaming only)")
+    p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)")
+    p.add_argument("--keep-model", dest="keep_model", action="store_true",
+                   help="--clean-lines: leave the model loaded when the run ends")
     p.add_argument("--out", help="output .wav path")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
