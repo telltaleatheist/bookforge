@@ -212,11 +212,23 @@ none of which a loose-file run can be made to do afterwards.
 |---|---|---|---|---|
 | 8.1 | Convert a PDF to EPUB (queue row `vlm-convert`) | `main.ts:9668` → `vlm-convert.ts:653 runVlmConversion` | `--generate-epub` | **PARITY** |
 | 8.2 | Plan a conversion (dry run) | `vlm-convert.ts:499 planVlmConversion` | `--generate-epub --dry-run` | **PARITY** |
-| 8.3 | Clean text (Foundry's own pass) | `queue-steps/foundry-job.ts:149` → `foundry-host-queue.ts:279 foundryRunner()` | NONE | **MISSING — cannot be reached headlessly** |
+| 8.3 | Clean text (Foundry's own pass) | `queue-steps/foundry-job.ts:149` → `foundry-host-queue.ts:279 foundryRunner()` | `--clean` (`cli/clean-step.js`) | **PARITY** (2026-09-08) |
 | 8.4 | Foundry read / translate / simplify / export | same `foundryRunner()` | NONE | **MISSING — same reason** |
 | 8.5 | Adopt / reload a Foundry project | `foundry-adopt.adoptFoundryProject` / `refreshAdoptedProject` | NONE | **MISSING** (headless-capable) |
 
-**Why 8.3/8.4 cannot be closed.** `foundryRunner()` throws unless
+**8.3 was closed on 2026-09-08, and how says what 8.4 still needs.** The
+paragraph below was right about the shape of the problem and wrong about one
+premise: the request is NOT only composable in Foundry's renderer. `workspace.
+planCleanup` is a main-side function — it is what `workspace:plan-clean` calls —
+and `electron/host.recordHost({libraryDir})` is a leaf module that takes the one
+fact `mountFoundry` was being relied on for. So `cli/clean-step.js` records the
+host, resolves the project and its position the way the dialog does, calls
+`planCleanup`, composes the `CleanRequest` field for field as `clean-dialog.add()`
+does, and hands it to `runJob` — no window, no `ipcMain`, no CSP, no stub of any
+of them. The same route is open to 8.4's four acts (each has its own `plan*` in
+`electron/workspace.ts`); only the doors are unwritten.
+
+**Why 8.4 is still open.** `foundryRunner()` throws unless
 `setFoundrySeam` has been called, and that happens in exactly one place —
 `electron/main.ts:12023`, **after** `foundryMount.mountFoundry(...)` at
 `main.ts:11955`. `mountFoundry` ends in `applyContentSecurityPolicy()`,
@@ -226,12 +238,11 @@ should be faked. Worse, the `FoundryJobRequest` (its `readingsPath`,
 `recordsPath` and minted step id) is composed by **Foundry's renderer**; there is
 no main-side composer to call.
 
-**What a refactor would need:** (a) a mount-free entry point to
-`foundry-app/electron/job-queue.ts:3446 runJob` with an injectable `libraryDir`
-instead of one sourced from the record `mountFoundry` sets; and (b) a
-main-process composer for `FoundryJobRequest`, since only the renderer knows how
-to build one today. Both are changes in the vendored Foundry subtree, which this
-repository re-vendors rather than edits.
+**What 8.4 needs** is what 8.3 got: a door per act that calls the act's own
+`plan*` and hands the result to `runJob`. It costs the vendored subtree one
+additive export — `job-queue.argsFor`, so a `--dry-run` can print the command line
+a request would spawn instead of composing a second copy of it (added 2026-09-08,
+foundry side).
 
 ## 9. Library, projects, variants, m4b metadata
 

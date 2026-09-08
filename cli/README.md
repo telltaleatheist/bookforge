@@ -294,8 +294,9 @@ guesses between them). The API key travels in the process env, never argv.
 **Not `--ai-simplify`.** That drives `ai-bridge.cleanupEpub` over a LOOSE epub and
 writes `simplified.epub` beside it — file in, file out, no project record.
 `--pass --kind simplify` is the project act. **Not Foundry's "Clean text"** either:
-that is ordered inside the hosted Foundry window and cannot be reached headlessly —
-see `docs/CLI_PARITY_AUDIT.md` §8.
+that is a Foundry act on a Foundry project, ordered inside the hosted window — and
+since 2026-09-08 it has its own headless door, `--clean` (below), which IS that press
+rather than a second copy of it.
 
 The fourth pass kind, `narration-text`, has its own command (`--narration-text`)
 because it also has a bare-EPUB door. Both go through the same
@@ -529,6 +530,76 @@ break cannot be written by position; a foundry older than 1.1.0 has no `--book` 
 corpus and a book are cleaned by one setting. The number rules are deterministic: `1994`
 becomes `nineteen ninety-four` whether or not the narrator said it that way — that is the
 corpus doctrine, and the reason this door exists.
+
+## Clean text step — `--clean`
+
+**The hosted Foundry window's Clean text press, with no window.** Not a headless
+re-implementation of it: the adapter calls the same compiled functions in the same
+order the button walks through — `planCleanup` (`workspace:plan-clean`, which
+materialises the position's own book and mints the records, stamp and step id), the
+`CleanRequest` `clean-dialog.add()` composes field for field, and `runJob`, the seam
+`queue-steps/foundry-job.ts` hands a Foundry row to. So it **lands a ledger step**,
+writes the same records and stamp beside the project's readings, and a run can be
+timed against the app it is a run of.
+
+```bash
+# Clean the book at the project's current position:
+python cli/bookforge-tts.py --clean --project "/path/to/library/projects/<slug>"
+
+# A specific model, eight blocks in flight, and see the spawn without touching a model:
+python cli/bookforge-tts.py --clean --project "<dir>" \
+    --model qwen3.5:9b-mlx-bf16 --concurrency 8 --dry-run
+
+# The Foundry project directly, when the mapping is not the question:
+python cli/bookforge-tts.py --clean --foundry-project "<library>/foundry/projects/<key>"
+
+# The node adapter directly:
+node --require ./cli/electron-stub.js cli/clean-step.js --project "<dir>" --dry-run
+```
+
+- `--project` is a **BookForge** project dir; its Foundry project is resolved the way
+  the app resolves it — the manifest records a KEY (`foundryProject.dir`) and
+  `<library>/foundry/projects` is where keys live. A book with no record has no Foundry
+  project, and is refused by name rather than guessed at from its folder name.
+- **Where it stands is where the project stands.** The step is `positionOf` the
+  project's ledger, exactly as `LedgerService.standingIn` answers it in the window, and
+  `canCleanFrom` is asked about it — a position the dialog would not offer the button
+  from refuses here too.
+- `--model` / `--ollama` override the settings the dialog seeds itself from
+  (`cleanTextModel`, `ollamaUrl` in the app's own `app-settings.json`) — **not**
+  `defaultLlmModel`, which names a 27b that cleans at a fifth of the 9b's rate.
+- `--concurrency <n>` is the engine's own `--concurrency`: blocks in flight at once,
+  absent meaning the engine's default of 4. It changes the **speed, never the text** —
+  every block is asked the same question at temperature 0.
+- **The model is released when the run ends.** `foundry clean-text` unloads the weights
+  (`keep_alive: 0`) unless it is told the machine is shared, so a run that finishes
+  hands the GPU back. `--keep-model` is the opt-in for several runs back to back, and is
+  the only thing that puts `--keep-model` on the line.
+- `--dry-run` prints the resolved project, the position and the step it will mint, the
+  request as JSON and **the exact argv `runJob` would spawn** — composed by Foundry's
+  own `argsFor`, never by a copy of it here — and spawns nothing. It still makes the
+  plan, because an argv is a fact about a plan.
+- The run prints `clean-text: N/M` as the engine counts blocks, then the elapsed
+  seconds, the blocks/min, the stamp, and the ledger step it landed (id and label).
+  Ctrl+C aborts through an `AbortController` — the same gesture the ✕ makes on a running
+  row — and the records written so far are kept, so a re-run asks only about the blocks
+  with no answer.
+- **The engine is the locally-built one**, not the installed component. A CLI run is a
+  dev run by construction, so the door primes `FOUNDRY_CLI_PATH` at
+  `<foundry checkout>/dist/foundry-<platform>-<arch>` exactly as the app does under
+  `isDev`, before `resolveFoundryPath()` is asked — an already-set `FOUNDRY_CLI_PATH`
+  wins untouched. It matters: `--concurrency` arrived in foundry **1.2.0**, and the
+  installed component can be months older. The dry run prints the binary *and* what
+  `foundry --version` said, because a path cannot say which release is sitting at it.
+- `--foundry-dist <dir>` names which built Foundry to drive. The default is
+  `foundry-app/dist`, the vendored build the running app executes; a build that does not
+  export `argsFor` is refused by name rather than fallen back from, because composing
+  the command line here instead would be the parallel implementation this door exists
+  not to be.
+
+Not `--clean-lines`, which is this same engine command behind a *file of lines* and has
+no project, no plan and no ledger. Not `--narration-text`, which cleans a loose EPUB
+through BookForge's own chain. This one is the press.
 
 ## Sentence generation (`--generate-sentences`)
 
@@ -872,8 +943,8 @@ Docker files for the NAS live in `deploy/bookshelf-server/`.
 
 `COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`,
 `audiobook`, `assemble`, `denoise`, `rvc-enhance`, `retake`, `pass`, `prep`,
-`align`, `narration-text`, `ai-cleanup`, `ai-simplify`, `generate-sentences`,
-`generate-epub`, `rvc`).
+`align`, `narration-text`, `clean-lines`, `clean`, `ai-cleanup`, `ai-simplify`,
+`generate-sentences`, `generate-epub`, `rvc`).
 
 **Which app actions have a command, which do not, and why:**
 `docs/CLI_PARITY_AUDIT.md`. It is the table `tools/test-cli-parity.js` defends —

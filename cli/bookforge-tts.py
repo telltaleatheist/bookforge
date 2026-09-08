@@ -47,6 +47,7 @@ ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4
 NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door: cut + numbers
 NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"        # the persisted text cleanup
 CLEAN_LINES = REPO_ROOT / "cli" / "clean-lines.js"              # a file of lines through clean-text, by position
+CLEAN_STEP = REPO_ROOT / "cli" / "clean-step.js"                # the hosted Foundry Clean text press, headless
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
@@ -627,6 +628,51 @@ def cmd_clean_lines(args):
 
     _require(Path(args.input).is_file(), f"input file not found: {args.input}")
     print("[bookforge-tts] clean lines ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_clean(args):
+    """THE HOSTED FOUNDRY WINDOW'S **Clean text** PRESS, with no window.
+
+    Not a second way of doing what the press does: the adapter calls the same
+    compiled functions in the same order - `planCleanup` (workspace:plan-clean),
+    the `CleanRequest` the dialog composes field for field, and `runJob`, the seam
+    BookForge's own queue calls to run a Foundry job. So it lands the same ledger
+    step, writes the same records and stamp, and can be timed.
+
+    The model comes from app-settings `cleanTextModel` unless --model says
+    otherwise, the endpoint from `ollamaUrl` unless --ollama does. --concurrency
+    is the engine's `--concurrency` (blocks in flight; absent = the engine's own
+    4) and changes the speed, never the text. The weights are RELEASED when the
+    run ends - `--keep-model` is the opt-in for back-to-back runs.
+    """
+    _require(bool(args.project or args.foundry_project),
+             "--clean needs --project <BookForge project dir> (or --foundry-project <dir>)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(CLEAN_STEP.is_file(), f"missing adapter {CLEAN_STEP}")
+    _require((REPO_ROOT / "dist" / "electron" / "manifest-service.js").is_file(),
+             "BookForge is not built - run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/manifest-service.js missing)")
+    cmd = ["node", "--require", str(NODE_STUB), str(CLEAN_STEP)]
+    if args.project:
+        cmd += ["--project", str(Path(args.project).resolve())]
+    if args.foundry_project:
+        cmd += ["--foundry-project", str(Path(args.foundry_project).resolve())]
+    if args.model:
+        cmd += ["--model", args.model]
+    if args.ollama:
+        cmd += ["--ollama", args.ollama]
+    if args.concurrency is not None:
+        cmd += ["--concurrency", str(args.concurrency)]
+    if args.keep_model:
+        cmd += ["--keep-model"]
+    if args.foundry_dist:
+        cmd += ["--foundry-dist", str(Path(args.foundry_dist).resolve())]
+    if args.dry_run:
+        cmd += ["--dry-run"]
+        print("[bookforge-tts] DRY RUN - clean text, no model loaded")
+
+    print("[bookforge-tts] clean text ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
@@ -1248,6 +1294,8 @@ COMMANDS = {
     "narration-text": cmd_narration_text,
     # A corpus of lines through the same cleanup, by position (cli/clean-lines.js).
     "clean-lines": cmd_clean_lines,
+    # The hosted Foundry window's Clean text press, headless (cli/clean-step.js).
+    "clean": cmd_clean,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
@@ -1292,7 +1340,18 @@ def build_parser():
     p.add_argument("--text", help="literal text to stream (--mode streaming only)")
     p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)")
     p.add_argument("--keep-model", dest="keep_model", action="store_true",
-                   help="--clean-lines: leave the model loaded when the run ends")
+                   help="--clean-lines / --clean: leave the model loaded when the run ends "
+                        "(default: the weights are released)")
+    p.add_argument("--foundry-project", dest="foundry_project",
+                   help="--clean: the Foundry project dir directly, instead of resolving it "
+                        "from --project's manifest")
+    p.add_argument("--foundry-dist", dest="foundry_dist",
+                   help="--clean: which built Foundry to drive (default: foundry-app/dist, "
+                        "the build the running app executes)")
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="--clean: blocks in flight at once (default: the engine's own, 4). "
+                        "Changes the speed, never the text.")
+    p.add_argument("--ollama", help="--clean: the Ollama endpoint (default: app-settings ollamaUrl)")
     p.add_argument("--out", help="output .wav path")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
