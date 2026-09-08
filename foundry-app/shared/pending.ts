@@ -307,7 +307,26 @@ export interface Standing {
  * main). This module maps rows to nodes and reads nothing about a disk.
  */
 export function admitPending(ledger: ProjectLedger | null, rows: readonly Job[]): Job[] {
-  const known = new Set((ledger?.steps ?? []).map((step) => step.id));
+  /*
+   * ── WHAT THE LEDGER ALREADY HOLDS, WHICH IS NOT A PROMISE ANY MORE ─────────
+   *
+   * `PENDING_IN` says the intent — *"`done` IS OUT BECAUSE THE REAL STEP IS
+   * THERE. A landed text pass is a row of the ledger and drawing the promise
+   * beside it would be two cards for one act"* — and the row's STATE was the
+   * proxy for it. The proxy has a gap: a step lands at the settle, and the row
+   * that made it does not become `done` in this window's mirror until the
+   * scheduler says so and, hosted, until the host's next push carries it. In
+   * that window the step is in the ledger AND the row still says `running`, so
+   * the tree drew both and Owen watched one cleanup listed twice, both saying
+   * running (2026-09-08, Julius Streicher).
+   *
+   * So the question is asked of the LEDGER, which is the thing that actually
+   * knows. `landed` is the ids as they were when this walk began; `known` grows
+   * with admitted promises because that is a different question — who may be a
+   * PARENT — and a promise still counts as one of those.
+   */
+  const landed = new Set((ledger?.steps ?? []).map((step) => step.id));
+  const known = new Set(landed);
   const candidates = rows.filter(promises);
   const admitted: Job[] = [];
   const seen = new Set<string>();
@@ -315,6 +334,13 @@ export function admitPending(ledger: ProjectLedger | null, rows: readonly Job[])
     let grew = false;
     for (const job of candidates) {
       if (seen.has(job.id)) continue;
+      if (landed.has(job.mints!)) {
+        // The act it promised has happened. Never drawn, and never a reason to
+        // walk again — its own children resolve against the real step's id,
+        // which is in `known` already because the ledger put it there.
+        seen.add(job.id);
+        continue;
+      }
       const parent = job.parentStep ?? null;
       if (parent === null || !known.has(parent)) continue;
       seen.add(job.id);

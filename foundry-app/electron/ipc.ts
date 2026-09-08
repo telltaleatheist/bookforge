@@ -2611,9 +2611,15 @@ export function registerIpc(): void {
     },
   );
   ipcMain.handle('ledger:describe-delete', async (_event, projectDir: string, stepId: string) => {
-    // A ghost first: a promise is a queue row, and the ledger would refuse the
-    // id by name (`promisedDeletion`).
-    const promised = promisedDeletion(projectDir, stepId);
+    /*
+     * A ghost first — but only where the ledger does NOT hold the id. A row can
+     * still say `running` after the step it minted has landed (`admitPending`
+     * carries that window's whole argument), and in it a real step's delete must
+     * stay a real step's delete rather than becoming a refusal about a promise.
+     */
+    const held = await readStepLedger(projectDir);
+    const real = held !== null && held.ledger.steps.some((step) => step.id === stepId);
+    const promised = real ? null : promisedDeletion(projectDir, stepId);
     if (promised !== null) return promised;
     // Proven BEFORE the card is composed, so a warning is never put on screen for
     // something the delete would refuse a click later.
@@ -2629,7 +2635,10 @@ export function registerIpc(): void {
      * view that comes back is the ledger as it was, because nothing in it moved
      * — the tree's ghosts are derived from the rows and go with the next push.
      */
-    const promised = rowMinting(rowsIn(projectDir), stepId);
+    const standing = await readStepLedger(projectDir);
+    const promised = standing !== null && standing.ledger.steps.some((step) => step.id === stepId)
+      ? null
+      : rowMinting(rowsIn(projectDir), stepId);
     if (promised !== null) {
       /*
        * `remove`, WHICH TAKES THE SUBTREE — a host's own removal stops nothing

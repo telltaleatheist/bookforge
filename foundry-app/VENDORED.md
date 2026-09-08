@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **13b98a3** — *feat(app): the aligned sheets stand together, and quote fixes are a checkbox* |
+| Source sha | **79a3c3a** — *fix(tree): a promise whose step has landed is not drawn — one act, one card* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 13b98a3 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 79a3c3a app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1137,3 +1137,19 @@ characters of the written text. THE TEXT IS UNTOUCHED EITHER WAY: both sheets dr
 actually hold and only the highlight moves. Guillemets are deliberately NOT folded, because a
 translation turning `"` into `«` HAS changed the page, and that is the thing somebody comparing a
 translation is looking for. 141 blobs hash-verified, no IPC change, no dep movement.
+**79a3c3a (copied 2026-09-08) — one act, one card.** Owen, with Shift rendering and the GPU slot
+free: *“i went to julius streicher by bytwerk and added cleaning to the queue and it immediately
+started it without me hitting a button … but foundry added a second cleaning step to the step
+list, so i had two that were listed and said ‘running’ simultaneously.”* The immediate start
+was right (the queue was moving, the slot was empty). The pair was the PROMISE and the REAL STEP:
+`admitPending` decided “this promise has happened, stop drawing it” from the ROW’S state, and
+`PENDING_IN` excludes `done` — but a text pass lands its step in the ledger at the settle, while the
+row that minted it does not read `done` in Foundry’s mirror until the scheduler settles it and,
+hosted, until BookForge’s NEXT push carries the new state. In that window the ledger held the step
+and the row still said running, so the tree drew both cards. It now asks the LEDGER: a candidate
+whose `mints` is already a step is never drawn (it stays a legal parent for anything chained under
+it, so chains are untouched), and the two delete doors took the same guard — otherwise, inside the
+window, deleting a REAL step was refused as “that promise is running”. The window is as wide as
+the gap between the engine settling and the next `setHostQueueRows`; nothing changes on this side.
+Two files (`electron/ipc.ts`, `shared/pending.ts`); 141 blobs hash-verified, no IPC change, no dep
+movement.
