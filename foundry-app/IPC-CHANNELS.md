@@ -23,6 +23,16 @@ standing rule it states is unchanged: regenerate this file in the same commit th
 touches `ipcMain.handle`, not on the next wave. The per-family tables below are
 the authority for the NAMES; where a total contradicts them, the tables win.
 
+**ONE DOOR ADDED ON 2026-09-08 — `llm:set-clean-model`, so the count is 109.**
+Clean text got its own persisted model setting (`cleanTextModel`,
+app/electron/app-settings.ts, defaulting to `DEFAULT_CLEAN_TEXT_MODEL`) rather
+than riding `defaultLlmModel`, which seeds translate, simplify and analyse. The
+new door writes it; `llm:defaults` — unrenamed — now answers `cleanModel`
+alongside `model`, a WIDENED payload inside an existing channel of the kind the
+2026-08-17 and -08-18 sections below record. Hosted, BookForge's Clean text
+press reads the same key out of the same `app-settings.json`, which is the
+property this design exists to keep: one file, both doors, one model.
+
 NO REGENERATION WAS OWED ON 2026-09-07, and it is recorded here so that the next
 reader can tell a skipped regeneration from a deliberate one. Wave 56 (the promised
 chain — grayed steps you can act from) WIDENED four existing doors with one optional
@@ -466,7 +476,8 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
-| `llm:defaults` | The model and the ollama URL the three language dialogs open with. |
+| `llm:defaults` | What the language dialogs open with: `model` (translate/simplify/analyse), `cleanModel` (Clean text's own `cleanTextModel`) and the ollama URL. |
+| `llm:set-clean-model` | Set the Clean text model. Answers with the tag AS STORED, same rule. |
 | `llm:set-model` | Set the default model. Answers with the tag AS STORED — a name main clamped comes back changed. |
 | `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone; a host that throws REJECTS in its own words so the form can say so. |
 | `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |

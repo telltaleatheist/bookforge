@@ -50,6 +50,15 @@ import { UiService } from '../../core/ui.service';
         <input type="text" placeholder="qwen3.5:4b" name="model"
                [ngModel]="model()" (ngModelChange)="model.set($event)">
       </label>
+      <label class="field">
+        <span class="label">Clean text model</span>
+        <input type="text" placeholder="qwen3.5:9b-q8_0" name="cleanModel"
+               [ngModel]="cleanModel()" (ngModelChange)="cleanModel.set($event)">
+      </label>
+      <p class="small">
+        Clean text runs its own model: the narration cleanup is a different job from
+        translating a book, and a bigger model is slower at it rather than better.
+      </p>
       <p class="small mono">Ollama: {{ ollama() }}</p>
 
       <div class="actions">
@@ -117,6 +126,7 @@ export class LlmCardComponent {
   private readonly ui = inject(UiService);
 
   protected readonly model = signal('');
+  protected readonly cleanModel = signal('');
   protected readonly ollama = signal('');
   protected readonly saving = signal(false);
   protected readonly saved = signal(false);
@@ -131,6 +141,7 @@ export class LlmCardComponent {
     if (!api) return;
     const [defaults, state] = await Promise.all([api.llm.defaults(), api.setup.state()]);
     this.model.set(defaults.model);
+    this.cleanModel.set(defaults.cleanModel);
     this.ollama.set(defaults.ollama);
     this.state.set(state);
   }
@@ -147,6 +158,7 @@ export class LlmCardComponent {
     this.saved.set(false);
     try {
       this.model.set(await api.llm.setModel(this.model()));
+      this.cleanModel.set(await api.llm.setCleanModel(this.cleanModel()));
       this.saved.set(true);
     } finally {
       this.saving.set(false);

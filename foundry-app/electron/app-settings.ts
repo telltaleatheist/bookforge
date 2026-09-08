@@ -21,7 +21,11 @@ import { app } from 'electron';
 
 import { hostedLibraryDir } from './host';
 import { readJson } from '../shared/json';
-import { DEFAULT_OLLAMA_ENDPOINT, DEFAULT_TRANSLATE_MODEL } from '../shared/pipeline';
+import {
+  DEFAULT_CLEAN_TEXT_MODEL,
+  DEFAULT_OLLAMA_ENDPOINT,
+  DEFAULT_TRANSLATE_MODEL,
+} from '../shared/pipeline';
 import {
   ANALYSIS_CATEGORY_IDS,
   CUSTOM_CATEGORY_DESCRIPTION_MAX,
@@ -94,6 +98,25 @@ export interface AppSettings {
    * not a change of mind about the default.
    */
   defaultLlmModel: string;
+  /**
+   * The model the narration cleanup — **Clean text** — runs.
+   *
+   * NOT `defaultLlmModel`, and the separation is the whole point of this key.
+   * That one seeds translate, simplify and analyse; the cleanup declares its
+   * own default (`DEFAULT_CLEAN_TEXT_MODEL`, shared/pipeline.ts, mirroring the
+   * engine's `DEFAULT_NORMALIZER_MODEL`) because it is a different job with a
+   * different economy — measured 2026-09-08, the 27b the language dialogs open
+   * with walks a book at ~9 blocks/min against ~50 on the 9b-q8_0.
+   *
+   * A SEED, NOT A LOCK, exactly as above: the Clean dialog still shows the tag
+   * in an editable field and still sends whatever is in it.
+   *
+   * AND IT IS READ BY TWO DOORS. Hosted, BookForge's userData IS this app's, so
+   * BookForge's own Clean text press reads this same key out of this same file
+   * (`electron/narration-clean-text.ts` there). One file, one model — the two
+   * doors cannot run a cleanup against different models.
+   */
+  cleanTextModel: string;
   /**
    * Where ollama is. Its own default port unless somebody moved it.
    *
@@ -315,6 +338,7 @@ export function readAppSettings(): AppSettings {
     libraryDir: clampLibraryDir(hostedLibraryDir() ?? raw?.['libraryDir']),
     analysisCategories: clampAnalysisCategories(raw?.['analysisCategories']),
     defaultLlmModel: clampModelTag(raw?.['defaultLlmModel']),
+    cleanTextModel: clampModelTag(raw?.['cleanTextModel'], DEFAULT_CLEAN_TEXT_MODEL),
     ollamaUrl: clampOllamaUrl(raw?.['ollamaUrl']),
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
@@ -334,6 +358,9 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   }
   if (patch.defaultLlmModel !== undefined) {
     root['defaultLlmModel'] = clampModelTag(patch.defaultLlmModel);
+  }
+  if (patch.cleanTextModel !== undefined) {
+    root['cleanTextModel'] = clampModelTag(patch.cleanTextModel, DEFAULT_CLEAN_TEXT_MODEL);
   }
   if (patch.ollamaUrl !== undefined) {
     root['ollamaUrl'] = clampOllamaUrl(patch.ollamaUrl);

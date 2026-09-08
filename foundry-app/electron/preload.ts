@@ -306,6 +306,7 @@ const api: FoundryApi = {
   llm: {
     defaults: () => ipcRenderer.invoke('llm:defaults'),
     setModel: (model) => ipcRenderer.invoke('llm:set-model', model),
+    setCleanModel: (model) => ipcRenderer.invoke('llm:set-clean-model', model),
   },
 
   backendSetup: {

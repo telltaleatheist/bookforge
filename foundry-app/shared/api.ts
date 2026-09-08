@@ -1304,11 +1304,17 @@ export interface FoundryApi {
     onProgress(listener: (progress: OllamaPullProgress) => void): () => void;
   };
 
-  /** What the translate, simplify and analyse dialogs open with. */
+  /**
+   * What the language dialogs open with. `model` is translate/simplify/analyse's
+   * seed; `cleanModel` is Clean text's, which is a separate stored setting
+   * because the narration cleanup declares its own default.
+   */
   llm: {
-    defaults(): Promise<{ model: string; ollama: string }>;
+    defaults(): Promise<{ model: string; cleanModel: string; ollama: string }>;
     /** Answers with the tag AS STORED — a name main refused comes back changed. */
     setModel(model: string): Promise<string>;
+    /** The Clean text model, same rule: answered with what was stored. */
+    setCleanModel(model: string): Promise<string>;
   };
 
   backendSetup: {

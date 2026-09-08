@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f1a494a** — *fix(clean): Clean text defaults to DEFAULT_NORMALIZER_MODEL (qwen3.5:9b-q8_0), not the translate default* |
+| Source sha | **2f7376a** — *feat(app): cleanTextModel — Clean text has its own stored model, read by both doors* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive f1a494a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 2f7376a app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1015,3 +1015,13 @@ names ran Shift at 8.7 blocks/min against ~50 on the 9b-q8_0 (pipeline.ts, clean
 llm-defaults `seedOllamaDefault`). BookForge's own press moved the same way in 77d00744
 (`ttsNumberNormalizerModel`, never `defaultLlmModel`). 6 files, tree diff-verified against
 foundry/app, no IPC change, no dep movement.
+
+**2f7376a (copied 2026-09-08) — `cleanTextModel`, Clean text's OWN stored model, read by both doors.**
+Owen: the cleanup gets a persisted setting in app-settings.json, separate from `defaultLlmModel`
+(translate/simplify/analyse), default `DEFAULT_CLEAN_TEXT_MODEL` = `qwen3.5:9b-q8_0`. The Clean
+dialog opens on it (`seedCleanDefaults`), the settings card edits it, `llm:defaults` answers
+`cleanModel` beside `model`, and `llm:set-clean-model` is the 109th handle (IPC-CHANNELS.md
+refreshed here in step). Hosted, BookForge's userData IS Foundry's, so BookForge's own press
+(4f190253) reads the same key out of the same file — one file, one model. Per-machine by
+construction: userData never syncs. 7 files + the IPC doc, tree diff-verified, one new channel
+(BookForge owns nothing on `llm:`), no dep movement.

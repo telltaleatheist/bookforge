@@ -2894,8 +2894,14 @@ export function registerIpc(): void {
   ipcMain.handle('ollama:pull-cancel', () => { cancelPull(); });
 
   /*
-   * The model every language job starts from. Read by the three dialogs when
-   * they open, written by setup and by the settings screen.
+   * The models a language job starts from, and where ollama is. Read by the
+   * dialogs when they open, written by setup and by the settings screen.
+   *
+   * TWO MODELS, BECAUSE THERE ARE TWO JOBS. `model` is `defaultLlmModel`, what
+   * Translate, Simplify and Analyse open with; `cleanModel` is
+   * `cleanTextModel`, what the narration cleanup opens with, and Clean text
+   * reads THAT one — a pass with its own declared default and its own economy
+   * has no business being dragged along by the translate seed.
    *
    * ANSWERED WITH WHAT WAS STORED, never with what was sent: `clampModelTag`
    * refuses a name with whitespace in it and falls back, and a renderer that
@@ -2903,10 +2909,16 @@ export function registerIpc(): void {
    */
   ipcMain.handle('llm:defaults', () => {
     const settings = readAppSettings();
-    return { model: settings.defaultLlmModel, ollama: settings.ollamaUrl };
+    return {
+      model: settings.defaultLlmModel,
+      cleanModel: settings.cleanTextModel,
+      ollama: settings.ollamaUrl,
+    };
   });
   ipcMain.handle('llm:set-model', (_event, model: string) =>
     writeAppSettings({ defaultLlmModel: model }).defaultLlmModel);
+  ipcMain.handle('llm:set-clean-model', (_event, model: string) =>
+    writeAppSettings({ cleanTextModel: model }).cleanTextModel);
 
   /*
    * The whole list on every mutation — and hosted, the whole list is the HOST's

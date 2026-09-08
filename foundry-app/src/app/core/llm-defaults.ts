@@ -15,28 +15,40 @@
  * a dialog that cannot be looked at. So this only ever overwrites with an
  * answer main actually gave.
  *
- * CLEAN TEXT TAKES ONLY THE URL. `defaultLlmModel` is the seed for translate,
- * simplify and analyse; the narration cleanup carries its own declared default
- * (`DEFAULT_CLEAN_TEXT_MODEL`, mirroring the engine's `DEFAULT_NORMALIZER_MODEL`)
- * — Owen, 2026-09-02. So `seedOllamaDefault` is the same read with the model
- * half left alone, rather than a second hand-written copy of the read.
+ * CLEAN TEXT TAKES A DIFFERENT MODEL, NOT NO MODEL. `defaultLlmModel` is the
+ * seed for translate, simplify and analyse; the narration cleanup has its own
+ * stored setting, `cleanTextModel`, defaulting to `DEFAULT_CLEAN_TEXT_MODEL`
+ * (Owen, 2026-09-08). It arrives on the same `llm:defaults` answer as
+ * `cleanModel`, so `seedCleanDefaults` is the same read reaching for the other
+ * half rather than a second hand-written copy of the read.
+ *
+ * AND THAT SHARED READ IS LOAD-BEARING BEYOND THIS FILE: hosted, BookForge's
+ * Clean text press reads `cleanTextModel` out of the very same
+ * `app-settings.json`, so one file decides what both doors run.
  */
 import type { WritableSignal } from '@angular/core';
 
 import { api } from './foundry';
 
 export function seedLlmDefaults(
-  model: WritableSignal<string> | null,
+  model: WritableSignal<string>,
   ollama: WritableSignal<string>,
 ): void {
   if (!api) return;
   void api.llm.defaults().then((defaults) => {
-    if (model !== null && defaults.model.trim().length > 0) model.set(defaults.model);
+    if (defaults.model.trim().length > 0) model.set(defaults.model);
     if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
   });
 }
 
-/** The URL half alone — for a dialog whose model is not `defaultLlmModel`'s to set. */
-export function seedOllamaDefault(ollama: WritableSignal<string>): void {
-  seedLlmDefaults(null, ollama);
+/** The same read, taking `cleanTextModel` — for the Clean text dialog alone. */
+export function seedCleanDefaults(
+  model: WritableSignal<string>,
+  ollama: WritableSignal<string>,
+): void {
+  if (!api) return;
+  void api.llm.defaults().then((defaults) => {
+    if (defaults.cleanModel.trim().length > 0) model.set(defaults.cleanModel);
+    if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
+  });
 }

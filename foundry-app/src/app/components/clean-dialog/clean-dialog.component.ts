@@ -10,7 +10,7 @@ import {
 import type { CleanRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedOllamaDefault } from '../../core/llm-defaults';
+import { seedCleanDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -306,12 +306,15 @@ export class CleanDialogComponent {
   protected readonly busy = signal(false);
 
   constructor() {
-    // THE URL ONLY. `defaultLlmModel` seeds translate, simplify and analyse;
-    // this pass opens on its own declared default (DEFAULT_CLEAN_TEXT_MODEL,
-    // mirroring the engine's DEFAULT_NORMALIZER_MODEL) because the 27b that
-    // setting names runs the cleanup at a fifth of the 9b-q8_0's rate — Owen,
-    // 2026-09-02. See core/llm-defaults.ts.
-    seedOllamaDefault(this.ollama);
+    // ITS OWN STORED MODEL, `cleanTextModel` — NOT `defaultLlmModel`, which
+    // seeds translate, simplify and analyse and names a 27b that runs the
+    // cleanup at a fifth of the 9b-q8_0's rate. Unset, that setting IS
+    // DEFAULT_CLEAN_TEXT_MODEL (mirroring the engine's
+    // DEFAULT_NORMALIZER_MODEL), so this field opens on the declared default
+    // until somebody types otherwise in Settings — Owen, 2026-09-08. The same
+    // key is what BookForge's own Clean text press reads out of the same
+    // app-settings.json. See core/llm-defaults.ts.
+    seedCleanDefaults(this.model, this.ollama);
     // A complaint about the last book is cleared when the book changes.
     effect(() => {
       this.source();
