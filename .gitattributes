@@ -30,3 +30,4 @@ electron/scripts/higgs/*.py text eol=lf
 electron/scripts/higgs/*.txt text eol=lf
 electron/scripts/higgs/*.yaml text eol=lf
 python/narrator/tests/golden/** text eol=lf
+electron/scripts/vllm/*.sh text eol=lf
