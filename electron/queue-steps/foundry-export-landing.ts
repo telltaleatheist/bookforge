@@ -43,6 +43,14 @@ export interface FoundryExportLandingConfig {
   fileName: string;
   /** The ledger step the export is cast from, when the row said. */
   forStep?: string;
+  /**
+   * AN IMPLIED EXPORT — the file Foundry wrote where the host said (`to`), which
+   * is filed nowhere and announced to nobody (Owen, 2026-09-08: the EPUB a
+   * narration is made from is not a version unless somebody asked for one). The
+   * row this step hangs under IS the export; the engine runs this step only once
+   * that row is done, so the whole wait is "is the file there".
+   */
+  unfiledPath?: string;
 }
 
 function refuseMissing(config: FoundryExportLandingConfig): Error {
@@ -69,6 +77,28 @@ export const foundryExportLandingStep: StepModule = {
           `This export-landing row carries no ${key}, so it cannot say which file it waits for. `
           + 'The row was composed wrongly rather than the work failing.');
       }
+    }
+    if (config.unfiledPath !== undefined) {
+      if (!path.isAbsolute(config.unfiledPath)) {
+        throw new Error(
+          `This export-landing row names its implied export as "${config.unfiledPath}", which is `
+          + 'not an absolute path. The row was composed wrongly rather than the work failing.');
+      }
+      ctx.report({ message: `Checking for ${path.basename(config.unfiledPath)}` });
+      const fs = await import('node:fs');
+      if (!fs.existsSync(config.unfiledPath)) {
+        throw new Error(
+          `The export this narration reads (${config.unfiledPath}) is not on disk although its `
+          + 'row finished. It is scratch: an app start sweeps what no queue step names, so a '
+          + 'chain interrupted for long enough loses it. Press Narrate on the step again.');
+      }
+      ctx.report({ percent: 100, message: `Book for narration: ${path.basename(config.unfiledPath)}`, detail: null });
+      return {
+        kind: 'epub',
+        path: config.unfiledPath,
+        detail: { projectDir: config.bookDir,
+                  ...(config.forStep === undefined ? {} : { forStep: config.forStep }) },
+      };
     }
     const projectId = path.basename(config.bookDir);
     const lookUp = async (): Promise<ProjectVariant | null> => {

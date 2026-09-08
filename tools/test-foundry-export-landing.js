@@ -15,7 +15,14 @@ if (!fs.existsSync(path.join(DIST, 'electron', 'foundry-landing-wait.js'))) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
   process.exit(1);
 }
+// The step module reaches for manifest-service, which reaches for electron:
+// the same stub cli/library.js runs under.
+if (!process.env.BOOKFORGE_USERDATA_DIR) {
+  process.env.BOOKFORGE_USERDATA_DIR = fs.mkdtempSync(path.join(require('os').tmpdir(), 'bf-landing-step-ud-'));
+}
+require(path.join(path.resolve(__dirname, '..'), 'cli', 'electron-stub.js'));
 const sweep = require(path.join(DIST, 'electron', 'foundry-landing-wait.js'));
+const landingStep = require(path.join(DIST, 'electron', 'queue-steps', 'foundry-export-landing.js')).foundryExportLandingStep;
 const landing = sweep;
 const run = require(path.join(DIST, 'shared', 'queue', 'narration-run.js'));
 
@@ -101,6 +108,53 @@ const tick = () => new Promise((r) => setImmediate(r));
     // The sourceRef it states is dropped by the append (the parent's artifact wins);
     // stating the file it will be is not a lookup.
     assert.strictEqual(plan.sourceRef.path, book.epubPath);
+  });
+
+  await test('AN IMPLIED EXPORT: the landing step waits for the FILE, not a version record (Owen, 2026-09-08)', async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-implied-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    const reports = [];
+    const ctx = (config) => ({
+      step: { config }, stepId: 'step_x', job: {}, signal: new AbortController().signal,
+      report: (r) => reports.push(r), input: null,
+    });
+    // Not there yet: refused by name, naming the scratch rule.
+    await assert.rejects(
+      landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub })),
+      /is not on disk although its row finished/);
+    fs.writeFileSync(epub, 'EPUB');
+    const out = await landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub, forStep: 's1' }));
+    assert.strictEqual(out.kind, 'epub');
+    assert.strictEqual(out.path, epub);
+    assert.deepStrictEqual(out.detail, { projectDir: dir, forStep: 's1' });
+    assert.ok(reports.some((r) => r.percent === 100), 'the step reports done');
+    // A relative path is a composition error, said before anything is looked at.
+    await assert.rejects(
+      landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: 'x.epub', unfiledPath: 'relative/x.epub' })),
+      /not an absolute path/);
+  });
+
+  await test('THE IMPLIED-EXPORT PATH: minted top-level in scratch as implied-<id>/<book>.epub, and recognised back; sessions and versions are not', () => {
+    const os = require('os');
+    const np = require(path.join(DIST, 'electron', 'narrator-paths.js'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-scratch-'));
+    try {
+      np.setNarratorScratchRoot(root);
+      const minted = np.mintImpliedExportPath('Book. Author. (2001).epub');
+      assert.strictEqual(path.dirname(path.dirname(minted)), root, 'top level in the scratch root - the sweep decides by top-level name');
+      assert.ok(path.basename(path.dirname(minted)).startsWith(np.IMPLIED_EXPORT_PREFIX));
+      assert.ok(fs.existsSync(path.dirname(minted)), 'the folder is made; the file is not');
+      assert.ok(!fs.existsSync(minted));
+      assert.strictEqual(np.impliedExportDirOf(minted), path.dirname(minted));
+      assert.strictEqual(np.impliedExportDirOf(path.join(root, 'ebook-123', 'abc', 'book.epub')), null, 'a session is not an implied export');
+      assert.strictEqual(np.impliedExportDirOf(path.join(root, '..', 'projects', 'x', 'output', 'y.epub')), null, 'a version is not');
+      assert.strictEqual(np.impliedExportDirOf(root), null, 'the root itself is not');
+      assert.throws(() => np.mintImpliedExportPath('book.txt'), /one EPUB file name/);
+      assert.throws(() => np.mintImpliedExportPath('a/b.epub'), /one EPUB file name/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   console.log(failures.length === 0

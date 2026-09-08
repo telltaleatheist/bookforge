@@ -2294,6 +2294,7 @@ import {
   wslToWindowsPath,
   shellEscapeArgs,
   buildToolsSpawnEnv,
+  impliedExportDirOf,
 } from './narrator-paths';
 import { legacyGuestSessionsRoot } from './tool-paths';
 
@@ -8987,6 +8988,19 @@ export async function deleteSessionsForEpub(epubPath: string): Promise<number> {
     }
   }
 
+  // AN IMPLIED EXPORT GOES WITH ITS SESSIONS. The EPUB a narration was made from
+  // without anybody asking for one lives in scratch for exactly as long as a
+  // session of it does (narrator-paths.ts, impliedExportDirOf); deleting the
+  // sessions for it is the moment nothing names it any more.
+  const implied = impliedExportDirOf(epubPath);
+  if (implied !== null) {
+    try {
+      await fs.rm(implied, { recursive: true, force: true });
+      console.log(`[PARALLEL-TTS] Removed the implied export ${implied} with its sessions`);
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] The implied export ${implied} could not be removed:`, err);
+    }
+  }
   console.log(`[PARALLEL-TTS] Deleted ${deletedCount} session(s) for ${epubPath}`);
   return deletedCount;
 }

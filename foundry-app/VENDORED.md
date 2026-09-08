@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f1d1eb0** — *fix(app): an EPUB pressed on a promised step waits behind it — the mint dialog now plans with the aim and queues a deferred export* |
+| Source sha | **ceaad53** — *feat(mount): exportEpubFromStep takes `to` — an EPUB written where the host says, and nowhere this app keeps* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive f1d1eb0 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ceaad53 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -991,3 +991,17 @@ planned twice with NO aim, so the export was made from the landed parent, never 
 ENQUEUED (the export dialog's own branch): the row carries `after`, the tree greys it under the
 clean, and the confirmed filename survives the spawn (materializeDeferred leaves outputPath alone).
 1 file, 141 blobs hash-verified, no IPC change, no dep movement, nothing on the host side.
+**ceaad53 (copied 2026-09-08) — `exportEpubFromStep(projectDir, stepId, opts?: { to?: string })`,
+for Owen's ruling that Narrate IMPLIES the export and the implied EPUB is nobody's version.** `to` is
+an absolute `.epub` path OUTSIDE every project in the library (refused by name otherwise); with it the
+file is written there and nowhere Foundry keeps — not final/, not the tray, not rotated, not drawn —
+and NOT announced through `onExport`: the promise resolves with the same `ExportLanding` carrying
+`unfiled: true` (shared/types.ts), the only word. A promised step still plans deferred with `after`;
+the narration stamp, the metadata patch steps, the chain's language and the mint-block inheritance
+ride unchanged because the request carries `home: <projectDir>` (new optional
+`ConversionRequest.home`) and every project derivation asks `homeOf(request)` first
+(materializeDeferred, reconcileChains, chainLanguageOf, recordFor, the settle). Hosted, the row
+crosses with `outputPath` = the host's path and `home` set; the host copies it verbatim. Host side:
+BookForge's implied-export wave (narrator-paths.ts `mintImpliedExportPath`, the landing step's
+`unfiledPath` mode, `impliedExportPathFor` in main.ts). 3 files, 141 blobs hash-verified, no IPC
+change, no dep movement.

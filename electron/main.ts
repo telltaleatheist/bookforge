@@ -121,7 +121,7 @@ import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 // policy is a different question and no longer one this file asks:
 // shared/queue/coverage-policy.ts.)
 import { coverageAlignPython } from './coverage-align-job';
-import { setNarratorScratchRoot, narratorScratchRoot } from './narrator-paths';
+import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath, impliedExportDirOf } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 // TYPE ONLY — the module itself stays behind the dynamic imports in the orpheus:* IPC
@@ -186,6 +186,13 @@ app.setName('BookForge');
 
 /** An export Foundry landed in a project's `final/` tray. Its exact spelling. */
 interface FoundryExportLanding {
+  /**
+   * Foundry wrote the file where the host said (`exportEpubFromStep`'s `to`,
+   * foundry@ceaad53): it is in none of Foundry's trays, drawn in no tree, and
+   * was NOT announced through `onExport` — this landing is the only word. The
+   * host files nothing for it.
+   */
+  readonly unfiled?: true;
   /** The project folder, absolute. Its basename is the project KEY. */
   readonly projectDir: string;
   /** The file, absolute, inside `<projectDir>/final/`. */
@@ -606,7 +613,15 @@ interface FoundryMountModule {
    * stderr. They are surfaced verbatim, never paraphrased — this side knows less
    * about why an export failed than the sentence does.
    */
-  exportEpubFromStep(projectDir: string, stepId: string): Promise<FoundryExportLanding>;
+  /**
+   * `to` (foundry@ceaad53): an absolute `.epub` path OUTSIDE every project in
+   * the library, refused by name otherwise. With it the file is written there
+   * and nowhere Foundry keeps, the landing comes back `unfiled`, and nothing is
+   * announced. A promised step still plans deferred with `after`; the stamp, the
+   * metadata patches, the chain's language and the mint-block inheritance ride
+   * unchanged. Leave it off and the door behaves exactly as before.
+   */
+  exportEpubFromStep(projectDir: string, stepId: string, opts?: { to?: string }): Promise<FoundryExportLanding>;
   /**
    * REVISE THE REGISTERED OPERATIONS IN A WINDOW THAT IS ALREADY OPEN.
    *
@@ -1427,6 +1442,51 @@ async function foundryBookDirFor(projectDir: string): Promise<{ key: string; boo
 }
 
 /**
+ * WHERE AN IMPLIED EXPORT IS WRITTEN — a scratch path, minted per press.
+ *
+ * Owen, 2026-09-08: "any time the user narrates it should imply an epub export
+ * … it shouldnt even show the epub unless they intentionally generate one …
+ * i dont want 16 outdated epubs hanging around." The file is named the way the
+ * book's own exports are named, so the session and the audiobook made from it
+ * carry the book's name, and it lives under `<scratch>/implied-<id>/`, which
+ * is a version nowhere, drawn in no tree, and swept with the sessions
+ * (narrator-paths.ts).
+ */
+async function impliedExportPathFor(projectDir: string): Promise<string> {
+  const { bookDir } = await foundryBookDirFor(projectDir);
+  const got = await manifestService.getManifest(path.basename(bookDir));
+  if (!got.manifest) {
+    throw new Error(
+      `${path.basename(bookDir)} could not be read (${got.error || 'no reason given'}), so the `
+      + 'book this narration would be made from cannot be named.');
+  }
+  const m = got.manifest.metadata;
+  const fileName = manifestService.computeDescriptiveFilename(
+    { title: m.title, author: m.author, year: m.year ? String(m.year) : undefined }, '.epub');
+  return mintImpliedExportPath(fileName);
+}
+
+/**
+ * THE VERSION AN IMPLIED NARRATION IS FILED UNDER: the version this Foundry
+ * project was made from — "it can sit under its parent chain" (Owen,
+ * 2026-09-08). There is no export variant to file it under, by design, and a
+ * run that named no version would be refused by the dialog and the run book
+ * alike; naming the source version is the honest answer, because that is the
+ * chain every step of this project descends from.
+ */
+async function parentChainVariantId(bookDir: string): Promise<string> {
+  const ref = await manifestService.readFoundryProjectRef(bookDir);
+  if (ref === null || !ref.sourceVariantId) {
+    throw new Error(
+      `${path.basename(bookDir)} does not record which of its versions was opened in Foundry `
+      + '(foundryProject.sourceVariantId), so a narration made from a Foundry step has no version '
+      + 'to be filed under. Open the book in Foundry from its page once, so the mapping is '
+      + 'recorded, and press Narrate again.');
+  }
+  return ref.sourceVariantId;
+}
+
+/**
  * THE PENDING EXPORT a Narrate press was made on, or null when the press was on
  * something that exists.
  *
@@ -1489,10 +1549,13 @@ async function pendingExportRowFor(
   const promised = rows().find((r) => r.mints === nodeId && live(r));
   if (!promised) return null;
   // Ask for the export as a landed step's press would; Foundry plans it deferred.
-  const landing = foundryMount.exportEpubFromStep(projectDir, nodeId);
+  // IMPLIED, so it is written to scratch and filed nowhere (impliedExportPathFor).
+  const to = await impliedExportPathFor(projectDir);
+  const landing = foundryMount.exportEpubFromStep(projectDir, nodeId, { to });
   landing.catch(() => undefined);   // observed below, in the race; never unhandled
   const rowAppears = new Promise<FoundryJobRow>((resolve) => {
-    const find = () => rows().find((r) => r.kind === 'epub' && r.forStep === nodeId && live(r));
+    const find = () => rows().find((r) => r.kind === 'epub' && live(r)
+      && normalizeFsPath(r.outputPath).toLowerCase() === normalizeFsPath(to).toLowerCase());
     const now = find();
     if (now) { resolve(now); return; }
     const off = queueEngine.onQueueChanged(() => {
@@ -1614,25 +1677,23 @@ async function foundryNarrationTarget(
    * would not replay, the engine's own stderr), and a paraphrase would be this
    * process editing the only account of what happened.
    */
-  const landing = await foundryMount.exportEpubFromStep(projectDir, choice.stepId);
-  /*
-   * FILED HERE AND NOT LEFT TO THE ANNOUNCEMENT. Foundry tells the host first and
-   * settles this promise second, so `recordFoundryExportLanding` has been entered
-   * by now and — being asynchronous, as every record it keeps is a file — has
-   * almost certainly not finished. Waiting on a callback the seam gives us no
-   * handle to would be a handshake this side invented; filing the landing we were
-   * handed is the fact itself. Both callers reach one idempotent door, so the two
-   * leave one version between them.
-   */
-  const variantId = await registerFoundryExportLanding(bookDir, key, landing);
-  const filed = (await exportedEpubs()).find((v) => v.id === variantId);
-  if (filed === undefined) {
+  // IMPLIED (Owen, 2026-09-08): the book is written to scratch and filed nowhere;
+  // the narration is filed under the version this project was made from. The
+  // landing is awaited here because the step has landed and the export is quick;
+  // a PROMISED step's export goes through pendingExportRowFor's race instead.
+  const to = await impliedExportPathFor(projectDir);
+  const landing = await foundryMount.exportEpubFromStep(projectDir, choice.stepId, { to });
+  if (landing.unfiled !== true) {
     throw new Error(
-      `${projectId} exported "${landing.title}" from that step and recorded it, but the version is `
-      + 'not on the book\'s list a moment later, so there is nothing to narrate. Open the book\'s '
-      + 'versions page to see what is there.');
+      `Foundry was asked to write "${landing.title}" to ${to} and answered with a filed landing at `
+      + `${landing.path} instead. This Foundry predates exportEpubFromStep's \`to\` (foundry ceaad53); `
+      + 'nothing was narrated and nothing was filed.');
   }
-  return narrationTargetOf(bookDir, filed);
+  const variantId = await parentChainVariantId(bookDir);
+  console.log(
+    `[foundry-host] narrate on ${nodeId}: implied export written to ${landing.path}, filed nowhere; `
+    + `the narration is filed under version ${variantId}.`);
+  return { bookDir, variantId, variantPath: landing.path, exportNodeId: nodeId };
 }
 
 /**
@@ -1938,6 +1999,10 @@ async function invokeFoundryNarrate(
        */
       const { key, bookDir } = await foundryBookDirFor(projectDir);
       const fileName = path.basename(row.outputPath);
+      // An IMPLIED export (written to scratch, filed nowhere) is told apart from
+      // an export the person asked for by where it lands — the landing step then
+      // waits for the FILE rather than for a version record that never comes.
+      const implied = impliedExportDirOf(row.outputPath) !== null;
       const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((st) => st.id === row.id));
       if (!owner) {
         throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
@@ -1947,14 +2012,19 @@ async function invokeFoundryNarrate(
         && (st.config as { fileName?: string }).fileName === fileName);
       const landingStep = existing ?? queueEngine.appendStep(owner.id, {
         type: 'foundry-export-landing',
-        label: `Exported book — ${fileName}`,
+        label: implied ? `Book for narration — ${fileName}` : `Exported book — ${fileName}`,
         parentStepId: row.id,
         config: {
           bookDir, projectKey: key, fileName,
           ...(row.forStep === undefined ? {} : { forStep: row.forStep }),
+          ...(implied ? { unfiledPath: row.outputPath } : {}),
         },
       }, { deferPump: true });
-      target = { bookDir, variantId: '', variantPath: row.outputPath, exportNodeId: nodeId };
+      // Filed under the parent chain: an implied export is no version, and a
+      // pending export the person asked for is not one YET — the run is queued
+      // now, so the version it can name now is the one the project was made from.
+      const variantId = await parentChainVariantId(bookDir);
+      target = { bookDir, variantId, variantPath: row.outputPath, exportNodeId: nodeId };
       pending = { jobId: owner.id, stepId: landingStep.id, cleaned: context.cleaned };
       console.log(
         `[foundry-host] narrate on ${nodeId}: the export (${fileName}) is pending as row ${row.id}; `
@@ -2862,6 +2932,13 @@ async function liveStepIds(): Promise<Set<string>> {
         // review, 2026-08-20).
         if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
         ids.add(step.id);
+        // AN IMPLIED EXPORT a live step still names is kept by its folder name —
+        // the run's book, written to scratch and filed nowhere (narrator-paths.ts).
+        const cfg = step.config as { epubPath?: unknown; unfiledPath?: unknown };
+        for (const p of [cfg.epubPath, cfg.unfiledPath, step.sourceRef?.path]) {
+          const dir = typeof p === 'string' ? impliedExportDirOf(p) : null;
+          if (dir !== null) ids.add(path.basename(dir));
+        }
       }
     }
   } catch (err) {

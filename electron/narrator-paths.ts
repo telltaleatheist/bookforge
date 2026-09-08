@@ -45,6 +45,7 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import {
   getCondaPath as getToolCondaPath,
   getConfiguredToolsEnvPath,
@@ -619,3 +620,56 @@ export const narratorPaths = {
   getWslSessionsRoot,
   getWslHiggsCondaEnv,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Implied exports — the EPUB a narration is made from when nobody asked for one
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The folder prefix, top level in the scratch root, under which an IMPLIED
+ * export lives: `<scratch>/implied-<id>/<book>.epub`.
+ *
+ * Owen, 2026-09-08: *"any time the user narrates it should imply an epub export
+ * … maybe it shouldnt even show the epub unless they intentionally generate one
+ * … epub is required to send to higgs for rendering, but the epub generation
+ * step is cheap. we could send it to higgs and delete it on cleanup … i dont
+ * want 16 outdated epubs hanging around."* So an export made only because
+ * Narrate was pressed is written HERE and nowhere the library or Foundry's tree
+ * lists: not a version, not a tray file, never on the versions page. It lives
+ * exactly as long as a render session does — narrator's prep copies the book
+ * into the session, so nothing reads this file after prep — and it goes the way
+ * every other scratch item goes: the startup sweep (`sweepDirContents`,
+ * main.ts) keeps it only while a queue step still names it, and the
+ * sessions-for-this-EPUB delete takes it with the sessions.
+ *
+ * TOP LEVEL ON PURPOSE. The sweep decides by top-level name, so a nested
+ * `implied-exports/<id>` folder would be one name for every implied export and
+ * would go, whole, at the first start with any of them idle.
+ */
+export const IMPLIED_EXPORT_PREFIX = 'implied-';
+
+/** Mint the path an implied export is written to. The folder is created; the file is not. */
+export function mintImpliedExportPath(fileName: string): string {
+  if (!/\.epub$/i.test(fileName) || fileName.includes('/') || fileName.includes('\\')) {
+    throw new Error(`An implied export is one EPUB file name, and "${fileName}" is not one.`);
+  }
+  const dir = path.join(narratorScratchRoot(), `${IMPLIED_EXPORT_PREFIX}${crypto.randomUUID()}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, fileName);
+}
+
+/**
+ * The implied-export folder a path lies in, or null when the path is anything
+ * else — a version, a tray file, a session, a path outside the scratch root.
+ * Null rather than a throw because every caller is a filter over paths that
+ * are mostly not implied exports.
+ */
+export function impliedExportDirOf(p: string): string | null {
+  const root = scratchRoot;
+  if (!root || typeof p !== 'string' || p === '') return null;
+  const rel = path.relative(root, p);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const top = rel.split(/[\\/]/)[0]!;
+  if (!top.startsWith(IMPLIED_EXPORT_PREFIX)) return null;
+  return path.join(root, top);
+}

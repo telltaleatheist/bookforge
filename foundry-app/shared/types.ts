@@ -551,6 +551,21 @@ export interface GenerateRequest {
    */
   export?: true;
   /**
+   * THE PROJECT THIS PRODUCT IS ABOUT, when `outputPath` lies outside it.
+   *
+   * Every rule that needs the project — which reading, which metadata edits,
+   * whose mint block, whether the step it waits for landed — used to derive it
+   * from `outputPath`, which is right for every file this app files itself:
+   * they all land inside the project. A host may now ask for an EPUB at a path
+   * of its own (`exportEpubFromStep(…, { to })`, electron/mount.ts): Owen's
+   * ruling that Narrate IMPLIES an export and that an implied one must not
+   * become one of *"16 outdated epubs hanging around"* (2026-09-08). Such a
+   * file belongs to no project on disk, so the request says which project its
+   * words came from, and the queue asks this before it asks the path. Absent
+   * for every request the app composes itself; never set by a renderer.
+   */
+  home?: string;
+  /**
    * THIS EXPORT IS OF A STEP THAT HAS NOT LANDED — see `DeferredPlan`, which is
    * where the whole argument lives.
    *
@@ -2327,8 +2342,16 @@ export interface ProjectFinal {
 export interface ExportLanding {
   /** The project the export was made in — the folder, absolute. */
   projectDir: string;
-  /** The file itself, absolute, sitting in that project's `final/`. */
+  /** The file itself, absolute — in that project's `final/`, unless `unfiled`. */
   path: string;
+  /**
+   * WRITTEN WHERE THE HOST ASKED AND NOWHERE THIS APP KEEPS — `to` on
+   * `exportEpubFromStep`. Not in `final/`, not in the tray, not a version, not
+   * drawn in the tree; the host owns the file and the mount does not announce
+   * it through `onExport` (the awaiting caller is answered instead). Absent on
+   * every export this app files, which is every export before 2026-09-08.
+   */
+  unfiled?: true;
   /** `epub`, `txt`, `pdf` — the format the export was asked for. */
   kind: string;
   /** What to call it in a list: the file's own name, as the shelf announces it. */

@@ -103,7 +103,7 @@ import {
 } from './host-ops';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
-import { ledgerOf, listProjects, onImportLanded, readManifest } from './projects';
+import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
 import * as vllm from './vllm-server';
 import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
@@ -454,7 +454,11 @@ export function mountFoundry(host?: FoundryHost): void {
    * than a second registration path to keep in step with this one.
    */
   queue.onExportLanded((landing) => {
-    if (host !== undefined) {
+    // AN UNFILED LANDING IS NOT THE HOST'S SHELF'S BUSINESS: the file went to
+    // the path the host itself named (`exportEpubFromStep`'s `to`), and the
+    // caller awaiting it below is the one who wanted to hear. Announcing it
+    // through onExport would file the host's own scratch as a version.
+    if (host !== undefined && landing.unfiled !== true) {
       try {
         host.onExport(landing);
       } catch (err) {
@@ -720,6 +724,28 @@ const awaitingExports = new Set<AwaitedExport>();
 export async function exportEpubFromStep(
   projectDir: string,
   stepId: string,
+  /**
+   * ── `to`: THE HOST'S OWN PATH, AND NOTHING OF THIS APP'S KEEPS IT ──────────
+   *
+   * Owen, 2026-09-08: *"any time the user narrates it should imply an epub
+   * export … maybe it shouldnt even show the epub unless they intentionally
+   * generate one … i dont want 16 outdated epubs hanging around."* So an
+   * IMPLIED export — made because Narrate was pressed, not because Export was —
+   * is written where the host says (its narrator session's own folder), not in
+   * `final/`: it is not filed in the tray, not rotated, not drawn in the tree,
+   * and not announced through `onExport`; the landing this promise resolves
+   * with says `unfiled` and is the only word anybody hears. EVERYTHING ELSE IS
+   * UNCHANGED — the deferred plan for a promised step and its `after`, the
+   * narration receipt, the metadata edits, the mint block's inheritance — because
+   * the request carries the project as `home` and the queue asks that before it
+   * asks the path.
+   *
+   * ABSOLUTE, `.epub`, AND OUTSIDE EVERY PROJECT, refused by name otherwise: a
+   * host that wants the file in `final/` leaves `to` off and gets the filed
+   * export it always got; a relative path is the stray-in-the-cwd defect the
+   * queue already refuses at enqueue.
+   */
+  opts?: { to?: string },
 ): Promise<ExportLanding> {
   /*
    * THE PROJECT AND ITS BOOK, resolved the way the deep link resolves them one
@@ -732,6 +758,21 @@ export async function exportEpubFromStep(
   const project = (await listProjects()).find((row) => fold(row.dir) === fold(projectDir));
   if (project === undefined) {
     throw new Error(`${projectDir} is not a project in this app's library.`);
+  }
+  const to = opts?.to;
+  if (to !== undefined) {
+    if (!path.isAbsolute(to)) {
+      throw new Error(`"${to}" is not an absolute path, so there is nowhere certain to write the EPUB.`);
+    }
+    if (!/\.epub$/i.test(to)) {
+      throw new Error(`"${to}" does not end in .epub, and the file this makes is one.`);
+    }
+    if (projectDirOf(to) !== null) {
+      throw new Error(
+        `"${to}" is inside a project in this app's library. Leave \`to\` off to file the export in `
+        + 'the final/ tray of that project the ordinary way; name a path outside the library for one this app does not keep.',
+      );
+    }
   }
   const original = originalOf(project.documents);
   if (original === null) {
@@ -795,7 +836,10 @@ export async function exportEpubFromStep(
     // The pixels, as always: the plan resolved the archived original rather than
     // trusting whatever document anybody was looking at.
     inputPath: plan.sourcePath,
-    outputPath: plan.outputPath,
+    // The host's own path when it named one, and the project it was made from
+    // beside it (`ConversionRequest.home`) — see `to` above.
+    outputPath: to ?? plan.outputPath,
+    ...(to !== undefined ? { home: project.dir } : {}),
     readingsPath: plan.readingsPath,
     // TERMINAL. Without it the landing files the result as a rendering of the
     // project — a documents row, a live file something later could be built on —
@@ -813,11 +857,12 @@ export async function exportEpubFromStep(
      */
     ...carriedFromPlan(plan),
   };
+  const outputPath = request.outputPath;
 
   return new Promise<ExportLanding>((resolve, reject) => {
     let over = false;
     const waiting: AwaitedExport = {
-      path: plan.outputPath,
+      path: outputPath,
       landed: (landing) => {
         if (over) return;
         over = true;
@@ -835,7 +880,7 @@ export async function exportEpubFromStep(
      */
     awaitingExports.add(waiting);
     const stopWatching = queue.onJobSettled((row) => {
-      if (over || fold(row.outputPath) !== fold(plan.outputPath)) return;
+      if (over || fold(row.outputPath) !== fold(outputPath)) return;
       over = true;
       awaitingExports.delete(waiting);
       stopWatching();
