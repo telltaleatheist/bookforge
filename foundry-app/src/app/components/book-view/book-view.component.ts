@@ -30,7 +30,7 @@ import { INLINE_DROPPED, INLINE_ITALIC, INLINE_STRONG, inlineEmphasis } from '@s
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
 // The compare column's light: which characters went and which came, per block,
 // drawn through the same walk as the analysis's — see `cut`.
-import { wordDiff, type ChangeRange, type WordDiff } from '@shared/word-diff';
+import { foldQuotes, wordDiff, type ChangeRange, type WordDiff } from '@shared/word-diff';
 
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
@@ -978,6 +978,33 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               (click)="align('aligned')"
             >Aligned</button>
           </div>
+          <!--
+            AND WHAT THE LIGHT COUNTS AS A CHANGE — Owen, 2026-09-08: *"lets put
+            a checkbox in that shows/doesnt show the apostrophe/quote fixes. the
+            apostrophe/quote fixes arent really what im looking for when im
+            scanning through the list of cleaning changes."*
+
+            OFF BY DEFAULT, which is the ask read plainly: a narration pass
+            curls every quote in the book, so hundreds of true edits stand
+            between somebody and the two or three they opened this view to find.
+            The text is untouched either way — the quotes are drawn exactly as
+            they are written on both sheets — and only the highlight moves
+            (\`foldQuotes\`, shared/word-diff.ts).
+
+            DRAWN ONLY WITH THE PAIR, because it is a fact about the pair's
+            light and means nothing beside a single sheet.
+          -->
+          @if (aligned()) {
+            <label class="act toggle" title="Count a straight quote turned curly as a change">
+              <input
+                type="checkbox"
+                [checked]="quoteFixes()"
+                (change)="showQuoteFixes(box.checked)"
+                #box
+              >
+              <span>Quote fixes</span>
+            </label>
+          }
         }
         <!--
           THE ORIGINAL, AS A TOGGLE AND NOT A SEGMENT — it composes with either
@@ -1842,6 +1869,25 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * not have, and the category chip was the thing that paid for it.
      */
     .pair.aligned .sheet, .pair.aligned .tray { width: min(38rem, calc(100% - 10rem)); }
+    /*
+     * ── AND THE TWO COLUMNS STAND TOGETHER, CENTRED AS ONE GROUP ─────────────
+     *
+     * Owen, 2026-09-08: *"lets make the two views right next to each other.
+     * theyre spaced way too far apart."* Each column was \`width: 100%\` of half
+     * the pane with a 38rem sheet centred inside it, so on a wide screen the
+     * leftover gray fell BETWEEN the sheets as well as outside them — two
+     * columns of one book with a hand's width of nothing down the middle, which
+     * is exactly the distance a reader's eye has to jump per line.
+     *
+     * The fix is the one already ruled for the original panel, one rule up:
+     * *"they should be side-by-side with a small margin between them and the two
+     * should be centered on screen."* The columns stop stretching, take a basis
+     * just over their own sheet, and the pair centres the pair rather than each
+     * column centring itself. Pure flex — no measurement, no listener — and
+     * every column keeps its own scroller, which is what the lock is locking.
+     */
+    .pair.aligned { justify-content: center; }
+    .pair.aligned .context, .pair.aligned .bench { flex: 0 1 40rem; }
     /*
      * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
      *
@@ -2715,6 +2761,18 @@ const OP_GESTURE: Gesture = { kind: 'op' };
     .act:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
     .act:disabled { opacity: 0.4; cursor: default; }
     .act.ghost { background: transparent; color: var(--text-secondary); }
+    /*
+      THE PAIR'S ONE CHECKBOX, wearing the chrome's own button shape so it sits
+      in the row with the segments rather than beside it. A label rather than a
+      button because it IS a state with a name, and the native box is kept: this
+      strip has no other checkbox to be consistent with, and a person who has met
+      one anywhere else already knows what it does.
+    */
+    .toggle {
+      display: inline-flex; align-items: center; gap: 5px;
+      user-select: none;
+    }
+    .toggle input { margin: 0; accent-color: var(--accent); }
 
     /* ── The obvious Apply, at the head of the pane ────────────────────────
        The app's own filled-accent verb (the capture editor's \`.btn.primary\`
@@ -3213,6 +3271,19 @@ export class BookViewComponent {
    * pressed and the sheet that is drawn cannot come apart.
    */
   private readonly alignment = signal<'alone' | 'aligned'>('alone');
+
+  /**
+   * WHETHER A CURLED QUOTE COUNTS AS A CHANGE — the pair's own checkbox, off by
+   * default (Owen's ask is quoted at the control). It changes the LIGHT and
+   * never the text: both sheets draw the quotes they actually hold, and this
+   * decides only whether the diff was taken over the folded strings
+   * (`foldQuotes`) or the written ones.
+   */
+  protected readonly quoteFixes = signal(false);
+
+  protected showQuoteFixes(on: boolean): void {
+    this.quoteFixes.set(on);
+  }
 
   /** The translation this position stands under, or null — main's own walk. */
   protected readonly translation = computed(() => this.book()?.translation ?? null);
@@ -4288,11 +4359,22 @@ export class BookViewComponent {
       // A block the pass INVENTED has no older side to have changed from, and a
       // string compare answers the ordinary case — most of a book — for free.
       if (was === undefined || was === row.text) continue;
+      /*
+       * FOLDED FIRST WHEN THE QUOTES ARE NOT THE QUESTION. The fold is one
+       * character for one, so a range measured in the folded string lights the
+       * same characters of the written one — see `foldQuotes`. The memo is
+       * keyed on the strings THAT WERE DIFFED, so flipping the checkbox
+       * recomputes rather than answering with the other question's ranges.
+       */
+      const lit = this.quoteFixes();
+      const beforeText = lit ? was : foldQuotes(was);
+      const afterText = lit ? row.text : foldQuotes(row.text);
+      if (beforeText === afterText) continue;
       const held = this.alignedMemo.get(row.id);
-      const diff = held !== undefined && held.before === was && held.after === row.text
+      const diff = held !== undefined && held.before === beforeText && held.after === afterText
         ? held.diff
-        : wordDiff(was, row.text);
-      kept.set(row.id, { before: was, after: row.text, diff });
+        : wordDiff(beforeText, afterText);
+      kept.set(row.id, { before: beforeText, after: afterText, diff });
       if (diff.removed.length > 0) removed.set(row.id, diff.removed);
       if (diff.added.length > 0) added.set(row.id, diff.added);
     }

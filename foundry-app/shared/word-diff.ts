@@ -82,6 +82,42 @@ export interface WordDiff {
 export const NO_DIFF: WordDiff = { removed: [], added: [] };
 
 /**
+ * THE TYPOGRAPHER'S QUOTES, FOLDED TO THE TYPIST'S — one character for one
+ * character, so every offset into the folded string is the same offset into the
+ * original.
+ *
+ * ── What it is for ──────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-08, scanning a cleaned book in the aligned pair: *"lets put a
+ * checkbox in that shows/doesnt show the apostrophe/quote fixes. the
+ * apostrophe/quote fixes arent really what im looking for when im scanning
+ * through the list of cleaning changes."* Every straight quote a narration pass
+ * turns into a curly one is a true change and a real edit, and there are
+ * hundreds of them in a novel — enough that the two or three changes somebody is
+ * actually reading for are lost among them. Diffing the FOLDED strings answers
+ * "what changed, apart from the quote marks" without pretending the fold
+ * happened: the text drawn is the text as written, and only the LIGHT moves.
+ *
+ * ── Why the mapping is one-to-one and stays that way ────────────────────────
+ *
+ * Ranges from a diff of the folded text are used to light the ORIGINAL text, so
+ * a fold that changed any length would light the wrong characters. Every entry
+ * below is a single code unit replaced by a single code unit. An ellipsis
+ * (`…` → `...`) belongs to the same family of tidying and is deliberately NOT
+ * here, because it is not length-preserving and would need a mapping table
+ * rather than a substitution.
+ *
+ * GUILLEMETS ARE NOT FOLDED. `«` and `»` are what several languages quote WITH,
+ * so a translation that turns `"` into `«` has made a real change to the words
+ * on the page, and hiding it under "just quotes" would hide the one thing a
+ * person comparing a translation is looking at.
+ */
+export function foldQuotes(text: string): string {
+  return text.replace(/[\u2018\u2019\u201A\u201B\u2032\u00B4`]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"');
+}
+
+/**
  * Above this many tokens on either side the diff answers whole-string ranges
  * rather than filling a table. Blocks are paragraphs; 1500 tokens is several
  * hundred words past the longest paragraph a reader would call one.

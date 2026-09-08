@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **98acf5a** — *feat: the spine is translated but never rewritten, and a text pass offers Compare* |
+| Source sha | **13b98a3** — *feat(app): the aligned sheets stand together, and quote fixes are a checkbox* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 98acf5a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 13b98a3 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1125,3 +1125,15 @@ now pinned to what the book printed, so anything that reads a chapter title alou
 form — “4. 2110: Silo 1” rather than words. A title that is a provable COPY of a heading is still
 derived from that heading and therefore still moves when a cleanup cleans the heading; only the
 standalone spine is pinned. 141 blobs hash-verified, no IPC change, no dep movement.
+**13b98a3 (copied 2026-09-08) — Owen’s two adjustments after the aligned highlight worked.** The
+two aligned columns were each `width: 100%` of half the pane with a 38rem sheet centred inside, so
+the leftover gray fell BETWEEN the sheets as well as outside them; each column now takes a basis
+just over its own sheet and the pair centres as one group, the rule the original panel already had.
+And a **“Quote fixes” checkbox, off by default**: a narration pass curls every quote in a book, so
+hundreds of true edits were drowning the two or three worth scanning for. Unchecked, the diff is
+taken over strings with typographer’s quotes folded to typist’s (`foldQuotes`, `shared/word-diff.ts`,
+exported and pure) — one character for one, so a range measured in the folded text lights the same
+characters of the written text. THE TEXT IS UNTOUCHED EITHER WAY: both sheets draw the quotes they
+actually hold and only the highlight moves. Guillemets are deliberately NOT folded, because a
+translation turning `"` into `«` HAS changed the page, and that is the thing somebody comparing a
+translation is looking for. 141 blobs hash-verified, no IPC change, no dep movement.
