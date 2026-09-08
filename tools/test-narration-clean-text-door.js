@@ -261,21 +261,6 @@ function writeAppSettings(settings) {
   return userData;
 }
 
-/**
- * The narration cleanup's MODEL comes from BookForge's own `tool-paths.json`
- * (`ttsNumberNormalizerModel`), not from foundry's app-settings — Owen,
- * 2026-09-02. Only the endpoint is app-settings'.
- */
-function writeToolPaths(config) {
-  const userData = process.platform === 'darwin'
-    ? path.join(FAKE_APPDATA, 'Library', 'Application Support', 'BookForge')
-    : path.join(FAKE_APPDATA, 'BookForge');
-  fs.mkdirSync(userData, { recursive: true });
-  fs.writeFileSync(
-    path.join(userData, 'tool-paths.json'), JSON.stringify(config, null, 2), 'utf8');
-  return userData;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. The pure parts
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,13 +289,14 @@ test('the sidecars are named where the engine writes them', () => {
   assert.strictEqual(door.cleanTextBankPath(out), `${path.resolve(out)}.clean-bank.jsonl`);
 });
 
-test('the endpoint is the hosted press\'s; the model is Clean text\'s own', async () => {
+test('BOTH halves are the hosted press\'s, out of the one settings file', async () => {
   /*
-   * `defaultLlmModel` IS NOT THIS PASS'S SETTING — Owen, 2026-09-02. It seeds
-   * translate, simplify and analyse; the narration cleanup declares its own
-   * default (`DEFAULT_NORMALIZER_MODEL`) and takes an override from BookForge's
-   * `ttsNumberNormalizerModel`, which the production caller states in. Measured
-   * 2026-09-08: the 27b that setting names runs ~9 blocks/min against ~50.
+   * `defaultLlmModel` IS NOT THIS PASS'S SETTING — it seeds translate, simplify
+   * and analyse. Clean text has its OWN persisted key, `cleanTextModel` (Owen,
+   * 2026-09-08), read out of the same `app-settings.json` the hosted dialog
+   * seeds from, so the two doors cannot run a cleanup against different models.
+   * Measured 2026-09-08: the 27b `defaultLlmModel` names runs ~9 blocks/min
+   * against ~50 on the declared default.
    */
   const dir = path.join(ROOT, 'settings');
   fs.mkdirSync(dir, { recursive: true });
@@ -320,19 +306,23 @@ test('the endpoint is the hosted press\'s; the model is Clean text\'s own', asyn
   }), 'utf8');
   const read = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(read.model, 'qwen3.5:9b-q8_0', 'defaultLlmModel must NOT reach this pass');
+  assert.ok(/declared default/.test(read.source), read.source);
   // The trailing slash goes, exactly as `clampOllamaUrl` drops it there, so the
   // two doors send byte-identical `--endpoint` values.
   assert.strictEqual(read.endpoint, 'http://titan:11434');
 
-  // The stated model — `getConfig().ttsNumberNormalizerModel` in production.
-  const stated = await door.cleanTextEngineSettingsIn(dir, 'qwen3.8:27b');
-  assert.strictEqual(stated.model, 'qwen3.8:27b');
-  assert.ok(/ttsNumberNormalizerModel/.test(stated.source), stated.source);
+  // The setting itself — what Foundry's Settings → Clean text model writes.
+  fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
+    defaultLlmModel: 'qwen3.8:14b', cleanTextModel: 'qwen3.5:9b-bf16',
+    ollamaUrl: 'http://titan:11434/',
+  }), 'utf8');
+  const stated = await door.cleanTextEngineSettingsIn(dir);
+  assert.strictEqual(stated.model, 'qwen3.5:9b-bf16');
+  assert.ok(/cleanTextModel/.test(stated.source), stated.source);
 
   // A file that is not there, and one that is not JSON, are what Foundry itself
-  // reads as its own default endpoint — so this answers with what the hosted
-  // press would actually dial rather than with a refusal about a file the user
-  // never made.
+  // reads as its own defaults — so this answers with what the hosted press would
+  // actually run rather than with a refusal about a file the user never made.
   const empty = await door.cleanTextEngineSettingsIn(path.join(ROOT, 'settings-none'));
   assert.strictEqual(empty.model, 'qwen3.5:9b-q8_0');
   assert.strictEqual(empty.endpoint, 'http://localhost:11434');
@@ -341,9 +331,9 @@ test('the endpoint is the hosted press\'s; the model is Clean text\'s own', asyn
   // A tag with whitespace in it is not a tag, and a non-http URL is not an
   // endpoint. Both are the clamps' own answers, mirrored.
   fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
-    defaultLlmModel: 'two words', ollamaUrl: 'file:///etc/passwd',
+    cleanTextModel: 'two words', ollamaUrl: 'file:///etc/passwd',
   }), 'utf8');
-  const clamped = await door.cleanTextEngineSettingsIn(dir, 'two words');
+  const clamped = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(clamped.model, 'qwen3.5:9b-q8_0');
   assert.strictEqual(clamped.endpoint, 'http://localhost:11434');
 });
@@ -435,7 +425,7 @@ test('a STAMPED book is ADMITTED, and the run reaches the model the settings nam
    * below: a connection refused takes milliseconds and depends on nothing that
    * is running on the machine.
    */
-  writeAppSettings({ defaultLlmModel: 'nothing-is-here:0b', ollamaUrl: 'http://127.0.0.1:1' });
+  writeAppSettings({ cleanTextModel: 'nothing-is-here:0b', ollamaUrl: 'http://127.0.0.1:1' });
   const printed = path.join(ROOT, 'admitted.epub');
   writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
   const stamped = path.join(ROOT, 'admitted.stamped.epub');
@@ -502,8 +492,7 @@ test('a REAL cleanup stamps the book, and this app\'s own gate reads it', async 
       + 'Start it (and pull one) to run the live leg of this keeper.');
     return;
   }
-  writeAppSettings({ ollamaUrl: endpoint });
-  writeToolPaths({ ttsNumberNormalizerModel: model });
+  writeAppSettings({ cleanTextModel: model, ollamaUrl: endpoint });
 
   const printed = path.join(ROOT, 'live.epub');
   writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
@@ -531,7 +520,7 @@ test('a REAL cleanup stamps the book, and this app\'s own gate reads it', async 
 
   assert.ok(seen.length > 0, 'the door saw no `clean-text: N/M` line to draw a bar from');
   assert.strictEqual(outcome.settings.model, model,
-    'it ran the model ttsNumberNormalizerModel named');
+    'it ran the model cleanTextModel named');
   assert.strictEqual(outcome.settings.endpoint, endpoint);
 
   // The receipt: the shape the ledger row is written from.
