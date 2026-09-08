@@ -69,13 +69,21 @@ import { foundryVersionAtLeast } from '../shared/vlm/readings-bank.js';
 /**
  * The model and the Ollama endpoint a cleanup runs against.
  *
- * READ OUT OF FOUNDRY'S OWN SETTINGS FILE, `userData/app-settings.json`, which
- * is where the hosted **Clean text** dialog gets them: it seeds its two fields
- * from `llm:defaults`, and that handler answers with
- * `{ model: settings.defaultLlmModel, ollama: settings.ollamaUrl }`
- * (foundry-app/electron/ipc.ts). Hosted, Foundry's userData IS BookForge's, so
- * this reads the identical file the identical way and the two doors cannot run a
- * cleanup against different models.
+ * THE ENDPOINT IS READ OUT OF FOUNDRY'S OWN SETTINGS FILE,
+ * `userData/app-settings.json`, which is where the hosted **Clean text** dialog
+ * gets it: it seeds its URL field from `llm:defaults`, and that handler answers
+ * with `{ ..., ollama: settings.ollamaUrl }` (foundry-app/electron/ipc.ts).
+ * Hosted, Foundry's userData IS BookForge's, so this reads the identical file
+ * the identical way and the two doors cannot dial different servers.
+ *
+ * THE MODEL IS NOT `defaultLlmModel` AND NEVER WAS THIS PASS'S TO TAKE. That
+ * setting is the seed for translate, simplify and analyse; Clean text carries
+ * its own declared default (`DEFAULT_NORMALIZER_MODEL`,
+ * electron/tts-number-normalizer.ts, mirroring foundry's
+ * src/clean/tts-number-normalizer.ts) — Owen, 2026-09-02. Measured 2026-09-08:
+ * the 27b `defaultLlmModel` names runs a book at ~9 blocks/min against ~50 on
+ * the 9b-q8_0. BookForge's own override is `ttsNumberNormalizerModel`
+ * (electron/tool-paths.ts), which the production caller states below.
  *
  * MIRRORED, NOT IMPORTED, on `standaloneFoundryProjectsRoot`'s precedent
  * (electron/foundry-adopt.ts): `foundry-app/` is built output of a separate
@@ -83,7 +91,8 @@ import { foundryVersionAtLeast } from '../shared/vlm/readings-bank.js';
  * seal exists to prevent. So `clampModelTag` and `clampOllamaUrl`
  * (foundry-app/electron/app-settings.ts) are mirrored below, byte-for-byte in
  * behaviour, and their defaults are Foundry's own published constants
- * (`DEFAULT_TRANSLATE_MODEL`, `DEFAULT_OLLAMA_ENDPOINT`, foundry-app/shared/pipeline.ts).
+ * (`DEFAULT_CLEAN_TEXT_MODEL`/`DEFAULT_NORMALIZER_MODEL`,
+ * `DEFAULT_OLLAMA_ENDPOINT`, foundry-app/shared/pipeline.ts).
  *
  * THE CLAMPS' DEFAULTS ARE NOT A FALLBACK PAPERING OVER A MISSING VALUE. The
  * question this answers is "what would the hosted press run", and for a settings
@@ -100,8 +109,14 @@ export interface CleanTextEngineSettings {
   source: string;
 }
 
-/** Foundry's own default model tag. `DEFAULT_TRANSLATE_MODEL`, their pipeline.ts. */
-const FOUNDRY_DEFAULT_MODEL = 'qwen3.8:27b';
+/**
+ * Clean text's own declared default model tag — foundry's
+ * `DEFAULT_NORMALIZER_MODEL` (src/clean/tts-number-normalizer.ts, mirrored in
+ * their app as `DEFAULT_CLEAN_TEXT_MODEL`), NOT the translate default. Owen,
+ * 2026-09-02: this pass declares its own, and the 27b is chosen by typing it
+ * into Settings.
+ */
+const FOUNDRY_DEFAULT_MODEL = 'qwen3.5:9b-q8_0';
 /** Foundry's own default Ollama origin. `DEFAULT_OLLAMA_ENDPOINT`, their pipeline.ts. */
 const FOUNDRY_DEFAULT_ENDPOINT = 'http://localhost:11434';
 
@@ -128,16 +143,25 @@ function clampOllamaUrl(value: unknown): string {
 }
 
 /**
- * Read `<userDataDir>/app-settings.json` the way Foundry reads it.
+ * Read `<userDataDir>/app-settings.json` the way Foundry reads it — for the
+ * ENDPOINT. The model is `statedModel` (BookForge's `ttsNumberNormalizerModel`)
+ * when somebody set one, and Clean text's declared default otherwise.
  *
- * `userDataDir` is PASSED IN rather than derived from `app.getPath` for
- * `standaloneFoundryProjectsRoot`'s reason: a keeper has to be able to point it
- * at a temp folder, and deriving it here would make that impossible. The
- * production caller is {@link cleanTextEngineSettings}.
+ * `userDataDir` and `statedModel` are both PASSED IN rather than derived here,
+ * for `standaloneFoundryProjectsRoot`'s reason: a keeper has to be able to point
+ * one at a temp folder and hand the other a literal, and reaching for
+ * `app.getPath` or `getConfig()` in this function would make that impossible.
+ * The production caller is {@link cleanTextEngineSettings}.
  */
 export async function cleanTextEngineSettingsIn(
   userDataDir: string,
+  statedModel?: string,
 ): Promise<CleanTextEngineSettings> {
+  const stated = typeof statedModel === 'string' ? statedModel.trim() : '';
+  const model = stated.length > 0 ? clampModelTag(stated) : FOUNDRY_DEFAULT_MODEL;
+  const modelSource = stated.length > 0
+    ? 'Settings → the narration cleanup model (ttsNumberNormalizerModel)'
+    : `Clean text's declared default (${FOUNDRY_DEFAULT_MODEL})`;
   const settingsPath = path.join(userDataDir, 'app-settings.json');
   let raw: unknown = null;
   try {
@@ -147,19 +171,19 @@ export async function cleanTextEngineSettingsIn(
     // (`readAppSettings` → the clamps with no value), so this is what the hosted
     // press would run. Said in the answer's `source` rather than swallowed.
     return {
-      model: FOUNDRY_DEFAULT_MODEL,
+      model,
       endpoint: FOUNDRY_DEFAULT_ENDPOINT,
-      source: `${settingsPath} could not be read, so this is what the hosted Clean text press `
-        + 'would run: Foundry at its own defaults',
+      source: `model from ${modelSource}; endpoint from Foundry's own default, because `
+        + `${settingsPath} could not be read`,
     };
   }
   const record = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
     ? raw as Record<string, unknown>
     : {};
   return {
-    model: clampModelTag(record['defaultLlmModel']),
+    model,
     endpoint: clampOllamaUrl(record['ollamaUrl']),
-    source: settingsPath,
+    source: `model from ${modelSource}; endpoint from ${settingsPath}`,
   };
 }
 
@@ -174,7 +198,10 @@ export async function cleanTextEngineSettingsIn(
  */
 export async function cleanTextEngineSettings(): Promise<CleanTextEngineSettings> {
   const { app } = require('electron') as typeof import('electron');
-  return cleanTextEngineSettingsIn(app.getPath('userData'));
+  // Lazily, for the same reason: `tool-paths` reads `app` at import time, and a
+  // keeper importing this module must not need Electron to have booted.
+  const { getConfig } = require('./tool-paths.js') as typeof import('./tool-paths.js');
+  return cleanTextEngineSettingsIn(app.getPath('userData'), getConfig().ttsNumberNormalizerModel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -362,8 +389,7 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
     '--model', settings.model,
   ];
   console.log(
-    `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — model and endpoint from `
-    + `${settings.source}`);
+    `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — ${settings.source}`);
 
   const result = await runFoundry(args, {
     ...(opts.signal === undefined ? {} : { signal: opts.signal }),
