@@ -215,5 +215,120 @@ class PrepareParallel(unittest.TestCase):
             plan_chapters(self.manifest(), self.tmp, lambda _l: None, workers=0)
 
 
+class PreparePaddedParallel(unittest.TestCase):
+    """The PADDED path on a pool - Orpheus, and the majority of books.
+
+    It writes nothing and reads 42 bytes a chunk, so it was left serial when the
+    pool landed. Over SMB the cost is the OPEN and not the bytes: one round trip
+    per chunk, 847 of them for Mutineer's Moon. What must survive the move is the
+    same thing that had to survive it on the unpadded path - the concat list is
+    the serial list, in order - plus the guards, which on this path are the only
+    thing standing between a manifest that disagrees with the audio and a book
+    that is quietly wrong.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="narrator-prepare-padded-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.session = os.path.join(self.tmp, "session")
+        self.samples: dict[tuple[int, int], int] = {}
+        seed = 100
+        for c, chunks in enumerate(CHAPTERS, start=1):
+            for i, (secs, _b, _a) in enumerate(chunks):
+                seed += 1
+                self.samples[(c, i)] = _write_chunk(
+                    os.path.join(self.session, f"{c}_{i}.flac"), secs, seed
+                )
+
+    def manifest(self) -> M.Manifest:
+        """An engine that PADS its own chunks: no gaps, nothing rewritten."""
+        chapters = []
+        for c, chunks in enumerate(CHAPTERS, start=1):
+            chapters.append(M.Chapter(
+                index=c, title=f"Chapter {c}", doc=None,
+                chunks=[
+                    M.Chunk(index=i, text=f"Line {c}.{i}.", kind="prose",
+                            file=os.path.join(self.session, f"{c}_{i}.flac"),
+                            gapBefore=0.0, gapAfter=0.0, samples=self.samples[(c, i)])
+                    for i, (_s, _b, _a) in enumerate(chunks)
+                ],
+            ))
+        return M.Manifest(
+            source=M.Source(kind="synthetic", processDir=self.session,
+                            sessionId="s", epubContentHash="h"),
+            book=M.Book(epubPath=None, title="T", author="A", year=None,
+                        language="en", language3="eng", cover=None),
+            voice=M.Voice(engine="orpheus", fineTuned="v", modelDir=None,
+                          adapterDir=None, baseDir=None),
+            engine=M.Engine(id="orpheus", pads=True,
+                            edgeFadeMs=M.EdgeFadeMs(0.0, 0.0)),
+            sampleRate=RATE,
+            sentencesDir=self.session,
+            chapters=chapters,
+        )
+
+    def run_plan(self, workers: int):
+        lines: list[str] = []
+        plans = plan_chapters(self.manifest(), None, lines.append, workers=workers)
+        paths = [list(plan.paths) for plan in plans]
+        infos = [
+            [(i.min_blocksize, i.max_blocksize, i.sample_rate, i.channels,
+              i.bits_per_sample, i.samples) for i in plan.infos]
+            for plan in plans
+        ]
+        return paths, infos, lines, plans
+
+    def test_one_worker_and_eight_agree_on_the_concat_list(self):
+        serial_paths, serial_infos, _l1, serial_plans = self.run_plan(1)
+        pool_paths, pool_infos, _l2, pool_plans = self.run_plan(8)
+        self.assertEqual(serial_paths, pool_paths)
+        self.assertEqual(serial_infos, pool_infos)
+        self.assertEqual([p.samples for p in serial_plans],
+                         [p.samples for p in pool_plans])
+        self.assertEqual([(p.index, p.first_chunk, p.last_chunk) for p in serial_plans],
+                         [(p.index, p.first_chunk, p.last_chunk) for p in pool_plans])
+
+    def test_the_session_files_go_in_untouched_and_in_chunk_order(self):
+        paths, _i, _l, _p = self.run_plan(4)
+        self.assertEqual(
+            paths[0],
+            [os.path.join(self.session, f"1_{i}.flac") for i in range(len(CHAPTERS[0]))])
+        # Nothing is written on this path at all: the work dir was None.
+        self.assertEqual(
+            sorted(os.listdir(self.session)),
+            sorted(f"{c}_{i}.flac"
+                   for c, chunks in enumerate(CHAPTERS, start=1)
+                   for i in range(len(chunks))))
+
+    def test_progress_counts_every_chunk_exactly_once(self):
+        _p, _i, lines, _pl = self.run_plan(8)
+        total = chunk_total(self.manifest())
+        counts = [l for l in lines if l.startswith("[ASSEMBLE] Preparing sentences ")]
+        self.assertEqual(counts[0], f"[ASSEMBLE] Preparing sentences 0/{total}")
+        self.assertEqual(counts[-1], f"[ASSEMBLE] Preparing sentences {total}/{total}")
+
+    def test_a_missing_chunk_is_named_the_same_way_on_a_pool(self):
+        m = self.manifest()
+        os.remove(m.chapters[1].chunks[1].file)
+        with self.assertRaises(FileNotFoundError) as caught:
+            plan_chapters(m, None, lambda _l: None, workers=8)
+        self.assertIn("is missing chunk 1", str(caught.exception))
+
+    def test_a_manifest_that_disagrees_with_the_audio_is_refused_on_a_pool(self):
+        m = self.manifest()
+        m.chapters[0].chunks[2].samples += 7
+        with self.assertRaisesRegex(ValueError, "audio changed after the manifest"):
+            plan_chapters(m, None, lambda _l: None, workers=8)
+
+    def test_a_gap_on_a_padding_engine_is_still_refused_on_a_pool(self):
+        """The guard that only exists on this path: a gap here is not merely
+        wrong, it is silently DISCARDED, because nothing downstream looks at it
+        again."""
+        m = self.manifest()
+        m.chapters[0].chunks[1].gapAfter = 0.25
+        with self.assertRaisesRegex(ValueError, "pads its own chunks"):
+            plan_chapters(m, None, lambda _l: None, workers=8)
+
+
 if __name__ == "__main__":
     unittest.main()

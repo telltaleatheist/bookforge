@@ -48,6 +48,12 @@ destination, no shared state - and every second of it is spent waiting on a
 socket or inside libsndfile, both of which drop the GIL. They now run on a
 `ThreadPoolExecutor` bounded by the same `workers` that sizes the encoder pool.
 
+BOTH PATHS, not only the unpadded one. The padded path (Orpheus, the majority
+engine) writes nothing and reads 42 bytes a chunk, which is why it was left
+serial in the first pass - but the cost over SMB is the OPEN, not the bytes: one
+round trip per chunk, hundreds of them, on the path most books take. Same pool,
+same `workers`, same ordering guarantee.
+
 Two properties are not negotiable and are pinned by
 `tests/test_assemble_prepare_parallel.py`:
 
@@ -249,7 +255,8 @@ def _normalize_mixed(paths: list[str], infos: list[StreamInfo], chapter_index: i
 
 
 def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
-                 log, progress: PrepareProgress) -> tuple[list[str], list[StreamInfo]]:
+                 log, workers: int,
+                 progress: PrepareProgress) -> tuple[list[str], list[StreamInfo]]:
     """The original path: the session's own FLACs, untouched.
 
     The ONE exception is a set that mixes bit depth or blocksize because the
@@ -257,15 +264,19 @@ def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
     set (every book rendered on one machine, which is all of them today) never
     reaches it and nothing is written at all.
 
-    THIS PATH STAYS SERIAL. It writes nothing and reads 42 bytes per chunk (see
-    `render/flac_header.py`), so there is no minutes-long stall here to spread
-    across threads - only the same open/read/close the unpadded path pays on top
-    of a full read and two writes. It still COUNTS, so a padded book's prepare
-    bar moves for exactly the same reason.
+    IT RUNS ON THE SAME POOL AS THE UNPADDED PATH, and the reason is LATENCY
+    rather than bytes. It writes nothing and reads 42 bytes a chunk, which is
+    why it was left serial when the pool landed (73c2bc49) - but over SMB the
+    cost of a chunk here is not the 42 bytes, it is the open: a round trip each,
+    847 of them for Mutineer's Moon, tens of seconds of a card showing nothing.
+    Orpheus is the majority engine and this is its path.
+
+    The unit is one chunk: check it exists, read its STREAMINFO, compare it with
+    the manifest. Independent by construction - it touches no shared state and
+    writes nothing - so ordering is all that has to be preserved, and
+    `_map_ordered` preserves it.
     """
-    paths: list[str] = []
-    infos: list[StreamInfo] = []
-    for chunk in chapter.chunks:
+    def prepare(chunk) -> tuple[str, StreamInfo]:
         if chunk.gapBefore or chunk.gapAfter:
             # manifest.validate() refuses this too; repeated here because
             # plan_chapters() is callable on a hand-built manifest, and on this
@@ -278,15 +289,21 @@ def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
                 f"inside the FLAC and this gap would be added on top of it."
             )
         path = _check_chunk(manifest, chapter, chunk)
-        infos.append(read_expected(path, manifest.sampleRate, channels=1))
-        paths.append(path)
-        if chunk.samples is not None and infos[-1].samples != chunk.samples:
+        info = read_expected(path, manifest.sampleRate, channels=1)
+        if chunk.samples is not None and info.samples != chunk.samples:
             raise ValueError(
                 f"chapter {chapter.index} chunk {chunk.index}: the manifest records "
-                f"{chunk.samples} samples but the file holds {infos[-1].samples} - the "
+                f"{chunk.samples} samples but the file holds {info.samples} - the "
                 f"audio changed after the manifest was built ({path})"
             )
         progress.step()
+        return path, info
+
+    paths: list[str] = []
+    infos: list[StreamInfo] = []
+    for path, info in _map_ordered(prepare, chapter.chunks, workers):
+        paths.append(path)
+        infos.append(info)
 
     # A sample-rate or channel mismatch says the audio is not what the session
     # claims; no rewrite can reconcile that, so it still refuses.
@@ -410,7 +427,9 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
             manifest, chapter, profile, work_dir, workers, progress
         )
     else:
-        paths, infos = _plan_padded(manifest, chapter, work_dir, log, progress)
+        paths, infos = _plan_padded(
+            manifest, chapter, work_dir, log, workers, progress
+        )
 
     # ffmpeg's concat demuxer drops every FLAC frame whose blocksize exceeds the
     # FIRST list entry's STREAMINFO max-blocksize AND STILL EXITS 0, so a mixed
@@ -441,10 +460,12 @@ def plan_chapters(manifest: Manifest, work_dir: str | None = None,
     where the faded copies and the generated silence go. It is unused, and may be
     None, for a padded engine, whose files go into the concat list untouched.
 
-    `workers` bounds the per-chunk prepare pool on the unpadded path; `assemble()`
-    passes the same number it sizes the encoder pool with. It DEFAULTS TO 1 -
-    serial, exactly as this function has always behaved - so a caller that has not
-    thought about concurrency does not silently acquire it.
+    `workers` bounds the per-chunk prepare pool on BOTH paths - the unpadded
+    path's read-fade-write unit and the padded path's header read, which is a
+    round trip apiece over SMB. `assemble()` passes the same number it sizes the
+    encoder pool with. It DEFAULTS TO 1 - serial, exactly as this function has
+    always behaved - so a caller that has not thought about concurrency does not
+    silently acquire it.
     """
     if not manifest.chapters:
         raise ValueError("plan_chapters(): the manifest has no chapters")
