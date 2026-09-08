@@ -2388,6 +2388,11 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
 
 check('a measured pace becomes the length band in the document; a malformed pace is refused', () => {
   // Owen, 2026-09-06: the guard uses the voice's recorded chars-per-second.
+  // 2026-09-08: the band is SEEDED FROM THE MEDIAN (× 1.2 short, ÷ 1.3 long)
+  // and the median RIDES ALONG as `paceCharsPerSec`, because narrator keeps
+  // only the ratios and re-centres them on the book's own running median
+  // (`truncation.PaceTracker`) — measured on Shift, where the ladder's tails
+  // (p99 × 1.15) sat 1.37× off the book's own pace.
   const pace = { median: 17.2, mean: 17.1, p05: 15.6, p95: 18.3, p99: 18.9, n: 42,
     method: 'spoken chars / chunk flac seconds', source: 'ladder night-4', measuredOn: '2026-09-06' };
   const m = probeVoice({
@@ -2396,14 +2401,24 @@ check('a measured pace becomes the length band in the document; a malformed pace
                 mlx: { maxChars: 900, maxCharsSource: 'catalog' } }, pace,
   });
   const doc = higgs.higgsVoicesDocument(m, WSL_DOC).probe;
-  assert.strictEqual(doc.maxCharsPerSec, Math.round(18.9 * 1.15 * 100) / 100);
-  assert.strictEqual(doc.minCharsPerSec, Math.round(15.6 / 1.15 * 100) / 100);
-  assert.deepStrictEqual(higgs.higgsLengthBand(pace), { maxCharsPerSec: doc.maxCharsPerSec, minCharsPerSec: doc.minCharsPerSec });
+  // THE DOCUMENT'S PACE IS THE MEDIAN — the reference the two edges are ratios
+  // of, and the number narrator's tracker starts centred on.
+  assert.strictEqual(doc.paceCharsPerSec, 17.2);
+  assert.strictEqual(higgs.PACE_GUARD_SHORT_FACTOR, 1.2);
+  assert.strictEqual(higgs.PACE_GUARD_LONG_FACTOR, 1.3);
+  assert.strictEqual(doc.maxCharsPerSec, Math.round(17.2 * 1.2 * 100) / 100);
+  assert.strictEqual(doc.minCharsPerSec, Math.round(17.2 / 1.3 * 100) / 100);
+  assert.deepStrictEqual(higgs.higgsLengthBand(pace), {
+    paceCharsPerSec: doc.paceCharsPerSec,
+    maxCharsPerSec: doc.maxCharsPerSec,
+    minCharsPerSec: doc.minCharsPerSec,
+  });
   // No pace: no band in the document (the engine default applies).
   const bare = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
     backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } } });
   const bareDoc = higgs.higgsVoicesDocument(bare, WSL_DOC).probe;
-  assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc));
+  assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc)
+    && !('paceCharsPerSec' in bareDoc));
   // SAMPLING RIDES IN THE DOCUMENT, per arm: a block's own (with its reason)
   // for that arm, the ENGINE-LEVEL one for a block that states none - so no
   // document is ever written without the number that renders.

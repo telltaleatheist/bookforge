@@ -168,9 +168,10 @@ roster, and a voice not in it is refused by name.
       "mlx": { ... }            //   darwin -> in-process mlx-audio. ITS OWN cap.
     },
     // THE MEASURED PACE (chars/s over the ladder's clean renders), ONE PER
-    // VOICE for both arms; the document gets maxCharsPerSec = p99 x 1.15 and
-    // minCharsPerSec = p05 / 1.15 - the length guard's band, with headroom
-    // over the median. Absent = narrator's default band (20 / 14.5).
+    // VOICE for both arms; the document gets paceCharsPerSec = median,
+    // maxCharsPerSec = median x 1.2 and minCharsPerSec = median / 1.3 - the
+    // length guard's SEED band, whose ratios narrator re-centres on the book's
+    // own running median. Absent = narrator's default band (20 / 14.5).
     "pace": { "median": 17.11, "mean": 16.91, "p05": 14.66, "p95": 18.11, "p99": 18.27,
               "n": 71, "method": "...", "source": "...", "measuredOn": "2026-09-06" }
   }]
@@ -918,25 +919,51 @@ split at sentence boundaries and re-render. same as orpheus."*
 `python/narrator/engine/higgs/truncation.py`, shared by both arms and wired
 into `convert` (served, MLX) and the MLX batch path:
 
-- **The band comes from the voice's MEASURED PACE** (Owen, 2026-09-06, via
-  training: recorded in the catalog as part of the normal ladder, like an
-  Orpheus voice's, and the guard uses it): the entry's `pace` (ONE per voice,
-  both arms — Owen: "the same setting for both mac and windows") holds median /
-  p05 / p99 / n / method / source, and the voice document carries the derived
-  `maxCharsPerSec` = p99 × 1.15 and `minCharsPerSec` = p05 / 1.15 (both edges
-  by the Orpheus rule; `higgsLengthBand`, `load_voices._length_band`,
-  `truncation.band_for`). The headroom is the point: the guard sits at the
-  ladder's p99 × 1.15 and p05 / 1.15, never at the median, so a book paced 17.6
-  on a 17.1 voice is well inside. Shipped: deathstalker 17.11 (mlx measured
-  17.05 — same voice, same pace; band 12.7–21.0), mistborn 15.16 (band
-  11.6–19.2, 11 % slower — the reason the band is per voice). A voice with no pace block
-  renders at the engine default band: `StopPolicy.max_chars_per_sec` 20.0
-  (above = too SHORT, an early stop) and `min_chars_per_sec` 14.5 (below =
-  too LONG, a run-on). Book
-  pace on deathstalker is 17.2 chars/s; every clean chunk of the measured
-  render sat at 0.94×–1.10× of expectation, the early stops at 0.05× and
-  0.84×, the run-ons at 1.11×–1.54× (three of four inside the band's long
-  side; the 1.11× one is the coverage audit's).
+- **The band is SEEDED from the voice's MEASURED PACE and then re-centred on
+  the book** (Owen, 2026-09-06, via training: recorded in the catalog as part of
+  the normal ladder, like an Orpheus voice's, and the guard uses it): the
+  entry's `pace` (ONE per voice, both arms — Owen: "the same setting for both
+  mac and windows") holds median / p05 / p99 / n / method / source, and the
+  voice document carries `paceCharsPerSec` = median, `maxCharsPerSec` =
+  median × `PACE_GUARD_SHORT_FACTOR` (1.2) and `minCharsPerSec` =
+  median ÷ `PACE_GUARD_LONG_FACTOR` (1.3) — `higgsLengthBand`,
+  `load_voices._length_band` (all three or none), `truncation.tracker_for`.
+  Shipped seeds: deathstalker 16.64 (band 12.80–19.97), mistborn 15.12 (band
+  11.63–18.14), owen-morgan 16.32 (12.55–19.58), thirdreich 15.29
+  (11.76–18.35). A voice with no pace block renders at the engine default band:
+  `StopPolicy.max_chars_per_sec` 20.0 (above = too SHORT, an early stop) and
+  `min_chars_per_sec` 14.5 (below = too LONG, a run-on).
+- **2026-09-08 — the band follows the book (`truncation.PaceTracker`).** Owen:
+  *"change the guard to re-render if it deviates too far from the calculated and
+  recorded characters per second"*. Until this date the band was FIXED for the
+  whole book at the ladder's p99 × 1.15 / p05 ÷ 1.15. MEASURED on the first full
+  book rendered under it — Shift, mistborn, served arm, 1,313 chunks, 16.38 h of
+  audio, a 37-minute render — that was the wrong shape: the ladder bank is
+  uniform nonfiction prose and Shift is fiction with dialogue, so **this book's**
+  clean chunks (≥ 150 chars) ran at a median of **14.09 chars/s** (p05 12.26,
+  p99 17.61, max 18.63) against the bank's 15.12 — 7 % slower. Both edges
+  therefore sat at the wrong distance from the book: the long edge (11.97) fired
+  on **340 healthy chunks at take 0** (264 of them tiny headings of 4–18 chars
+  at 2–10 chars/s, the rest prose at 11.0–11.75) and the ladder re-rolled or
+  split every one for nothing, while the short edge (19.27) sat at **1.37× the
+  book's own pace** and let takes at 0.76× of their expected length ship. A CPU
+  spot-alignment of the 14 fastest shipped chunks found **8 real truncations**
+  (13–52 % of the words dropped), every one at ≥ **1.23×** the book's pace
+  (17.3–18.6 chars/s); the 8 slowest shipped chunks (11.1–11.9 chars/s) all
+  aligned clean (ratio ≥ 0.99). So now: the catalog's three numbers are a SEED,
+  narrator keeps only their RATIOS, and after `PACE_WARMUP_CHUNKS` (10) guarded
+  takes the reference becomes the **running median of the book's own shipped
+  clean takes** — a book that paces 17.6 becomes its own 17.6 reference, which
+  is what Owen's 17.11/17.6 worry actually asked for. A chunk under
+  `MIN_GUARD_CHARS` (150) is judged on the short side only and feeds nothing
+  into the running pace, so headings stop firing the guard. The factors: **1.2**
+  short (under every measured truncation, over every clean take) and **1.3**
+  long (looser on purpose — Shift's clean dialogue chunks reached 0.79× of the
+  book's pace; the cost is that the Fuhrer 1.24× run-on class is left to the ASR
+  coverage audit, which is the only sensor that can see inside a chunk anyway).
+  Book pace on the Fuhrer deathstalker render was 17.2 chars/s; every clean
+  chunk there sat at 0.94×–1.10× of expectation, the early stops at 0.05× and
+  0.84×, the run-ons at 1.11×–1.54×.
 - **The ladder**: re-roll at `seed + index + 100003` (an early stop REPRODUCES
   at the chunk's own seed — training's live validation flagged the same
   chunk 19), then split at the sentence boundary nearest the middle and run

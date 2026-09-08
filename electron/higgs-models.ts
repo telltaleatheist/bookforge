@@ -357,18 +357,58 @@ export interface HiggsPace {
 }
 
 /**
- * The Orpheus rule for the guard's distance from the pace: p99 × 1.15 sits
- * above every healthy render and below a truncation, which roughly doubles the
- * rate (orpheus-models.json `_rateNote`s). The same factor divides p05 for the
- * long side.
+ * THE SHORT EDGE: above `pace × 1.2` a take is too short — it stopped before
+ * the end of its text.
+ *
+ * MEASURED on Shift (mistborn, served arm, 1,313 chunks, 16.38 h, 2026-09-08).
+ * A CPU spot-alignment of the 14 FASTEST shipped chunks found 8 real
+ * truncations (13–52 % of the words dropped), and every one of them sat at
+ * ≥ 1.23× the book's own pace (17.3–18.6 chars/s against a book median of
+ * 14.09); the 8 SLOWEST shipped chunks (11.1–11.9 chars/s) all aligned clean
+ * (ratio ≥ 0.99). So 1.2 sits under every measured truncation with a margin
+ * and over every clean take. The rule this replaces — the ladder's p99 × 1.15 —
+ * put mistborn's short edge at 19.27, which is 1.37× Shift's own pace: it
+ * missed all 8 and shipped takes at 0.76× of their expected length.
  */
-export const PACE_GUARD_FACTOR = 1.15;
+export const PACE_GUARD_SHORT_FACTOR = 1.2;
 
-/** The length band a measured pace derives. */
-export function higgsLengthBand(pace: HiggsPace): { maxCharsPerSec: number; minCharsPerSec: number } {
+/**
+ * THE LONG EDGE: below `pace ÷ 1.3` a take ran on — it kept talking past the
+ * end of its text. LOOSER than the short edge on purpose, because a healthy
+ * chunk is far more often slow than fast: on Shift the clean dialogue chunks
+ * ran down to 0.79× of the book's pace (11.0–11.75 chars/s against 14.09) and
+ * every one of them aligned clean, so an edge at 1/1.2 = 0.83× would have
+ * re-rolled them for nothing — which is exactly what the old fixed long edge
+ * (11.97) did to 340 healthy chunks at take 0.
+ *
+ * THE COST IS STATED: the run-on tails measured on Working Towards The Fuhrer
+ * (2026-09-06) ran 1.24×–1.54× of expectation, so 1.3 catches the 1.42× and
+ * 1.54× tails and LEAVES THE 1.24× CLASS to the ASR coverage audit (`align/`),
+ * which is the sensor that can see inside a chunk. A cheap duration guard that
+ * fires on a quarter of the healthy chunks to catch the mildest run-on is a bad
+ * trade; the audit names that chunk without re-rendering the book.
+ */
+export const PACE_GUARD_LONG_FACTOR = 1.3;
+
+/**
+ * The SEED length band a measured pace derives — from the MEDIAN, not from the
+ * ladder's tails.
+ *
+ * Narrator keeps only the RATIOS of this band (`truncation.PaceTracker`) and
+ * re-centres them on the running median of the book's own shipped takes once
+ * ten guarded takes are in, so these three numbers are a SEED and not a
+ * ceiling. That is why `paceCharsPerSec` travels with the two edges: the pace
+ * is what the seed band is centred on, and without it narrator cannot tell a
+ * band's tolerated deviation from its reference.
+ */
+export function higgsLengthBand(
+  pace: HiggsPace,
+): { paceCharsPerSec: number; maxCharsPerSec: number; minCharsPerSec: number } {
+  const round2 = (v: number) => Math.round(v * 100) / 100;
   return {
-    maxCharsPerSec: Math.round(pace.p99 * PACE_GUARD_FACTOR * 100) / 100,
-    minCharsPerSec: Math.round(pace.p05 / PACE_GUARD_FACTOR * 100) / 100,
+    paceCharsPerSec: pace.median,
+    maxCharsPerSec: round2(pace.median * PACE_GUARD_SHORT_FACTOR),
+    minCharsPerSec: round2(pace.median / PACE_GUARD_LONG_FACTOR),
   };
 }
 
@@ -720,15 +760,27 @@ export interface HiggsModel {
    * for both mac and windows since theyre the same voice and theyre pretty
    * close" (deathstalker measured 17.11 served / 17.05 mlx). Recorded here as
    * part of the normal ladder, the way Orpheus voices are, and THE LENGTH GUARD
-   * USES IT: the voice document carries the derived band, both rules stated:
-   *   maxCharsPerSec = p99 × PACE_GUARD_FACTOR   (above it: too SHORT)
-   *   minCharsPerSec = p05 / PACE_GUARD_FACTOR   (below it: ran ON)
-   * The headroom is the point (Owen: "if its set to 17.11 chars/s, and one book
-   * averages 17.6/s, it shouldnt split and re-render everything over 17.11"):
-   * the guard sits at the ladder's p99 × 1.15 and p05 / 1.15, not at the
-   * median, so a book paced 17.6 on a 17.1 voice is well inside. Orpheus keeps
-   * only the derived guard in its catalog and the pace in prose; Higgs keeps
-   * the pace as data. Measured by the training ladder on clean renders
+   * USES IT: the voice document carries the pace AND the band seeded from it,
+   * all three rules stated:
+   *   paceCharsPerSec = median                     (what the band is centred on)
+   *   maxCharsPerSec  = median × PACE_GUARD_SHORT_FACTOR  (above it: too SHORT)
+   *   minCharsPerSec  = median / PACE_GUARD_LONG_FACTOR   (below it: ran ON)
+   *
+   * A SEED, NOT A CEILING (2026-09-08). narrator keeps only the RATIOS of that
+   * band and re-centres them on the running median of the book's own shipped
+   * takes after ten guarded chunks (`truncation.PaceTracker`), which is what
+   * actually answers Owen's worry — "if its set to 17.11 chars/s, and one book
+   * averages 17.6/s, it shouldnt split and re-render everything over 17.11":
+   * a book that paces 17.6 BECOMES the reference, so the edges move with it
+   * instead of the ladder's bank deciding for every book. The old rule (the
+   * ladder's p99 × 1.15 / p05 ÷ 1.15) could not do that, and MEASURED on Shift
+   * — a fiction book whose clean chunks ran 7 % slower than mistborn's uniform
+   * nonfiction ladder bank (14.09 vs 15.12 chars/s) — it fired on 340 healthy
+   * chunks while missing 8 real truncations. The recorded pace must therefore
+   * travel to narrator: it is what the seed band is centred on.
+   *
+   * Orpheus keeps only the derived guard in its catalog and the pace in prose;
+   * Higgs keeps the pace as data. Measured by the training ladder on clean renders
    * (coverage ≥ 0.95, no early stop, no run-on). Absent = unmeasured:
    * narrator's default band applies (20 / 14.5, the Fuhrer whole-book
    * measurement on deathstalker).
@@ -1778,13 +1830,18 @@ export function higgsVoicesDocument(
   // asked for 0.7 (2026-09-06) and nothing could carry it. narrator's
   // load_voices reads it onto the voice; the MLX config takes it as an override.
   if (caps.sampling !== undefined) entry.sampling = caps.sampling;
-  // THE LENGTH BAND, derived from the voice's measured pace (one per voice,
-  // both arms) and written as the pair narrator's `load_voices` reads
-  // (`_length_band`); a voice with no pace gets no band and renders at the
-  // engine's default one.
+  // THE LENGTH BAND, seeded from the voice's measured pace (one per voice, both
+  // arms) and written as the TRIPLE narrator's `load_voices` reads
+  // (`_length_band`, which takes all three or none): the recorded pace plus the
+  // two edges derived from it. The pace travels because narrator keeps only the
+  // band's ratios and re-centres them on the book's own running median
+  // (`truncation.PaceTracker`) — without the pace it cannot tell the tolerated
+  // deviation from the reference it was measured against. A voice with no pace
+  // gets no band and renders at the engine's default one.
   if (model.pace !== undefined) {
     refuseMalformedPace(model, 'voice', model.pace);
     const band = higgsLengthBand(model.pace);
+    entry.paceCharsPerSec = band.paceCharsPerSec;
     entry.maxCharsPerSec = band.maxCharsPerSec;
     entry.minCharsPerSec = band.minCharsPerSec;
   }

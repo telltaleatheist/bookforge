@@ -95,7 +95,7 @@ class GuardTest(unittest.TestCase):
         # (the text is one short sentence) -> the shorter miss ships? No: the
         # one CLOSEST to the band's centre - here the long one is 3x off and the
         # short one is ~7x off, so the long take ships.
-        short_text = 'x' * 100
+        short_text = 'x' * 160    # over MIN_GUARD_CHARS, so the long side is judged
         render = FakeRender(lambda t, s, n: n == 2, long=lambda t, s, n: n == 1)
         render.long = lambda t, s, n: n == 1
         calls = {'n': 0}
@@ -103,13 +103,13 @@ class GuardTest(unittest.TestCase):
         def scripted(text, seed):
             calls['n'] += 1
             render.calls.append((text, seed))
-            return audio_for(300) if calls['n'] == 1 else audio_for(15)
+            return audio_for(480) if calls['n'] == 1 else audio_for(24)
         events = []
         out = truncation.render_guarded(scripted, short_text, 5, sample_rate=RATE, max_chars_per_sec=20.0,
                                         min_chars_per_sec=14.5, base_seed=1, on_event=events.append)
         self.assertEqual(events[-1]['action'], 'accepted-off-length')
         self.assertEqual(events[-1]['shipped_side'], 'long')
-        self.assertEqual(len(out), len(audio_for(300)))
+        self.assertEqual(len(out), len(audio_for(480)))
 
     def test_the_reroll_seed_differs_from_the_chunks_own_and_none_stays_none(self):
         self.assertNotEqual(truncation.reroll_seed(1234, 19, 1), 1234 + 19)
@@ -181,8 +181,89 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(len(out), len(audio_for(len(TEXT))))
 
 
+class PaceTrackerTest(unittest.TestCase):
+    """The band follows the book (Owen, 2026-09-08). Numbers from the Shift
+    render: mistborn recorded 15.12 chars/s; the book ran at 14.09."""
+
+    def _tracker(self):
+        # The catalog's seed band at F = 1.2: 18.14 / 12.6 around 15.12.
+        return truncation.PaceTracker(15.12, 18.14, 12.6, warmup=4)
+
+    def test_the_seed_band_is_the_documents_until_warm(self):
+        t = self._tracker()
+        self.assertEqual(t.band(), {'max_chars_per_sec': 18.14, 'min_chars_per_sec': 12.6})
+        self.assertFalse(t.warm)
+        self.assertEqual(t.reference, 15.12)
+
+    def test_the_band_recentres_on_the_shipped_takes_median(self):
+        t = self._tracker()
+        for cps in (14.0, 14.2, 13.9, 14.3):
+            t.observe(1000, 1000 / cps)
+        self.assertTrue(t.warm)
+        self.assertAlmostEqual(t.reference, 14.1, places=6)
+        band = t.band()
+        # The seed band's RATIOS, around the book's pace: 18.14/15.12 and 15.12/12.6.
+        self.assertAlmostEqual(band['max_chars_per_sec'], round(14.1 * 18.14 / 15.12, 2))
+        self.assertAlmostEqual(band['min_chars_per_sec'], round(14.1 / (15.12 / 12.6), 2))
+        # Shift's fastest shipped take (998 chars in 53.6 s = 18.6) is now SHORT
+        # against the book's pace, where the fixed band (19.27) let it through.
+        self.assertTrue(truncation.check('x' * 998, audio_for(998, 18.6), RATE, **band).short)
+
+    def test_small_chunks_feed_nothing_and_are_short_side_only(self):
+        t = self._tracker()
+        for _ in range(10):
+            t.observe(8, 1.0)          # a heading: 8 chars/s, under MIN_GUARD_CHARS
+        self.assertEqual(t.observed, 0)
+        self.assertFalse(t.warm)
+        # Through the ladder: a 40-char heading at 5 chars/s is not 'long'...
+        render = FakeRender(lambda t_, s, n: False)
+        events = []
+        out = truncation.render_guarded(render, 'x' * 40, 3, sample_rate=RATE, tracker=t,
+                                        base_seed=1, on_event=events.append)
+        self.assertEqual(events, [])
+        self.assertEqual(len(render.calls), 1)
+        self.assertEqual(len(out), len(audio_for(40)))
+        # ...but the same heading at 60 chars/s (cut off) IS short and re-rolled.
+        events = []
+        calls = {'n': 0}
+
+        def fast_once(text, seed):
+            calls['n'] += 1
+            return audio_for(40, 60.0) if calls['n'] == 1 else audio_for(40)
+        truncation.render_guarded(fast_once, 'x' * 40, 3, sample_rate=RATE, tracker=t,
+                                  base_seed=1, on_event=events.append)
+        self.assertEqual([e['action'] for e in events], ['short', 'rerolled'])
+        self.assertEqual(events[0]['pace_source'], 'recorded')
+
+    def test_the_ladder_feeds_shipped_takes_back_and_not_accepted_misses(self):
+        t = self._tracker()
+        render = FakeRender(lambda t_, s, n: False)
+        for i in range(4):
+            truncation.render_guarded(render, TEXT, i, sample_rate=RATE, tracker=t, base_seed=1,
+                                      on_event=lambda e: None)
+        self.assertTrue(t.warm)
+        self.assertAlmostEqual(t.reference, PACE, places=1)
+        # A chunk that stays short at every rung is accepted and NOT observed.
+        before = t.observed
+        always_short = FakeRender(lambda t_, s, n: True)
+        events = []
+        truncation.render_guarded(always_short, 'x' * 100 + ' ' + 'y' * 100, 9, sample_rate=RATE,
+                                  tracker=t, base_seed=1, on_event=events.append)
+        self.assertEqual(events[-1]['action'], 'accepted-off-length')
+        self.assertEqual(events[-1]['pace_source'], 'book')
+        self.assertEqual(t.observed, before)
+
+    def test_a_malformed_seed_is_refused_by_name(self):
+        for args, why in (((15.0, 14.0, 12.0), 'min < pace < max'),
+                          ((0, 18.0, 12.0), 'positive'),
+                          ((15.0, 18.0, -1), 'positive')):
+            with self.assertRaises(ValueError) as caught:
+                truncation.PaceTracker(*args)
+            self.assertIn(why, str(caught.exception))
+
+
 class VoiceBandTest(unittest.TestCase):
-    """The catalog's derived band rides on the voice and the guard uses it."""
+    """The catalog's recorded pace and seed band ride on the voice and seed the guard's tracker."""
 
     def _load(self, entry):
         import json, tempfile
@@ -193,20 +274,29 @@ class VoiceBandTest(unittest.TestCase):
             json.dump({'v': {'kind': 'default', **entry}}, h)
         return load_voices(p)['v']
 
-    def test_a_band_in_the_document_lands_on_the_voice_and_wins_over_the_default(self):
-        v = self._load({'maxCharsPerSec': 21.7, 'minCharsPerSec': 13.6})
-        self.assertEqual((v.max_chars_per_sec, v.min_chars_per_sec), (21.7, 13.6))
-        self.assertEqual(truncation.band_for(v, 20.0, 14.5),
-                         {'max_chars_per_sec': 21.7, 'min_chars_per_sec': 13.6})
+    def test_a_band_in_the_document_lands_on_the_voice_and_seeds_the_tracker(self):
+        v = self._load({'maxCharsPerSec': 21.7, 'minCharsPerSec': 13.6, 'paceCharsPerSec': 17.2})
+        self.assertEqual((v.max_chars_per_sec, v.min_chars_per_sec, v.pace_chars_per_sec),
+                         (21.7, 13.6, 17.2))
+        tracker = truncation.tracker_for(v, 20.0, 14.5)
+        self.assertEqual(tracker.seed_pace, 17.2)
+        self.assertEqual(tracker.band(), {'max_chars_per_sec': 21.7, 'min_chars_per_sec': 13.6})
         bare = self._load({})
         self.assertIsNone(bare.max_chars_per_sec)
-        self.assertEqual(truncation.band_for(bare, 20.0, 14.5),
-                         {'max_chars_per_sec': 20.0, 'min_chars_per_sec': 14.5})
+        self.assertIsNone(bare.pace_chars_per_sec)
+        default = truncation.tracker_for(bare, 20.0, 14.5)
+        self.assertEqual(default.band(), {'max_chars_per_sec': 20.0, 'min_chars_per_sec': 14.5})
+        self.assertAlmostEqual(default.seed_pace, truncation.expected_chars_per_sec(20.0, 14.5))
 
-    def test_half_a_band_or_an_inverted_one_is_refused_by_name(self):
-        for entry, why in (({'maxCharsPerSec': 21.7}, 'one edge'),
-                           ({'maxCharsPerSec': 10.0, 'minCharsPerSec': 14.5}, 'min < pace < max'),
-                           ({'maxCharsPerSec': -1, 'minCharsPerSec': 14.5}, 'positive')):
+    def test_a_partial_band_or_an_inverted_one_is_refused_by_name(self):
+        for entry, why in (({'maxCharsPerSec': 21.7}, 'all three or none'),
+                           ({'maxCharsPerSec': 21.7, 'minCharsPerSec': 13.6}, 'all three or none'),
+                           ({'maxCharsPerSec': 10.0, 'minCharsPerSec': 14.5, 'paceCharsPerSec': 12.0},
+                            'min < pace < max'),
+                           ({'maxCharsPerSec': 21.7, 'minCharsPerSec': 13.6, 'paceCharsPerSec': 30.0},
+                            'min < pace < max'),
+                           ({'maxCharsPerSec': -1, 'minCharsPerSec': 14.5, 'paceCharsPerSec': 17.0},
+                            'positive')):
             with self.assertRaises(ValueError) as caught:
                 self._load(entry)
             self.assertIn(why, str(caught.exception))

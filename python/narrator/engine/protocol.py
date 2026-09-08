@@ -167,13 +167,19 @@ class ClipsVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
-    #: THE LENGTH GUARD'S BAND FOR THIS VOICE, chars of text per second of
-    #: audio, derived by the catalog from the voice's MEASURED pace (Owen,
-    #: 2026-09-06: a Higgs voice's chars-per-second is recorded in the
-    #: configuration as part of the normal ladder, like an Orpheus voice's,
-    #: and the guard uses it): `max` = p99 x 1.15 (above it the take is too
-    #: SHORT), `min` = p05 / 1.15 (below it the take ran ON). None = the voice
-    #: has no measured pace yet and the engine's own default band applies.
+    #: THE VOICE'S RECORDED PACE AND THE LENGTH GUARD'S SEED BAND, chars of
+    #: text per second of audio, from the catalog (Owen, 2026-09-06: a Higgs
+    #: voice's chars-per-second is recorded in the configuration as part of
+    #: the normal ladder, like an Orpheus voice's, and the guard uses it).
+    #: `pace` is the ladder's median; `max` = pace x 1.2 (above it the take is
+    #: too SHORT) and `min` = pace / 1.3 (below it the take ran ON), the two
+    #: being BookForge's PACE_GUARD_SHORT_FACTOR / PACE_GUARD_LONG_FACTOR
+    #: (higgs-models.ts). THE GUARD KEEPS ONLY THE RATIOS: from
+    #: 2026-09-08 it re-centres the band on the book's own running pace
+    #: (`truncation.PaceTracker`), because a book paces itself and the fixed
+    #: band let a 0.76x take ship on Shift. All three or none (`load_voices`
+    #: refuses a partial set); None = unmeasured, the engine's default band.
+    pace_chars_per_sec: Optional[float] = None
     max_chars_per_sec: Optional[float] = None
     min_chars_per_sec: Optional[float] = None
     #: The voice's OWN sampling, from the catalog's per-backend block
@@ -248,13 +254,19 @@ class DefaultVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
-    #: THE LENGTH GUARD'S BAND FOR THIS VOICE, chars of text per second of
-    #: audio, derived by the catalog from the voice's MEASURED pace (Owen,
-    #: 2026-09-06: a Higgs voice's chars-per-second is recorded in the
-    #: configuration as part of the normal ladder, like an Orpheus voice's,
-    #: and the guard uses it): `max` = p99 x 1.15 (above it the take is too
-    #: SHORT), `min` = p05 / 1.15 (below it the take ran ON). None = the voice
-    #: has no measured pace yet and the engine's own default band applies.
+    #: THE VOICE'S RECORDED PACE AND THE LENGTH GUARD'S SEED BAND, chars of
+    #: text per second of audio, from the catalog (Owen, 2026-09-06: a Higgs
+    #: voice's chars-per-second is recorded in the configuration as part of
+    #: the normal ladder, like an Orpheus voice's, and the guard uses it).
+    #: `pace` is the ladder's median; `max` = pace x 1.2 (above it the take is
+    #: too SHORT) and `min` = pace / 1.3 (below it the take ran ON), the two
+    #: being BookForge's PACE_GUARD_SHORT_FACTOR / PACE_GUARD_LONG_FACTOR
+    #: (higgs-models.ts). THE GUARD KEEPS ONLY THE RATIOS: from
+    #: 2026-09-08 it re-centres the band on the book's own running pace
+    #: (`truncation.PaceTracker`), because a book paces itself and the fixed
+    #: band let a 0.76x take ship on Shift. All three or none (`load_voices`
+    #: refuses a partial set); None = unmeasured, the engine's default band.
+    pace_chars_per_sec: Optional[float] = None
     max_chars_per_sec: Optional[float] = None
     min_chars_per_sec: Optional[float] = None
     #: The voice's OWN sampling, from the catalog's per-backend block

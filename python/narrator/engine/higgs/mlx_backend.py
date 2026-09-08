@@ -1543,13 +1543,25 @@ class HiggsV3MlxEngine:
         return truncation.render_guarded(
             lambda part, seed: self.render_audio(part, seed=seed, index=index),
             clean, index, sample_rate=self.SAMPLE_RATE,
-            # THE VOICE'S OWN BAND when the catalog measured its pace (Owen,
-            # 2026-09-06: the guard uses the recorded chars-per-second), else
-            # the engine default band - which is itself a measurement (Fuhrer,
-            # deathstalker), not a guess. `truncation.band_for` states which.
-            **truncation.band_for(self.voice_ref, float(self.config.max_chars_per_sec),
-                                  float(self.config.min_chars_per_sec)),
+            # THE BAND FOLLOWS THE BOOK (Owen, 2026-09-08): one tracker per
+            # engine, seeded from the voice's recorded pace and band when the
+            # catalog measured them, else from the engine default band - itself
+            # a measurement (Fuhrer, deathstalker), not a guess - and re-centred
+            # on the shipped takes' own median. `truncation.tracker_for`.
+            tracker=self._pace_tracker(),
             base_seed=self.config.seed, first_take=first_take)
+
+    def _pace_tracker(self):
+        """The engine's ONE `PaceTracker`, made on first use so the running
+        pace spans the whole book and a test that builds the engine without
+        `__init__` still gets one."""
+        tracker = getattr(self, '_pace', None)
+        if tracker is None:
+            tracker = truncation.tracker_for(
+                self.voice_ref, float(self.config.max_chars_per_sec),
+                float(self.config.min_chars_per_sec))
+            self._pace = tracker
+        return tracker
 
     def convert_batch(self, items) -> list:
         """Render `items` - `(index, text)` in BOOK ORDER - and answer one bool

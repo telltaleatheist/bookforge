@@ -465,7 +465,8 @@ def load_voices(path: str = None, *, allowed_controls=None,
                 name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
                 max_chars_source=None if max_chars is None else source,
                 target_chars=target, max_chars_per_sec=band[0],
-                min_chars_per_sec=band[1], sampling=sampling)
+                min_chars_per_sec=band[1], pace_chars_per_sec=band[2],
+                sampling=sampling)
             continue
         voices[name] = ClipsVoice(
             clips=tuple(clips),
@@ -480,6 +481,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
             target_chars=target,
             max_chars_per_sec=band[0],
             min_chars_per_sec=band[1],
+            pace_chars_per_sec=band[2],
             sampling=sampling,
         )
     return voices
@@ -522,29 +524,34 @@ def _voice_sampling(path: str, name: str, entry: dict):
 
 
 def _length_band(path: str, name: str, entry: dict):
-    """The voice's `maxCharsPerSec` / `minCharsPerSec` (the length guard's
-    band, derived by the catalog from the measured pace), as a (max, min) pair
-    of floats or Nones. Both or neither: a band with one edge is a pace nobody
-    finished writing, and is refused by name. Positive, and min below max."""
+    """The voice's `maxCharsPerSec` / `minCharsPerSec` / `paceCharsPerSec` (the
+    length guard's seed band and the recorded pace it was derived from), as a
+    (max, min, pace) triple of floats or Nones. ALL THREE OR NONE: a band with
+    an edge missing, or a band with no pace to re-centre from, is a pace
+    nobody finished writing, and is refused by name. Positive, and
+    min < pace < max."""
     hi = entry.get('maxCharsPerSec')
     lo = entry.get('minCharsPerSec')
-    if hi is None and lo is None:
-        return (None, None)
-    if hi is None or lo is None:
+    pace = entry.get('paceCharsPerSec')
+    if hi is None and lo is None and pace is None:
+        return (None, None, None)
+    if hi is None or lo is None or pace is None:
         raise ValueError(
-            f"{path}: voice '{name}' declares only one edge of its length band "
-            f'(maxCharsPerSec={hi!r}, minCharsPerSec={lo!r}). The band comes from '
-            'the measured pace as a pair; write both or neither.')
-    for label, value in (('maxCharsPerSec', hi), ('minCharsPerSec', lo)):
+            f"{path}: voice '{name}' declares only part of its length band "
+            f'(maxCharsPerSec={hi!r}, minCharsPerSec={lo!r}, paceCharsPerSec={pace!r}). '
+            'The band comes from the measured pace as a triple - the pace and the '
+            'two edges derived from it; write all three or none.')
+    for label, value in (('maxCharsPerSec', hi), ('minCharsPerSec', lo),
+                         ('paceCharsPerSec', pace)):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(
                 f"{path}: voice '{name}' declares {label} {value!r}, which is not a "
                 'positive number of characters per second.')
-    if float(lo) >= float(hi):
+    if not (float(lo) < float(pace) < float(hi)):
         raise ValueError(
-            f"{path}: voice '{name}' declares minCharsPerSec {lo} at or above "
-            f'maxCharsPerSec {hi}; the band is min < pace < max.')
-    return (float(hi), float(lo))
+            f"{path}: voice '{name}' declares minCharsPerSec {lo}, paceCharsPerSec "
+            f'{pace}, maxCharsPerSec {hi} out of order; the band is min < pace < max.')
+    return (float(hi), float(lo), float(pace))
 
 
 def load_voice(name: str, path: str = None, **engine_defaults) -> ClipsVoice:

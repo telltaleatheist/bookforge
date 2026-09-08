@@ -57,6 +57,9 @@ def _engine(*, ceiling: int, budget: float = 42.0,
     # convert: the chunk's seed rule and the chars-per-second guard.
     from types import SimpleNamespace
     engine.config = SimpleNamespace(seed=None, max_chars_per_sec=20.0, min_chars_per_sec=14.5)
+    # ...and the voice the guard's `_pace_tracker()` seeds itself from: one with
+    # no pace fields, so `tracker_for` falls to the engine's default band above.
+    engine.voice_ref = SimpleNamespace()
     return engine
 
 
