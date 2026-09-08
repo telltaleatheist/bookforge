@@ -14,18 +14,29 @@
  * Electron under it), and a dialog that blanked its model field there would be
  * a dialog that cannot be looked at. So this only ever overwrites with an
  * answer main actually gave.
+ *
+ * CLEAN TEXT TAKES ONLY THE URL. `defaultLlmModel` is the seed for translate,
+ * simplify and analyse; the narration cleanup carries its own declared default
+ * (`DEFAULT_CLEAN_TEXT_MODEL`, mirroring the engine's `DEFAULT_NORMALIZER_MODEL`)
+ * — Owen, 2026-09-02. So `seedOllamaDefault` is the same read with the model
+ * half left alone, rather than a second hand-written copy of the read.
  */
 import type { WritableSignal } from '@angular/core';
 
 import { api } from './foundry';
 
 export function seedLlmDefaults(
-  model: WritableSignal<string>,
+  model: WritableSignal<string> | null,
   ollama: WritableSignal<string>,
 ): void {
   if (!api) return;
   void api.llm.defaults().then((defaults) => {
-    if (defaults.model.trim().length > 0) model.set(defaults.model);
+    if (model !== null && defaults.model.trim().length > 0) model.set(defaults.model);
     if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
   });
+}
+
+/** The URL half alone — for a dialog whose model is not `defaultLlmModel`'s to set. */
+export function seedOllamaDefault(ollama: WritableSignal<string>): void {
+  seedLlmDefaults(null, ollama);
 }

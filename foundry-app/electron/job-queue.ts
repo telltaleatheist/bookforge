@@ -284,6 +284,17 @@ function productOf(request: EngineRequest): string {
   return request.outputPath;
 }
 
+/**
+ * THE PROJECT A REQUEST NAMES OUTRIGHT, or null — `ConversionRequest.home`,
+ * for a product a host asked to have written outside every project. Every
+ * caller below asks this FIRST and the path second: `homeOf(request) ??
+ * projectDirOf(outputPath)`. For every request this app composes it is null and
+ * the path answers, exactly as it always did.
+ */
+function homeOf(request: JobRequest | EngineRequest): string | null {
+  return 'home' in request && typeof request.home === 'string' ? request.home : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The promised chain — what a row will land, and what it has to wait for
 // ─────────────────────────────────────────────────────────────────────────────
@@ -566,7 +577,7 @@ async function materializeDeferred(
 ): Promise<EngineRequest> {
   const deferred = deferralOf(request);
   if (deferred === undefined) return request;
-  const dir = projectDirOf(productOf(request));
+  const dir = homeOf(request) ?? projectDirOf(productOf(request));
   if (dir === null) {
     throw new Error(
       'This work was to be made from a step that had not finished yet, and it no longer belongs to '
@@ -796,9 +807,11 @@ async function inheritedMintMetaFor(dir: string): Promise<MintMeta | null> {
 async function chainLanguageOf(
   outputPath: string,
   parentStep: string | null,
+  /** The request's own project, for a file written outside it (`homeOf`). */
+  home: string | null = null,
 ): Promise<string | undefined> {
   if (parentStep === null) return undefined;
-  const dir = projectDirOf(outputPath);
+  const dir = home ?? projectDirOf(outputPath);
   if (dir === null) return undefined;
   try {
     const ledger = ledgerOf(await readManifest(dir));
@@ -2805,8 +2818,10 @@ async function recordFor(
   outputPath: string,
   kind: ConversionKind,
   parentStep: string | null,
+  /** The request's own project, for a file written outside it (`homeOf`). */
+  home: string | null = null,
 ): Promise<Record<string, string>> {
-  const dir = projectDirOf(outputPath);
+  const dir = home ?? projectDirOf(outputPath);
   if (dir === null) return {};
   return metadataForProduct(dir, kind === 'pdf' ? 'pdf' : 'epub', parentStep);
 }
@@ -3033,7 +3048,9 @@ async function reconcileChains(): Promise<void> {
       delete job.after;
       continue;
     }
-    const dir = projectDirOf(job.outputPath);
+    // The request's own project first: a host's implied export lies outside
+    // every project and would otherwise be un-chained here as an orphan.
+    const dir = (request === undefined ? null : homeOf(request)) ?? projectDirOf(job.outputPath);
     if (dir === null) {
       delete job.after;
       continue;
@@ -3473,7 +3490,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * and neither of them re-derives the other's answer.
    */
   const merged = exporting
-    ? await recordFor(next.outputPath, request.kind, next.parentStep ?? null)
+    ? await recordFor(next.outputPath, request.kind, next.parentStep ?? null, homeOf(request))
     : {};
   const record = exporting && request.kind !== 'txt'
     ? {
@@ -4159,7 +4176,16 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
        * an empty one, and a title the compile already took from the scan is
        * strictly better than that word over it.
        */
-      const projectDir = projectDirOf(next.outputPath);
+      /*
+       * WHERE IT LANDED, AND WHOSE IT IS — two questions since a host may ask
+       * for the file OUTSIDE every project (`ConversionRequest.home`). The
+       * project answers for the mint block and the announcement; the path
+       * answers for whether anything of this app's filed it, and a file filed
+       * nowhere is announced as `unfiled` so the mount answers its awaiting
+       * caller without telling the host's shelf about a version that is not one.
+       */
+      const filedIn = projectDirOf(next.outputPath);
+      const projectDir = homeOf(request) ?? filedIn;
       let minted: ExportMintMetadata | undefined;
       const inherited = request.kind === 'epub' && request.mintMeta === undefined && projectDir !== null
         ? await inheritedMintMetaFor(projectDir)
@@ -4170,7 +4196,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       if (request.kind === 'epub' && confirmed !== undefined) {
         const meta = confirmed;
         const declared = request.language
-          ?? await chainLanguageOf(next.outputPath, madeFrom)
+          ?? await chainLanguageOf(next.outputPath, madeFrom, homeOf(request))
           ?? meta.language;
         minted = {
           title: meta.title,
@@ -4223,6 +4249,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
             // absent means "minted before the modal existed", never "no
             // metadata" (`ExportLanding.metadata`).
             ...(minted !== undefined ? { metadata: minted } : {}),
+            ...(filedIn === null ? { unfiled: true as const } : {}),
           });
         } catch (err) {
           console.error(
