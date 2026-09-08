@@ -96,3 +96,76 @@ export function findLandedExport(
   const live = matches.find((v) => v.foundrySource !== undefined);
   return live ?? matches[0] ?? null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Waiting for an IMPLIED export to be WRITTEN — the other half, and a different
+// fact
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The implied exports this process has ordered, by the path they will be written
+ * to, each held as the promise `exportEpubFromStep` returned for it.
+ *
+ * ── Why this registry has to exist at all ───────────────────────────────────
+ *
+ * An export ordered through the mount NEVER enters BookForge's queue.
+ * `exportEpubFromStep` ends in `queue.enqueueHere(request, stepId)` — Foundry's
+ * own internal list, deliberately, and the seam says so in as many words:
+ * *"ONLY WHAT A PERSON PRESSED IN THIS WINDOW ROUTES. An export the host itself
+ * ordered stays on Foundry's internal queue."* So there is no row of ours to
+ * wait on, no `outputPath` of ours to match, and nothing in `queue-engine.json`
+ * that could ever mention it. The first cut of the implied-export wave watched
+ * our own rows for it and therefore watched for something that cannot appear:
+ * the race resolved null every time and the press quietly ordered a second
+ * export (Owen, 2026-09-08 — three presses, six empty `implied-*` folders).
+ *
+ * What the mount DOES give us is the promise, which settles exactly when the
+ * export lands or fails, whatever hour that is — a deferred one waits on the
+ * very text pass the narration is chained behind. So the promise is the fact,
+ * and this holds it for the `foundry-export-landing` step to await instead of
+ * polling a directory.
+ *
+ * NOT A CACHE, AND NOT LOAD-BEARING ACROSS A RESTART. An app that stops loses
+ * every entry here, and the step falls back to asking the filesystem, which is
+ * the honest answer when nobody is left holding the promise.
+ */
+const impliedExportsInFlight = new Map<string, Promise<unknown>>();
+
+function impliedLane(toPath: string): string {
+  return toPath.replace(/\\/g, '/').toLowerCase();
+}
+
+/** Hold the ordered export's promise under the path it will be written to. */
+export function noteImpliedExportOrdered(toPath: string, landing: Promise<unknown>): void {
+  const lane = impliedLane(toPath);
+  impliedExportsInFlight.set(lane, landing);
+  void landing.then(() => undefined, () => undefined).then(() => {
+    if (impliedExportsInFlight.get(lane) === landing) impliedExportsInFlight.delete(lane);
+  });
+}
+
+/**
+ * Wait for the implied export at `toPath` to settle, or return `'unheld'` at
+ * once when nobody in this process ordered it — which is what a restart leaves
+ * behind, and is a fact the caller must be told rather than have smoothed over.
+ *
+ * A FAILED export settles this wait too, and REJECTS it with Foundry's own
+ * sentence: the step then says why the book it was to read was never written,
+ * in the engine's words rather than in a guess of ours.
+ */
+export function awaitImpliedExport(
+  toPath: string,
+  signal: AbortSignal,
+): Promise<'landed' | 'unheld'> {
+  const landing = impliedExportsInFlight.get(impliedLane(toPath));
+  if (landing === undefined) return Promise.resolve('unheld');
+  return new Promise<'landed' | 'unheld'>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error('Stopped while waiting for the book to be written.'));
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    void landing.then(
+      () => { signal.removeEventListener('abort', onAbort); resolve('landed'); },
+      (err: unknown) => { signal.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+}

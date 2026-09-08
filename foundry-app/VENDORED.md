@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ca0bf1c** — *fix(tree): a press that throws says so — no act in this panel can fail silently* |
+| Source sha | **5ee8be6** — *feat(queue): the hosted shelf draws Foundry's own live work, and its ✕ reaches it* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive ca0bf1c app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 5ee8be6 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1078,3 +1078,14 @@ on; the Foundry window is not subscribed to it and cannot be, so a host refusal 
 in THAT window lands in a strip nobody was looking at, and nothing logs it. The door does re-throw,
 so with this wrap the message now surfaces where the press was made. 1 file, 141 blobs
 hash-verified, no IPC change, no dep movement.
+**5ee8be6 (copied 2026-09-08) — the hosted shelf draws Foundry's OWN live rows, and its ✕ reaches
+them.** Fallout from the implied-export hunt: an export the host orders NEVER routes to our queue
+(`exportEpubFromStep` ends in `queue.enqueueHere`, by the seam's oldest rule), so a DEFERRED one
+waits on Foundry's internal list for as long as the text pass it is chained behind takes — and
+hosted `shelfJobs()` used to show only our rows plus their never-routed kinds, which made that wait
+invisible and uncancellable. It now includes every LIVE row of theirs (settled ones still leave at
+the settle), and `cancel`/`remove` route on WHOSE list the id is in rather than on the row's kind —
+which also closes a latent one, a ✕ on one of their rows forwarding to us with an id we have never
+seen. The implied export's row is titled "Book for narration — <file>" to read as the same act our
+landing row names. Owen's ruling that an implied EPUB is invisible is about FILES and VERSIONS, not
+about a running job he cannot see or stop. 141 blobs hash-verified, no IPC change, no dep movement.

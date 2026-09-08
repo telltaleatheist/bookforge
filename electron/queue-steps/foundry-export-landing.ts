@@ -29,7 +29,9 @@
  */
 import * as path from 'node:path';
 import * as manifestService from '../manifest-service';
-import { awaitFoundryLandingRecorded, findLandedExport } from '../foundry-landing-wait';
+import {
+  awaitFoundryLandingRecorded, awaitImpliedExport, findLandedExport,
+} from '../foundry-landing-wait';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import type { ProjectVariant } from '../manifest-types';
@@ -84,13 +86,25 @@ export const foundryExportLandingStep: StepModule = {
           `This export-landing row names its implied export as "${config.unfiledPath}", which is `
           + 'not an absolute path. The row was composed wrongly rather than the work failing.');
       }
-      ctx.report({ message: `Checking for ${path.basename(config.unfiledPath)}` });
+      /*
+       * WAIT FOR THE PROMISE, NOT FOR THE DIRECTORY. The export is on FOUNDRY's
+       * own queue (`exportEpubFromStep` ends in `enqueueHere`), chained behind
+       * the very text pass this row hangs under — so at the moment this step
+       * becomes runnable the file is typically seconds away, and polling would
+       * be this side guessing at a fact the mount already promised us.
+       * `awaitImpliedExport` resolves when that promise settles and REJECTS with
+       * Foundry's own sentence when the export failed, which is the honest thing
+       * to tell somebody whose narration has no book to read.
+       */
+      ctx.report({ message: `Waiting for ${path.basename(config.unfiledPath)} to be written` });
+      const held = await awaitImpliedExport(config.unfiledPath, ctx.signal);
       const fs = await import('node:fs');
       if (!fs.existsSync(config.unfiledPath)) {
-        throw new Error(
-          `The export this narration reads (${config.unfiledPath}) is not on disk although its `
-          + 'row finished. It is scratch: an app start sweeps what no queue step names, so a '
-          + 'chain interrupted for long enough loses it. Press Narrate on the step again.');
+        throw new Error(held === 'unheld'
+          ? `The export this narration reads (${config.unfiledPath}) is not on disk, and nothing in `
+            + 'this app is making it — the press that ordered it was in an earlier run, and an '
+            + 'implied export does not survive one. Press Narrate on the step again.'
+          : `Foundry reported the export at ${config.unfiledPath} as written and it is not there.`);
       }
       ctx.report({ percent: 100, message: `Book for narration: ${path.basename(config.unfiledPath)}`, detail: null });
       return {

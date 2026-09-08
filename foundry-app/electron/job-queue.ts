@@ -1115,10 +1115,30 @@ export function shelfJobs(): Job[] {
   if (hostQueue() === null) return listJobs();
   const rows: Job[] = [];
   for (const held of hostRowsByProject.values()) rows.push(...held.map(copyOf));
-  // Every row of ours that never routed, not just the installs: a mint is
-  // minutes long and drawing nothing for it while hosted would leave a person
-  // watching an app that looks idle while it works.
-  return [...rows, ...jobs.filter((job) => NEVER_ROUTED[job.kind]).map(copyOf)];
+  /*
+   * AND EVERY ROW OF OURS THAT IS STILL ALIVE — not just the never-routed kinds.
+   *
+   * A mint is minutes long and drawing nothing for it while hosted would leave a
+   * person watching an app that looks idle while it works; that was the original
+   * reason and it is unchanged. What it missed is the door the HOST orders work
+   * through: `exportEpubFromStep` enqueues here rather than routing (mount.ts's
+   * header says why), and while that only ever meant "an export that runs at
+   * once" the row was gone before anybody could have looked for it. A deferred
+   * one waits — Owen's narrate on a running cleanup orders an EPUB that sits
+   * behind it for as long as the cleanup takes — and until this line it sat
+   * there invisible in both windows and reachable by no gesture at all: six of
+   * them were queued on the Mac before anyone could see one (2026-09-08).
+   *
+   * ALIVE ONLY, which keeps `runNow`'s rule intact: a settled row leaves this
+   * app's list at the settle and does not accumulate in anybody's shelf. What is
+   * drawn is work this app is doing or is about to, which is exactly what a
+   * queue is for.
+   */
+  const alive = jobs.filter(
+    (job) => NEVER_ROUTED[job.kind]
+      || job.state === 'held' || job.state === 'queued' || job.state === 'running',
+  );
+  return [...rows, ...alive.map(copyOf)];
 }
 
 /**
@@ -1229,8 +1249,20 @@ const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
  * An id belonging to no row of ours answers false and routes, which is the
  * ordinary case and the whole of the host’s queue.
  */
-function neverRouted(id: string): boolean {
-  return jobs.some((job) => job.id === id && NEVER_ROUTED[job.kind]);
+/**
+ * IS THIS ROW OURS — the test the two gestures route on, and it is the row's
+ * OWNERSHIP rather than its kind.
+ *
+ * It was `NEVER_ROUTED[job.kind]`, which answered for the mint and the install
+ * and nothing else, because nothing else of ours was ever drawn hosted. Now the
+ * shelf draws every live row of ours (`shelfJobs`), and a ✕ on one of those has
+ * to reach the row it is drawn on: forwarding it to the host would hand a host
+ * queue an id from a list it has never seen, which is a button that does
+ * nothing. Ours are `randomUUID`s and a host's are its own step ids, so the
+ * lists cannot collide; being IN this list is the whole of the question.
+ */
+function ourRow(id: string): boolean {
+  return jobs.some((job) => job.id === id);
 }
 
 /**
@@ -1415,6 +1447,19 @@ export function enqueueHere(
     id: randomUUID(),
     inputPath: request.inputPath,
     outputPath,
+    /*
+     * AN IMPLIED EXPORT SAYS WHAT IT IS FOR, in the host's own words for it.
+     * `home` is set by exactly one caller — `exportEpubFromStep(…, { to })`, the
+     * EPUB a host makes because somebody pressed Narrate and there was no file
+     * (shared/types.ts, `ConversionRequest.home`) — so this is not a guess about
+     * intent. BookForge's landing row calls itself "Book for narration", and two
+     * rows for one act saying it in different words would be worse than either
+     * (their session's request, 2026-09-08). Every other export keeps the
+     * filename the shelf has always shown it under.
+     */
+    ...(homeOf(request) !== null
+      ? { title: `Book for narration — ${path.basename(outputPath)}` }
+      : {}),
     kind: request.kind,
     /*
      * ── THE HOLD IS FOR THE EXPENSIVE ONE ONLY ──────────────────────────────
@@ -1884,7 +1929,7 @@ export function start(): number {
  */
 export function remove(id: string): void {
   const host = hostQueue();
-  if (host !== null && !neverRouted(id)) {
+  if (host !== null && !ourRow(id)) {
     forwardToHost('remove', host.remove === undefined ? undefined : () => { host.remove?.(id); });
     return;
   }
@@ -1986,9 +2031,9 @@ export function enqueueEnvInstall(request: EnvInstallRequest, reason?: string): 
  */
 export function cancel(id: string): void {
   const host = hostQueue();
-  // A row that never routed is ours however this window is hosted, and its ✕ is
-  // reachable in the hosted shelf now that it draws the row — see `neverRouted`.
-  if (host !== null && !neverRouted(id)) {
+  // A row of ours is ours however this window is hosted, and its ✕ is reachable
+  // in the hosted shelf because that shelf now draws it — see `ourRow`.
+  if (host !== null && !ourRow(id)) {
     forwardToHost('cancel', host.cancel === undefined ? undefined : () => { host.cancel?.(id); });
     return;
   }

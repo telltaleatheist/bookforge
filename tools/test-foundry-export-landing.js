@@ -119,10 +119,11 @@ const tick = () => new Promise((r) => setImmediate(r));
       step: { config }, stepId: 'step_x', job: {}, signal: new AbortController().signal,
       report: (r) => reports.push(r), input: null,
     });
-    // Not there yet: refused by name, naming the scratch rule.
+    // Not there, and nobody in this process is making it: refused by name, and the
+    // sentence says WHY nothing is coming rather than blaming the file.
     await assert.rejects(
       landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub })),
-      /is not on disk although its row finished/);
+      /nothing in this app is making it/);
     fs.writeFileSync(epub, 'EPUB');
     const out = await landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub, forStep: 's1' }));
     assert.strictEqual(out.kind, 'epub');
@@ -133,6 +134,37 @@ const tick = () => new Promise((r) => setImmediate(r));
     await assert.rejects(
       landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: 'x.epub', unfiledPath: 'relative/x.epub' })),
       /not an absolute path/);
+  });
+
+  await test('THE LANDING STEP AWAITS FOUNDRY\'S OWN PROMISE — the export is on their queue, never ours', async () => {
+    const os = require('os');
+    const wait = require(path.join(DIST, 'electron', 'foundry-landing-wait.js'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-implied-wait-'));
+    const epub = path.join(dir, 'Held. Author. (2001).epub');
+    const ctx = (config) => ({
+      step: { config }, stepId: 's', job: {}, signal: new AbortController().signal,
+      report: () => {}, input: null,
+    });
+    // Held and settling late: the step waits for the promise, not for a poll.
+    let settle;
+    wait.noteImpliedExportOrdered(epub, new Promise((r) => { settle = r; }));
+    const running = landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub }));
+    let done = false;
+    void running.then(() => { done = true; }, () => { done = true; });
+    await tick();
+    assert.strictEqual(done, false, 'it is still waiting on the promise');
+    fs.writeFileSync(epub, 'EPUB');
+    settle({ path: epub, unfiled: true });
+    const out = await running;
+    assert.strictEqual(out.path, epub);
+
+    // A FAILED export rejects the wait with the engine's own sentence.
+    const bad = path.join(dir, 'Bad. Author. (2001).epub');
+    wait.noteImpliedExportOrdered(bad, Promise.reject(new Error('the model is not pulled')));
+    await assert.rejects(
+      landingStep.run(ctx({ bookDir: dir, projectKey: 'k', fileName: path.basename(bad), unfiledPath: bad })),
+      /the model is not pulled/);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await test('THE IMPLIED-EXPORT PATH: minted top-level in scratch as implied-<id>/<book>.epub, and recognised back; sessions and versions are not', () => {
