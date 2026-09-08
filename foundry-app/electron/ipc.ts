@@ -2604,8 +2604,27 @@ export function registerIpc(): void {
      */
     const promised = rowMinting(rowsIn(projectDir), stepId);
     if (promised !== null) {
-      if (promised.state === 'running') queue.cancel(promised.id);
-      else queue.remove(promised.id);
+      /*
+       * `remove` FIRST AND ALWAYS, because Owen's ruling is that the thing is
+       * GONE: *"if that item is removed from the queue, anything under it also
+       * disappears."* A host's remove stops a running row and drops it with its
+       * whole subtree (BookForge's `queue-engine.removeStep`, confirmed by that
+       * session 2026-09-08), so hosted this is the whole gesture for a running
+       * ghost as much as for a waiting one.
+       *
+       * AND `cancel` IS THE FALLBACK, NOT THE RULE. Foundry's own `remove`
+       * refuses a row that is already running — it splices `held` and `queued`
+       * only — so standalone a running ghost would survive the press in silence.
+       * Cancelling it stops the work and leaves the row on the shelf as
+       * `cancelled`, which is a dead row where Owen asked for none; it is still
+       * the better of the two, because the alternative is a button that does
+       * nothing. The ghost CARD goes either way (`PENDING_IN` excludes a
+       * cancelled row), which is what the tree draws.
+       */
+      queue.remove(promised.id);
+      if (queue.shelfJobsFor(projectDir).some((row) => row.id === promised.id && row.state === 'running')) {
+        queue.cancel(promised.id);
+      }
       const view = await readStepLedger(projectDir);
       if (view === null) throw new Error(`${projectDir} has no history to show after the removal.`);
       return view;

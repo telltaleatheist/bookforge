@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **2b1bcd1** — *fix(queue): a chain waits on the shelf it was composed from, and a ghost step is deleted off the queue* |
+| Source sha | **b381122** — *fix(queue): removing a ghost step calls remove even when it is running — cancel is only the standalone fallback* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 2b1bcd1 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive b381122 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1046,3 +1046,11 @@ already running), which forward to BookForge's `remove`/`cancel` hosted, so our 
 the queue?" and names the chained rows — the labels are OUR `Job.title` (`labelFor`,
 foundry-host-queue.ts: "Clean text — <file>", "Simplify — <file>", …). 4 files, 141 blobs
 hash-verified, no IPC channel added (IPC-CHANNELS.md wording only), no dep movement.
+**b381122 (copied 2026-09-08) — a ghost's delete calls `remove` in EVERY state, running included.**
+2b1bcd1 called `cancel` for a running ghost; hosted that stops the work but leaves the rows on the
+shelf as `cancelled`, where Owen's ruling is that they disappear. BookForge's `remove` needs no
+special case — `queue-engine.removeStep` stops each running step in the subtree (module cancel +
+abort) and then drops the rows — so `remove` is now the whole gesture. `cancel` survives as a
+fallback for Foundry's STANDALONE queue, whose own `remove` splices held/queued rows only; it is
+guarded on the row still being `running` afterwards, so hosted it never fires. 1 file (ipc.ts), 141
+blobs hash-verified, no IPC change, no dep movement.
