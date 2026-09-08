@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **5ee8be6** — *feat(queue): the hosted shelf draws Foundry's own live work, and its ✕ reaches it* |
+| Source sha | **4d62293** — *feat(app): CleanRequest carries concurrency and keepModel; the clean argv passes them; argsFor exported* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 5ee8be6 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 4d62293 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1089,3 +1089,8 @@ which also closes a latent one, a ✕ on one of their rows forwarding to us with
 seen. The implied export's row is titled "Book for narration — <file>" to read as the same act our
 landing row names. Owen's ruling that an implied EPUB is invisible is about FILES and VERSIONS, not
 about a running job he cannot see or stop. 141 blobs hash-verified, no IPC change, no dep movement.
+
+**4d62293 (copied 2026-09-08) — `CleanRequest.concurrency` / `keepModel`, `argsFor` exported.** Additive,
+for BookForge's headless Clean text door (`cli/clean-step.js`, `--clean`): the app's clean argv passes
+`--concurrency <n>` when set and `--keep-model` only when asked; `argsFor` is exported so a dry run prints
+the spawn without making it. 3 files, tree diff-verified, no IPC change, no dep movement.

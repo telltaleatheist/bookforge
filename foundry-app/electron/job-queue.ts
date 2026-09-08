@@ -2432,7 +2432,16 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
   return said;
 }
 
-function argsFor(
+/**
+ * EXPORTED FOR ONE CALLER AND ONE PURPOSE: a headless door that wants to print the
+ * command line a request WOULD spawn without spawning it (BookForge's
+ * `cli/clean-step.js --dry-run`). A dry run that composed its own argv would be a
+ * second answer to "what does this request run", and the first time the two drifted
+ * the dry run would be reassuring about a command that no longer exists.
+ *
+ * Nothing here runs anything: it is a pure function of the request.
+ */
+export function argsFor(
   request: EngineRequest,
   /**
    * The merged metadata patch this product carries, for the ONE route that puts
@@ -2545,6 +2554,28 @@ function argsFor(
       '--model', request.model,
       '--endpoint', request.ollama,
     ];
+    /*
+     * `--concurrency` ONLY WHEN SOMEBODY SAID A NUMBER. Absent, the flag is not on
+     * the line at all and the engine uses its own default — this file never spells
+     * that default, because a copy of it here is a second place it lives and the
+     * day the engine changes one they disagree. A non-integer or a zero is simply
+     * not a number of blocks in flight, so it is dropped rather than passed on for
+     * the engine to argue with.
+     */
+    if (
+      typeof request.concurrency === 'number'
+      && Number.isInteger(request.concurrency)
+      && request.concurrency > 0
+    ) {
+      args.push('--concurrency', String(request.concurrency));
+    }
+    /*
+     * `--keep-model`, and only ever to say KEEP. The engine releases the weights at
+     * the end of a run on its own; there is no flag for "release" and this must not
+     * invent one, so `false` and absent are the same line — which is right, because
+     * they are the same request.
+     */
+    if (request.keepModel === true) args.push('--keep-model');
     /*
      * The reading these answers are about, written into every row and read by
      * nobody in the engine — `Overlay.generation`'s contract, exactly as the

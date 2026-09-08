@@ -971,6 +971,28 @@ export interface CleanRequest {
   model: string;
   ollama: string;
   /**
+   * `--concurrency`: blocks in flight at once. Absent means the engine's own
+   * (`DEFAULT_CLEAN_CONCURRENCY`, 4) — a number is never filled in here, because a
+   * default written on this side is a second place the engine's default lives and
+   * the two would drift. It changes the SPEED and never the text: every block is
+   * asked the same question at temperature 0, so the only thing this decides is how
+   * many of them are in the air at once.
+   *
+   * The dialog does not offer it (the engine's default is the press's), and the
+   * headless door does — a run being timed is exactly the run that wants to say.
+   */
+  concurrency?: number;
+  /**
+   * `--keep-model`: leave the weights resident when the run ends.
+   *
+   * ABSENT IS THE RELEASE, and that is the engine's own default rather than a
+   * choice made here — `foundry clean-text` unloads with `keep_alive: 0` unless
+   * this says the Ollama is somebody else's (src/clean/runner.ts). So a cleanup
+   * that is not asked about hands the machine back, which is what a run finishing
+   * should mean; a caller doing several in a row sets it and pays the load once.
+   */
+  keepModel?: boolean;
+  /**
    * The reading these answers are about, carried into every row and interpreted by
    * nobody. `TranslateRequest.generation`, one command over.
    */
