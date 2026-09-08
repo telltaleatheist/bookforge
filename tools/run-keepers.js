@@ -153,6 +153,10 @@ const SUITES = [
   'test-cli-parity',
   'test-library-lock',
   'test-job-timing',
+  // The throughput window itself: burst engines (Higgs lands 32 rows at once)
+  // measured 15x fast while the window ended at `now` instead of at the last
+  // landing. See the file's header for the live evidence.
+  'test-rate-window',
   'test-vlm-convert-plan',
   'test-vlm-convert-attach',
   'test-foundry-host',

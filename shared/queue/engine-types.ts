@@ -691,12 +691,9 @@ export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Minimum span, in seconds, before a chunk-rate window is reported at all.
- *
- * Batched engines emit progress in bursts of 64, and consecutive bursts can land
- * only ~25s apart when two batches' emits coalesce — timing that single gap
- * gives 143 chunks/min for a job actually running at ~70. A window shorter than
- * roughly one batch cycle cannot average out that quantization, so it is not
- * shown.
+ * The rate window lives in ./rate-window with the arithmetic that uses it — one
+ * definition, so the engine, the renderer and the host-node readout cannot drift
+ * apart on how long a window has to be. Re-exported here for the callers that
+ * already read it off this module.
  */
-export const RATE_WINDOW_MIN_SECONDS = 45;
+export { RATE_WINDOW_MIN_SECONDS } from './rate-window';

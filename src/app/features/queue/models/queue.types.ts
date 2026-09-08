@@ -10,15 +10,11 @@ import type {
 import type { NarrationTextCleanupChoice } from '@shared/queue/narration-run';
 
 /**
- * Minimum span, in seconds, before a chunk-rate window is reported at all.
- *
- * Batched engines emit progress in bursts of 64, and consecutive bursts can land only
- * ~25s apart when two batches' emits coalesce — timing that single gap gives 143
- * chunks/min for a job actually running at ~70. A window shorter than roughly one batch
- * cycle cannot average out that quantization, so it is not shown. The window only ever
- * widens after that, so the estimate tightens as the job runs.
+ * The rate window and the arithmetic that measures over it live in
+ * @shared/queue/rate-window — ONE definition, tested by `npm run
+ * test:rate-window`. Re-exported so the queue's own imports keep reading it here.
  */
-export const RATE_WINDOW_MIN_SECONDS = 45;
+export { RATE_WINDOW_MIN_SECONDS } from '@shared/queue/rate-window';
 
 /**
  * Which of the two AI-cleanup passes to run. Independent products, not degrees of

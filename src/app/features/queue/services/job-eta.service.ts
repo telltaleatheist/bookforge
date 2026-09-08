@@ -1,12 +1,14 @@
 /**
  * The single throughput measurement every progress readout shares.
  *
- * Speed and ETA must never disagree, so both come from ONE sample per job, taken
- * when a chunk completes and HELD between completions. The readouts used to divide
- * a frozen chunk count by a growing elapsed on every one-second tick, so the rate
- * slid down and the ETA crept up between completions, then both jumped when a chunk
- * landed. That is what the holding does away with: a completion takes one
- * measurement, and the ETA counts down monotonically from it until the next one.
+ * Speed and ETA must never disagree, so both come from ONE sample per job, measured
+ * over the span BETWEEN LANDINGS — anchor completion to latest completion — and
+ * re-measured when the next one lands. The readouts used to divide a frozen chunk
+ * count by a growing elapsed on every one-second tick, so the rate slid down and the
+ * ETA crept up between completions, then both jumped when a chunk landed. A window
+ * whose ends are both completions has neither problem: it cannot slide, because
+ * nothing in it moves until work is actually observed. The ETA counts down
+ * monotonically from the instant the sample was taken until the next landing.
  *
  * State lives HERE rather than in a component because the queue list tears
  * components down and rebuilds them freely; a per-component sample would reset the
@@ -15,7 +17,8 @@
 
 import { Injectable, OnDestroy, signal } from '@angular/core';
 import { runElapsedSeconds, taskElapsedSeconds } from '@shared/queue/job-timing';
-import { JobStageProgress, QueueJob, RATE_WINDOW_MIN_SECONDS } from '../models/queue.types';
+import { throughputSample } from '@shared/queue/rate-window';
+import { JobStageProgress, QueueJob } from '../models/queue.types';
 
 /** The stage fields the ETA math needs — accepts any stage list the UI renders. */
 type StageView = Pick<JobStageProgress, 'name' | 'pct' | 'status' | 'weight'>;
@@ -84,107 +87,75 @@ export class JobEtaService implements OnDestroy {
    * Chunk-throughput sample for a chunked job (TTS, AI cleanup), or null when there
    * isn't yet an honest window to measure.
    *
-   * The window is [firstChunkCompletedAt, now] and contains exactly the completions
-   * since chunksAtFirstStamp — the count the anchor was stamped at. It is NOT
-   * (chunksDone - 1): that convention assumed progress arrives one chunk at a time,
-   * but Orpheus emits "Converting sentence" only when a batch of 64 finishes, so the
-   * FIRST observation is routinely already 128 chunks deep. Crediting 127 of them to
-   * a window that just opened reported 429 chunks/min for a job running at ~70.
+   * THE WINDOW RUNS BETWEEN LANDINGS, never up to "now":
+   * [firstChunkCompletedAt, chunkCompletedAt], holding exactly the completions since
+   * chunksAtFirstStamp — the count the anchor was stamped at. Both ends are instants
+   * at which work was observed to finish, so the span and the count describe the same
+   * interval. The arithmetic lives in @shared/queue/rate-window (test:rate-window).
    *
-   * Consequence: no rate until the second flush lands, and none until the window
-   * spans RATE_WINDOW_MIN_SECONDS. One observation cannot time anything, and one
-   * batch gap is too quantized to trust.
+   * It is NOT (chunksDone - 1) over elapsed-to-now. Both halves of that older
+   * convention assumed one chunk lands at a time on a steady cadence — true of
+   * Orpheus MLX, false of Higgs, which retires a batch of 32 at once and then reads
+   * in silence for minutes. A window ending at `now` first clears the 45s minimum in
+   * the middle of the FIRST burst and credits the whole batch to ~45 seconds: Owen's
+   * live job, 2026-09-08, read 84 chunks/min — 63.3x realtime, 8,918 words/min — for
+   * work actually running at 5.7 chunks/min, 4.4x realtime.
+   *
+   * What each engine shape sees:
+   *   - Steady (one chunk per landing): the last landing is at most one chunk-time
+   *     behind `now`, so the number is what it always was. Nothing regresses.
+   *   - Burst: the first burst spans seconds, fails the minimum, and shows nothing
+   *     ('Calculating…'); the second burst opens a window one batch cycle wide, which
+   *     is the true cadence. So the first number appears only after the SECOND batch
+   *     lands — later than it used to, and right instead of 15x fast.
+   *
+   * The sample is still cached, but only to keep the derived ETA counting down from a
+   * fixed instant. It no longer has to HOLD anything: with both ends of the window at
+   * landings, the rate is constant between landings by construction, and a new landing
+   * (chunksDone changes) is the invalidation.
    */
   private rateSample(job: QueueJob): RateSample | null {
     const anchorAt = job.firstChunkCompletedAt;
-    const anchorChunks = job.chunksAtFirstStamp;
-    // Both or neither. A job carrying only the timestamp came from a build that
-    // didn't record the count — there is no honest rate to derive from it.
-    if (anchorAt === undefined || anchorChunks === undefined) return null;
-
     // Nullish, not ||: a real 0 must not collapse to the cumulative count.
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    const chunksInWindow = chunksDoneInSession - anchorChunks;
-    if (chunksInWindow <= 0) return null;        // still inside the anchoring batch
+
+    const measured = throughputSample({
+      anchorAt,
+      anchorChunks: job.chunksAtFirstStamp,
+      lastLandingAt: job.chunkCompletedAt,
+      chunksDone: chunksDoneInSession,
+      // Whole-book counts and this session's per-chunk counts. Every derived rate is
+      // the chunk rate scaled by a ratio COUNTED THIS SESSION, so speed, words,
+      // sentences and the ETA cannot disagree; a missing count means that rate is
+      // absent, never estimated from the book average (which would hide a broken
+      // per-chunk accrual behind something that looks like a measurement).
+      totalChunks: job.totalChunksInJob,
+      totalChunksForEta: job.totalChunksInJob || job.totalChunks,
+      totalRawSentences: job.totalRawSentencesInJob,
+      rawSentencesDone: job.rawSentencesDoneInSession,
+      rawWordsDone: job.rawWordsDoneInSession,
+      rawCharsDone: job.rawCharsDoneInSession,
+      audioSecondsPerChar: job.audioSecondsPerChar,
+      totalRawChars: job.totalRawCharsInJob,
+      charsDoneInJob: this.charsCompletedInJob(job),
+      chunksCompletedInJob: job.chunksCompletedInJob,
+    });
+    if (!measured || anchorAt === undefined) return null;
 
     const held = this.samples.get(job.id);
     if (held && held.anchorAt === anchorAt && held.chunksDone === chunksDoneInSession) {
-      return held;                               // hold — do not re-divide by a longer elapsed
-    }
-
-    const elapsedMs = Date.now() - anchorAt;
-    if (elapsedMs < RATE_WINDOW_MIN_SECONDS * 1000) return null;
-    const chunksPerMin = chunksInWindow / (elapsedMs / 60000);
-
-    // Sentences/min rides the SAME chunk rate scaled by the sentences-per-chunk ratio
-    // COUNTED THIS SESSION, so it stays exactly consistent with chunks/min and the ETA.
-    //
-    // No book-average stand-in: the backend emits the per-session sentence total and the
-    // book total from the same per-chunk counts, so either both are present or neither
-    // is. A missing exact count alongside a present book total would mean the per-chunk
-    // accrual had broken — and quietly swapping in the book average there would hide
-    // exactly that, while looking like a real measurement. Absent → show chunks/min only.
-    //
-    // Also absent for 1:1 engines (XTTS), where it would just duplicate chunks/min.
-    const totalChunks = job.totalChunksInJob || 0;
-    const rawTotal = job.totalRawSentencesInJob || 0;
-    const rawDone = job.rawSentencesDoneInSession;
-    let sentencesPerMin: number | null = null;
-    if (totalChunks > 0 && rawTotal > totalChunks && typeof rawDone === 'number' && rawDone > 0) {
-      sentencesPerMin = chunksPerMin * (rawDone / chunksDoneInSession);
-    }
-
-    // Words and characters ride the same window, scaled by what THIS session actually
-    // rendered — same discipline as sentences/min, and absent rather than estimated when
-    // the per-chunk counts aren't there.
-    const wordsDone = job.rawWordsDoneInSession;
-    const charsDone = job.rawCharsDoneInSession;
-    const wordsPerMin = typeof wordsDone === 'number' && wordsDone > 0
-      ? chunksPerMin * (wordsDone / chunksDoneInSession)
-      : null;
-    const charsPerMin = typeof charsDone === 'number' && charsDone > 0
-      ? chunksPerMin * (charsDone / chunksDoneInSession)
-      : null;
-
-    // Audio seconds produced per wall second. Both factors are measured on this run: the
-    // character rate above, and the seconds-of-audio-per-character the bridge sampled
-    // from the rendered FLACs.
-    const secondsPerChar = job.audioSecondsPerChar;
-    const realtimeFactor = charsPerMin !== null && typeof secondsPerChar === 'number' && secondsPerChar > 0
-      ? (charsPerMin * secondsPerChar) / 60
-      : null;
-
-    // Remaining uses the CUMULATIVE count (a resume job has work banked from earlier
-    // sessions) while the rate came from this session only.
-    //
-    // Priced in CHARACTERS when they're known, chunks otherwise. Chunks are packed to a
-    // character budget, so they are near-uniform in the body of a book but not at its
-    // seams — the last chunk of every chapter is a short one, and a chunk-count ETA
-    // charges full price for each. Characters also track the audio duration that is the
-    // actual work (seconds-per-char varied ±6% across books measured, seconds-per-word
-    // ±11%), so this is the same estimate expressed in the better unit, not a new model.
-    const totalCharsForEta = job.totalRawCharsInJob || 0;
-    const charsDoneForEta = this.charsCompletedInJob(job);
-    let etaSeconds = 0;
-    if (charsPerMin !== null && charsPerMin > 0 && totalCharsForEta > 0 && charsDoneForEta !== null) {
-      etaSeconds = Math.round((Math.max(0, totalCharsForEta - charsDoneForEta) / charsPerMin) * 60);
-    } else {
-      const totalForEta = job.totalChunksInJob || job.totalChunks || 0;
-      const remainingChunks = Math.max(0, totalForEta - (job.chunksCompletedInJob || 0));
-      etaSeconds = chunksPerMin > 0 && totalForEta > 0
-        ? Math.round((remainingChunks / chunksPerMin) * 60)
-        : 0;
+      return held;                               // same landing — same measurement, same countdown
     }
 
     const sample: RateSample = {
       chunksDone: chunksDoneInSession,
       anchorAt,
-      chunksPerMin,
-      sentencesPerMin,
-      wordsPerMin,
-      charsPerMin,
-      realtimeFactor,
-      etaSeconds,
+      chunksPerMin: measured.chunksPerMin,
+      sentencesPerMin: measured.sentencesPerMin,
+      wordsPerMin: measured.wordsPerMin,
+      charsPerMin: measured.charsPerMin,
+      realtimeFactor: measured.realtimeFactor,
+      etaSeconds: measured.etaSeconds,
       stampedAt: Date.now(),
     };
     this.samples.set(job.id, sample);
@@ -287,7 +258,18 @@ export class JobEtaService implements OnDestroy {
     const sample = this.rateSample(job);
     if (sample) {
       const sinceSample = Math.floor((Date.now() - sample.stampedAt) / 1000);
-      return Math.max(0, sample.etaSeconds - sinceSample);
+      const remainingNow = sample.etaSeconds - sinceSample;
+      // A countdown that ran out while chunks are still landing has been contradicted
+      // by the work itself. Clamping it to 0 printed "0s left" for the rest of a run
+      // — which is what an over-measured rate looked like on Owen's card: an ETA of
+      // 15 minutes taken during one Higgs burst, against 2+ hours of real work.
+      // Say 'Calculating…' instead and let the next landing measure again.
+      if (remainingNow <= 0) {
+        const total = job.totalChunksInJob || job.totalChunks || 0;
+        const done = job.chunksCompletedInJob || 0;
+        if (total > 0 && done < total) return null;
+      }
+      return Math.max(0, remainingNow);
     }
 
     return this.stageEtaSeconds(job, stages);
