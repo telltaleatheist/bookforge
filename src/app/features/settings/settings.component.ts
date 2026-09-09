@@ -19,6 +19,20 @@ import { OrpheusVoicesPanelComponent } from './components/orpheus-voices-panel.c
 import { HiggsVoicesPanelComponent } from './components/higgs-voices-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
+/**
+ * One tool-path value as TEXT, whichever shape it arrived in.
+ *
+ * A tool-paths record holds strings for the path rows and real BOOLEANS for the
+ * checkbox keys (electron/tool-paths.ts coerces the renderer's 'true' at the IPC
+ * boundary, deliberately, so main-process readers can ask `=== true`). Every
+ * comparison in this component goes through here so that a boolean and the
+ * string that produced it are the same answer.
+ */
+function toolPathText(raw: string | boolean | undefined): string {
+  if (typeof raw === 'string') return raw;
+  return raw === true ? 'true' : '';
+}
+
 @Component({
   selector: 'app-settings',
   standalone: true,
@@ -873,7 +887,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                             <input
                               type="checkbox"
                               class="toggle-input"
-                              [checked]="getToolPathValue('useWsl2ForOrpheus') === 'true'"
+                              [checked]="getToolPathFlag('useWsl2ForOrpheus')"
                               (change)="toggleWsl2ForOrpheus($any($event.target).checked)"
                             />
                           </div>
@@ -947,7 +961,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                             <input
                               type="checkbox"
                               class="toggle-input"
-                              [checked]="getToolPathValue('useWsl2ForVlm') === 'true'"
+                              [checked]="getToolPathFlag('useWsl2ForVlm')"
                               (change)="toggleWsl2ForVlm($any($event.target).checked)"
                             />
                           </div>
@@ -1095,7 +1109,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                         <input
                           type="checkbox"
                           class="toggle-input"
-                          [checked]="getToolPathValue('useWsl2ForHiggs') === 'true'"
+                          [checked]="getToolPathFlag('useWsl2ForHiggs')"
                           (change)="toggleWsl2ForHiggs($any($event.target).checked)"
                         />
                       </div>
@@ -1310,7 +1324,19 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
     @use '../../creamsicle-desktop/styles/variables' as *;
 
     .settings-container {
-      height: 100vh;
+      /* THE CONTENT AREA, NOT THE VIEWPORT. Settings renders inside the app
+         shell (app.ts: desktop-window's titlebar above and status bar below,
+         then .app-content with height 100% and overflow hidden), so a 100vh
+         page is taller than the space it is given by exactly that chrome - and
+         the bottom of .settings-content, which is the scroll container, sits
+         below the window with no way to reach it. Owen, 2026-09-08: "settings
+         isnt letting me scroll to the bottom", on the Higgs voice catalog. Same
+         bug and same fix as the first-run wizard's .setup-card (see its comment:
+         100vh "overran the bottom and hid the Next button"). min-height 0 so the
+         column's children may shrink below their content and let the scroller do
+         its job. */
+      height: 100%;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       background: var(--bg-base);
@@ -1355,6 +1381,10 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
     .settings-layout {
       flex: 1;
+      /* A flex item's min-height defaults to auto, which refuses to shrink
+         below its content - the height chain has to be definite all the way to
+         .settings-content or the scroller never gets a bounded height. */
+      min-height: 0;
       display: flex;
       overflow: hidden;
     }
@@ -2364,7 +2394,15 @@ export class SettingsComponent implements OnInit {
 
   // Tools section state. toolPathsConfig is the saved config; pending edits go
   // into toolPathsDraft (keyed overrides) and only persist on Save.
-  readonly toolPathsConfig = signal<Record<string, string | undefined>>({});
+  // The SAVED config carries real booleans for the checkbox keys — `updateConfig`
+  // (electron/tool-paths.ts, BOOLEAN_CONFIG_KEYS) coerces the renderer's 'true'
+  // at the IPC boundary so every main-process reader can ask `=== true`. The
+  // DRAFT is this component's own strings. Both shapes are named here rather
+  // than typed as string and lied about: reading a saved boolean back as a
+  // string is what made a saved toggle come back unchecked (Owen, 2026-09-08).
+  readonly toolPathsConfig = signal<Record<string, string | boolean | undefined>>({});
+  // The DRAFT is only ever this component's own strings (updateToolPath writes
+  // 'true' / '' for a checkbox), and it is what goes over IPC on save.
   readonly toolPathsDraft = signal<Record<string, string | undefined>>({});
   readonly toolPathsStatus = signal<Record<string, { configured: boolean; detected: boolean; path: string }>>({});
   readonly toolPathsLoading = signal(false);
@@ -2376,7 +2414,10 @@ export class SettingsComponent implements OnInit {
   readonly toolPathsDirty = computed(() => {
     const draft = this.toolPathsDraft();
     const saved = this.toolPathsConfig();
-    return Object.keys(draft).some(k => (draft[k] || '') !== (saved[k] || ''));
+    // Through the normaliser on BOTH sides: a checkbox's draft is the string
+    // 'true' and its saved value is the boolean true, and comparing those raw
+    // left the row permanently dirty (Save never went back to "Saved").
+    return Object.keys(draft).some(k => toolPathText(draft[k]) !== toolPathText(saved[k]));
   });
 
   // WSL2 state (Windows only, for Orpheus TTS)
@@ -2989,8 +3030,26 @@ export class SettingsComponent implements OnInit {
 
   getToolPathValue(key: string): string {
     const draft = this.toolPathsDraft();
-    if (key in draft) return draft[key] || '';
-    return this.toolPathsConfig()[key] || '';
+    if (key in draft) return toolPathText(draft[key]);
+    return toolPathText(this.toolPathsConfig()[key]);
+  }
+
+  /**
+   * A tool-path CHECKBOX's state, which is NOT `getToolPathValue(key) ===
+   * 'true'`.
+   *
+   * The draft holds this component's own string; the saved config holds a real
+   * boolean, because `updateConfig` coerces at the IPC boundary so that every
+   * main-process reader can ask `=== true` (electron/tool-paths.ts,
+   * BOOLEAN_CONFIG_KEYS). Comparing the saved boolean to the string 'true' is
+   * false, so a box that was saved ON came back UNCHECKED on the next visit —
+   * Owen, 2026-09-08: "i checked the box, hit save, went back, its unchecked
+   * now". The SETTING was on the whole time (his tool-paths.json had
+   * `useWsl2ForHiggs: true` and Higgs was routing through WSL); only the box
+   * lied. Both shapes are accepted here, at the one place that renders them.
+   */
+  getToolPathFlag(key: string): boolean {
+    return this.getToolPathValue(key) === 'true';
   }
 
   getToolStatus(key: string): { configured: boolean; detected: boolean; path: string } | undefined {
