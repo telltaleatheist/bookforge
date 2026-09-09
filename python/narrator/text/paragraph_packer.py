@@ -1264,6 +1264,10 @@ class CatalogBudget:
     chars: int
     chars_per_sec: float = 0.0
     audio_tokens: int = 0
+    #: THE MERGE FLOOR, beside the cap in `chars`. 0 = "no band declared", and
+    #: the caller falls back to the cap, which is what every voice did before
+    #: safeMinChars existed. See `engine/protocol.py`'s `safe_min_chars`.
+    floor_chars: int = 0
 
     def max_chars(self, voice=None) -> int:
         return self.chars

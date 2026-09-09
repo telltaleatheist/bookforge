@@ -167,6 +167,21 @@ class ClipsVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
+    #: THE SAFE BAND, in characters: the floor and the cap the prep packs
+    #: between. Owen, 2026-09-09: "every chunk should fall within that range
+    #: unless there's an exceptional case." Measured 2026-09-09 (field notes
+    #: 4n.37.20) as the TRAINING CORPUS'S INTERQUARTILE RANGE - tr_v3's IQR
+    #: 532-985 predicted its measured best band 600-1000 (5.0% early stops
+    #: [2.0-12.2], against 18.8% below and 20.3% above).
+    #:
+    #: `safe_min_chars` is the half that did not exist. Until it did, the floor
+    #: and the cap were ONE number (`target_chars`), so the merge rule - which
+    #: requires the RESULT to stay within the cap - could not combine two
+    #: 400-char paragraphs at a 700 cap, and a 400-char chunk shipped. That is
+    #: the failure Owen saw live: truncations at 323, 502 and 634 chars.
+    #: Absent, both fall back to `target_chars` and the old behaviour stands.
+    safe_min_chars: Optional[int] = None
+    safe_max_chars: Optional[int] = None
     #: THE VOICE'S RECORDED PACE AND THE LENGTH GUARD'S SEED BAND, chars of
     #: text per second of audio, from the catalog (Owen, 2026-09-06: a Higgs
     #: voice's chars-per-second is recorded in the configuration as part of
@@ -254,6 +269,21 @@ class DefaultVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
+    #: THE SAFE BAND, in characters: the floor and the cap the prep packs
+    #: between. Owen, 2026-09-09: "every chunk should fall within that range
+    #: unless there's an exceptional case." Measured 2026-09-09 (field notes
+    #: 4n.37.20) as the TRAINING CORPUS'S INTERQUARTILE RANGE - tr_v3's IQR
+    #: 532-985 predicted its measured best band 600-1000 (5.0% early stops
+    #: [2.0-12.2], against 18.8% below and 20.3% above).
+    #:
+    #: `safe_min_chars` is the half that did not exist. Until it did, the floor
+    #: and the cap were ONE number (`target_chars`), so the merge rule - which
+    #: requires the RESULT to stay within the cap - could not combine two
+    #: 400-char paragraphs at a 700 cap, and a 400-char chunk shipped. That is
+    #: the failure Owen saw live: truncations at 323, 502 and 634 chars.
+    #: Absent, both fall back to `target_chars` and the old behaviour stands.
+    safe_min_chars: Optional[int] = None
+    safe_max_chars: Optional[int] = None
     #: THE VOICE'S RECORDED PACE AND THE LENGTH GUARD'S SEED BAND, chars of
     #: text per second of audio, from the catalog (Owen, 2026-09-06: a Higgs
     #: voice's chars-per-second is recorded in the configuration as part of

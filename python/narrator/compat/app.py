@@ -319,8 +319,15 @@ def route_prep(args) -> int:
         # "combine paragraphs to reach closer to the cap ... shoot for 3
         # paragraphs per chunk"; "targetChars is used by the code directly").
         # Walls stay walls; a paragraph already at it stands alone.
+        # TWO NUMBERS since 2026-09-09: the budget's `chars` is safeMaxChars
+        # (the cap) and `floor_chars` is safeMinChars (the merge floor). Short
+        # prose paragraphs travel together until the group reaches the FLOOR and
+        # the result may grow to the CAP - so a pair that overflows the floor
+        # still merges instead of shipping one short chunk. A voice with no band
+        # falls back to the cap for both: the old single-number behaviour.
         optional['chunking_floor_chars'] = int(
-            optional['budget'].max_chars(args.higgs_voice))
+            getattr(optional['budget'], 'floor_chars', 0)
+            or optional['budget'].max_chars(args.higgs_voice))
     if args.fine_tuned:
         optional['fine_tuned'] = args.fine_tuned
     if args.output_format:

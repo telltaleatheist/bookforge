@@ -456,6 +456,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
                     f'maxChars {max_chars}. The cap is the MEASURED safe chunk '
                     'length; a target above it asks for chunks the length sweep '
                     'refused. Lower the target or re-certify the cap.')
+        safe_min, safe_max = _safe_band(path, name, entry, max_chars)
         band = _length_band(path, name, entry)
         sampling = _voice_sampling(path, name, entry)
         if not clips:
@@ -464,7 +465,8 @@ def load_voices(path: str = None, *, allowed_controls=None,
             voices[name] = DefaultVoice(
                 name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
                 max_chars_source=None if max_chars is None else source,
-                target_chars=target, max_chars_per_sec=band[0],
+                target_chars=target, safe_min_chars=safe_min,
+                safe_max_chars=safe_max, max_chars_per_sec=band[0],
                 min_chars_per_sec=band[1], pace_chars_per_sec=band[2],
                 sampling=sampling)
             continue
@@ -479,12 +481,44 @@ def load_voices(path: str = None, *, allowed_controls=None,
             max_chars=max_chars,
             max_chars_source=None if max_chars is None else source,
             target_chars=target,
+            safe_min_chars=safe_min,
+            safe_max_chars=safe_max,
             max_chars_per_sec=band[0],
             min_chars_per_sec=band[1],
             pace_chars_per_sec=band[2],
             sampling=sampling,
         )
     return voices
+
+
+def _safe_band(path, name, entry, max_chars):
+    """`safeMinChars` / `safeMaxChars` - the band the prep packs between.
+
+    Both optional and independent: a voice may declare a floor without a cap.
+    A floor at or above the cap is refused, because the merge rule would then
+    never terminate a group on the floor. The cap may not exceed `maxChars`,
+    the model's stated limit, for the same reason `targetChars` may not.
+    """
+    def _one(key):
+        v = entry.get(key)
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise ValueError(
+                f"{path}: voice '{name}' declares {key} {v!r}, which is not a "
+                'positive whole number of characters.')
+        return int(v)
+    lo, hi = _one('safeMinChars'), _one('safeMaxChars')
+    if hi is not None and max_chars is not None and hi > int(max_chars):
+        raise ValueError(
+            f"{path}: voice '{name}' declares safeMaxChars {hi} above its maxChars "
+            f"{max_chars}. The cap is the model's stated limit; a safe band may "
+            'sit inside it, never past it.')
+    if lo is not None and hi is not None and lo >= hi:
+        raise ValueError(
+            f"{path}: voice '{name}' declares safeMinChars {lo} at or above "
+            f'safeMaxChars {hi}, which is not a band.')
+    return lo, hi
 
 
 #: The document's sampling keys (the catalog's camelCase) -> the engine's.

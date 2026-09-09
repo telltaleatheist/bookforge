@@ -501,6 +501,32 @@ export interface HiggsBackendCaps {
   /** Provenance of `targetChars`, in the style of `maxCharsSource`. */
   targetCharsSource?: string | null;
   /**
+   * THE SAFE BAND, in characters: the floor and the cap the prep packs
+   * BETWEEN. Owen, 2026-09-09: "every chunk should fall within that range
+   * unless there's an exceptional case."
+   *
+   * Measured the same day (orpheus-finetune field notes 4n.37.20) as the
+   * TRAINING CORPUS'S INTERQUARTILE RANGE: tr_v3's IQR 532-985 predicted its
+   * measured best band 600-1000 (4/80 = 5.0 % early stops [2.0-12.2], against
+   * 18.8 % below 600 and 20.3 % above 1000). Pearson r = -0.64 between a
+   * rung's training density and its early-stop rate.
+   *
+   * `safeMinChars` is the half that did not exist. Until it did, the floor and
+   * the cap were ONE number (`targetChars`), and the merge rule requires the
+   * RESULT to fit the cap - so two 400-char paragraphs could not combine under
+   * a 700 cap and a 400-char chunk shipped. That is what Owen saw live on
+   * 2026-09-09: truncations at 323, 502 and 634 characters, all of them below
+   * the floor. A voice declaring neither packs exactly as it did before.
+   *
+   * `safeMaxChars` may never exceed this arm's `maxChars`, and the floor may
+   * never reach the cap - refused on BOTH sides, here and in narrator's
+   * `engine/higgs/config.py`.
+   */
+  safeMinChars?: number | null;
+  safeMaxChars?: number | null;
+  /** Provenance of the safe band, in the style of `_maxCharsNote`. */
+  _safeBandNote?: string | null;
+  /**
    * Assembly-time fades on every chunk. Higgs emits no pads of its own, so the
    * decoded chunk ends at a hard sample boundary and joins click without these.
    */
@@ -1716,6 +1742,8 @@ export function higgsVoiceCapsForModel(
   if (served.maxCharsSource !== undefined) caps.maxCharsSource = served.maxCharsSource;
   if (served.targetChars !== undefined) caps.targetChars = served.targetChars;
   if (served.targetCharsSource !== undefined) caps.targetCharsSource = served.targetCharsSource;
+  if (served.safeMinChars !== undefined) caps.safeMinChars = served.safeMinChars;
+  if (served.safeMaxChars !== undefined) caps.safeMaxChars = served.safeMaxChars;
   if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
   // SAMPLING: the engine-level one (higgsEngineSampling), for every voice on
   // every arm. A block may override it only with its reason written beside it.
@@ -1857,6 +1885,34 @@ export function higgsVoicesDocument(
     }
     entry.targetChars = caps.targetChars;
     if (caps.targetCharsSource) entry.targetCharsSource = caps.targetCharsSource;
+  }
+  // THE SAFE BAND travels with the pair, refused here before the spawn on the
+  // same rules narrator's loader applies by name, so the two never disagree.
+  for (const key of ['safeMinChars', 'safeMaxChars'] as const) {
+    const v = caps[key];
+    if (v === undefined || v === null) continue;
+    if (!Number.isInteger(v) || v <= 0) {
+      throw new Error(
+        `Higgs voice '${model.id}' (${target.arm}) declares ${key} ${JSON.stringify(v)}, `
+        + 'which is not a positive whole number of characters.',
+      );
+    }
+    entry[key] = v;
+  }
+  if (typeof caps.safeMaxChars === 'number' && typeof caps.maxChars === 'number'
+      && caps.safeMaxChars > caps.maxChars) {
+    throw new Error(
+      `Higgs voice '${model.id}' declares safeMaxChars ${caps.safeMaxChars} above its `
+      + `${target.arm} cap of ${caps.maxChars}. The cap is the model's stated limit; `
+      + 'a safe band may sit inside it, never past it.',
+    );
+  }
+  if (typeof caps.safeMinChars === 'number' && typeof caps.safeMaxChars === 'number'
+      && caps.safeMinChars >= caps.safeMaxChars) {
+    throw new Error(
+      `Higgs voice '${model.id}' (${target.arm}) declares safeMinChars ${caps.safeMinChars} `
+      + `at or above safeMaxChars ${caps.safeMaxChars}, which is not a band.`,
+    );
   }
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;

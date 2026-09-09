@@ -1196,11 +1196,31 @@ def higgs_v3_prep_budget(voice_name: str):
         raise ValueError(
             f"Higgs v3 voice '{name}' declares targetChars {target}, which is not "
             'a chunk size.')
-    log(f"[HIGGS3] prep packs '{name}' to {target} chars per chunk "
-        f'(targetChars; maxChars '
-        f'{getattr(resolved, "max_chars", None)!r} is the model\'s stated limit)',
-        flush=True)
-    return CatalogBudget(chars=target, chars_per_sec=0.0)
+    # The band's own log line replaces this one when a band is declared.
+    if not getattr(resolved, 'safe_min_chars', None) and not getattr(resolved, 'safe_max_chars', None):
+        log(f"[HIGGS3] prep packs '{name}' to {target} chars per chunk "
+            f'(targetChars; maxChars '
+            f'{getattr(resolved, "max_chars", None)!r} is the model\'s stated limit)',
+            flush=True)
+    # THE SAFE BAND (2026-09-09, field notes 4n.37.20). safeMaxChars is the
+    # packing cap and safeMinChars the merge floor; the pair replaces the single
+    # targetChars, which was BOTH. With one number the merge rule could not
+    # combine two 400-char paragraphs under a 700 cap (the result must fit the
+    # cap), so a 400-char chunk shipped - the 323/502/634 truncations Owen hit
+    # live on 2026-09-09. A voice declaring neither packs exactly as before.
+    safe_max = getattr(resolved, 'safe_max_chars', None)
+    safe_min = getattr(resolved, 'safe_min_chars', None)
+    cap = int(safe_max) if safe_max else target
+    floor = int(safe_min) if safe_min else cap
+    if floor > cap:
+        raise ValueError(
+            "Higgs v3 voice '%s' has a safe floor %d above its cap %d; that is "
+            'not a band the packer can pack between.' % (name, floor, cap))
+    if safe_min or safe_max:
+        log("[HIGGS3] prep packs '%s' BETWEEN %d and %d chars "
+            '(safeMinChars/safeMaxChars; targetChars %s)'
+            % (name, floor, cap, target), flush=True)
+    return CatalogBudget(chars=cap, chars_per_sec=0.0, floor_chars=floor)
 
 
 def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,
