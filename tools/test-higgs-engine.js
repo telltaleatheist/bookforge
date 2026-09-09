@@ -511,14 +511,20 @@ check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () =
 
 
 
-check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms (Owen, 2026-09-06)', () => {
-  // "temperature should be .8 everywhere, as it's the boson default" — for
-  // Higgs specifically, Listen streaming and book renders alike (both spawn
-  // through higgs-spawn, which writes the document this rides in). Stated ONCE
-  // at the catalog top with its reason; a per-block deviation must carry a
-  // reason too or it is refused, so 14 copies of a number can never drift.
+check('ONE engine-level sampling - 0.7 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
+  // 0.8 UNTIL 2026-09-09, on the reason "temperature should be .8 everywhere,
+  // as it's the boson default" — a default asserted, never compared. Owen then
+  // rendered known-gibberish chunks at both settings: "gibberish gets cut in
+  // half at 0.7. set it to be global for higgs renders. streaming and rendering
+  // both." A measurement outranks a default, so the number moved and the old
+  // note is kept in the catalog under SUPERSEDED.
+  //
+  // ONE number for Listen streaming and book renders alike — both spawn through
+  // higgs-spawn, which writes the document this rides in. Stated ONCE at the
+  // catalog top with its reason; a per-block deviation must carry a reason too
+  // or it is refused, so 14 copies of a number can never drift.
   const engine = higgs.higgsEngineSampling();
-  assert.deepStrictEqual(engine, { temperature: 0.8, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(engine, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
   for (const m of higgs.listHiggsModels()) {
     for (const arm of ['wsl', 'darwin']) {
