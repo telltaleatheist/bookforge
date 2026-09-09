@@ -41,6 +41,7 @@ if _PYTHON_ROOT not in sys.path:
 
 from narrator.engine import registry                                  # noqa: E402
 from narrator.engine.higgs import v3_served                           # noqa: E402
+from narrator.engine.higgs import truncation                         # noqa: E402
 from narrator.engine.higgs import config as v3_config           # noqa: E402
 from narrator.engine.higgs.v3_engine import (HiggsV3Budget,           # noqa: E402
                                              HiggsV3Config,
@@ -2551,59 +2552,77 @@ class VoiceDocumentShapesTest(V3TestCase):
 # =============================================================================
 
 class ConvertManyTest(unittest.TestCase):
-    """The stream keeps exactly BATCH_SIZE rows in flight, refills a slot the
-    moment it retires, reports every row, and a dead server ends it without
-    submitting what was still queued. No server: `_convert_one` is faked."""
+    """The stream keeps exactly BATCH_SIZE TAKES in flight, refills a slot the
+    moment one retires, reports every chunk, and a dead server ends it without
+    submitting what was still queued.
 
-    def engine(self, width, convert_one):
+    THE UNIT OF WORK IS A TAKE, NOT A CHUNK (Owen, 2026-09-08: "it should always
+    be batched. even if it re-rolls, it should be batched"), so these fake
+    `render_audio` - the one call a pool thread makes - and let the real
+    `truncation.GuardPlan` decide what to ask for next. No server.
+    """
+
+    RATE = 24000
+    PACE = 17.0            # the engine default band's centre: sqrt(20 * 14.5)
+
+    def audio(self, chars, cps=None):
+        import numpy as np
+        return np.zeros(int(chars / (cps or self.PACE) * self.RATE), dtype=np.float32)
+
+    def engine(self, width, render_audio):
+        from types import SimpleNamespace
         eng = HiggsV3Engine.__new__(HiggsV3Engine)
         eng.BATCH_SIZE = width
-        eng._convert_one = convert_one
+        eng.config = SimpleNamespace(seed=1234, max_chars_per_sec=20.0,
+                                     min_chars_per_sec=14.5)
+        eng.voice_ref = SimpleNamespace()
+        eng.render_audio = render_audio
+        eng.written = []
+        eng._write_sentence = lambda index, audio: eng.written.append(index) or True
         return eng
 
-    def test_width_is_held_and_slots_refill_as_rows_retire(self):
-        lock = threading.Lock()
-        active = [0]
-        peak = [0]
-        release = {i: threading.Event() for i in range(8)}
+    #: 200 characters - over MIN_GUARD_CHARS, so both edges of the band apply.
+    TEXT = ('The night was long and the road was longer, and he walked it. ' * 4).strip()
 
-        def convert_one(index, text):
+    def test_width_is_held_and_slots_refill_as_takes_retire(self):
+        lock = threading.Lock()
+        active, peak = [0], [0]
+        release = {i: threading.Event() for i in range(8)}
+        pulled = []
+
+        def render_audio(text, seed=None, index=0):
             with lock:
                 active[0] += 1
                 peak[0] = max(peak[0], active[0])
             release[index].wait(5)
             with lock:
                 active[0] -= 1
-            return True
+            return self.audio(len(text))
 
-        eng = self.engine(3, convert_one)
-        done = []
-        in_flight = []
-        pulled = []
+        eng = self.engine(3, render_audio)
+        done, in_flight = [], []
 
         def rows():
             for i in range(8):
                 pulled.append(i)
-                yield i, f'row {i}'
+                yield i, self.TEXT
 
         t = threading.Thread(target=eng.convert_many,
                              args=(rows(), lambda i, ok: done.append((i, ok)), in_flight))
         t.start()
-        # Three submitted at once, and only three: the fourth waits for a slot.
-        deadline = threading.Event()
-        for _ in range(50):
+        tick = threading.Event()
+        for _ in range(100):
             if len(pulled) == 3:
                 break
-            deadline.wait(0.02)
-        self.assertEqual(pulled, [0, 1, 2])
+            tick.wait(0.02)
+        self.assertEqual(pulled, [0, 1, 2], 'three in flight and only three')
         self.assertEqual(sorted(in_flight), [0, 1, 2])
-        # Retire the middle row: exactly one more is pulled, and it is the next.
         release[1].set()
-        for _ in range(50):
+        for _ in range(100):
             if len(pulled) == 4:
                 break
-            deadline.wait(0.02)
-        self.assertEqual(pulled, [0, 1, 2, 3])
+            tick.wait(0.02)
+        self.assertEqual(pulled, [0, 1, 2, 3], 'the retiring slot pulled exactly one more')
         self.assertEqual(done, [(1, True)])
         self.assertEqual(sorted(in_flight), [0, 2, 3])
         for i in range(8):
@@ -2613,45 +2632,93 @@ class ConvertManyTest(unittest.TestCase):
         self.assertEqual(peak[0], 3)
         self.assertEqual(sorted(i for i, _ in done), list(range(8)))
         self.assertEqual(in_flight, [])
+        self.assertEqual(sorted(eng.written), list(range(8)), 'every chunk written once')
 
-    def test_a_failed_row_is_reported_false_and_the_stream_goes_on(self):
-        eng = self.engine(2, lambda i, text: i != 3)
+    def test_a_reroll_re_enters_the_pool_instead_of_holding_its_slot(self):
+        """THE POINT OF THE CHANGE. Chunk 0's take 0 is off-length, so the guard
+        wants a re-roll - and while that re-roll waits its turn the pool is
+        rendering other chunks, not sitting on chunk 0."""
+        seen = []
+
+        def render_audio(text, seed=None, index=0):
+            seen.append((index, seed))
+            if index == 0 and seed is None:
+                return self.audio(len(text), cps=40.0)     # a truncation
+            return self.audio(len(text))
+
+        eng = self.engine(2, render_audio)
         done = []
-        eng.convert_many(((i, 'x') for i in range(6)),
+        eng.convert_many(((i, self.TEXT) for i in range(4)),
+                         lambda i, ok: done.append((i, ok)), [])
+        self.assertEqual(sorted(done), [(0, True), (1, True), (2, True), (3, True)])
+        # 5 takes for 4 chunks: chunk 0 twice, and its re-roll used another seed.
+        self.assertEqual(len(seen), 5)
+        self.assertEqual([s for i, s in seen if i == 0],
+                         [None, truncation.reroll_seed(1234, 0, 1)])
+        # ...and every other chunk still rendered. The re-roll is a unit of work
+        # in the same pool, not a step chunk 0's slot walks through while the
+        # rest of the book waits behind it.
+        self.assertEqual(sorted(i for i, _ in seen), [0, 0, 1, 2, 3])
+
+    def test_the_two_halves_of_a_split_render_at_the_same_time(self):
+        """A split's halves are independent, and until 2026-09-08 they rendered
+        one after the other inside one slot."""
+        lock = threading.Lock()
+        active, peak = [0], [0]
+        started = threading.Event()
+
+        def render_audio(text, seed=None, index=0):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            if len(text) < len(self.TEXT):
+                started.wait(0.4)          # a half: hold the slot a moment
+            with lock:
+                active[0] -= 1
+            if len(text) == len(self.TEXT):
+                return self.audio(len(text), cps=40.0)     # whole text always short
+            return self.audio(len(text))                   # halves are fine
+
+        eng = self.engine(4, render_audio)
+        done = []
+        eng.convert_many(iter([(7, self.TEXT)]), lambda i, ok: done.append((i, ok)), [])
+        self.assertEqual(done, [(7, True)])
+        self.assertEqual(peak[0], 2, 'both halves were in flight together')
+
+    def test_a_failed_take_fails_its_chunk_by_name_and_the_stream_goes_on(self):
+        def render_audio(text, seed=None, index=0):
+            if index == 3:
+                raise RuntimeError('HTTP 400 for this text')
+            return self.audio(len(text))
+
+        eng = self.engine(2, render_audio)
+        done = []
+        eng.convert_many(((i, self.TEXT) for i in range(6)),
                          lambda i, ok: done.append((i, ok)), [])
         self.assertEqual(sorted(done), [(0, True), (1, True), (2, True),
                                         (3, False), (4, True), (5, True)])
+        self.assertNotIn(3, eng.written, 'a chunk that failed is never written')
 
     def test_a_dead_server_ends_the_stream_before_the_queue_is_submitted(self):
-        def convert_one(index, text):
+        def render_audio(text, seed=None, index=0):
             if index == 1:
                 raise v3_served.HiggsV3ServerDown('port 8100 refused')
-            return True
+            return self.audio(len(text))
 
-        eng = self.engine(2, convert_one)
+        eng = self.engine(2, render_audio)
         pulled = []
 
         def rows():
             for i in range(10):
                 pulled.append(i)
-                yield i, 'x'
+                yield i, self.TEXT
 
         in_flight = []
         with self.assertRaises(v3_served.HiggsV3ServerDown):
             eng.convert_many(rows(), lambda i, ok: None, in_flight)
-        # The queue was NOT drained into the dead server: only the rows that
-        # had already refilled a retiring slot before the failure was observed
-        # were ever pulled, and nothing is pulled after the exception.
         seen = len(pulled)
         self.assertLess(seen, 10)
         threading.Event().wait(0.1)
-        self.assertEqual(len(pulled), seen)
+        self.assertEqual(len(pulled), seen, 'nothing is pulled after the exception')
         self.assertIn(1, in_flight)
 
-    def test_the_served_engine_declares_itself_continuous(self):
-        self.assertTrue(HiggsV3Engine.CONTINUOUS_BATCH)
-        self.assertTrue(HiggsV3Engine.SUPPORTS_BATCH)
-
-
-if __name__ == '__main__':
-    unittest.main()

@@ -881,105 +881,187 @@ class HiggsV3Engine:
         then split at a sentence boundary and re-rendered - the Orpheus
         practice, asked for by Owen on 2026-09-06 after Fuhrer chunk 19
         shipped 3 s of a 1,127-character paragraph."""
+        return self._write_sentence(sentence_number,
+                                    self._render_guarded(sentence_number, sentence))
+
+    def _write_sentence(self, sentence_number: int, audio) -> bool:
+        """The chunk file, EXACTLY AS DECODED - no trim, no fade, no pad.
+
+        ONE writer for every path on this arm - `convert` and the pool driver in
+        `convert_many` - for the reason the MLX backend states at its own
+        `_write_sentence`: a batched render must land byte-identically to a
+        single-row one, and two copies of `sf.write` is how a subtype or a
+        container drifts between them. PCM_16 is stated, never left to a library
+        default (engine/orpheus/audio.py:write_chunk_file).
+        """
         import soundfile as sf
         path = self._sentence_file(sentence_number)
-        audio = self._render_guarded(sentence_number, sentence)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # PCM_16, stated - the same writer contract every narrator chunk uses.
-        # See engine/orpheus/audio.py:write_chunk_file for why the bit depth is
-        # never left to a library default.
         sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
                  format=self.config.audio_format.upper())
         return True
 
-    def _convert_one(self, index: int, text: str) -> bool:
-        """`convert`, with the per-row failure policy of a batch.
-
-        A refusal of ONE chunk (an HTTP 400 for its text, a decode failure) is
-        that chunk's False, logged by name, and the batch goes on - the same
-        policy as Orpheus's per-item path. A DEAD SERVER is not one chunk's
-        failure: it propagates and ends the flush, because every remaining row
-        would fail the same way and the worker would mark the whole book failed
-        one sentence at a time.
-        """
-        try:
-            return self.convert(index, text)
-        except v3_served.HiggsV3ServerDown:
-            raise
-        except Exception as exc:
-            log(f'[HIGGS3] sentence {index} failed: {exc}', flush=True)
-            return False
-
     def convert_batch(self, items) -> list:
-        """`BATCH_SIZE` requests in flight at once over `items`; results aligned
-        to `items`. See the module docstring's `batching` entry for why N
-        concurrent POSTs are the batch on this backend."""
+        """`items` through the SAME pool as a continuous take, and one bool per
+        item in that order.
+
+        A thin wrapper on `convert_many` since 2026-09-08, and that is the point:
+        there is one driver on this arm, so a book rendered through the worker's
+        continuous path and a list rendered through this one take the same route
+        - `BATCH_SIZE` renders in flight, the guard's retakes among them (Owen:
+        "it should always be batched. even if it re-rolls, it should be
+        batched"). The two copies that stood here rendered whole ladders inside
+        pool threads, which is exactly the serialisation that went.
+
+        A dead server propagates, as it always has; a row that fails for its own
+        reason is that row's False.
+        """
         items = list(items)
         if not items:
             return []
-        width = min(self.BATCH_SIZE, len(items))
-        with ThreadPoolExecutor(max_workers=width,
-                                thread_name_prefix='higgs3-render') as pool:
-            futures = [pool.submit(self._convert_one, index, text)
-                       for index, text in items]
-            # `result()` re-raises a HiggsV3ServerDown from any row; the
-            # executor's __exit__ then waits for the rows already in flight,
-            # which fail fast against a dead port.
-            return [future.result() for future in futures]
+        results = {}
+        self.convert_many(iter(items), lambda index, ok: results.__setitem__(index, ok), [])
+        return [bool(results.get(index, False)) for index, _text in items]
 
     def convert_many(self, rows, on_done, in_flight) -> None:
-        """`BATCH_SIZE` rows in flight for as long as `rows` has any.
+        """`BATCH_SIZE` RENDERS in flight for as long as there is work.
 
         `rows` is an ITERATOR of `(index, text)` and is pulled lazily: a slot is
-        refilled from it the moment a row retires, so the server never sees the
-        drain a pool boundary made. `on_done(index, ok)` is called from THIS
-        thread at each retirement, in completion order, so the worker's counters
-        and progress lines stay single-threaded. `in_flight` is the worker's
-        list of indices whose files may be half-written right now; it is kept
-        exact here (appended at submit, removed at retirement) so a cooperative
+        refilled the moment one retires, so the server never sees the drain a
+        pool boundary made. `on_done(index, ok)` is called from THIS thread at
+        each chunk's completion, so the worker's counters and progress lines stay
+        single-threaded. `in_flight` is the worker's list of indices whose files
+        may be half-written right now; it is kept exact here so a cooperative
         stop deletes precisely the rows that were running.
 
-        A dead server (`HiggsV3ServerDown`, raised by any row) ends the take:
-        the rows still queued are never submitted, the rows already running are
-        left to fail fast against the dead port, and the exception propagates.
-        That is `convert_batch`'s policy, kept - every remaining row would fail
-        the same way, and marking the book failed one sentence at a time is the
-        thing this backend refuses to do.
+        ── EVERY TAKE IS A UNIT OF WORK, INCLUDING THE GUARD'S ─────────────────
+
+        Owen, 2026-09-08: *"it should always be batched. even if it re-rolls, it
+        should be batched. there are no situations in which serializing is
+        superior."*
+
+        Until then a slot held one chunk's WHOLE LADDER: take 0, then its re-roll,
+        then - if it split - the left half rendered to completion before the right
+        half was begun. The re-roll has to follow its own take 0 and nothing can
+        change that, but the two halves of a split are independent and were
+        rendering one after the other inside a single slot while other slots sat
+        on unrelated chunks. So the unit of work here is now a `RenderRequest`
+        from a `truncation.GuardPlan`, not a chunk: a slot is FREED the moment a
+        take lands, and the retake it provoked re-enters the same pool as one more
+        request. The ladder's policy is untouched (`truncation.py`: one policy,
+        three drivers now - serial for a single chunk, rounds for the MLX slab,
+        this pool for the server).
+
+        THE PLAN IS THIS THREAD'S. `GuardPlan` is not thread-safe and does not
+        need to be: the pool threads only render, and every `add` / `next_request`
+        / `offer` happens here, at a retirement, exactly where `on_done` already
+        happened. The files are written here too, for the same reason.
+
+        A dead server (`HiggsV3ServerDown`, raised by any request) ends the take:
+        nothing further is submitted, the requests already running are left to
+        fail fast against the dead port, and the exception propagates. That is
+        `convert_batch`'s policy, kept - every remaining row would fail the same
+        way, and marking the book failed one sentence at a time is the thing this
+        backend refuses to do. A request that fails for its OWN reason (an HTTP
+        400 for its text, a decode failure) fails its chunk by name and the take
+        goes on, which is the per-row policy this arm has always had.
         """
         rows = iter(rows)
         width = int(self.BATCH_SIZE)
         if width < 1:
             raise ValueError(f'convert_many needs BATCH_SIZE >= 1; got {width}.')
+        plan = truncation.GuardPlan(
+            sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed,
+            tracker=self._pace_tracker())
         pool = ThreadPoolExecutor(max_workers=width, thread_name_prefix='higgs3-render')
-        running = {}  # future -> index
+        running = {}      # future -> RenderRequest
+        outstanding = {}  # chunk index -> how many of its requests are in flight
+
+        def render(request):
+            """The pool thread's whole job: one take. No plan, no file, no lock."""
+            return self.render_audio(request.text, seed=request.seed,
+                                     index=request.index)
+
+        def start(request) -> None:
+            outstanding[request.index] = outstanding.get(request.index, 0) + 1
+            if request.index not in in_flight:
+                in_flight.append(request.index)
+            running[pool.submit(render, request)] = request
+
+        def fill() -> None:
+            """EVERY free slot, every time. One submit per retirement was not
+            enough the moment a take could produce TWO renders: a split's halves
+            are both waiting the instant the re-roll fails, and filling one slot
+            left the other half rendering after it - the serialisation this
+            driver exists to remove."""
+            while len(running) < width and submit_next():
+                pass
 
         def submit_next() -> bool:
-            try:
-                index, text = next(rows)
-            except StopIteration:
-                return False
-            in_flight.append(index)
-            running[pool.submit(self._convert_one, index, text)] = index
+            """One more take in flight: a retake the guard is waiting on first,
+            else the next chunk's take 0. RETAKES FIRST so a chunk that is part
+            way through the ladder finishes rather than accumulating behind a
+            book's worth of fresh work."""
+            request = plan.next_request()
+            if request is None:
+                try:
+                    index, text = next(rows)
+                except StopIteration:
+                    return False
+                # THE MARKER STRIP, AT THE LADDER'S DOOR, exactly as
+                # `_render_guarded` does it for the single-chunk path.
+                # `render_audio` strips again at the model boundary and is
+                # idempotent about it, but the GUARD measures characters: a
+                # chunk carrying `[break]` would be judged, and split, on text
+                # that is not what the model will be given.
+                plan.add(index, self._clean_sentence_for_tts(text))
+                request = plan.next_request()
+                if request is None:
+                    # `add` without a first take always leaves a take-0 request.
+                    raise RuntimeError(
+                        f'Higgs v3: chunk {index} entered the ladder with nothing to render.')
+            start(request)
             return True
 
+        def retire(request, index_failed=None) -> None:
+            """Bookkeeping for one finished request, and the chunks it completed."""
+            outstanding[request.index] -= 1
+            if outstanding[request.index] <= 0:
+                outstanding.pop(request.index, None)
+                if request.index in in_flight:
+                    in_flight.remove(request.index)
+            for index, audio, _clean in plan.finished():
+                self._write_sentence(index, audio)
+                on_done(index, True)
+            if index_failed is not None:
+                on_done(index_failed, False)
+
         try:
-            for _ in range(width):
-                if not submit_next():
-                    break
+            fill()
             while running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    index = running.pop(future)
-                    ok = future.result()  # re-raises HiggsV3ServerDown
-                    in_flight.remove(index)
-                    on_done(index, bool(ok))
-                    submit_next()
+                    request = running.pop(future)
+                    try:
+                        audio = future.result()   # re-raises HiggsV3ServerDown
+                    except v3_served.HiggsV3ServerDown:
+                        raise
+                    except Exception as exc:
+                        # This chunk's failure, named, and the take goes on.
+                        log(f'[HIGGS3] sentence {request.index} failed: {exc}', flush=True)
+                        failed = plan.abandon(request)
+                        retire(request, index_failed=failed)
+                        fill()
+                        continue
+                    plan.offer(request, audio)
+                    retire(request)
+                    fill()
         except BaseException:
             # A stop or a dead server: nothing queued is submitted, and the
-            # rows already running are not waited for - they fail fast against
-            # a killed port, and `in_flight` still names them for the worker's
-            # cleanup. `shutdown(wait=True)` here would hold a cooperative stop
-            # open for as long as the slowest HTTP timeout.
+            # requests already running are not waited for - they fail fast
+            # against a killed port, and `in_flight` still names their chunks for
+            # the worker's cleanup. `shutdown(wait=True)` here would hold a
+            # cooperative stop open for as long as the slowest HTTP timeout.
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown(wait=True)

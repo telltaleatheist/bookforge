@@ -55,11 +55,21 @@ THE LADDER, per chunk, in order, for either side:
            2026-09-05 ruling), and the coverage audit names the chunk.
 
 THE RUNGS ABOVE ARE THE POLICY; WHEN their renders happen is the driver's, and
-there are two - `render_guarded` (one chunk, serial, depth-first: the served arm
-and every single-chunk path) and `GuardPlan` (many chunks, a ROUND of renders at
-a time, so a batch's retakes render as one batch instead of as N solos: the MLX
-arm, where a solo re-roll costs a whole batch). Same rungs, same events, same
-accept rule under either. See "THE LADDER: ONE POLICY, TWO DRIVERS" below.
+there are THREE, all over the same `GuardPlan`:
+
+  serial   `render_guarded` - one chunk, depth-first, taking the plan's next
+           request every time. The single-chunk paths (Listen, `convert`).
+  rounds   every waiting chunk's next take gathered and rendered as ONE batch
+           (`round()`): the MLX arm, where a batch of 32 costs about the wall
+           time of one row and a solo re-roll therefore costs a whole batch.
+  pool     one request per free slot (`next_request()`), a slot freed the moment
+           a take lands: the served arm's `convert_many`, where the batch is N
+           concurrent requests against a continuously-batching server.
+
+Owen, 2026-09-08: "it should always be batched. even if it re-rolls, it should
+be batched. there are no situations in which serializing is superior." Same
+rungs, same events, same accept rule under all three. See "THE LADDER: ONE
+POLICY, THREE DRIVERS" below.
 
 WHAT THIS CANNOT SEE, stated: a chunk that repeats a section AND drops the rest
 lands near the expected length and passes. Only the ASR coverage audit
@@ -412,13 +422,14 @@ def emit_event(record: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# THE LADDER: ONE POLICY, TWO DRIVERS
+# THE LADDER: ONE POLICY, THREE DRIVERS
 # ---------------------------------------------------------------------------
 # The rungs above are the policy; WHEN their renders happen is the driver's.
 # `render_guarded` drives one chunk serially, depth-first - the ladder's own
-# order, unchanged, and what the served arm and the single-chunk path use.
-# `GuardPlan` drives many chunks a ROUND at a time: every chunk that wants a
-# retake asks for one, and the driver renders the whole round in a single batch.
+# order, unchanged, and what every single-chunk path uses. `GuardPlan` drives
+# many chunks at once, and a driver takes work from it in whichever shape its
+# backend's batch has: `round()` for a slab (MLX), `next_request()` per free slot
+# for a pool of concurrent requests (the served arm's `convert_many`).
 #
 # Owen, 2026-09-08 (through the Mac, after his MLX Shift run): "maybe we should
 # batch the re-renders. take note of which ones we need to re-render and add
@@ -442,7 +453,8 @@ def emit_event(record: dict) -> None:
 #     draws one RNG stream per batch. What the rung needs is a draw the first
 #     take did not make; both give that, and a batched re-roll is reproducible
 #     as a batch - the same guarantee `_generate_delayed_rows_batch` already
-#     makes for take 0.
+#     makes for take 0. (The POOL driver has neither difference: each request
+#     carries its own seed to its own HTTP call.)
 
 
 @dataclass(frozen=True)
@@ -626,6 +638,11 @@ class GuardPlan:
         self._tasks: dict = {}
         self._added = 0
         self._finished: List[tuple] = []
+        #: Paths handed to a driver and not yet answered. A POOL driver asks
+        #: for one request at a time and must never be given the same one
+        #: twice; the round driver takes them all at once, which is the same
+        #: rule with a wider hand.
+        self._issued: set = set()
 
     # -- the band -----------------------------------------------------------
     def edges(self) -> tuple:
@@ -660,17 +677,59 @@ class GuardPlan:
         every chunk added has been decided."""
         requests = []
         for path in sorted(self._tasks):
+            if path in self._issued:
+                continue
             request = self._tasks[path].request()
             if request is not None:
                 requests.append(request)
+                self._issued.add(path)
         return requests
+
+    def next_request(self) -> Optional[RenderRequest]:
+        """ONE render the ladder is waiting on, in ladder order, or None.
+
+        For a POOL driver: it takes a request whenever it has a free slot, so a
+        chunk's re-roll and a split's two halves are units of work in the same
+        pool as every other chunk rather than steps a slot walks through. Taking
+        the first waiting request every time is what makes the serial driver
+        depth-first (`render_guarded`).
+        """
+        for path in sorted(self._tasks):
+            if path in self._issued:
+                continue
+            request = self._tasks[path].request()
+            if request is not None:
+                self._issued.add(path)
+                return request
+        return None
 
     def offer(self, request: RenderRequest, audio) -> None:
         """The audio for one of `round()`'s requests."""
         task = self._tasks.get(request.path)
         if task is None:
             raise KeyError(f'GuardPlan.offer: no task at {request.path}')
+        self._issued.discard(request.path)
         task.offer(audio)
+
+    def abandon(self, request: RenderRequest) -> int:
+        """The driver could not render this request; the CHUNK leaves the ladder.
+
+        A chunk half-way through the ladder has no audio to ship - the take that
+        would have been accepted is the one that failed - so the whole tree under
+        its root is dropped and the chunk index is returned for the driver to
+        report as that row's failure. It never reaches `finished()`: a caller
+        that ships what `finished()` gives it can never ship an abandoned chunk.
+        """
+        task = self._tasks.get(request.path)
+        if task is None:
+            raise KeyError(f'GuardPlan.abandon: no task at {request.path}')
+        root = task
+        while root.parent is not None:
+            root = root.parent
+        for path in [p for p in self._tasks if p[:len(root.path)] == root.path]:
+            self._issued.discard(path)
+            del self._tasks[path]
+        return root.index
 
     def finish_root(self, task) -> None:
         """A whole chunk is decided. THE SHIPPED TAKE FEEDS THE TRACKER ONLY
@@ -725,10 +784,9 @@ def render_guarded(render: Callable[[str, Optional[int]], np.ndarray],
                      min_chars_per_sec=min_chars_per_sec, on_event=on_event)
     plan.add(index, text, first_take=first_take)
     while True:
-        requests = plan.round()
-        if not requests:
+        request = plan.next_request()
+        if request is None:
             break
-        request = requests[0]
         plan.offer(request, render(request.text, request.seed))
     decided = plan.finished()
     if len(decided) != 1:
