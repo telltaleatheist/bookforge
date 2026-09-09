@@ -54,6 +54,13 @@ THE LADDER, per chunk, in order, for either side:
            is built on the expected text and the real audio length (Owen's
            2026-09-05 ruling), and the coverage audit names the chunk.
 
+THE RUNGS ABOVE ARE THE POLICY; WHEN their renders happen is the driver's, and
+there are two - `render_guarded` (one chunk, serial, depth-first: the served arm
+and every single-chunk path) and `GuardPlan` (many chunks, a ROUND of renders at
+a time, so a batch's retakes render as one batch instead of as N solos: the MLX
+arm, where a solo re-roll costs a whole batch). Same rungs, same events, same
+accept rule under either. See "THE LADDER: ONE POLICY, TWO DRIVERS" below.
+
 WHAT THIS CANNOT SEE, stated: a chunk that repeats a section AND drops the rest
 lands near the expected length and passes. Only the ASR coverage audit
 (`align/`) sees inside a chunk; this guard is the cheap sensor for the common
@@ -84,10 +91,17 @@ from the calculated and recorded characters per second") the band now
 FOLLOWS THE BOOK - `PaceTracker`:
 
   - the catalog still writes the voice's recorded pace and a seed band
-    (`paceCharsPerSec`, `maxCharsPerSec` = pace x 1.2, `minCharsPerSec` = pace / 1.3
-    - BookForge's PACE_GUARD_SHORT_FACTOR and PACE_GUARD_LONG_FACTOR, the short
-    side tight because every measured truncation sat at >= 1.23x, the long side
-    looser because clean dialogue ran down to 0.79x); the RATIOS of that seed band are the
+    (`paceCharsPerSec`, `maxCharsPerSec` = pace x 1.3, `minCharsPerSec` = pace / 1.3
+    - BookForge's PACE_GUARD_SHORT_FACTOR and PACE_GUARD_LONG_FACTOR. The short
+    edge was 1.2x until 2026-09-08, when Owen's live MLX Shift run showed it
+    re-rolling healthy brisk prose: the tracked pace settled at 13.1 (the slow
+    opening chunks seed it, 7 % under the 14.09 shipped median measured below),
+    so the edge sat at 15.7 and re-rolled takes at 15.75-16.15 chars/s that came
+    back 3-8 % longer with the same words. Every real truncation sat at >= 17.3
+    absolute; 1.3 x 13.1 = 17.0. IF THE TRACKER IS EVER RE-SEEDED from the
+    shipped median, revisit: 14.09 x 1.3 = 18.3 sits inside the 17.3-18.6
+    truncation band. The long side is looser because clean dialogue ran down to
+    0.79x. The RATIOS of that seed band are the
     deviation the guard tolerates, and they are the only thing kept from it;
   - the guard's reference is the recorded pace until `PACE_WARMUP_CHUNKS`
     guarded takes have shipped, then the running MEDIAN of the shipped takes'
@@ -339,6 +353,281 @@ def emit_event(record: dict) -> None:
     log(GUARD_EVENT_PREFIX + json.dumps(record, ensure_ascii=False), flush=True)
 
 
+# ---------------------------------------------------------------------------
+# THE LADDER: ONE POLICY, TWO DRIVERS
+# ---------------------------------------------------------------------------
+# The rungs above are the policy; WHEN their renders happen is the driver's.
+# `render_guarded` drives one chunk serially, depth-first - the ladder's own
+# order, unchanged, and what the served arm and the single-chunk path use.
+# `GuardPlan` drives many chunks a ROUND at a time: every chunk that wants a
+# retake asks for one, and the driver renders the whole round in a single batch.
+#
+# Owen, 2026-09-08 (through the Mac, after his MLX Shift run): "maybe we should
+# batch the re-renders. take note of which ones we need to re-render and add
+# them to the task list, and batch them at the end. instead of serializing every
+# single one. would that be more efficient". MEASURED reason it is: an MLX batch
+# of 32 rows costs about the wall time of ONE row, so a solo re-roll costs a
+# whole batch - his log slice had 4 re-rolls in ~28 chunks, which roughly
+# doubled the run. The served arm has no such asymmetry (a re-roll there is one
+# more concurrent POST against a server that batches continuously), which is why
+# it keeps the serial driver. Orpheus solved the same problem the same way, in
+# `vllm_backend._render_deferred_resplits`.
+#
+# THE POLICY IS THE SAME UNDER EITHER DRIVER: same rungs in the same order, same
+# events, same accept rule, same tracker discipline. Two things do differ under
+# the batch driver, and both are stated rather than hidden:
+#   - a re-roll is judged against the band AS IT STANDS WHEN ITS ROUND RUNS, by
+#     which time the clean chunks of the same batch have shipped and fed the
+#     running median. That is the better reference, not a worse one.
+#   - a re-roll's sampling comes from its ROUND's batch seed (`reroll_seed` of
+#     the round's first chunk) rather than from its own solo seed, because MLX
+#     draws one RNG stream per batch. What the rung needs is a draw the first
+#     take did not make; both give that, and a batched re-roll is reproducible
+#     as a batch - the same guarantee `_generate_delayed_rows_batch` already
+#     makes for take 0.
+
+
+@dataclass(frozen=True)
+class RenderRequest:
+    """One render the ladder wants next, for the driver to satisfy.
+
+    `text` at `seed` - the two arguments the serial `render(text, seed)`
+    callable takes, with None meaning the engine's own seed rule for `index`.
+    `path` is the ladder position that asked for it, handed straight back to
+    `GuardPlan.offer`.
+    """
+    path: tuple
+    index: int
+    text: str
+    seed: Optional[int]
+    rung: str        # 'take' (take 0) | 'reroll' | 'part' (a split half's take 0)
+    depth: int
+
+
+class _LadderTask:
+    """One text unit on the ladder: a chunk, or a half of one after a split.
+
+    Advances exactly one rung per take offered to it. At any moment a task is
+    WAITING for a render (`request()` says which), waiting for its children, or
+    done.
+    """
+
+    def __init__(self, plan, path: tuple, index: int, text: str,
+                 depth: int, parent=None):
+        self.plan = plan
+        self.path = path
+        self.index = index
+        self.text = text
+        self.depth = depth
+        self.parent = parent
+        self.takes: List[tuple] = []
+        self.children: List['_LadderTask'] = []
+        self.stage = 'take0'      # take0 -> reroll -> children | accept -> done
+        self.base: dict = {}
+        self.audio = None
+        self.clean = False
+        self.done = False
+
+    # -- what it wants next -------------------------------------------------
+    def request(self) -> Optional[RenderRequest]:
+        if self.stage == 'take0':
+            return RenderRequest(self.path, self.index, self.text, None,
+                                 'part' if self.depth else 'take', self.depth)
+        if self.stage == 'reroll':
+            return RenderRequest(self.path, self.index, self.text,
+                                 reroll_seed(self.plan.base_seed, self.index, 1),
+                                 'reroll', self.depth)
+        return None
+
+    # -- one rung -----------------------------------------------------------
+    def offer(self, audio) -> None:
+        if self.stage not in ('take0', 'reroll'):
+            raise RuntimeError(
+                f'GuardPlan: chunk {self.index} at {self.path} was handed a take '
+                f'while it was waiting on {self.stage}.')
+        max_edge, min_edge = self.plan.edges()
+        chars = len((self.text or '').strip())
+        long_edge = min_edge if chars >= MIN_GUARD_CHARS else 0.0
+        verdict = check(self.text, audio, self.plan.sample_rate, max_edge, long_edge)
+
+        if self.stage == 'take0':
+            if not verdict.off_length:
+                self._finish(audio, True)
+                return
+            self.takes.append((audio, verdict))
+            self.base = {'index': self.index, 'depth': self.depth,
+                         'side': verdict.side, **asdict(verdict)}
+            if self.plan.tracker is not None:
+                # WHAT THE BAND WAS CENTRED ON, so a reader of the log can tell a
+                # band still on the recorded pace from one that has moved to the
+                # book's.
+                self.base['pace'] = round(self.plan.tracker.reference, 2)
+                self.base['pace_source'] = ('book' if self.plan.tracker.warm
+                                            else 'recorded')
+            # Rung 1: the re-roll, at a seed the first take did not use.
+            self.plan.on_event({**self.base, 'action': verdict.side, 'rung': 'reroll'})
+            self.stage = 'reroll'
+            return
+
+        # stage == 'reroll'
+        if not verdict.off_length:
+            self.plan.on_event({**self.base, 'action': 'rerolled', 'rung': 'reroll',
+                                'seconds_after': verdict.seconds})
+            self._finish(audio, True)
+            return
+        self.takes.append((audio, verdict))
+
+        # Rung 2: the split, each half through this same ladder.
+        parts = split_halves(self.text) if self.depth < MAX_DEPTH else []
+        if parts:
+            self.plan.on_event({**self.base, 'action': 'resplit', 'rung': 'split',
+                                'reroll_side': verdict.side,
+                                'parts': [len(p) for p in parts]})
+            self.stage = 'children'
+            self.children = [self.plan.child(self, position, part)
+                             for position, part in enumerate(parts)]
+            return
+        self._accept(max_edge, min_edge)
+
+    # -- rung 3 -------------------------------------------------------------
+    def _accept(self, max_edge: float, min_edge: float) -> None:
+        """The take closest to the expected length ships, and the event says so:
+        the render never refuses (Owen, 2026-09-05), and the coverage audit
+        names the chunk."""
+        centre = expected_chars_per_sec(max_edge, min_edge)
+        best, best_verdict = min(
+            self.takes,
+            key=lambda tv: abs(math.log(max(tv[1].chars_per_second, 1e-9)) - math.log(centre))
+            if tv[1].chars_per_second != float('inf') else float('inf'))
+        self.plan.on_event({**self.base, 'action': 'accepted-off-length', 'rung': 'accept',
+                            'shipped_side': best_verdict.side,
+                            'seconds_shipped': best_verdict.seconds,
+                            'why': ('at MAX_DEPTH' if self.depth >= MAX_DEPTH
+                                    else 'text cannot be split')})
+        self._finish(best, False)
+
+    def _finish(self, audio, clean: bool) -> None:
+        self.audio = audio
+        self.clean = bool(clean)
+        self.stage = 'done'
+        self.done = True
+        if self.parent is None:
+            self.plan.finish_root(self)
+            return
+        siblings = self.parent.children
+        if all(child.done for child in siblings):
+            self.parent._finish(
+                join_parts([child.audio for child in siblings], self.plan.sample_rate),
+                all(child.clean for child in siblings))
+
+
+class GuardPlan:
+    """Chunks through the ladder, a ROUND of renders at a time.
+
+    The batch driver's loop:
+
+        plan = GuardPlan(sample_rate=..., base_seed=..., tracker=...)
+        for index, text, take0 in batch:       # take 0 the engine already has
+            plan.add(index, text, first_take=take0)
+        ship(plan.finished())                  # everything take 0 got right
+        while True:
+            requests = plan.round()            # every retake the guard wants
+            if not requests:
+                break
+            for request, audio in zip(requests, render_as_one_batch(requests)):
+                plan.offer(request, audio)
+            ship(plan.finished())
+
+    `round()` is ordered by ladder position, so a driver that takes only its
+    FIRST request walks the ladder depth-first - which is exactly what
+    `render_guarded` does, and why the two drivers cannot drift apart.
+
+    NOT THREAD-SAFE, deliberately: one plan belongs to one batch on one thread.
+    The `PaceTracker` it feeds is the shared, locked one.
+    """
+
+    def __init__(self, *, sample_rate: int, base_seed: Optional[int],
+                 tracker: Optional[PaceTracker] = None,
+                 max_chars_per_sec: float = 0.0, min_chars_per_sec: float = 0.0,
+                 on_event: Callable[[dict], None] = emit_event):
+        self.sample_rate = int(sample_rate)
+        self.base_seed = base_seed
+        self.tracker = tracker
+        self.fixed = (float(max_chars_per_sec), float(min_chars_per_sec))
+        self.on_event = on_event
+        self._tasks: dict = {}
+        self._added = 0
+        self._finished: List[tuple] = []
+
+    # -- the band -----------------------------------------------------------
+    def edges(self) -> tuple:
+        """`(max_chars_per_sec, min_chars_per_sec)` for a take being judged NOW:
+        the tracker's, read fresh, or the fixed pair when there is no tracker."""
+        if self.tracker is None:
+            return self.fixed
+        band = self.tracker.band()
+        return band['max_chars_per_sec'], band['min_chars_per_sec']
+
+    # -- building -----------------------------------------------------------
+    def add(self, index: int, text: str, first_take=None) -> None:
+        """A chunk onto the ladder. `first_take` is take 0 when the caller
+        already has it (every batch path), so it is never rendered twice."""
+        task = _LadderTask(self, (self._added,), int(index), text, 0)
+        self._tasks[task.path] = task
+        self._added += 1
+        if first_take is not None:
+            task.offer(first_take)
+
+    def child(self, parent, position: int, text: str):
+        """A split half. Its path sorts INSIDE its parent's, so depth-first
+        order falls out of sorting the pending tasks."""
+        task = _LadderTask(self, parent.path + (position,), parent.index, text,
+                           parent.depth + 1, parent=parent)
+        self._tasks[task.path] = task
+        return task
+
+    # -- the round ----------------------------------------------------------
+    def round(self) -> List[RenderRequest]:
+        """Every render the ladder is waiting on, in ladder order. Empty once
+        every chunk added has been decided."""
+        requests = []
+        for path in sorted(self._tasks):
+            request = self._tasks[path].request()
+            if request is not None:
+                requests.append(request)
+        return requests
+
+    def offer(self, request: RenderRequest, audio) -> None:
+        """The audio for one of `round()`'s requests."""
+        task = self._tasks.get(request.path)
+        if task is None:
+            raise KeyError(f'GuardPlan.offer: no task at {request.path}')
+        task.offer(audio)
+
+    def finish_root(self, task) -> None:
+        """A whole chunk is decided. THE SHIPPED TAKE FEEDS THE TRACKER ONLY
+        WHEN IT IS CLEAN - an `accepted-off-length` take is a defect the ladder
+        could not fix, and feeding it back would pull the reference toward the
+        defect (Owen's worry, 2026-09-08: a truncation in the earliest chunks).
+        """
+        if self.tracker is not None and task.clean:
+            self.tracker.observe(len((task.text or '').strip()),
+                                 float(len(task.audio)) / float(self.sample_rate))
+        self._finished.append((task.index, task.audio, task.clean))
+
+    def finished(self) -> List[tuple]:
+        """`(index, audio, clean)` for every chunk decided since the last call.
+        Drains, so a driver ships as it goes."""
+        out, self._finished = self._finished, []
+        return out
+
+    @property
+    def pending(self) -> int:
+        """Chunks still on the ladder."""
+        return sum(1 for task in self._tasks.values()
+                   if task.parent is None and not task.done)
+
+
 def render_guarded(render: Callable[[str, Optional[int]], np.ndarray],
                    text: str, index: int, *, sample_rate: int,
                    base_seed: Optional[int],
@@ -347,10 +636,10 @@ def render_guarded(render: Callable[[str, Optional[int]], np.ndarray],
                    tracker: Optional[PaceTracker] = None,
                    first_take: Optional[np.ndarray] = None,
                    on_event: Callable[[dict], None] = emit_event) -> np.ndarray:
-    """The ladder. `render(text, seed)` is the engine's own single render
-    (seed None = the engine's seed rule for `index`); `first_take` is take 0 when
-    the caller already has it (the MLX batch path), so it is never rendered twice.
-    Returns the audio to ship.
+    """The ladder, ONE chunk, driven serially. `render(text, seed)` is the
+    engine's own single render (seed None = the engine's seed rule for `index`);
+    `first_take` is take 0 when the caller already has it, so it is never
+    rendered twice. Returns the audio to ship.
 
     THE BAND is the `tracker`'s when one is given - read fresh for every take,
     so a re-roll is judged against the same book pace the take before it was -
@@ -358,78 +647,23 @@ def render_guarded(render: Callable[[str, Optional[int]], np.ndarray],
     tests, and any caller that wants a band that does not move). A chunk under
     `MIN_GUARD_CHARS` is judged on the short side only, either way.
 
-    THE SHIPPED TAKE FEEDS THE TRACKER ONLY WHEN IT IS CLEAN: a take inside the
-    band, a re-roll inside it, or a split whose every part came out clean. An
-    `accepted-off-length` take - at any depth of the split - is a defect the
-    ladder could not fix, and feeding it back would pull the reference toward
-    the defect (Owen's worry, 2026-09-08: a truncation in the earliest chunks).
+    Taking `round()[0]` every time is what makes this DEPTH-FIRST: a split's
+    left half is finished before its right half is begun, which is the order
+    the ladder has always rendered and logged in. `GuardPlan` is the same
+    policy with every waiting chunk rendered together instead.
     """
-    audio, clean = _ladder(render, text, index, sample_rate=sample_rate,
-                           base_seed=base_seed, max_chars_per_sec=max_chars_per_sec,
-                           min_chars_per_sec=min_chars_per_sec, tracker=tracker,
-                           first_take=first_take, depth=0, on_event=on_event)
-    if tracker is not None and clean:
-        tracker.observe(len((text or '').strip()), float(len(audio)) / float(sample_rate))
-    return audio
-
-
-def _ladder(render, text, index, *, sample_rate, base_seed, max_chars_per_sec,
-            min_chars_per_sec, tracker, first_take, depth, on_event):
-    """`render_guarded`'s body: the audio to ship and whether it is CLEAN."""
-    if tracker is not None:
-        edges = tracker.band()
-        max_chars_per_sec = edges['max_chars_per_sec']
-        min_chars_per_sec = edges['min_chars_per_sec']
-    chars = len((text or '').strip())
-    long_edge = min_chars_per_sec if chars >= MIN_GUARD_CHARS else 0.0
-
-    def verdict_of(audio):
-        return check(text, audio, sample_rate, max_chars_per_sec, long_edge)
-
-    take0 = first_take if first_take is not None else render(text, None)
-    verdict = verdict_of(take0)
-    if not verdict.off_length:
-        return take0, True
-    takes = [(take0, verdict)]
-    base = {'index': index, 'depth': depth, 'side': verdict.side, **asdict(verdict)}
-    if tracker is not None:
-        # WHAT THE BAND WAS CENTRED ON, so a reader of the log can tell a band
-        # still on the recorded pace from one that has moved to the book's.
-        base['pace'] = round(tracker.reference, 2)
-        base['pace_source'] = 'book' if tracker.warm else 'recorded'
-
-    # Rung 1: the re-roll, at a seed the first take did not use.
-    on_event({**base, 'action': verdict.side, 'rung': 'reroll'})
-    take1 = render(text, reroll_seed(base_seed, index, 1))
-    verdict1 = verdict_of(take1)
-    if not verdict1.off_length:
-        on_event({**base, 'action': 'rerolled', 'rung': 'reroll',
-                  'seconds_after': verdict1.seconds})
-        return take1, True
-    takes.append((take1, verdict1))
-
-    # Rung 2: the split, each half through the same ladder.
-    parts = split_halves(text) if depth < MAX_DEPTH else []
-    if parts:
-        on_event({**base, 'action': 'resplit', 'rung': 'split',
-                  'reroll_side': verdict1.side, 'parts': [len(p) for p in parts]})
-        rendered = [_ladder(render, part, index, sample_rate=sample_rate,
-                            max_chars_per_sec=max_chars_per_sec,
-                            min_chars_per_sec=min_chars_per_sec,
-                            tracker=tracker, first_take=None,
-                            base_seed=base_seed, depth=depth + 1,
-                            on_event=on_event)
-                    for part in parts]
-        return (join_parts([audio for audio, _clean in rendered], sample_rate),
-                all(clean for _audio, clean in rendered))
-
-    # Rung 3: accept the take closest to the expected length, and say so.
-    centre = expected_chars_per_sec(max_chars_per_sec, min_chars_per_sec)
-    best, best_verdict = min(
-        takes, key=lambda tv: abs(math.log(max(tv[1].chars_per_second, 1e-9)) - math.log(centre))
-        if tv[1].chars_per_second != float('inf') else float('inf'))
-    on_event({**base, 'action': 'accepted-off-length', 'rung': 'accept',
-              'shipped_side': best_verdict.side,
-              'seconds_shipped': best_verdict.seconds,
-              'why': ('at MAX_DEPTH' if depth >= MAX_DEPTH else 'text cannot be split')})
-    return best, False
+    plan = GuardPlan(sample_rate=sample_rate, base_seed=base_seed, tracker=tracker,
+                     max_chars_per_sec=max_chars_per_sec,
+                     min_chars_per_sec=min_chars_per_sec, on_event=on_event)
+    plan.add(index, text, first_take=first_take)
+    while True:
+        requests = plan.round()
+        if not requests:
+            break
+        request = requests[0]
+        plan.offer(request, render(request.text, request.seed))
+    decided = plan.finished()
+    if len(decided) != 1:
+        raise RuntimeError(
+            f'render_guarded: the ladder decided {len(decided)} chunks for one call.')
+    return decided[0][1]

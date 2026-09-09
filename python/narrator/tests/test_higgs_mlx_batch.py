@@ -33,6 +33,7 @@ from unittest import mock
 
 import numpy as np
 
+from narrator.engine.higgs import truncation
 from narrator.engine.higgs.mlx_backend import (BATCH_ENV, CACHE_LIMIT_ENV,
                                                MEM_BUDGET_ENV,
                                                HiggsV3MlxEngine,
@@ -591,3 +592,89 @@ class OnRetireTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RetakeBatchTest(unittest.TestCase):
+    """The length guard's retakes ride the batches (Owen, 2026-09-08: "batch
+    them at the end. instead of serializing every single one").
+
+    A batch of 32 rows costs about the wall time of ONE row here, so a solo
+    re-roll costs a whole batch. What these prove is the SCHEDULING: one
+    generation call for take 0, one more for every retake the guard wants -
+    never one per off-length row.
+    """
+
+    RATE = 24000
+    #: 300 characters, two sentences - over MIN_GUARD_CHARS (so both edges of
+    #: the band apply) and splittable if it ever came to that.
+    TEXTS = [(f'Chunk {tag}. ' + 'The night was long and the road was longer. '
+              * 6).strip() for tag in 'ABCD']
+
+    def _audio(self, chars, cps=17.0):
+        return np.zeros(int(chars / cps * self.RATE), dtype=np.float32)
+
+    def _engine_with_batches(self, bad_first_take):
+        """An engine whose generation is a stub: the rows it 'renders' are the
+        audio itself (`codec().decode` is identity), so the guard's arithmetic
+        is the only thing under test."""
+        engine = _engine(ceiling=8, budget=42.0)
+        engine.config.seed = 1234
+        engine._budget = mock.Mock(cap_frames=lambda text: 300)
+        engine._seed_for = lambda index: 500 + index
+        engine._mlx_prompts_for = lambda texts: [(None, 700) for _t in texts]
+        engine.codec = lambda: mock.Mock(decode=lambda rows: rows)
+        written = []
+        engine._write_sentence = lambda number, audio: written.append((number, audio)) or True
+        calls = []
+
+        def _batch(texts, caps, seed, prompts=None, group_no=1, group_count=1,
+                   should_stop=None, on_retire=None):
+            calls.append({'texts': list(texts), 'seed': seed})
+            first = len(calls) == 1
+            return [self._audio(50) if (first and text in bad_first_take)
+                    else self._audio(len(text)) for text in texts]
+
+        engine._generate_delayed_rows_batch = _batch
+        return engine, calls, written
+
+    def test_two_off_length_rows_are_ONE_extra_generation_call_not_two(self):
+        bad = {self.TEXTS[1], self.TEXTS[3]}
+        engine, calls, written = self._engine_with_batches(bad)
+        answers = engine.convert_batch(list(enumerate(self.TEXTS)))
+
+        self.assertEqual(answers, [True, True, True, True])
+        self.assertEqual(len(calls), 2,
+                         'take 0 for the four rows, then ONE round for both retakes')
+        self.assertEqual(calls[1]['texts'], [self.TEXTS[1], self.TEXTS[3]])
+        self.assertEqual(calls[1]['seed'], truncation.reroll_seed(1234, 1, 1),
+                         'the round takes its first request\'s seed')
+        self.assertEqual(sorted(number for number, _audio in written), [0, 1, 2, 3])
+        # The clean rows were written before the retake round ran.
+        self.assertEqual([number for number, _audio in written][:2], [0, 2])
+
+    def test_nothing_off_length_is_no_extra_call_at_all(self):
+        engine, calls, written = self._engine_with_batches(set())
+        self.assertEqual(engine.convert_batch(list(enumerate(self.TEXTS))),
+                         [True, True, True, True])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([number for number, _audio in written], [0, 1, 2, 3])
+
+    def test_the_retake_round_is_named_by_CHUNK_when_it_fails(self):
+        # A failed slice raises naming its rows; on the retake round those rows
+        # are ladder positions, and a reader needs the chunk numbers.
+        # TWO bad rows: a round of one renders solo through `render_audio`,
+        # which is the same call the serial ladder makes.
+        engine, calls, _written = self._engine_with_batches({self.TEXTS[1], self.TEXTS[3]})
+        real = engine._generate_delayed_rows_batch
+
+        def _batch(texts, caps, seed, **kwargs):
+            if len(calls) >= 1:
+                raise RuntimeError('Metal out of memory')
+            return real(texts, caps, seed, **kwargs)
+
+        engine._generate_delayed_rows_batch = _batch
+        with self.assertRaises(RuntimeError) as caught:
+            engine.convert_batch(list(enumerate(self.TEXTS)))
+        message = str(caught.exception)
+        self.assertIn('Metal out of memory', message)
+        self.assertIn('rows [1, 3]', message)

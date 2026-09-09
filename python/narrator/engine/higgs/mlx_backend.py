@@ -1572,6 +1572,13 @@ class HiggsV3MlxEngine:
         memory-budgeted slices (`_mlx_batch_groups`), each generated in one
         left-padded batch and then decoded and written per row.
 
+        THE LENGTH GUARD'S RETAKES RIDE THE SAME BATCHES: a row whose take 0 is
+        off-length is recorded rather than re-rendered on the spot, and after
+        the last slice every recorded retake renders together
+        (`_render_retake_rounds`). Every row of `items` is still decided before
+        this returns - the deferral is inside the call, exactly as Orpheus's
+        `_render_deferred_resplits` defers inside its own batch.
+
         A GENERATION FAILURE IS LOUD. It raises, naming the slice's width and
         its row indices on top of the original error, exactly as `convert`
         raises when one row fails - there is no per-item retry. A retry was
@@ -1616,6 +1623,16 @@ class HiggsV3MlxEngine:
                    in zip(cleaned, prompts)]
 
         results = {}
+        # THE GUARD'S RETAKES ARE BATCHED, NOT SERIAL (Owen, 2026-09-08: "take
+        # note of which ones we need to re-render and add them to the task list,
+        # and batch them at the end. instead of serializing every single one").
+        # A batch of 32 rows costs about the wall time of ONE row here, so a
+        # solo re-roll costs a whole batch: his Shift slice had 4 re-rolls in
+        # ~28 chunks. The ladder is unchanged - `GuardPlan` is the same policy,
+        # driven a round at a time (truncation.py, "ONE POLICY, TWO DRIVERS").
+        plan = truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
+                                    base_seed=self.config.seed,
+                                    tracker=self._pace_tracker())
         groups = self._mlx_batch_groups(entries)
         for group_no, (bucket, depth) in enumerate(groups, 1):
             texts = [e[1] for e in bucket]
@@ -1628,14 +1645,88 @@ class HiggsV3MlxEngine:
             except Exception as bucket_err:
                 raise self._batch_failure(bucket, depth, bucket_err) from bucket_err
             for entry, rows in zip(bucket, rows_per_row):
-                # The batched take is take 0 of the ladder; a row that passes
-                # the guard is written as decoded, a row that stopped early is
-                # re-rolled and, if need be, split - serially, in its own
-                # voice, exactly as `convert` would have done it.
-                results[entry[0]] = self._write_sentence(
-                    entry[0], self._render_guarded(
-                        entry[0], entry[1], first_take=self.codec().decode(rows)))
+                # The batched take is take 0 of the ladder: a row inside the
+                # band is written as decoded, a row that stopped early or ran on
+                # is RECORDED and rendered with the rest of this call's retakes.
+                plan.add(entry[0], entry[1], first_take=self.codec().decode(rows))
+            self._ship_guarded(plan, results)
+        self._render_retake_rounds(plan, results)
         return [results.get(index, False) for index, _text in items]
+
+    def _ship_guarded(self, plan, results: dict) -> None:
+        """Every chunk the ladder has decided since the last call, written to
+        its sentence file. One writer for every path (`_write_sentence`)."""
+        for index, audio, _clean in plan.finished():
+            results[index] = self._write_sentence(index, audio)
+
+    #: A round advances every waiting chunk one rung, and the ladder is at most
+    #: two rungs deep at each of `MAX_DEPTH` + 1 levels. A run past this is a
+    #: ladder that does not terminate, which is a bug to see, not to survive.
+    MAX_RETAKE_ROUNDS = 2 * (truncation.MAX_DEPTH + 1)
+
+    def _render_retake_rounds(self, plan, results: dict) -> None:
+        """The guard's retakes for this call, a ROUND at a time, each round in
+        one batch.
+
+        Round 1 is every off-length row's re-roll; round 2 is the split halves
+        of the rows the re-roll did not fix, FLATTENED ACROSS CHUNKS so three
+        chunks' six halves are one batch, not six solo renders; and so on to
+        `MAX_DEPTH`. Rows land by index, so the ship order is unchanged.
+        """
+        for round_no in range(1, self.MAX_RETAKE_ROUNDS + 1):
+            requests = plan.round()
+            if not requests:
+                return
+            _log(f'length guard: retake round {round_no}, {len(requests)} take(s) '
+                 f'for chunk(s) {sorted({request.index for request in requests})}')
+            audio = self._render_requests(requests)
+            for request, take in zip(requests, audio):
+                plan.offer(request, take)
+            self._ship_guarded(plan, results)
+        raise RuntimeError(
+            f'Higgs v3 MLX: the length guard asked for a {self.MAX_RETAKE_ROUNDS + 1}th '
+            f'retake round ({plan.pending} chunk(s) still on the ladder); the ladder '
+            'is meant to terminate at MAX_DEPTH.')
+
+    def _render_requests(self, requests: list) -> list:
+        """`truncation.RenderRequest`s rendered as batches; the audio, aligned
+        to `requests`.
+
+        ONE SEED PER BUCKET, as everywhere on this backend (`mx.random.seed` is
+        drawn per batch): the bucket takes its first request's seed, which for a
+        re-roll is `reroll_seed` - a seed no take 0 in this book used - and for
+        a split half is that chunk's own. The text differs from take 0's either
+        way, so the draw does too.
+        """
+        width = max(1, int(self.BATCH_SIZE or 1))
+        if width <= 1 or len(requests) == 1:
+            return [self.render_audio(request.text, seed=request.seed,
+                                      index=request.index)
+                    for request in requests]
+        # Keyed by POSITION, not by chunk index: the two halves of one chunk are
+        # two requests carrying the same index, and they render side by side.
+        prompts = self._mlx_prompts_for([request.text for request in requests])
+        entries = [(position, request.text, positions,
+                    self._budget.cap_frames(request.text))
+                   for position, (request, (_embeds, positions))
+                   in enumerate(zip(requests, prompts))]
+        out = [None] * len(requests)
+        groups = self._mlx_batch_groups(entries)
+        for group_no, (bucket, depth) in enumerate(groups, 1):
+            first = requests[bucket[0][0]]
+            seed = first.seed if first.seed is not None else self._seed_for(first.index)
+            try:
+                rows_per_row = self._generate_delayed_rows_batch(
+                    [entry[1] for entry in bucket], [entry[3] for entry in bucket], seed,
+                    prompts=[prompts[entry[0]] for entry in bucket],
+                    group_no=group_no, group_count=len(groups))
+            except Exception as bucket_err:
+                # Named by CHUNK index, which is what a reader of the log has.
+                named = [(requests[entry[0]].index,) + tuple(entry[1:]) for entry in bucket]
+                raise self._batch_failure(named, depth, bucket_err) from bucket_err
+            for entry, rows in zip(bucket, rows_per_row):
+                out[entry[0]] = self.codec().decode(rows)
+        return out
 
     @staticmethod
     def _batch_failure(bucket, depth, err) -> RuntimeError:

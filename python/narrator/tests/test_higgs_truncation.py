@@ -332,5 +332,136 @@ class ServedEngineTest(SglTestCase):
         self.assertGreater(len(audio) / rate, 4 * 20.0)
 
 
+class GuardPlanTest(unittest.TestCase):
+    """The BATCH driver (Owen, 2026-09-08: "take note of which ones we need to
+    re-render and add them to the task list, and batch them at the end").
+
+    The policy is `render_guarded`'s - what these prove is that the retakes of a
+    whole batch arrive in ONE round, and that the two drivers ship the same
+    audio and log the same events.
+    """
+
+    TEXTS = [f'Chunk {tag}. ' + TEXT for tag in 'ABCDE']
+
+    def plan(self, events, tracker=None):
+        return truncation.GuardPlan(sample_rate=RATE, base_seed=1234, tracker=tracker,
+                                    max_chars_per_sec=20.0, min_chars_per_sec=14.5,
+                                    on_event=events.append)
+
+    @staticmethod
+    def drive(plan, render):
+        """The batch driver's loop; answers what each round asked for."""
+        rounds = []
+        shipped = []
+        while True:
+            requests = plan.round()
+            if not requests:
+                return rounds, shipped
+            rounds.append(list(requests))
+            for request in requests:
+                plan.offer(request, render(request.text, request.seed))
+            shipped.extend(plan.finished())
+
+    def add_all(self, plan, render):
+        """Take 0 for every chunk, the way a batch hands it in."""
+        for index, text in enumerate(self.TEXTS):
+            plan.add(index, text, first_take=render(text, None))
+        return plan.finished()
+
+    def test_the_off_length_rows_of_a_batch_all_ask_in_ONE_round(self):
+        # Chunks 1 and 3 stop early on their own seed and are fine on any other:
+        # serially that is two solo re-rolls, which on MLX costs two batches.
+        render = FakeRender(lambda t, s, n: s is None and ('Chunk B' in t or 'Chunk D' in t))
+        events = []
+        plan = self.plan(events)
+        clean = self.add_all(plan, render)
+        self.assertEqual([index for index, _audio, _clean in clean], [0, 2, 4],
+                         'the rows take 0 got right ship before any retake runs')
+        rounds, shipped = self.drive(plan, render)
+        self.assertEqual([len(r) for r in rounds], [2], 'one round, both re-rolls in it')
+        self.assertEqual([(r.index, r.rung) for r in rounds[0]],
+                         [(1, 'reroll'), (3, 'reroll')])
+        self.assertEqual([r.seed for r in rounds[0]],
+                         [truncation.reroll_seed(1234, 1, 1), truncation.reroll_seed(1234, 3, 1)])
+        self.assertEqual([index for index, _audio, _clean in shipped], [1, 3])
+        self.assertEqual([e['action'] for e in events], ['short', 'short', 'rerolled', 'rerolled'])
+
+    def test_the_split_halves_of_several_chunks_flatten_into_one_round(self):
+        # Nothing fixes the whole text of B and D; their halves are fine (the
+        # script fires on length, the shape of a real early stop). Round 1 is
+        # the two re-rolls, round 2 is FOUR halves - one batch, not four solos.
+        render = FakeRender(
+            lambda t, s, n: len(t) > 900 and ('Chunk B' in t or 'Chunk D' in t))
+        events = []
+        plan = self.plan(events)
+        self.add_all(plan, render)
+        rounds, shipped = self.drive(plan, render)
+        self.assertEqual([len(r) for r in rounds], [2, 4])
+        self.assertEqual([(r.index, r.rung) for r in rounds[1]],
+                         [(1, 'part'), (1, 'part'), (3, 'part'), (3, 'part')])
+        self.assertEqual(sorted(index for index, _audio, _clean in shipped), [1, 3])
+        for index, audio, clean in shipped:
+            halves = truncation.split_halves(self.TEXTS[index])
+            self.assertTrue(clean, 'both halves came out clean, so the chunk did')
+            self.assertEqual(len(audio),
+                             len(audio_for(len(halves[0]))) + len(audio_for(len(halves[1])))
+                             + int(round(truncation.RESPLIT_JOIN_SECONDS * RATE)))
+
+    def test_the_two_drivers_ship_the_same_audio_and_log_the_same_events(self):
+        """The drift guard: same scripted renders, one chunk at a time through
+        `render_guarded` and all five through a plan."""
+        def script(t, s, n):
+            return 'Chunk B' in t or ('Chunk D' in t and s is None)
+
+        serial_events, serial_audio = [], []
+        for index, text in enumerate(self.TEXTS):
+            render = FakeRender(script)
+            serial_audio.append(len(truncation.render_guarded(
+                render, text, index, sample_rate=RATE, max_chars_per_sec=20.0,
+                min_chars_per_sec=14.5, base_seed=1234,
+                first_take=render(text, None), on_event=serial_events.append)))
+
+        batched_events = []
+        plan = self.plan(batched_events)
+        render = FakeRender(script)
+        decided = list(self.add_all(plan, render))
+        _rounds, shipped = self.drive(plan, render)
+        decided.extend(shipped)
+        batched_audio = [length for _index, length
+                         in sorted((index, len(audio)) for index, audio, _clean in decided)]
+
+        self.assertEqual(batched_audio, serial_audio)
+        def by_index(events):
+            return {index: [e['action'] for e in events if e['index'] == index]
+                    for index in range(len(self.TEXTS))}
+        self.assertEqual(by_index(batched_events), by_index(serial_events))
+
+    def test_only_a_clean_take_feeds_the_tracker_through_the_batch_driver(self):
+        tracker = truncation.PaceTracker(17.0, 20.0, 14.5, warmup=1)
+        # Chunk B can never be fixed: it is accepted off-length and must not
+        # pull the running median toward the defect.
+        render = FakeRender(lambda t, s, n: 'Chunk B' in t)
+        events = []
+        plan = self.plan(events, tracker=tracker)
+        self.add_all(plan, render)
+        self.drive(plan, render)
+        self.assertIn('accepted-off-length', [e['action'] for e in events])
+        self.assertEqual(tracker.observed, 4, 'the four clean chunks, not the accepted one')
+        self.assertAlmostEqual(tracker.reference, PACE, delta=0.05)
+
+    def test_a_take_offered_to_a_chunk_that_is_not_waiting_is_refused(self):
+        events = []
+        plan = self.plan(events)
+        plan.add(7, TEXT, first_take=audio_for(len(TEXT)))    # clean: nothing pending
+        self.assertEqual(plan.round(), [])
+        self.assertEqual(plan.pending, 0)
+        request = truncation.RenderRequest((0,), 7, TEXT, None, 'take', 0)
+        with self.assertRaises(RuntimeError):
+            plan.offer(request, audio_for(len(TEXT)))
+        with self.assertRaises(KeyError):
+            plan.offer(truncation.RenderRequest((9,), 9, TEXT, None, 'take', 0),
+                       audio_for(len(TEXT)))
+
+
 if __name__ == '__main__':
     unittest.main()
