@@ -186,20 +186,58 @@ class BatchGroupsTest(unittest.TestCase):
         # max(700+300, 900+100, 100+1500) = 1600, not 900 and not 1500.
         self.assertEqual(groups[0][1], 1600)
 
-    def test_an_over_deep_slice_is_split_evenly_not_into_a_tail(self):
-        # Ceiling 64 at a depth that only affords 50 rows: 32 + 32, never 50 + 14.
-        # depth 4000 -> 4000 x 0.140625 / 1024 = 0.5493 GB/row; 25.5 / 0.5493 = 46.
+    def test_an_over_deep_slice_shrinks_to_what_fits(self):
+        """WAS `test_an_over_deep_slice_is_split_evenly_not_into_a_tail`,
+        asserting [32, 32] - the ceiling read as a UNIT to divide, so that 64
+        rows capped at 46 ran 32+32 rather than 46+18 and no batch carried a
+        near-solo tail. Reversed 2026-09-09: the ceiling is a MAXIMUM and the
+        book runs on, so a short window has no tail to avoid, and dividing threw
+        away every row between the cap and the ceiling. Measured on Owen's
+        Streicher render, 62 rows fitted, 64 were asked for, and 32 ran.
+
+        With exactly 64 entries both rules cost two batches, which is what hid
+        this; the length test below is the one that shows the difference."""
         engine = _engine(ceiling=64, budget=42.0)
         entries = self._entries(64, positions=1000, cap=3000)
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(engine._mlx_width_for_depth(4000), 46)
             groups = engine._mlx_batch_groups(entries)
         sizes = [len(bucket) for bucket, _d in groups]
-        self.assertEqual(sizes, [32, 32])
+        self.assertEqual(sizes, [46, 18])
         self.assertEqual(sum(sizes), 64)
         # Still consecutive, still in book order.
-        self.assertEqual([e[0] for e in groups[0][0]], list(range(32)))
-        self.assertEqual([e[0] for e in groups[1][0]], list(range(32, 64)))
+        self.assertEqual([e[0] for e in groups[0][0]], list(range(46)))
+        self.assertEqual([e[0] for e in groups[1][0]], list(range(46, 64)))
+
+    def test_over_a_whole_book_the_shrink_is_fewer_batches(self):
+        """THE ROW THAT WOULD HAVE CAUGHT IT. A batch costs about the wall time
+        of its deepest row however many rows ride in it, so batch COUNT is the
+        cost. 640 chunks at a cap of 46: shrinking runs ceil(640/46) = 14
+        batches; the even split ran 640/32 = 20."""
+        engine = _engine(ceiling=64, budget=42.0)
+        entries = self._entries(640, positions=1000, cap=3000)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            groups = engine._mlx_batch_groups(entries)
+        sizes = [len(bucket) for bucket, _d in groups]
+        self.assertEqual(len(sizes), 14)
+        self.assertEqual(sizes[:-1], [46] * 13)
+        self.assertEqual(sum(sizes), 640)
+
+    def test_one_deep_row_narrows_only_the_window_it_sits_in(self):
+        """A deep row anchors ITS window and no other. Book order is kept - no
+        sorting, no bucketing - so a deep row at the head cannot be shrunk out
+        of its own slice; what the shrink protects is everything BEHIND it,
+        which starts a fresh window and is measured on its own depth."""
+        engine = _engine(ceiling=8, budget=42.0)
+        entries = ([(0, 'deep', 1000, 30000)]
+                   + [(i, f'c{i}', 100, 100) for i in range(1, 8)])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(engine._mlx_width_for_depth(31000), 5)
+            groups = engine._mlx_batch_groups(entries)
+        # 8 asked, 5 afforded at depth 31000 -> a window of 5; the shallow
+        # remainder is its own window, measured at depth 200.
+        self.assertEqual([len(b) for b, _d in groups], [5, 3])
+        self.assertEqual([d for _b, d in groups], [31000, 200])
 
     def test_an_uneven_split_puts_the_extra_row_first(self):
         engine = _engine(ceiling=5, budget=42.0)

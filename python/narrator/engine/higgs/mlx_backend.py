@@ -1232,9 +1232,10 @@ class HiggsV3MlxEngine:
         therefore gets a shallow depth and, through `_mlx_width_for_depth`, buys
         back width.
 
-        A slice too deep for its own width is split EVENLY rather than into
-        [allowed, remainder]: throughput is bought by width, so 64 rows capped at
-        50 run 32+32, not 50+14 - the same batch count with no near-solo tail.
+        A slice too deep for its own width SHRINKS to the width that fits and
+        the next slice starts there - 64 rows capped at 50 run 50, then 50, not
+        32+32. See the comment on the loop for why the even split it replaced
+        (2026-09-09) was throwing away rows.
         """
         width = max(1, int(self.BATCH_SIZE or 1))
 
@@ -1244,25 +1245,39 @@ class HiggsV3MlxEngine:
         groups = []
         i, n = 0, len(entries)
         while i < n:
-            take = min(width, n - i)
-            window = entries[i:i + take]
+            asked = min(width, n - i)
+            take = asked
+            # A WINDOW THAT DOES NOT FIT SHRINKS TO WHAT DOES; it is not split
+            # into equal parts (2026-09-09). The even split read the ceiling as a
+            # UNIT to be divided — 64 rows capped at 50 became 32+32 rather than
+            # 50+14, to avoid a near-solo tail. But the ceiling is a MAXIMUM and
+            # the book runs on, so there is no tail to avoid: a window of 50 just
+            # means the next window starts at 50. Dividing instead threw away
+            # every row between `allowed` and `take`, and it cost the most
+            # exactly when it was closest to fitting.
+            #
+            # MEASURED on Owen's Streicher render (2026-09-09): "narrowed 64 rows
+            # -> 2 x ~32 (depth 2989 positions, cap 62, budget 42 GB)". 62 rows
+            # fitted; it asked for 64, missed by two, and ran 32. Over 774 chunks
+            # that is 24 batches instead of 12, and a batch costs about the wall
+            # time of its deepest row however many rows ride in it.
+            #
+            # Re-measured on each shrink because a smaller window can be
+            # SHALLOWER — its deepest row may be one of the rows just dropped —
+            # which buys width back. `take` only ever decreases, so this ends.
+            while True:
+                window = entries[i:i + take]
+                depth = _depth(window)
+                allowed = self._mlx_width_for_depth(depth)
+                if allowed >= take or take <= 1:
+                    break
+                take = allowed
+            if take < asked:
+                _log(f'MLX batch narrowed {asked} rows -> {take} '
+                     f'(depth {depth} positions, cap {allowed}, budget '
+                     f'{self.MLX_MEM_BUDGET_GB:g} GB)')
+            groups.append((window, depth))
             i += take
-            depth = _depth(window)
-            allowed = self._mlx_width_for_depth(depth)
-            if allowed >= take:
-                groups.append((window, depth))
-                continue
-            parts = -(-take // allowed)   # ceil: fewest equal parts that all fit
-            base, extra = divmod(take, parts)
-            _log(f'MLX batch narrowed {take} rows -> {parts} x ~{base} '
-                 f'(depth {depth} positions, cap {allowed}, budget '
-                 f'{self.MLX_MEM_BUDGET_GB:g} GB)')
-            pos = 0
-            for p in range(parts):
-                size = base + (1 if p < extra else 0)
-                sub = window[pos:pos + size]
-                pos += size
-                groups.append((sub, _depth(sub)))
         return groups
 
     # ---- batched generation -------------------------------------------------
