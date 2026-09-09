@@ -449,6 +449,18 @@ function refuseMalformedPace(model: HiggsModel, arm: string, pace: unknown): voi
   }
 }
 
+/**
+ * Where a `maxChars` came from — a CLOSED SET, mirroring narrator's
+ * `MAX_CHARS_SOURCES` in `engine/protocol.py`, which refuses anything else.
+ * The reasoning behind a number goes in `_maxCharsNote`, not here.
+ */
+export type HiggsMaxCharsSource = 'catalog' | 'placeholder' | 'length-sweep';
+
+/** The same set as a runtime value, for validating catalog JSON. */
+export const HIGGS_MAX_CHARS_SOURCES: readonly HiggsMaxCharsSource[] = [
+  'catalog', 'placeholder', 'length-sweep',
+];
+
 export interface HiggsBackendCaps {
   /**
    * The PREP packing cap, in characters. Consumed by BookForge, never sent to
@@ -470,7 +482,7 @@ export interface HiggsBackendCaps {
    * is evidence, and a duration ratio is not — a v3 render measured ratio 0.99
    * while dropping 22 % of its text.
    */
-  maxCharsSource?: string | null;
+  maxCharsSource?: HiggsMaxCharsSource | null;
   /**
    * THE CHUNK SIZE THE CODE PACKS TO on this arm, in characters. Owen,
    * 2026-09-05: "maxChars is what the model was trained to do, and targetChars
@@ -1814,7 +1826,18 @@ export function higgsVoicesDocument(
   // trip `higgs_v3_config_from_worker_kwargs`'s refusal — that one is about
   // Orpheus knobs arriving through the load message.
   if (caps.maxChars !== undefined && caps.maxChars !== null) entry.maxChars = caps.maxChars;
-  if (caps.maxCharsSource) entry.maxCharsSource = caps.maxCharsSource;
+  // Refused here rather than by narrator, mid-prep.
+  if (caps.maxCharsSource) {
+    if (!HIGGS_MAX_CHARS_SOURCES.includes(caps.maxCharsSource)) {
+      throw new Error(
+        `Higgs voice '${model.id}' (${target.arm}) declares maxCharsSource `
+        + `${JSON.stringify(caps.maxCharsSource)}, which narrator refuses: it is not one of `
+        + `${HIGGS_MAX_CHARS_SOURCES.join(' | ')}. A ruling that overrides a measurement is `
+        + "still declared 'catalog' — the reasoning belongs in _maxCharsNote, which no protocol reads.",
+      );
+    }
+    entry.maxCharsSource = caps.maxCharsSource;
+  }
   // THE TRAINER'S TARGET travels beside the cap. Refused here, before the
   // spawn, when it contradicts this arm's cap; narrator's loader refuses the
   // same thing by name, so the two never disagree about what a target may be.

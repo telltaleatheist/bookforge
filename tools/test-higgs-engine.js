@@ -445,23 +445,24 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   }
 });
 
-check('the deathstalker served cap is its TRAINING CEILING, declared — and the old certificate stays on record', () => {
-  // THE RULE CHANGED WITH THE DIRECTORY. ds_v5_prod (promoted 2026-09-07) has
-  // no length-sweep certificate; Owen's rule that day: 'max chunk is what we
-  // trained on' — the served max is the LONGEST TRAINING ROW of the directory's
-  // own corpus (ds_v5 mix: max 1764 chars / 100 s; p75 1092), declared here as
-  // maxCharsSource 'catalog' (narrator's vocabulary has no 'training-ceiling').
-  // The ckpt-1080 certificate (150/300/600/900/1200; 1500 fails at 86.1 %) is
-  // kept inside _maxCharsNote as the record of how a certificate is made.
+check('the deathstalker served cap is 800 BY RULING — and both older records stay on the page', () => {
+  // Owen, 2026-09-09: 800 chars is where renders start truncating. That
+  // supersedes the training ceiling (1764), which superseded the ckpt-1080
+  // certificate (1200); each stays written where it happened. Provenance is a
+  // wire value from narrator's closed set, so a ruling is 'catalog' and the
+  // reason lives in _maxCharsNote.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.strictEqual(m.backends.served.maxChars, 1764);
+  assert.strictEqual(m.backends.served.maxChars, 800);
   assert.strictEqual(m.backends.served.maxCharsSource, 'catalog');
   const src = m.backends.served._maxCharsSourceNote;
   assert.match(src, /max chunk is what we trained on/, 'the note does not quote the rule the number comes from');
   assert.match(src, /MAX 1764/, 'the note does not give the training ceiling the number is');
   assert.match(src, /ds_v5/, 'the note does not name the corpus the ceiling was read from');
-  assert.strictEqual(m.backends.served.targetChars, 1000, 'Owen 2026-09-07: target 1000');
+  assert.strictEqual(m.backends.served.targetChars, 700, 'Owen 2026-09-09: target 700');
   const note = m.backends.served._maxCharsNote;
+  assert.match(note, /OWEN'S RULING \(2026-09-09\)/, 'the note does not say the cap is a ruling');
+  assert.match(note, /truncations/, 'the note does not give the reason the cap came down');
+  assert.match(note, /PREVIOUS:/, 'the superseded note was overwritten instead of kept');
   assert.match(note, /SUPERSEDED DIRECTORY/, 'the old certificate is not marked as belonging to the deleted directory');
   assert.match(note, /97\.3/, 'the certified length\'s coverage is not recorded');
   assert.match(note, /86\.1/, 'the note does not say what stopped the ladder');
@@ -1017,35 +1018,26 @@ check('a null MLX cap REFUSES on darwin while the served cap still loads on WSL'
     'an absent mlx block silently inherited the served certificate');
 });
 
-check('the shipped deathstalker is CERTIFIED PER ARM, each carrying its own evidence', () => {
-  // THE PREMISE OF THIS ROW CHANGED, AND IT IS THE ROW'S SUBJECT THAT DID NOT.
-  // It read "UNCERTIFIED on BOTH arms" while both caps were a declared null and
-  // the sweeps were owed. They have been run — served 1200 (2026-09-05T12:52:57)
-  // and MLX 900 (2026-09-05T13:19) — so the assertion is now the OTHER half of
-  // the same rule: each arm states a MEASURED number, with its own method, and
-  // the two are not required to agree.
-  // 2026-09-07: the served arm moved to ds_v5_prod, whose number is the
-  // declared training ceiling ('catalog'); the MLX arm still renders the
-  // ckpt-1080 copy under its own sweep. Each arm names ITS method.
+check('the shipped deathstalker caps BOTH arms at the ruling, each keeping its own evidence', () => {
+  // This row used to REQUIRE the arms to differ: two sweeps of identical
+  // weights measured 1200 and 900, so an equal pair meant a number copied
+  // across. Owen's ruling makes them equal on purpose, and that refusal cannot
+  // tell a ruling from a copy, so what is checked now is that each arm states
+  // its provenance and keeps its own superseded evidence.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  const METHOD = { served: 'catalog', mlx: 'length-sweep' };
   for (const backend of ['served', 'mlx']) {
     const caps = m.backends[backend];
-    assert.ok(Number.isInteger(caps.maxChars) && caps.maxChars > 0,
-      `${backend}: cap is ${JSON.stringify(caps.maxChars)}, not a stated number`);
-    assert.strictEqual(caps.maxCharsSource, METHOD[backend],
-      `${backend}: the cap must name the method that produced it`);
+    assert.strictEqual(caps.maxChars, 800,
+      `${backend}: the ruling is 800 on both arms`);
+    assert.strictEqual(caps.targetChars, 700,
+      `${backend}: the packer's target is 700 on both arms`);
+    assert.strictEqual(caps.maxCharsSource, 'catalog',
+      `${backend}: a declared ruling is 'catalog' in narrator's vocabulary`);
+    assert.match(caps._maxCharsNote, /OWEN'S RULING \(2026-09-09\)/,
+      `${backend}: the note does not say where the 800 came from`);
+    assert.match(caps._maxCharsNote, /PREVIOUS:/,
+      `${backend}: the superseded certificate was overwritten rather than kept`);
   }
-
-  // A CERTIFICATE IS PER (DIRECTORY, BACKEND) — the whole reason the blocks are
-  // separate. The SAME merged directory, sha256-verified identical across the
-  // two machines, certifies at 1200 through vllm-omni's sampler and 900 through
-  // mlx-audio's. If these two ever became equal by an EDIT rather than by a
-  // measurement, that is a number carried across, which is what this refuses.
-  assert.notStrictEqual(m.backends.served.maxChars, m.backends.mlx.maxChars,
-    'both arms now claim the same cap — a certificate is per (directory, backend), and the '
-    + 'two sweeps measured 1200 and 900 on identical weights. If a new sweep really did make '
-    + 'them agree, update this row with the certificate that says so.');
 
   // Each note must carry the evidence for ITS OWN arm: the rule, the scorer, the
   // ladder including the length that FAILED, and the artifact it came from.
@@ -2543,6 +2535,7 @@ if (skipWhy) {
       '                  "clips": len(getattr(one, "clips", ()) or ()),',
       '                  "checkpoint": getattr(one, "checkpoint_dir", None),',
       '                  "max_chars": one.max_chars,',
+      '                  "target_chars": one.target_chars,',
       '                  "source": one.max_chars_source}))',
     ].join('\n');
     const py = TRUE_HOST === 'win32' ? 'python' : 'python3';
@@ -2615,7 +2608,8 @@ if (skipWhy) {
     assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
     assert.strictEqual(got.checkpoint,
       '/home/telltale/higgs_v3_merged/ds_v5_prod');
-    assert.strictEqual(got.max_chars, 1764);
+    assert.strictEqual(got.max_chars, 800, "narrator did not get Owen's 2026-09-09 ceiling");
+    assert.strictEqual(got.target_chars, 700, 'narrator did not get the packer target that rides beside it');
     assert.strictEqual(got.source, 'catalog');
 
     // AND THE MAC'S DOCUMENT IS A DIFFERENT DOCUMENT — the Mac's own copy of the
@@ -2634,8 +2628,10 @@ if (skipWhy) {
     // which slash the machine running it prefers.
     assert.strictEqual(macGot.checkpoint.replace(/\\/g, '/'),
       '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080');
-    assert.strictEqual(macGot.max_chars, 900,
-      "the Mac document carries the served arm's cap — a certificate is per (directory, backend)");
+    // Both arms carry 800 by the ruling, not by inheritance; the checkpoint
+    // asserted above is what proves this is the darwin document.
+    assert.strictEqual(macGot.max_chars, 800,
+      "the Mac document does not carry the ruling's ceiling");
   });
 
   check('narrator ACCEPTS the SHIPPED zero-shot documents, clip and cap', () => {
