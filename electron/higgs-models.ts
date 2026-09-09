@@ -905,7 +905,65 @@ function loadCatalog(): HiggsCatalog {
   if (!cat.serving || typeof cat.serving !== 'object') {
     throw new Error(`Higgs voice catalog is malformed (missing the shared 'serving' block): ${dataPath}`);
   }
+  applySafeBands(cat as HiggsCatalog);
   return cat as HiggsCatalog;
+}
+
+/**
+ * THE SAFE BAND OVERLAY — `electron/data/higgs-safe-bands.json`, the file a human edits.
+ *
+ * Owen, 2026-09-09: "lets make the bookforge config a lot more straightforward to edit, so we can
+ * easily find the file and set the min/max safe band per model." `higgs-models.json` is 100 KB of
+ * evidence notes and the two numbers that matter were buried in it, per arm, twice per voice. They
+ * now live in one flat file of four lines, and this merges them over the catalog on every read.
+ *
+ * `{ "<voice>": { "min": 600, "max": 1000 } }`, optionally with a `served` or `mlx` block when one
+ * arm needs its own pair. Absent file, or a voice it does not name, changes nothing — the catalog's
+ * own `safeMinChars`/`safeMaxChars` stand, so this is additive and removable.
+ *
+ * Refused BY NAME here, before a spawn, on the same rules narrator applies at load: a band whose max
+ * exceeds that arm's `maxChars`, or whose min is not below its max.
+ */
+function applySafeBands(cat: HiggsCatalog): void {
+  const bandPath = path.join(__dirname, 'data', 'higgs-safe-bands.json');
+  let bands: Record<string, unknown>;
+  try {
+    bands = JSON.parse(fs.readFileSync(bandPath, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return;                       // no overlay file is a valid state: the catalog stands alone
+  }
+  for (const model of cat.models ?? []) {
+    const entry = bands[model.id] as Record<string, unknown> | undefined;
+    if (!entry || typeof entry !== 'object') continue;
+    for (const arm of ['served', 'mlx'] as const) {
+      const caps = (model.backends as Record<string, HiggsBackendCaps> | undefined)?.[arm];
+      if (!caps) continue;
+      const per = entry[arm] as Record<string, unknown> | undefined;
+      const min = (per && typeof per.min === 'number') ? per.min : entry.min;
+      const max = (per && typeof per.max === 'number') ? per.max : entry.max;
+      if (typeof min !== 'number' || typeof max !== 'number') continue;
+      if (!Number.isInteger(min) || !Number.isInteger(max) || min <= 0 || max <= 0) {
+        throw new Error(
+          `higgs-safe-bands.json: '${model.id}' (${arm}) band ${min}-${max} is not a pair of `
+          + 'positive whole numbers of characters.',
+        );
+      }
+      if (min >= max) {
+        throw new Error(
+          `higgs-safe-bands.json: '${model.id}' (${arm}) has min ${min} at or above max ${max}, `
+          + 'which is not a band.',
+        );
+      }
+      if (typeof caps.maxChars === 'number' && max > caps.maxChars) {
+        throw new Error(
+          `higgs-safe-bands.json: '${model.id}' (${arm}) max ${max} is above that arm's maxChars `
+          + `${caps.maxChars}. Raise the cap in higgs-models.json with the evidence, or lower this.`,
+        );
+      }
+      caps.safeMinChars = min;
+      caps.safeMaxChars = max;
+    }
+  }
 }
 
 /**

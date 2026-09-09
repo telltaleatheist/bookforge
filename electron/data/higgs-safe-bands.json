@@ -1,0 +1,26 @@
+{
+  "_README": [
+    "THE SAFE CHUNK BAND PER VOICE, in characters. THIS FILE IS THE ONE TO EDIT.",
+    "",
+    "  min  the packer's MERGE FLOOR - short paragraphs travel together until a group reaches it",
+    "  max  the packer's CAP        - a group may grow to here, and no chunk exceeds it",
+    "",
+    "Every chunk a book renders falls between the two, except text that cannot be merged with",
+    "anything (a chapter heading, a list item, a scene-final line) - those are walls and stand alone.",
+    "",
+    "WHERE THE NUMBERS COME FROM: a length sweep of the promoted checkpoint across the whole",
+    "spectrum. The band is where that checkpoint makes the fewest mistakes, and promotion writes it",
+    "here. Do NOT guess one from the training corpus - a rule derived from the corpus p25 was wrong",
+    "in production within a day (orpheus-finetune HIGGS_FIELD_NOTES 4n.37.19-21).",
+    "",
+    "These OVERRIDE safeMinChars/safeMaxChars in higgs-models.json, which keeps the evidence notes.",
+    "A voice may add an 'mlx' or 'served' block to give one arm its own band; otherwise both arms",
+    "share the top-level pair. max may never exceed that arm's maxChars, and min must sit below max -",
+    "both refused by name, here and in narrator's engine/higgs/config.py."
+  ],
+
+  "thirdreich":   { "min": 600, "max": 1000, "_note": "MEASURED. runs/base_len, 320 renders: 600-1000 = 4/80 early stops = 5.0% [2.0-12.2], against 18.8% below 600 and 20.3% above 1000. A full live book in band ran 4 failures in ~320 chunks = 1.25%. Owen raised the cap 800 -> 1000 on 2026-09-09 on that evidence." },
+  "deathstalker": { "min": 600, "max": 800,  "_note": "PREDICTED, not swept. ds_v5 corpus p50 806; floor ~0.85 x p50. Sweep it and replace these." },
+  "owen":         { "min": 600, "max": 800,  "_note": "PREDICTED, not swept. owen_gp2w corpus p50 793. Sweep it and replace these." },
+  "mistborn":     { "min": 500, "max": 800,  "_note": "RAISED FROM PRODUCTION 300 -> 500 on 2026-09-09: rendering Shift on mb_h2lm_prod the guard fired 42 times in 669 chunks, every one under 500 chars and 26 of them inside the old 300-800 band. Superseded when the 22-part retrain is swept." }
+}

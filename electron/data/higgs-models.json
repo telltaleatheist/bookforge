@@ -366,12 +366,12 @@
       "addedAt": "2026-09-08",
       "backends": {
         "served": {
-          "maxChars": 800,
+          "maxChars": 1000,
           "maxCharsSource": "catalog",
           "safeMinChars": 600,
-          "safeMaxChars": 800,
+          "safeMaxChars": 1000,
           "_safeBandNote": "SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). tr_v3: p25 532, p75 985 -> floor 600. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
-          "_maxCharsNote": "800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 1623, the LONGEST TRAINING ROW of tr_v3_prod's corpus (Owen's rule: max chunk is what the model trained on); no length sweep yet.",
+          "_maxCharsNote": "MEASURED 2026-09-09, raising Owen's earlier 800 ruling: runs/base_len swept 20 rungs x 16 renders on tr_v3_prod and the best contiguous band is 600-1000 (4/80 early stops = 5.0% [2.0-12.2]); 900 and 1000 measure 6.2% each, indistinguishable from 700's 12.5%, while 1100+ climbs to 20.3%. A full live book packed inside the band ran 4 failures in ~320 chunks = 1.25%. Owen: \"you said third reich is capable of going up to 1000? then go ahead and set the upper limit to 1000.\" PREVIOUS: 800, Owen's ruling of the same morning, made before the sweep. 800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 1623, the LONGEST TRAINING ROW of tr_v3_prod's corpus (Owen's rule: max chunk is what the model trained on); no length sweep yet.",
           "edgeFadeMs": {
             "in": 10,
             "out": 25
@@ -382,12 +382,12 @@
         },
         "mlx": {
           "_comment": "THE MAC'S OWN BLOCK FOR THIS FINE-TUNE, UNMEASURED on tr_v3_prod: 900 mirrors deathstalker's MLX certificate as the conservative number for the same architecture; `placeholder` says nobody has measured THIS voice on this arm. Replace both numbers and the source after a Mac sweep.",
-          "maxChars": 800,
+          "maxChars": 1000,
           "maxCharsSource": "catalog",
           "safeMinChars": 600,
-          "safeMaxChars": 800,
+          "safeMaxChars": 1000,
           "_safeBandNote": "SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). tr_v3: p25 532, p75 985 -> floor 600. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
-          "_maxCharsNote": "800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 900, a PLACEHOLDER borrowed from deathstalker's MLX certificate; not measured on tr_v3_prod.",
+          "_maxCharsNote": "MEASURED 2026-09-09, raising Owen's earlier 800 ruling: runs/base_len swept 20 rungs x 16 renders on tr_v3_prod and the best contiguous band is 600-1000 (4/80 early stops = 5.0% [2.0-12.2]); 900 and 1000 measure 6.2% each, indistinguishable from 700's 12.5%, while 1100+ climbs to 20.3%. A full live book packed inside the band ran 4 failures in ~320 chunks = 1.25%. Owen: \"you said third reich is capable of going up to 1000? then go ahead and set the upper limit to 1000.\" PREVIOUS: 800, Owen's ruling of the same morning, made before the sweep. 800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 900, a PLACEHOLDER borrowed from deathstalker's MLX certificate; not measured on tr_v3_prod.",
           "edgeFadeMs": {
             "in": 10,
             "out": 25
