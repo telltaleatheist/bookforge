@@ -458,7 +458,12 @@ check('the deathstalker served cap is 800 BY RULING — and both older records s
   assert.match(src, /max chunk is what we trained on/, 'the note does not quote the rule the number comes from');
   assert.match(src, /MAX 1764/, 'the note does not give the training ceiling the number is');
   assert.match(src, /ds_v5/, 'the note does not name the corpus the ceiling was read from');
-  assert.strictEqual(m.backends.served.targetChars, 700, 'Owen 2026-09-09: target 700');
+  // Owen, 2026-09-09: "I dont think we need a target anymore. Just a safe range."
+  // A fine-tune declares a BAND; the point target is gone from every fine-tune arm.
+  assert.strictEqual(m.backends.served.targetChars, undefined,
+    'a fine-tune must not carry a point target any more - it declares a safe band');
+  assert.strictEqual(m.backends.served.safeMinChars, 600, 'deathstalker floor');
+  assert.strictEqual(m.backends.served.safeMaxChars, 800, 'deathstalker cap');
   const note = m.backends.served._maxCharsNote;
   assert.match(note, /OWEN'S RULING \(2026-09-09\)/, 'the note does not say the cap is a ruling');
   assert.match(note, /truncations/, 'the note does not give the reason the cap came down');
@@ -1029,8 +1034,14 @@ check('the shipped deathstalker caps BOTH arms at the ruling, each keeping its o
     const caps = m.backends[backend];
     assert.strictEqual(caps.maxChars, 800,
       `${backend}: the ruling is 800 on both arms`);
-    assert.strictEqual(caps.targetChars, 700,
-      `${backend}: the packer's target is 700 on both arms`);
+    assert.strictEqual(caps.targetChars, undefined,
+      `${backend}: the point target is retired - a fine-tune declares a safe band`);
+    assert.ok(Number.isInteger(caps.safeMinChars) && Number.isInteger(caps.safeMaxChars),
+      `${backend}: a fine-tune must declare safeMinChars and safeMaxChars`);
+    assert.ok(caps.safeMinChars < caps.safeMaxChars,
+      `${backend}: the floor must sit below the cap`);
+    assert.ok(caps.safeMaxChars <= caps.maxChars,
+      `${backend}: the band may sit inside maxChars, never past it`);
     assert.strictEqual(caps.maxCharsSource, 'catalog',
       `${backend}: a declared ruling is 'catalog' in narrator's vocabulary`);
     assert.match(caps._maxCharsNote, /OWEN'S RULING \(2026-09-09\)/,
@@ -2536,6 +2547,8 @@ if (skipWhy) {
       '                  "checkpoint": getattr(one, "checkpoint_dir", None),',
       '                  "max_chars": one.max_chars,',
       '                  "target_chars": one.target_chars,',
+      '                  "safe_min_chars": getattr(one, "safe_min_chars", None),',
+      '                  "safe_max_chars": getattr(one, "safe_max_chars", None),',
       '                  "source": one.max_chars_source}))',
     ].join('\n');
     const py = TRUE_HOST === 'win32' ? 'python' : 'python3';
@@ -2609,7 +2622,15 @@ if (skipWhy) {
     assert.strictEqual(got.checkpoint,
       '/home/telltale/higgs_v3_merged/ds_v5_prod');
     assert.strictEqual(got.max_chars, 800, "narrator did not get Owen's 2026-09-09 ceiling");
-    assert.strictEqual(got.target_chars, 700, 'narrator did not get the packer target that rides beside it');
+    // Owen, 2026-09-09: the point target is retired; a fine-tune ships a BAND, and
+    // this asserts the packer's floor and cap where they LAND, not only where they
+    // are written.
+    assert.strictEqual(got.target_chars, null,
+      'a fine-tune must no longer carry a point target');
+    assert.strictEqual(got.safe_min_chars, 600,
+      'narrator did not get the packer FLOOR that rides beside the cap');
+    assert.strictEqual(got.safe_max_chars, 800,
+      'narrator did not get the packer CAP');
     assert.strictEqual(got.source, 'catalog');
 
     // AND THE MAC'S DOCUMENT IS A DIFFERENT DOCUMENT — the Mac's own copy of the

@@ -1173,53 +1173,45 @@ def higgs_v3_prep_budget(voice_name: str):
         allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
         max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
         placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
-    # THE NUMBER THE CODE USES IS targetChars (Owen, 2026-09-05: "maxChars is
-    # informative, targetChars is used by the code directly"). The trainer
-    # sets it after training; the loader has already refused one above the
-    # arm's maxChars. A fine-tune without it cannot be packed - there is no
-    # engine-wide number that is that model's - and a zero-shot voice packs at
-    # the base model's placeholder.
-    target = getattr(resolved, 'target_chars', None)
-    if target is None:
-        if getattr(resolved, 'checkpoint_dir', None):
-            raise ValueError(
-                f"Higgs v3 voice '{name}' is a fine-tune "
-                f'({resolved.checkpoint_dir}) and declares no targetChars. The '
-                'trainer sets it after training from the training clips\' text '
-                'lengths (electron/data/higgs-models.json, targetChars +\n'
-                'targetCharsSource); the prep packs to that number and to '
-                f"nothing else - refusing the base model's "
-                f'{HiggsV3Defaults.MAX_CHARS}-char placeholder for a fine-tune.')
-        target = HiggsV3Defaults.MAX_CHARS
-    target = int(target)
-    if target <= 0:
+    # A BAND, NOT A POINT. Owen, 2026-09-09: "I dont think we need a target
+    # anymore. Just a safe range. Upper and lower bounds." safeMinChars is the
+    # merge floor and safeMaxChars the packing cap, and a fine-tune declares
+    # both or cannot be packed.
+    #
+    # targetChars was ONE number doing both jobs, and that was the bug: the
+    # merge rule requires the RESULT to fit the cap, so at floor == cap == 700
+    # two 400-char paragraphs could not combine and a 400-char chunk shipped.
+    # Owen watched it live - a thirdreich render truncating at 323, 502 and 634
+    # characters, every one BELOW the floor. It survives only for the zero-shot
+    # voices, which have no measured band of their own.
+    safe_min = getattr(resolved, "safe_min_chars", None)
+    safe_max = getattr(resolved, "safe_max_chars", None)
+    target = getattr(resolved, "target_chars", None)
+    if safe_min and safe_max:
+        floor, cap = int(safe_min), int(safe_max)
+    elif getattr(resolved, "checkpoint_dir", None):
         raise ValueError(
-            f"Higgs v3 voice '{name}' declares targetChars {target}, which is not "
-            'a chunk size.')
-    # The band's own log line replaces this one when a band is declared.
-    if not getattr(resolved, 'safe_min_chars', None) and not getattr(resolved, 'safe_max_chars', None):
-        log(f"[HIGGS3] prep packs '{name}' to {target} chars per chunk "
-            f'(targetChars; maxChars '
-            f'{getattr(resolved, "max_chars", None)!r} is the model\'s stated limit)',
-            flush=True)
-    # THE SAFE BAND (2026-09-09, field notes 4n.37.20). safeMaxChars is the
-    # packing cap and safeMinChars the merge floor; the pair replaces the single
-    # targetChars, which was BOTH. With one number the merge rule could not
-    # combine two 400-char paragraphs under a 700 cap (the result must fit the
-    # cap), so a 400-char chunk shipped - the 323/502/634 truncations Owen hit
-    # live on 2026-09-09. A voice declaring neither packs exactly as before.
-    safe_max = getattr(resolved, 'safe_max_chars', None)
-    safe_min = getattr(resolved, 'safe_min_chars', None)
-    cap = int(safe_max) if safe_max else target
-    floor = int(safe_min) if safe_min else cap
-    if floor > cap:
+            "Higgs v3 voice %r is a fine-tune (%s) and declares no safe band. Set "
+            "safeMinChars and safeMaxChars in electron/data/higgs-models.json from "
+            "THAT model's own training clip lengths - refusing to pack a book at the "
+            "base model's %d-char placeholder."
+            % (name, resolved.checkpoint_dir, HiggsV3Defaults.MAX_CHARS))
+    elif target:
+        floor = cap = int(target)      # zero-shot: the placeholder, one number
+    else:
+        floor = cap = HiggsV3Defaults.MAX_CHARS
+    if floor > cap or cap <= 0:
         raise ValueError(
-            "Higgs v3 voice '%s' has a safe floor %d above its cap %d; that is "
-            'not a band the packer can pack between.' % (name, floor, cap))
-    if safe_min or safe_max:
-        log("[HIGGS3] prep packs '%s' BETWEEN %d and %d chars "
-            '(safeMinChars/safeMaxChars; targetChars %s)'
-            % (name, floor, cap, target), flush=True)
+            "Higgs v3 voice %r has a safe floor %d and cap %d, which is not a band "
+            "the packer can pack between." % (name, floor, cap))
+    if floor == cap:
+        log("[HIGGS3] prep packs %r to %d chars per chunk (no safe band declared; "
+            "maxChars %r is the model's stated limit)"
+            % (name, cap, getattr(resolved, "max_chars", None)), flush=True)
+    else:
+        log("[HIGGS3] prep packs %r BETWEEN %d and %d chars "
+            "(safeMinChars/safeMaxChars; maxChars %r is the model's stated limit)"
+            % (name, floor, cap, getattr(resolved, "max_chars", None)), flush=True)
     return CatalogBudget(chars=cap, chars_per_sec=0.0, floor_chars=floor)
 
 
