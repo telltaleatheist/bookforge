@@ -754,6 +754,221 @@ async function runVerify(args) {
   if (code !== 0) throw new Error(`speaker_verify.py exited ${code}`);
 }
 
+// ===========================================================================
+// TRAINING VERBS - ClipForge as the front door for the corpus pipeline.
+//
+// Owen, 2026-09-09: "at the end of the day, clipforge can act as a CLI wrapper
+// for all the training tools we've built ... just make it the central hub for
+// training tools."
+//
+// These verbs do NOT reimplement anything. Each spawns the proven script from
+// the orpheus-finetune repo, where the behaviour was measured and where the
+// field notes point. What is added is discoverability: one command surface,
+// named arguments, and a --help carrying the WHY plus its field-note
+// reference, so a green agent can read the pipeline instead of reconstructing
+// it from seven scattered scripts.
+//
+// THE REPO IS NAMED, NEVER GUESSED - the same doctrine as qwenAlignEnv:
+//   --training-root <dir> | CLIPFORGE_TRAINING_ROOT | the default below.
+// An unresolvable root REFUSES BY NAME rather than silently doing nothing.
+// ===========================================================================
+
+const TRAINING_ROOT_DEFAULT = 'C:/Users/tellt/Projects/orpheus-finetune';
+const TRAINING_PYTHON_DEFAULT =
+  'C:/Users/tellt/AppData/Roaming/BookForge/components/whisperx-env/python.exe';
+
+function resolveTrainingRoot(args) {
+  const root = args['training-root'] || process.env.CLIPFORGE_TRAINING_ROOT || TRAINING_ROOT_DEFAULT;
+  const abs = path.resolve(root);
+  if (!fs.existsSync(path.join(abs, 'pipeline', 'untreated'))) {
+    throw new Error(
+      'training root not found (no pipeline/untreated under it): ' + abs + '\n' +
+      '  This is the orpheus-finetune repo, which holds the slicer and the row gate.\n' +
+      '  Name it with --training-root <dir> or CLIPFORGE_TRAINING_ROOT.');
+  }
+  return abs;
+}
+
+function resolveTrainingPython(args, what) {
+  const py = args.python ? path.resolve(args.python) : TRAINING_PYTHON_DEFAULT;
+  if (!fs.existsSync(py)) {
+    throw new Error(
+      what + ' python not found: ' + py + '\n' +
+      '  The row gate needs faster-whisper (BookForge whisperx-env has it). The slicer needs\n' +
+      '  soundfile + numpy + scipy, which whisperx-env does NOT have - pass a python that does.\n' +
+      '  Override with --python <exe>.');
+  }
+  return py;
+}
+
+async function spawnTraining(python, script, argv, cwd, label) {
+  console.log('[' + label + '] ' + python + ' ' + path.basename(script) + ' ' + argv.join(' '));
+  const code = await new Promise((resolve, reject) => {
+    const child = spawn(python, [script, ...argv], {
+      cwd,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '2',
+        MKL_NUM_THREADS: process.env.MKL_NUM_THREADS || '2',
+      },
+    });
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+  if (code !== 0) throw new Error(path.basename(script) + ' exited ' + code);
+}
+
+const TRAINING_HELP = {};
+
+TRAINING_HELP.slice = [
+  'clipforge slice - cut a book master into training clips (slice_vtt.py)',
+  '',
+  '  --raw <master>   book audio. 48 kHz input is fine; CLIPS ARE ALWAYS WRITTEN AT 24 kHz.',
+  '                   build_higgs_mix asserts sr==24000, and a 44.1/48 k clip set once failed',
+  '                   to encode AFTER 40 GPU-minutes of gating (field notes 4n.34.4).',
+  '  --vtt <vtt>      the aligned cue file whose text is authoritative',
+  '  --build <dir>    build root. EVERY source pool must live under the SAME root, or the mix',
+  '                   builder reads clip N from the wrong pool and the model speaks fluent',
+  '                   gibberish (4n.11).',
+  '  --rows <dir>     where per-tier rows json is written',
+  '  --prefix <bk>    book prefix          --speaker <voice>',
+  '',
+  '  BAND (4n.39.5). Dimension the corpus from the length you will SERVE, not from a cap.',
+  '  Runs carry ~12.8 chars per second of clip with full tails. For a 600-1000 band:',
+  '      --run-median-s 59 --run-sigma 0.35 --long-min-s 22 --long-max-s 125',
+  '  Then HISTOGRAM the result and adjust - a book slices in ~11 s. Deriving the numbers once',
+  '  and committing is how a corpus ends up centred at p50 542, truncating where it is used.',
+  '',
+  '  TAILS  --tail-s 4.0  keeps the speaker own sentence-final pause, to 40 ms before the next',
+  '                       onset. A CAP, not a pad. The old 0.25 truncated every pause and is',
+  '                       retired: full tails raised rendered pause 0.22 -> 1.58 s at no cost',
+  '                       in early stops or coverage (4n.37.17).',
+  '  MICRO  --tiers lsm --micro-min-s 0.4 --micro-max-s 8.0 --micro-max-rows 20',
+  '         --micro-weights 1,1,1.5,3,3.5',
+  '                       one-word entries, titles, subheadings. The SHORT tier cannot supply',
+  '                       these: it floors at 8 s and requires 4+ words. Keep micro near 5% of',
+  '                       rows - at 22% it drags the median, and the median sets the floor.',
+].join('\n');
+
+TRAINING_HELP.gate = [
+  'clipforge gate - score every training row against its own text (row_gate.py)',
+  '',
+  '  --tier <dir>     a MERGED tier directory (metadata_train.csv + wavs)',
+  '  --min 0.80       row coverage floor     --sent-min 0.50  per-sentence floor',
+  '  --workers 4      faster-whisper takes EVERY core per worker unless OMP_NUM_THREADS is set;',
+  '                   this verb exports 2. Do not run six workers beside a serving stack.',
+  '',
+  '  THIS IS THE REAL ALIGNMENT TEST (4n.40.4b). A mis-aligned clip fails coverage by',
+  '  construction, so read the DROP RATE against these measured baselines:',
+  '      prose long ~0.9%     prose short ~0.6%     micro ~14%',
+  '  Micro is high by nature - one wrong ASR word on a one-word row is 100% of it. A PROSE tier',
+  '  dropping much above ~2% is an ALIGNMENT problem, not a gate problem. Do not raise the',
+  '  threshold to make it pass; re-align that book instead.',
+  '  Proper nouns are free: the gate scores ordinary words only (4n.34.8).',
+].join('\n');
+
+TRAINING_HELP['merge-tiers'] = [
+  'clipforge merge-tiers - merge per-book tiers into one corpus (merge_corpora.py)',
+  '',
+  '  --build <dir>    build root (must hold every <bk>_<tier> and its _raw_src_ pool)',
+  '  --rows <dir>     rows json directory',
+  '  --out <name>     merged tier name, e.g. mb6_l',
+  '  --books fe,woa,hoa   book prefixes      --tier l|s|m',
+  '',
+  '  Distinct from the clip-level "merge" verb, which assembles clips for an Adobe round-trip.',
+  '  This is the corpus-level merge, and it keeps each row OWN pool: a per-side constant once',
+  '  paired clip N with a different passage and the model spoke fluent gibberish (4n.11).',
+].join('\n');
+
+async function runSlice(args) {
+  if (args.help) { console.log(TRAINING_HELP.slice); return; }
+  for (const k of ['raw', 'vtt', 'build', 'rows', 'prefix', 'speaker']) {
+    if (!args[k]) throw new Error('slice: --' + k + ' is required (see: clipforge slice --help)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolveTrainingPython(args, 'slice');
+  const pass = ['raw', 'vtt', 'build', 'rows', 'prefix', 'speaker', 'min-start', 'max-end',
+    'run-median-s', 'run-sigma', 'long-min-s', 'long-max-s', 'gap-s', 'tail-s', 'tiers',
+    'micro-min-s', 'micro-max-s', 'micro-min-words', 'micro-max-words', 'micro-max-rows',
+    'micro-weights', 'max-hours', 'exclude-cue-ids'];
+  const argv = [];
+  for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  if (args['interp-interior']) argv.push('--interp-interior');
+  if (args['tail-s'] === undefined) {
+    console.log('[slice] NOTE: no --tail-s given, so slice_vtt uses its 0.25 default - the RETIRED cut.');
+    console.log('[slice]       Pass --tail-s 4.0 to keep the speaker own pause (field notes 4n.37.17).');
+  }
+  await spawnTraining(python, path.join(cwd, 'slice_vtt.py'), argv, cwd, 'slice');
+}
+
+async function runGate(args) {
+  if (args.help) { console.log(TRAINING_HELP.gate); return; }
+  if (!args.tier) throw new Error('gate: --tier <merged tier dir> is required (see: clipforge gate --help)');
+  const tier = path.resolve(args.tier);
+  if (!fs.existsSync(path.join(tier, 'metadata_train.csv'))) {
+    throw new Error('gate: not a corpus tier (no metadata_train.csv): ' + tier);
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolveTrainingPython(args, 'gate');
+  const argv = [tier,
+    '--min', String(args.min || 0.8),
+    '--sent-min', String(args['sent-min'] || 0.5),
+    '--device', String(args.device || 'cpu'),
+    '--workers', String(args.workers || 4)];
+  await spawnTraining(python, path.join(cwd, 'row_gate.py'), argv, cwd, 'gate');
+  const gateJson = path.join(tier, 'row_gate.json');
+  if (!fs.existsSync(gateJson)) {
+    throw new Error('gate: ' + path.basename(tier) + ' produced no row_gate.json - it did NOT pass');
+  }
+  console.log('[gate] ' + path.basename(tier) + ' -> ' + gateJson);
+  console.log('[gate] Drop rate: prose ~0.9-2% healthy, micro ~14% normal. A prose tier far above');
+  console.log('[gate] 2% is an ALIGNMENT problem, not a gate problem (field notes 4n.40.4b).');
+}
+
+async function runMergeTiers(args) {
+  if (args.help) { console.log(TRAINING_HELP['merge-tiers']); return; }
+  for (const k of ['build', 'rows', 'out', 'books', 'tier']) {
+    if (!args[k]) throw new Error('merge-tiers: --' + k + ' is required (see: clipforge merge-tiers --help)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolveTrainingPython(args, 'merge-tiers');
+  const build = path.resolve(args.build);
+  const rowsDir = path.resolve(args.rows);
+  const tier = String(args.tier);
+  const books = String(args.books).split(',').map((b) => b.trim()).filter(Boolean);
+  const pairs = books.map((b) => path.join(build, b + '_' + tier) + ':' + path.join(rowsDir, b + '_' + tier + '_rows.json'));
+  const argv = [path.join(build, String(args.out)), path.join(rowsDir, String(args.out) + '_rows.json'), ...pairs];
+  await spawnTraining(python, path.join(cwd, 'merge_corpora.py'), argv, cwd, 'merge-tiers');
+}
+
+function printUsage() {
+  console.log([
+    'clipforge-process - the ClipForge CLI',
+    '',
+    'CLIP TOOLS (audio in, audio or text out)',
+    '  chain        run a recipe over one wav through the shared chain engine (default verb)',
+    '  speakers     bucket clips by voice actor',
+    '  narration    split a sliced corpus into narration vs character voices by quote marks',
+    '  verify       embedding sweep: is every clip really the narrator?',
+    '  merge/split  Adobe Podcast round-trip for CLIPS (keyed on a .mergemap.json)',
+    '  sentences    per-clip transcripts from the epub',
+    '',
+    'TRAINING TOOLS (corpus in, corpus out) - wrappers over the orpheus-finetune scripts',
+    '  slice        cut a book master into training clips        (slice_vtt.py)',
+    '  gate         score every row against its own text         (row_gate.py)',
+    '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
+    '',
+    '  Each takes --help and explains the WHY with its field-note reference.',
+    '  Scripts live in the orpheus-finetune repo: --training-root <dir> or',
+    '  CLIPFORGE_TRAINING_ROOT (default ' + TRAINING_ROOT_DEFAULT + ').',
+  ].join('\n'));
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -772,7 +987,12 @@ async function main() {
   if (verb === 'narration') return runNarration(args);
   if (verb === 'verify') return runVerify(args);
   if (verb === 'chain') return runChainVerb(args);
-  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', 'narration', 'verify', or a bare chain invocation)`);
+  if (verb === 'slice') return runSlice(args);
+  if (verb === 'gate') return runGate(args);
+  if (verb === 'merge-tiers') return runMergeTiers(args);
+  if (verb === 'help') return printUsage();
+  printUsage();
+  throw new Error(`unknown verb: ${verb}`);
 }
 
 main().catch((e) => {
