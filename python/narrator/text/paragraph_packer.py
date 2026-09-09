@@ -155,7 +155,8 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 
 import regex as re
 
-from .lang import abbreviations_mapping, chars_remove, punctuation_split_hard_set
+from .lang import (abbreviations_mapping, chars_remove,
+                   punctuation_split_hard_set, SENTENCE_ABBREVIATIONS)
 from .sml import SML_UNSPOKEN_PATTERN, sml_token, strip_escaped_sml  # noqa: F401
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -681,21 +682,33 @@ def _hard_sentence_pattern():
 
     `text/packer.py` builds this inside `get_sentences` and may not be edited to
     share it, so this is a deliberate second copy. It reads the SAME tables -
-    `abbreviations_mapping['eng']` and `punctuation_split_hard_set` from
-    `text/lang.py` - so the two cannot drift on their inputs, and
-    `tests/test_text_paragraph_packer.py` asserts they agree on behaviour.
+    `abbreviations_mapping['eng']`, `SENTENCE_ABBREVIATIONS` and
+    `punctuation_split_hard_set` from `text/lang.py` - so the two cannot drift on
+    their inputs, and `tests/test_text_paragraph_packer.py` asserts they agree on
+    behaviour.
 
     The `tok_class` terminator is dropped because a block's text carries no
     escaped SML: markers are added by the packer AFTER splitting, on a chunk's
     leading edge.
     """
     stems = set()
-    for k in abbreviations_mapping.get('eng', {}):
+    for k in list(abbreviations_mapping.get('eng', {})) + list(SENTENCE_ABBREVIATIONS):
         stem = (k[:-1] if k.endswith('.') else k).split('.')[-1].strip()
         if len(stem) >= 2:
             stems.add(stem)
     guards = ''.join(f'(?<!\\b{re.escape(s)})' for s in sorted(stems))
-    guarded_dot = rf'(?<!\b[A-Za-z]){guards}\.'
+    # THE DIGIT RULE (Owen, 2026-09-09). A dot followed by whitespace and then a
+    # DIGIT never ends a sentence: 'Col. 2:1' and 'No. 1' were breaking into two
+    # cues mid-citation, and no abbreviation list can be complete enough to catch
+    # every 'No.'-shaped token - a real sentence essentially never starts with a
+    # bare digit in this corpus, so the shape is the better test. It lives in the
+    # pattern, not in a post-pass, so `split_sentences` stays text-preserving and
+    # `packer.get_sentences` gets it from the same construction.
+    #
+    # KNOWN COST: '...in 1994. 1995 was worse.' now shares one cue. Rarer than
+    # the citation case, and cosmetic either way - the audio is already rendered
+    # by the time a cue list is built.
+    guarded_dot = rf'(?<!\b[A-Za-z]){guards}\.(?!\s+\d)'
     others = [re.escape(p) for p in punctuation_split_hard_set if p != '.']
     closing_run = r'["\'’”»)\]]*'
     return re.compile(

@@ -180,6 +180,58 @@ abbreviations_mapping = {
     },
 }
 
+#: NARRATOR'S OWN sentence-break guard - NOT part of the e2a copy above.
+#:
+#: `abbreviations_mapping` is carried whole and byte-checkable against
+#: ebook2audiobook@9daab0ba, so nothing may be added to it. This set exists
+#: BESIDE it for the one thing narrator needs and e2a's table does not carry:
+#: more abbreviations whose dot must not end a subtitle cue. It is read for its
+#: MEMBERS ONLY - there are no expansions here, and there is nothing to expand,
+#: because narrator renders the book's text as printed. What a member changes is
+#: where a VTT cue breaks; it changes nothing that is spoken, because the
+#: splitter is text-preserving and the pieces rejoin to the book's own words.
+#: (Same reach as the e2a keys it sits beside: PASS 1 is also what an OVER-BUDGET
+#: paragraph is cut on, so a guarded dot can move a chunk edge by a sentence
+#: there - the same trade the 'Mr. Darcy' guard has always made.)
+#:
+#: Owen, 2026-09-09: "'No. 1' becomes two sentences, the first ending on 'no.'
+#: and the second starting at '1' ... another example: 'Col. 2:1' - a bibleverse.
+#: it reads 'colossians chapter 2 verse 1.' but the VTT reads 'Col.' ' 2:1.'"
+#:
+#: 'No.' IS DELIBERATELY ABSENT, and must stay absent. It is also an ordinary
+#: sentence-final English word, so guarding it would weld `"No." Then he left.`
+#: into one cue - a real regression in fiction, traded for a case the pattern
+#: builders' digit rule already fixes precisely. Any token that doubles as an
+#: ordinary sentence-final word belongs out here, not in.
+#:
+#: CASE MATTERS, and that is what makes the risky-looking members safe. The
+#: guard the pattern builders emit is `(?<!\bStem)\.` in a pattern compiled with
+#: re.DOTALL and nothing else - no re.IGNORECASE - so 'Ch.' guards 'Ch.' and not
+#: 'much.', 'Sec.' not 'sec.', 'Fr.' not 'fr.'. What survives is the narrow
+#: collision of a sentence ending in that exact CAPITALIZED word ('...to Sam.',
+#: '...the Sun.'): those cues merge with the next. Cosmetic, rare, and the price
+#: of catching the citations. 'Ezra' is left out for the same reason 'No.' is -
+#: it is not abbreviated (it carries no dot), so guarding it could only suppress
+#: a genuine break, and 'Ezra 7:10' never had a dot to break at.
+SENTENCE_ABBREVIATIONS = frozenset({
+    # Bible books, the case Owen hit ('Col. 2:1').
+    'Gen.', 'Ex.', 'Exod.', 'Lev.', 'Num.', 'Deut.', 'Josh.', 'Judg.',
+    'Sam.', 'Kgs.', 'Chron.', 'Neh.', 'Esth.', 'Ps.', 'Pss.', 'Prov.',
+    'Eccl.', 'Isa.', 'Jer.', 'Lam.', 'Ezek.', 'Dan.', 'Hos.', 'Obad.',
+    'Mic.', 'Nah.', 'Hab.', 'Zeph.', 'Hag.', 'Zech.', 'Mal.', 'Matt.',
+    'Mk.', 'Lk.', 'Jn.', 'Rom.', 'Cor.', 'Gal.', 'Eph.', 'Phil.', 'Col.',
+    'Thess.', 'Tim.', 'Tit.', 'Philem.', 'Heb.', 'Jas.', 'Pet.', 'Rev.',
+    # Publishing apparatus and titles.
+    'Vol.', 'Vols.', 'Ch.', 'Chap.', 'Fig.', 'Figs.', 'Sec.', 'Ed.',
+    'Eds.', 'Trans.', 'cf.', 'viz.', 'approx.', 'Inc.', 'Ltd.', 'Co.',
+    'Corp.', 'Univ.', 'Dept.', 'Gov.', 'Sen.', 'Rep.', 'Pres.', 'Sgt.',
+    'Lt.', 'Maj.', 'Adm.', 'Fr.', 'Hon.', 'Msgr.', 'Esq.',
+    # Months and days.
+    'Jan.', 'Feb.', 'Mar.', 'Apr.', 'Jun.', 'Jul.', 'Aug.', 'Sep.',
+    'Sept.', 'Oct.', 'Nov.', 'Dec.', 'Mon.', 'Tue.', 'Tues.', 'Wed.',
+    'Thu.', 'Thur.', 'Thurs.', 'Fri.', 'Sat.', 'Sun.',
+})
+
 language_mapping = {
     'eng': {
         'name': 'English',

@@ -660,6 +660,7 @@ class SentenceSplitterTest(unittest.TestCase):
         self.assertIs(pp.abbreviations_mapping, packer.abbreviations_mapping)
         self.assertIs(pp.punctuation_split_hard_set,
                       packer.punctuation_split_hard_set)
+        self.assertIs(pp.SENTENCE_ABBREVIATIONS, packer.SENTENCE_ABBREVIATIONS)
 
     def test_an_abbreviation_does_not_end_a_sentence(self):
         for text in ('He asked Mr. Darcy about it.',
@@ -696,6 +697,75 @@ class SentenceSplitterTest(unittest.TestCase):
                 'He did not answer... Then he did.')
         self.assertEqual(' '.join(pp.split_sentences(text)).split(),
                          text.split())
+
+    # -------------------------------------------------------------------------
+    # Cue boundaries at abbreviations (Owen, 2026-09-09)
+    # -------------------------------------------------------------------------
+    #
+    # "it's splitting sentences in the VTT even at abbreviations. like 'No. 1'
+    # becomes two sentences ... another example: 'Col. 2:1' - a bibleverse. it
+    # reads 'colossians chapter 2 verse 1.' but the VTT reads 'Col.' ' 2:1.'"
+    #
+    # Two rules answer it: `lang.SENTENCE_ABBREVIATIONS` (narrator's own set,
+    # beside the e2a table that may not be edited) and the digit lookahead.
+
+    def test_owens_case_a_citation_is_one_sentence(self):
+        """The chunk from the live book, end to end. Before the fix this was
+        four pieces: 'He read Col.' / '2:1 aloud.' / 'See No.' / '1 in the
+        list.'"""
+        self.assertEqual(
+            pp.split_sentences('He read Col. 2:1 aloud. See No. 1 in the list.'),
+            ['He read Col. 2:1 aloud.', 'See No. 1 in the list.'])
+
+    def test_a_dot_before_a_digit_never_ends_a_sentence(self):
+        """THE DIGIT RULE, which is what actually catches 'No. 1': a real
+        sentence essentially never starts with a bare digit, and no abbreviation
+        list could be complete enough to catch every 'No.'-shaped token."""
+        for text in ('See No. 1 in the list.',
+                     'Refer to Col. 2:1 for the wording.',
+                     'It is in Ch. 12 of the report.'):
+            self.assertEqual(len(pp.split_sentences(text)), 1, text)
+
+    def test_narrators_own_abbreviations_do_not_end_a_sentence(self):
+        for text in ('Rev. Smith said hello.',
+                     'The passage in Col. carries the same idea.',
+                     'It appeared in Vol. II of the collection.',
+                     'They met on Tues. before the vote.'):
+            self.assertEqual(len(pp.split_sentences(text)), 1, text)
+
+    def test_a_quoted_No_STILL_ends_its_sentence(self):
+        """The regression the exclusion protects. 'No.' is an ordinary
+        sentence-final English word, so it is deliberately NOT in
+        SENTENCE_ABBREVIATIONS - guarding it would weld a line of dialogue onto
+        the narration after it."""
+        self.assertEqual(pp.split_sentences('"No." Then he left.'),
+                         ['"No."', 'Then he left.'])
+        self.assertEqual(pp.split_sentences('He said no. Then he left.'),
+                         ['He said no.', 'Then he left.'])
+
+    def test_the_new_rules_lose_no_words(self):
+        """Text-preserving, same as every other boundary rule here."""
+        for text in ('He read Col. 2:1 aloud. See No. 1 in the list.',
+                     'Rev. Smith said hello. "No." Then he left.',
+                     'It happened in 1994. 1995 was worse.'):
+            self.assertEqual(' '.join(pp.split_sentences(text)).split(),
+                             text.split(), text)
+
+    def test_the_parity_packer_draws_the_SAME_boundaries(self):
+        """Both copies of PASS 1, on one input, at a length that survives the
+        parity packer's own packing (2 x ~180 chars against its 350-char cap).
+        If the two constructions ever drift, this is the row that says so."""
+        from narrator.text import packer
+        first = ('He read Col. 2:1 aloud to the assembled students who had been '
+                 'waiting in the cold hall since dawn, and not one of them so '
+                 'much as murmured a complaint about the hour or the draft.')
+        second = ('She answered with No. 1 on the list of objections, a quotation '
+                  'from Vol. 4 of the commentary that nobody in the room had ever '
+                  'actually managed to finish reading through to its end.')
+        text = f'{first} {second}'
+        self.assertEqual(pp.split_sentences(text), [first, second])
+        self.assertEqual(packer.get_sentences(text, 'eng', 'orpheus', []),
+                         [first, second])
 
     def test_a_paragraph_with_no_terminal_mark_is_one_sentence(self):
         self.assertEqual(pp.split_sentences('no terminator here'),

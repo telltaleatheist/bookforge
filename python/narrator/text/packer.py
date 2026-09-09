@@ -47,7 +47,7 @@ import os
 import regex as re
 
 from .lang import abbreviations_mapping, language_entry, punctuation_split_hard_set, \
-    punctuation_split_soft_set
+    punctuation_split_soft_set, SENTENCE_ABBREVIATIONS
 from .normalize import ORPHEUS, _refuse_engine
 from .sml import (
     SML_TAG_PATTERN,
@@ -546,13 +546,25 @@ def get_sentences(text: str, language: str, tts_engine: str,
         # scan with two terminators, so laziness picks the EARLIER of a sentence
         # end and a token. The leading `{tok_class}*` lets a row start on its own
         # token(s) without the terminator matching empty at position zero.
+        #
+        # NARRATOR ADDS TWO THINGS to e2a's guard, both cosmetic and both mirrored
+        # in `paragraph_packer._hard_sentence_pattern` (Owen, 2026-09-09: a VTT
+        # cue was breaking 'Col. 2:1' after 'Col.' and 'No. 1' after 'No.').
+        # First, `SENTENCE_ABBREVIATIONS` - narrator's own set beside the e2a
+        # table, which may not be edited - joins the stems. Second, THE DIGIT
+        # RULE: a dot followed by whitespace and then a DIGIT never ends a
+        # sentence, which catches every citation shape without guessing at the
+        # abbreviation ('No.' is deliberately NOT in the set: it is also an
+        # ordinary sentence-final word). Known cost: '...in 1994. 1995 was worse.'
+        # rides one row. Both live in the pattern so the second copy in
+        # `paragraph_packer` is built the same way and stays text-preserving.
         stems = set()
-        for k in abbreviations_mapping.get('eng', {}):
+        for k in list(abbreviations_mapping.get('eng', {})) + list(SENTENCE_ABBREVIATIONS):
             stem = (k[:-1] if k.endswith('.') else k).split('.')[-1].strip()
             if len(stem) >= 2:
                 stems.add(stem)
         guards = ''.join(f'(?<!\\b{re.escape(s)})' for s in sorted(stems))
-        guarded_dot = rf'(?<!\b[A-Za-z]){guards}\.'
+        guarded_dot = rf'(?<!\b[A-Za-z]){guards}\.(?!\s+\d)'
         others = [re.escape(p) for p in punctuation_split_hard_set if p != '.']
         hard_pattern = re.compile(
             rf"{tok_class}*.*?"
