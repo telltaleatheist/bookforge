@@ -946,6 +946,200 @@ async function runMergeTiers(args) {
   await spawnTraining(python, path.join(cwd, 'merge_corpora.py'), argv, cwd, 'merge-tiers');
 }
 
+
+// --- Campaign scripts (mix, train) live outside the repo, under E:\training\_campaigns.
+// Named, never guessed: --campaign-root | CLIPFORGE_CAMPAIGN_ROOT | the default.
+const CAMPAIGN_ROOT_DEFAULT =
+  'E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs';
+const GPU_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/higgs3/bin/python';
+
+function resolveCampaignRoot(args) {
+  const root = args['campaign-root'] || process.env.CLIPFORGE_CAMPAIGN_ROOT || CAMPAIGN_ROOT_DEFAULT;
+  const abs = path.resolve(root);
+  if (!fs.existsSync(path.join(abs, 'night2', 'build_higgs_mix.py'))) {
+    throw new Error(
+      'campaign root not found (no night2/build_higgs_mix.py under it): ' + abs + '\n' +
+      '  Name it with --campaign-root <dir> or CLIPFORGE_CAMPAIGN_ROOT.');
+  }
+  return abs;
+}
+
+function refuseNonHiggs(args, verb) {
+  const engine = String(args.engine || 'higgs').toLowerCase();
+  if (engine !== 'higgs') {
+    throw new Error(
+      verb + ': --engine ' + engine + ' is not wired here yet. Only higgs is.\n' +
+      '  Orpheus has its own trainer and mix; running the Higgs one against an Orpheus corpus\n' +
+      '  would silently produce a corpus for the wrong model. Refusing rather than guessing.');
+  }
+}
+
+TRAINING_HELP.mix = [
+  'clipforge mix - encode a gated corpus into a training set (night2/build_higgs_mix.py)',
+  '',
+  '  --out <dir>      the data directory to write   --build-root <dir>  where the tiers live',
+  '  --long <tier> --short <tier> [--heading <tier>]',
+  '  --rows-l / --rows-s / --rows-h <json>',
+  '  --served-cap-chars <n> [--served-cap-strict]',
+  '',
+  '  NO BED. --nobed is passed always. The -70 dB bed is an Orpheus/SNAC EOS fix that does NOT',
+  '  transfer to v3: coverage 90.9 vs 90.7, early stops 14 vs 13, runaways 0 vs 0 (field notes 4f).',
+  '',
+  '  TWO FLAGS SUPPRESS SHORT ROWS, NOT ONE. --short-rows-frac 0.0 leaves --short-frac at its',
+  '  0.25-of-DURATION default, which is ~59% of ROWS. A "band only" corpus built with just the',
+  '  first flag had 38.5% of rows in band against the base model own 34.3% - the experiment would',
+  '  have compared a model to itself (4n.37.16). Pass BOTH zeros for a deliberate long-only build.',
+  '',
+  '  --served-cap-strict REFUSES a cap above the train rows p75. If it fires, the CORPUS is wrong',
+  '  for the cap, not the flag: by 4n.37.19 a model is safe to about its corpus median, so serving',
+  '  above p75 means truncating exactly where you render. Re-slice; do not drop the flag.',
+].join('\n');
+
+async function runMix(args) {
+  if (args.help) { console.log(TRAINING_HELP.mix); return; }
+  refuseNonHiggs(args, 'mix');
+  for (const k of ['out', 'build-root', 'long', 'short']) {
+    if (!args[k]) throw new Error('mix: --' + k + ' is required (see: clipforge mix --help)');
+  }
+  const camp = resolveCampaignRoot(args);
+  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const pass = ['out', 'build-root', 'long', 'short', 'heading', 'rows-l', 'rows-s', 'rows-h',
+    'short-rows-frac', 'short-frac', 'short-prefer-min', 'short-max', 'served-cap-chars',
+    'max-hours', 'workers', 'device', 'mode-name', 'seed'];
+  const argv = ['--nobed'];
+  for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  if (args['served-cap-strict']) argv.push('--served-cap-strict');
+  if (args['short-rows-frac'] !== undefined && args['short-frac'] === undefined) {
+    console.log('[mix] NOTE: --short-rows-frac given without --short-frac. --short-frac still');
+    console.log('[mix]       defaults to 0.25 of DURATION, which is ~59% of ROWS (4n.37.16).');
+  }
+  await spawnTraining(python, path.join(camp, 'night2', 'build_higgs_mix.py'), argv, camp, 'mix');
+}
+
+TRAINING_HELP.train = [
+  'clipforge train - LoRA fine-tune on an encoded corpus (v3_ft/train_lora.py)',
+  '',
+  '  --data <dir>     the mix output      --out <run dir>',
+  '  --epochs 12 --patience 3 --lora-r 32 --lora-alpha 64 --lora-dropout 0.05',
+  '  --lr 1e-4 --accum 4 --warmup 20 --max-seq-len 4096 --eval-every Q --save-every Q --seed 1234',
+  '  Q is about rows/16. Early stop after 3 non-improving evals (field notes 4n.32.5).',
+  '',
+  '  GPU DISCIPLINE. Take the lock first - v3_ft/gpu_lock.sh acquire - and check the card is',
+  '  actually allocatable, not merely reported free: probe_vram.py. Under WSL mem_get_info LIES;',
+  '  one over-subscription episode shrank the VM budget 23 -> 13 GiB and every later train died',
+  '  constructing the model while nvidia-smi still read 22.74 GiB free (4n.37.15).',
+  '  Baseline is mem-fraction 0.48 / render concurrency 4, about 20 GB. Never SIGKILL a WSL GPU',
+  '  process. Run campaign stages ONE AT A TIME.',
+  '',
+  '  PICK THE CHECKPOINT BY BEHAVIOUR, NOT LOSS. A 0.04-nat holdout gap does not resolve a',
+  '  behavioural difference, and loss kept improving while worst-case coverage fell 98.1 -> 96.4%',
+  '  (4n.4d, 4n.32.6). Sweep two checkpoints across 0-1600 and take the band (4n.39.1).',
+].join('\n');
+
+async function runTrain(args) {
+  if (args.help) { console.log(TRAINING_HELP.train); return; }
+  refuseNonHiggs(args, 'train');
+  for (const k of ['data', 'out']) {
+    if (!args[k]) throw new Error('train: --' + k + ' is required (see: clipforge train --help)');
+  }
+  const camp = resolveCampaignRoot(args);
+  const ft = path.join(camp, 'v3_ft');
+  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const pass = ['data', 'out', 'init-adapter', 'steps', 'epochs', 'patience', 'lora-r',
+    'lora-alpha', 'lora-dropout', 'lr', 'accum', 'warmup', 'max-seq-len', 'eval-every',
+    'save-every', 'log-every', 'seed'];
+  const argv = [];
+  for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  console.log('[train] GPU job. Take v3_ft/gpu_lock.sh and probe_vram.py FIRST - see --help.');
+  await spawnTraining(python, path.join(ft, 'train_lora.py'), argv, ft, 'train');
+}
+
+TRAINING_HELP.masters = [
+  'clipforge masters - rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
+  '',
+  '  --adobe-dir <dir>   holds build_span_inventory.py and build_masters.py (e.g. mistborn/adobe_v2)',
+  '  --step inventory|masters|both        (default both)',
+  '',
+  '  SPAN-LEVEL, not clip-level. Each Adobe part is a concatenation of non-contiguous narration',
+  '  spans; the split map carries part_start_sample/part_end_sample plus the run_ci0/run_ci1 cue',
+  '  range, so spans are cut back sample-exact and concatenated IN SOURCE ORDER.',
+  '',
+  '  TWO TRAPS. The returned-parts list has been HARDCODED before and silently excluded 2.8 h of',
+  '  a book once Adobe returned more (fixed 2026-09-09 to derive from disk). And build_masters',
+  '  caches segments by LIST POSITION (seg0000...), so re-running with a CHANGED span list would',
+  '  reuse a cached segment for a different passage - clear _seg_<bk> before any rebuild.',
+].join('\n');
+
+async function runMasters(args) {
+  if (args.help) { console.log(TRAINING_HELP.masters); return; }
+  if (!args['adobe-dir']) throw new Error('masters: --adobe-dir is required (see: clipforge masters --help)');
+  const dir = path.resolve(args['adobe-dir']);
+  const step = String(args.step || 'both');
+  const python = args.python ? path.resolve(args.python) : TRAINING_PYTHON_DEFAULT;
+  const scripts = [];
+  if (step === 'inventory' || step === 'both') scripts.push('build_span_inventory.py');
+  if (step === 'masters' || step === 'both') scripts.push('build_masters.py');
+  if (!scripts.length) throw new Error('masters: --step must be inventory, masters or both');
+  for (const sc of scripts) {
+    const full = path.join(dir, sc);
+    if (!fs.existsSync(full)) throw new Error('masters: missing ' + full);
+    if (sc === 'build_masters.py') {
+      for (const d of fs.readdirSync(dir)) {
+        if (d.startsWith('_seg_')) {
+          console.log('[masters] STALE SEGMENT CACHE present: ' + d);
+          console.log('[masters] It is keyed by list POSITION. If the span list changed, cached');
+          console.log('[masters] segments pair audio with the WRONG text. Delete it, then re-run.');
+          throw new Error('masters: refusing with ' + d + ' present - clear it deliberately');
+        }
+      }
+    }
+    await spawnTraining(python, full, [], dir, 'masters');
+  }
+}
+
+TRAINING_HELP.align = [
+  'clipforge align - align each Adobe span against its own text (adobe_v2/align_spans.py)',
+  '',
+  '  --adobe-dir <dir>   holds align_spans.py and the rebuilt masters',
+  '  --book <fe|woa|hoa|...>   [--limit N] [--window-s 280]',
+  '  --python <exe>      the qwen-align env (default /home/telltale/anaconda3/envs/qwen-align/bin/python)',
+  '',
+  '  PER SPAN, NOT PER BOOK. A concatenated master is non-contiguous, and the whole-book aligner',
+  '  loses the thread at the seams: on fe_ad it dropped 2.71 h of 5.99 h into asr-fallback while',
+  '  advancing one sentence per 22 minutes. Here each window is audio PLUS EXACTLY THE WORDS IN IT,',
+  '  so nothing is searched for and there is no asr-fallback class by construction.',
+  '',
+  '  IT REFUSES RATHER THAN INVENTING. Above ~20% failed windows it writes NOTHING. On 2026-09-09',
+  '  it refused woa at 78/362 - all one cause, cues whose text was a bare "." from spaced ellipses',
+  '  and detached punctuation in the source VTT (10.3% of woa cues). Fixing the TEXT took it to',
+  '  1/362. If it refuses, find the text defect; do not loosen the gate.',
+  '',
+  '  QWEN3 DRIFTS ON SHORT AND HEADING WINDOWS (4n.40): 395x realtime and more precise where it',
+  '  places, but it publishes no confidence and never refuses, and 59 of its 116 misses over 1 s',
+  '  were headings or tiny chunks. Spot-check with the row gate, listen to the SHORTEST clips, and',
+  '  if a prose tier drops far above 2% re-align that book with wav2vec2 instead.',
+].join('\n');
+
+const QWEN_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/qwen-align/bin/python';
+
+async function runAlign(args) {
+  if (args.help) { console.log(TRAINING_HELP.align); return; }
+  for (const k of ['adobe-dir', 'book']) {
+    if (!args[k]) throw new Error('align: --' + k + ' is required (see: clipforge align --help)');
+  }
+  const dir = path.resolve(args['adobe-dir']);
+  const script = path.join(dir, 'align_spans.py');
+  if (!fs.existsSync(script)) throw new Error('align: missing ' + script);
+  const python = args.python ? path.resolve(args.python) : QWEN_PYTHON_DEFAULT;
+  const argv = [String(args.book)];
+  for (const k of ['limit', 'window-s']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  if (args.dry) argv.push('--dry');
+  console.log('[align] GPU job. Take the lock first, and read the refusal rule in --help.');
+  await spawnTraining(python, script, argv, dir, 'align');
+}
+
 function printUsage() {
   console.log([
     'clipforge-process - the ClipForge CLI',
@@ -962,10 +1156,19 @@ function printUsage() {
     '  slice        cut a book master into training clips        (slice_vtt.py)',
     '  gate         score every row against its own text         (row_gate.py)',
     '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
+    '  mix          encode a gated corpus into a training set   (build_higgs_mix.py)',
+    '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
+    '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
+    '  align        align each Adobe span against its own text  (align_spans.py)',
     '',
     '  Each takes --help and explains the WHY with its field-note reference.',
     '  Scripts live in the orpheus-finetune repo: --training-root <dir> or',
     '  CLIPFORGE_TRAINING_ROOT (default ' + TRAINING_ROOT_DEFAULT + ').',
+    '  Campaign scripts (mix, train): --campaign-root or CLIPFORGE_CAMPAIGN_ROOT',
+    '  (default ' + CAMPAIGN_ROOT_DEFAULT + ').',
+    '',
+    '  Pipeline order is the runbook in HIGGS_FIELD_NOTES 4n.41:',
+    '    masters -> align -> slice -> merge-tiers -> gate -> mix -> train -> sweep -> promote',
   ].join('\n'));
 }
 
@@ -990,6 +1193,10 @@ async function main() {
   if (verb === 'slice') return runSlice(args);
   if (verb === 'gate') return runGate(args);
   if (verb === 'merge-tiers') return runMergeTiers(args);
+  if (verb === 'mix') return runMix(args);
+  if (verb === 'train') return runTrain(args);
+  if (verb === 'masters') return runMasters(args);
+  if (verb === 'align') return runAlign(args);
   if (verb === 'help') return printUsage();
   printUsage();
   throw new Error(`unknown verb: ${verb}`);
