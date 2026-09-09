@@ -133,20 +133,40 @@ class FloorTest(unittest.TestCase):
         self.assertGreaterEqual(report.chunks[0].chars, 100)
         self.assertEqual(report.chunks[0].blocks, (0, 1, 2, 3))
 
-    def test_a_paragraph_that_already_reaches_the_floor_stands_alone(self):
+    def test_a_short_group_absorbs_the_full_size_paragraph_behind_it(self):
+        """WAS `test_a_paragraph_that_already_reaches_the_floor_stands_alone`,
+        asserting [(0,), (1,), (2,)] - a full-size paragraph neither joined a run
+        in front of it nor accepted one. Reversed 2026-09-09: the floor is now
+        the bottom of a MEASURED safe band, so shipping '"Hi."' as a five-char
+        chunk is the truncation risk and absorbing the paragraph behind it is the
+        cure. '"Bye."' still ships short because nothing follows it."""
         long_p = 'A sentence that is comfortably long. ' * 10
         blocks = [para('"Hi."', 0), para(long_p, 1), para('"Bye."', 2)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
-        self.assertEqual([c.blocks for c in report.chunks],
-                         [(0,), (1,), (2,)])
+        self.assertEqual([c.blocks for c in report.chunks], [(0, 1), (2,)])
+        self.assertGreaterEqual(report.chunks[0].chars, 300)
 
-    def test_a_long_paragraph_is_never_swallowed_by_the_run_in_front_of_it(self):
-        """The bug this rule's third clause exists for: three dialogue turns
-        followed by a full-size paragraph must not become one chunk."""
+    def test_a_short_run_keeps_absorbing_until_it_reaches_the_floor(self):
+        """WAS `test_a_long_paragraph_is_never_swallowed_by_the_run_in_front_of
+        _it`, asserting [(0, 1, 2), (3,)] against the rule's third clause. That
+        clause was dropped 2026-09-09 and this grouping is now the ACCEPTED COST:
+        three dialogue turns worth 22 characters plus a 401-char paragraph is one
+        chunk inside the band, where before it was one chunk far below the floor
+        and one at full size."""
         blocks = [para('"One."', 0), para('"Two."', 1), para('"Three."', 2),
                   para('B' * 400 + '.', 3)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
-        self.assertEqual([c.blocks for c in report.chunks], [(0, 1, 2), (3,)])
+        self.assertEqual([c.blocks for c in report.chunks], [(0, 1, 2, 3)])
+        self.assertGreaterEqual(report.chunks[0].chars, 300)
+        self.assertLessEqual(report.chunks[0].chars, 520)
+
+    def test_a_group_that_cannot_reach_the_floor_under_the_cap_ships_short(self):
+        """The cap is never traded away for the floor. Two 400-char paragraphs
+        against a 520-char cap: neither reaches the floor's far side by merging,
+        because 801 > 520, so both are emitted as they stand."""
+        blocks = [para('A' * 399 + '.', 0), para('B' * 399 + '.', 1)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=600)
+        self.assertEqual([c.blocks for c in report.chunks], [(0,), (1,)])
 
     def test_a_run_that_ends_before_the_floor_is_emitted_short(self):
         blocks = [para('"One."', 0), para('"Two."', 1)]
@@ -189,15 +209,66 @@ class WallTest(unittest.TestCase):
         self.assertEqual([c.blocks for c in report.chunks],
                          [(0,), (1,), (2,)])
 
-    def test_a_heading_is_its_own_chunk_and_keeps_its_marker(self):
+    def test_a_heading_merges_forward_into_the_prose_that_follows_it(self):
+        """WAS `test_a_heading_is_its_own_chunk_and_keeps_its_marker`, asserting
+        three chunks with `chunks[1]` a lone 'heading' reading 'Chapter Two.'.
+        Changed 2026-09-09: a heading is always far under the floor, so emitting
+        it alone was this packer's most reliable way of producing a chunk the
+        model early-stops on. It now walls BACKWARD only - '"Short."' still does
+        not reach across it - and leads the group the prose behind it joins.
+
+        The kind is the load-bearing half: `assemble/sentence_vtt.py` bolds every
+        cue of a 'heading' chunk, so a merged chunk must read 'prose' or a whole
+        paragraph of subtitles goes bold. The `[heading]` marker stays first in
+        the text, so the TTS prosody cue is not lost."""
         blocks = [para('"Short."', 0),
                   pp.Block('Chapter Two.', pp.HEADING, index=1),
                   para('"Also short."', 2)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
-        self.assertEqual(len(report.chunks), 3)
+        self.assertEqual([c.blocks for c in report.chunks], [(0,), (1, 2)])
+        self.assertEqual(report.chunks[1].kind, 'prose')
+        self.assertTrue(report.chunks[1].text.startswith('[break][heading]'),
+                        report.chunks[1].text)
+        self.assertEqual(spoken(report.chunks[1].text),
+                         'Chapter Two. "Also short."')
+
+    def test_a_heading_with_nothing_behind_it_is_still_its_own_chunk(self):
+        """The other half of the 2026-09-09 change: end of document, or another
+        wall next, and the heading is emitted exactly as it always was - kind
+        'heading', its marker first, its period on."""
+        blocks = [para('"Short."', 0),
+                  pp.Block('Chapter Two.', pp.HEADING, index=1)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.blocks for c in report.chunks], [(0,), (1,)])
         self.assertEqual(report.chunks[1].kind, 'heading')
         self.assertIn('[heading]', report.chunks[1].text)
         self.assertEqual(spoken(report.chunks[1].text), 'Chapter Two.')
+
+    def test_two_headings_in_a_row_do_not_merge_into_each_other(self):
+        """A heading is still a wall backward, so the second one flushes the
+        first: the part label ships alone and the chapter title takes the prose."""
+        blocks = [pp.Block('Part Two.', pp.HEADING, index=0),
+                  pp.Block('Chapter Two.', pp.HEADING, index=1),
+                  para('"Also short."', 2)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.blocks for c in report.chunks], [(0,), (1, 2)])
+        self.assertEqual([c.kind for c in report.chunks], ['heading', 'prose'])
+
+    def test_a_heading_gets_a_closing_period_before_it_merges(self):
+        """Owen, 2026-09-09: 'put a period at the end of the headers so they read
+        correctly'. Without it the heading runs into the first sentence behind it
+        and is spoken as one clause. `_closed_block_text` is idempotent, so a
+        heading the EPUB walk already closed does not get a second one."""
+        blocks = [pp.Block('Chapter Two', pp.HEADING, index=0),
+                  para('It began to rain.', 1)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual(spoken(report.chunks[0].text),
+                         'Chapter Two. It began to rain.')
+        closed = pp.pack_paragraphs(
+            [pp.Block('Chapter Two.', pp.HEADING, index=0), para('It began to rain.', 1)],
+            ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual(spoken(closed.chunks[0].text),
+                         'Chapter Two. It began to rain.')
 
     def test_a_scene_break_speaks_nothing_but_still_stops_a_merge(self):
         blocks = [para('"One."', 0), para('"Two."', 1),
@@ -220,6 +291,14 @@ class WallTest(unittest.TestCase):
                                walls={pp.PARAGRAPH})
 
     def test_every_wall_kind_holds_independently(self):
+        """Every wall stops the run BEHIND it - that half is unchanged, so
+        '"One."' never reaches '"Two."' across any of them.
+
+        HEADING's expectation changed 2026-09-09: it used to assert
+        `prose == [(0,), (2,)]` for all five kinds, because a heading emitted
+        itself and left block 2 to stand alone. A heading now leads the group in
+        FRONT of the wall, so block 2 arrives as the prose chunk (1, 2). The
+        other four kinds keep the old assertion exactly."""
         for kind in (pp.HEADING, pp.ITEM, pp.TABLE, pp.SCENE_BREAK,
                      pp.CHAPTER_START):
             blocks = [para('"One."', 0), pp.Block('Wall.', kind, index=1),
@@ -227,7 +306,8 @@ class WallTest(unittest.TestCase):
             report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER,
                                         floor_chars=300)
             prose = [c.blocks for c in report.chunks if c.kind == 'prose']
-            self.assertEqual(prose, [(0,), (2,)], kind)
+            expected = [(0,), (1, 2)] if kind == pp.HEADING else [(0,), (2,)]
+            self.assertEqual(prose, expected, kind)
 
 
 # =============================================================================
@@ -568,6 +648,14 @@ class MarkerTest(unittest.TestCase):
         blocks = [pp.Block('Chapter Two.', pp.HEADING, index=0)]
         chunk = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER).chunks[0]
         self.assertIsNotNone(SML_HEADING_PATTERN.search(chunk.text))
+        # 2026-09-09: the marker survives a merge but the KIND does not. Only a
+        # heading-only chunk is 'heading' - `assemble/sentence_vtt.py` bolds every
+        # cue of one, and it would bold the merged paragraph too.
+        self.assertEqual(chunk.kind, 'heading')
+        merged = pp.pack_paragraphs(
+            blocks + [para('It began to rain.', 1)], ORPHEUS_DEATHSTALKER).chunks[0]
+        self.assertIsNotNone(SML_HEADING_PATTERN.search(merged.text))
+        self.assertEqual(merged.kind, 'prose')
 
     def test_no_marker_survives_into_the_spoken_text(self):
         blocks = [pp.Block('Chapter Two.', pp.HEADING, index=0),
@@ -781,16 +869,23 @@ class ExtractBlocksTest(unittest.TestCase):
         report = pp.pack_paragraphs(self.blocks, ORPHEUS_DEATHSTALKER,
                                     floor_chars=300)
         kinds = [c.kind for c in report.chunks]
-        self.assertEqual(kinds, ['heading', 'prose', 'prose', 'prose',
+        # WAS ['heading', 'prose', 'prose', 'prose', 'item', 'item', 'prose'] on
+        # blocks [(0,), (1,), (2, 3, 4), (6,), (7,), (8,), (10,)]: seven chunks,
+        # the h1 alone. Changed 2026-09-09 - the heading merges forward into the
+        # full-size first paragraph, so the chapter opens with ONE 318-char chunk
+        # inside the band instead of a 12-char one and a 306-char one, and that
+        # chunk is 'prose' so `sentence_vtt` does not bold the paragraph.
+        self.assertEqual(kinds, ['prose', 'prose', 'prose',
                                  'item', 'item', 'prose'])
-        # ONLY the three dialogue turns merged: the full-size first paragraph
-        # stands alone in front of them, the scene break stops the run, and the
-        # two items are chunks of their own.
-        merged = [c for c in report.chunks if len(c.blocks) > 1]
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0].blocks, (2, 3, 4))
         self.assertEqual([c.blocks for c in report.chunks],
-                         [(0,), (1,), (2, 3, 4), (6,), (7,), (8,), (10,)])
+                         [(0, 1), (2, 3, 4), (6,), (7,), (8,), (10,)])
+        self.assertTrue(report.chunks[0].text.startswith('[break][heading]'),
+                        report.chunks[0].text)
+        # The scene break still stops the run, so the three dialogue turns merge
+        # among themselves and go no further; the two items are chunks of their
+        # own; and the closing paragraph after the second break stands alone.
+        merged = [c.blocks for c in report.chunks if len(c.blocks) > 1]
+        self.assertEqual(merged, [(0, 1), (2, 3, 4)])
 
 
 TABLE_FIXTURE = """<body>

@@ -738,13 +738,22 @@ def _chunk_kind(kind: str) -> str:
 
 
 def _closed_block_text(block: Block) -> str:
-    """An item's text with the period it needs so TTS stops at its end - added
-    HERE, when the item becomes a chunk, and not at extraction, so that
-    `join_provisional_fragments` can still see a bullet a page break cut in
-    two. Headings and table rows get theirs at extraction (they are never
-    fragments); a label line got its own in the join."""
+    """An item's or heading's text with the period it needs so TTS stops at its
+    end - added HERE, when the block becomes a chunk, and not at extraction, so
+    that `join_provisional_fragments` can still see a bullet a page break cut in
+    two. Table rows get theirs at extraction (they are never fragments); a label
+    line got its own in the join.
+
+    A HEADING is belt and braces: the EPUB walk already closes one (see
+    `extract_blocks`, guarded by `ends_a_thought` so it never doubles), and this
+    guard is the same one, so passing through both is idempotent. It matters
+    from 2026-09-09, when a heading started merging FORWARD into the prose
+    behind it - an unclosed heading would run into that first sentence and be
+    spoken as one clause. A heading arriving from any other producer gets its
+    period here.
+    """
     text = block.text.strip()
-    if block.kind == ITEM and text and not ends_a_thought(text):
+    if block.kind in (ITEM, HEADING) and text and not ends_a_thought(text):
         return text + '.'
     return text
 
@@ -763,24 +772,26 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     pure function should not go looking for a file.
 
     THE MERGE RULE, exactly. Walking the paragraph run left to right, a group
-    accepts the next paragraph only when ALL THREE hold:
+    accepts the next block only when BOTH hold:
 
-      1. the incoming paragraph is itself SHORT (under `floor_chars`) - only
-         short paragraphs travel, so a full-size thought is never swallowed into
-         a run of dialogue turns in front of it;
-      2. the group is still under `floor_chars` - the floor is what merging is
+      1. the group is still under `floor_chars` - the floor is what merging is
          FOR, not a target to overshoot;
-      3. the result stays within the budget cap.
+      2. the result stays within the budget cap.
 
-    So a 400-char paragraph stands alone; three 80-char dialogue turns become one
-    240-char chunk and then accept a fourth to cross 300; and a run that ends
-    before the floor is reached is emitted short, because inventing a neighbour
-    is not an option.
+    So three 80-char dialogue turns become one 240-char chunk and then accept
+    whatever comes next to cross the floor, full-size paragraph included; and a
+    run that ends before the floor is reached - or that would have to break the
+    cap to get there - is emitted short, because inventing a neighbour is not an
+    option. A third clause requiring the INCOMING block to be short as well was
+    dropped on 2026-09-09; `flush` carries why.
 
-    THE WALLS: every kind in `walls` flushes the run in progress. A heading or an
-    item then becomes a chunk of its own carrying its marker; a scene break or a
-    chapter start speaks nothing and emits no chunk - it exists to stop the merge
-    reaching across it.
+    THE WALLS: every kind in `walls` flushes the run in progress. An item or a
+    table row then becomes a chunk of its own carrying its marker; a scene break
+    or a chapter start speaks nothing and emits no chunk - it exists to stop the
+    merge reaching across it. A HEADING walls BACKWARD only: it flushes what came
+    before, then leads the next group, so the prose behind it merges in and a
+    heading is no longer shipped as a chunk far under the floor. Alone - at the
+    end of a document, or against another wall - it is still its own chunk.
 
     OVER-BUDGET PARAGRAPHS are split at sentence boundaries and NEVER mid-
     sentence. A single sentence longer than the cap is emitted whole and counted
@@ -811,12 +822,37 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     run: list = []
 
     def emit_prose(group: list) -> None:
-        """One group of merged paragraphs -> one or more chunks."""
+        """One group of merged paragraphs -> one or more chunks.
+
+        A HEADING may LEAD the group (2026-09-09): it walls the run behind it
+        but not the run in front, so the prose that follows merges into it. Its
+        `[heading]` marker stays FIRST in the chunk text, ahead of the words it
+        colours, exactly where the standalone path put it.
+
+        THE KIND IS THE LOAD-BEARING PART. `kind == 'heading'` is what
+        `assemble/sentence_vtt.py` reads to wrap a cue in `<b>`, and it applies
+        the flag to EVERY sentence cue it splits the chunk into - so a merged
+        chunk marked 'heading' would bold a whole paragraph of subtitles. A
+        heading-only chunk keeps 'heading'; the moment prose joins it the chunk
+        is 'prose'. The marker stays in the text either way, so the TTS prosody
+        cue survives; what is given up is the subtitle bolding of the heading's
+        own words, and that is the cheaper half of the trade.
+        """
+        head = (group[0] if (group and HEADING in walls
+                             and group[0].kind == HEADING) else None)
+        marker = _marker_for(HEADING) if head is not None else ''
         text = ' '.join(b.text.strip() for b in group if b.text.strip())
         if not text:
             return
         indices = tuple(b.index for b in group)
         lead = sml_token('break') if lead_break else ''
+        if head is not None and len(group) == 1:
+            # Alone: the standalone wall chunk, unchanged - never sentence-split,
+            # because a heading over the cap was always emitted whole.
+            report.chunks.append(Chunk(text=f'{lead}{marker}{text}',
+                                       kind=_chunk_kind(HEADING),
+                                       blocks=indices))
+            return
         # Every join past the first drops the boundary token that would have sat
         # between the two paragraphs - counted, never carried, because a token in
         # the middle of a row is stripped before TTS anyway.
@@ -826,7 +862,7 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         report.dropped_join_tokens += dropped
 
         if len(spoken(text)) <= cap:
-            report.chunks.append(Chunk(text=f'{lead}{text}', kind='prose',
+            report.chunks.append(Chunk(text=f'{lead}{marker}{text}', kind='prose',
                                        blocks=indices,
                                        dropped_join_tokens=dropped))
             return
@@ -848,7 +884,8 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                       f'this policy never splits mid-sentence: '
                       f'{spoken(part)[:80]!r}...')
             report.chunks.append(Chunk(
-                text=f'{lead if n == 0 else ""}{part}', kind='prose',
+                text=f'{lead if n == 0 else ""}{marker if n == 0 else ""}{part}',
+                kind='prose',
                 blocks=indices, sentence_split=True,
                 dropped_join_tokens=dropped if n == 0 else 0))
 
@@ -858,19 +895,37 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
             return
         group: list = []
         for block in run:
-            block_len = len(spoken(block.text))
             if not group:
                 group = [block]
                 continue
-            # ONLY SHORT PARAGRAPHS TRAVEL. A paragraph that already reaches the
-            # floor on its own is a complete thought of full size: it neither
-            # joins a run in front of it nor accepts one behind it. Without this
-            # a 400-char paragraph following three dialogue turns was swallowed
-            # into their chunk, which is the opposite of the rule.
+            # A SHORT GROUP KEEPS ABSORBING THE NEXT BLOCK IN LINE until it
+            # reaches the floor. Reversed on 2026-09-09 (Owen): the rule used to
+            # carry a third clause, `block_len < floor_chars` - ONLY SHORT
+            # PARAGRAPHS TRAVEL - so a group under the floor refused a full-size
+            # neighbour and shipped short.
+            #
+            # What changed underneath it is that "short" stopped being a
+            # stylistic preference and became a MEASURED property. The floor is
+            # now the bottom of a Higgs voice's safe band (`safeMinChars` in
+            # electron/data/higgs-models.json), the interquartile range of the
+            # voice's training corpus, and the model's early-stop rate is
+            # U-shaped in chunk length: a chunk below the floor truncates as
+            # badly as one above the cap. Measured on an 89-chunk thirdreich
+            # render, 82 prose chunks shipped below the floor under the old
+            # rule. Swallowing a full paragraph into a short group is the lesser
+            # evil against handing the model a chunk it early-stops on.
+            #
+            # THE COST, kept here because it is real and was once a bug: a
+            # 400-char paragraph following three dialogue turns is now part of
+            # their chunk. That grouping is accepted deliberately, not by
+            # oversight.
+            #
+            # The cap is untouched - it is the truncation ceiling on the other
+            # side, and a group that cannot reach the floor without breaking it
+            # is emitted short, which is unavoidable rather than wrong.
             group_len = len(spoken(' '.join(b.text for b in group)))
             merged_len = len(spoken(' '.join(b.text for b in group + [block])))
-            if (block_len < floor_chars and group_len < floor_chars
-                    and merged_len <= cap):
+            if group_len < floor_chars and merged_len <= cap:
                 group.append(block)
                 continue
             emit_prose(group)
@@ -882,7 +937,21 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     for block in blocks:
         if block.kind in walls:
             flush()
-            if block.kind in (HEADING, ITEM, TABLE) and block.text.strip():
+            if block.kind == HEADING and block.text.strip():
+                # A HEADING WALLS BACKWARD ONLY (2026-09-09). The flush above is
+                # the wall: nothing before it reaches across. But a heading is
+                # always far under the floor, so emitting it alone was the most
+                # reliable way this packer produced a truncation-prone chunk -
+                # so it becomes the START of the next group instead, and the
+                # prose behind it merges in under the ordinary floor rule.
+                # `_closed_block_text` is applied HERE so the period travels with
+                # the text into that merge; `emit_prose` puts the marker back on
+                # the front and decides the kind. ITEM and TABLE are unchanged:
+                # a list item is a complete separate thought, which is the whole
+                # reason it is a wall.
+                run.append(replace(block, text=_closed_block_text(block)))
+                continue
+            if block.kind in (ITEM, TABLE) and block.text.strip():
                 marker = _marker_for(block.kind)
                 lead = sml_token('break') if lead_break else ''
                 report.chunks.append(Chunk(

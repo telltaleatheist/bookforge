@@ -671,7 +671,25 @@ class HiggsEngineTest(_PrepDoorTest):
             self.assertEqual(gaps[str(index)]['before'], before, chunk[:60])
             self.assertEqual(gaps[str(index)]['after'], after, chunk[:60])
         self.assertGreater(kinds['heading'], 0, 'the fixture book has no heading')
-        self.assertGreater(kinds['prose'], 0)
+        # THE PROSE-ONLY CHUNK LEFT THIS FIXTURE ON 2026-09-09, and the assertion
+        # `assertGreater(kinds['prose'], 0)` went with it. Every document in
+        # `build_epub` is one <h1> plus one <p>, and a heading now merges FORWARD
+        # into the prose behind it (paragraph_packer, "A HEADING WALLS BACKWARD
+        # ONLY"), so every chunk this book produces carries a heading marker and
+        # none is bare prose. That is the packer working, not the gap file
+        # failing: the per-chunk loop above still asserts the classifier's answer
+        # for all of them, heading-led ones included.
+        #
+        # The prose BRANCH is still covered, directly rather than through the
+        # fixture, so this test keeps its name. It also pins the thing the module
+        # docstring warns is surprising: at 9daab0ba a heading and bare prose
+        # classify THE SAME, so the merge cannot have moved a chunk's gaps.
+        self.assertEqual(classify_gap_seconds('A bare sentence of prose.'),
+                         classify_gap_seconds('[break][heading]A heading.'),
+                         'heading and prose no longer classify alike - the '
+                         'per-kind tiers removed on 2026-07-17 are back, and a '
+                         'heading-led chunk now carries a different gap from the '
+                         'prose it merged with')
 
     def test_an_orpheus_prep_writes_NO_gap_file(self):
         """Orpheus bakes its silence into each FLAC, so a gap file would be a
