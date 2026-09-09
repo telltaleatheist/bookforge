@@ -773,9 +773,18 @@ async function runVerify(args) {
 // An unresolvable root REFUSES BY NAME rather than silently doing nothing.
 // ===========================================================================
 
-const TRAINING_ROOT_DEFAULT = 'C:/Users/tellt/Projects/orpheus-finetune';
-const TRAINING_PYTHON_DEFAULT =
-  'C:/Users/tellt/AppData/Roaming/BookForge/components/whisperx-env/python.exe';
+// PLATFORM-AWARE DEFAULTS. This same file runs on BOTH sides, deliberately (Owen, 2026-09-09:
+// "we could move clipforge code to wsl"). Nothing needs moving: the CLIP tools need the
+// WINDOWS BookForge components (whisperx-env, ffmpeg via tool-paths) while the GPU stack lives
+// in WSL (higgs3, qwen-align, sgl-omni), so the pipeline genuinely spans two OSes. Verified
+// 2026-09-09: this file loads and runs under WSL node v18.
+const IS_LINUX = process.platform === 'linux';
+const TRAINING_ROOT_DEFAULT = IS_LINUX
+  ? '/mnt/c/Users/tellt/Projects/orpheus-finetune'
+  : 'C:/Users/tellt/Projects/orpheus-finetune';
+const TRAINING_PYTHON_DEFAULT = IS_LINUX
+  ? '/home/telltale/anaconda3/envs/whisperx/bin/python'
+  : 'C:/Users/tellt/AppData/Roaming/BookForge/components/whisperx-env/python.exe';
 
 function resolveTrainingRoot(args) {
   const root = args['training-root'] || process.env.CLIPFORGE_TRAINING_ROOT || TRAINING_ROOT_DEFAULT;
@@ -949,8 +958,9 @@ async function runMergeTiers(args) {
 
 // --- Campaign scripts (mix, train) live outside the repo, under E:\training\_campaigns.
 // Named, never guessed: --campaign-root | CLIPFORGE_CAMPAIGN_ROOT | the default.
-const CAMPAIGN_ROOT_DEFAULT =
-  'E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs';
+const CAMPAIGN_ROOT_DEFAULT = IS_LINUX
+  ? '/mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs'
+  : 'E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs';
 const GPU_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/higgs3/bin/python';
 
 function resolveCampaignRoot(args) {
@@ -962,6 +972,24 @@ function resolveCampaignRoot(args) {
       '  Name it with --campaign-root <dir> or CLIPFORGE_CAMPAIGN_ROOT.');
   }
   return abs;
+}
+
+/**
+ * The GPU verbs run INSIDE WSL. Called from Windows node, path.resolve() rewrites a POSIX
+ * path into a Git-Bash path and the spawn ENOENTs - measured 2026-09-09 on mix. Refuse BY
+ * NAME with the command to run, rather than hand the guest a path it cannot open (the same
+ * choice BookForge made for the qwen aligner door).
+ */
+function requireGuestSide(verb) {
+  if (IS_LINUX) return;
+  console.log([
+    verb + ': this is a WSL GPU job and must run inside the guest.',
+    '  From Windows, path.resolve() rewrites /mnt/e/... into a Git-Bash path and the spawn fails.',
+    '  Run it there instead:',
+    '    wsl -e node /mnt/c/Users/tellt/Projects/bookforge/cli/clipforge-process.js ' + verb + ' ...',
+    '  (slice, gate and merge-tiers are Windows-side and work from here.)',
+  ].join('\n'));
+  throw new Error(verb + ': refusing to run a guest-side job from Windows');
 }
 
 function refuseNonHiggs(args, verb) {
@@ -997,6 +1025,7 @@ TRAINING_HELP.mix = [
 
 async function runMix(args) {
   if (args.help) { console.log(TRAINING_HELP.mix); return; }
+  requireGuestSide('mix');
   refuseNonHiggs(args, 'mix');
   for (const k of ['out', 'build-root', 'long', 'short']) {
     if (!args[k]) throw new Error('mix: --' + k + ' is required (see: clipforge mix --help)');
@@ -1038,6 +1067,7 @@ TRAINING_HELP.train = [
 
 async function runTrain(args) {
   if (args.help) { console.log(TRAINING_HELP.train); return; }
+  requireGuestSide('train');
   refuseNonHiggs(args, 'train');
   for (const k of ['data', 'out']) {
     if (!args[k]) throw new Error('train: --' + k + ' is required (see: clipforge train --help)');
@@ -1124,6 +1154,7 @@ const QWEN_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/qwen-align/bin/python
 
 async function runAlign(args) {
   if (args.help) { console.log(TRAINING_HELP.align); return; }
+  requireGuestSide('align');
   for (const k of ['adobe-dir', 'book']) {
     if (!args[k]) throw new Error('align: --' + k + ' is required (see: clipforge align --help)');
   }
