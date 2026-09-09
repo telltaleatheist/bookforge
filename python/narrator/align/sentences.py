@@ -286,7 +286,10 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
             start_s=chunk_start_s + start,
             end_s=chunk_start_s + end,
             text=sentence,
-            is_heading=is_heading,
+            # ONLY THE FIRST SENTENCE IS THE HEADING — the same rule and the same
+            # reason as `assemble/sentence_vtt.proportional_cues`, which the gate
+            # compares against position by position, so the two must agree.
+            is_heading=is_heading and position == 0,
             quality=_cue_quality(alignment, words, start, end, sentence,
                                  monotonic),
         ))

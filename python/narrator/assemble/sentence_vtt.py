@@ -163,7 +163,16 @@ def proportional_cues(*, chunk_index: int, chunk_start_s: float,
             start_s=chunk_start_s + start,
             end_s=chunk_start_s + end,
             text=sentence,
-            is_heading=is_heading,
+            # THE HEADING IS THE FIRST SENTENCE, NOT THE WHOLE CHUNK (2026-09-09).
+            # `chunk.kind` is derived from the chunk's leading `[heading]` marker
+            # (`render/session_v1.chunk_kind`), and until a heading merged forward
+            # into the prose behind it that marker meant "this chunk IS a heading".
+            # It now means "this chunk STARTS with one", so passing the flag to
+            # every cue bolded whole paragraphs — measured on the witches VTT: 310
+            # of 2,660 cues bold, entire runs of body text under Dedication,
+            # Preface and Introduction. The chunk stays kind 'heading' because
+            # that is what places the chapter marker; only the bolding narrows.
+            is_heading=is_heading and position == 0,
             estimated=True,
         ))
     return tuple(cues)
