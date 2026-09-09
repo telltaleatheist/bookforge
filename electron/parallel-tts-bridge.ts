@@ -72,9 +72,9 @@ function initWorkerLog(libraryPath: string): void {
 }
 
 /**
- * Per-job directory where Orpheus keeps the renders its guards threw away
- * (→ ORPHEUS_REJECT_DIR). One directory per job so the evidence carries the
- * identity of the run that produced it.
+ * Per-job directory where an engine's guards keep the renders they threw away
+ * (→ ORPHEUS_REJECT_DIR / HIGGS_REJECT_DIR). One directory per job so the
+ * evidence carries the identity of the run that produced it.
  *
  * It sits beside the worker log rather than in the project for one measured
  * reason: on Windows the worker runs inside WSL, and a library on a network
@@ -85,7 +85,7 @@ function initWorkerLog(libraryPath: string): void {
  *
  * Unlike worker-output.log, which is truncated on every start, these persist.
  */
-function orpheusRejectDir(jobId: string): string | null {
+function guardRejectDir(jobId: string): string | null {
   if (!workerLogsDir) return null;
   const dir = path.join(workerLogsDir, 'tts-rejects', jobId);
   try {
@@ -4183,7 +4183,15 @@ function startWorker(
   // on. Translating it here as well was harmless (the translation is idempotent)
   // but it was the pattern that let the argv guard's bug hide: two translations,
   // one correct, and a log that looked right either way.
-  const rejectDir = settings.ttsEngine === 'orpheus' ? orpheusRejectDir(session.jobId) : null;
+  // BOTH ENGINES KEEP THEM SINCE 2026-09-08. Owen, looking at a screen of Higgs
+  // guard fires on Shift: "we should probably whisper them and see what was
+  // missing. how much was missing, where it stopped, etc. and pass it to the
+  // training agent" - which is impossible while the re-roll overwrites the bad
+  // take. One directory per job for either engine; the NAME differs because each
+  // engine's guard reads its own (ORPHEUS_REJECT_DIR in orpheus/guards.py,
+  // HIGGS_REJECT_DIR in higgs/truncation.py), and one env var read by two
+  // engines would be a shared name nobody owns.
+  const rejectDir = guardRejectDir(session.jobId);
   // ── ONE SPAWN, for every engine ─────────────────────────────────────
   //
   // The Higgs branch that stood here built a SECOND command line, sliced the e2a
@@ -4249,7 +4257,14 @@ function startWorker(
       // Keep guard rejects for this job somewhere durable and identifiable. Without
       // this e2a falls back to its own tmp, where the evidence is anonymous (keyed
       // by session uuid) and shares the lifetime of a scratch directory.
-      ...(rejectDir ? { ORPHEUS_REJECT_DIR: rejectDir } : {}),
+      ...(rejectDir && settings.ttsEngine === 'orpheus'
+        ? { ORPHEUS_REJECT_DIR: rejectDir } : {}),
+      // The same directory, under the name the Higgs guard reads. Its value is a
+      // Windows path here and buildNarratorSpawn translates every env value into
+      // the guest, so the WSL worker writes it through /mnt/c - a local drive,
+      // which the guest can see (the library on Z: could not).
+      ...(rejectDir && isHiggsJob(settings)
+        ? { HIGGS_REJECT_DIR: rejectDir } : {}),
       // VRAM-sized gpu_memory_utilization for Orpheus (see acquireGpuForJob). Must be
       // set here so buildWslBashCommand can export it INTO the WSL worker — without
       // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.

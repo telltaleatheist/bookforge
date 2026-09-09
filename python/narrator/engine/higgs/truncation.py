@@ -122,6 +122,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import statistics
 import threading
 from dataclasses import dataclass, asdict
@@ -343,6 +344,63 @@ def join_parts(parts: List[np.ndarray], sample_rate: int) -> np.ndarray:
     return np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
 
 
+#: Where a take the guard threw away is kept, set per job by
+#: `parallel-tts-bridge.ts` beside `ORPHEUS_REJECT_DIR` (the same directory: one
+#: place to look for either engine's evidence). UNSET = keep nothing, which is
+#: what a CLI render or a test does.
+REJECT_DIR_ENV = 'HIGGS_REJECT_DIR'
+
+#: `events.jsonl` is one shared append-only file and the served arm renders a
+#: batch on a pool.
+_reject_lock = threading.Lock()
+
+
+def keep_reject(audio, sample_rate: int, record: dict, text: str) -> None:
+    """Preserve a take the guard threw away, and WHY.
+
+    Without this a truncation is only ever a log line: the re-roll overwrites the
+    bad audio, so nothing can say WHERE it cut or WHAT it said instead - and
+    those are the two facts a fine-tune needs. Owen, 2026-09-08, looking at a
+    screen of guard fires on Shift: "we should probably whisper them and see what
+    was missing. how much was missing, where it stopped, etc. and pass it to the
+    training agent." Orpheus has kept its rejects since 2026-07-28 for the same
+    reason (`engine/orpheus/guards.py::_keep_reject`); this is that, for Higgs.
+
+    Writes `<index>_d<depth>_<rung>_<side>.wav` + `.json` and appends the record
+    to `events.jsonl`, so a post-mortem is one read rather than a directory walk.
+    THE TEXT IS IN THE RECORD: the transcript diff is the whole point, and the
+    session that produced the chunk may be gone by the time anyone looks.
+
+    BEST-EFFORT BY DESIGN, and the one place in this module that swallows: this
+    is diagnostics, not product, and losing a post-mortem must never take down a
+    book. The failure is logged by name.
+    """
+    directory = os.environ.get(REJECT_DIR_ENV, '').strip()
+    if not directory:
+        return
+    try:
+        import json as _json
+        import soundfile as sf
+        with _reject_lock:
+            os.makedirs(directory, exist_ok=True)
+            stem = os.path.join(
+                directory,
+                f"{int(record.get('index', 0)):06d}_d{int(record.get('depth', 0))}"
+                f"_{record.get('rung', 'take')}_{record.get('side', 'off')}")
+            if audio is not None and len(audio) > 0:
+                sf.write(stem + '.wav', np.asarray(audio, dtype=np.float32),
+                         int(sample_rate), subtype='PCM_16', format='WAV')
+            full = {**record, 'text': text, 'sample_rate': int(sample_rate)}
+            with open(stem + '.json', 'w', encoding='utf-8') as handle:
+                _json.dump(full, handle, indent=1, ensure_ascii=False)
+            with open(os.path.join(directory, 'events.jsonl'), 'a',
+                      encoding='utf-8') as handle:
+                handle.write(_json.dumps(full, ensure_ascii=False) + '\n')
+    except Exception as err:      # noqa: BLE001 - diagnostics never take a book down
+        log(f'[HIGGS3] could not keep the rejected take for chunk '
+            f"{record.get('index')} ({err})", flush=True)
+
+
 def emit_event(record: dict) -> None:
     """One human line and one parseable line per guard fire."""
     log(f"[HIGGS3] length guard: chunk {record.get('index')} {record.get('action')} - "
@@ -466,6 +524,11 @@ class _LadderTask:
                                             else 'recorded')
             # Rung 1: the re-roll, at a seed the first take did not use.
             self.plan.on_event({**self.base, 'action': verdict.side, 'rung': 'reroll'})
+            # THE DISCARDED TAKE IS THE EVIDENCE. Kept when the run names a
+            # directory to keep it in; a no-op otherwise. See `keep_reject`.
+            keep_reject(audio, self.plan.sample_rate,
+                        {**self.base, 'action': verdict.side, 'rung': 'take0'},
+                        self.text)
             self.stage = 'reroll'
             return
 
@@ -476,6 +539,11 @@ class _LadderTask:
             self._finish(audio, True)
             return
         self.takes.append((audio, verdict))
+        keep_reject(audio, self.plan.sample_rate,
+                    {**self.base, 'action': verdict.side, 'rung': 'reroll',
+                     'seconds_after': verdict.seconds,
+                     'chars_per_second_after': verdict.chars_per_second},
+                    self.text)
 
         # Rung 2: the split, each half through this same ladder.
         parts = split_halves(self.text) if self.depth < MAX_DEPTH else []

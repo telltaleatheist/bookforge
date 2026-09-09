@@ -4,6 +4,7 @@ Measured case (Fuhrer, PC/SGLang, 2026-09-06): chunk 19, 1,127 chars, 3.0 s of
 audio - a mid-chunk early stop that reproduces at its seed. The ladder must
 re-roll at ANOTHER seed, then split at a sentence boundary, and never refuse.
 """
+import json
 import os
 import sys
 import unittest
@@ -461,6 +462,83 @@ class GuardPlanTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             plan.offer(truncation.RenderRequest((9,), 9, TEXT, None, 'take', 0),
                        audio_for(len(TEXT)))
+
+
+class RejectKeepingTest(unittest.TestCase):
+    """The take the guard threw away is KEPT when the run names a directory.
+
+    Owen, 2026-09-08: "we should probably whisper them and see what was missing.
+    how much was missing, where it stopped, etc." - which needs the audio, and
+    the re-roll overwrites it.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix='higgs-rejects-')
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.dir, ignore_errors=True))
+        self._env = os.environ.get(truncation.REJECT_DIR_ENV)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._env is None:
+            os.environ.pop(truncation.REJECT_DIR_ENV, None)
+        else:
+            os.environ[truncation.REJECT_DIR_ENV] = self._env
+
+    def test_a_discarded_take_lands_as_wav_json_and_one_event_line(self):
+        os.environ[truncation.REJECT_DIR_ENV] = self.dir
+        # Take 0 stops early, the re-roll is fine: exactly one take is thrown away.
+        render = FakeRender(lambda t, s, n: s is None)
+        truncation.render_guarded(render, TEXT, 19, sample_rate=RATE,
+                                  max_chars_per_sec=20.0, min_chars_per_sec=14.5,
+                                  base_seed=1234, on_event=lambda e: None)
+        names = sorted(os.listdir(self.dir))
+        self.assertEqual(names, ['000019_d0_take0_short.json', '000019_d0_take0_short.wav',
+                                 'events.jsonl'])
+        with open(os.path.join(self.dir, '000019_d0_take0_short.json'), encoding='utf-8') as handle:
+            record = json.load(handle)
+        self.assertEqual(record['index'], 19)
+        self.assertEqual(record['side'], 'short')
+        self.assertEqual(record['text'], TEXT, 'the diff needs the text, and the session may be gone')
+        self.assertEqual(record['chars'], len(TEXT))
+        self.assertEqual(record['sample_rate'], RATE)
+        with open(os.path.join(self.dir, 'events.jsonl'), encoding='utf-8') as handle:
+            self.assertEqual(len(handle.read().strip().splitlines()), 1)
+        import soundfile as sf
+        audio, rate = sf.read(os.path.join(self.dir, '000019_d0_take0_short.wav'))
+        self.assertEqual(rate, RATE)
+        self.assertEqual(len(audio), len(audio_for(50)), 'the take as it was, not the re-roll')
+
+    def test_both_thrown_away_takes_are_kept_when_the_chunk_is_split(self):
+        os.environ[truncation.REJECT_DIR_ENV] = self.dir
+        render = FakeRender(lambda t, s, n: t == TEXT)   # whole text always stops early
+        truncation.render_guarded(render, TEXT, 7, sample_rate=RATE,
+                                  max_chars_per_sec=20.0, min_chars_per_sec=14.5,
+                                  base_seed=1234, on_event=lambda e: None)
+        stems = sorted(n for n in os.listdir(self.dir) if n.endswith('.wav'))
+        self.assertEqual(stems, ['000007_d0_reroll_short.wav', '000007_d0_take0_short.wav'],
+                         'take 0 AND the re-roll, each named by its rung')
+
+    def test_no_directory_named_keeps_nothing_and_renders_the_same(self):
+        os.environ.pop(truncation.REJECT_DIR_ENV, None)
+        render = FakeRender(lambda t, s, n: s is None)
+        out = truncation.render_guarded(render, TEXT, 19, sample_rate=RATE,
+                                        max_chars_per_sec=20.0, min_chars_per_sec=14.5,
+                                        base_seed=1234, on_event=lambda e: None)
+        self.assertEqual(len(out), len(audio_for(len(TEXT))))
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_an_unwritable_directory_is_logged_and_never_raises(self):
+        # Diagnostics must never take a book down: the reject dir is a path from
+        # the environment and the render has no say in whether it is writable.
+        os.environ[truncation.REJECT_DIR_ENV] = os.path.join(self.dir, 'nul-file', 'deeper')
+        with open(os.path.join(self.dir, 'nul-file'), 'w', encoding='utf-8') as handle:
+            handle.write('not a directory')
+        render = FakeRender(lambda t, s, n: s is None)
+        out = truncation.render_guarded(render, TEXT, 19, sample_rate=RATE,
+                                        max_chars_per_sec=20.0, min_chars_per_sec=14.5,
+                                        base_seed=1234, on_event=lambda e: None)
+        self.assertEqual(len(out), len(audio_for(len(TEXT))), 'the re-roll still shipped')
 
 
 if __name__ == '__main__':
