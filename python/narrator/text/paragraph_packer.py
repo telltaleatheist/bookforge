@@ -20,7 +20,9 @@ quarter of the time and LONGER than any Orpheus cap about one time in a hundred.
 **Tier 1 - EPUB paragraphs are authoritative.** A chunk ends ONLY at a paragraph
 end. Consecutive SHORT PROSE paragraphs (dialogue turns) travel together up to a
 floor of ~300 characters, so a one-line chunk is not rendered as a cold start.
-Scene breaks, chapter starts, headings and list items are HARD WALLS.
+Scene breaks, chapter starts and table rows are HARD WALLS; a heading walls
+BACKWARD only and a list item is not a wall at all - both 2026-09-09, and both
+are the section below.
 
 **Tier 2 - PDF-derived blocks are PROVISIONAL.** A block that does not end in
 terminal punctuation is a fragment - a page break, a column break, a running
@@ -31,19 +33,41 @@ provenance is unknown is REFUSED rather than guessed.
 
 ## What is a wall, and what the floor is NOT for
 
-Owen, same day: *short blocks that are complete, separate thoughts are not
-merged.* A list item is the example - each `[item]` is read on its own and is
-never joined to its neighbours for context, which is the 2026-08-29 item rule and
-it stands. So:
+Owen, 2026-08-29: *short blocks that are complete, separate thoughts are not
+merged.* The list item was the example - each `[item]` read on its own, a wall,
+never joined to its neighbours for context. THAT RULE WAS REVERSED ON
+2026-09-09, by the same person and for a measured reason.
 
-  - a HEADING is its own chunk and a wall, carrying `[heading]` as today;
-  - a LIST ITEM is its own chunk and a wall, carrying `[item]` as today;
+A Higgs voice has a SAFE BAND - `safeMinChars`/`safeMaxChars` per arm in
+`electron/data/higgs-models.json`, the interquartile range of the voice's
+training corpus - and the model's early-stop rate is U-shaped in it: a chunk
+BELOW the floor truncates as badly as one above the cap. Measured on witches
+(583 chunks, floor 600 / cap 800): 372 chunks land below the floor and 150 of
+them are LIST ITEMS emitted alone at 30-60 characters, which is the single
+largest cause - larger than the 125 the cap blocks. An item is still a complete
+thought and Owen still says so; what changed the answer is that a CLOSING PERIOD
+is what lets a complete thought sit beside another one in a chunk and still be
+read as its own sentence: *"list items ... should get periods and be treated
+like a sentence in a chunk"*. It is the same reasoning that let a HEADING merge
+forward on the same day. So:
+
+  - a HEADING walls BACKWARD only: it flushes the run behind it, then LEADS the
+    next group carrying `[heading]`, so the prose in front merges into it
+    (2026-09-09; `emit_prose` and "A HEADING WALLS BACKWARD ONLY");
+  - a LIST ITEM is not a wall: it enters the run with the closing period
+    `_closed_block_text` gives it and merges with the items and the prose around
+    it, as one sentence of an ordinary prose chunk carrying NO marker
+    (2026-09-09);
   - a TABLE ROW is its own chunk and a wall, carrying `[item]` (2026-09-05,
-    `docs/NARRATOR_PLAN.md` "Higgs v3 path design points" point 2). See
-    "Table-like fragments" below for what one is and why it borrows `[item]`;
+    `docs/NARRATOR_PLAN.md` "Higgs v3 path design points" point 2). It did not
+    move with the item: a row is a RECORD `table_rows` builds out of
+    `header: cell` pairs, not a sentence, so packing rows into prose is the
+    exact weld point 2 forbids. See "Table-like fragments" below for what one is
+    and why it borrows `[item]`;
   - a SCENE BREAK and a CHAPTER START are walls that speak nothing;
-  - the ~300-char floor applies ONLY to consecutive short PROSE/dialogue
-    paragraphs, and to the fragments tier 2 has already joined.
+  - the floor applies to consecutive short PROSE/dialogue paragraphs, to the
+    list items now travelling among them, and to the fragments tier 2 has
+    already joined.
 
 ## Table-like fragments (2026-09-05)
 
@@ -93,7 +117,9 @@ engine prompt strips them through `SML_UNSPOKEN_PATTERN`, `vtt_cue_text` writes 
 `[heading]` cue bold, and `manifest.py` classifies a chunk by the same test. A
 merge drops the join's tokens and counts them - the same ratified trade-off the
 parity packer makes, for the same reason (a token buried mid-row is stripped
-before TTS and its pause is lost either way).
+before TTS and its pause is lost either way). From 2026-09-09 a LIST ITEM that
+merges takes that same trade-off up front and carries no `[item]` at all; the
+tag is still emitted for a TABLE ROW, which is still a row of its own.
 
 ## The Budget seam
 
@@ -140,8 +166,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 # Blocks
 # =============================================================================
 
-#: The six kinds a source block can have. `paragraph` is the only one the floor
-#: may merge; the other five are walls.
+#: The six kinds a source block can have. `paragraph` and `item` are the two the
+#: floor may merge (see `DEFAULT_WALLS`); the other four are walls.
 PARAGRAPH = 'paragraph'
 HEADING = 'heading'
 ITEM = 'item'
@@ -153,7 +179,12 @@ BLOCK_KINDS = (PARAGRAPH, HEADING, ITEM, TABLE, SCENE_BREAK, CHAPTER_START)
 
 #: Everything that is not a prose paragraph is a wall. Passed in rather than
 #: hard-coded so a caller can narrow it (and so a test can prove each one).
-DEFAULT_WALLS = frozenset({HEADING, ITEM, TABLE, SCENE_BREAK, CHAPTER_START})
+#:
+#: ITEM LEFT THIS SET ON 2026-09-09 (Owen). It is a sentence that merges, not a
+#: wall - 150 of the 372 sub-floor chunks in witches were list items emitted
+#: alone; see the module docstring's wall section for the whole measurement.
+#: TABLE DID NOT MOVE WITH IT: a row is a record, not a sentence.
+DEFAULT_WALLS = frozenset({HEADING, TABLE, SCENE_BREAK, CHAPTER_START})
 
 #: Consecutive short PROSE paragraphs travel together up to this many characters.
 #: Not a minimum chunk length: a paragraph that is already this long stands
@@ -739,17 +770,24 @@ def _chunk_kind(kind: str) -> str:
 
 def _closed_block_text(block: Block) -> str:
     """An item's or heading's text with the period it needs so TTS stops at its
-    end - added HERE, when the block becomes a chunk, and not at extraction, so
+    end - added HERE, when the block enters the pack, and not at extraction, so
     that `join_provisional_fragments` can still see a bullet a page break cut in
     two. Table rows get theirs at extraction (they are never fragments); a label
     line got its own in the join.
 
-    A HEADING is belt and braces: the EPUB walk already closes one (see
-    `extract_blocks`, guarded by `ends_a_thought` so it never doubles), and this
-    guard is the same one, so passing through both is idempotent. It matters
-    from 2026-09-09, when a heading started merging FORWARD into the prose
-    behind it - an unclosed heading would run into that first sentence and be
-    spoken as one clause. A heading arriving from any other producer gets its
+    IDEMPOTENT BY `ends_a_thought`, not by "the last character is a full stop":
+    an item that already ends in '.', '?' or '!' - behind a closing quote or
+    bracket included - gets no second period. Measured 2026-09-05 (witches): a
+    doubled period made whisperx split the trailing ")." into a word of its own
+    and the aligner refused eight chunks on a 22-vs-21 word count.
+
+    Both callers are in `pack_paragraphs`'s block loop, and both are the same
+    2026-09-09 change: a HEADING now leads the group in front of it and an ITEM
+    now travels inside one, so in both cases the period must reach the MERGED
+    text or the block runs into the sentence behind it and is spoken as one
+    clause. A heading is belt and braces on top of that - the EPUB walk already
+    closes one (see `extract_blocks`, under the same guard), so passing through
+    both changes nothing; a heading arriving from any other producer gets its
     period here.
     """
     text = block.text.strip()
@@ -785,13 +823,19 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     option. A third clause requiring the INCOMING block to be short as well was
     dropped on 2026-09-09; `flush` carries why.
 
-    THE WALLS: every kind in `walls` flushes the run in progress. An item or a
-    table row then becomes a chunk of its own carrying its marker; a scene break
+    THE WALLS: every kind in `walls` flushes the run in progress. A table row
+    then becomes a chunk of its own carrying its `[item]` marker; a scene break
     or a chapter start speaks nothing and emits no chunk - it exists to stop the
     merge reaching across it. A HEADING walls BACKWARD only: it flushes what came
     before, then leads the next group, so the prose behind it merges in and a
     heading is no longer shipped as a chunk far under the floor. Alone - at the
     end of a document, or against another wall - it is still its own chunk.
+
+    A LIST ITEM IS NOT A WALL (2026-09-09, Owen): it joins the run like a
+    paragraph, closed with a period so it still reads as its own sentence, and
+    a run of bullets becomes one chunk of that many sentences. `DEFAULT_WALLS`
+    carries the measurement. A caller that passes ITEM in `walls` anyway gets
+    the old behaviour, marker and all.
 
     OVER-BUDGET PARAGRAPHS are split at sentence boundaries and NEVER mid-
     sentence. A single sentence longer than the cap is emitted whole and counted
@@ -946,17 +990,39 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                 # prose behind it merges in under the ordinary floor rule.
                 # `_closed_block_text` is applied HERE so the period travels with
                 # the text into that merge; `emit_prose` puts the marker back on
-                # the front and decides the kind. ITEM and TABLE are unchanged:
-                # a list item is a complete separate thought, which is the whole
-                # reason it is a wall.
+                # the front and decides the kind.
                 run.append(replace(block, text=_closed_block_text(block)))
                 continue
+            # ITEM reaches this branch only when a caller has explicitly named
+            # it a wall; by default (2026-09-09) it never gets here at all and
+            # is handled below, with the paragraphs. TABLE always does.
             if block.kind in (ITEM, TABLE) and block.text.strip():
                 marker = _marker_for(block.kind)
                 lead = sml_token('break') if lead_break else ''
                 report.chunks.append(Chunk(
                     text=f'{lead}{marker}{_closed_block_text(block)}',
                     kind=_chunk_kind(block.kind), blocks=(block.index,)))
+            continue
+        if block.kind == ITEM:
+            # AN ITEM GETS ITS CLOSING PERIOD ON THE WAY INTO THE RUN
+            # (2026-09-09, Owen: "they should get periods and be treated like a
+            # sentence in a chunk"). `_closed_block_text` used to be reached
+            # only from the wall branch above, so an item that stopped being a
+            # wall would have lost its period silently - and a bullet with no
+            # terminal mark welded to the next bullet is the one way this change
+            # could break the TEXT rather than the packing.
+            #
+            # AND IT CARRIES NO MARKER into the chunk it merges with, which is
+            # safe on all three counts that could have made it otherwise:
+            # nothing reads chunk kind 'item' (`grep -rn "== 'item'"` finds no
+            # non-test reader); `text/gaps.py` has given `[item]`, `[break]`,
+            # `[heading]` and a bare sentence end THE SAME gap since the
+            # 2026-07-17 tier removal, so no chunk's silence moves; and the
+            # engine strips every marker before the server sees it
+            # (test_higgs_v3, `test_the_packers_markers_never_reach_the_server`).
+            # A mid-chunk marker would be stripped before TTS anyway - the same
+            # trade every merge in `emit_prose` already makes.
+            run.append(replace(block, text=_closed_block_text(block)))
             continue
         run.append(block)
     flush()
@@ -1029,9 +1095,11 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
     document's own BLOCK STRUCTURE, which is the thing the rule calls
     authoritative, so it walks block elements and takes each one's text whole.
 
-      h1-h6            -> heading   (a wall, its own chunk, terminated as the
-                                     parity packer terminates one)
-      li               -> item      (a wall, its own chunk)
+      h1-h6            -> heading   (walls backward, leads the group in front of
+                                     it, terminated as the parity packer
+                                     terminates one)
+      li               -> item      (not a wall since 2026-09-09: one sentence
+                                     of the chunk it merges into)
       table            -> one TABLE block per data row (a wall, its own chunk),
                           built with e2a's cell recipe - see `table_rows`
       hr               -> scene-break
@@ -1125,7 +1193,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 if text:
                     # NO PERIOD HERE. An item is recorded as the book set it;
                     # the period an item needs so TTS stops is added where the
-                    # item becomes a chunk (`pack_paragraphs`), AFTER the
+                    # item enters the pack (`pack_paragraphs`), AFTER the
                     # fragment join has had its look. Measured 2026-09-05
                     # (Working Towards the Fuhrer, PDF-derived): a bullet cut
                     # by a page break arrived as the item "... the 'creature of

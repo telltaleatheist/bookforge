@@ -188,26 +188,100 @@ class FloorTest(unittest.TestCase):
 
 
 class WallTest(unittest.TestCase):
-    """Owen's refinement: a short block that is a complete, separate thought is
-    NOT merged. Items are the example."""
+    """What stops a merge, and what no longer does.
 
-    def test_each_list_item_is_its_own_chunk_and_keeps_its_marker(self):
+    WAS "Owen's refinement: a short block that is a complete, separate thought
+    is NOT merged. Items are the example." Reversed 2026-09-09 by the same
+    person: an item is still a complete thought, but a closing period is what
+    lets one sit beside another in a chunk and still be read as its own
+    sentence. The walls left are the table row, the scene break, the chapter
+    start, and the heading - backward only."""
+
+    def test_consecutive_list_items_merge_into_one_chunk(self):
+        """WAS `test_each_list_item_is_its_own_chunk_and_keeps_its_marker`,
+        asserting three chunks, each kind 'item', each carrying '[item]', and
+        `merges == 0`. Reversed 2026-09-09 (Owen: list items 'should get periods
+        and be treated like a sentence in a chunk'). Measured on witches: 150 of
+        the 372 sub-floor chunks were list items emitted alone at 30-60
+        characters, deep in the region where the model early-stops - the single
+        largest cause, larger than the 125 the cap blocks.
+
+        The marker goes with the merge and nothing downstream misses it: no
+        non-test reader tests chunk kind 'item', and `text/gaps.py` has given
+        '[item]', '[break]' and a bare sentence end the same gap since the
+        2026-07-17 tier removal."""
         blocks = [pp.Block('fourteen.', pp.ITEM, index=0),
                   pp.Block('fifteen.', pp.ITEM, index=1),
                   pp.Block('sixteen.', pp.ITEM, index=2)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
-        self.assertEqual(len(report.chunks), 3)
-        for chunk in report.chunks:
-            self.assertEqual(chunk.kind, 'item')
-            self.assertIn('[item]', chunk.text)
-        self.assertEqual(report.merges, 0)
+        self.assertEqual([c.blocks for c in report.chunks], [(0, 1, 2)])
+        self.assertEqual(report.chunks[0].kind, 'prose')
+        self.assertNotIn('[item]', report.chunks[0].text)
+        self.assertEqual(spoken(report.chunks[0].text),
+                         'fourteen. fifteen. sixteen.')
+        self.assertEqual(report.merges, 1)
 
-    def test_an_item_is_never_merged_with_the_prose_around_it(self):
+    def test_an_item_merges_with_the_prose_around_it(self):
+        """WAS `test_an_item_is_never_merged_with_the_prose_around_it`,
+        asserting [(0,), (1,), (2,)] - three chunks of 8, 9 and 13 characters,
+        every one of them far under any band's floor. Reversed 2026-09-09: the
+        item travels with the dialogue either side of it as one sentence of one
+        chunk."""
         blocks = [para('"Short."', 0), pp.Block('fourteen.', pp.ITEM, index=1),
                   para('"Also short."', 2)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.blocks for c in report.chunks], [(0, 1, 2)])
+        self.assertEqual(spoken(report.chunks[0].text),
+                         '"Short." fourteen. "Also short."')
+
+    def test_a_lead_in_paragraph_merges_with_the_items_that_follow_it(self):
+        """The shape the reversal was aimed at (2026-09-09): a lead-in sentence
+        and its bullets are one thought printed as several blocks, and the list
+        is exactly where the old rule shipped a wall of 40-char chunks."""
+        blocks = [para('The practices are:', 0),
+                  pp.Block('Reading the cards', pp.ITEM, index=1),
+                  pp.Block('Casting the circle', pp.ITEM, index=2),
+                  pp.Block('Calling the quarters', pp.ITEM, index=3)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.blocks for c in report.chunks], [(0, 1, 2, 3)])
+        self.assertEqual(spoken(report.chunks[0].text),
+                         'The practices are: Reading the cards. Casting the '
+                         'circle. Calling the quarters.')
+
+    def test_an_item_gets_a_closing_period_before_it_merges(self):
+        """Owen, 2026-09-09: 'they should get periods and be treated like a
+        sentence in a chunk'. Without one the bullet runs into the bullet behind
+        it and the pair is spoken as a single clause. `_closed_block_text` was
+        reached only from the wall branch before this change, so the period is
+        applied where the item now enters the run instead.
+
+        Idempotent by `ends_a_thought`, not by a last-character test: an item
+        that already ends in '.', '?' or '!' - behind a closing quote or bracket
+        included - gets no second period (measured 2026-09-05, witches: a
+        doubled period cost eight chunks their alignment)."""
+        blocks = [pp.Block('Reading the cards', pp.ITEM, index=0),
+                  pp.Block('Is it magic?', pp.ITEM, index=1),
+                  pp.Block('Casting the circle.', pp.ITEM, index=2),
+                  pp.Block('She said "no."', pp.ITEM, index=3)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual(spoken(report.chunks[0].text),
+                         'Reading the cards. Is it magic? Casting the circle. '
+                         'She said "no."')
+
+    def test_a_table_row_did_not_move_with_the_list_item(self):
+        """The half of the 2026-09-09 change that did NOT happen. A row is a
+        record `table_rows` built out of `header: cell` pairs, not a sentence,
+        so it is still a wall, still its own chunk, still kind 'item' and still
+        carrying the `[item]` marker."""
+        blocks = [para('"One."', 0),
+                  pp.Block('Year: 1933 - Office: Chancellor.', pp.TABLE, index=1),
+                  para('"Two."', 2)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
         self.assertEqual([c.blocks for c in report.chunks],
                          [(0,), (1,), (2,)])
+        self.assertEqual(report.chunks[1].kind, 'item')
+        self.assertIn('[item]', report.chunks[1].text)
+        self.assertNotIn('[', spoken(report.chunks[1].text))
 
     def test_a_heading_merges_forward_into_the_prose_that_follows_it(self):
         """WAS `test_a_heading_is_its_own_chunk_and_keeps_its_marker`, asserting
@@ -291,22 +365,29 @@ class WallTest(unittest.TestCase):
                                walls={pp.PARAGRAPH})
 
     def test_every_wall_kind_holds_independently(self):
-        """Every wall stops the run BEHIND it - that half is unchanged, so
-        '"One."' never reaches '"Two."' across any of them.
+        """A wall stops the run BEHIND it, so '"One."' never reaches '"Two."'
+        across TABLE, SCENE_BREAK or CHAPTER_START.
 
-        HEADING's expectation changed 2026-09-09: it used to assert
-        `prose == [(0,), (2,)]` for all five kinds, because a heading emitted
-        itself and left block 2 to stand alone. A heading now leads the group in
-        FRONT of the wall, so block 2 arrives as the prose chunk (1, 2). The
-        other four kinds keep the old assertion exactly."""
-        for kind in (pp.HEADING, pp.ITEM, pp.TABLE, pp.SCENE_BREAK,
-                     pp.CHAPTER_START):
+        THE ROW IS NOW PER KIND, because two of the five stopped behaving alike.
+        It used to assert `prose == [(0,), (2,)]` for all five. HEADING changed
+        2026-09-09 - it walls backward only, so block 2 arrives as the prose
+        chunk (1, 2) - and ITEM changed the same day in the other direction: it
+        is not a wall at all any more, so nothing is stopped and all three
+        blocks are one chunk. The remaining three keep the old assertion
+        exactly, which is the point of still looping over all five."""
+        expectations = {
+            pp.HEADING: [(0,), (1, 2)],     # walls backward, leads the group
+            pp.ITEM: [(0, 1, 2)],           # not a wall: one sentence of one chunk
+            pp.TABLE: [(0,), (2,)],
+            pp.SCENE_BREAK: [(0,), (2,)],
+            pp.CHAPTER_START: [(0,), (2,)],
+        }
+        for kind, expected in expectations.items():
             blocks = [para('"One."', 0), pp.Block('Wall.', kind, index=1),
                       para('"Two."', 2)]
             report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER,
                                         floor_chars=300)
             prose = [c.blocks for c in report.chunks if c.kind == 'prose']
-            expected = [(0,), (1, 2)] if kind == pp.HEADING else [(0,), (2,)]
             self.assertEqual(prose, expected, kind)
 
 
@@ -752,9 +833,14 @@ class CapsFoldTest(unittest.TestCase):
         self.assertTrue(blocks[0].text.startswith('DOES'))
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
         texts = [spoken(c.text) for c in report.chunks]
+        # WAS three chunks - the heading, the item and the paragraph, one line
+        # each. They are ONE chunk from 2026-09-09 (the heading leads the group,
+        # the item is no longer a wall), so the assertion is the same three
+        # folded strings in the same order, joined. What it tests is unchanged:
+        # the fold reaches a heading, an item and a paragraph alike, at packing.
         self.assertEqual(texts, [
-            'Does God Hold Children Accountable?',
-            'Fourteen Secrets Witches Hope Parents Never Find Out.',
+            'Does God Hold Children Accountable? '
+            'Fourteen Secrets Witches Hope Parents Never Find Out. '
             "In Kelsier's Opinion, The City Of Luthadel was dark, and it stayed that way.",
         ])
 
@@ -791,8 +877,18 @@ class ExtractBlocksTest(unittest.TestCase):
             'a bare item',      # an item's period is added when it becomes a chunk
         ])
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
-        self.assertEqual([c.text for c in report.chunks if c.kind == 'item'][-1].split(']')[-1],
-                         'a bare item.')
+        # WAS a lookup of the last chunk of kind 'item', asserting its text read
+        # 'a bare item.'. There is no 'item' chunk any more: from 2026-09-09 the
+        # items merge into the heading-led prose chunk. The assertion the test
+        # exists for is unchanged and now reads off that chunk - the bare item
+        # still gains its period, and the two that already end a thought behind
+        # a closer ('.)' and '."') still gain nothing.
+        self.assertEqual([c.kind for c in report.chunks], ['prose'])
+        self.assertTrue(spoken(report.chunks[0].text).endswith('a bare item.'))
+        self.assertIn('tolerant to Christianity.) ten.',
+                      spoken(report.chunks[0].text))
+        self.assertIn('"Murphy Brown Show." a bare item.',
+                      spoken(report.chunks[0].text))
 
     def test_unspoken_glyphs_never_reach_a_block(self):
         """Measured 2026-09-06 (witches, Higgs on the Mac): the introduction's
@@ -871,21 +967,27 @@ class ExtractBlocksTest(unittest.TestCase):
         kinds = [c.kind for c in report.chunks]
         # WAS ['heading', 'prose', 'prose', 'prose', 'item', 'item', 'prose'] on
         # blocks [(0,), (1,), (2, 3, 4), (6,), (7,), (8,), (10,)]: seven chunks,
-        # the h1 alone. Changed 2026-09-09 - the heading merges forward into the
-        # full-size first paragraph, so the chapter opens with ONE 318-char chunk
-        # inside the band instead of a 12-char one and a 306-char one, and that
-        # chunk is 'prose' so `sentence_vtt` does not bold the paragraph.
-        self.assertEqual(kinds, ['prose', 'prose', 'prose',
-                                 'item', 'item', 'prose'])
+        # the h1 alone. Changed 2026-09-09 in two steps. First the heading
+        # merged forward into the full-size first paragraph, so the chapter
+        # opens with ONE 318-char chunk inside the band instead of a 12-char one
+        # and a 306-char one, and that chunk is 'prose' so `sentence_vtt` does
+        # not bold the paragraph - that left six chunks and the two 'item' rows.
+        # Then the item stopped being a wall, so the two 11-char bullets join
+        # the 76-char paragraph in front of them: four chunks, none of them
+        # 'item', and the shortest is 51 characters instead of 11.
+        self.assertEqual(kinds, ['prose', 'prose', 'prose', 'prose'])
         self.assertEqual([c.blocks for c in report.chunks],
-                         [(0, 1), (2, 3, 4), (6,), (7,), (8,), (10,)])
+                         [(0, 1), (2, 3, 4), (6, 7, 8), (10,)])
         self.assertTrue(report.chunks[0].text.startswith('[break][heading]'),
                         report.chunks[0].text)
+        self.assertEqual(spoken(report.chunks[2].text),
+                         'After the scene break the prose starts again with a '
+                         'complete thought here. first item. second item.')
         # The scene break still stops the run, so the three dialogue turns merge
-        # among themselves and go no further; the two items are chunks of their
-        # own; and the closing paragraph after the second break stands alone.
+        # among themselves and go no further, and the closing paragraph after
+        # the second break stands alone.
         merged = [c.blocks for c in report.chunks if len(c.blocks) > 1]
-        self.assertEqual(merged, [(0, 1), (2, 3, 4)])
+        self.assertEqual(merged, [(0, 1), (2, 3, 4), (6, 7, 8)])
 
 
 TABLE_FIXTURE = """<body>
@@ -1112,8 +1214,12 @@ class PrepPolicyTest(unittest.TestCase):
         self.assertEqual(record['budget'],
                          {'voice': 'deathstalker', 'max_chars': 520,
                           'max_chars_per_sec': 22.6})
+        # WAS sorted([... 'heading', 'item', 'scene-break', 'table']). 'item'
+        # left `DEFAULT_WALLS` on 2026-09-09 and this record is `sorted(
+        # DEFAULT_WALLS)`, so the prep record says so too - which is the point
+        # of recording it: a session on disk names the walls it was packed with.
         self.assertEqual(record['walls'],
-                         sorted(['chapter-start', 'heading', 'item',
+                         sorted(['chapter-start', 'heading',
                                  'scene-break', 'table']))
 
 

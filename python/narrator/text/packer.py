@@ -262,7 +262,11 @@ def _merge_short_headings_forward(rows: list, clean_len, max_chars: int,
 
     HEADINGS ONLY, and NOT extended to [item] (2026-09-01): a demoted heading
     joins the text it already belongs to, while a demoted list item would join a
-    DIFFERENT item, which is the exact weld [item] exists to forbid.
+    DIFFERENT item, which is the exact weld [item] exists to forbid. The OTHER
+    policy decided otherwise on 2026-09-09 - `text/paragraph_packer.py` merges a
+    list item as a sentence, closing it with a period so it still reads as one -
+    and this parity packer deliberately keeps the older rule, because it is what
+    every session on disk was rendered with and a resume of one depends on it.
     """
     if min_words <= 0:
         return rows
