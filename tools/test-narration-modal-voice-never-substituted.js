@@ -31,10 +31,50 @@ check('no code path assigns a list element to the voice signal', () => {
   assert.ok(!/const first = available\[0\]/.test(src), 'the `available[0]` substitution is back');
 });
 
-check('an engine switch and a preset both drop a voice that does not belong', () => {
+check('an engine switch drops a voice that does not belong', () => {
+  // WAS "an engine switch AND A PRESET both drop...", asserting that
+  // `applyPreset` called dropVoiceUnlessItBelongs(preset.ttsEngine). That line
+  // is gone on purpose (2026-09-09): a preset no longer sets the engine, so it
+  // has no engine to validate a voice against. The engine switch is now the
+  // only thing that clears a voice, and it still refuses rather than
+  // substitutes — which is what this file exists to protect.
   assert.ok(/selectEngine\(id: TTSEngine\): void \{[\s\S]*?this\.dropVoiceUnlessItBelongs\(id\);/.test(src));
-  assert.ok(/applyPreset\(id: string\): void \{[\s\S]*?this\.dropVoiceUnlessItBelongs\(preset\.ttsEngine\);/.test(src));
   assert.ok(/private dropVoiceUnlessItBelongs\(engine: TTSEngine\): void \{[\s\S]*?this\.voice\.set\(''\);/.test(src));
+});
+
+check('a preset sets the CONVERSION only — never the engine, voice, device or speed', () => {
+  // THE 2026-09-09 BUG, pinned. Every shipped preset named `orpheus`, so
+  // applying one moved a Higgs run onto Orpheus silently — both engines ship a
+  // voice called `deathstalker`, so the voice label did not change and no
+  // refusal fired. Owen: "the preset is designed to change RVC settings,
+  // nothing else." A whole book (step_mtuiyir4) rendered on the wrong engine.
+  const body = src.slice(src.indexOf('applyPreset(id: string): void {'));
+  const end = body.indexOf('\n  }');
+  assert.ok(end > 0, 'applyPreset body not found');
+  const apply = body.slice(0, end);
+  for (const forbidden of ['this.engine.set(', 'this.voice.set(',
+                           'this.device.set(', 'this.speed.set(']) {
+    assert.ok(!apply.includes(forbidden),
+      `applyPreset writes ${forbidden} — a preset is conversion settings only`);
+  }
+  // ...and it still applies the conversion it is for.
+  assert.ok(apply.includes('this.onRvcToggled(preset.rvcEnhancementEnabled);'));
+  assert.ok(apply.includes('this.rvcVoiceId.set(preset.rvcEnhancementVoiceId);'));
+
+  // The shipped presets must not carry an engine or voice either: a reader that
+  // starts obeying those fields again re-opens the bug.
+  const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'core',
+    'services', 'settings.service.ts'), 'utf-8');
+  const builtins = settingsSrc.slice(
+    settingsSrc.indexOf('BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = ['));
+  const listEnd = builtins.indexOf('\n];');
+  assert.ok(listEnd > 0, 'BUILTIN_PIPELINE_PRESETS not found');
+  const list = builtins.slice(0, listEnd);
+  for (const dead of ['ttsEngine:', 'ttsVoice:', 'ttsSpeed:', 'ttsDevice:']) {
+    assert.ok(!list.includes(dead),
+      `a builtin preset still declares ${dead} — nothing reads it, and it is `
+      + 'what moved a Higgs run onto Orpheus');
+  }
 });
 
 check('the submit check refuses an empty voice and a foreign voice by name', () => {

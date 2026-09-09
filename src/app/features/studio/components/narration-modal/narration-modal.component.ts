@@ -1295,11 +1295,12 @@ export class NarrationModalComponent {
    * beside it has been moved is a label claiming a tuning nobody is running.
    */
   readonly activePresetId = computed(() => {
+    // RVC FIELDS ONLY, since 2026-09-09 — the same set `applyPreset` writes.
+    // Matching on the engine/voice/speed a preset used to carry would leave the
+    // dropdown reading "No preset" the moment a preset was applied under a
+    // different engine, which is now the ordinary case.
     const match = this.presets().find((p) =>
-      p.ttsEngine === this.engine()
-      && p.ttsVoice === this.voice()
-      && p.ttsSpeed === this.speed()
-      && p.rvcEnhancementEnabled === this.rvcEnabled()
+      p.rvcEnhancementEnabled === this.rvcEnabled()
       && p.rvcEnhancementVoiceId === this.rvcVoiceId()
       && p.rvcEnhancementIndexRate === this.rvcIndexRate()
       && p.rvcEnhancementProtectRate === this.rvcProtectRate()
@@ -1310,26 +1311,33 @@ export class NarrationModalComponent {
   });
 
   /**
-   * Apply a preset to the WHOLE run, reading tab included.
+   * Apply a preset's VOICE-CONVERSION settings. It touches nothing else.
    *
-   * A preset is a VOICE PAIR — the reading voice and the conversion that was
-   * auditioned against it — so applying only its rates would leave the user
-   * running half of a tuning nobody tested, under that tuning's name. It also
-   * turns the conversion stage on or off, because whether there IS a conversion
-   * is part of what the preset says.
+   * IT USED TO SET THE ENGINE, VOICE, DEVICE AND SPEED TOO, on the reading that
+   * a preset is a VOICE PAIR — the reading voice and the conversion auditioned
+   * against it — so applying half of it would run a tuning nobody tested. Owen
+   * reversed that on 2026-09-09: "the preset is designed to change RVC
+   * settings, nothing else."
+   *
+   * WHAT THE OLD READING COST, and it is why the reversal is not a matter of
+   * taste. Every shipped preset names `ttsEngine: 'orpheus'`, so applying one
+   * SILENTLY MOVED THE RUN OFF HIGGS. Nothing on screen said so, because both
+   * engines ship a voice called `deathstalker`: the voice label did not change,
+   * and `dropVoiceUnlessItBelongs` had no reason to fire on a name that is
+   * valid under both. Owen picked Higgs, applied Deathstalker → Sigma for its
+   * conversion rates, and job step_mtuiyir4 (2026-09-09 20:02Z) rendered 826
+   * chunks on Orpheus at roughly a third of the speed — found only because the
+   * throughput looked wrong, not because anything reported it.
+   *
+   * So the engine and the voice are the USER'S, held across a preset the way
+   * they are held across everything else on this dialog. `selectEngine` remains
+   * the only thing that clears a voice, and it still refuses rather than
+   * substitutes.
    */
   applyPreset(id: string): void {
     if (!id) return;
     const preset = this.presets().find((p) => p.id === id);
     if (!preset) return;
-    this.engine.set(preset.ttsEngine);
-    this.voice.set(preset.ttsVoice);
-    // A preset is a voice PAIR, but its voice can still be one this machine's
-    // catalog no longer lists under that engine; validated the same way an
-    // engine switch is, never substituted (see `selectEngine`).
-    this.dropVoiceUnlessItBelongs(preset.ttsEngine);
-    this.device.set(preset.ttsDevice);
-    this.speed.set(preset.ttsSpeed);
     // A preset states the CONVERSION, which is one of the two enhancement
     // passes, so it moves that pass's check and the stage follows the same rule
     // a click on the check follows. It says nothing about the denoise, so the
@@ -1343,17 +1351,20 @@ export class NarrationModalComponent {
     this.rvcHopLength.set(preset.rvcEnhancementHopLength ?? 0);
   }
 
-  /** Save the controls as they stand under a name the user typed. */
+  /**
+   * Save the CONVERSION controls as they stand, under a name the user typed.
+   *
+   * The engine, voice, device and speed are deliberately not recorded: since
+   * 2026-09-09 `applyPreset` would not read them back, and a preset carrying a
+   * value nobody applies is the "inert value that looks like a tuning decision"
+   * this file already refuses elsewhere.
+   */
   savePreset(): void {
     const name = this.presetName().trim();
     if (!name) return;
     const next = this.settings.savePipelinePreset({
       id: `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name,
-      ttsEngine: this.engine(),
-      ttsDevice: this.device(),
-      ttsVoice: this.voice(),
-      ttsSpeed: this.speed(),
       rvcEnhancementEnabled: this.rvcEnabled(),
       rvcEnhancementVoiceId: this.rvcVoiceId(),
       rvcEnhancementIndexRate: this.rvcIndexRate(),

@@ -144,10 +144,24 @@ export interface PipelinePreset {
   name: string;
   /** True for shipped, non-deletable presets (not persisted to user storage). */
   builtin?: boolean;
-  ttsEngine: PipelineDefaults['ttsEngine'];
-  ttsDevice: PipelineDefaults['ttsDevice'];
-  ttsVoice: string;
-  ttsSpeed: number;
+  /**
+   * READ BY NOTHING since 2026-09-09. A preset configures the VOICE CONVERSION
+   * and nothing else (Owen: "the preset is designed to change RVC settings,
+   * nothing else"), so `applyPreset` no longer sets the engine, voice, device
+   * or speed and `savePreset` no longer records them.
+   *
+   * They stay on the type, optional, because presets saved before that date
+   * carry them and dropping the fields would make a stored preset fail to
+   * parse. They are HISTORY, not configuration: a reader that starts obeying
+   * them again re-opens the bug they were removed for — every shipped preset
+   * said `orpheus`, so applying one moved a Higgs run onto Orpheus with nothing
+   * on screen to show it, because both engines ship a voice named
+   * `deathstalker`.
+   */
+  ttsEngine?: PipelineDefaults['ttsEngine'];
+  ttsDevice?: PipelineDefaults['ttsDevice'];
+  ttsVoice?: string;
+  ttsSpeed?: number;
   rvcEnhancementEnabled: boolean;
   rvcEnhancementVoiceId: string;
   rvcEnhancementIndexRate: number;
@@ -177,10 +191,12 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     id: 'builtin:leah-sigma',
     name: 'Leah → Sigma (deep male narrator)',
     builtin: true,
-    ttsEngine: 'orpheus',
-    ttsDevice: 'auto',
-    ttsVoice: 'leah',
-    ttsSpeed: 1.0,
+    /*
+     * NO ttsEngine/ttsVoice/ttsSpeed/ttsDevice — removed 2026-09-09 with the
+     * reading that a preset sets them. The NAME still says Leah, because that
+     * is the source these rates were auditioned against and -15 semitones only
+     * makes sense stated against it; the preset no longer SELECTS Leah.
+     */
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
     rvcEnhancementIndexRate: 0.7,
@@ -227,10 +243,15 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     id: 'builtin:deathstalker-sigma',
     name: 'Deathstalker → Sigma (deep male narrator)',
     builtin: true,
-    ttsEngine: 'orpheus',
-    ttsDevice: 'auto',
-    ttsVoice: 'deathstalker',
-    ttsSpeed: 1.0,
+    /*
+     * NO ttsEngine/ttsVoice — removed 2026-09-09, and THIS is the preset whose
+     * `orpheus` did the damage. Owen ran it on the Higgs deathstalker; the
+     * preset set the engine back to Orpheus and the voice name matched under
+     * both engines, so nothing looked wrong and a whole book started rendering
+     * on the slower engine. The name still reads Deathstalker because these
+     * rates were auditioned against that narrator, and -2 semitones is only
+     * meaningful stated against a source that is already a deep male voice.
+     */
     /*
      * The three sampling fields this preset used to carry (temperature 0.6,
      * top-p 0.9, repetition penalty 1.1) are gone with the field itself — they
