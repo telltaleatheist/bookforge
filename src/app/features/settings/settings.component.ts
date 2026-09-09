@@ -1115,6 +1115,28 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                         />
                       </div>
                     </div>
+                    <!-- The forced aligner's env. Windows-only here because on a
+                         Mac it is the "Qwen3 forced aligner (Apple Silicon)"
+                         add-on and needs no setting; qwen-asr wants a CUDA torch
+                         env, which on this machine lives in the guest. No
+                         placeholder default on purpose: there is no conventional
+                         name for an env built by hand, and BookForge refuses by
+                         name rather than guessing one. -->
+                    <div class="tool-row">
+                      <div class="tool-info">
+                        <h4>Qwen3 aligner WSL env</h4>
+                        <p class="tool-description">Name of the conda env holding qwen-asr — used to force-align the rendered chunks and to generate sentences</p>
+                      </div>
+                      <div class="tool-control">
+                        <input
+                          type="text"
+                          class="text-input"
+                          [value]="getToolPathValue('qwenAlignEnv')"
+                          placeholder="qwen-align"
+                          (change)="updateToolPath('qwenAlignEnv', $any($event.target).value)"
+                        />
+                      </div>
+                    </div>
                     <div class="save-section">
                       <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
                         {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}

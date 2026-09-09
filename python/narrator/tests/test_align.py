@@ -2239,6 +2239,233 @@ class AlignSessionTest(unittest.TestCase):
         self.assertEqual(orpheus['document']['summary']['chunksFailed'], 1)
 
 
+class PerChunkGateTest(unittest.TestCase):
+    """`run.gate_refusal` - the check that stops a placement nobody can believe
+    from reaching the transcript (2026-09-08).
+
+    WHY IT EXISTS, in one line: qwen3 never refuses. It returns word times for
+    whatever window it is given, so a chunk whose printed text differs from the
+    speech is PLACED rather than rejected, and the only tell is where it landed.
+
+    THE FIVE MAC CASES, and what each one becomes at THIS door. The bake-off
+    (M-series, mps bf16, Shift's first hour, 61 chunk starts) found +3.5 s,
+    -7.8 s and three tiny chunks - 1857.5 / 1859.1 / 1861.1 s - all predicted at
+    1855.43. This door aligns each chunk against its OWN audio file and lays the
+    cues inside the chunk's own manifest span, so a chunk cannot be moved onto
+    another chunk's audio here at all: the two shift cases become a SEAM that
+    lands seconds from where the sentence's share of the audio puts it, and the
+    collapse becomes an invariant that today's seam arithmetic already makes
+    unreachable (tested directly, because `align_session` cannot produce it).
+    The same aligner, the same failure, a different amount of damage - which is
+    why the gate that matters for the whole-book door
+    (`electron/scripts/align_audiobook.py`) is the same constant applied where a
+    sentence really can move.
+    """
+
+    #: 12 s a chunk at the manifest's 24 kHz - long enough that a seam can miss
+    #: its proportional position by more than `GATE_MAX_SHIFT_S` in either
+    #: direction, which a 1 s chunk cannot.
+    SAMPLES = 24000 * 12
+    #: Two sentences, two words each, and the SAME character count (11 each), so
+    #: the proportional seam is exactly half way: 6.000 s into the chunk.
+    TEXT = 'Aaaa bbbbb. Ccccc dddd.'
+    #: Two more of the same shape, for the neighbour test - DISTINCT strings,
+    #: because the fake aligner is keyed on the SPOKEN text and two chunks that
+    #: differ only in whitespace collapse to the same key.
+    TEXT2 = 'Eeee fffff. Ggggg hhhh.'
+    TEXT3 = 'Iiii jjjjj. Kkkkk llll.'
+
+    def _manifest(self, texts, engine='higgs-v3'):
+        from narrator.manifest import (Book, Chapter, Chunk, EdgeFadeMs, Engine,
+                                       Manifest, Source, Voice)
+        chunks = [
+            Chunk(index=i, text=text, kind='prose',
+                  file=f'chapters/sentences/{i}.flac', samples=self.SAMPLES)
+            for i, text in enumerate(texts)
+        ]
+        return Manifest(
+            source=Source(kind='e2a-session-v1', processDir=self.tmp,
+                          sessionId='sid', epubContentHash='h'),
+            book=Book(title='T', author='A', language='en', language3='eng'),
+            voice=Voice(engine=engine, fineTuned='v'),
+            sampleRate=24000, sentencesDir=os.path.join(self.tmp, 'chapters'),
+            engine=Engine(id=engine, pads=False,
+                          edgeFadeMs=EdgeFadeMs(10.0, 25.0)),
+            chapters=[Chapter(index=1, title='C', doc=None, chunks=chunks)])
+
+    def setUp(self):
+        import numpy as np
+
+        self.tmp = tempfile.mkdtemp(prefix='narrator-align-gate-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # 12 s of "audio" at the aligner's own 16 kHz, matching the manifest.
+        self._audio = np.zeros(A.SAMPLE_RATE * 12, dtype='float32')
+        self._patch(A, 'decode_audio', lambda path, ffmpeg=None: self._audio)
+        self._patch(A, 'detect_silences',
+                    lambda audio, noise_db=None, min_s=None: ())
+        self._patch(E, 'backend_importable', lambda backend: True)
+        A._BACKEND_LOADERS['whisperx'] = lambda language, device: (None, None)
+        self.addCleanup(A._BACKEND_LOADERS.__setitem__, 'whisperx',
+                        A._load_whisperx)
+        #: text -> the four (start, end) pairs the fake aligner places.
+        self.placement = {}
+        A._BACKEND_FUNCTIONS['whisperx'] = self._fake
+        self.addCleanup(A._BACKEND_FUNCTIONS.__setitem__, 'whisperx',
+                        A._whisperx_words)
+
+    def _patch(self, module, name, value):
+        old = getattr(module, name)
+        setattr(module, name, value)
+        self.addCleanup(setattr, module, name, old)
+
+    def _fake(self, audio, text, language, device):
+        """The placement `self.placement` names, or an even spread."""
+        words = [w for w in text.split(' ') if w]
+        times = self.placement.get(text)
+        if times is None:
+            step = (audio.size / A.SAMPLE_RATE) / max(1, len(words))
+            times = [(i * step, (i + 1) * step) for i in range(len(words))]
+        return [(w, a, b, 0.9) for w, (a, b) in zip(words, times)]
+
+    def _align(self, texts):
+        return R.align_session(self._manifest(texts), progress=lambda line: None)
+
+    def _gated(self, document):
+        return [(e['index'], e['error']) for e in document['errors']
+                if e['stage'] == 'gate']
+
+    # ---- the clean chunk, which must NOT be gated ---------------------------
+
+    def test_a_well_placed_chunk_is_not_gated(self):
+        """The control. An even spread puts the seam at 6.0 s, which is exactly
+        where the proportional estimate puts it, and every word runs forward."""
+        result = self._align([self.TEXT])
+        self.assertEqual(self._gated(result['document']), [])
+        self.assertEqual([c.estimated for c in result['cues']], [False, False])
+
+    # ---- shift, the check that actually fires -------------------------------
+
+    def test_a_seam_placed_seconds_LATE_is_gated_and_estimated(self):
+        """The Mac's +3.5 s case as this door can express it: the aligner puts
+        the second sentence's words at the very end of the chunk, so its cue
+        starts 3.5 s after its share of the audio says it should."""
+        self.placement[self.TEXT] = [(0.0, 0.5), (0.5, 8.0),
+                                     (11.0, 11.4), (11.4, 11.8)]
+        result = self._align([self.TEXT])
+        gated = self._gated(result['document'])
+        self.assertEqual([index for index, _message in gated], [0])
+        self.assertIn('gate/shift', gated[0][1])
+        self.assertIn('sentence 1', gated[0][1])
+        # ...and the chunk ships the ESTIMATE, marked as one.
+        self.assertTrue(all(c.estimated for c in result['cues']))
+        self.assertAlmostEqual(result['cues'][1].start_s, 6.0, places=3)
+
+    def test_a_seam_placed_seconds_EARLY_is_gated(self):
+        """The -7.8 s case: everything crammed into the first second."""
+        self.placement[self.TEXT] = [(0.0, 0.05), (0.05, 0.10),
+                                     (0.20, 0.30), (0.30, 0.40)]
+        result = self._align([self.TEXT])
+        gated = self._gated(result['document'])
+        self.assertEqual([index for index, _message in gated], [0])
+        self.assertIn('gate/shift', gated[0][1])
+
+    def test_the_shift_limit_is_GATE_MAX_SHIFT_S_and_a_smaller_miss_passes(self):
+        """A seam 1.5 s from proportional is inside the band the Mac's GOOD
+        prose chunks sat in, and must survive; 2.0 s is where the two
+        populations separate."""
+        self.assertEqual(R.GATE_MAX_SHIFT_S, 2.0)
+        # Words 1 and 2 straddle a raw seam at 7.5 s: 1.5 s from 6.0.
+        self.placement[self.TEXT] = [(0.0, 0.5), (0.5, 7.0),
+                                     (8.0, 8.5), (8.5, 9.0)]
+        result = self._align([self.TEXT])
+        self.assertEqual(self._gated(result['document']), [])
+        self.assertAlmostEqual(result['cues'][1].start_s, 7.5, places=3)
+
+    # ---- order --------------------------------------------------------------
+
+    def test_words_placed_backwards_inside_a_sentence_are_gated(self):
+        """`quality['monotonic']` is False - the alignment put this sentence's
+        second word before its first. Checked BEFORE the shift, because a cue
+        whose own words disagree about their order has no start worth
+        comparing."""
+        self.placement[self.TEXT] = [(0.0, 0.5), (0.5, 5.0),
+                                     (7.0, 8.0), (6.5, 7.5)]
+        result = self._align([self.TEXT])
+        gated = self._gated(result['document'])
+        self.assertEqual([index for index, _message in gated], [0])
+        self.assertIn('gate/order', gated[0][1])
+
+    # ---- collapse -----------------------------------------------------------
+
+    def test_two_cues_at_one_position_are_refused(self):
+        """The Mac's worst case - 1857.5 / 1859.1 / 1861.1 s all predicted at
+        1855.43 - as an INVARIANT.
+
+        `align_session` cannot produce it: `sentences.sentence_cues` clamps
+        every seam to `MIN_CUE_S` past the previous one, so two cues of one
+        chunk can never share a start. The check exists so a future change to
+        that arithmetic cannot reintroduce it silently, which is why it is
+        tested against `gate_refusal` directly rather than through a run that
+        would have to be broken first.
+        """
+        from narrator.assemble.sentence_vtt import SentenceCue
+
+        quality = {'monotonic': True, 'chars_per_sec': 10.0, 'pace_ratio': 1.0,
+                   'boundary_silence_s': 0.0, 'worst_word_score': 0.9,
+                   'score_source': 'derived'}
+        collapsed = (
+            SentenceCue(chunk_index=7, sentence_index=0, start_s=100.0,
+                        end_s=100.0, text='Aaaa bbbbb.', quality=dict(quality)),
+            SentenceCue(chunk_index=7, sentence_index=1, start_s=100.0,
+                        end_s=112.0, text='Ccccc ddddd.', quality=dict(quality)),
+        )
+        refusal = R.gate_refusal(collapsed, chunk_index=7, chunk_start_s=100.0,
+                                 chunk_end_s=112.0, text=self.TEXT,
+                                 is_heading=False)
+        self.assertIsNotNone(refusal)
+        self.assertIn('gate/collapse', refusal)
+        self.assertIn('100.000s', refusal)
+
+    # ---- what the gate does NOT do ------------------------------------------
+
+    def test_a_single_sentence_chunk_can_never_be_gated(self):
+        """A HEADING IS ONE SENTENCE, AND THIS DOOR CANNOT MISPLACE IT.
+
+        Its only cue starts at the chunk's own manifest start and ends at the
+        chunk's own end, whatever the aligner said - so the 59 heading misses
+        the Shift bake-off found cost this door nothing, and there is nothing
+        for a gate to catch. Stated as a test because it is the finding, not an
+        omission: the heading damage happens at the whole-book door, where a
+        sentence's position comes from the alignment rather than from a
+        manifest.
+        """
+        text = 'Two thousand one hundred and ten.'
+        # The aligner puts every word in the last half-second of a 12 s chunk.
+        self.placement[text] = [(11.5, 11.6), (11.6, 11.7), (11.7, 11.8),
+                                (11.8, 11.85), (11.85, 11.9), (11.9, 11.95)]
+        result = self._align([text])
+        self.assertEqual(self._gated(result['document']), [])
+        self.assertEqual(len(result['cues']), 1)
+        self.assertAlmostEqual(result['cues'][0].start_s, 0.0, places=6)
+        self.assertAlmostEqual(result['cues'][0].end_s, 12.0, places=6)
+
+    def test_a_gated_chunk_does_not_touch_its_neighbours(self):
+        """"So a heading never drags the following prose chunk with it": the
+        gated chunk is estimated ALONE and the chunks around it keep their
+        measured cues."""
+        texts = [self.TEXT, self.TEXT2, self.TEXT3]
+        self.placement[self.TEXT2] = [(0.0, 0.5), (0.5, 8.0),
+                                      (11.0, 11.4), (11.4, 11.8)]
+        result = self._align(texts)
+        gated = self._gated(result['document'])
+        self.assertEqual([index for index, _message in gated], [1])
+        estimated = {c.chunk_index for c in result['cues'] if c.estimated}
+        self.assertEqual(estimated, {1})
+        # The aligner still MEASURED the gated chunk - the coverage document
+        # counts it - and only its cues were replaced.
+        self.assertEqual(result['document']['summary']['chunksAligned'], 3)
+
+
 # =============================================================================
 # Measured: real audio through the installed whisperx env
 # =============================================================================

@@ -144,6 +144,35 @@ export interface NarratorSpawnRequest {
    */
   envExtras: Record<string, string>;
   /**
+   * RUN THIS PHASE INSIDE THE WSL GUEST, in the conda env NAMED here — for a
+   * phase that is otherwise native.
+   *
+   * ── Why an engine-agnostic phase ever crosses into the guest ──────────────
+   *
+   * `align` is 'refused' in `PHASE_ENGINE` and native everywhere, because on
+   * Windows the session it reads has normally been copied OUT of WSL first. The
+   * qwen3 aligner broke that assumption in one place and only one: the
+   * post-render alignment runs BEFORE that copy (the session is still on ext4,
+   * the render just wrote it there) and the env that holds `qwen-asr` on this PC
+   * is a WSL env — `electron/qwen-aligner.ts`, `viaWsl: true`. The guest cannot
+   * see the Z: network drive the session is copied to afterwards, and a Windows
+   * spawn cannot run a `/home/...` interpreter, so the alignment has to happen
+   * where the audio and the model already are.
+   *
+   * ── Why a NAME here rather than an engine ────────────────────────────────
+   *
+   * Naming an engine would have worked on Windows and been wrong on the Mac:
+   * `narratorNativePython('higgs')` there resolves the `narrator-mlx` env, which
+   * is the render's environment and has no business running an alignment. And
+   * the standalone Align row has no engine to name at all. So the caller states
+   * the guest env, which is a fact about where the aligner is, not about what
+   * rendered the book.
+   *
+   * REFUSED off Windows and refused together with `engine`: there is no guest to
+   * cross into, and two sources for one answer is how they come to disagree.
+   */
+  wslCondaEnv?: string;
+  /**
    * Working directory for the NATIVE arm. narrator reads cwd for nothing
    * (PORT_NOTES section 9.3), so this only decides where relative paths a caller
    * passes would resolve and where a crash dump would land. Omitted means the
@@ -253,12 +282,17 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
  *
  * It is ABOUT an engine — which engine rendered the session is what decides
  * whether it runs at all — but it does not RUN one. The alignment happens in the
- * whisperx env, named on the command line as `--python`, and narrator's own half
- * of it (manifest, spans, sentence cues, the report) is pure stdlib plus the
- * tools env. Naming an engine here would route a CPU alignment into a 6 GB vLLM
- * environment, or into WSL — and on Windows the session it reads has just been
- * copied OUT of WSL by `normalizeWslSessionToWindows` precisely so that the
- * post-render steps do not have to cross the 9p mount.
+ * aligner's own env, named on the command line as `--python`, and narrator's own
+ * half of it (manifest, spans, sentence cues, the report) is pure stdlib plus the
+ * tools env. Naming an engine here would route the alignment into a 6 GB vLLM
+ * environment, or into the Mac's `narrator-mlx` env, neither of which has an
+ * aligner in it.
+ *
+ * IT CAN STILL CROSS INTO THE GUEST, and `wslCondaEnv` is how (2026-09-08). The
+ * post-render alignment runs BEFORE `normalizeWslSessionToWindows` copies the
+ * session out — that is the whole point of where it sits — so on this PC the
+ * audio is on ext4 and the qwen3 env is a WSL env. The caller states that env by
+ * NAME; the phase still names no engine.
  */
 const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> = {
   serve: 'required',
@@ -418,9 +452,26 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     );
   }
 
+  if (req.wslCondaEnv !== undefined) {
+    if (process.platform !== 'win32') {
+      throw new Error(
+        `buildNarratorSpawn: wslCondaEnv '${req.wslCondaEnv}' was named on ${process.platform}, ` +
+          'where there is no WSL guest to run it in. Only a Windows caller may cross that ' +
+          'boundary; everywhere else the same phase runs natively.',
+      );
+    }
+    if (engine) {
+      throw new Error(
+        `buildNarratorSpawn: phase '${phase}' was given BOTH engine '${engine}' and ` +
+          `wslCondaEnv '${req.wslCondaEnv}'. Each names the guest environment on its own, and ` +
+          'two sources for one answer disagree the day one of them is changed. Pass one.',
+      );
+    }
+  }
+
   const module = PHASE_MODULE[phase];
   const pythonRoot = narratorPythonRoot();
-  const viaWsl = narratorRunsInWsl(engine, phase);
+  const viaWsl = req.wslCondaEnv !== undefined || narratorRunsInWsl(engine, phase);
 
   const baseEnv: Record<string, string> = {
     PYTHONUNBUFFERED: '1',
@@ -431,7 +482,11 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
 
   if (viaWsl) {
     const conda = getWslCondaPath();
-    const envName = engine === 'higgs' ? getWslHiggsCondaEnv() : getWslOrpheusCondaEnv();
+    // The caller's stated guest env wins when there is one (see `wslCondaEnv`);
+    // otherwise the engine decides, which is every render spawn.
+    const envName = req.wslCondaEnv !== undefined
+      ? req.wslCondaEnv
+      : (engine === 'higgs' ? getWslHiggsCondaEnv() : getWslOrpheusCondaEnv());
     const distro = getWslDistro();
 
     const guestArgs = args.map(toGuestPath);

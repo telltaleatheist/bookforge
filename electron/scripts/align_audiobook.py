@@ -6,7 +6,8 @@ Produces a sentence-level VTT whose TEXT is the epub's canonical prose and whose
 TIMING comes from wav2vec2 (WhisperX) phoneme forced-alignment — accurate and
 immune to speech-to-text transcription errors.
 
-Pipeline (all inside the whisperx conda env):
+Pipeline (stages 1-2 and 4-5 in the whisperx conda env; stage 3 wherever the
+chosen --backend lives, which for qwen3 is a different env - see step 3):
   1. Rough pass: faster-whisper transcribes ~600 s slices of the ORIGINAL audio
      in parallel worker processes (each slices with ffmpeg + loads its own model).
      Meanwhile the full-book 16 kHz wav — needed only by the align workers —
@@ -15,8 +16,12 @@ Pipeline (all inside the whisperx conda env):
      transcript word stream (also finds narrated head/tail; trims non-narrated
      matter, and drops interior text runs the narrator never read — copyright
      pages, TOCs, acknowledgments, footnote bodies).
-  3. Chunk by rough times (~CHUNK_S at sentence gaps), parallel WhisperX force-align
-     each chunk's epub text to its audio slice.
+  3. Chunk by rough times (~CHUNK_S at sentence gaps), parallel force-align each
+     chunk's epub text to its audio slice — WhisperX (default) or
+     Qwen3-ForcedAligner (--backend qwen3; see the backend note below the imports
+     for what each measured and for the gate qwen3 needs). Stage 1 and stage 3
+     may run in DIFFERENT interpreters: --rough-python names the one that has
+     faster-whisper, because the qwen-align env does not.
   4. Drift self-check: verify final cue times against the rough transcript and
      correct multi-second local drift it can unambiguously confirm (music
      bridges / recap montages can strand a chunk past the true audio, where
@@ -61,6 +66,7 @@ Usage:
                      [--device cpu|mps] [--snap-silence-s 0.6] [--contiguous-cues]
                      --silence-source ffmpeg|auto-editor [--silence-map M.json]
                      [--report-hole-min-s 3]
+                     [--backend whisperx|qwen3] [--rough-python PY]
 
 Cue-edge quality is measured, not asserted: electron/scripts/measure_cue_edges.py
 scores a VTT's edges against the audio's own envelope (mid-word edges, ends inside
@@ -93,13 +99,107 @@ def require_worker_imports(stage, *modules):
                 f"{stage}: this interpreter ({sys.executable}) cannot import {name} ({e}). "
                 f"The {stage} workers would die in their initializer and the pool would replace "
                 "them forever with nothing in the log. Run this script with an interpreter that "
-                "has it - the app's whisperx-env (Settings -> Ebook Alignment add-on), or pass "
-                "--python <that env's python> to the whole-book driver.")
+                "has it - the app's whisperx-env (Settings -> Ebook Alignment add-on) for the "
+                "whisperx backend and the rough transcribe stage, the qwen-align env for "
+                "--backend qwen3 - or name the rough stage's own interpreter with "
+                "--rough-python.")
 
 
 DEVICE = "cpu"   # module default; the real device is resolved per-run and propagated to
                  # spawn workers via the ALIGN_DEVICE env (set by main after --device auto-
                  # resolves — favors CUDA when available, else Apple MPS, else CPU).
+
+# ---------------------------------------------------------------------------
+# The forced aligner: whisperx (the default) or qwen3
+# ---------------------------------------------------------------------------
+#
+# TWO BACKENDS, CHOSEN BY NAME (--backend), never probed for at runtime.
+#
+#   whisperx  wav2vec2 CTC, the default, and BYTE-FOR-BYTE the behaviour this
+#             script has always had. Nothing below this line runs for it.
+#   qwen3     Qwen3-ForcedAligner-0.6B through the `qwen_asr` package. Owen,
+#             2026-09-08: "go ahead and wire it up to alignment so itll be used
+#             to align the chunks in app ... for generate-sentences logic and for
+#             normal post-render alignment". MEASURED on Shift (Higgs mistborn,
+#             16.56 h, RTX 3090 Ti in WSL) against 1,083 known chunk starts:
+#             395x realtime and 890/1083 starts inside 0.1 s, against whisperx's
+#             18x and 39/61. On the Mac (mps bf16, the same session's first hour,
+#             61 starts): 87x and 51/61 inside 0.1 s, against whisperx-CPU's 20x
+#             and 43/61.
+#
+# WHAT QWEN3 CANNOT DO IS REFUSE. It returns word times for whatever window it is
+# given, so a window whose printed text differs from the speech is PLACED rather
+# than rejected: on the Mac that was five gross misses in 61 - one at +3.5 s, one
+# at -7.8 s, and three consecutive tiny chunks all predicted at ONE position. It
+# publishes no confidence to catch that with, so this script gates on POSITION
+# instead. Most of that gate was already here (`WV_TRUST_S`, the whisper-authority
+# pass); what qwen3 needed added is in `main` beside it, and the constant is
+# narrator's `align/run.GATE_MAX_SHIFT_S` rather than a second number.
+#
+# THE MODEL'S OWN LIMIT is five minutes of audio (`QWEN3_MAX_AUDIO_S`), which is
+# why an over-long chunk is refused by name here rather than truncated. The
+# default `--chunk-s 60` caps a chunk's span at 120 s, so only a caller who
+# raised it can reach that.
+
+_NARRATOR_ALIGNER = None
+
+
+def narrator_aligner():
+    """`narrator.align.aligner`, imported ONCE, or a refusal naming the search.
+
+    WHY THE IMPORT RATHER THAN A COPY. The qwen3 model tokenizes the text itself
+    and hands back ITS units, which merge and split against a whitespace split
+    (measured 2026-09-08: 665 items for a 668-word English window). Lining those
+    up with our words is `_map_items_onto_words`, and it is subtle enough - an
+    OVERLAP walk in normalized-character space, not "the first item at or past
+    this offset" - that a second copy here would be a second answer to the same
+    question, drifting the whole-book door away from the per-chunk one. The same
+    goes for `qwen3_language_name` (the model takes an English language NAME and
+    places words badly for a language it was not trained on) and the 5-minute
+    cap.
+
+    PYTHONPATH FIRST, then the derived path. BookForge's bridge sets PYTHONPATH
+    at `narratorPythonRoot()`, which is the only thing that works in a packaged
+    build; the walk-up is for running this script by hand out of the checkout,
+    and it is derived from THIS file the way `narrator/align/env.package_root()`
+    derives its own - never hardcoded.
+    """
+    global _NARRATOR_ALIGNER
+    if _NARRATOR_ALIGNER is not None:
+        return _NARRATOR_ALIGNER
+    try:
+        from narrator.align import aligner
+    except ImportError:
+        here = os.path.dirname(os.path.abspath(__file__))         # electron/scripts
+        root = os.path.join(os.path.dirname(os.path.dirname(here)), "python")
+        if os.path.isdir(os.path.join(root, "narrator")) and root not in sys.path:
+            sys.path.insert(0, root)
+        try:
+            from narrator.align import aligner
+        except ImportError as missing:
+            raise SystemExit(
+                f"--backend qwen3 needs the narrator package for its item->word mapping "
+                f"and its language table, and this interpreter ({sys.executable}) cannot "
+                f"import it ({missing}). It was looked for on PYTHONPATH and at {root}. "
+                f"Run this script from BookForge (which sets PYTHONPATH) or export "
+                f"PYTHONPATH=<checkout>/python.")
+    _NARRATOR_ALIGNER = aligner
+    return aligner
+
+
+def narrator_gate_shift_s():
+    """narrator's own `align/run.GATE_MAX_SHIFT_S`, in seconds.
+
+    IMPORTED, NOT RESTATED. The per-chunk door and this one gate on the same
+    number for the same reason, and the reasoning behind 2.0 s (the Mac
+    bake-off's good population sat within 1.5 s; its gross misses were 2.1-7.8 s)
+    lives with the constant. Two spellings of it is how the two doors come to
+    disagree about what "too far" means. Verified importable in this PC's
+    `qwen-align` WSL env on 2026-09-08.
+    """
+    narrator_aligner()   # fixes sys.path, or refuses by name
+    from narrator.align.run import GATE_MAX_SHIFT_S
+    return GATE_MAX_SHIFT_S
 
 
 def _resolved_device():
@@ -144,16 +244,35 @@ def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
 # thread PER CORE, i.e. 4 workers × 20 threads = 80 threads fighting for 20 cores).
 WORKER_THREADS = 4
 _MODEL = None; _META = None; _WAV = None; _LANG = "en"; _DEVICE = DEVICE
-def _winit(wav_path, lang, device):
-    global _MODEL, _META, _WAV, _LANG, _DEVICE
+_BACKEND = "whisperx"
+def _winit(wav_path, lang, device, backend="whisperx"):
+    global _MODEL, _META, _WAV, _LANG, _DEVICE, _BACKEND
     # must be set before torch/whisperx import so OpenMP honors it
     os.environ["OMP_NUM_THREADS"] = str(WORKER_THREADS)
     os.environ["MKL_NUM_THREADS"] = str(WORKER_THREADS)
     if device == "mps":
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # before torch import
+    _WAV = wav_path; _LANG = lang; _DEVICE = device; _BACKEND = backend
+    if backend == "qwen3":
+        import torch
+        from qwen_asr import Qwen3ForcedAligner
+        torch.set_num_threads(WORKER_THREADS)
+        aligner = narrator_aligner()
+        # Validated HERE, before the model load and before a book's worth of
+        # badly placed words: the model takes an English language NAME and does
+        # not fall back for a language it was not trained on.
+        aligner.qwen3_language_name(lang)
+        # bfloat16 on cuda/mps (what the model card runs and what the bake-off
+        # measured), float32 on cpu, where bfloat16 matmuls are emulated and
+        # slower than the type they save memory over. Same rule as
+        # `narrator/align/aligner._load_qwen3`.
+        dtype = torch.float32 if device == "cpu" else torch.bfloat16
+        _MODEL = Qwen3ForcedAligner.from_pretrained(
+            aligner.QWEN3_MODEL_ID, dtype=dtype, device_map=device)
+        _META = None
+        return
     import torch, whisperx
     torch.set_num_threads(WORKER_THREADS)
-    _WAV = wav_path; _LANG = lang; _DEVICE = device
     _MODEL, _META = whisperx.load_align_model(language_code=lang, device=device)
 
 # How far ahead the sentence walker may look for the next epub token before it
@@ -188,27 +307,88 @@ def _consume_sentence(words, j, tk):
     return last_end, min(max(p, last_hit + 1), len(words))
 
 
+def _qwen_align_words(wav_path, text, span_s):
+    """One sliced wav + its text -> `[(start, end, normalized token)]`.
+
+    The qwen3 half of `_align_chunk`, kept out of it so the whisperx path reads
+    exactly as it always has. The model returns ITS OWN tokenization, so the
+    items are mapped back onto our whitespace words by
+    `narrator.align.aligner._map_items_onto_words` - the same OVERLAP walk the
+    per-chunk door uses, imported rather than copied (see `narrator_aligner`).
+    A merge (one item covering two of our words) gives both words the merged
+    span, which is the honest answer: that is all the model said about either.
+    """
+    aligner = narrator_aligner()
+    if span_s > aligner.QWEN3_MAX_AUDIO_S:
+        # REFUSED BY NAME rather than truncated. The model card places timestamps
+        # "within up to 5 minutes" and says nothing about longer input, so a
+        # longer window is a caller who raised --chunk-s past what this backend
+        # can see, not a case to handle quietly.
+        raise RuntimeError(
+            f"chunk is {span_s:.1f}s of audio; Qwen3-ForcedAligner places timestamps "
+            f"within {aligner.QWEN3_MAX_AUDIO_S:.0f}s. Lower --chunk-s (a chunk's span "
+            f"is capped at 2x it) or align this book with --backend whisperx.")
+    results = _MODEL.align(audio=wav_path, text=text,
+                           language=aligner.qwen3_language_name(_LANG))
+    # ONE list per audio, and one audio was passed.
+    mapped = aligner._map_items_onto_words(results[0], aligner.chunk_words(text))
+    return [(start, end, _norm(word)) for word, start, end, _score in mapped]
+
+
+def _drop_collapsed(out, idxs, ci):
+    """QWEN3 ONLY: reject a sentence placed at or before the one accepted before
+    it, inside one chunk. It keeps its coarse time instead.
+
+    THE MAC'S WORST CASE, 2026-09-08: three consecutive tiny chunks at 1857.5 /
+    1859.1 / 1861.1 s were ALL predicted at 1855.43 - the model collapsed them
+    onto one position and said nothing, because it publishes no confidence and
+    never refuses. Two sentences cannot both start where one sentence starts, so
+    this needs no threshold and no measurement: it is an ordering invariant, and
+    the second of a colliding pair is the one that is certainly wrong.
+
+    It is NOT applied to whisperx, whose per-word CTC posterior is monotonic by
+    construction and whose behaviour this run leaves byte-for-byte alone.
+    """
+    kept = {}
+    previous = None
+    for si in idxs:
+        if si not in out:
+            continue
+        start = out[si][0]
+        if previous is not None and start <= previous:
+            log(f"chunk {ci}: sentence {si} placed at {start:.3f}s, at or before the "
+                f"previous accepted sentence's {previous:.3f}s — rejected (collapsed "
+                f"placement); it keeps coarse timing")
+            continue
+        kept[si] = out[si]
+        previous = start
+    return kept
+
+
 def _align_chunk(args):
     ci, idxs, a, b, texts = args
-    import whisperx
     t0 = time.time(); tmp = None
     try:
         fd, tmp = tempfile.mkstemp(suffix=".wav"); os.close(fd)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(a), "-t", str(b - a),
                         "-i", _WAV, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
-        audio = whisperx.load_audio(tmp)
-        seg = [{"text": " ".join(texts), "start": 0.0, "end": len(audio) / SR}]
-        res = whisperx.align(seg, _MODEL, _META, audio, _DEVICE, return_char_alignments=False)
-        if _DEVICE == "mps":  # release Metal buffers per chunk — keeps wired memory flat
-            import torch
-            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"): torch.mps.empty_cache()
         # KEEP THE WORD ENDS. Until 2026-09-06 this discarded w["end"], so a
         # sentence had no end of its own and every cue was forced to run to the
         # NEXT sentence's onset — see build_events.
         words = []
-        for sg in res["segments"]:
-            for w in sg.get("words", []):
-                words.append((w.get("start"), w.get("end"), _norm(w.get("word", ""))))
+        if _BACKEND == "qwen3":
+            words = _qwen_align_words(tmp, " ".join(texts), b - a)
+        else:
+            import whisperx
+            audio = whisperx.load_audio(tmp)
+            seg = [{"text": " ".join(texts), "start": 0.0, "end": len(audio) / SR}]
+            res = whisperx.align(seg, _MODEL, _META, audio, _DEVICE, return_char_alignments=False)
+            for sg in res["segments"]:
+                for w in sg.get("words", []):
+                    words.append((w.get("start"), w.get("end"), _norm(w.get("word", ""))))
+        if _DEVICE == "mps":  # release Metal buffers per chunk — keeps wired memory flat
+            import torch
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"): torch.mps.empty_cache()
         # Walk the aligned words in order, accepting a sentence only when its
         # opening tokens confirm as an ordered run inside a tight window. The old
         # rule (first token found ANYWHERE ahead) let a single common word like
@@ -232,6 +412,8 @@ def _align_chunk(args):
                         out[si] = (words[j][0] + a, (end + a) if end is not None else None)
                         break
                 j += 1
+        if _BACKEND == "qwen3":
+            out = _drop_collapsed(out, idxs, ci)
         return (ci, out)
     except Exception as e:
         log(f"chunk {ci} [{idxs[0]}:{idxs[-1] + 1}] FAILED: {e}")
@@ -440,6 +622,84 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
     W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
     S = [g for i in sorted(parts_s) for g in parts_s[i]]
     return W, lang, S, sorted(failed_idx), n
+
+def _delegated_rough(args):
+    """Run stage 1 in `--rough-python` and read its transcript back.
+
+    Returns exactly what `rough_transcribe` returns, so the caller cannot tell
+    which interpreter produced it.
+
+    WHY THIS EXISTS: measured 2026-09-08, the `qwen-align` env on this PC has
+    qwen_asr/torch/soundfile and NOT faster_whisper (the Mac component is the
+    same shape). So under `--backend qwen3` the interpreter that can align cannot
+    transcribe, and the whisperx-env that ships with BookForge is the one that
+    can. One process per stage, each named, rather than one env that has to hold
+    both stacks - `qwen-asr` pins transformers 4.57.6, which is exactly the kind
+    of pin that breaks the other half.
+
+    THE CHILD RUNS ON CPU, STATED. The only interpreter BookForge delegates to is
+    the whisperx-env component, which is CPU-only BY DESIGN (its own docblock),
+    and `_make_whisper` would hand `WhisperModel(device="cuda")` to a ctranslate2
+    with no CUDA libraries. It is said out loud in the log rather than inferred
+    from a silent failure. A hand-run that wants a GPU rough pass runs the two
+    stages itself with `--transcribe-only` and `--rough-cache`.
+
+    ITS PROGRESS IS FORWARDED. The child emits the same STAGE/PROGRESS/
+    SUBPROGRESS protocol this script does, so those lines go straight to our
+    stdout and the bridge's transcribe bar moves exactly as it always has.
+    Everything else it says goes to our stderr log, and a non-zero exit is a
+    failed run with the child's own tail in the message.
+    """
+    if not os.path.isfile(args.rough_python):
+        raise SystemExit(
+            f"--rough-python {args.rough_python} is not a file. It names the interpreter "
+            f"the rough transcribe stage runs in (BookForge's whisperx-env python); it is "
+            f"never guessed.")
+    fd, handoff = tempfile.mkstemp(prefix="align-rough-", suffix=".json"); os.close(fd)
+    argv = [args.rough_python, os.path.abspath(__file__),
+            "--audio", args.audio,
+            # Required by the parser and unused by --transcribe-only; passed
+            # through rather than made conditional, so the child's argv is this
+            # run's argv and not a second dialect of it.
+            "--sentences", args.sentences, "--out", args.out,
+            "--silence-source", args.silence_source,
+            "--lang", args.lang, "--rough-model", args.rough_model,
+            "--device", "cpu",
+            "--transcribe-only", handoff]
+    log(f"rough transcribe delegated to {args.rough_python} (cpu): {' '.join(argv[1:])}")
+    tail = []
+    try:
+        child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, bufsize=1)
+        def _drain_err():
+            for line in child.stderr:
+                line = line.rstrip()
+                if line:
+                    tail.append(line)
+                    del tail[:-40]
+                    log(f"[rough] {line}")
+        t = threading.Thread(target=_drain_err, daemon=True); t.start()
+        for line in child.stdout:
+            line = line.rstrip()
+            if line.startswith(("STAGE ", "PROGRESS ", "SUBPROGRESS ")):
+                emit(line)
+            elif line:
+                tail.append(line); del tail[:-40]
+                log(f"[rough] {line}")
+        code = child.wait()
+        t.join(timeout=10)
+        if code != 0 or not os.path.getsize(handoff):
+            fail(f"the rough transcribe stage failed in {args.rough_python} "
+                 f"(exit {code}): " + " | ".join(tail[-6:]))
+        with open(handoff, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    finally:
+        if os.path.exists(handoff):
+            try: os.remove(handoff)
+            except OSError: pass
+    return (doc["words"], doc["lang"], [tuple(g) for g in doc["segs"]],
+            doc["failedSliceIdx"], doc["totalSlices"])
+
 
 def coarse_align(sents, W, failed_ranges=()):
     """Sentence -> rough audio time, drift-proof at book scale.
@@ -846,13 +1106,23 @@ def detect_silences_autoeditor(src, thr, min_s, total_dur, exe="auto-editor"):
     return iv
 
 
-def align_fingerprint(sents, rough_model, chunk_s, lang):
+def align_fingerprint(sents, rough_model, chunk_s, lang, backend="whisperx"):
     """Identity of an align result: the exact sentence list plus every input that
     changes the CTC output. A cache written under a different fingerprint is a
-    different alignment and must never be silently reused."""
+    different alignment and must never be silently reused.
+
+    THE BACKEND IS ONE OF THOSE INPUTS (2026-09-08). Two aligners with different
+    accuracy, different failure modes and different gates produce different word
+    times for the same chunk, and reusing one under the other's name would ship
+    wav2vec2 cues in a run whose log says qwen3. `whisperx` is the default value
+    and contributes NOTHING to the hash, so a fingerprint computed today for a
+    whisperx run still matches a cache written before this argument existed —
+    every cache on disk is a whisperx cache."""
     h = hashlib.sha256()
     h.update(("\u0000".join(sents)).encode("utf-8"))
     h.update(f"|{rough_model}|{chunk_s}|{lang}".encode("utf-8"))
+    if backend != "whisperx":
+        h.update(f"|backend={backend}".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1335,7 +1605,39 @@ def main():
     # result can be reproduced. Never use it for corpus output.
     ap.add_argument("--no-rescue", action="store_true")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
+    # WHICH FORCED ALIGNER. Default whisperx, so anyone running this by hand gets
+    # exactly the behaviour this script has always had; the app passes qwen3
+    # (Owen, 2026-09-08). See the backend note at the top of this file for what
+    # each one measured and for what qwen3 cannot do.
+    ap.add_argument("--backend", default="whisperx", choices=["whisperx", "qwen3"],
+                    help="which forced aligner runs the per-chunk stage")
+    # THE ROUGH TRANSCRIBE STAGE'S OWN INTERPRETER — because the two stages do
+    # not live in the same environment any more.
+    #
+    # MEASURED 2026-09-08 in this PC's WSL env `qwen-align`: qwen_asr, torch,
+    # soundfile and numpy import; faster_whisper and whisperx do NOT. The Mac's
+    # `qwen-align-env` component is the same shape by construction (qwen-asr 0.0.6
+    # pins transformers 4.57.6 and drags gradio/flask; faster-whisper is not in
+    # it). So a qwen3 run has an interpreter that can ALIGN and cannot
+    # TRANSCRIBE, and the whisperx-env - which BookForge still ships - is the one
+    # that can. Naming it here runs stage 1 there, as a child of this process,
+    # and hands the transcript back through --transcribe-only's JSON.
+    #
+    # NEVER GUESSED: absent, the rough stage runs in THIS interpreter and refuses
+    # by name if it cannot (require_worker_imports), which is what a hand-run
+    # whisperx alignment has always done.
+    ap.add_argument("--rough-python", default="",
+                    help="interpreter to run the rough transcribe stage in "
+                         "(BookForge's whisperx-env python); absent = this one")
+    # The other half of --rough-python: run ONLY the rough transcribe and write
+    # its result here, then exit 0. Not a user-facing mode - it is how the parent
+    # asks another interpreter for a transcript.
+    ap.add_argument("--transcribe-only", default="",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.transcribe_only and args.rough_python:
+        ap.error("--transcribe-only IS the rough stage; it cannot also delegate it "
+                 "with --rough-python")
     if args.hole_min_s < 0:
         ap.error(f"--hole-min-s must be >= 0 (got {args.hole_min_s}); 0 = report every gap")
     if args.report_hole_min_s is None:
@@ -1401,7 +1703,27 @@ def main():
     if DUR <= 0:
         raise RuntimeError(f"ffprobe reported non-positive duration {DUR} for {args.audio!r}")
     log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={args.device}, "
-        f"RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
+        f"backend={args.backend}, RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
+
+    if args.transcribe_only:
+        # STAGE 1 ALONE, for a parent running in another interpreter — see
+        # `_delegated_rough`. Nothing else in this function runs: no full-book
+        # wav, no silence scan, no align pool, no VTT. The transcript is the
+        # deliverable and the parent owns everything after it.
+        stage("transcribe")
+        W, lang, rough_segs, failed_slice_idx, total_slices = rough_transcribe(
+            args.audio, args.rough_model, args.lang, DUR)
+        with open(args.transcribe_only, "w", encoding="utf-8") as fh:
+            json.dump({"words": W, "lang": lang, "segs": rough_segs,
+                       "failedSliceIdx": failed_slice_idx,
+                       "totalSlices": total_slices}, fh)
+        # THE HOLES TRAVEL WITH IT. `--rough-cache` deliberately refuses to store
+        # a transcript with failed slices (a re-run would inherit them forever);
+        # this handoff is not a cache, it is this run's own stage 1, and the
+        # parent needs the failure counts to decide whether to go on at all.
+        log(f"transcribe-only: {len(W)} words, {len(rough_segs)} segments, lang={lang}, "
+            f"failed slices {len(failed_slice_idx)}/{total_slices} -> {args.transcribe_only}")
+        return
 
     # the full-book 16k wav is only needed by the ALIGN workers (transcribe
     # slices from the original audio itself), so decode it on a background
@@ -1437,7 +1759,12 @@ def main():
                 log(f"rough cache unreadable ({e}); transcribing")
                 W = None
         if W is None:
-            W, lang, rough_segs, failed_slice_idx, total_slices = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
+            # ONE STAGE, TWO POSSIBLE INTERPRETERS, chosen by a stated flag and
+            # never by probing — see `_delegated_rough` for why the qwen3 arm
+            # cannot run this stage itself.
+            W, lang, rough_segs, failed_slice_idx, total_slices = (
+                _delegated_rough(args) if args.rough_python
+                else rough_transcribe(args.audio, args.rough_model, args.lang, DUR))
             failed_slices = len(failed_slice_idx)
             log(f"rough transcript: {len(W)} words, {len(rough_segs)} segments, lang={lang}, "
                 f"failed slices {failed_slices}/{total_slices}")
@@ -1512,6 +1839,17 @@ def main():
         # means "not narrated" (interior drop) — excluded from chunk text so the
         # CTC align isn't fed pages of words that have no audio.
         stage("align")
+        if args.backend == "qwen3":
+            # BEFORE THE POOL, not inside a worker: qwen3 takes an English
+            # language NAME and does not fall back for a language it was not
+            # trained on - it just places the words badly - so an unsupported
+            # code costs a refusal here instead of a book's worth of bad cues.
+            # `lang` rather than `args.lang`, because `auto` has just been
+            # resolved by the transcribe stage.
+            try:
+                narrator_aligner().qwen3_language_name(lang)
+            except Exception as unsupported:
+                fail(f"--backend qwen3 cannot align this book: {unsupported}")
         narr = [i for i in range(first_idx, last_idx) if rough[i] is not None]
         chunks = []; capped = 0; capped_ranges = []; cur = 0; base = rough[narr[0]] if narr else 0.0
         for x in range(1, len(narr) + 1):
@@ -1535,7 +1873,8 @@ def main():
                 f"and were truncated — coarse alignment is likely off: {ranges}")
         log(f"{len(chunks)} chunks")
 
-        align_fp = align_fingerprint(sents, args.rough_model, args.chunk_s, lang)
+        align_fp = align_fingerprint(sents, args.rough_model, args.chunk_s, lang,
+                                     args.backend)
         cached = (load_align_cache(args.align_cache, align_fp, N)
                   if (args.align_cache and os.path.exists(args.align_cache)) else None)
         sent_start = list(rough)  # default to rough; refine with WhisperX
@@ -1576,8 +1915,15 @@ def main():
             # recycling the same 30-min slice went 154 s -> 43 s (42x), identical
             # cues; CUDA memory sat flat at the first chunk's peak (caching allocator).
             mtpc = None if args.device in ("mps", "cuda") else 2
-            require_worker_imports("align", "torch", "whisperx")
-            with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang, args.device), maxtasksperchild=mtpc) as pool:
+            # THE BACKEND DECIDES WHAT A WORKER MUST IMPORT. Asked in the PARENT,
+            # once, because a pool worker that dies in its initializer is
+            # replaced forever with nothing in the log (see the function).
+            require_worker_imports(
+                "align", *(("torch", "qwen_asr", "soundfile") if args.backend == "qwen3"
+                           else ("torch", "whisperx")))
+            with ctx.Pool(workers, initializer=_winit,
+                          initargs=(wav, lang, args.device, args.backend),
+                          maxtasksperchild=mtpc) as pool:
                 for ci, out in pool.imap_unordered(_align_chunk, pending):
                     completed.add(ci)
                     # out is None ONLY on an align error (ffmpeg/whisperx blew up
@@ -1665,6 +2011,32 @@ def main():
     # to whisper. Interpolated/paraphrase sentences (not matched_direct) keep
     # whatever the align stage gave them — whisper had no word to anchor them.
     WV_TRUST_S = 1.0
+    # THE PER-CHUNK GATE'S SHIFT CHECK, FOR THE SENTENCES `WV_TRUST_S` CANNOT SEE.
+    #
+    # The whisper-authority pass below IS the shift gate, and a stricter one
+    # (1.0 s, measured on real books) — but only for sentences whose own opening
+    # was found in the rough transcript, because only those have a real spoken
+    # time to be checked against. An INTERPOLATED sentence "keeps whatever the
+    # align stage gave it", which was safe with a CTC aligner that refuses what it
+    # cannot place and is not safe with qwen3, which places everything and says
+    # nothing: on the Mac's 61 scored chunks its gross misses were +3.5 s, -7.8 s
+    # and a collapse, and every one of those was a short/heading window - exactly
+    # the population `drift_audit` also skips (it needs three tokens and an
+    # unambiguous trigram).
+    #
+    # So under qwen3 an interpolated sentence whose CTC time is further than
+    # narrator's own `align/run.GATE_MAX_SHIFT_S` from its coarse anchor is
+    # rejected back onto that anchor, tagged `matched=suspect` like every other
+    # rescued cue. The CONSTANT is imported, not restated: it is 2.0 s, the gap
+    # between the Mac's good population (every scored prose chunk within 1.5 s)
+    # and its bad one, and one number in one place is what keeps the two doors
+    # agreeing about what "too far" means. The band is deliberately WIDER than
+    # WV_TRUST_S because an interpolated anchor is itself only an estimate.
+    #
+    # WHISPERX IS UNTOUCHED BY THIS. Its behaviour in this script is byte-for-byte
+    # what it was, which is what "default whisperx" is for.
+    GATE_SHIFT_S = narrator_gate_shift_s() if args.backend == "qwen3" else None
+    gated_interpolated = 0; max_gated = 0.0
     reverted = 0; max_revert = 0.0
     reverted_idx = set()   # cues whose start now comes from the ROUGH clock
     kept_ctc = 0           # contradicted, but CTC lands in a real pause -> trusted
@@ -1696,6 +2068,28 @@ def main():
                         kept_ctc += 1     # the substituted time lands in a real pause
                     continue
                 suspect_idx.add(i)
+        elif (GATE_SHIFT_S is not None and rough[i] is not None
+                and sent_span[i] is not None):
+            # NOT matched_direct: the coarse anchor is interpolated, so it is an
+            # estimate rather than a spoken time — but it is the only expectation
+            # this sentence has, and a CTC time seconds away from it under a
+            # backend that never refuses is the qwen3 gross miss. `sent_span[i]
+            # is not None` restricts this to sentences the align stage actually
+            # placed; one that already fell back to coarse timing has nothing to
+            # gate.
+            d = abs(sent_start[i] - rough[i])
+            if d > GATE_SHIFT_S:
+                max_gated = max(max_gated, d)
+                sent_start[i] = rough[i]; sent_span[i] = None
+                gated_interpolated += 1
+                reverted_idx.add(i)   # its start now comes from the rough clock
+                suspect_idx.add(i)
+    if gated_interpolated:
+        log(f"qwen3 gate: {gated_interpolated} interpolated cue(s) placed further than "
+            f"{GATE_SHIFT_S:.1f}s from their coarse anchor (worst {max_gated:.1f}s) — "
+            f"reverted to the anchor and tagged matched=suspect. qwen3 places a window "
+            f"whose text does not match the speech rather than refusing it, and these "
+            f"sentences have no direct transcript match for whisper-authority to check.")
     if reverted or suspect_idx:
         log(f"whisper-authority: {reverted} cue(s) rescued onto the transcript word time "
             f"(wav2vec2 disagreed by > {WV_TRUST_S:.1f}s; worst {max_revert:.1f}s) - of those "

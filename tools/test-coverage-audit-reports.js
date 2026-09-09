@@ -218,6 +218,100 @@ check('narrator itself no longer refuses a book on coverage', () => {
     'coverage_gate.check() raises a refusal of its own again');
 });
 
+// ── 2026-09-08: the qwen3 cutover ───────────────────────────────────────────
+//
+// Owen: *"good. go ahead and wire it up to alignment so itll be used to align the
+// chunks in app"*, *"for generate-sentences logic and for normal post-render
+// alignment"*. Two doors moved onto one backend, and the thing that would go
+// wrong silently is a whisperx arm creeping back in behind one of them: the two
+// score words on different scales (`Alignment.score_source`), so a book measured
+// by the other instrument under the same label reads as a coverage regression
+// nobody caused.
+
+check('every app door states --backend qwen3, and none of them resolves a backend', () => {
+  const job = read('electron/coverage-align-job.ts');
+  assert.ok(/'--backend', 'qwen3'/.test(job),
+    'the per-chunk door must STATE the backend: narrator\'s DEFAULT_BACKEND is '
+    + 'still whisperx, which is its contract with a caller that names none');
+  const bridge = read('electron/whisperx-align-bridge.ts');
+  assert.ok(/'--backend', 'qwen3'/.test(bridge),
+    'the whole-m4b door must state it too — "for generate-sentences logic AND '
+    + 'for normal post-render alignment"');
+  for (const [file, source] of [['coverage-align-job.ts', job],
+                                ['whisperx-align-bridge.ts', bridge]]) {
+    assert.ok(!/backend\s*[=:]\s*['"]whisperx['"]/.test(source),
+      `${file} names whisperx as a backend somewhere — there is no fallback arm`);
+  }
+});
+
+check('the per-chunk door resolves ONE aligner env, and refuses instead of falling back', () => {
+  const job = read('electron/coverage-align-job.ts');
+  assert.ok(/resolveQwenAlignEnv/.test(job),
+    'the job must ask qwen-aligner.ts — a second copy of that ladder is a second '
+    + 'answer, and the copy is the one that goes stale');
+  assert.ok(!/resolveWhisperxEnvRoot/.test(job),
+    'the job still reaches for the whisperx env; the align stage does not run there');
+  const compiled = require(JOB);
+  assert.strictEqual(typeof compiled.coverageAlignRefusal, 'function',
+    'the refusal is exported so the CLI\'s plan-time check says the SAME sentence '
+    + 'as the job, rather than a second wording of one fact');
+  assert.ok(read('cli/coverage-align.js').includes('coverageAlignRefusal()'),
+    'and the CLI adapter uses it rather than writing its own');
+});
+
+check('the post-render phase runs BEFORE the session leaves the guest, and never fails the render', () => {
+  const bridge = read('electron/parallel-tts-bridge.ts');
+  // Scoped to the completion path itself: `cacheSessionToProject` is DEFINED
+  // earlier in this file and called by other doors, so a whole-file indexOf
+  // compares the phase against a declaration rather than against the call that
+  // copies this render's session.
+  const at = bridge.indexOf('async function checkAllWorkersComplete');
+  assert.ok(at > 0, 'checkAllWorkersComplete is the completion path');
+  const complete = bridge.slice(at);
+  const align = complete.indexOf('await runPostRenderAlignment(session)');
+  const cache = complete.indexOf('await cacheSessionToProject(');
+  const normalize = complete.indexOf('await normalizeWslSessionToWindows(');
+  assert.ok(align > 0, 'the TTS step must run the alignment as its final phase');
+  assert.ok(cache > 0 && normalize > 0, 'both copies out of the guest are here');
+  // ORDER IS THE WHOLE DESIGN. On Windows the render writes the session inside
+  // WSL, the qwen env is in the guest, and the guest cannot see the network
+  // drive the session is copied to. The report and the measured transcript are
+  // session files: written after either copy, they stay on ext4 and the native
+  // assembly never sees them.
+  assert.ok(align < cache && align < normalize,
+    'the alignment must run BEFORE both copies out of the guest — see '
+    + 'runPostRenderAlignment');
+  const phase = bridge.slice(bridge.indexOf('async function runPostRenderAlignment'),
+    bridge.indexOf('function postRenderAlignProgress(session'));
+  assert.ok(!/throw /.test(phase),
+    'the phase must never throw: no aligner is an announced SKIP and a failed '
+    + 'align is an announced failure, and the audiobook ships either way with '
+    + 'the proportional estimate');
+  assert.ok(/Chunk alignment skipped/.test(phase) && /Chunk alignment failed/.test(phase),
+    'and both outcomes must be SAID — the one allowed skip in this path is a '
+    + 'stated one');
+  assert.ok(/stopCoverageAlign\(postRenderAlignStepId\(/.test(bridge),
+    'a user stop must reach the align child; it is the one long-running thing in '
+    + 'this job that is not a worker');
+});
+
+check('the gate is one constant, in one place, imported by the whole-book door', () => {
+  const run = read('python/narrator/align/run.py');
+  assert.ok(/^GATE_MAX_SHIFT_S = 2\.0$/m.test(run),
+    'narrator/align/run.py owns GATE_MAX_SHIFT_S');
+  assert.ok(/def gate_refusal\(/.test(run));
+  for (const stage of ['gate/shift', 'gate/order', 'gate/collapse']) {
+    assert.ok(run.includes(stage), `the gate must name its check: ${stage}`);
+  }
+  assert.ok(/stage='gate'/.test(run),
+    "a gated chunk must be recorded under stage 'gate' and estimated, exactly "
+    + 'like one the aligner could not place');
+  const script = read('electron/scripts/align_audiobook.py');
+  assert.ok(/from narrator\.align\.run import GATE_MAX_SHIFT_S/.test(script),
+    'align_audiobook.py must IMPORT the constant, not restate it — two spellings '
+    + 'is how the two doors come to disagree about what "too far" means');
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 
 console.log(failures === 0 ? '\nALL GREEN' : `\n${failures} CHECK(S) FAILING`);

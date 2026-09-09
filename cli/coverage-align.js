@@ -62,19 +62,19 @@ async function main() {
 
   const job = require('../dist/electron/coverage-align-job.js');
   for (const fn of ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython',
-                    'coverageReportPath']) {
+                    'coverageAlignRefusal', 'coverageReportPath']) {
     if (typeof job[fn] !== 'function') {
       throw new Error(
         `compiled coverage-align-job missing ${fn} — rebuild (npx tsc -p tsconfig.electron.json)`);
     }
   }
-  // The plan-time check the narration dialog makes, made here for the same
-  // reason: an absent aligner is cheap to say now and expensive to discover
-  // after the render.
+  // The plan-time check the app makes, made here for the same reason: an absent
+  // aligner is cheap to say now and expensive to discover after the render. The
+  // SENTENCE is the job's, not a second wording of the same fact — the backend is
+  // qwen3 on every door now (Owen, 2026-09-08) and what is missing differs per
+  // machine (a Mac add-on, a WSL env name).
   if (job.coverageAlignPython() === null) {
-    throw new Error(
-      'the whisperx add-on is not installed, and the aligner runs in it. Install it in '
-      + 'Settings -> Add-ons (whisperx-env) — narrator\'s own interpreters must not grow torch.');
+    throw new Error(job.coverageAlignRefusal());
   }
   const events = require('../dist/electron/bridge-events.js');
 

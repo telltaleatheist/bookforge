@@ -23,40 +23,63 @@
  * disk, the aligner is not installed, the worker died. Then there is no report,
  * assembly says so, and the book is still assembled from what was rendered.
  *
+ * ── THE BACKEND IS QWEN3 (Owen, 2026-09-08) ─────────────────────────────────
+ *
+ * *"good. go ahead and wire it up to alignment so itll be used to align the
+ * chunks in app"* … *"for generate-sentences logic and for normal post-render
+ * alignment"*. So this door passes `--backend qwen3` and there is no whisperx
+ * arm behind it — not as a fallback, not when the qwen env is missing. A machine
+ * with no qwen env does not align and is told so by name
+ * (`qwen-aligner.qwenAlignRefusal`), because the two backends do not score words
+ * on the same scale (`align/aligner.py`, `score_source`) and a book measured by
+ * the other instrument under this label would be a silent substitution.
+ *
+ * WHAT BOUGHT IT, on Shift (Higgs mistborn, 16.56 h, RTX 3090 Ti in WSL), scored
+ * against 1,083 known chunk starts: qwen3 395x realtime — 151 s for the whole
+ * book — with 890/1083 starts inside 0.1 s once each chunk's own ~0.27 s of head
+ * silence is subtracted. WhisperX on the same GPU: 18x, 39/61 inside 0.1 s, and
+ * it parks ~0.9 s early in the inter-chunk gap.
+ *
  * ── Two environments, one command line ──────────────────────────────────────
  *
  * narrator's half of the alignment (manifest, chunk spans, sentence cues, the
- * report) is stdlib plus the tools env, and it runs in the TOOLS env like every
- * other post-render door — natively, on every platform, including Windows, where
- * `normalizeWslSessionToWindows` has already copied the session out of WSL for
- * exactly this reason.
+ * report) is stdlib. The ALIGNMENT itself needs torch and `qwen_asr`, which
+ * narrator's interpreters do not have and must not grow (the Orpheus envs are
+ * pinned to torch 2.5.1 / vLLM 0.7.3), so `narrator align --python <that env>`
+ * drives it over `align/worker.py`'s JSON-lines protocol with PYTHONPATH pointed
+ * back at this checkout. Nothing is installed and nothing is copied.
  *
- * The ALIGNMENT itself needs torch and whisperx, which narrator's interpreters do
- * not have and must not grow (the Orpheus envs are pinned to torch 2.5.1 / vLLM
- * 0.7.3, which whisperx's torch 2.8 stack cannot coexist with). BookForge already
- * ships that interpreter as the managed "Ebook Alignment (WhisperX)" component,
- * and `narrator align --python <it>` drives it over `align/worker.py`'s
- * JSON-lines protocol with PYTHONPATH pointed back at this checkout. Nothing is
- * installed and nothing is copied.
+ * THE ENV IS RESOLVED BY `qwen-aligner.ts`, not here — one ladder for this door
+ * and for the whole-m4b "Generate sentences" door, because a second copy of it is
+ * a second answer and the copy is the one that goes stale.
  *
- * THE ENV IS RESOLVED BY `whisperx-align-bridge.ts`, not here. That bridge
- * already answers "where is WhisperX" for the whole-m4b alignment — managed
- * component, then `WHISPERX_ENV_PATH`, then a dev conda env by name — and a
- * second copy of that ladder is a second answer, of which the copy is always the
- * one that goes stale. It is imported.
+ * ── ON WINDOWS THE WHOLE SPAWN CROSSES INTO THE GUEST ───────────────────────
+ *
+ * `qwen-asr` wants a CUDA torch env and the PC's is a WSL env, so its interpreter
+ * is a `/home/...` path a Windows process cannot execute. When
+ * `resolveQwenAlignEnv()` answers `viaWsl`, `buildNarratorSpawn` is given that
+ * env's NAME (`wslCondaEnv`) and runs narrator's half inside the guest too, with
+ * every path in the argv translated. That is also what lets the POST-RENDER call
+ * (`parallel-tts-bridge`, the tail of the TTS step) align a session that is still
+ * on ext4 — the guest cannot see the Z: network drive the session is copied to
+ * afterwards, which is exactly why the phase runs before the copy.
  *
  * ── THE DEVICE IS THE USER'S CHOICE, MADE WHEN THE ROW WAS QUEUED ───────────
  *
  * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
  * queue. GPU or CPU? defaults to CPU."
  *
- * It was `--device cpu`, always, and the argument for that is still the argument
- * for the DEFAULT: the aligner is 213.5 s of wall clock for 2,615 s of audio on
- * CPU (RTF 0.082, median 1.72 s a chunk), it runs in the second cpu slot beside
- * the assembly, and a book that had to wait for a card behind a nine-hour
- * narration would be slower for the privilege. What was wrong was making that
- * argument for everyone: a Mac with the GPU free aligns at ~49x realtime, and an
- * operator who knows the card is idle should be able to say so.
+ * It was `--device cpu`, always, and the default has not moved. The argument for
+ * the default was measured on WhisperX (213.5 s of wall clock for 2,615 s of
+ * audio, RTF 0.082, in the second cpu slot beside the assembly) and it is a
+ * WEAKER argument for qwen3, which is a GPU model: 395x realtime on this PC's
+ * 3090 Ti and 87x on the Mac's MPS, against a CPU rate nobody has measured
+ * (float32 there, `align/aligner.py:_load_qwen3`). The default stands because
+ * the queue is what it is — a CPU row runs beside the assembly, a GPU row waits
+ * for the card — and because moving it is Owen's call with a measurement behind
+ * it, not an inference from two GPU numbers. The POST-RENDER phase in
+ * `parallel-tts-bridge.ts` asks for the GPU explicitly, and it is entitled to:
+ * the TTS step already owns the gpu lane at that moment.
  *
  * 'gpu' IS RESOLVED TO A DEVICE NAME HERE, on the machine that runs the row —
  * `mps` on Apple Silicon, `cuda` where CUDA is present, and a machine with
@@ -75,7 +98,7 @@ import * as path from 'path';
 
 import { publishBridgeEvent } from './bridge-events';
 import { buildNarratorSpawn } from './narrator-spawn';
-import { resolveWhisperxEnvRoot, whisperxEnvPython } from './whisperx-align-bridge';
+import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
 import { seedSessionAuthorship } from './session-authorship';
 // The machine's own capability answer — see `resolveAlignDevice`.
@@ -161,6 +184,10 @@ export interface CoverageAlignResult {
  * one chunk over the cores, and the pool divides those threads between workers.
  * That measurement is Owen's, on a free CPU, and HE sets this number when it is
  * in. Until then the app spawns exactly what it has always spawned.
+ *
+ * The qwen3 cutover of 2026-09-08 mostly retires the problem this constant was
+ * written for — the whole Shift book aligned in 151 s on the GPU — but it does
+ * not retire the constant: a CPU row still exists and still has not been swept.
  */
 const ALIGN_CPU_WORKERS = 1;
 
@@ -272,17 +299,35 @@ function sendProgress(
 }
 
 /**
- * The interpreter that can align, or the refusal naming the add-on.
+ * The interpreter that can align, or null.
  *
- * Exported because the plan-time check asks the same question — the narration
- * dialog refuses a guarded run whose aligner is missing BEFORE it queues
- * anything, which is the only point at which the answer is still cheap.
+ * Exported because the plan-time check asks the same question — the CLI refuses a
+ * run whose aligner is missing BEFORE it starts, which is the only point at which
+ * the answer is still cheap.
+ *
+ * ON WINDOWS THIS IS A GUEST PATH (`/home/.../envs/qwen-align/bin/python`) and
+ * nothing on the Windows side may execute it or stat it. It is what goes on
+ * `narrator align --python` inside the guest, and `runCoverageAlign` is what
+ * knows which arm it is on. A caller that only wants "can this machine align"
+ * should read the null-ness, not the string.
  */
 export function coverageAlignPython(): string | null {
-  const root = resolveWhisperxEnvRoot();
-  if (!root) return null;
-  const python = whisperxEnvPython(root);
-  return fs.existsSync(python) ? python : null;
+  const resolved = resolveQwenAlignEnv();
+  return resolved.ok ? resolved.env.python : null;
+}
+
+/**
+ * WHY this machine cannot align, or null when it can.
+ *
+ * The refusal text is `qwen-aligner`'s, exported through here so the CLI's
+ * plan-time check and this job say the SAME sentence. The app states this
+ * refusal twice on purpose — once when a row is composed, once when it runs,
+ * because a row outlives the machine state that composed it — and two different
+ * wordings for one fact is how an operator ends up looking for two problems.
+ */
+export function coverageAlignRefusal(): string | null {
+  const resolved = resolveQwenAlignEnv();
+  return resolved.ok ? null : resolved.error;
 }
 
 /**
@@ -345,19 +390,16 @@ export async function runCoverageAlign(
       return { success: false, error };
     }
   }
-  const python = coverageAlignPython();
-  if (python === null) {
-    // The same refusal the dialog raises at plan time, said again here because a
-    // row can outlive the machine state that composed it: a queue restored after
-    // the add-on was uninstalled must say WHICH add-on rather than "python not
-    // found".
-    const error =
-      'The "Ebook Alignment (WhisperX)" add-on is not installed, so there is nothing on this '
-      + 'machine that can align the rendered chunks. Install it from Settings → Add-ons and '
-      + 'retry this step — the rendered audio is intact.';
+  // The same refusal the CLI raises at plan time, said again here because a row
+  // can outlive the machine state that composed it: a queue restored after the
+  // add-on was uninstalled must say WHICH add-on rather than "python not found".
+  const resolvedEnv = resolveQwenAlignEnv();
+  if (!resolvedEnv.ok) {
+    const error = `${resolvedEnv.error} The rendered audio is intact.`;
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
+  const alignEnv = resolvedEnv.env;
 
   const resolved = await resolveAlignDevice(config.device);
   if (!resolved.ok) {
@@ -371,27 +413,37 @@ export async function runCoverageAlign(
   const reportPath = coverageReportPath(config.processDir);
 
   /*
-   * BookForge's managed torch cache, so the ~378 MB wav2vec2 align checkpoint is
-   * fetched once for the whole app rather than once per user cache. The same
-   * directory `whisperx-align-bridge.ts` points TORCH_HOME at; `align/env.py`
-   * only adopts it when it EXISTS, so it is created here rather than assumed.
+   * BookForge's managed Hugging Face cache, so the ~1.2 GB
+   * Qwen3-ForcedAligner-0.6B checkpoint is fetched once for the whole app rather
+   * than once per user cache. `components/qwen-align-env.ts` DECLARES the
+   * variable and sets nothing; the doors are where it is set, and it is created
+   * here rather than assumed because a cache directory that does not exist is a
+   * download into somewhere else.
    */
-  const torchHome = path.join(app.getPath('userData'), 'runtime', 'whisperx-cache');
-  fs.mkdirSync(torchHome, { recursive: true });
+  const hfHome = qwenAlignCacheDir(app.getPath('userData'));
+  fs.mkdirSync(hfHome, { recursive: true });
 
   const args = [
     'align',
     '--session-dir', config.processDir,
     '--report', reportPath,
     '--language', config.language,
+    // QWEN3, ALWAYS, AND NEVER RESOLVED AT RUNTIME. narrator's own
+    // DEFAULT_BACKEND is still whisperx (an unchanged default is its contract);
+    // the APP's door is qwen3 by Owen's ruling of 2026-09-08, so it says so.
+    '--backend', 'qwen3',
     // The resolved device NAME. Stated rather than left to the CLI's own
     // default so a reader of the job log can see which processor measured the
     // book without going to look up what narrator defaults to.
     '--device', device,
-    // The whisperx interpreter. Absent, narrator refuses BY NAME rather than
+    // The qwen-align interpreter. Absent, narrator refuses BY NAME rather than
     // picking one, which is the behaviour we want everywhere else and the one
-    // thing this door must not leave to chance.
-    '--python', python,
+    // thing this door must not leave to chance. It is passed EVEN WHEN the
+    // narrator parent is already running in that env (the WSL arm): the model
+    // then lives in a child process on both platforms, so `align/env.run_jobs`'s
+    // named worker refusals are the same failure on both, and the argv is one
+    // argv rather than two.
+    '--python', alignEnv.python,
     // THE POOL IS A CPU THING. A GPU row holds the single GPU slot for one
     // model on one card, and N processes there would fight over the same
     // memory rather than over spare cores — so it says 1 out loud rather than
@@ -404,7 +456,12 @@ export async function runCoverageAlign(
     // so naming one here would be a compile-time-legal, runtime-refused mistake.
     phase: 'align',
     args,
-    envExtras: { TORCH_HOME: torchHome },
+    // WHERE NARRATOR'S OWN HALF RUNS. Native everywhere except the machine whose
+    // qwen env lives in WSL: there the interpreter above is a guest path, so the
+    // whole spawn crosses and `buildNarratorSpawn` translates every path in the
+    // argv. See the header, and `narrator-spawn.ts`'s `wslCondaEnv`.
+    ...(alignEnv.viaWsl ? { wslCondaEnv: alignEnv.wslEnvName } : {} as const),
+    envExtras: { HF_HOME: hfHome },
     // No cwdHint: narrator reads cwd for nothing, every path in this argv is
     // absolute, and the default (userData) always exists and is always writable.
   });

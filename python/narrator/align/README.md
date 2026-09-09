@@ -217,21 +217,77 @@ places the words badly:
 pip install qwen-asr        # into a CUDA torch env; soundfile too
 ```
 
-There is **no BookForge component** for this one - the whisperx component is
-CPU-only by design and `qwen-asr` wants CUDA torch - so a qwen3 run is always
-`--python <that env>/python`. On this PC the WSL env **`qwen-align`** has it, and
-that is where the API above was verified on 2026-09-08. Device follows the same
-rule as whisperx: `cpu` / `cuda` / `cuda:N` / `mps` through `check_device`, and a
-GPU request is refused by name while `external-gpu-job.lock` exists. dtype is
-bfloat16 on cuda/mps, float32 on cpu.
+**darwin has a component**: `qwen-align-env`, "Qwen3 forced aligner (Apple
+Silicon)", a managed conda-pack in Settings -> Add-ons
+(`electron/components/qwen-align-env.ts`, landed ac36c1b6). It is separate from
+`whisperx-env` on purpose - that one is CPU-BY-DESIGN and this one exists to use
+the Apple GPU, and `qwen-asr` 0.0.6 pins transformers 4.57.6 and drags
+gradio/flask, which have no business in a small CPU env.
+
+**win32 has no component and cannot have one**: the env has to be a CUDA torch
+env, and on this PC that means a WSL env. It is the hand-built guest env
+**`qwen-align`** (`/home/telltale/anaconda3/envs/qwen-align`, verified
+2026-09-08), NAMED in BookForge's `tool-paths.json` as `qwenAlignEnv` (Settings
+-> Add-ons -> "Qwen3 aligner WSL env"). Absent, BookForge refuses by name and
+does not guess. **`install_qwen_align.sh` is owed** - the env is built by hand
+today.
+
+Either way a qwen3 run is `--python <that env>/python`. BookForge points
+`HF_HOME` at `<userData>/runtime/qwen-align-cache` so the ~1.2 GB checkpoint is
+fetched once for the whole app. Device follows the same rule as whisperx: `cpu` /
+`cuda` / `cuda:N` / `mps` through `check_device`, and a GPU request is refused by
+name while `external-gpu-job.lock` exists. dtype is bfloat16 on cuda/mps,
+float32 on cpu.
+
+**What that env does NOT have** (measured on both machines, 2026-09-08):
+`faster_whisper` and `whisperx`. That matters only to the whole-m4b door
+(`electron/scripts/align_audiobook.py`), whose rough-transcript stage is
+faster-whisper - it runs that stage in the whisperx env through its own
+`--rough-python` and aligns in this one.
+
+### The per-chunk gate (`run.gate_refusal`, `GATE_MAX_SHIFT_S = 2.0`)
+
+qwen3 never refuses, so `align_session` checks where it put things before the
+cues are accepted. A chunk that fails is recorded in the report's `errors` under
+stage **`gate`** and ESTIMATED, exactly like one the aligner could not place at
+all - same code path, same `NOTE estimated chunk <i>` in the VTT.
+
+| check | fires when |
+|---|---|
+| `gate/shift` | a cue's start is more than `GATE_MAX_SHIFT_S` from the start the PROPORTIONAL estimate would have given it |
+| `gate/order` | a cue's `quality['monotonic']` is False - the sentence's own words were placed backwards |
+| `gate/collapse` | two cues of one chunk share a start |
+
+**2.0 s is a first estimate, from the Mac bake-off**, and it is written down in
+one place: the five gross misses there were +3.5 s, -7.8 s and three tiny chunks
+collapsed onto one position 2.1-5.7 s away, while every prose chunk it placed
+well sat within 1.5 s of proportional. `electron/scripts/align_audiobook.py`
+imports this constant rather than restating it.
+
+**WHAT THIS DOOR CANNOT LOSE, AND WHY THE GATE IS SMALLER THAN IT SOUNDS.**
+`sentences.sentence_cues` builds every cue inside the chunk's own manifest span:
+the first starts at the chunk's start, the last ends at the chunk's end, and
+interior seams are clamped `MIN_CUE_S` apart. So a chunk cannot be dragged onto
+another chunk's audio here, and a SINGLE-SENTENCE chunk - which is what a heading
+is - cannot be moved at all. The 59 heading misses the Shift bake-off found cost
+this door nothing; the gate is about the INTERIOR of a multi-sentence chunk. The
+door where a sentence really can land seconds away is the whole-book one, and
+that is where the same constant does the heavy lifting.
 
 ### Why the default did not move
 
-`DEFAULT_BACKEND` is still `whisperx`. An unchanged default is the contract, and
-switching the app onto derived scores that the coverage thresholds have never
-been calibrated against would change what "this chunk failed coverage" means
-without anybody measuring it. That is a separate decision with the Shift
-calibration behind it.
+`DEFAULT_BACKEND` is still `whisperx`. An unchanged default is the contract for a
+caller that names no backend, and switching it would change what "this chunk
+failed coverage" means for every such caller without anybody measuring it.
+
+**THE APP IS NOT SUCH A CALLER (2026-09-08).** Every BookForge door now says
+`--backend qwen3` out loud - the post-render phase, the standalone Align row, the
+CLI adapter and the whole-m4b "Generate sentences" script - so the default moving
+or not is a question about `narrator align` run by hand. What is still owed is the
+calibration itself: `engine_profiles.min_word_score = 0.4` was measured on
+whisperx's CTC posterior and has NOT been scored against the derived numbers, so
+a coverage FAILURE under qwen3 does not yet mean what one under whisperx means.
+That is the audit half of the report; the transcript half is measured and gated.
 
 ### `align_text_window` - the corpus cutter's door
 
@@ -382,12 +438,33 @@ align took ~2 h on CPU while the assembly held the second CPU slot waiting — O
 read that as a freeze twice and ruled: *"remove the align the narration checkbox.
 lets just have it permanently do it that way [the proportional estimate]. if the
 user wants an exact alignment they can hit generate sentences on the bookforge
-library."* So no narration run composes this row any more; the only doors left are
-the CLI (`narrator align`, `bookforge-tts --align`) and a queue file restored from
-before that date. Where it does run, the row REPORTS: it succeeds whenever the
+library."*
+
+**AND IT CAME BACK THE SAME DAY, AS A PHASE RATHER THAN A ROW** - because what
+was wrong with it was the two hours, not the alignment. Owen, once the qwen3
+bake-off was in: *"good. go ahead and wire it up to alignment so itll be used to
+align the chunks in app"*, *"for generate-sentences logic and for normal
+post-render alignment"*, and earlier *"lets build that in instead then … run it as
+a gpu job after tts finishes … as long as its faster than assembly, we can do the
+proper job."* It is: 151 s for Shift against an 8-minute assembly.
+
+So the alignment is now **the final phase of the `tts-conversion` step**
+(`electron/parallel-tts-bridge.ts` -> `runPostRenderAlignment`), not a queue row.
+It runs after the workers are gone and BEFORE the session is copied out of WSL,
+because on Windows the render writes to ext4, the `qwen-align` env is in the
+guest, and the guest cannot see the network drive the session is copied to. It
+never fails the render: no aligner env is an announced SKIP, a failed align is an
+announced failure, and either way the book ships the proportional estimate. The
+Align QUEUE ROW still exists for the CLI (`narrator align`,
+`bookforge-tts --align`, `cli/coverage-align.js`) and for a queue file restored
+from before 2026-09-08. Where it runs, the row REPORTS: it succeeds whenever the
 run happened and puts the counts and the retake list on its card
 (`tools/test-coverage-audit-reports.js`), and the assembly behind it repeats that
 list once on the finished book.
+
+**The app's doors pass `--backend qwen3`, always, and have no whisperx arm.**
+`DEFAULT_BACKEND` in this package is still whisperx (below), which is narrator's
+contract with a caller who names nothing; BookForge names one.
 
 The row sits **behind the render and in front of every enhancement pass**: the
 guard measures the RENDER, the thresholds below were calibrated on raw engine

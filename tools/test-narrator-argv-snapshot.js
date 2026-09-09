@@ -95,6 +95,27 @@
  * same day the narration run stopped composing this row at all (the checkbox is
  * gone; the estimate is the transcript), so this door is now the CLI's and a
  * restored queue file's only.
+ *
+ * 2026-09-08 (later the same day), THE ALIGN DOOR's `flags` literal a third
+ * time, for the qwen3 cutover. Owen: *"good. go ahead and wire it up to alignment
+ * so itll be used to align the chunks in app"*, *"for generate-sentences logic
+ * and for normal post-render alignment"*. Two tokens added and one renamed:
+ *
+ *     '--backend', 'qwen3',        (added, before --device)
+ *     '--python', python      ->   '--python', alignEnv.python
+ *
+ * The backend is STATED rather than left to narrator's `DEFAULT_BACKEND`, which
+ * is still whisperx and is its contract with a caller that names none; the
+ * interpreter now comes from `qwen-aligner.resolveQwenAlignEnv()` instead of the
+ * whisperx env. Checked, not assumed: the regeneration MASKED exactly those two
+ * edits and required the remainder to compare byte-equal to the old literal
+ * (it did), and a key-by-key diff of `narrator-argv-extract.js flags` against the
+ * baseline showed `align` as the only key that moved. The three PLAN arms were
+ * NOT regenerated and still pass — the align door names no engine and no
+ * `wslCondaEnv` in the fixture, so it is still the native tools-env spawn there.
+ * (The real door DOES cross into the guest when the resolved env is a WSL one;
+ * that is `narrator-spawn.ts`'s new `wslCondaEnv` field, and the fixture drives
+ * this phase without it because the fixture's env resolution is stubbed out.)
  */
 'use strict';
 const assert = require('assert');

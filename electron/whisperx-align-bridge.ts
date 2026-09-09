@@ -9,10 +9,21 @@
  * DTW align → per-sentence forced alignment), and gets back a VTT whose text is
  * the ebook's own words with real audio timings.
  *
- * The heavy lifting runs in the CPU-only `whisperx-env` conda env; this bridge
- * resolves the env's python + the packaged script, spawns it, and translates the
- * script's STDOUT progress protocol into 'generate-sentences:progress' events.
- * The caller (startGenerateSentences) owns embed + manifest linking + completion.
+ * TWO ENVIRONMENTS SINCE 2026-09-08, and the file name is now half a lie it is
+ * not worth renaming a keeper over. Owen: *"go ahead and wire it up to alignment
+ * so itll be used to align the chunks in app … for generate-sentences logic and
+ * for normal post-render alignment"* — so the FORCED ALIGNMENT is
+ * Qwen3-ForcedAligner-0.6B in the `qwen-align` env (395x realtime against
+ * WhisperX's 18x on the same GPU; 890/1083 chunk starts inside 0.1 s against
+ * 39/61), and the ROUGH TRANSCRIPT stage is still faster-whisper in the CPU-only
+ * `whisperx-env`, named to the script as `--rough-python`. Neither env holds the
+ * other's stack, measured on both machines. There is no whisperx arm behind the
+ * align stage: a machine with no qwen env is refused by name.
+ *
+ * This bridge resolves both interpreters + the packaged script, spawns it, and
+ * translates the script's STDOUT progress protocol into
+ * 'generate-sentences:progress' events. The caller (startGenerateSentences) owns
+ * embed + manifest linking + completion.
  */
 
 import { BrowserWindow, app } from 'electron';
@@ -27,6 +38,8 @@ import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
 import { toUnpackedPath } from './narrator-paths.js';
 import { getFfmpegPath } from './tool-paths.js';
+import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner.js';
+import { narratorPythonRoot } from './narrator-spawn.js';
 import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
 import { StageTracker, type StageSpec } from './job-stages.js';
 
@@ -75,10 +88,12 @@ export function cancelEpubAlign(jobId: string): void {
  * Resolve the python executable inside a conda env root (mirrors
  * component-manager's envPython).
  *
- * EXPORTED for `coverage-align-job.ts`, which spawns `narrator align --python
- * <this>` and must name the same interpreter this bridge does. A second copy of
- * the resolution there would be a second answer to "where is WhisperX" — and the
- * one that goes stale is always the copy, not the original.
+ * EXPORTED because "where is WhisperX" must have ONE answer, and the copy is
+ * always the one that goes stale. It was `coverage-align-job.ts` that asked;
+ * since the qwen3 cutover (2026-09-08) that door asks `qwen-aligner.ts` instead
+ * and this pair is what names the interpreter for the ROUGH TRANSCRIPT stage —
+ * still faster-whisper, still this component, delegated to the script as
+ * `--rough-python`.
  */
 export function whisperxEnvPython(envRoot: string): string {
   return envPython(envRoot);
@@ -568,14 +583,61 @@ export async function runEpubAlignOnFiles(
   glog(`[epub-align] extracted ${sentences.length} sentences (${headingCount} heading-like, ` +
     `paragraph-aware=${paragraphAware})`);
 
-  // 3. Resolve the whisperx env python.
-  const envRoot = resolveWhisperxEnvRoot();
-  if (!envRoot) {
+  /*
+   * 3. THE TWO INTERPRETERS, both named, neither guessed.
+   *
+   * Owen, 2026-09-08: the app's aligner is qwen3 "for generate-sentences logic
+   * and for normal post-render alignment". So the SCRIPT runs under the
+   * qwen-align env, which is what holds `qwen_asr`, and the rough-transcript
+   * stage is delegated to the whisperx env with `--rough-python`, which is what
+   * holds `faster_whisper`.
+   *
+   * THEY ARE TWO ENVS BECAUSE THEY MEASURABLY ARE. `qwen-asr` 0.0.6 pins
+   * transformers 4.57.6 and drags gradio/flask; the whisperx env is CPU-only by
+   * design. Checked on this PC's `qwen-align` env, 2026-09-08: qwen_asr, torch,
+   * soundfile and numpy import, faster_whisper and whisperx do not.
+   *
+   * NO WHISPERX ARM BEHIND THE ALIGN STAGE. A machine that cannot resolve a qwen
+   * env does not run this door and is told which add-on to install; quietly
+   * aligning with wav2vec2 instead would ship a different measurement under the
+   * same label.
+   */
+  const alignEnv = resolveQwenAlignEnv();
+  if (!alignEnv.ok) throw new Error(alignEnv.error);
+  if (alignEnv.env.viaWsl) {
+    /*
+     * REFUSED BY NAME, AND THIS IS A KNOWN GAP RATHER THAN A DESIGN.
+     *
+     * The per-chunk door can cross into the guest because the thing it reads —
+     * the render's session — is written INSIDE the guest on ext4. This door
+     * reads an m4b and an EPUB out of the LIBRARY, which on this PC is the titan
+     * share on Z:, and WSL has no /mnt for a network drive (memory:
+     * wsl-cannot-see-network-drives). Spawning it there would hand the guest a
+     * path it cannot open, halfway through a 40-minute transcribe.
+     *
+     * What unblocks it is a NATIVE CUDA qwen env on Windows named as
+     * `qwenAlignEnv`, which is also what `install_qwen_align.sh` is owed for.
+     */
     throw new Error(
-      'WhisperX alignment engine is not installed. Install it in Settings → Add-ons (or set WHISPERX_ENV_PATH for dev).',
+      'The Qwen3 aligner on this machine lives in a WSL environment '
+      + `("${alignEnv.env.wslEnvName}"), and this alignment reads the audiobook and the ebook `
+      + 'out of the library, which the WSL guest cannot see when the library is on a network '
+      + 'drive. Point "qwenAlignEnv" in tool-paths.json at a NATIVE Windows conda prefix that '
+      + 'has qwen-asr, or run this alignment on the Mac. (The per-chunk alignment that runs '
+      + 'after a render is unaffected: its session is inside the guest already.)',
     );
   }
-  const python = envPython(envRoot);
+  const python = alignEnv.env.python;
+
+  const roughEnvRoot = resolveWhisperxEnvRoot();
+  if (!roughEnvRoot) {
+    throw new Error(
+      'The rough-transcript stage needs faster-whisper, which lives in the "Ebook Alignment '
+      + '(WhisperX)" add-on and not in the Qwen3 aligner env. Install it in Settings → Add-ons '
+      + '(or set WHISPERX_ENV_PATH for dev) — both envs are needed for this alignment.',
+    );
+  }
+  const roughPython = envPython(roughEnvRoot);
   const scriptPath = resolveAlignScript();
 
   // 4. Write the sentences to a temp JSON file (cleaned up in finally).
@@ -591,9 +653,18 @@ export async function runEpubAlignOnFiles(
 
   // Managed torch cache so the wav2vec2 align model (~378 MB, fetched on first
   // use) persists in the app's runtime folder instead of the user's ~/.cache.
-  // torch stores it at <TORCH_HOME>/hub/checkpoints/.
+  // torch stores it at <TORCH_HOME>/hub/checkpoints/. Still set: the delegated
+  // rough stage runs in the whisperx env and inherits this environment.
   const torchHome = path.join(app.getPath('userData'), 'runtime', 'whisperx-cache');
   try { fs.mkdirSync(torchHome, { recursive: true }); } catch { /* best-effort */ }
+
+  // ...and the managed Hugging Face cache for the ~1.2 GB
+  // Qwen3-ForcedAligner-0.6B, which `from_pretrained` pulls on first use. Same
+  // arrangement, same reason; `components/qwen-align-env.ts` declares the
+  // variable and the doors are what set it. CREATED, not assumed — a cache
+  // directory that does not exist is a download into somewhere else.
+  const hfHome = qwenAlignCacheDir(app.getPath('userData'));
+  fs.mkdirSync(hfHome, { recursive: true });
 
   // Put the app's bundled ffmpeg/ffprobe on PATH so the script's slicing calls
   // AND whisperx.load_audio's internal ffmpeg resolve correctly (packaged apps
@@ -602,7 +673,8 @@ export async function runEpubAlignOnFiles(
   try { ffmpegDir = path.dirname(getFfmpegPath()); } catch { /* fall back to system ffmpeg */ }
   const spawnPath = ffmpegDir ? `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}` : (process.env.PATH || '');
 
-  glog(`[epub-align] spawning python=${python} script=${scriptPath} lang=${langCode} out=${outVtt}`);
+  glog(`[epub-align] spawning python=${python} (qwen3, ${alignEnv.env.source}) `
+    + `rough-python=${roughPython} script=${scriptPath} lang=${langCode} out=${outVtt}`);
 
   try {
     return await new Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }>((resolve, reject) => {
@@ -613,6 +685,11 @@ export async function runEpubAlignOnFiles(
         '--out', outVtt,
         '--rough-model', 'base',
         '--lang', langCode,
+        // QWEN3, ALWAYS, on the app's door (Owen, 2026-09-08). The script's own
+        // default stays whisperx so a hand-run is unchanged; the app states it.
+        '--backend', 'qwen3',
+        // The rough stage's interpreter — see the two-interpreter note above.
+        '--rough-python', roughPython,
       ];
       if (reportPath) args.push('--report', reportPath);
       // THE SILENCE SOURCE, stated. align_audiobook.py has no default for it.
@@ -661,6 +738,14 @@ export async function runEpubAlignOnFiles(
             PYTHONIOENCODING: 'UTF-8',
             TOKENIZERS_PARALLELISM: 'false',
             TORCH_HOME: torchHome,
+            HF_HOME: hfHome,
+            // narrator on the path, for the qwen3 backend's item->word mapping
+            // and its language table (align_audiobook.py: `narrator_aligner`).
+            // The script can also derive this from its own location, but only in
+            // a CHECKOUT: packaged, it runs out of app.asar.unpacked and the
+            // walk-up lands nowhere. This is the answer that works in both, and
+            // it is the same `narratorPythonRoot()` every narrator spawn uses.
+            PYTHONPATH: narratorPythonRoot(),
           },
         });
       } catch (err) {

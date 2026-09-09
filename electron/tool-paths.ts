@@ -211,6 +211,31 @@ export interface ToolPathsConfig {
   wslVlmCondaEnv?: string;         // Conda env name holding vLLM (e.g. "dots")
   wslVlmModel?: string;            // HF repo the server loads, e.g. "rednote-hilab/dots.ocr"
 
+  /**
+   * THE QWEN3 FORCED ALIGNER'S ENVIRONMENT — the one setting that names it, and
+   * it means a DIFFERENT KIND OF THING on each platform. That is not sloppiness;
+   * it is the honest shape of the fact, and `electron/qwen-aligner.ts` is the one
+   * function that reads it.
+   *
+   *   darwin   an absolute conda PREFIX — the env root that holds `qwen_asr`,
+   *            e.g. `/opt/homebrew/Caskroom/miniconda/base/envs/qwen-align`. The
+   *            interpreter is `<prefix>/bin/python`. Normally ABSENT: the
+   *            `qwen-align-env` component (Settings → Add-ons) is what a Mac
+   *            uses, and this key is for a machine whose env lives somewhere the
+   *            component's own detect chain cannot see.
+   *   win32    a WSL conda env NAME, e.g. `qwen-align`. `qwen-asr` needs a CUDA
+   *            torch env and the PC's lives in the guest, so there is nothing a
+   *            Windows-side managed install could lay down and no prefix a
+   *            Windows path could name. The prefix is derived with
+   *            `wslCondaEnvPrefix(getWslCondaPath(), <name>)`.
+   *
+   * ABSENT ON WINDOWS IS A REFUSAL, not a default: there is no conventional name
+   * for an env a user built by hand (`install_qwen_align.sh` is not written yet),
+   * and `conda run -n <a guess>` would report a conda error instead of the
+   * setting nobody filled in — the same reasoning `getWslVlmCondaEnv()` gives.
+   */
+  qwenAlignEnv?: string;
+
   // Enhance tab (local Adobe-Podcast-style speech cleanup). Only the Resemble
   // Enhance step needs wiring; see EnhanceConfig.
   enhance?: EnhanceConfig;
@@ -2208,6 +2233,22 @@ export function getWslHiggsCondaEnv(): string {
 }
 
 /**
+ * The stated `qwenAlignEnv` setting, trimmed, or undefined when nobody set one.
+ *
+ * THE RAW SETTING AND NOTHING ELSE. What it MEANS per platform, and what to do
+ * when it is absent, is `electron/qwen-aligner.ts:resolveQwenAlignEnv()` — one
+ * function, because the darwin branch has to ask the component system where the
+ * `qwen-align-env` component was installed and `components/component-manager.ts`
+ * already imports THIS module. Reading it there and stating it here is the same
+ * division `whisperx-align-bridge.ts:resolveWhisperxEnvRoot()` uses.
+ */
+export function getQwenAlignEnvSetting(): string | undefined {
+  loadConfig();
+  const value = state.config.qwenAlignEnv?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
+/**
  * Convert a WSL path to a Windows UNC path that Node.js can access
  * e.g., /home/user/file.txt -> \\wsl$\Ubuntu\home\user\file.txt
  */
@@ -2264,6 +2305,7 @@ export const toolPaths = {
   legacyGuestSessionsRoot,
   getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
+  getQwenAlignEnvSetting,
   wslPathToWindows,
   windowsToWslPath,
 };

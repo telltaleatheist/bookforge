@@ -34,6 +34,14 @@ with no placed word): the refusal is named under stage `cues` and the chunk is
 estimated. Nothing is invented silently; the report names the chunk and the file
 says the cue is a guess.
 
+AND FOR A CHUNK WHOSE MEASUREMENT THIS MODULE DOES NOT BELIEVE (2026-09-08,
+stage `gate`). The qwen3 backend has no confidence and never refuses - it PLACES
+a window whose text does not match the speech - so `gate_refusal` checks each
+chunk's measured cues against the proportional estimate for the same chunk and
+against their own quality dicts, and a chunk that fails is recorded and
+estimated exactly like one the aligner could not place. `GATE_MAX_SHIFT_S` is
+the one number.
+
 An earlier design stopped at the first failure and wrote nothing, with
 `--continue-on-error` as the opt-in sweep. That made a 50-chunk book with 5
 unplaceable chunks unassemblable, which is the thing the ruling forbids. The
@@ -64,8 +72,8 @@ DEFAULT_REPORT_NAME = 'coverage.json'
 #: The sentence VTT's suffix - re-exported from `assemble/sentence_vtt.py`, where
 #: it has to live because assembly writes the same file when no report exists and
 #: assembly may not import this package. `cli.py` and the tests import it here.
-__all__ = ['DEFAULT_REPORT_NAME', 'SENTENCE_VTT_SUFFIX', 'align_session',
-           'engine_id_of', 'write_outputs']
+__all__ = ['DEFAULT_REPORT_NAME', 'GATE_MAX_SHIFT_S', 'SENTENCE_VTT_SUFFIX',
+           'align_session', 'engine_id_of', 'gate_refusal', 'write_outputs']
 
 
 def engine_id_of(manifest: Manifest) -> str:
@@ -166,13 +174,25 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         alignment = alignment_from_dict(result['alignment'])
         coverages.append(evaluate_chunk(alignment, policy, index=chunk.index))
         try:
-            cues.extend(sentence_cues(
+            measured = sentence_cues(
                 alignment, chunk_index=chunk.index, chunk_start_s=start,
                 chunk_end_s=end, is_heading=chunk.kind == 'heading',
-                text=chunk.text))
+                text=chunk.text)
         except AlignerError as refused:
             _estimate(chunk, start, end, stage='cues', message=str(refused),
                       cues=cues, errors=errors, log=log)
+            continue
+        # THE GATE. A measurement this module cannot believe is estimated
+        # instead, and says so - see `gate_refusal`.
+        refusal = gate_refusal(measured, chunk_index=chunk.index,
+                               chunk_start_s=start, chunk_end_s=end,
+                               text=chunk.text,
+                               is_heading=chunk.kind == 'heading')
+        if refusal is not None:
+            _estimate(chunk, start, end, stage='gate', message=refusal,
+                      cues=cues, errors=errors, log=log)
+            continue
+        cues.extend(measured)
 
     # The cues come out in the order the chunks were walked, which is manifest
     # order for a whole-book pass - but `--indices` walks a subset and an
@@ -200,6 +220,113 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     return {'document': document, 'cues': cues}
 
 
+#: How far a MEASURED cue's start may sit from the PROPORTIONAL start the same
+#: sentence would have been given, before this module stops believing the
+#: measurement and estimates the whole chunk instead. Seconds.
+#:
+#: THIS IS A FIRST ESTIMATE, NOT A MEASUREMENT, and it is chosen from the Mac
+#: bake-off of 2026-09-08 (M-series, mps bf16, Shift's first hour, 61 chunk
+#: starts scored against the assembled m4b): qwen3's five gross misses were
+#: +3.5 s, -7.8 s and three tiny chunks collapsed onto ONE position 2.1-5.7 s
+#: from where they belong, while every prose chunk it placed well sat within
+#: 1.5 s of its proportional position. 2.0 s is the gap between those two
+#: populations. Widen it if a real book's good chunks start tripping it; the
+#: number is here, once, so that is one edit.
+GATE_MAX_SHIFT_S = 2.0
+
+
+def gate_refusal(measured: Sequence, *, chunk_index: int,
+                 chunk_start_s: float, chunk_end_s: float, text: str,
+                 is_heading: bool) -> Optional[str]:
+    """Do this chunk's MEASURED cues survive a sanity check? None = yes.
+
+    WHY A GATE AT ALL. qwen3 has no confidence and never refuses (see
+    `aligner.py`): a window whose printed text differs from the speech is
+    PLACED, not rejected. On Shift that was 59 headings and tiny chunks, and on
+    the Mac's first hour it was five gross misses including three tiny chunks
+    all predicted at one position. The aligner will not tell a caller that
+    happened, so the caller measures it - against the one other answer it has,
+    the proportional estimate over the chunk's own real audio.
+
+    WHAT IS ALREADY SAFE, AND SO IS NOT CHECKED HERE. `sentences.sentence_cues`
+    builds every cue INSIDE the chunk's own manifest span: the first cue starts
+    at `chunk_start_s` and the last ends at `chunk_end_s`, whatever the aligner
+    said, and the interior seams are clamped to `MIN_CUE_S` apart. So a chunk
+    can never be dragged onto another chunk's audio by this door, and a
+    single-sentence chunk - which is what a heading is - cannot be moved at all.
+    That is why the gross-miss mode costs this door nothing on headings and why
+    the gate is about the INTERIOR of a multi-sentence chunk. The door where a
+    sentence really can land seconds away is the whole-book one,
+    `electron/scripts/align_audiobook.py`, which gates on the same constant
+    against its own coarse expectation.
+
+    THE THREE CHECKS:
+
+      shift      a cue whose start is more than `GATE_MAX_SHIFT_S` from the
+                 start the proportional estimate would have given it. This is
+                 the one that fires in practice.
+      order      a cue whose `quality['monotonic']` is False - the alignment
+                 placed this sentence's words backwards. `sentence_cues` already
+                 guarantees the between-cue half of monotonic for any chunk it
+                 did not refuse, so a False here is the within-cue half.
+      collapse   two cues in this chunk with the SAME start. Today's seam
+                 arithmetic (`low = previous seam + MIN_CUE_S`) makes that
+                 unreachable, and it is checked anyway because it is the shape
+                 the Mac's worst case took (1857.5 / 1859.1 / 1861.1 s all
+                 predicted at 1855.43) and because a future change to that
+                 arithmetic must not be able to reintroduce it silently.
+
+    Returns the refusal SENTENCE - naming the check and the numbers - so the
+    caller can put it in the report's `errors` under stage 'gate'.
+    """
+    if not measured:
+        return None
+    starts = [cue.start_s for cue in measured]
+    for position in range(1, len(starts)):
+        if starts[position] == starts[position - 1]:
+            return (
+                f'gate/collapse: sentences {position - 1} and {position} of chunk '
+                f'{chunk_index} were both placed at {starts[position]:.3f}s, so '
+                f'one of them has no audio of its own')
+    for cue in measured:
+        if cue.quality is None:
+            # Only `sentences.sentence_cues` produces the cues this function is
+            # given, and it fills `quality` on every one of them. A None here is
+            # a caller handing us something else, and guessing "probably fine"
+            # would let an unmeasured cue through the one check that exists to
+            # catch unmeasured cues.
+            return (
+                f'gate/order: chunk {chunk_index} sentence {cue.sentence_index} '
+                f'carries no quality measurement, so nothing here can judge it')
+        if not cue.quality['monotonic']:
+            return (
+                f'gate/order: chunk {chunk_index} sentence {cue.sentence_index} '
+                f'has words the aligner placed out of order, so its cue is not a '
+                f'reading of this sentence')
+
+    expected = proportional_cues(
+        chunk_index=chunk_index, chunk_start_s=chunk_start_s,
+        chunk_end_s=chunk_end_s, text=text, is_heading=is_heading)
+    if len(expected) != len(measured):
+        # Both sides run the SAME splitter (`split_chunk_sentences`) over the
+        # same text, so this cannot differ - and if it ever does, the two lists
+        # are not about the same sentences and comparing them position by
+        # position would compare a cue with somebody else's expectation.
+        return (
+            f'gate/shift: chunk {chunk_index} measured {len(measured)} cue(s) but '
+            f'splits into {len(expected)} sentence(s); the measured cues and the '
+            f'proportional estimate are not about the same text')
+    for cue, guess in zip(measured, expected):
+        shift = abs(cue.start_s - guess.start_s)
+        if shift > GATE_MAX_SHIFT_S:
+            return (
+                f'gate/shift: chunk {chunk_index} sentence {cue.sentence_index} '
+                f'was placed at {cue.start_s:.3f}s, {shift:.3f}s from the '
+                f'{guess.start_s:.3f}s its share of the chunk\'s audio gives it '
+                f'(limit {GATE_MAX_SHIFT_S:.1f}s)')
+    return None
+
+
 def _estimate(chunk, start: float, end: float, *, stage: str, message: str,
               cues: list, errors: list, log) -> None:
     """Record one chunk's failure BY NAME and cue it from its own audio anyway.
@@ -208,6 +335,12 @@ def _estimate(chunk, start: float, end: float, *, stage: str, message: str,
     visible: the report gains an `errors` row naming the chunk, the stage and
     the message the aligner gave, and the transcript gains cues that say - in
     the file - that they are proportional estimates rather than measurements.
+
+    `stage` is one of `align` (the backend refused or blew up), `cues` (it
+    aligned but a sentence had no placed word) or `gate` (it placed every
+    sentence and `gate_refusal` did not believe where). All three end here
+    because all three mean the same thing to the reader of the transcript:
+    this chunk's cues are the estimate, and the report says why.
 
     A failure to lay even the estimate (a chunk whose manifest span is zero, so
     there is no audio to spread anything over) is recorded as its own `estimate`

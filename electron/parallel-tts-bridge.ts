@@ -12,7 +12,7 @@
  * - --sentence_start / --sentence_end: Define worker's sentence range
  */
 
-import { publishBridgeEvent } from './bridge-events';
+import { onBridgeEvent, publishBridgeEvent } from './bridge-events';
 import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
 import { app, BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
@@ -235,7 +235,12 @@ import {
   gpuOwnershipOverrideNote,
   ALLOW_SHARED_GPU_ENV,
 } from '../shared/tts/gpu-ownership';
-import { coverageReportPath } from './coverage-align-job';
+import {
+  coverageReportPath,
+  runCoverageAlign,
+  stopCoverageAlign,
+} from './coverage-align-job';
+import { resolveQwenAlignEnv } from './qwen-aligner';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -4652,6 +4657,187 @@ function isOomError(err: string | undefined | null): boolean {
 }
 
 /**
+ * The align child's step id for a render, derived from the job id so a user stop
+ * can reach it. `runCoverageAlign` keys its live children on this string.
+ */
+function postRenderAlignStepId(jobId: string): string {
+  return `${jobId}:post-render-align`;
+}
+
+/**
+ * THE FINAL PHASE OF THE TTS STEP: force-align every rendered chunk, on the card
+ * the render just finished with.
+ *
+ * Owen, 2026-09-08 (via the Mac): *"good. go ahead and wire it up to alignment so
+ * itll be used to align the chunks in app"*, *"for generate-sentences logic and
+ * for normal post-render alignment"*, and earlier: *"lets build that in instead
+ * then … run it as a gpu job after tts finishes … as long as its faster than
+ * assembly, we can do the proper job."* It is faster: 151 s of qwen3 for Shift's
+ * 16.56 h against an 8-minute assembly, where the WhisperX row this replaces took
+ * two hours on CPU and was the reason Owen deleted the Align checkbox on
+ * 2026-09-08 (cd1678d7) in the first place.
+ *
+ * ── WHERE IT SITS, AND WHY EXACTLY HERE ─────────────────────────────────────
+ *
+ * AFTER the workers are done — so the serving process the render owned is gone
+ * and the card is free for a second model — and BEFORE `cacheSessionToProject`
+ * and `normalizeWslSessionToWindows`, which are the two copies that carry a
+ * session out of the WSL guest.
+ *
+ * Both halves of that are load-bearing on this PC. The render happens inside WSL
+ * with the session on ext4; the `qwen-align` env is IN the guest; and the guest
+ * cannot see the Z: network drive the session is copied to afterwards (WSL has no
+ * /mnt for a network drive). So the alignment has to happen while the audio and
+ * the model are on the same side of that boundary. And its two outputs —
+ * `coverage.json` and `<stem>.sentences.vtt` — are SESSION FILES: written before
+ * the copies, they ride along with them and the native assembly finds them on the
+ * Windows path it reads. Written after, they would sit on ext4 where nothing
+ * downstream looks.
+ *
+ * The cost of being first is that the durable resume checkpoint is a couple of
+ * minutes later than it was. That is the right trade at 151 s a book and it would
+ * not be at two hours — which is the measurement that moved the backend.
+ *
+ * On the Mac the render is native and this runs natively in the same place in the
+ * sequence; nothing about the ordering is Windows-specific except the reason.
+ *
+ * ── IT NEVER FAILS THE RENDER. THREE OUTCOMES, ALL ANNOUNCED ────────────────
+ *
+ *   no aligner env   the phase is SKIPPED and the row says so. This is the one
+ *                    allowed skip in the whole path and it is stated, never
+ *                    silent: the audiobook still ships, carrying the proportional
+ *                    ESTIMATE that `assemble/run.py` writes when no report
+ *                    exists (`if coverage is None: write_estimated_sentence_vtt`).
+ *   the align failed the row says what failed and the estimate ships, same as
+ *                    above. A device that cannot be resolved is this case.
+ *   it ran           `coverage.json` and the measured `<stem>.sentences.vtt` are
+ *                    beside the session; `runAssembly` passes `--coverage_report`
+ *                    because the file exists, and assembly leaves the measured
+ *                    transcript alone.
+ *
+ * There is no whisperx arm behind any of that — see `coverage-align-job.ts`.
+ */
+async function runPostRenderAlignment(session: ConversionSession): Promise<void> {
+  if (session.cancelled) return;
+  const processDir = session.prepInfo?.processDir;
+  if (!processDir) {
+    await logger.log('WARN', session.jobId,
+      'Chunk alignment skipped: this session has no process dir to align.');
+    return;
+  }
+  const language = session.config.settings.language;
+  if (!language) {
+    // NOT DEFAULTED TO 'en'. The aligner is language-selected (qwen3 takes an
+    // English language NAME, mapped from the ISO code, and refuses a code it was
+    // not trained on), and a guess would place a whole book's words badly while
+    // reporting success. Prep already refuses a render with no language, so this
+    // is a statement that the two agree rather than a case that happens.
+    await logger.log('WARN', session.jobId,
+      'Chunk alignment skipped: this render names no language, and the aligner '
+      + 'loads a different model for each.');
+    return;
+  }
+
+  const resolved = resolveQwenAlignEnv();
+  if (!resolved.ok) {
+    const message = `Chunk alignment skipped: ${resolved.error} `
+      + 'The audiobook carries the estimated transcript.';
+    console.log(`[PARALLEL-TTS] ${message}`);
+    await logger.log('WARN', session.jobId, message);
+    if (mainWindow) {
+      rendererSend('parallel-tts:progress', {
+        jobId: session.jobId,
+        progress: postRenderAlignProgress(session, 'Chunk alignment skipped — no aligner env'),
+      });
+    }
+    return;
+  }
+
+  const stepId = postRenderAlignStepId(session.jobId);
+  // The align job reports on the bridge channel it always reports on; this maps
+  // it onto the TTS row rather than duplicating the parser. `mainWindow` is NOT
+  // handed to the job (below) precisely so 'coverage-align:progress' never
+  // reaches the renderer for a row that does not exist there.
+  const unsubscribe = onBridgeEvent<{
+    jobId: string;
+    progress: { percentage: number; processed?: number; total?: number; message?: string };
+  }>('coverage-align:progress', (event) => {
+    if (event.jobId !== stepId) return;
+    const counted = event.progress.total
+      ? ` (chunk ${event.progress.processed ?? 0}/${event.progress.total})`
+      : '';
+    rendererSend('parallel-tts:progress', {
+      jobId: session.jobId,
+      progress: postRenderAlignProgress(session, `Aligning chunks (qwen3)…${counted}`),
+    });
+  });
+
+  const started = Date.now();
+  await logger.log('INFO', session.jobId,
+    `Chunk alignment starting (qwen3, ${resolved.env.source} env${
+      resolved.env.viaWsl ? ` "${resolved.env.wslEnvName}" in WSL` : ''}): ${processDir}`);
+  try {
+    const result = await runCoverageAlign(
+      stepId,
+      // THE GPU, EXPLICITLY. This phase runs inside the TTS step, which already
+      // owns the gpu lane, so there is no card to wait for and no queue slot to
+      // claim — which is exactly the run Owen described ("a gpu job after tts
+      // finishes"). `resolveAlignDevice` turns it into cuda or mps and refuses by
+      // name on a machine with neither; that refusal lands in `result.error`.
+      { processDir, language, device: 'gpu' },
+      null,
+    );
+    const seconds = Math.round((Date.now() - started) / 1000);
+    if (!result.success) {
+      const message = `Chunk alignment failed after ${seconds}s, so the audiobook carries the `
+        + `estimated transcript: ${result.error}`;
+      console.warn(`[PARALLEL-TTS] ${message}`);
+      await logger.log('WARN', session.jobId, message);
+      if (mainWindow) {
+        rendererSend('parallel-tts:progress', {
+          jobId: session.jobId,
+          progress: postRenderAlignProgress(session, 'Chunk alignment failed — estimated transcript'),
+        });
+      }
+      return;
+    }
+    const retake = result.retakeIndices ?? [];
+    const message = `Chunk alignment complete in ${seconds}s — ${result.chunksAligned ?? 0} aligned, `
+      + `${result.chunksFailed ?? 0} failed coverage, ${result.chunksErrored ?? 0} could not be placed`
+      + (retake.length > 0 ? ` — retake: ${retake.join(',')}` : '');
+    console.log(`[PARALLEL-TTS] ${message}`);
+    await logger.log('INFO', session.jobId, message);
+  } finally {
+    unsubscribe();
+  }
+}
+
+/**
+ * One progress frame for the align phase, in the shape the denoise and RVC passes
+ * already use.
+ *
+ * `phase: 'enhancing'` rather than a seventh phase name: the union is read by the
+ * queue card, the job list and the analytics writer, and a value none of them
+ * knows would render as nothing at all. 'enhancing' is this row's existing "a
+ * post-render pass is running" state and the MESSAGE says which pass — the same
+ * decision `denoiseSentences` and `enhanceSentences` made above.
+ */
+function postRenderAlignProgress(session: ConversionSession, message: string): AggregatedProgress {
+  return {
+    phase: 'enhancing',
+    totalSentences: session.prepInfo!.totalSentences,
+    completedSentences: session.prepInfo!.totalSentences,
+    completedInSession: session.isResumeJob
+      ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
+    percentage: 95,
+    activeWorkers: 0,
+    workers: session.workers,
+    estimatedRemaining: 0,
+    message,
+  };
+}
+
+/**
  * Check if all workers are complete and trigger assembly
  */
 async function checkAllWorkersComplete(session: ConversionSession): Promise<void> {
@@ -4717,6 +4903,14 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       console.log('[PARALLEL-TTS] All workers complete, starting assembly');
       await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
     }
+
+    // THE ALIGNMENT, HERE AND NOT LATER. The workers are gone, so the card and
+    // the serving process are free; the session is still where the render wrote
+    // it, which on Windows is inside the WSL guest beside the aligner's own env;
+    // and the two files this writes are session files that have to travel with
+    // the copies below. See runPostRenderAlignment. It never throws: the three
+    // outcomes are all announced and the render succeeds through all of them.
+    await runPostRenderAlignment(session);
 
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
@@ -8238,6 +8432,12 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   session.cancelled = true;
   stopWatchdog(session);
   stopRenderedPoller(session);
+  // A stop that arrives DURING the post-render alignment has to reach that child
+  // too, whole tree. It is the one long-running thing in this job that is not a
+  // worker, so the worker teardown below does not cover it, and an aligner left
+  // holding the card is exactly the orphan `stopCoverageAlign` was written for.
+  // A no-op when the phase is not running.
+  stopCoverageAlign(postRenderAlignStepId(jobId));
   // The closer polls on a timer of its own; without this it would outlive the
   // cancelled job and keep reading a session that is being torn down. Its partial
   // output stays on disk and is simply never marked complete, so assembly ignores it.

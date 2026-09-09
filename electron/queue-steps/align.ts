@@ -59,6 +59,16 @@
  * CLI still queues one against a session on purpose (`cli/coverage-align.js`,
  * `bookforge-tts.py --align`). A step type the engine could not run would fail
  * every one of those by name for a reason that has nothing to do with them.
+ *
+ * ── AND THE ALIGNMENT ITSELF CAME BACK, LATER THE SAME DAY ──────────────────
+ *
+ * Owen, once the qwen3 bake-off was in: *"good. go ahead and wire it up to
+ * alignment so itll be used to align the chunks in app"*, *"for generate-sentences
+ * logic and for normal post-render alignment"*. It is now the FINAL PHASE of the
+ * `tts-conversion` step (`parallel-tts-bridge.runPostRenderAlignment`), not a
+ * row — 151 s for a 16.5 h book against the two hours that killed the checkbox.
+ * This row is unchanged and still what the CLI drives; `runCoverageAlign` is the
+ * single spawn behind both, and it passes `--backend qwen3` from either.
  */
 import { onBridgeEvent } from '../bridge-events';
 import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
