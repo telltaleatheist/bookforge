@@ -16,7 +16,11 @@
     "These OVERRIDE safeMinChars/safeMaxChars in higgs-models.json, which keeps the evidence notes.",
     "A voice may add an 'mlx' or 'served' block to give one arm its own band; otherwise both arms",
     "share the top-level pair. max may never exceed that arm's maxChars, and min must sit below max -",
-    "both refused by name, here and in narrator's engine/higgs/config.py."
+    "both refused by name, here and in narrator's engine/higgs/config.py.",
+    "",
+    "THE MEASUREMENTS BEHIND EACH BAND live in higgs-safe-bands-evidence.md beside this file: the per-rung",
+    "failure curve, what every column means, and the four failure modes (cov / short / long / error).",
+    "JSON takes no comments, so the evidence lives there instead of here."
   ],
 
   "thirdreich":   { "min": 500, "max": 800, "_note": "MEASURED 2026-09-09 by the FULL 4-seed length ladder (runs/tr_ladder_full, 620 scored renders, n=32 per rung): best contiguous band 500-800 at 7/128 = 5.5% (95% hi 10.9%). THIS REVERSES the 800->1000 cap raise made earlier the same day. That raise rested on a 2-seed sweep (n=16/rung) measuring 900 and 1000 at 6.2%; at n=32 they BOTH measure 16% - the 6.2% was the noise floor, not a reading. Failure by rung: 300 22%, 400 16%, 500 3%, 600 3%, 700 12%, 800 3%, 900 16%, 1000 16%, 1500 34%, 1900 91%. Matches production: Owen saw truncations at a 700 target, and his Mac failures at 323/502/634 sit at rung 300 (22%) and the 500/600 edge. maxChars stays 1000 - a cap above the band is legal; the band is what the packer uses. PREVIOUS: 600-1000. MEASURED. runs/base_len, 320 renders: 600-1000 = 4/80 early stops = 5.0% [2.0-12.2], against 18.8% below 600 and 20.3% above 1000. A full live book in band ran 4 failures in ~320 chunks = 1.25%. Owen raised the cap 800 -> 1000 on 2026-09-09 on that evidence." },
