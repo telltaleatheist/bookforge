@@ -306,9 +306,13 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
   // as the definitive model locally ... delete the old one') the WSL arm is
   // ds_v5_prod, the ds_v5 train's ladder pick (ckpt-1102); ds_ad4lm_prod_ckpt1080
   // was deleted from the PC and survives on the Mac arm and on HF.
+  // PROMOTED 2026-09-10 to the v7 retrain (ds_v7_prod, ckpt-744, holdout 3.8353). The v6 model was
+  // never shipped: it did not emit EOS and ran to the token cap on 29% of probe renders, caused by
+  // RETAINED post-chunk pauses (slice_vtt --tail-s 4.0). Re-sliced at 0.25 s and retrained -> 0/24
+  // runaway. Field notes 4n.53/4n.54. ds_v5_prod (ckpt-1102) held this slot from 2026-09-07.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.voice.checkpoint.wsl,
-    '/home/telltale/higgs_v3_merged/ds_v5_prod');
+    '/home/telltale/higgs_v3_merged/ds_v7_prod');
   assert.ok(m._checkpointDirNote, 'nothing says why this is not the higgs-models convention');
 });
 
@@ -327,7 +331,7 @@ check('deathstalker is staged on BOTH arms, each in that arm\'s own shape', () =
   //           directory that exists on exactly one machine.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.voice.checkpoint.darwin,
-    'runtime/higgs-models/ds_ad4lm_prod_ckpt1080');
+    'runtime/higgs-models/ds_v7_prod');
   assert.ok(m.voice.checkpoint.wsl.startsWith('/'), 'the wsl path is not absolute');
   assert.ok(!m.voice.checkpoint.darwin.startsWith('/'),
     'the darwin path is absolute — it would name one machine only');
@@ -2626,7 +2630,7 @@ if (skipWhy) {
     assert.strictEqual(got.name, 'deathstalker');
     assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
     assert.strictEqual(got.checkpoint,
-      '/home/telltale/higgs_v3_merged/ds_v5_prod');
+      '/home/telltale/higgs_v3_merged/ds_v7_prod');
     assert.strictEqual(got.max_chars, 800, "narrator did not get Owen's 2026-09-09 ceiling");
     // Owen, 2026-09-09: the point target is retired; a fine-tune ships a BAND, and
     // this asserts the packer's floor and cap where they LAND, not only where they
@@ -2654,7 +2658,7 @@ if (skipWhy) {
     // this keeper runs on both hosts — the derivation is what is under test, not
     // which slash the machine running it prefers.
     assert.strictEqual(macGot.checkpoint.replace(/\\/g, '/'),
-      '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080');
+      '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_v7_prod');
     // Both arms carry 800 by the ruling, not by inheritance; the checkpoint
     // asserted above is what proves this is the darwin document.
     assert.strictEqual(macGot.max_chars, 800,
