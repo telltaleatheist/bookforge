@@ -35,7 +35,7 @@ from ..manifest import (
     Voice,
     validate,
 )
-from .flac_header import read_expected
+from .flac_header import read_expected, read_streaminfo
 
 #: e2a's `default_audio_proc_format`. Every rendered chunk is a FLAC.
 AUDIO_PROC_FORMAT = "flac"
@@ -53,9 +53,21 @@ AUDIO_PROC_FORMAT = "flac"
 #: along.
 GAPS_FILENAME = "gaps.json"
 
-#: Orpheus renders at 24 kHz mono. The assembler resamples to 44.1 kHz at the AAC
-#: encode, exactly as e2a does; nothing before that point changes the rate.
-SAMPLE_RATE = 24000
+#: What the ENGINES render at: 24 kHz mono, Orpheus and Higgs alike. The assembler
+#: resamples to 44.1 kHz at the AAC encode, exactly as e2a does.
+#:
+#: IT IS NOT WHAT EVERY SET THIS ASSEMBLES IS AT, which is why it is no longer
+#: what a chunk is held to - see `_detect_sample_rate`. It survives as the value a
+#: log line compares against, so a set at some other rate is REPORTED rather than
+#: passed over in silence.
+ENGINE_SAMPLE_RATE = 24000
+
+#: Mono, and this one IS a requirement rather than an observation. The assembler
+#: writes its generated silence in mono (`assemble/edges.write_silence`,
+#: `assemble/chapters._plan_unpadded`), so a stereo set would have mono frames
+#: spliced into it - and ffmpeg's concat demuxer drops mismatched frames while
+#: still exiting 0. Refusing here is what keeps that from becoming a book with
+#: sentences missing.
 CHANNELS = 1
 
 #: The tags no engine ever SPEAKS. Copied from ebook2audiobook@9daab0ba
@@ -183,6 +195,57 @@ def detect_completed_chapters(sentences_dir: str, chapter_sentences: list) -> li
         completed.append(i + 1)
         offset += len(chapter)
     return completed
+
+
+def _detect_sample_rate(resolved_sentences: str) -> int:
+    """The sample rate OF THE SET BEING ASSEMBLED, read off its first chunk.
+
+    WHY THIS IS NOT A CONSTANT (2026-09-10). It was `SAMPLE_RATE = 24000`, and
+    every chunk was held to it - which is right for a session's own render and
+    WRONG for a derived set, because a derived set is made by a different tool
+    with its own rate. An RVC voice conversion runs at the model's rate, 48 kHz
+    for RVC v2 (`electron/rvc-bridge.ts`), and writes `chapters/sentences-rvc-
+    <voice>/`; handing that to `--sentences_dir` refused the whole assembly with
+    "FLAC sample rate is 48000 Hz, the session renders at 24000 Hz" after the
+    conversion had already spent its GPU. Southern Slavery, 2026-09-10.
+
+    NOTHING REAL WAS BEING GUARDED. A FLAC declares its own rate in its header,
+    so a UNIFORM set at any rate decodes and plays at exactly the right speed -
+    measured on that book, the 48 kHz set ran 3760.02 s against the 24 kHz
+    original's 3762.24 s, a 2.2 s stitch difference over an hour of audio and no
+    per-chunk delta above 30 ms. The failure the guard was written for is a set
+    that DISAGREES WITH ITSELF, and that is still refused: every chunk is held to
+    the rate this returns, so one file at another rate fails by name exactly as
+    before.
+
+    The FIRST chunk is the right witness because it is also the first entry of
+    the concat list, and ffmpeg's concat demuxer takes the whole stream's
+    parameters from that entry (`assemble/README.md` s2).
+    """
+    first = os.path.join(resolved_sentences, f"0.{AUDIO_PROC_FORMAT}")
+    if not os.path.isfile(first):
+        raise SessionError(
+            f"the set has no chunk 0 ({first}), so there is nothing to read a "
+            f"sample rate off; a manifest's chunk indices are global and start at 0"
+        )
+    try:
+        rate = read_streaminfo(first).sample_rate
+    except (OSError, ValueError) as unreadable:
+        raise SessionError(
+            f"could not read the sample rate off {first}: {unreadable}"
+        ) from None
+    if rate != ENGINE_SAMPLE_RATE:
+        # Said out loud, every time. A derived set at another rate is legitimate
+        # and assembles correctly - but "this book was assembled from 48 kHz
+        # audio" is a fact somebody debugging its sound should not have to infer.
+        print(
+            f"[ASSEMBLE] This set is {rate} Hz, not the {ENGINE_SAMPLE_RATE} Hz "
+            f"the engines render at - a derived set (a voice conversion runs at "
+            f"its model's rate). Assembling at {rate} Hz; every chunk is held to "
+            f"it, and the AAC encode resamples to 44.1 kHz as always.",
+            flush=True,
+        )
+    return rate
 
 
 def _find_gaps_file(resolved_sentences: str, process_dir: str) -> str | None:
@@ -650,6 +713,17 @@ def build_manifest(
     # ------------------------------------------------------------------
     # Chapters -> chunks, with global indices and exact sample counts.
     # ------------------------------------------------------------------
+    # The rate of the set THIS assembly is reading - the session's own render, or
+    # a derived set at its own rate. Read once, and every chunk below is held to
+    # it (`_detect_sample_rate`).
+    #
+    # AFTER the chapter selection above, deliberately. A session that has not
+    # finished a single chapter has no chunk 0 either, and "the render has not
+    # finished a single chapter" is the sentence that tells its operator what to
+    # do; "there is nothing to read a sample rate off" is a true statement about
+    # a symptom.
+    sample_rate = _detect_sample_rate(resolved_sentences)
+
     chapters_out: list[Chapter] = []
     global_index = 0
     for ci, texts in enumerate(chapter_sentences):
@@ -667,7 +741,7 @@ def build_manifest(
                 raise SessionError(
                     f"chapter {ci + 1} is missing chunk audio {audio_path}"
                 )
-            info = read_expected(audio_path, SAMPLE_RATE, CHANNELS)
+            info = read_expected(audio_path, sample_rate, CHANNELS)
             chunks.append(
                 Chunk(
                     index=global_index,
@@ -763,7 +837,7 @@ def build_manifest(
             adapterDir=state.get("orpheus_adapter_dir"),
             baseDir=state.get("orpheus_base_dir"),
         ),
-        sampleRate=SAMPLE_RATE,
+        sampleRate=sample_rate,
         sentencesDir=resolved_sentences,
         chapters=chapters_out,
     )

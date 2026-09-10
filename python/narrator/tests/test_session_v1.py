@@ -269,6 +269,79 @@ class TestSentencesDirOverride(SessionCase):
         with self.assertRaisesRegex(S.SessionError, "sentences directory not found"):
             S.build_manifest(process_dir, os.path.join(process_dir, "nope"))
 
+    # ── A DERIVED SET COMES AT ITS OWN SAMPLE RATE ─────────────────────────
+    #
+    # An RVC voice conversion runs at the model's rate - 48 kHz for RVC v2 - and
+    # writes `chapters/sentences-rvc-<voice>/`. Handing that to --sentences_dir
+    # used to refuse the whole assembly against a hardcoded 24000, AFTER the
+    # conversion had spent its GPU (Southern Slavery, 2026-09-10). The rate is in
+    # every FLAC's own header, so a uniform set at any rate plays at exactly the
+    # right speed; what must still be refused is a set that disagrees with itself.
+
+    def _derived(self, process_dir, name, *, sample_rate=24000, channels=1,
+                 odd_one_out=None):
+        """A complete derived set beside the session's own, at `sample_rate`.
+
+        `odd_one_out` gives one chunk index a different rate - the set that is
+        genuinely broken, as opposed to the one that is merely not 24 kHz.
+        """
+        out = os.path.join(process_dir, "chapters", name)
+        os.makedirs(out, exist_ok=True)
+        for i, seconds in enumerate(synthetic.CHUNK_SECONDS):
+            rate = sample_rate
+            if odd_one_out is not None and i == odd_one_out:
+                rate = 22050
+            synthetic.write_flac(os.path.join(out, f"{i}.flac"), seconds,
+                                 sample_rate=rate, channels=channels)
+        return out
+
+    def test_a_derived_set_at_48k_assembles_at_48k(self):
+        process_dir = self.build()
+        rvc = self._derived(process_dir, "sentences-rvc-sigma", sample_rate=48000)
+
+        base = S.build_manifest(process_dir)
+        over = S.build_manifest(process_dir, rvc)
+
+        self.assertEqual(base.sampleRate, 24000)
+        self.assertEqual(over.sampleRate, 48000, "the manifest takes the set's rate")
+        # THE SAME BOOK: same chapters, same text, same DURATION. Only the rate
+        # and the sample counts that express it moved.
+        self.assertEqual([c.title for c in base.chapters],
+                         [c.title for c in over.chapters])
+        self.assertEqual([k.text for c in base.chapters for k in c.chunks],
+                         [k.text for c in over.chapters for k in c.chunks])
+        for b, o in zip((k for c in base.chapters for k in c.chunks),
+                        (k for c in over.chapters for k in c.chunks)):
+            self.assertEqual(o.samples, b.samples * 2)
+            self.assertAlmostEqual(o.samples / over.sampleRate,
+                                   b.samples / base.sampleRate, places=9)
+        validate(over)
+
+    def test_a_derived_set_that_disagrees_with_itself_is_still_refused(self):
+        """The failure the guard was written for, and it still fires: one chunk at
+        another rate concatenates into audio that plays at the wrong speed."""
+        process_dir = self.build()
+        mixed = self._derived(process_dir, "sentences-rvc-mixed",
+                              sample_rate=48000, odd_one_out=4)
+        with self.assertRaisesRegex(ValueError, "sample rate is 22050"):
+            S.build_manifest(process_dir, mixed)
+
+    def test_a_derived_set_that_is_not_MONO_is_still_refused(self):
+        """Mono is a requirement, not an observation: the assembler splices mono
+        silence into these sets, and ffmpeg's concat demuxer drops mismatched
+        frames while still exiting 0."""
+        process_dir = self.build()
+        stereo = self._derived(process_dir, "sentences-rvc-stereo", channels=2)
+        with self.assertRaisesRegex(ValueError, "2 channel"):
+            S.build_manifest(process_dir, stereo)
+
+    def test_the_rate_comes_from_chunk_zero_which_is_the_concat_s_first_entry(self):
+        process_dir = self.build()
+        empty = os.path.join(process_dir, "chapters", "sentences-empty")
+        os.makedirs(empty)
+        with self.assertRaisesRegex(S.SessionError, "no chunk 0"):
+            S.build_manifest(process_dir, empty)
+
 
 class TestChapterSelection(SessionCase):
     """e2a's --chapters, ported for the partially-rendered golden session."""
