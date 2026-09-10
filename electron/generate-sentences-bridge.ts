@@ -24,6 +24,7 @@ import { componentManager } from './components/component-manager.js';
 import { getMainLogger } from './rolling-logger.js';
 import * as manifestService from './manifest-service.js';
 import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
+import { regenerateBoundSidecars } from './sidecar-migration.js';
 import { normalizeFsPath } from './path-utils.js';
 import { runEpubAlign } from './whisperx-align-bridge.js';
 import type { JobStageProgress } from './job-stages.js';
@@ -78,6 +79,64 @@ export function sendProgress(
   if (win.isDestroyed()) return;
   win.webContents.send('generate-sentences:progress', { jobId, percentage, message, stages });
 }
+
+/**
+ * Bind the transcript this run produced to the m4b it describes, FROM THE FILE
+ * THE ALIGNER WROTE — before anything deletes it.
+ *
+ * WHY THIS EXISTS, and why the order is the whole point.
+ *
+ * This bridge used to be embed-only: embed into the m4b, delete the VTT, sweep
+ * the sidecars, clear `vttPath`, on the doctrine that "the m4b IS the source of
+ * truth". Two things make that wrong now.
+ *
+ *   THE CONTAINER LOSES CUES. mov_text cannot represent an empty cue, so the
+ *   track is a lossy copy of what was embedded — the reassembly bridge stopped
+ *   trusting it in Sep 2026 for exactly this ("a 133-cue book shipped as 132 and
+ *   every later cue was off by one"). Deleting the VTT right after the embed
+ *   destroys the only lossless copy, so nothing can ever tell whether the track
+ *   is complete. Measured 2026-09-10 on Shift: after a re-align the m4b's track
+ *   extracted to 14,092 cues where the book's sentence set is 14,377, and the
+ *   285-cue difference was UNATTRIBUTABLE because the aligner's own file was
+ *   already gone.
+ *
+ *   BOOKSHELF PREFERS THE SIDECAR. Its transcript ladder is bound sidecar first
+ *   (a validated file read, no per-request ffmpeg), embedded extraction only as
+ *   the fallback — and a DOWNLOAD needs a bound copy, because a downloaded book
+ *   plays with no network at all. Leaving the binding stale meant every
+ *   re-aligned book served the lossy extraction until bookshelf-server's lazy
+ *   repair happened to run, and that repair binds the extraction, not the truth.
+ *
+ * So: embed (the track is a copy for players), then bind the REAL file, then let
+ * the caller delete it. `regenerateBoundSidecars` writes `<m4b>.vtt` plus the
+ * hash-bound `<m4b>.sidecars.json`, recording the m4b's sha256 AS IT IS NOW —
+ * which is why this runs after the embed and not before it, the embed being what
+ * changes those bytes.
+ *
+ * `manifest.vttPath` stays cleared and this does not touch it: Bookshelf resolves
+ * a mono transcript through the BINDING, never through that field (it is read
+ * only for bilingual pairs), so the two facts do not conflict.
+ *
+ * NEVER THROWS. The alignment is hours of compute and the embed already
+ * succeeded; a book whose sidecar did not get written still plays, still carries
+ * its track, and is repaired by bookshelf-server on first serve. Failing the job
+ * here would throw away the run over its least important artifact.
+ */
+async function bindAlignedTranscript(m4bPath: string, vttPath: string): Promise<void> {
+  try {
+    const bound = await regenerateBoundSidecars(m4bPath, { vttPath });
+    const action = bound?.vtt.action ?? 'none';
+    if (action === 'written' || action === 'would-write') {
+      glog(`[generate-sentences] transcript bound as a sidecar (source: ${bound?.vtt.source})`);
+    } else {
+      gerror(`[generate-sentences] sidecar binding produced NO transcript (vtt: ${action}) — `
+        + 'players fall back to the m4b\'s own track, which is lossy for empty cues');
+    }
+  } catch (err) {
+    gerror(`[generate-sentences] sidecar binding threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 
 /** Compact H:MM:SS for an audio position (e.g. 3:07:42). */
 function fmtDur(seconds: number): string {
@@ -134,13 +193,15 @@ export async function startGenerateSentences(
         return;
       }
 
-      // Seal the aligned transcript INTO the m4b. The VTT is a temporary build
-      // artifact, not a sidecar; success requires reading the embedded track back.
+      // Seal the aligned transcript into the m4b for players, and BIND IT AS THE
+      // SIDECAR FROM THIS FILE — in that order, and the file is not deleted until
+      // the binder has had it. See `bindAlignedTranscript` for why.
       try {
         const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
         const embedded = await embedAndVerifyVtt(m4bPath, vttPath, lang);
         if (!embedded) throw new Error('Embedded transcript verification failed');
         glog('[generate-sentences] embedded and verified aligned transcript in m4b');
+        await bindAlignedTranscript(m4bPath, vttPath);
         try { fs.unlinkSync(vttPath); } catch { /* absent/already cleaned */ }
       } catch (err) {
         // The alignment itself (hours of compute) succeeded — only sealing it
@@ -299,6 +360,7 @@ export async function startGenerateSentences(
       const embedded = await embedAndVerifyVtt(m4bPath, outVtt, lang);
       if (!embedded) throw new Error('Embedded transcript verification failed');
       glog('[generate-sentences] embedded and verified transcript in m4b');
+      await bindAlignedTranscript(m4bPath, outVtt);
     } finally {
       try { fs.unlinkSync(outVtt); } catch { /* absent/already cleaned */ }
     }
