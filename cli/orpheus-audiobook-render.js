@@ -36,6 +36,20 @@
  *   --chapter-gap <s>    seconds of silence to leave BETWEEN chapters (never after the
  *                        last one). Omit for BookForge's default of 3s; pass 0 for the
  *                        butt-joined book this pipeline made until 2026-09-09.
+ *
+ * Assembling a DERIVED set as a SECOND audiobook (--assemble-only only):
+ *   --sentences-dir <d>  assemble THIS set instead of the session's own cache — the
+ *                        durable output of an enhancement pass, e.g.
+ *                        `<session>/chapters/sentences-rvc-<voice>/`. Nothing is
+ *                        derived here: the set already exists and is assembled as it
+ *                        is, so --final-denoise is refused alongside it.
+ *   --as-new-version     file the result BESIDE the project's audiobook instead of
+ *                        replacing it — a manifest variant, under a filename carrying
+ *                        the voice. This is what the app does for a run that converted
+ *                        sentences it did not itself render.
+ *   --version-voice <id> the RVC voice that second version is NAMED after. Derived from
+ *                        a `sentences-rvc-<voice>` directory name; required when the
+ *                        set is named anything else.
  *   --skip-text-cleanup  do NOT run the narration text cleanup, and tell the render
  *                        door so: the book is read exactly as printed, digits and all.
  *                        The app's own "No, narrate as printed" button, headless.
@@ -116,6 +130,66 @@ async function main() {
     throw new Error(`not a BookForge project (no manifest.json): ${projectDir}`);
   }
 
+  // ── ASSEMBLING A DERIVED SET, AND FILING IT AS A SECOND AUDIOBOOK ────────
+  //
+  // An enhancement pass writes a DURABLE set inside the session
+  // (`chapters/sentences-rvc-<voice>`, `chapters/sentences-denoised`) and the
+  // app assembles it through `startReassembly`'s `sentencesDir` — the same field
+  // this passes. Until 2026-09-10 the CLI could RUN the conversion
+  // (`--rvc-enhance`) and then had no way to assemble what it produced, so a
+  // headless enhancement ended at a directory of FLACs.
+  //
+  // `--as-new-version` is the other half: the app files a conversion of
+  // sentences it did not render as a manifest VARIANT rather than over the
+  // project's one audiobook, because overwriting it would destroy the original
+  // to produce its alternative. Same flags, same helper
+  // (`audiobook-variant-filing.resolveRvcVariantFiling`), same result.
+  const suppliedSentencesDir = args['sentences-dir'] && args['sentences-dir'] !== true
+    ? path.resolve(args['sentences-dir'])
+    : null;
+  if (suppliedSentencesDir) {
+    if (!args['assemble-only']) {
+      throw new Error('--sentences-dir names a set that already exists; a render makes its own. Use --assemble-only.');
+    }
+    if (!fs.existsSync(suppliedSentencesDir)) {
+      throw new Error(`--sentences-dir not found: ${suppliedSentencesDir}`);
+    }
+    if (args['final-denoise']) {
+      throw new Error(
+        '--final-denoise derives a new set from the session\'s raw cache; --sentences-dir '
+        + 'names the set to assemble. Denoise it first (--denoise --sentences-dir ...) and '
+        + 'assemble THAT directory.');
+    }
+  }
+  const asNewVersion = !!args['as-new-version'];
+  if (asNewVersion && !args['assemble-only']) {
+    throw new Error('--as-new-version files a SECOND audiobook beside the project\'s; a render makes the project\'s own. Use --assemble-only.');
+  }
+  if (args['version-voice'] && !asNewVersion) {
+    throw new Error('--version-voice names the voice a second version is called after; it means nothing without --as-new-version.');
+  }
+  // WHICH VOICE NAMES IT. A `sentences-rvc-<voiceId>` directory was named by the
+  // conversion that wrote it, so the id is already on disk and asking for it
+  // again is asking the operator to repeat what the path says. Anything else -
+  // a denoised set, a hand-assembled directory - has no voice in its name and
+  // must say.
+  let versionVoiceId = args['version-voice'] && args['version-voice'] !== true
+    ? String(args['version-voice'])
+    : undefined;
+  if (asNewVersion && !versionVoiceId) {
+    const fromName = suppliedSentencesDir
+      ? /^sentences-rvc-(.+?)(?:-denoised)?$/.exec(path.basename(suppliedSentencesDir))
+      : null;
+    if (!fromName) {
+      throw new Error(
+        '--as-new-version needs --version-voice <id>: the voice is what tells two versions of '
+        + 'a book apart, and it could not be read off the set\'s directory name (only a '
+        + '`sentences-rvc-<voice>` directory carries it).');
+    }
+    versionVoiceId = fromName[1];
+    console.log(`[audiobook] --as-new-version: voice "${versionVoiceId}", read off the set's directory name`);
+  }
+
   // Library root = {library}/projects/{slug} -> two levels up. Reassembly resolves the
   // cover + metadata from the manifest relative to this, exactly like the app does.
   const libraryRoot = path.dirname(path.dirname(projectDir));
@@ -167,7 +241,11 @@ async function main() {
   if (args['final-denoise'] && args['no-final-denoise']) {
     throw new Error('--final-denoise and --no-final-denoise are mutually exclusive');
   }
-  const finalDenoise = !args['no-final-denoise'];
+  // A SUPPLIED SET IS ALREADY FINAL. `--sentences-dir` names the audio to
+  // assemble; deriving a denoise off the session's raw cache and then assembling
+  // a different directory would spend the roformer on audio nobody hears. The
+  // combination with an explicit --final-denoise was refused by name above.
+  const finalDenoise = !args['no-final-denoise'] && !suppliedSentencesDir;
 
   // De-ring (OPT-IN, default OFF — same as the app's assemble step): apply the voice's
   // per-voice post-render filter chain (the notch/comb that strips SNAC tonal ringing)
@@ -403,13 +481,24 @@ async function main() {
     // supplied set, because the gap is already baked into it; so the gap only travels
     // to assembly on the no-denoise path, where assembly is the pass that applies it.
     // undefined → the voice's models.json sentenceGap default applies (or no gap step)
-    ...(denoisedSentencesDir
-      ? { sentencesDir: denoisedSentencesDir }
-      : (sentenceGap !== undefined ? { sentenceGap } : {})),
+    // A SET SUPPLIED BY THE CALLER WINS. `--sentences-dir` names the audio to
+    // assemble outright; the denoise below it cannot have run (it is gated on the
+    // same flag), so these two are alternatives and never both.
+    ...(suppliedSentencesDir
+      ? { sentencesDir: suppliedSentencesDir }
+      : denoisedSentencesDir
+        ? { sentencesDir: denoisedSentencesDir }
+        : (sentenceGap !== undefined ? { sentenceGap } : {})),
     // Unlike the sentence gap, this never rides on an upstream pass — no
     // enhancement touches a chapter boundary — so it goes straight to assembly,
     // and absence hands the question to the bridge's default rather than to zero.
     ...(chapterGap !== undefined ? { chapterGap } : {}),
+    // BESIDE the project's audiobook rather than over it. The bridge names the
+    // file after the voice, spares the audiobooks already in output/, and records
+    // a manifest variant instead of overwriting `outputs.audiobook`.
+    ...(asNewVersion
+      ? { registerAsNewVariant: true, rvcVoiceId: versionVoiceId }
+      : {}),
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);

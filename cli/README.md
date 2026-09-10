@@ -151,6 +151,36 @@ python cli/bookforge-tts.py --assemble --project "<dir>" --dry-run
 here: nothing is generated and nothing is narrated, so a value that changes nothing
 about the run is an error rather than a silent no-op.
 
+### Assembling an enhancement pass's output, as a SECOND audiobook
+
+`--rvc-enhance` and `--denoise` write **durable** sets inside the session
+(`chapters/sentences-rvc-<voice>/`, `chapters/sentences-denoised/`). Until
+2026-09-10 the CLI could produce one and had no way to assemble it, so a headless
+enhancement ended at a directory of FLACs. Two flags close that:
+
+| flag | what it does |
+|---|---|
+| `--sentences-dir <dir>` | assemble THIS set instead of the session's own cache. Nothing is derived — the set is assembled as it is, so `--final-denoise` is refused alongside it and `--no-final-denoise` is not needed |
+| `--as-new-version` | file the result **beside** the project's audiobook instead of replacing it: a manifest variant (`rvc:<voice>`), under a filename carrying the voice. The same filing the app does for a run that converted sentences it did not itself render |
+| `--version-voice <id>` | the voice that second version is NAMED after. Read off a `sentences-rvc-<voice>` directory name; required for any other set |
+
+```
+# Convert the session's sentences, then file the result as a second version:
+python cli/bookforge-tts.py --rvc-enhance --project "<dir>" --rvc-voice-id rvc-voice-sigma
+python cli/bookforge-tts.py --assemble  --project "<dir>" --as-new-version \
+    --sentences-dir "<session>/chapters/sentences-rvc-rvc-voice-sigma"
+```
+
+Both books end up in `output/`, the original untouched and `outputs.audiobook`
+still pointing at it; the new one is registered as a manifest variant and shows in
+Studio as a second version of the book.
+
+**A derived set comes at its own sample rate.** An RVC v2 conversion runs at
+48 kHz where the render was 24 kHz. `narrator`'s `build_manifest` takes the rate
+from the set it is assembling (chunk 0, which is also the concat list's first
+entry) and holds every chunk to it — a set that disagrees with itself is still
+refused by name.
+
 **Higgs.** `higgs-v3` books are `audited` — force-aligned after the render — and
 assembly reads the `--coverage_report` that `narrator align` writes. It does not
 REQUIRE one: assembly logs whatever the audit found (failed chunks, dropped text,

@@ -349,7 +349,26 @@ def _audiobook_spawn(args, assemble_only):
         _require(not args.skip_text_cleanup,
                  "--skip-text-cleanup is a render choice; --assemble narrates nothing")
         cmd += ["--assemble-only"]
+        # ASSEMBLING A DERIVED SET, AND FILING IT AS A SECOND AUDIOBOOK.
+        # `--rvc-enhance` writes a durable set inside the session and, until
+        # 2026-09-10, the CLI had no way to assemble what it had just produced —
+        # a headless enhancement ended at a directory of FLACs. The adapter
+        # states every refusal (a set that is not there, a voice it cannot name,
+        # a denoise that would derive a different directory); nothing is
+        # re-decided here.
+        if args.sentences_dir:
+            cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+        if args.as_new_version:
+            cmd += ["--as-new-version"]
+        if args.version_voice:
+            cmd += ["--version-voice", args.version_voice]
     else:
+        _require(not args.as_new_version,
+                 "--as-new-version files a SECOND audiobook beside the project's; "
+                 "--audiobook makes the project's own")
+        _require(not args.version_voice,
+                 "--version-voice names the voice a second version is called after; "
+                 "it means nothing without --as-new-version")
         _require(bool(args.voice), "--voice <id> is required for --audiobook")
         cmd += ["--engine", args.engine, "--voice", args.voice]
         if args.input:
@@ -383,10 +402,19 @@ def _audiobook_spawn(args, assemble_only):
     # so the spawn line is self-documenting.
     _require(not (args.final_denoise and args.no_final_denoise),
              "--final-denoise and --no-final-denoise are mutually exclusive")
+    _require(not (args.final_denoise and assemble_only and args.sentences_dir),
+             "--final-denoise derives a NEW set from the session's raw cache; --sentences-dir "
+             "names the set to assemble. Denoise first (--denoise --sentences-dir ...) and "
+             "assemble the directory that pass writes.")
     if args.no_final_denoise:
         final_denoise = False
     elif args.final_denoise:
         final_denoise = True
+    elif assemble_only and args.sentences_dir:
+        # A SUPPLIED SET ANSWERS THE QUESTION. `--sentences-dir` names the audio
+        # to assemble; this door derives nothing from the raw cache, so there is
+        # no denoise to have run or not run and nothing to guess.
+        final_denoise = False
     elif assemble_only:
         # NO DEFAULT ON THIS DOOR. Whether the denoise ran is a fact about the
         # CHAIN that produced the sentences being assembled — its own queue row in
@@ -1565,7 +1593,18 @@ def build_parser():
     p.add_argument("--sentences-dir", dest="sentences_dir",
                    help="--denoise/--rvc-enhance: the set this pass reads, when an EARLIER pass "
                         "produced it (the 'convert first, then denoise' order and its mirror). "
-                        "The job refuses it alongside --sentence-gap rather than ignoring one")
+                        "The job refuses it alongside --sentence-gap rather than ignoring one. "
+                        "--assemble: the set to ASSEMBLE — an enhancement pass's durable output, "
+                        "e.g. <session>/chapters/sentences-rvc-<voice>/. Nothing is derived: the "
+                        "set is assembled as it is, so --final-denoise is refused alongside it")
+    p.add_argument("--as-new-version", dest="as_new_version", action="store_true",
+                   help="--assemble: file the result BESIDE the project's audiobook instead of "
+                        "replacing it — a manifest variant under a filename carrying the voice. "
+                        "What the app does for a run that converted sentences it did not render")
+    p.add_argument("--version-voice", dest="version_voice",
+                   help="--assemble: the RVC voice id the second version is NAMED after. Read off "
+                        "a `sentences-rvc-<voice>` directory name when --sentences-dir names one; "
+                        "required for any other set")
     p.add_argument("--rvc-voice-id", dest="rvc_voice_id",
                    help="--rvc-enhance: the RVC asset id (e.g. builtin:deathstalker-sigma). "
                         "Not --rvc-model, which is the urvc FOLDER name the whole-file --rvc takes")
