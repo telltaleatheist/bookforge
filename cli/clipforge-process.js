@@ -1191,6 +1191,8 @@ function printUsage() {
     '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
     '  align        align each Adobe span against its own text  (align_spans.py)',
+    '  ladder       length sweep N models back to back + band calc  (ladder_chain.sh)',
+    '  deploy       promote a laddered winner into BookForge       (promote_voice.py)',
     '',
     '  Each takes --help and explains the WHY with its field-note reference.',
     '  Scripts live in the orpheus-finetune repo: --training-root <dir> or',
@@ -1201,6 +1203,149 @@ function printUsage() {
     '  Pipeline order is the runbook in HIGGS_FIELD_NOTES 4n.41:',
     '    masters -> align -> slice -> merge-tiers -> gate -> mix -> train -> sweep -> promote',
   ].join('\n'));
+}
+
+TRAINING_HELP.ladder = [
+  'clipforge ladder - length sweep over one or more merged models, back to back',
+  '',
+  '  Owen 2026-09-09: "the ladder should keep the gpu occupied until it finishes rendering.',
+  '  we can do the calculations while the other is rendering." So each model renders on the',
+  '  GPU, then its ASR SCORING is launched on the CPU in the background while the NEXT model',
+  '  takes the GPU. The GPU idles only for a serve swap (~70 s).',
+  '',
+  '  RENDER + CALCULATE (the whole thing):',
+  '    --models "<dirA> <dirB>"   merged model dirs, rendered in this order',
+  '    --bank <bank.json>          length bank from make_bank.py (held-out text for THAT voice)',
+  '    --out-root <dir>            one run dir per model is created under it',
+  '    --seeds "500 501 502 503"  default 4 seeds. 4n.39 says use 4, not 2: at 2 seeds a',
+  '                                3-rung band is n=48 and two checkpoints 3x apart in failures',
+  '                                are still inside the noise (ladder-noise-floor, 2026-09-01).',
+  '    --conc 4                    concurrency. Also caps KV: conc x (max-tokens + input) must',
+  '                                fit the pool (23,173 tokens at mem-fraction 0.48).',
+  '    --max-tokens 5000           reserved per request UP FRONT. Too high and every request is',
+  '                                refused before scheduling; too low and you manufacture the',
+  '                                truncations you are trying to measure (4n.44).',
+  '    --ctx 8192                  HIGGS_CONTEXT_LENGTH. The default 4096 holds only ~2,000 chars,',
+  '                                so a sweep reaching 2k truncates on the WALL, not the voice.',
+  '',
+  '  CALCULATIONS ONLY (the calculations flag - run it on runs that already exist):',
+  '    --calc --runs "<runA> <runB>" [--score]',
+  '    Two or more run dirs give the head-to-head comparison and the higgs-safe-bands.json line.',
+  '    --score also re-runs ASR scoring first; omit it when the chain already scored.',
+  '',
+  '  Bands are ranked by the Wilson 95% UPPER bound so a narrow window cannot win on luck,',
+  '  which is exactly why the seed count matters (band.py, 4n.39).',
+].join('\n');
+
+async function runLadder(args) {
+  if (args.help) { console.log(TRAINING_HELP.ladder); return; }
+  requireGuestSide('ladder');
+  const camp = resolveCampaignRoot(args);
+  const n4 = path.join(camp, 'night4');
+  if (args.calc) {
+    if (!args.runs) throw new Error('ladder --calc: --runs "<runA> <runB>" is required');
+    const argv = [];
+    if (args.score) argv.push('--score');
+    for (const d of String(args.runs).split(/\s+/).filter(Boolean)) argv.push(d);
+    await spawnTraining('bash', path.join(n4, 'ladder_calc.sh'), argv, camp, 'ladder-calc');
+    return;
+  }
+  for (const k of ['models', 'bank', 'out-root']) {
+    if (!args[k]) throw new Error('ladder: --' + k + ' is required (see: clipforge ladder --help)');
+  }
+  const argv = ['--bank', String(args.bank), '--out-root', String(args['out-root'])];
+  for (const k of ['seeds', 'conc', 'max-tokens', 'ctx', 'tag-prefix']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  for (const d of String(args.models).split(/\s+/).filter(Boolean)) argv.push(d);
+  await spawnTraining('bash', path.join(n4, 'ladder_chain.sh'), argv, camp, 'ladder');
+}
+
+TRAINING_HELP.deploy = [
+  'clipforge deploy - promote a laddered checkpoint into BookForge (promote_voice.py)',
+  '',
+  'WHAT \'DEPLOY\' MEANS FOR HIGGS, AND WHY IT IS NOT JUST A FILE COPY',
+  '',
+  '  A Higgs voice ships as FOUR things that must agree, or the app renders the wrong voice',
+  '  at the wrong chunk size and nothing errors:',
+  '',
+  '    1. THE MERGED WEIGHTS. Training produces a LoRA adapter, but neither serving stack can',
+  '       attach one at runtime - there is no --enable-lora and the v3 talker never declares',
+  '       vLLM\'s SupportsLoRA. So the adapter is merged into the base weights first',
+  '       (v3_ft/merge_for_serving.py, CPU-only, ~1 min). A checkpoint dir is NOT servable.',
+  '',
+  '    2. TWO ARMS, TWO COPIES OF THOSE WEIGHTS. `served` is the PC: SGLang-Omni inside WSL,',
+  '       reading /home/telltale/higgs_v3_merged/<dir>. `mlx` is the Mac: the same merged',
+  '       directory rsynced to ~/Library/Application Support/BookForge/runtime/higgs-models/<dir>.',
+  '       No safetensors->MLX conversion - MLX loads the same files. Promote one arm only and the',
+  '       machines quietly disagree about which checkpoint is live.',
+  '',
+  '    3. THE SAFE BAND - the two numbers that actually steer the packer. A fine-tune\'s failure',
+  '       curve is U-SHAPED: it truncates on chunks that are too SHORT as well as too long',
+  '       (field notes 4n.37.19-21). Owen\'s Mac truncated at 323, 502 and 634 chars while the',
+  '       cap was 800, because floor==cap left short paragraphs unable to merge. So a band is a',
+  '       FLOOR and a CAP, measured by the length ladder, never guessed from the corpus - a rule',
+  '       derived from corpus p25 was wrong in production within a day.',
+  '',
+  '    4. THE CATALOG RECORD. electron/data/higgs-models.json is the source of truth for caps and',
+  '       arm directories; higgs-safe-bands.json is the small overlay that holds the band. The app',
+  '       reads the compiled copy under dist/, so an edit that is not copied and recompiled has no',
+  '       effect at all - the most common way a \'deployed\' model behaves exactly as before.',
+  '',
+  '  WHICH CHECKPOINT WINS. The ladder renders two candidates across the spectrum and band.py',
+  '  ranks contiguous windows by the Wilson 95% UPPER bound of their failure rate (upper bound, so',
+  '  a narrow window cannot win on luck; ties break toward the WIDER band, because width is room',
+  '  for the chunker). Owen: fewest truncations/runaways inside the band wins, and holdout loss is',
+  '  the tie-break ONLY when the margin is inside noise - which it usually is, since the top two',
+  '  checkpoints differ by ~0.01% loss.',
+  '',
+  '  WHAT IS DELIBERATELY *NOT* HERE: HuggingFace. It holds the backups of the current models, so',
+  '  anything lost from the Mac or the PC can be re-pulled. Publishing needs Owen\'s explicit green',
+  '  light and is not part of promotion.',
+  '',
+  'USAGE',
+  '    --voice <id>        catalog id in electron/data/higgs-models.json (e.g. mistborn)',
+  '    --verdict <json>    verdict.json written by the ladder (band.py --json)',
+  '    --run-dir <dir>     the TRAIN run dir, for the holdout losses behind the tie-break',
+  '    --prod-name <dir>   merged dir name to promote to (e.g. mb_v6_prod)',
+  '    --band-key <key>    higgs-safe-bands.json key, if it differs from --voice',
+  '    --apply             actually write. WITHOUT it this is a dry run that only names the winner.',
+  '    --push              git commit + push the two catalog files (PC)',
+  '    --mac               rsync to the Mac, sha-verify every weight file, refresh its checkout',
+  '                        and dist, re-run the engine test there',
+  '',
+  'ORDER OF OPERATIONS (what --apply --push --mac does, in order)',
+  '    ladder -> verdict.json -> winner -> merged dir renamed to <prod-name> -> sha256 recorded',
+  '    -> higgs-safe-bands.json { min, max } -> higgs-models.json both arms + arm dirs',
+  '    -> cp electron/data/*.json dist/electron/data/ -> npx tsc -p tsconfig.electron.json',
+  '    -> node tools/test-higgs-engine.js -> git commit + push -> rsync Mac -> verify -> Mac test',
+  '',
+  '  NEVER `npm run build:electron` here: it starts with `rm -rf dist/electron` and will break a',
+  '  render in flight. `npx tsc -p tsconfig.electron.json` produces the same overlay without it.',
+  '',
+  'GATES (it stops rather than half-deploying)',
+  '    - test-higgs-engine.js must print ALL OK *and* exit 0. A syntax error prints neither FAIL',
+  '      nor OK, so the exit code is checked too - passing on silence is how a broken catalog ships.',
+  '    - a safe max above that arm\'s maxChars, or a min not below the max, is refused BY NAME at',
+  '      load, so the cap is raised with the band rather than left to contradict it.',
+  '    - after the rsync, every weight file\'s sha256 must match or the Mac is not switched over.',
+].join('\n');
+
+async function runDeploy(args) {
+  if (args.help) { console.log(TRAINING_HELP.deploy); return; }
+  requireGuestSide('deploy');
+  const camp = resolveCampaignRoot(args);
+  for (const k of ['voice', 'verdict', 'run-dir', 'prod-name']) {
+    if (!args[k]) throw new Error('deploy: --' + k + ' is required (see: clipforge deploy --help)');
+  }
+  const argv = [];
+  for (const k of ['voice', 'verdict', 'run-dir', 'prod-name', 'band-key']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  for (const k of ['apply', 'push', 'mac']) if (args[k]) argv.push('--' + k);
+  if (!args.apply) console.log('[deploy] DRY RUN - no files written. Add --apply when the winner looks right.');
+  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  await spawnTraining(python, path.join(camp, 'night4', 'promote_voice.py'), argv, camp, 'deploy');
 }
 
 async function main() {
@@ -1228,6 +1373,8 @@ async function main() {
   if (verb === 'train') return runTrain(args);
   if (verb === 'masters') return runMasters(args);
   if (verb === 'align') return runAlign(args);
+  if (verb === 'ladder') return runLadder(args);
+  if (verb === 'deploy') return runDeploy(args);
   if (verb === 'help') return printUsage();
   printUsage();
   throw new Error(`unknown verb: ${verb}`);
