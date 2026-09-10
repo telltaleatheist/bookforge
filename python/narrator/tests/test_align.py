@@ -1440,6 +1440,45 @@ class EstimatedTranscriptTest(unittest.TestCase):
         with open(existing, encoding='utf-8') as handle:
             self.assertIn('measured', handle.read())
 
+    def _existing(self, last_cue_end: str) -> str:
+        """A sentence transcript beside the session whose last cue ends there."""
+        path = os.path.join(self.tmp, 'Book.sentences.vtt')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('WEBVTT\n\n00:00:00.000 --> %s\nmeasured\n' % last_cue_end)
+        return path
+
+    def test_a_measurement_of_LONGER_audio_is_replaced_not_believed(self):
+        """The Shift case, 2026-09-10. Assembly ran against a --sentences_dir
+        override whose chunks were shorter, so the transcript beside the session
+        timed audio that no longer existed - and the bridge sealed it into the
+        m4b. A cue cannot end after the audio does, so this one measured
+        something else."""
+        from narrator.assemble.run import write_estimated_sentence_vtt
+
+        existing = self._existing('00:00:10.000')      # 10 s of cues...
+        lines = []
+        path = write_estimated_sentence_vtt(            # ...over 1 s of audio
+            self._manifest(['One two.']), 'Book', lines.append)
+        self.assertEqual(path, existing)
+        with open(existing, encoding='utf-8') as handle:
+            document = handle.read()
+        self.assertNotIn('measured', document)
+        self.assertIn('NOTE estimated chunk 0', document)
+        self.assertIn('measured DIFFERENT audio', '\n'.join(lines))
+
+    def test_a_measurement_OF_THIS_audio_is_still_left_alone(self):
+        """The rule it must not break: a real alignment of this book ends at its
+        last word, which is at or under the assembly's own length."""
+        from narrator.assemble.run import write_estimated_sentence_vtt
+
+        existing = self._existing('00:00:00.500')      # inside 1 s of audio
+        lines = []
+        self.assertIsNone(write_estimated_sentence_vtt(
+            self._manifest(['One two.']), 'Book', lines.append))
+        with open(existing, encoding='utf-8') as handle:
+            self.assertIn('measured', handle.read())
+        self.assertIn('leaving the measured one alone', '\n'.join(lines))
+
     def test_a_broken_manifest_costs_the_transcript_and_not_the_audiobook(self):
         """A zero-length chunk has no audio to spread text over. It is named in
         the log; it does not raise, because the m4b is the deliverable."""

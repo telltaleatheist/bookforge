@@ -55,6 +55,7 @@ for `-->` skips it and a reader that shows cues shows exactly the cues.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
 
@@ -329,6 +330,37 @@ def write_sentence_vtt(cues: Sequence[SentenceCue], path: str) -> str:
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         handle.write(content)
     return path
+
+
+#: `HH:MM:SS.mmm --> HH:MM:SS.mmm`, the only line shape a cue time can take in a
+#: file this module wrote (`format_timestamp` always emits hours).
+_CUE_TIMES_RE = re.compile(
+    r'^(\d+):(\d{2}):(\d{2})\.(\d{3})\s+-->\s+(\d+):(\d{2}):(\d{2})\.(\d{3})\s*$')
+
+
+def last_cue_end_seconds(path: str) -> Optional[float]:
+    """The end time of the last cue in the VTT at `path`, or None.
+
+    None means "this file does not answer the question" - it is missing, it is
+    unreadable, or it holds no cue whose times parse. Every one of those is a
+    reason to fall through to whatever the caller would do without the file, and
+    none of them is a reason to refuse an audiobook, so this raises nothing.
+
+    THE LAST CUE, not the largest: a VTT is written in time order by everything
+    that writes one here, and a file out of order is already a file this cannot
+    reason about.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            last = None
+            for line in handle:
+                match = _CUE_TIMES_RE.match(line.strip())
+                if match:
+                    hours, minutes, seconds, millis = (int(v) for v in match.groups()[4:])
+                    last = hours * 3600 + minutes * 60 + seconds + millis / 1000.0
+            return last
+    except OSError:
+        return None
 
 
 def count_estimated(cues: Iterable[SentenceCue]) -> int:

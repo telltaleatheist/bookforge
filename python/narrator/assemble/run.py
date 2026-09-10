@@ -41,8 +41,9 @@ from . import encode as encode_mod
 from .chapters import ChapterPlan, chunk_total, plan_chapters, total_duration
 from .ffmpeg_tools import FfmpegError, probe_duration, resolve_binary
 from .sentence_vtt import (SENTENCE_VTT_SUFFIX, SentenceVttError,
-                           estimated_cues_for_manifest, write_sentence_vtt)
-from .vtt import write_vtt
+                           estimated_cues_for_manifest,
+                           last_cue_end_seconds, write_sentence_vtt)
+from .vtt import vtt_duration, write_vtt
 
 #: Prefix of the assembly's working directory, which lives in the MACHINE'S OWN
 #: TEMP SPACE and not beside the audiobook.
@@ -187,6 +188,15 @@ def _remove_work_dir(work_dir: str, log) -> None:
         )
 
 
+#: How far past this assembly's own length a sentence transcript beside the
+#: session may end and still be believed to measure it. One second: the cue
+#: times and `vtt_duration` come from the SAME running sum of sample counts,
+#: so a genuine measurement differs only by the aligner's rounding of the last
+#: word, while a transcript of different audio is out by the difference between
+#: two sentence sets - minutes on the case this was written for.
+_STALE_TRANSCRIPT_EPSILON_S = 1.0
+
+
 def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log,
                                  chapter_gap: float = 0.0) -> str | None:
     """The sentence transcript for a book NOBODY ALIGNED, beside the session.
@@ -200,9 +210,31 @@ def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log,
     sum of sample counts the chunk-level VTT is built from, so a sentence cue can
     never fall outside its own chunk's cue.
 
-    IT NEVER OVERWRITES A MEASURED ONE. A `<stem>.sentences.vtt` already beside
-    the session was written by `narrator align` from real word timings, and a
-    guess must not replace a measurement.
+    IT NEVER OVERWRITES A MEASURED ONE **OF THIS AUDIO**. A `<stem>.sentences.vtt`
+    already beside the session was written by `narrator align` from real word
+    timings, and a guess must not replace a measurement - but a measurement is
+    only about the audio it measured, and a session's sentence set is not fixed.
+    Assembly takes a `--sentences_dir` override (a denoised set, an RVC
+    conversion, a silence-trimmed set), and when that set's chunks have different
+    durations the file beside the session times audio that no longer exists.
+
+    Measured 2026-09-10: Shift re-assembled from a silence-trimmed set (18.47 h
+    -> 16.36 h) kept the 18.47 h transcript, and `reassembly-bridge` sealed it
+    into the m4b. The completeness gate refused the book - "126.4 minutes of
+    narration are missing" - which is the right refusal for the wrong reason, and
+    it only fired because the audio got SHORTER. A set that got LONGER would have
+    shipped, because that gate is one-sided (`lastCueEnd - m4bSeconds > 5`).
+
+    So the guard is one-sided in the direction that cannot lie: A CUE CANNOT END
+    AFTER THE AUDIO DOES. `vtt_duration` is this assembly's own length, from the
+    same running sum of sample counts the cue times come from, so a genuine
+    measurement of this audio is always at or under it and this can never fire on
+    a correct file. A file that runs past it measured something else and is
+    replaced, loudly. The reverse - audio longer than the transcript - is NOT
+    tested here: a book legitimately ends after its last word, by the last
+    chunk's trailing silence and its gap, and there is no threshold that
+    separates that from a stale short transcript without knowing which set was
+    measured.
 
     IT NEVER STOPS THE ASSEMBLY. A chunk with no audio to spread text over is a
     broken manifest and is named in the log, but the audiobook is the deliverable
@@ -210,9 +242,19 @@ def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log,
     """
     path = os.path.join(manifest.source.processDir, stem + SENTENCE_VTT_SUFFIX)
     if os.path.isfile(path):
-        log(f"[coverage] a sentence transcript is already beside the session "
-            f"({path}); leaving the measured one alone")
-        return None
+        book_seconds = vtt_duration(manifest, chapter_gap)
+        last_cue = last_cue_end_seconds(path)
+        if last_cue is None or last_cue <= book_seconds + _STALE_TRANSCRIPT_EPSILON_S:
+            log(f"[coverage] a sentence transcript is already beside the session "
+                f"({path}); leaving the measured one alone")
+            return None
+        log(f"[coverage] the sentence transcript beside the session ({path}) ends "
+            f"at {last_cue:.2f}s, and this assembly is {book_seconds:.2f}s long - "
+            f"it measured DIFFERENT audio (a --sentences_dir override changes chunk "
+            f"durations), so it is being replaced with an estimate for the audio "
+            f"actually being assembled. The measured file is not recoverable from "
+            f"here; re-run `narrator align` against the finished book to measure "
+            f"this one.")
     try:
         cues = estimated_cues_for_manifest(
             manifest, where="assemble", chapter_gap=chapter_gap
