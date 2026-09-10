@@ -522,15 +522,32 @@ def _safe_band(path, name, entry, max_chars):
 
 
 #: The document's sampling keys (the catalog's camelCase) -> the engine's.
-_SAMPLING_KEYS = {'temperature': 'temperature', 'topP': 'top_p', 'topK': 'top_k'}
+#:
+#: `repetitionPenalty` is SERVED-ARM ONLY and reaches this map from a per-backend
+#: block, never from the catalog's engine-level `sampling`. mlx-audio's
+#: `higgs_audio_v3` has no repetition penalty (PORT_NOTES 13.11), so
+#: `HiggsV3MlxConfig.__post_init__` refuses the key by name: a document carrying
+#: it on the Mac arm is a loud refusal, not a lever that looks applied and does
+#: nothing. It is listed here because the SERVED arm must be able to state it -
+#: `sgl_served.SAMPLING_KEYS` already accepts it on the wire.
+_SAMPLING_KEYS = {'temperature': 'temperature', 'topP': 'top_p', 'topK': 'top_k',
+                  'repetitionPenalty': 'repetition_penalty'}
 
 
 def _voice_sampling(path: str, name: str, entry: dict):
     """The voice's own `sampling` block, or None when the document carries
     none (the engine then renders at the checkpoint's own generation_config).
-    Any subset of temperature / topP / topK; each a positive number, top_k a
-    whole one; an unknown key is refused by name - a misspelled lever would
-    otherwise render at the file's value while the catalog states another."""
+    Any subset of temperature / topP / topK / repetitionPenalty; each a positive
+    number, top_k a whole one; an unknown key is refused by name - a misspelled
+    lever would otherwise render at the file's value while the catalog states
+    another.
+
+    A PARTIAL BLOCK IS A TRAP AND THE CALLER OWNS IT: a per-backend block
+    REPLACES the engine-level sampling rather than merging with it
+    (`higgs-models.ts:higgsVoiceCapsForModel`), so a block stating only
+    `repetitionPenalty` would leave temperature to fall back to the checkpoint's
+    own generation_config.json (1.0, which nobody chose) instead of the
+    catalog's 0.7. A deviating block restates every value it means to keep."""
     block = entry.get('sampling')
     if block is None:
         return None

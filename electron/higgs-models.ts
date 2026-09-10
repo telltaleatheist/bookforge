@@ -531,8 +531,17 @@ export interface HiggsBackendCaps {
    * decoded chunk ends at a hard sample boundary and joins click without these.
    */
   edgeFadeMs?: { in: number; out: number };
-  /** Sampling, sent inside `extra_params` — NEVER at the request top level. */
-  sampling?: { temperature?: number; topP?: number; topK?: number };
+  /**
+   * Sampling, sent inside `extra_params` — NEVER at the request top level.
+   *
+   * `repetitionPenalty` is a SERVED-ARM-ONLY lever and belongs in a per-backend
+   * block, never in the engine-level one. mlx-audio's `higgs_audio_v3` has no
+   * repetition penalty at all — `Model.generate` takes no such argument (narrator
+   * `engine/higgs/PORT_NOTES.md` 13.11) — so `HiggsV3MlxConfig.__post_init__`
+   * REFUSES the key rather than accepting a lever it would silently drop. Writing
+   * it at the catalog top would therefore refuse every Mac render.
+   */
+  sampling?: { temperature?: number; topP?: number; topK?: number; repetitionPenalty?: number };
   /** REQUIRED beside a per-backend `sampling`: the REASON it deviates from the engine-level one. */
   _samplingNote?: string;
   /** Hard server limit on total reference audio, in seconds. */

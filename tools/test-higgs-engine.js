@@ -530,15 +530,35 @@ check('ONE engine-level sampling - 0.7 / 0.95 / 50 - reaches EVERY Higgs voice o
   const engine = higgs.higgsEngineSampling();
   assert.deepStrictEqual(engine, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
+  // WHAT THIS HOLDS THE CATALOG TO, and what it deliberately no longer does.
+  // Until 2026-09-10 it asserted the shipped catalog carries NO per-block
+  // sampling at all - the rule's absence, not its mechanism. mistborn/served now
+  // states repetitionPenalty 1.1 with its reason, so the absence is false by
+  // intent and asserting it would only record that nobody had needed the lever
+  // yet. What is worth keeping is the shape: a block deviates only in
+  // repetitionPenalty (a SERVED-ARM lever mlx-audio cannot honour), it restates
+  // every engine value unchanged, and it says why.
   for (const m of higgs.listHiggsModels()) {
     for (const arm of ['wsl', 'darwin']) {
-      if (!m.backends[arm === 'wsl' ? 'served' : 'mlx']) continue;
+      const block = m.backends[arm === 'wsl' ? 'served' : 'mlx'];
+      if (!block) continue;
       const caps = higgs.higgsVoiceCapsForModel(m, arm);
-      assert.deepStrictEqual(caps.sampling, engine, `${m.id}/${arm}: does not render at the engine sampling`);
+      const { repetitionPenalty, ...rest } = caps.sampling;
+      assert.deepStrictEqual(rest, engine, `${m.id}/${arm}: deviates from the engine sampling in more than the penalty`);
+      if (repetitionPenalty !== undefined) {
+        assert.strictEqual(arm, 'wsl',
+          `${m.id}/${arm}: a repetitionPenalty on the MLX arm - mlx-audio has no such lever and narrator refuses the key`);
+        assert.ok(typeof repetitionPenalty === 'number' && repetitionPenalty > 0,
+          `${m.id}/${arm}: repetitionPenalty ${repetitionPenalty} is not a positive number`);
+        assert.ok(/reason/i.test(block._samplingNote || ''),
+          `${m.id}/${arm}: a per-block sampling with no _samplingNote stating the REASON`);
+      }
     }
-    for (const [arm, block] of Object.entries(m.backends)) {
-      assert.ok(block.sampling === undefined, `${m.id}/${arm}: a per-block sampling - the shipped catalog has one number`);
-    }
+    // The engine-level block may NEVER carry the penalty: it is written to both
+    // arms' documents, and HiggsV3MlxConfig refuses the key by name, so a
+    // penalty stated there would refuse every Mac render of every voice.
+    assert.ok(higgs.higgsEngineSampling().repetitionPenalty === undefined,
+      'the engine-level sampling carries a repetitionPenalty - that refuses every MLX render');
   }
   // A block that deviates WITHOUT a reason is refused by name.
   const silent = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
