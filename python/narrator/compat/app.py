@@ -83,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     # correct for Orpheus, whose policy is not enforced and for which the gate
     # is a no-op. See compat/FLAGS.md.
     p.add_argument('--coverage_report', type=str, default=None)
+    # Seconds of silence BETWEEN chapters at assembly. 0.0 - absent - is every
+    # book e2a ever assembled. See `assemble/run.assemble`.
+    p.add_argument('--chapter_gap', type=float, default=0.0)
 
     # range
     p.add_argument('--sentence_start', type=int, default=None)
@@ -522,6 +525,7 @@ def route_assemble(args) -> int:
             encoded_chapters_dir=args.encoded_chapters_dir,
             post_render_filter=args.post_render_filter,
             coverage_report=args.coverage_report,
+            chapter_gap=args.chapter_gap,
             **kwargs,
         )
     except Exception as e:

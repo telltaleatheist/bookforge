@@ -147,6 +147,61 @@ sentences directory reproduces the chapter atom to the millisecond.
 
 ---
 
+## 1a. THE CHAPTER GAP (`--chapter-gap`, 2026-09-09)
+
+**A different kind of gap entirely, and section 1 does not govern it.** The gap
+rule above is about a CHUNK: whether its silence is baked into its FLAC (padded
+engines) or realized around it (unpadded ones). This is silence between CHAPTERS
+- a property of the book, not of any sentence and not of any engine - so both
+paths get it and neither knows about it.
+
+Owen, 2026-09-09: *"can we artificially insert 3 seconds of silence at the end of
+every chapter so its easier to tell when it moves from one to the next"*. Default
+0.0 here (a CLI run that did not ask for a gap must not get one); BookForge's own
+default is 3 s, stated once in `shared/audio/chapter-gap.ts`.
+
+**Never after the last chapter.** The end of the book is not a boundary between
+anything.
+
+**It is not in `plan.paths`.** `ChapterPlan` records `gap_after`/`gap_samples`
+and the FILE is written where chapters are JOINED, which is the only level at
+which a chapter BookForge pre-encoded during the render (`chapter-closer.ts`,
+which encodes a chapter's sentences and nothing else) can be given the same
+treatment as one this assembler encodes. So:
+
+| | what it is | where |
+|---|---|---|
+| parallel path | one `.m4a`, `_aac_args` verbatim | between the entries of `concat_list_encoded.txt` |
+| serial path | one `.flac`, matched to the rendered set | between the entries of `concat_list_sentences.txt` |
+
+**THE FLAC IS WRITTEN BY FFMPEG, NOT SOUNDFILE, and that is load-bearing.**
+ffmpeg's concat demuxer drops every FLAC frame whose blocksize exceeds the first
+list entry's declared maximum, silently, exit 0 (section 2). libsndfile writes
+FLAC at blocksize 4096 and exposes no knob for it (measured 2026-09-09); a
+rendered Orpheus set at 24 kHz is 2304. `ffmpeg -frame_size <n>` sets it exactly,
+so `encode.chapter_gap_flac` writes the gap to the set's own shape and then reads
+the header back to prove it. Without that the gap would simply not be in the
+book, and nothing downstream would say so.
+
+**Four consumers, one argument.** `assemble(chapter_gap=...)` reaches the plan,
+the encode, the chapter markers (the gap belongs to the chapter it FOLLOWS, so
+seeking to a chapter lands on its first word) and BOTH transcripts. The last of
+those is not optional: the sentence VTT is sealed into the m4b as its subtitle
+track, so a gap in the audio that is not in `vtt.chunk_spans`' running sum drifts
+the whole transcript by one gap per chapter - a minute and a half by the end of a
+30-chapter book.
+
+**`narrator align` takes the same flag** and must be given the same value: it
+writes the MEASURED sentence transcript, assembly never rewrites a measurement,
+and nothing in the file records what it was timed for. Assembly logs which value
+it used whenever it seals a measured transcript with a non-zero gap in play.
+
+Tests: `tests/test_assemble_chapter_gap.py` (21 cases, real ffmpeg - including a
+concat that would lose the gap on a blocksize mismatch and a boundary extract
+that proves the added audio is actually SILENT).
+
+---
+
 ## 1b. THE `engine` BLOCK, AND WHERE THE NUMBERS LIVE
 
 The manifest gained an OPTIONAL top-level block:
@@ -254,6 +309,14 @@ goes into the list; anything still inhomogeneous there is a bug in the rewrite.
 |---|---|---|---|
 | concat / per-chapter encode | `0.5 + 0.01 * n_files` s | `lib/core.py:4841` | Witnesses - concat dropped frames, exit 0 |
 | finished export | `2.0` s | `lib/core.py:4351` | Nuremberg 2026-08-11 - a 20.12 h source exported as a valid, playable 14.72 h m4b |
+
+**The chapter gap is not in either of them.** Both guards ask "did every sentence
+reach the encoder", and the file they are asking about is the chapter's own
+audio, so they compare against `plan.audio_duration` - `plan.duration`, which
+includes the gap, is what the chapter markers and the export guard use. A
+pre-encoded chapter is held to the same audio-only number and then given the gap
+back in its marker (`run._chapter_durations_ms`); holding it to a duration it
+cannot contain would reject every pre-encoded chapter in the library.
 
 Both compare against the **sample-count** total, which is exact. `probe_duration`
 raises rather than returning 0.0 for an unreadable file, because a 0.0 does not

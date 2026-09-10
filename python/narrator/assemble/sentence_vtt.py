@@ -180,15 +180,20 @@ def proportional_cues(*, chunk_index: int, chunk_start_s: float,
 
 def estimated_cues_for_manifest(manifest, *,
                                 where: str = 'estimated_cues_for_manifest',
+                                chapter_gap: float = 0.0,
                                 ) -> Tuple[SentenceCue, ...]:
     """Estimated cues for EVERY chunk of a manifest - the no-report path.
 
     What assembly writes when the Align row never ran: the same spans the
     chunk-level VTT is built from (`chunk_spans`, imported rather than copied),
     with each chunk's text spread across its own audio.
+
+    `chapter_gap` is assembly's inter-chapter silence and reaches `chunk_spans`
+    unchanged - this file is SEALED INTO THE M4B as its subtitle track, so it is
+    timed against the finished audiobook or it is wrong from chapter two on.
     """
     cues = []
-    for chunk, start, end in chunk_spans(manifest, where):
+    for chunk, start, end in chunk_spans(manifest, where, chapter_gap):
         cues.extend(proportional_cues(
             chunk_index=chunk.index, chunk_start_s=start, chunk_end_s=end,
             text=chunk.text, is_heading=chunk.kind == 'heading'))

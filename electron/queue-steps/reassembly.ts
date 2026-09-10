@@ -59,6 +59,9 @@ interface ReassemblyStepConfig {
   finalDenoise?: boolean;
   applyDeRing?: boolean;
   sentenceGap?: number;
+  /** Seconds of silence between chapters. Absent = BookForge's default
+   *  (`DEFAULT_CHAPTER_GAP`, shared/audio/chapter-gap.ts), not zero. */
+  chapterGap?: number;
   /** File the result beside the project's audiobook instead of replacing it —
    *  set by the run description for a conversion of sentences it did not render. */
   registerAsNewVariant?: boolean;
@@ -181,6 +184,7 @@ export const reassemblyStep: StepModule = {
         finalDenoise: config.finalDenoise,
         applyDeRing: config.applyDeRing,
         sentenceGap: config.sentenceGap,
+        chapterGap: config.chapterGap,
         registerAsNewVariant: config.registerAsNewVariant,
         rvcVoiceId: config.rvcVoiceId,
       }, queueMainWindow());

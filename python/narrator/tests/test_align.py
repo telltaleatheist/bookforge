@@ -2120,7 +2120,7 @@ class AlignSessionTest(unittest.TestCase):
             indices=None, out=os.path.join(self.tmp, 'out.sentences.vtt'),
             report=os.path.join(self.tmp, 'coverage.json'), language='en',
             backend='whisperx', device='cpu', python=None, ffmpeg=None,
-            continue_on_error=False, workers=1)
+            continue_on_error=False, workers=1, chapter_gap=0.0)
         self.assertEqual(_run_align(args, self._manifest(texts)), 0)
         self.assertTrue(os.path.isfile(args.out))
         self.assertTrue(os.path.isfile(args.report))
@@ -2152,7 +2152,7 @@ class AlignSessionTest(unittest.TestCase):
         args = argparse.Namespace(
             indices=None, out=None, report=os.path.join(self.tmp, 'c.json'),
             language='en', backend='qwen3', device='cuda', python=None,
-            ffmpeg=None, continue_on_error=False, workers=1)
+            ffmpeg=None, continue_on_error=False, workers=1, chapter_gap=0.0)
         with mock.patch('narrator.align.run.align_session', capture):
             self.assertEqual(_run_align(args, self._manifest(['One two.'])), 0)
         self.assertEqual(seen['backend'], 'qwen3')

@@ -28,6 +28,7 @@ import { StageTracker, type StageSpec, type JobStageProgress } from './job-stage
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
 import { chooseSentenceTranscript, SENTENCE_VTT_SUFFIX } from '../shared/queue/sentence-transcript';
+import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { parseAssemblyPrepare } from '../shared/queue/assembly-prepare';
 
 /**
@@ -286,6 +287,20 @@ export interface ReassemblyConfig {
    *  A NON-Orpheus session yields no value → the gap step is skipped (raw sentences
    *  unchanged; gap normalization is Orpheus-specific and strips a pad only Orpheus bakes). */
   sentenceGap?: number;
+  /**
+   * Seconds of silence to leave BETWEEN chapters in the finished audiobook, so a
+   * listener hears the book move from one to the next. It is realized by
+   * narrator's assembler (`--chapter_gap`), which also puts it into the chapter
+   * markers and both transcripts.
+   *
+   * ABSENT IS NOT ZERO. Absent means "this caller did not choose", and the
+   * answer to that is `DEFAULT_CHAPTER_GAP` (shared/audio/chapter-gap.ts) — the
+   * gap is BookForge's default for every book, and a queue row written before
+   * this field existed still gets it. An explicit 0 is a real answer and is
+   * honoured: it assembles the butt-joined book this pipeline made until
+   * 2026-09-09.
+   */
+  chapterGap?: number;
   /**
    * FILE THE RESULT AS A SECOND AUDIOBOOK, beside the project's own, instead of
    * replacing it.
@@ -1575,6 +1590,14 @@ export async function startReassembly(
     }
   }
 
+  // The silence between chapters. Resolved HERE, once, so the number that goes
+  // on the command line is the number the log names — a caller's explicit value,
+  // or BookForge's default when it did not choose (which is not the same as 0).
+  const chapterGap = resolveChapterGap(config.chapterGap);
+  reassemblyLog.info('Chapter gap resolved', {
+    jobId, stated: config.chapterGap, chapterGap,
+  });
+
 
   /*
    * THE AUDIT, REPEATED ON THE FINISHED BOOK.
@@ -1662,6 +1685,12 @@ export async function startReassembly(
       // quotes; it crosses as an argv element and is never shell-interpolated, so
       // there is nothing left to escape it against.
       ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
+      // THE SILENCE BETWEEN CHAPTERS. Always passed, never conditional: the
+      // value is the answer for this book whether the caller chose it or took
+      // the default, and a flag that is sometimes absent is a book whose gap
+      // depends on which door assembled it. narrator puts it in the audio, the
+      // chapter markers and both transcripts.
+      '--chapter_gap', String(chapterGap),
     ];
 
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions

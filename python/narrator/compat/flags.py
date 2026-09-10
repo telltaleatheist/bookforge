@@ -63,6 +63,13 @@ FLAGS: dict[str, tuple[str, str]] = {
         "narrator's own: the report `narrator align --report` wrote. An AUDIT - "
         'assembly logs every chunk that failed coverage and the retake command, '
         'and assembles the book either way'),
+    # NARRATOR'S OWN. e2a joined chapters butt-to-butt and had no notion of a
+    # gap between them.
+    '--chapter_gap': (
+        ACCEPT,
+        "narrator's own: seconds of silence between chapters at assembly, so a "
+        'listener hears the book move from one to the next. Never after the last '
+        'chapter. 0.0 (absent) is every book e2a assembled'),
 
     # ---- the work range ---------------------------------------------------
     '--sentence_start': (ACCEPT, ''),

@@ -33,6 +33,9 @@
  *   --sentence-gap <s>   normalize the inter-sentence gap to <s> seconds at assembly
  *                        (strips e2a's artificial trailing exact-zero pad, then re-adds
  *                        <s>s of silence). Omit to use the voice's models.json default.
+ *   --chapter-gap <s>    seconds of silence to leave BETWEEN chapters (never after the
+ *                        last one). Omit for BookForge's default of 3s; pass 0 for the
+ *                        butt-joined book this pipeline made until 2026-09-09.
  *   --skip-text-cleanup  do NOT run the narration text cleanup, and tell the render
  *                        door so: the book is read exactly as printed, digits and all.
  *                        The app's own "No, narrate as printed" button, headless.
@@ -186,6 +189,17 @@ async function main() {
     sentenceGap = parseFloat(args['sentence-gap']);
     if (!Number.isFinite(sentenceGap) || sentenceGap < 0) {
       throw new Error(`--sentence-gap must be a non-negative number, got: ${args['sentence-gap']}`);
+    }
+  }
+
+  // The silence between chapters. Absent is NOT zero: it is left undefined so the
+  // reassembly bridge applies BookForge's default, which is the same answer the app's
+  // own dialog opens at — this door and that one must make the same book.
+  let chapterGap;
+  if (args['chapter-gap'] !== undefined && args['chapter-gap'] !== true) {
+    chapterGap = parseFloat(args['chapter-gap']);
+    if (!Number.isFinite(chapterGap) || chapterGap < 0) {
+      throw new Error(`--chapter-gap must be a non-negative number, got: ${args['chapter-gap']}`);
     }
   }
 
@@ -392,6 +406,10 @@ async function main() {
     ...(denoisedSentencesDir
       ? { sentencesDir: denoisedSentencesDir }
       : (sentenceGap !== undefined ? { sentenceGap } : {})),
+    // Unlike the sentence gap, this never rides on an upstream pass — no
+    // enhancement touches a chapter boundary — so it goes straight to assembly,
+    // and absence hands the question to the bridge's default rather than to zero.
+    ...(chapterGap !== undefined ? { chapterGap } : {}),
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);

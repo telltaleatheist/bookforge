@@ -49,6 +49,30 @@ def _align_pool_size(value: str) -> int:
     return workers
 
 
+def _chapter_gap(value: str) -> float:
+    """`--chapter-gap`: seconds, zero or more. Never negative - a negative gap is
+    not a shorter one, it is an argument nobody can realize."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--chapter-gap must be a number of seconds, got {value!r}"
+        ) from None
+    if seconds < 0:
+        raise argparse.ArgumentTypeError(
+            f"--chapter-gap must be 0 or more seconds, got {seconds}"
+        )
+    return seconds
+
+
+#: `--chapter-gap`'s help, said once because two subcommands take the flag and
+#: they must describe the same thing.
+GAP_HELP = (
+    "seconds of silence to leave BETWEEN chapters, so the move from one to the "
+    "next is audible (default: 0.0, no gap). Never after the last chapter."
+)
+
+
 def _add_session_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--session-dir",
@@ -108,6 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_assemble.add_argument(
         "--post-render-filter", metavar="CHAIN",
         help="per-voice ffmpeg filter chain applied at the final encode",
+    )
+    p_assemble.add_argument(
+        "--chapter-gap", type=_chapter_gap, default=0.0, metavar="SECONDS",
+        help=GAP_HELP,
     )
     p_assemble.add_argument(
         "--manifest-out", metavar="FILE",
@@ -177,6 +205,16 @@ def build_parser() -> argparse.ArgumentParser:
              "workers unless the environment already names them",
     )
     p_align.add_argument("--ffmpeg", metavar="PATH")
+    # THE SAME VALUE THE ASSEMBLY WILL USE. These cues are sealed into the m4b as
+    # its subtitle track, so they are timed against the FINISHED book: a gap in
+    # the audio that is not in this sum slides every cue after chapter one early
+    # by one gap per chapter. Nothing can detect the disagreement later - the
+    # transcript carries no record of what it was timed for - so the two commands
+    # are given the same number by whoever runs them.
+    p_align.add_argument(
+        "--chapter-gap", type=_chapter_gap, default=0.0, metavar="SECONDS",
+        help=GAP_HELP + " Must MATCH the value `narrator assemble` is given.",
+    )
     p_align.add_argument(
         "--indices", metavar="LIST",
         help="comma-separated global chunk indices to align instead of all of "
@@ -513,7 +551,8 @@ def _run_align(args, manifest) -> int:
         result = align_session(
             manifest, backend=args.backend, language=args.language,
             device=args.device, python_exe=args.python, ffmpeg=args.ffmpeg,
-            indices=indices, workers=args.workers)
+            indices=indices, workers=args.workers,
+            chapter_gap=args.chapter_gap)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)
@@ -590,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         post_render_filter=args.post_render_filter,
         coverage_report=args.coverage_report,
+        chapter_gap=args.chapter_gap,
     )
     print(
         f"[assemble] {result.chapter_count} chapter(s), {result.duration_s:.2f}s -> "

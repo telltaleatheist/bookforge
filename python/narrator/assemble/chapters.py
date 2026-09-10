@@ -69,6 +69,14 @@ unit in iteration order, so the message a broken book fails with is the one it
 failed with before. Later units may have run by then; everything they wrote is
 inside the assembly's own work dir, which is thrown away or kept as evidence.
 
+THE CHAPTER GAP IS NOT A GAP RULE. `plan_chapters(chapter_gap=...)` is silence
+BETWEEN CHAPTERS, and it is engine-agnostic: it is not inside a chunk, it is not
+`Chunk.gapAfter`, and neither the padded nor the unpadded path above knows about
+it. Each plan simply records how much silence follows it, and the file that
+carries it is written by `assemble/encode.py`, where chapters are joined. That is
+the only level at which a chapter BookForge PRE-ENCODED during the render gets
+the same treatment as one this assembler encodes itself.
+
 PROGRESS. The chunk total is known before any file is touched (`chunk_total`),
 so preparation reports `[ASSEMBLE] Preparing sentences <done>/<total>` at 0, at
 the total, and at most about once a second in between. That line is what the
@@ -107,17 +115,47 @@ class ChapterPlan:
     infos: list[StreamInfo]
     first_chunk: int
     last_chunk: int
+    #: Seconds of silence that FOLLOW this chapter, separating it from the next
+    #: one (`plan_chapters(chapter_gap=...)`). It is 0.0 on the last chapter -
+    #: the end of the book is not a boundary anyone needs marked - and 0.0
+    #: everywhere when no chapter gap was asked for.
+    #:
+    #: IT IS NOT PART OF `paths`/`infos`. Those are the chapter's AUDIO, and the
+    #: two duration guards that ask "did every sentence reach the encoder"
+    #: (`load_encoded_chapters`, `encode_chapters_parallel`) compare against
+    #: exactly that. The silence is realized where chapters are JOINED - one
+    #: entry in the final concat list - which is the only place both encode
+    #: paths and a chapter BookForge pre-encoded during the render can all be
+    #: given the same treatment. See `encode.chapter_gap_flac` /
+    #: `encode.chapter_gap_m4a`.
+    gap_after: float = 0.0
+    #: `gap_after` in samples, rounded ONCE (`edges.gap_frames`) so the audio,
+    #: the chapter markers and the VTT cannot disagree about it.
+    gap_samples: int = 0
+
+    @property
+    def audio_samples(self) -> int:
+        """Every sample of AUDIO in this chapter, the realized inter-chunk gaps
+        included and the chapter gap NOT.
+
+        `infos` describes the files actually in the chapter's concat list, which
+        on the unpadded path already includes the generated inter-chunk silence,
+        so this is the exact length of what the chapter encode produces.
+        """
+        return sum(i.samples for i in self.infos)
 
     @property
     def samples(self) -> int:
-        """Every sample that goes into this chapter, gaps included.
+        """Every sample this chapter occupies in the finished book - its audio
+        plus the silence that separates it from the next chapter.
 
-        `infos` describes the files actually in the concat list, which on the
-        unpadded path already includes the generated silence, so this stays the
-        one true length and every consumer of it - chapter markers, the export
-        guard, the pre-encoded duration check - accounts for gaps for free.
+        This is what the chapter markers, the whole-book duration and the export
+        guard are built from, because it is what a listener moves through.
         """
-        return sum(i.samples for i in self.infos)
+        return self.audio_samples + self.gap_samples
+
+    def audio_duration(self, sample_rate: int) -> float:
+        return self.audio_samples / sample_rate
 
     def duration(self, sample_rate: int) -> float:
         return self.samples / sample_rate
@@ -449,7 +487,8 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
 
 
 def plan_chapters(manifest: Manifest, work_dir: str | None = None,
-                  log=None, workers: int = 1) -> list[ChapterPlan]:
+                  log=None, workers: int = 1,
+                  chapter_gap: float = 0.0) -> list[ChapterPlan]:
     """Resolve every chapter to files + sample counts, running all the guards.
 
     This happens BEFORE a single ffmpeg is spawned: a book that is going to fail
@@ -466,25 +505,49 @@ def plan_chapters(manifest: Manifest, work_dir: str | None = None,
     encoder pool with. It DEFAULTS TO 1 - serial, exactly as this function has
     always behaved - so a caller that has not thought about concurrency does not
     silently acquire it.
+
+    `chapter_gap` is seconds of silence to put BETWEEN chapters, so a listener
+    hears the book move from one to the next. It is recorded on every plan but
+    the last as `gap_after`/`gap_samples` and is NOT realized here - see
+    `ChapterPlan.gap_after` for why the file that carries it is written where
+    chapters are joined rather than where a chapter's chunks are gathered. It
+    DEFAULTS TO 0.0, which is every book assembled before this existed.
     """
     if not manifest.chapters:
         raise ValueError("plan_chapters(): the manifest has no chapters")
     if workers < 1:
         raise ValueError(f"plan_chapters(): workers must be >= 1, got {workers}")
+    if chapter_gap < 0:
+        raise ValueError(
+            f"plan_chapters(): chapter_gap must be >= 0 seconds, got {chapter_gap}"
+        )
     profile = _resolve_profile(manifest)
     if log is None:
         def log(line):
             print(line, flush=True)
     progress = PrepareProgress(chunk_total(manifest), log)
     progress.start()
-    return [
+    plans = [
         _plan_one(manifest, chapter, profile, work_dir, log, workers, progress)
         for chapter in manifest.chapters
     ]
+    if chapter_gap > 0:
+        gap_samples = edges.gap_frames(chapter_gap, manifest.sampleRate)
+        # Every chapter BUT THE LAST. A gap after the final chapter is not a
+        # boundary between anything; it is a book that ends in dead air.
+        for plan in plans[:-1]:
+            plan.gap_after = chapter_gap
+            plan.gap_samples = gap_samples
+        log(
+            f"[assembly] Chapter gap: {chapter_gap:.3f}s ({gap_samples} samples) "
+            f"after each of the first {len(plans) - 1} chapter(s)"
+        )
+    return plans
 
 
 def total_duration(plans: list[ChapterPlan], sample_rate: int) -> float:
-    """Playing time of the whole book, from the chunk headers alone.
+    """Playing time of the whole book, from the chunk headers and the chapter
+    gaps alone.
 
     Ported from bookforge_ext/parallel/session.py:measure_assembly_duration. The
     decision this feeds (whether the parallel encode path is available) is

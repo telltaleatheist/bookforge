@@ -206,6 +206,7 @@ import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, g
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
+import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 /* The text server's own command line, so the global `|vllm` sweep spares it. */
 import { TEXT_SERVER_PROTECT_RE } from './text-server';
@@ -2182,6 +2183,18 @@ export interface ParallelConversionConfig {
   // hiss during speech that cuts out at the digitally-silent assembly gaps — this
   // strips it once, over the sentence set. false/absent = zero behavioral change.
   finalDenoise?: boolean;
+  /**
+   * Seconds of silence to leave BETWEEN chapters when this run assembles.
+   * Realized by narrator (`--chapter_gap`), which also puts it into the chapter
+   * markers and both transcripts.
+   *
+   * ABSENT IS NOT ZERO — it means "this caller did not choose", and the answer
+   * is `DEFAULT_CHAPTER_GAP` (shared/audio/chapter-gap.ts). Same rule, same
+   * constant and the same resolver as `ReassemblyConfig.chapterGap`, so a book
+   * cannot come out differently depending on whether it was assembled inline at
+   * the end of its render or by a separate reassembly row.
+   */
+  chapterGap?: number;
 }
 
 export interface ParallelTtsSettings {
@@ -5721,6 +5734,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // explicit flag, never resolved by default.
   const postRenderFilter: string | undefined = undefined;
 
+  // The silence between chapters. Resolved once, so the number on the command
+  // line is the number the log names — the caller's, or BookForge's default when
+  // it did not choose (which is not the same as 0).
+  const chapterGap = resolveChapterGap(config.chapterGap);
+
   const args = [
     '--headless',
     // Only include --ebook if we have a path (assembly_only doesn't require it)
@@ -5775,6 +5793,9 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       : []),
     // Per-voice post-render filter (Orpheus voices only) — applied at the final encode.
     ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
+    // THE SILENCE BETWEEN CHAPTERS. Always passed, never conditional — see the
+    // same line in reassembly-bridge.ts.
+    '--chapter_gap', String(chapterGap),
   ];
 
   console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));

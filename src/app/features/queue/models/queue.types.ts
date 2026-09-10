@@ -445,6 +445,13 @@ export interface ReassemblyJobConfig {
    *  absent, the backend resolves the session voice's models.json default from
    *  provenance, and skips the step if that is unset too (no invented default). */
   sentenceGap?: number;
+  /** Seconds of silence to leave BETWEEN CHAPTERS in the finished audiobook, so a
+   *  listener hears the book move from one to the next. Realized by narrator's
+   *  assembler, which also puts it into the chapter markers and both transcripts.
+   *  ABSENT IS NOT ZERO: absent means the job did not choose and takes
+   *  `DEFAULT_CHAPTER_GAP` (shared/audio/chapter-gap.ts). An explicit 0 assembles
+   *  the butt-joined book this pipeline made until 2026-09-09. */
+  chapterGap?: number;
   /** File the finished M4B as a SECOND audiobook version of this book rather than
    *  replacing the project's one — set only for a run that converted sentences it
    *  did not itself render. The backend then names the file after the voice, spares

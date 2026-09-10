@@ -248,6 +248,20 @@ export interface NarrationRunSettings {
    * is why it is only ever set from a control the user actually moved.
    */
   readonly sentenceGap?: number;
+  /**
+   * Seconds of silence to leave BETWEEN CHAPTERS in the finished audiobook, or
+   * absent to take BookForge's default (`DEFAULT_CHAPTER_GAP`,
+   * shared/audio/chapter-gap.ts). It is realized by narrator's assembler, which
+   * also puts it into the chapter markers and both transcripts.
+   *
+   * NOT THE SAME KIND OF ABSENCE AS `sentenceGap`. That one hands the question
+   * to the session's provenance, because the pad it normalizes is a property of
+   * the VOICE. This one is a property of the BOOK and no provenance has an
+   * opinion about it, so absent simply means "the user did not move the control"
+   * and the default applies. Set it to 0 for the butt-joined book this pipeline
+   * made until 2026-09-09.
+   */
+  readonly chapterGap?: number;
   /** The enhancement pass, or null for none. */
   readonly rvc: NarrationRvcSettings | null;
   /**
@@ -425,6 +439,13 @@ export interface NarrationReassemblyConfig {
    * here as well would state a knob twice and answer it in only one place.
    */
   readonly sentenceGap?: number;
+  /**
+   * Seconds of silence between chapters, or absent for BookForge's default.
+   * Unlike `sentenceGap` this is NEVER baked in upstream — no enhancement pass
+   * touches a chapter boundary — so it rides on the assembly every time the run
+   * states one. See `NarrationRunSettings.chapterGap`.
+   */
+  readonly chapterGap?: number;
   /**
    * FILE THIS AS A SECOND AUDIOBOOK RATHER THAN AS THE PROJECT'S ONE AUDIOBOOK.
    *
@@ -845,6 +866,9 @@ export function narrationReassemblyStep(
       // Absent stays absent: that is what leaves provenance in charge of the gap.
       ...(gapBakedUpstream || settings.sentenceGap === undefined
         ? {} : { sentenceGap: settings.sentenceGap }),
+      // No `gapBakedUpstream` equivalent: nothing before the assembly can bake a
+      // chapter boundary, so this rides whenever the run states one.
+      ...(settings.chapterGap === undefined ? {} : { chapterGap: settings.chapterGap }),
       registerAsNewVariant,
       // Carried only when it names something: the voice is what the second
       // audiobook is called, and an assembly filing into the base slot has no
