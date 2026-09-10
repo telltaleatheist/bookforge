@@ -134,6 +134,8 @@ const SUITES = [
   'test-assembly-prepare-progress',
   'test-narration-chain',
   'test-chapter-gap',
+  'test-alignable-text',
+  'test-sentence-abbreviations',
   'test-text-normalization',
   'test-narration-reading-law',
   // The arbiter that starts and stops the text-pass vLLM (Owen, 2026-09-08:

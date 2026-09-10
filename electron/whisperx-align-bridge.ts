@@ -42,6 +42,8 @@ import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner.js';
 import { narratorPythonRoot } from './narrator-spawn.js';
 import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
 import { StageTracker, type StageSpec } from './job-stages.js';
+import { alignableTextRefusal } from '../shared/document/alignable-text';
+import { periodTerminatorGuard } from '../shared/text/sentence-abbreviations';
 
 /** Managed-component id for the CPU-only WhisperX alignment env. */
 export const WHISPERX_ENV_ID = 'whisperx-env';
@@ -400,6 +402,27 @@ export function splitSentences(text: string, paragraphAware = true): AlignSenten
  * is exactly where dramatized audiobooks put music bridges, so the aligner keyed
  * the new scene's first cue on words that are never spoken there.
  */
+/**
+ * WHERE ONE SENTENCE ENDS AND THE NEXT BEGINS, in a block of prose.
+ *
+ * Terminal punctuation, an optional closing quote, whitespace (with any
+ * scene-break glyphs swallowed), then an opening capital or quote.
+ *
+ * THE PERIOD BRANCH IS GUARDED AND THE OTHERS ARE NOT, deliberately: `!` and `?`
+ * are unambiguous terminators, while `.` is also an abbreviation mark and an
+ * initial. `R.L. Dabney` came out as two cues in every aligned transcript until
+ * 2026-09-10 (Owen: "thats a persons name"), and so did `Mr. Darcy` and
+ * `St. Louis` — this splitter had no guard at all, where narrator's renderer has
+ * had one since the port. Both rules and the table they come from are in
+ * shared/text/sentence-abbreviations.ts.
+ *
+ * BUILT ONCE, at module load. The guard is ~120 lookbehinds; recompiling it per
+ * block would cost real time on a book with thousands of them.
+ */
+const SENTENCE_BOUNDARY = new RegExp(
+  `(?<=(?:${periodTerminatorGuard()}\\.|[!?…])["”'’]?|["”])\\s+(?:[*⁂•#]+\\s+)*(?=[A-Z“"'‘“])`,
+);
+
 function splitBlockIntoSentences(text: string): string[] {
   // Any structural-heading marker still embedded here is a mid-block one (or the
   // whole text in --no-paragraph-split mode). It is a transport marker, never
@@ -420,7 +443,7 @@ function splitBlockIntoSentences(text: string): string[] {
     .replace(/([.!?…]["”'’]?)\s+\d{1,3}\s+(?=[A-Z“"'‘])/g, '$1 ');
   if (!normalized) return [];
   return normalized
-    .split(/(?<=[.!?…]["”'’]?|["”])\s+(?:[*⁂•#]+\s+)*(?=[A-Z“"'‘“])/)
+    .split(SENTENCE_BOUNDARY)
     // A scene-break glyph run at the very start of a piece has no preceding
     // terminator to hang the split on — strip it rather than let it poison the
     // sentence's opening tokens.
@@ -510,9 +533,21 @@ export async function runEpubAlign(
   const { variants } = manifestService.getVariants(mf.manifest);
   const variant = variants.find((v) => v.id === config.epubVariantId);
   if (!variant) throw new Error(`Ebook variant not found: ${config.epubVariantId}`);
-  if (variant.kind !== 'ebook') {
-    throw new Error(`Variant ${config.epubVariantId} is not an ebook (kind=${variant.kind})`);
-  }
+  /*
+   * `kind === 'ebook'` WAS THE WHOLE TEST AND IT LET A PDF THROUGH. An archive
+   * PDF is an ebook version of the book, so it passed here and was handed to
+   * `loadEpubForComparison` — which is a zip reader. The refusal is by FORMAT
+   * now, and it is worded for a person because that is who reads it: the file is
+   * visible on the versions page, and "why is it not in the dropdown" is the
+   * question this sentence answers. See shared/document/alignable-text.ts for
+   * why a PDF's text layer is not the book's words.
+   *
+   * IN THE BRIDGE, not only in the picker. The dropdown no longer offers a PDF,
+   * but this door is also reached by a queue row restored from before the fix
+   * and by the CLI, and neither goes past the picker.
+   */
+  const refusal = alignableTextRefusal(variant, config.epubVariantId);
+  if (refusal) throw new Error(refusal);
   const epubPath = manifestService.resolveManifestPath(config.projectId, variant.path);
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
 

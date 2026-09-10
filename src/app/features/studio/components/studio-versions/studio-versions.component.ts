@@ -17,6 +17,7 @@ import {
 import { DesktopSelectComponent, DesktopSelectItems, DialogService } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 import type { PassDiffEntry } from '@shared/processing/pass-types';
+import { isAlignableText } from '@shared/document/alignable-text';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
@@ -606,7 +607,7 @@ const AUDIO_EXTS = new Set([
             <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
           }
 
-          @if (ebookVariants().length > 0) {
+          @if (alignableEbookVariants().length > 0) {
             <div class="gs-methods">
               <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'epub-align'"
                      [class.unavail]="!alignEngineInstalled()">
@@ -1313,6 +1314,22 @@ export class StudioVersionsComponent {
    */
   readonly ebookVariants = computed(() =>
     this.variantList().filter(v => v.kind === 'ebook'));
+
+  /**
+   * The ebook versions whose TEXT can be force-aligned to a narration — the
+   * Generate-sentences picker's list, and NOT `ebookVariants`.
+   *
+   * Owen, 2026-09-10: *"generate sentences should only ever pick the epub. the
+   * embedded text from pdfs cant be trusted."* An archive PDF is an ebook
+   * version of the book and the rows above are right to list it; its embedded
+   * text layer is simply not the book's words in reading order, and aligning to
+   * it produces a transcript that is quietly wrong rather than one that fails.
+   * The reasoning lives once, in shared/document/alignable-text.ts, which the
+   * align bridge refuses by as well — a queue row restored from before this and
+   * the CLI both reach that door without passing this picker.
+   */
+  readonly alignableEbookVariants = computed(() =>
+    this.variantList().filter(v => isAlignableText(v)));
 
   /**
    * The ebook versions in DISPLAY ORDER, each saying whether it is a nested row.
@@ -2827,9 +2844,10 @@ export class StudioVersionsComponent {
   /** When method='epub-align', the ebook variant id to align against. */
   readonly pickerEpubId = signal<string | null>(null);
 
-  /** Ebook variants offered in the epub-align dropdown. */
+  /** Ebook variants offered in the epub-align dropdown — EPUBs only; see
+   *  `alignableEbookVariants`. */
   readonly pickerEpubOptions = computed<DesktopSelectItems>(() =>
-    this.ebookVariants().map(v => ({
+    this.alignableEbookVariants().map(v => ({
       value: v.id,
       label: this.variantTitle(v) + (v.descriptor ? ' — ' + v.descriptor : ''),
       badge: v.metadata?.language || undefined,
@@ -2939,7 +2957,7 @@ export class StudioVersionsComponent {
     // Default the method by ebook availability: when the project has an ebook
     // AND the alignment engine is installed, aligning its exact text is more
     // accurate than transcribing the audio.
-    const ebooks = this.ebookVariants();
+    const ebooks = this.alignableEbookVariants();
     if (ebooks.length > 0) {
       this.pickerMethod.set(this.alignEngineInstalled() ? 'epub-align' : 'whisper');
       // Seed the ebook choice either way so the option is ready if it enables.

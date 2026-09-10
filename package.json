@@ -66,6 +66,8 @@
     "test:narration-deletions": "npx tsc -p tsconfig.electron.json && node tools/test-narration-deletions.js",
     "test:tab-recorder": "npx tsc -p tsconfig.electron.json && node tools/test-tab-recorder.js",
     "test:gpu-ownership": "npx tsc -p tsconfig.electron.json && node tools/test-gpu-ownership.js",
+    "test:alignable-text": "npx tsc -p tsconfig.electron.json && node tools/test-alignable-text.js",
+    "test:sentence-abbreviations": "npx tsc -p tsconfig.electron.json && node tools/test-sentence-abbreviations.js",
     "test:chapter-gap": "npx tsc -p tsconfig.electron.json && node tools/test-chapter-gap.js",
     "test:narration-pairing": "npx tsc -p tsconfig.electron.json && node tools/test-narration-pairing.js",
     "test:editor-layout": "npx tsc -p tsconfig.electron.json && node tools/test-editor-layout.js",
