@@ -27,7 +27,7 @@ mode counts in a row can exceed the failure count.
 
 ---
 
-## thirdreich — BAND 500-800  (`tr_v3_prod`, measured 2026-09-09)
+## thirdreich — BAND 500-700  (`tr_v3_prod`, measured 2026-09-09)
 
 `runs/tr_ladder_full`, seeds 500/501/502/503, 620 scored renders, held-out Third Reich prose.
 
@@ -69,6 +69,37 @@ wall, not random.
 **This band reversed an earlier 800 -> 1000 cap raise** made the same day from a 2-seed sweep (n=16/rung)
 that measured 900 and 1000 at 6.2%. At n=32 both measure **16%**. The 6.2% was the noise floor. Doubling
 the seeds is what separated a real 3% valley from a lucky 6%.
+
+
+### Pooled by ACTUAL characters — this is what set the band
+
+`band.py` pools by **rung label**, but a rung is a target ±12%, so its windows smear across boundaries:
+its "rung 800" prompts actually span **712-823 chars** and straddle the cliff, which is how it ranked
+500-800 first. The packer emits real character counts, so pooling by those is the faithful measure — and
+it disagrees:
+
+```
+  actual chars     fails      95% hi    modes
+   450- 500       0/20  =  0.0%   16.1%
+   500- 600       2/24  =  8.3%   25.8%   cov 2, short 1
+   600- 700       0/44  =  0.0%    8.0%   <- cleanest segment in the entire sweep
+   700- 800       5/40  = 12.5%   26.1%   cov 5
+   800- 900       6/32  = 18.8%   35.3%   cov 6, short 1
+   900-1000       1/32  =  3.1%   15.7%   short 1, cov 1
+
+  candidate bands
+   500-700        2/68  =  2.9%   10.1%   width 200   <-- CHOSEN
+   600-800        5/84  =  6.0%   13.2%   width 200
+   500-800        7/108 =  6.5%   12.8%   width 300
+   500-750        7/92  =  7.6%   14.9%   width 250
+```
+
+**The cap is 700 — chunks up to 699.** 700-800 is a genuine 12.5% zone and 800-900 is worse at 18.8%.
+Owen spotted this from the rung table before the char-pooling confirmed it.
+
+**Do not read a single rung's spike as real.** Rung 700 showed 4/32 = 12.5% against rung 800's 1/32 = 3.1%,
+but z = 1.42 — inside the noise. The 700-800 *character* segment being bad is a separate, better-supported
+finding than "rung 700 is bad"; they happen to point the same way here, and that is luck, not method.
 
 ## deathstalker / owen / mistborn
 
