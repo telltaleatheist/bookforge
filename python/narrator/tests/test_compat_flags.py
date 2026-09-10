@@ -95,6 +95,10 @@ class TableTest(unittest.TestCase):
             'not say its text together with the retake command, and assembles '
             'the book anyway (Owen, 2026-09-05). e2a had no post-render forced '
             'alignment and so no such flag.',
+        '--chapter_gap':
+            'Seconds of silence to leave BETWEEN chapters at assembly, so a '
+            'listener hears the book move from one to the next. e2a joined '
+            'chapters butt-to-butt and had no notion of a gap between them.',
     }
 
     def test_the_table_adds_no_flag_e2a_never_had_except_the_declared_ones(self):

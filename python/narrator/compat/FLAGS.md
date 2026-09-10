@@ -5,15 +5,16 @@ complete table, generated from the same dict the code routes on
 (`compat/flags.py:FLAGS`) so the two cannot drift; `tests/test_compat_flags.py`
 asserts every row.
 
-**Counts: 58 flags - 36 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
+**Counts: 59 flags - 37 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
 refused by name on `--tts_engine`, and 4 near-misses refused for naming no
 registry id.
 
-**58, not 56, and the two extras are narrator's own.** `--higgs_voice`
+**59, not 56, and the three extras are narrator's own.** `--higgs_voice`
 (Higgs did not exist in e2a, and its voice is a catalog id rather than a prompt
-token) and `--coverage_report` (e2a had no engine guarded by post-render forced
-alignment, so it needed no way to satisfy one). Everything else here is still
-e2a's argv answered by narrator.
+token), `--coverage_report` (e2a had no engine guarded by post-render forced
+alignment, so it needed no way to satisfy one) and `--chapter_gap` (e2a joined
+chapters butt-to-butt and had no notion of a gap between them). Everything else
+here is still e2a's argv answered by narrator.
 
 **Changed for Higgs v3 (2026-09-04, the first cut-over slice):** `--tts_engine`
 now accepts `higgs-v3` as well as `orpheus`, on the prep, worker and retake
@@ -71,6 +72,7 @@ nothing downstream can tell; what changes is that a caller who used
 | `--encoded_chapters_dir` | `reassembly-bridge.ts` | pre-encoded `<N>.m4a` chapters, each held to the 0.06 s duration guard |
 | `--output_dir` | `:3919`, `:3931`, `:5187` | where assembly writes the m4b and the VTT |
 | `--coverage_report` | nothing today | **narrator's own flag** - the report `narrator align --report` wrote, passed straight to `assemble(coverage_report=...)`. An AUDIT: assembly logs every chunk that failed coverage, quotes the dropped text and the retake command, and assembles the book anyway; absent, it says so and estimates the sentence cues. Only a report about ANOTHER book is refused. See `align/README.md` and `assemble/coverage_gate.py` |
+| `--chapter_gap` | `reassembly-bridge.ts`, `parallel-tts-bridge.ts` | **narrator's own flag** - seconds of silence to leave BETWEEN chapters at assembly, so a listener hears the book move from one to the next. Never after the last chapter. It reaches the plan, both encode paths, the chapter markers and BOTH transcripts, because a gap in the audio that is not in the VTT's running sum drifts the subtitle track by one gap per chapter. `0.0` (absent) is every book e2a assembled. See `assemble/run.assemble` |
 | `--sentence_start` / `--sentence_end` | `:3915-3918` | the contiguous 0-based inclusive range |
 | `--chapter_start` / `--chapter_end` | `:3911-3914` (chapter mode) | 1-based inclusive; converted to a sentence range |
 | `--chapters` | nothing today | assembly's chapter selection; must be a contiguous run from 1 (`assemble/README.md` s8) |

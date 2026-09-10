@@ -116,6 +116,22 @@
  * (The real door DOES cross into the guest when the resolved env is a WSL one;
  * that is `narrator-spawn.ts`'s new `wslCondaEnv` field, and the fixture drives
  * this phase without it because the fixture's env resolution is stubbed out.)
+ *
+ * 2026-09-09, THE TWO ASSEMBLY DOORS' `flags` literals, for the chapter gap
+ * (Owen: *"can we artificially insert 3 seconds of silence at the end of every
+ * chapter so its easier to tell when it moves from one to the next"*). Two
+ * tokens appended to each, and NOT behind a spread:
+ *
+ *     '--chapter_gap', String(chapterGap)
+ *
+ * Unconditional on purpose. The value is the answer for this book whether the
+ * caller chose it or took `DEFAULT_CHAPTER_GAP` (shared/audio/chapter-gap.ts),
+ * and a flag that is sometimes absent is a book whose gap depends on which of
+ * the two doors assembled it. An explicit 0 is also a real answer and would be
+ * eaten by a truthiness spread. Checked, not assumed: the regeneration masked
+ * exactly that suffix on both doors and required the remainder to compare
+ * byte-equal (it did), and the two assembly keys were the ONLY ones that moved -
+ * every other door and all three PLAN arms are untouched.
  */
 'use strict';
 const assert = require('assert');

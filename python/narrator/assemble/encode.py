@@ -43,6 +43,8 @@ import subprocess
 import tempfile
 
 from ..manifest import Manifest
+from ..render.flac_header import StreamInfo, read_streaminfo
+from . import edges
 from .chapters import (
     ChapterPlan,
     EXPORT_TOLERANCE_S,
@@ -379,7 +381,12 @@ def load_encoded_chapters(
             )
             continue
         plan = by_num[num]
-        expected_seconds = plan.duration(sample_rate)
+        # AUDIO ONLY. BookForge's chapter-closer encodes a chapter's sentences
+        # and nothing else, so the silence that separates chapters is not in this
+        # .m4a and must not be in the number it is held to. It is added back as
+        # its own entry in the final concat, exactly as it is for a chapter this
+        # assembler encodes.
+        expected_seconds = plan.audio_duration(sample_rate)
         tolerance = PRE_ENCODED_TOLERANCE_S
         if abs(actual - expected_seconds) > tolerance:
             log(
@@ -402,6 +409,168 @@ def load_encoded_chapters(
 
 def _aac_args(channels: int) -> list[str]:
     return ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", str(channels)]
+
+
+# --------------------------------------------------------------------------
+# The silence between chapters
+# --------------------------------------------------------------------------
+#
+# ONE FILE PER BOOK, not one per boundary: every gap in a book is the same
+# length, so the same silence is listed after every chapter but the last.
+#
+# IT IS WRITTEN BY FFMPEG, NOT BY SOUNDFILE, and that is the whole reason this
+# lives here rather than in `edges.py`. ffmpeg's concat demuxer silently drops
+# every FLAC frame whose blocksize exceeds the FIRST list entry's declared
+# maximum - it does not warn and it still exits 0 - so a silence spliced into a
+# list of rendered chunks must match the set it joins. libsndfile writes FLAC at
+# blocksize 4096 and nothing exposes a knob for it (MEASURED 2026-09-09); the
+# rendered sets this pipeline produces are 2304 at 24 kHz. ffmpeg's `-frame_size`
+# sets the blocksize exactly, so the gap is written to the set's own shape.
+#
+# `assemble/chapters.py` has already proven the set is homogeneous
+# (`assert_concat_homogeneous`), so ONE chunk of it describes all of them.
+
+
+def chapter_gap_flac(
+    seconds: float,
+    like: StreamInfo,
+    out_path: str,
+    ffmpeg: str,
+) -> str:
+    """Digital silence in the exact FLAC shape `like` is written in.
+
+    `like` is any chunk of the set this file will be concatenated with: its
+    sample rate, channel count, bit depth and MAX BLOCKSIZE are all reproduced,
+    because a mismatch in the last one costs the gap silently (see above).
+    """
+    if seconds <= 0:
+        raise FfmpegError(f"chapter_gap_flac(): {seconds}s is not a gap")
+    sample_fmt = _FLAC_SAMPLE_FMT.get(like.bits_per_sample)
+    if sample_fmt is None:
+        raise FfmpegError(
+            f"the rendered set is {like.bits_per_sample} bits per sample "
+            f"({like.path}) and narrator has no ffmpeg sample format that writes a "
+            f"FLAC at that depth, so the chapter gap cannot be made to match it"
+        )
+    layout = _CHANNEL_LAYOUT.get(like.channels)
+    if layout is None:
+        raise FfmpegError(
+            f"the rendered set has {like.channels} channels ({like.path}); this "
+            f"pipeline renders mono or stereo and the chapter gap has no layout "
+            f"to write for anything else"
+        )
+    run(
+        [
+            ffmpeg, "-hide_banner", "-nostats", "-v", "error",
+            "-f", "lavfi",
+            "-i", f"anullsrc=r={like.sample_rate}:cl={layout}",
+            "-t", f"{seconds:.9f}",
+            "-c:a", "flac",
+            "-sample_fmt", sample_fmt,
+            "-frame_size", str(like.max_blocksize),
+            "-y", out_path,
+        ],
+        f"chapter gap -> {os.path.basename(out_path)}",
+    )
+    # READ BACK, EVERY FIELD. The concat demuxer takes the whole stream's
+    # parameters from the FIRST entry in the list, so a gap that differs in any
+    # of these is decoded as if it did not - and the symptom is not an error, it
+    # is a book that quietly does not have the silence in it.
+    written = read_streaminfo(out_path)
+    for field, label in (("max_blocksize", "max blocksize"),
+                         ("sample_rate", "sample rate"),
+                         ("channels", "channel count"),
+                         ("bits_per_sample", "bit depth")):
+        if getattr(written, field) != getattr(like, field):
+            raise FfmpegError(
+                f"the chapter gap was written with a {label} of "
+                f"{getattr(written, field)} but the rendered set it joins is "
+                f"{getattr(like, field)} ({like.path}). ffmpeg's concat demuxer "
+                f"reads the stream's parameters off the first entry, so this gap "
+                f"would silently not be in the book."
+            )
+    if written.samples != edges.gap_frames(seconds, like.sample_rate):
+        raise FfmpegError(
+            f"the chapter gap holds {written.samples} samples, not the "
+            f"{edges.gap_frames(seconds, like.sample_rate)} that {seconds}s is at "
+            f"{like.sample_rate} Hz - the audio and the transcript would disagree"
+        )
+    return out_path
+
+
+def chapter_gap_m4a(
+    seconds: float,
+    out_path: str,
+    channels: int,
+    ffmpeg: str,
+) -> str:
+    """Digital silence encoded with THE SAME AAC ARGUMENTS every chapter is.
+
+    This is the entry that goes between chapters in the final stream-copy concat,
+    so it has to be the same stream: same codec, same rate, same channel count.
+    `_aac_args` is the one place those are stated and it is what is used here.
+    """
+    if seconds <= 0:
+        raise FfmpegError(f"chapter_gap_m4a(): {seconds}s is not a gap")
+    layout = _CHANNEL_LAYOUT.get(channels)
+    if layout is None:
+        raise FfmpegError(
+            f"the chapters are being encoded with {channels} channels; this "
+            f"pipeline encodes mono or stereo and the chapter gap has no layout "
+            f"to write for anything else"
+        )
+    run(
+        [
+            ffmpeg, "-hide_banner", "-nostats", "-v", "error",
+            "-f", "lavfi",
+            "-i", f"anullsrc=r=44100:cl={layout}",
+            "-t", f"{seconds:.9f}",
+            *_aac_args(channels),
+            "-movflags", MOVFLAGS,
+            "-y", out_path,
+        ],
+        f"chapter gap -> {os.path.basename(out_path)}",
+    )
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise FfmpegError(
+            f"the chapter gap encode exited 0 but produced no output: {out_path}"
+        )
+    return out_path
+
+
+def interleave_gaps(paths: list[str], plans: list[ChapterPlan], gap_path: str) -> list[str]:
+    """`paths` (one entry per chapter, in chapter order) with `gap_path` inserted
+    after every chapter that has a gap.
+
+    Takes the plans rather than a flag so the list can never disagree with the
+    numbers the chapter markers and the duration guards were built from: a gap
+    goes in exactly where `gap_after` is non-zero and nowhere else.
+    """
+    if len(paths) != len(plans):
+        raise FfmpegError(
+            f"interleave_gaps(): {len(paths)} chapter file(s) for {len(plans)} "
+            f"chapter plan(s)"
+        )
+    out: list[str] = []
+    for path, plan in zip(paths, plans):
+        out.append(path)
+        if plan.gap_after > 0:
+            out.append(gap_path)
+    return out
+
+
+#: STREAMINFO bit depth -> the ffmpeg sample format that writes a FLAC declaring
+#: it. MEASURED 2026-09-09, ffmpeg 7.x: `-sample_fmt s16` declares 16 and
+#: `-sample_fmt s32` declares 24, which are the two depths this pipeline renders
+#: (WSL and Windows write PCM_16, the Mac's MLX run writes PCM_24). 32 is
+#: DELIBERATELY ABSENT rather than mapped to s32: it would produce a 24-bit gap
+#: for a 32-bit set, and the read-back above would then refuse the book by name
+#: instead of shipping one whose gap the demuxer reads as something else.
+_FLAC_SAMPLE_FMT = {16: "s16", 24: "s32"}
+
+#: Channel count -> ffmpeg's `anullsrc` layout name. Only the two shapes this
+#: pipeline renders; anything else is a book that never got this far.
+_CHANNEL_LAYOUT = {1: "mono", 2: "stereo"}
 
 
 #: e2a's movflags, verbatim (lib/core.py:4278, :4514).
@@ -545,7 +714,9 @@ def encode_chapters_parallel(
             # we built the list from this plan a line ago.
             check_duration(
                 actual,
-                plan.duration(sample_rate),
+                # AUDIO ONLY - `plan.paths` is what was just handed to ffmpeg,
+                # and the chapter gap is not one of those files.
+                plan.audio_duration(sample_rate),
                 concat_tolerance(len(plan.paths)),
                 f"chapter {plan.index} encode",
                 out_path,
@@ -580,11 +751,13 @@ def encode_chapters_parallel(
 
 def concat_encoded(
     chapter_paths: list[str],
+    plans: list[ChapterPlan],
     metadata_file: str,
     cover: str | None,
     out_path: str,
     work_dir: str,
     ffmpeg: str,
+    channels: int,
     log,
 ) -> None:
     """Stream-copy the encoded chapters together and mux the chapter atoms, the
@@ -592,9 +765,25 @@ def concat_encoded(
 
     Ported from ebook2audiobook@9daab0ba lib/core.py:4504-4522, plus the cover
     (which e2a bolts on afterwards with mutagen).
+
+    THE CHAPTER GAP IS ONE MORE ENTRY IN THE LIST. It is encoded once, with the
+    same AAC arguments every chapter carries, and listed after each chapter whose
+    plan asks for it - which is what makes a chapter BookForge pre-encoded during
+    the render and a chapter encoded here indistinguishable at the join.
     """
+    entries = chapter_paths
+    if any(plan.gap_after > 0 for plan in plans):
+        gap_seconds = next(plan.gap_after for plan in plans if plan.gap_after > 0)
+        gap_path = chapter_gap_m4a(
+            gap_seconds, os.path.join(work_dir, "chapter-gap.m4a"), channels, ffmpeg
+        )
+        entries = interleave_gaps(chapter_paths, plans, gap_path)
+        log(
+            f"[assembly] {len(entries) - len(chapter_paths)} chapter gap(s) of "
+            f"{gap_seconds:.3f}s between the encoded chapters"
+        )
     concat_list = write_concat_list(
-        chapter_paths, os.path.join(work_dir, "concat_list_encoded.txt")
+        entries, os.path.join(work_dir, "concat_list_encoded.txt")
     )
     cmd = [
         ffmpeg, "-hide_banner", "-nostats", "-v", "error",
@@ -636,7 +825,31 @@ def encode_serial(
     Above the 2 h cutoff loudnorm is skipped entirely (it measures the whole file
     in memory); the streaming pre-filters still run.
     """
-    all_paths = [p for plan in plans for p in plan.paths]
+    # THE CHAPTER GAP, IN THE SET'S OWN FLAC SHAPE. The serial path hands the
+    # sentence FLACs to the concat demuxer directly, so the silence between
+    # chapters has to be one of them - written to the rendered set's blocksize
+    # and bit depth, or its frames are dropped without a word (see
+    # `chapter_gap_flac`). Every chapter has already been proven homogeneous, so
+    # the first chunk of the book describes the whole list.
+    gap_path: str | None = None
+    if any(plan.gap_after > 0 for plan in plans):
+        gap_seconds = next(plan.gap_after for plan in plans if plan.gap_after > 0)
+        gap_path = chapter_gap_flac(
+            gap_seconds,
+            plans[0].infos[0],
+            os.path.join(work_dir, "chapter-gap.flac"),
+            ffmpeg,
+        )
+        log(
+            f"[assembly] Chapter gap: {gap_seconds:.3f}s of silence between "
+            f"chapters, written at blocksize {plans[0].infos[0].max_blocksize}"
+        )
+
+    all_paths: list[str] = []
+    for plan in plans:
+        all_paths.extend(plan.paths)
+        if gap_path is not None and plan.gap_after > 0:
+            all_paths.append(gap_path)
     concat_list = write_concat_list(
         all_paths, os.path.join(work_dir, "concat_list_sentences.txt")
     )

@@ -284,8 +284,9 @@ class TestParallelPath(unittest.TestCase):
             self.manifest, durations, os.path.join(self.work, "metadata.txt")
         )
         out = os.path.join(self.tmp, "book.m4b")
-        E.concat_encoded(chapter_paths, meta, self.manifest.book.cover, out,
-                         self.work, FFMPEG, self.lines.append)
+        E.concat_encoded(chapter_paths, self.plans, meta,
+                         self.manifest.book.cover, out,
+                         self.work, FFMPEG, 1, self.lines.append)
 
         probe = probe_json(out)
         self.assertAlmostEqual(

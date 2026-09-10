@@ -128,6 +128,7 @@ import {
 } from '../../../../core/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
 import type { TTSEngine } from '@shared/tts/engine-caps';
+import { DEFAULT_CHAPTER_GAP, MAX_CHAPTER_GAP } from '@shared/audio/chapter-gap';
 
 /**
  * The sentences this project already has on disk, as main reports them.
@@ -648,6 +649,25 @@ function fileName(fullPath: string): string {
                 </div>
               }
 
+              <!-- ALWAYS DRAWN, unlike the sentence gap below it. The silence
+                   between chapters is a property of the BOOK, not of the voice,
+                   so no provenance has to resolve it and every engine gets the
+                   field. -->
+              <div class="nm-field">
+                <label class="nm-label">Silence between chapters: {{ chapterGap() }}s</label>
+                <input type="range" class="nm-slider" min="0" [max]="maxChapterGap" step="0.5"
+                       [disabled]="!assemble()"
+                       [value]="chapterGap()"
+                       (input)="onChapterGapInput(+$any($event.target).value)" />
+                <span class="nm-hint">
+                  @if (chapterGap() === 0) {
+                    Chapters run straight into one another, as they did before this control existed.
+                  } @else {
+                    Added after every chapter but the last, so the move from one to the next is audible.
+                  }
+                </span>
+              </div>
+
               <!-- Only drawn when the session's provenance resolves one: the pad
                    this normalizes is one only Orpheus bakes, so a non-Orpheus
                    session gets no field and no normalization. -->
@@ -1043,6 +1063,19 @@ export class NarrationModalComponent {
    */
   readonly resumeChoice = signal<'resume' | 'fresh'>('resume');
 
+  /**
+   * ── The silence between chapters ─────────────────────────────────────────
+   *
+   * Owen, 2026-09-09: *"can we artificially insert 3 seconds of silence at the
+   * end of every chapter so its easier to tell when it moves from one to the
+   * next"*. It opens at BookForge's default and is SENT EVERY TIME — there is
+   * nothing behind it for absence to defer to, so a run that did not say would
+   * only be taking the same default one layer down, and stating it keeps the
+   * queue row a full description of the book it makes.
+   */
+  readonly chapterGap = signal(DEFAULT_CHAPTER_GAP);
+  readonly maxChapterGap = MAX_CHAPTER_GAP;
+
   // ── The assembly gap, resolved from the session's own provenance ──────────
   readonly showGap = signal(false);
   readonly sentenceGap = signal(0.6);
@@ -1110,6 +1143,10 @@ export class NarrationModalComponent {
   onSentenceGapInput(value: number): void {
     this.sentenceGap.set(value);
     this.gapTouched.set(true);
+  }
+
+  onChapterGapInput(value: number): void {
+    this.chapterGap.set(value);
   }
 
   // ── The Enhance stage and its two passes ──────────────────────────────────
@@ -1802,6 +1839,9 @@ export class NarrationModalComponent {
          * into a frozen copy of what it happened to be when the dialog opened.
          */
         ...(this.showGap() && this.gapTouched() ? { sentenceGap: this.sentenceGap() } : {}),
+        // Stated always — see `chapterGap`. Zero is a real answer here and must
+        // survive the trip, so it is not spread behind a truthiness check.
+        chapterGap: this.chapterGap(),
         rvc: this.rvcEnabled()
           ? {
               voiceId: this.rvcVoiceId(),

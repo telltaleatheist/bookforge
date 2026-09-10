@@ -96,7 +96,8 @@ def cue_text(text: str, is_heading: bool) -> str:
     return stripped
 
 
-def chunk_spans(manifest: Manifest, where: str = "chunk_spans") -> list:
+def chunk_spans(manifest: Manifest, where: str = "chunk_spans",
+                chapter_gap: float = 0.0) -> list:
     """`[(chunk, start_s, end_s)]` - every chunk's cue span, in order.
 
     THE ONE PLACE the running sum lives. `build_vtt` reads it, and so does
@@ -105,34 +106,49 @@ def chunk_spans(manifest: Manifest, where: str = "chunk_spans") -> list:
     of this loop is exactly how a sentence cue would come to sit outside its own
     chunk's cue.
 
+    `chapter_gap` is the silence assembly puts BETWEEN CHAPTERS
+    (`chapters.plan_chapters(chapter_gap=...)`), in seconds. IT HAS TO BE IN THIS
+    SUM. The transcript is the timeline of the FINISHED audiobook - it is sealed
+    into the m4b as its subtitle track - so a gap in the audio that is not in the
+    running sum slides every later cue early by one gap per chapter, which on a
+    30-chapter book at 3 s is a minute and a half of drift by the end. It is
+    added after each chapter but the last, exactly where assembly puts the file.
+
     Raises when a chunk has no sample count: an unrendered chunk timed as 0.0
     would slide every later cue earlier by that chunk's true length and desync
     the whole transcript from there on.
     """
-    chunks = flat_chunks(manifest)
-    if not chunks:
+    if not flat_chunks(manifest):
         raise ValueError(f"{where}(): the manifest has no chunks")
+    if chapter_gap < 0:
+        raise ValueError(
+            f"{where}(): chapter_gap must be >= 0 seconds, got {chapter_gap}"
+        )
 
     rate = manifest.sampleRate
     spans = []
     current_time = 0.0
-    for chunk in chunks:
-        if chunk.samples is None:
-            raise ValueError(
-                f"{where}(): chunk {chunk.index} has no sample count ({chunk.file}); "
-                f"the book is not fully rendered"
-            )
-        start_time = current_time + chunk.gapBefore
-        end_time = start_time + chunk.samples / rate
-        current_time = end_time + chunk.gapAfter
-        spans.append((chunk, start_time, end_time))
+    last_chapter = len(manifest.chapters) - 1
+    for position, chapter in enumerate(manifest.chapters):
+        for chunk in chapter.chunks:
+            if chunk.samples is None:
+                raise ValueError(
+                    f"{where}(): chunk {chunk.index} has no sample count "
+                    f"({chunk.file}); the book is not fully rendered"
+                )
+            start_time = current_time + chunk.gapBefore
+            end_time = start_time + chunk.samples / rate
+            current_time = end_time + chunk.gapAfter
+            spans.append((chunk, start_time, end_time))
+        if position != last_chapter:
+            current_time += chapter_gap
     return spans
 
 
-def build_vtt(manifest: Manifest) -> str:
+def build_vtt(manifest: Manifest, chapter_gap: float = 0.0) -> str:
     """The complete VTT document for a manifest, as a string."""
     blocks = []
-    for chunk, start_time, end_time in chunk_spans(manifest, "build_vtt"):
+    for chunk, start_time, end_time in chunk_spans(manifest, "build_vtt", chapter_gap):
         text = cue_text(chunk.text, chunk.kind == "heading")
         blocks.append(
             f"{format_timestamp(start_time)} --> {format_timestamp(end_time)}\n{text}\n"
@@ -141,7 +157,7 @@ def build_vtt(manifest: Manifest) -> str:
     return "WEBVTT\n\n" + "\n".join(blocks)
 
 
-def write_vtt(manifest: Manifest, path: str) -> str:
+def write_vtt(manifest: Manifest, path: str, chapter_gap: float = 0.0) -> str:
     """Write the VTT to `path` (UTF-8, LF line endings) and return the path.
 
     `newline=""` keeps Python from translating the LFs to CRLF on Windows. That
@@ -149,7 +165,7 @@ def write_vtt(manifest: Manifest, path: str) -> str:
     docstring, "LINE ENDINGS - A DECLARED DEVIATION". It is the one place the VTT
     is deliberately not byte-identical to e2a's.
     """
-    content = build_vtt(manifest)
+    content = build_vtt(manifest, chapter_gap)
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
         raise ValueError(f"write_vtt(): {parent} is not a directory")
@@ -158,10 +174,14 @@ def write_vtt(manifest: Manifest, path: str) -> str:
     return path
 
 
-def vtt_duration(manifest: Manifest) -> float:
+def vtt_duration(manifest: Manifest, chapter_gap: float = 0.0) -> float:
     """The end time of the last cue - the transcript's own idea of the book's
     length. The reassembly bridge compares this against the finished m4b and
-    refuses to promote a file more than 5 s shorter."""
+    refuses to promote a file more than 5 s shorter.
+
+    The chapter gaps count, and the LAST cue does not end after one: a book ends
+    at its last word, not at a boundary. Same rule as `chunk_spans`, which is
+    where the cue times themselves come from."""
     rate = manifest.sampleRate
     total = 0.0
     for chunk in flat_chunks(manifest):
@@ -170,4 +190,6 @@ def vtt_duration(manifest: Manifest) -> float:
                 f"vtt_duration(): chunk {chunk.index} has no sample count ({chunk.file})"
             )
         total += chunk.gapBefore + chunk.samples / rate + chunk.gapAfter
+    if chapter_gap > 0:
+        total += chapter_gap * max(0, len(manifest.chapters) - 1)
     return total

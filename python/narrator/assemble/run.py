@@ -144,11 +144,17 @@ def _chapter_durations_ms(
     disagree. A pre-encoded chapter is measured from its .m4a, which is what e2a
     does and is strictly more honest anyway: that .m4a is the very stream copied
     into the audiobook, so the marker tiles against what the listener hears.
+
+    THE CHAPTER GAP BELONGS TO THE CHAPTER IT FOLLOWS. The markers have to tile
+    the whole book with no holes, and putting the silence at the FRONT of the
+    next chapter would mean seeking to a chapter and hearing three seconds of
+    nothing. `plan.duration` already carries it; a pre-encoded chapter is
+    measured and then given it, because the .m4a does not contain it.
     """
     out = []
     for plan in plans:
         if plan.index in pre_encoded:
-            seconds = probe_duration(pre_encoded[plan.index], ffprobe)
+            seconds = probe_duration(pre_encoded[plan.index], ffprobe) + plan.gap_after
         else:
             seconds = plan.duration(sample_rate)
         out.append(int(round(seconds * 1000)))
@@ -181,7 +187,8 @@ def _remove_work_dir(work_dir: str, log) -> None:
         )
 
 
-def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log) -> str | None:
+def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log,
+                                 chapter_gap: float = 0.0) -> str | None:
     """The sentence transcript for a book NOBODY ALIGNED, beside the session.
 
     Owen's ruling, 2026-09-05: "we need to base assembly on the expected text and
@@ -207,7 +214,9 @@ def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log) -> str | No
             f"({path}); leaving the measured one alone")
         return None
     try:
-        cues = estimated_cues_for_manifest(manifest, where="assemble")
+        cues = estimated_cues_for_manifest(
+            manifest, where="assemble", chapter_gap=chapter_gap
+        )
         if not cues:
             log("[coverage] this book has no spoken chunk to cue, so no sentence "
                 "transcript was written")
@@ -235,6 +244,7 @@ def assemble(
     channels: int = 1,
     post_render_filter: str | None = None,
     coverage_report: str | None = None,
+    chapter_gap: float = 0.0,
 ) -> AssembleResult:
     """Assemble the book the manifest describes into `output_dir`.
 
@@ -250,6 +260,23 @@ def assemble(
     manifest's own text over the real audio durations instead of from measured
     cues. Only a report about ANOTHER book is refused - see
     `assemble/coverage_gate.py`.
+
+    `chapter_gap` is seconds of silence to leave BETWEEN CHAPTERS, so the move
+    from one to the next is audible. 0.0 (the default) is every book assembled
+    before this existed. It reaches four places from here and they must all
+    agree, which is why it is one argument and not four:
+
+      - `plan_chapters`, which records it per chapter (never after the last);
+      - the ENCODE, which realizes it as one silence file listed between
+        chapters, on both the parallel and the serial path;
+      - the CHAPTER MARKERS, where it belongs to the chapter it follows;
+      - the TWO TRANSCRIPTS, whose running sums are the finished book's timeline.
+
+    A MEASURED `<stem>.sentences.vtt` beside the session is NOT retimed by this -
+    nothing here rewrites a measurement. `narrator align` takes the same
+    `--chapter-gap` and must be given the same value; run with a different one,
+    its cues are timed for a different book. Assembly says so in the log when it
+    seals a measured transcript with a non-zero gap in play.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
@@ -277,6 +304,8 @@ def assemble(
         workers = max(1, min(cpu_count, 16))
     if workers < 1:
         raise ValueError(f"workers must be >= 1, got {workers}")
+    if chapter_gap < 0:
+        raise ValueError(f"chapter_gap must be >= 0 seconds, got {chapter_gap}")
 
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -302,7 +331,9 @@ def assemble(
     # is the total, and electron/reassembly-bridge.ts closes its `prepare` stage
     # on it.
     prepare_started = time.monotonic()
-    plans = plan_chapters(manifest, work_dir, log, workers=workers)
+    plans = plan_chapters(
+        manifest, work_dir, log, workers=workers, chapter_gap=chapter_gap
+    )
     log(
         f"[ASSEMBLE] Prepared {chunk_total(manifest)} sentences in "
         f"{time.monotonic() - prepare_started:.1f}s"
@@ -351,9 +382,21 @@ def assemble(
     vtt_path = os.path.join(output_dir, stem + ".vtt")
 
     log("[ASSEMBLE] Creating VTT subtitle file...")
-    write_vtt(manifest, vtt_path)
+    write_vtt(manifest, vtt_path, chapter_gap)
     if coverage is None:
-        write_estimated_sentence_vtt(manifest, stem, log)
+        write_estimated_sentence_vtt(manifest, stem, log, chapter_gap)
+    elif chapter_gap > 0:
+        # The measured transcript beside the session was written by `narrator
+        # align`, from its own `--chapter-gap`. Nothing here rewrites it, so say
+        # which value THIS assembly used: if the two disagree, the sealed
+        # subtitle track drifts by one gap per chapter and this line is the only
+        # place the disagreement is visible.
+        log(
+            f"[coverage] this book has a MEASURED sentence transcript; it is used "
+            f"as written. This assembly leaves {chapter_gap:.3f}s between chapters, "
+            f"so the transcript is correct only if `narrator align` was given the "
+            f"same --chapter-gap."
+        )
 
     # ------------------------------------------------------------------
     # Chapter atoms, then the audio.
@@ -379,11 +422,13 @@ def assemble(
         )
         encode_mod.concat_encoded(
             chapter_paths=chapter_paths,
+            plans=plans,
             metadata_file=metadata_file,
             cover=manifest.book.cover,
             out_path=m4b_path,
             work_dir=work_dir,
             ffmpeg=ffmpeg_bin,
+            channels=channels,
             log=log,
         )
     else:

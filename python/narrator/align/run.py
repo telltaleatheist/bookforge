@@ -95,6 +95,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   indices: Optional[Sequence[int]] = None,
                   workers: int = 1,
                   pace_chars_per_sec: Optional[float] = None,
+                  chapter_gap: float = 0.0,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -118,6 +119,14 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     and every chunk measures its own, which the Alignment records as
     `pace_source='chunk'`. Inventing a manifest field for it here would be
     inventing the number.
+
+    `chapter_gap` is the silence ASSEMBLY will leave between chapters
+    (`assemble.assemble(chapter_gap=...)`), in seconds. The cues written here are
+    sealed into the m4b as its subtitle track, so they are timed against the
+    finished audiobook: the value must be the one assembly is given, and a
+    default of 0.0 is what every session assembled without a chapter gap wants.
+    The audio this pass MEASURES is the session's own chunks, which never contain
+    the gap; only the cue times move.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
@@ -125,7 +134,8 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     policy = profile_for(engine).coverage
     wanted = None if indices is None else set(int(i) for i in indices)
 
-    spans = [(chunk, start, end) for chunk, start, end in chunk_spans(manifest, 'align')
+    spans = [(chunk, start, end)
+             for chunk, start, end in chunk_spans(manifest, 'align', chapter_gap)
              if wanted is None or chunk.index in wanted]
     if not spans:
         raise AlignerError(
