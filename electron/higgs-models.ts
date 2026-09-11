@@ -1077,8 +1077,10 @@ export function higgsCatalogSamplingRule(): string {
 
 /**
  * THE ONE SAMPLING every Higgs voice renders at, on both arms, for Listen
- * streaming and book renders alike — Owen, 2026-09-06: "temperature should be
- * .8 everywhere, as it's the boson default". Stated ONCE at the catalog's top
+ * streaming and book renders alike — 0.6 / 0.95 / 50 since 2026-09-11, a TRIAL
+ * Owen asked for after hearing gibberish (not truncation) on the extension's
+ * Listen path; 0.7 from 2026-09-09 and 0.8 "the boson default" before that, with
+ * every superseded reason kept in the catalog. Stated ONCE at the catalog's top
  * with its reason in `_samplingNote`, written into every voice document by
  * `higgsVoiceCapsForModel`, and applied by narrator over the checkpoint's own
  * generation_config.json (which says 1.0 and was not chosen). Refused, not
