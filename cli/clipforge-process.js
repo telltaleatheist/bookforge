@@ -1056,6 +1056,42 @@ TRAINING_HELP['rvc-train'] = [
   'standing in. URVC_SKIP_INIT=1 is set too, or importing it downloads audio-separator weights.',
 ].join('\n');
 
+TRAINING_HELP['rvc-deploy'] = [
+  'clipforge rvc-deploy - put an INSTALLED RVC voice on the Mac and HuggingFace (deploy_rvc_voice.py)',
+  '',
+  '  --voice <name>        the trained model name (must already be under voice_models/<name>/;',
+  '                        rvc-train installs it there, or run install_rvc_voice.py by hand)',
+  '  --mac                 rsync to the Mac + sha256 verify (needs the go from Owen for the Mac)',
+  '  --hf                  build rvc/<name>.tar.gz, upload to owenmorgan/owen-morgan-bookforge,',
+  '                        add the rvc-voice-assets.json entry, HEAD the URL. Needs --id and --label.',
+  '                        HuggingFace is PUBLIC and needs an explicit green light from Owen per batch.',
+  '  --id <catalog id>     e.g. rvc-voice-owen-morgan-v1. Refused if it already exists.',
+  '  --label "..."         what the dropdown shows',
+  '  --matches "..."       which narrator this voice is FOR (catalog hint)',
+  '  --dry-run             check the install and print what each leg would do',
+  '',
+  'Both legs are opt-in because both are outward-facing. The bookforge commit is yours afterwards;',
+  'the tool prints the command. Voices go to HF, never GitHub releases (Owen 2026-09-11) - only',
+  'the base models come from a release.',
+].join('\n');
+
+async function runRvcDeploy(args) {
+  if (args.help) { console.log(TRAINING_HELP['rvc-deploy']); return; }
+  if (!args.voice) throw new Error('rvc-deploy: --voice is required (see: clipforge rvc-deploy --help)');
+  const root = resolveTrainingRoot(args);
+  const script = path.join(root, 'pipeline', 'rvc', 'deploy_rvc_voice.py');
+  if (!fs.existsSync(script)) throw new Error('rvc-deploy: missing entry point ' + script);
+  const python = args.python ? path.resolve(args.python) : RVC_PYTHON_DEFAULT;
+  const argv = [script, String(args.voice), '--models-dir', RVC_MODELS_DIR_DEFAULT];
+  for (const k of ['id', 'label', 'matches', 'stage-dir']) if (args[k]) argv.push('--' + k, String(args[k]));
+  for (const k of ['mac', 'hf', 'dry-run']) if (args[k]) argv.push('--' + k);
+  const code = await new Promise((resolve, reject) => {
+    const child = spawn(python, argv, { cwd: root, stdio: 'inherit' });
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+  if (code !== 0) throw new Error('rvc-deploy exited ' + code);
+}
 async function runRvcTrain(args) {
   if (args.help) { console.log(TRAINING_HELP['rvc-train']); return; }
   for (const k of ['voice', 'dataset']) {
@@ -1659,6 +1695,7 @@ function printUsage() {
     '  slice        cut a book master into training clips        (slice_vtt.py)',
     '  rvc-dataset  select 45 min of narration for an RVC train  (slice_rvc.py)',
     '  rvc-train    train an RVC voice model from that dataset    (ultimate-rvc)',
+    '  rvc-deploy   installed RVC voice -> Mac + HuggingFace     (deploy_rvc_voice.py)',
     '  gate         score every row against its own text         (row_gate.py)',
     '  pauses       audit what a corpus teaches / a model emits   (corpus_pauses.py)',
     '  pause-match  does the model pause like the reader? + inject  (pause_match.py)',
@@ -1932,6 +1969,7 @@ async function main() {
   if (verb === 'slice') return runSlice(args);
   if (verb === 'rvc-dataset') return runRvcDataset(args);
   if (verb === 'rvc-train') return runRvcTrain(args);
+  if (verb === 'rvc-deploy') return runRvcDeploy(args);
   if (verb === 'pauses') return runPauses(args);
   if (verb === 'pause-match') return runPauseMatch(args);
   if (verb === 'normalize-pauses') return runNormalizePauses(args);
