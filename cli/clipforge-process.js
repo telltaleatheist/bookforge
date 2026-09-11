@@ -1722,6 +1722,9 @@ function printUsage() {
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
     '  align        align each Adobe span against its own text  (align_spans.py)',
     '  checkpoints  rank a run\'s checkpoints by holdout loss       (pick_two.py)',
+    '  pause-map    corpus pause reference / score renders / rank   (higgs_pause_screen.py, CPU)',
+    '  pause-screen render EVERY checkpoint in the safe band, rank  (pause_screen.sh, GPU)',
+    '               by defects + pause distance, then ladder the top',
     '  merge-lora   fold a LoRA checkpoint into servable weights   (merge_for_serving.py)',
     '  ladder       length sweep N models back to back + band calc  (ladder_chain.sh)',
     '  deploy       promote a laddered winner into BookForge       (promote_voice.py)',
@@ -1791,7 +1794,8 @@ async function runLadder(args) {
     if (!args[k]) throw new Error('ladder: --' + k + ' is required (see: clipforge ladder --help)');
   }
   const argv = ['--bank', String(args.bank), '--out-root', String(args['out-root'])];
-  for (const k of ['seeds', 'conc', 'max-tokens', 'ctx', 'tag-prefix']) {
+  // --data / --pause-ref: the corpus pause map is scored automatically alongside ASR (2026-09-11)
+  for (const k of ['seeds', 'conc', 'max-tokens', 'ctx', 'tag-prefix', 'data', 'pause-ref', 'band']) {
     if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
   }
   for (const d of String(args.models).split(/\s+/).filter(Boolean)) argv.push(d);
@@ -1837,6 +1841,90 @@ async function runCheckpoints(args) {
   }
   await spawnTraining(python, path.join(n4, 'pick_two.py'),
     [runDir, '--n', String(args.n || 1)], camp, 'checkpoints');
+}
+
+TRAINING_HELP['pause-map'] = [
+  'clipforge pause-map - the pause mapper: measure a corpus, score renders against it, rank (CPU only)',
+  '',
+  '  --ref --data <dir>              corpus pause reference from the rows a run TRAINED on',
+  '                                  (<data>/index.jsonl, split=train) -> --out <pause_ref.json>',
+  '                                  [--n 600 rows sampled] [--seed 1234]',
+  '  --score --run <render dir> --ref <pause_ref.json> [--rows]',
+  '                                  one checkpoint\'s renders -> <run>/pauses.json: interior pause',
+  '                                  median/p90/>=2 s per 10k chars vs the reference, tail loops,',
+  '                                  overruns; truncations + repeats too when `ladder score` ran first',
+  '  --rank --runs "<dirA> <dirB>..." [--train-log <run>/train_log.json] [--top 2] [--out <json>]',
+  '                                  order checkpoints: fewest defects, then smallest pause',
+  '                                  distance, holdout loss as the tie-break; prints "CKPTS a b"',
+  '  --python <exe>                  a python with numpy + soundfile (default: the pauses verb\'s)',
+  '',
+  'WHY. Owen 2026-09-11: "we changed the ladder ... when we were scoring checkpoints by',
+  'runaway/loop/truncations, it naturally led us to pick the least flawed checkpoint" - Third Reich',
+  'was picked that way and pauses right; mistborn/deathstalker v7 were picked by lowest holdout loss',
+  '(pick_two, 2026-09-09) and pause badly. On the T1 quicktrain the lowest-loss checkpoint (256)',
+  'repeated text and paused long while 384 was clean. Silence is pause_lib\'s definition on both',
+  'sides (-40 dB below the clip\'s own peak, 20 ms hop, interior >= 0.30 s); the distance is',
+  '|ln median ratio| + |ln p90 ratio| + 0.5 * excess ln(>=2 s rate ratio). HIGGS_FIELD_NOTES 4n.66.',
+].join('\n');
+
+async function runPauseMap(args) {
+  if (args.help) { console.log(TRAINING_HELP['pause-map']); return; }
+  const root = resolveTrainingRoot(args);
+  const python = resolvePausePython(args, 'pause-map');
+  const script = path.join(root, 'pipeline', 'higgs_pause_screen.py');
+  const modes = ['ref', 'score', 'rank'].filter((m) => args[m]);
+  if (modes.length !== 1) throw new Error('pause-map: give exactly one of --ref / --score / --rank (see: clipforge pause-map --help)');
+  const mode = modes[0];
+  const argv = [mode];
+  if (mode === 'ref') {
+    if (!args.data) throw new Error('pause-map --ref: --data <train data dir> is required');
+    argv.push(String(args.data));
+    for (const k of ['out', 'n', 'seed']) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  } else if (mode === 'score') {
+    if (!args.run || !args.ref) throw new Error('pause-map --score: --run <render dir> and --ref <pause_ref.json> are required');
+    argv.push(String(args.run), '--ref', String(args.ref));
+    if (args.rows) argv.push('--rows');
+  } else {
+    if (!args.runs) throw new Error('pause-map --rank: --runs "<dirA> <dirB> ..." is required');
+    for (const d of String(args.runs).split(/\s+/).filter(Boolean)) argv.push(d);
+    for (const k of ['train-log', 'top', 'out']) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  await spawnTraining(python, script, argv, path.join(root, 'pipeline'), 'pause-map');
+}
+
+TRAINING_HELP['pause-screen'] = [
+  'clipforge pause-screen - render EVERY checkpoint of a run in the safe band, rank, then ladder the top',
+  '',
+  '  --run-dir <dir>       the train run (ckpt-<step>/ + train_log.json)',
+  '  --bank <bank.json>    an in-band bank (500-600 char prose; the first --items prompts are used)',
+  '  --out-root <dir>      where <name>_ckpt<K>/, pause_ref.json, pause_screen.json go',
+  '  --name <run name>     merged dirs are /home/telltale/higgs_v3_merged/<name>_<step> (default: basename of --run-dir)',
+  '  --data <dir>          the encoded train set (for the corpus reference; default <run>/../../data/<name>)',
+  '  --ckpts "all"|"128 256"  which checkpoints (default all)',
+  '  --seeds "500 501 502 503"   --items 2   --conc 4   --max-tokens 3000   --ctx 8192   --top 2',
+  '  --then-ladder <ladder bank.json>   hand the top --top merged dirs straight to `ladder`',
+  '',
+  'Per checkpoint: merge (CPU) -> serve -> render items x seeds -> stop -> ASR + pause score on CPU',
+  'while the next one serves. ~2.5 min of GPU per checkpoint at 2 prompts x 4 seeds. Rank = fewest',
+  'defects in band (loops, overruns, truncations, repeats), then pause distance to the corpus, then',
+  'holdout loss. Owen 2026-09-11: "render a single chunk for each checkpoint and score its pauses ...',
+  'pick the best models based on how close to the original training corpus their pausing is ... run',
+  'the ladder on the top two. pausing will probably be a good indicator of overall model quality".',
+].join('\n');
+
+async function runPauseScreen(args) {
+  if (args.help) { console.log(TRAINING_HELP['pause-screen']); return; }
+  requireGuestSide('pause-screen');
+  const camp = resolveCampaignRoot(args);
+  const n4 = stageDir(camp);
+  for (const k of ['run-dir', 'bank', 'out-root']) {
+    if (!args[k]) throw new Error('pause-screen: --' + k + ' is required (see: clipforge pause-screen --help)');
+  }
+  const argv = ['--run', String(args['run-dir']), '--bank', String(args.bank), '--out-root', String(args['out-root'])];
+  for (const k of ['name', 'data', 'ckpts', 'seeds', 'items', 'classes', 'conc', 'max-tokens', 'ctx', 'top', 'then-ladder']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  await spawnTraining('bash', path.join(n4, 'pause_screen.sh'), argv, camp, 'pause-screen');
 }
 
 TRAINING_HELP['merge-lora'] = [
@@ -1996,6 +2084,8 @@ async function main() {
   if (verb === 'masters') return runMasters(args);
   if (verb === 'align') return runAlign(args);
   if (verb === 'checkpoints') return runCheckpoints(args);
+  if (verb === 'pause-map') return runPauseMap(args);
+  if (verb === 'pause-screen') return runPauseScreen(args);
   if (verb === 'merge-lora') return runMergeLora(args);
   if (verb === 'ladder') return runLadder(args);
   if (verb === 'deploy') return runDeploy(args);
