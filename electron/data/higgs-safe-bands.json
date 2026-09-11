@@ -38,9 +38,9 @@
     "_note": "PREDICTED, not swept. owen_gp2w corpus p50 793. Sweep it and replace these."
   },
   "mistborn": {
-    "min": 500,
+    "min": 200,
     "max": 700,
-    "_note": "MEASURED 2026-09-10 on mistborn v7 (ckpt-704, retrained --tail-s 0.25), full 4-seed ladder, 512 renders, scored at the voice's OWN pace 13.3 chars/s. By actual chars: 200-300 5.0%, 300-400 11.1%, 400-500 7.1%, 500-600 3.1%, 600-700 5.0%, 700-800 15.6%, 900-1000 18.8%, 1200-1300 52.5%, 1300-1400 72.5%. CHOSEN 500-700 = 3/72 = 4.2% (95% hi 11.5%). The ranked winner was 200-700 (6.2%, hi 10.8%) but its floor sits one bin from 16.7% at 100-200 and 33% at 0-100 - no cliff margin; 500-700 keeps 400-500 at 7.1% underneath it, and matches thirdreich's 500-700. Cap is 700: 700-800 jumps to 15.6% and coverage climbs from there. WHY THE PREVIOUS 500-800 IS RETIRED: it came from the pre-retrain model. v6 was unusable - 58% of renders ran to the token cap with a median 37.9 s of trailing silence (retained post-chunk pauses, field notes 4n.53); v7 cut tails to 0.25 s and that is now 4.5%, at/below thirdreich's own 5.2% baseline. The band's remaining limit is COVERAGE (missing words), not stopping - 115/512 overall, and it is what closes the cap at 700. That is an alignment defect in the corpus, unfixed by the tail change. Chart + full curve: higgs-safe-bands-evidence.md. PREVIOUS: 500-800."
+    "_note": "MEASURED 2026-09-11 19:03 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds each): in-band 4/96 = 4.2% (95% hi 10.2%). Winner mb_v7_440 -- band winner: fewest in-band failures, margin 0.0 renders. Previous band 500-700. Run: /mnt/e/training/_campaigns/2026-09-11-pausing-problem/ladder_mb_v7/mb_v7_440"
   },
   "sigma": {
     "min": 500,

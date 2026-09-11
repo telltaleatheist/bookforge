@@ -212,12 +212,12 @@
       "engineVersion": "v3",
       "voice": {
         "checkpoint": {
-          "wsl": "/home/telltale/higgs_v3_merged/mb_v7_prod",
-          "darwin": "runtime/higgs-models/mb_v7_prod"
+          "wsl": "/home/telltale/higgs_v3_merged/mb_v7_440_prod",
+          "darwin": "runtime/higgs-models/mb_v7_440_prod"
         }
       },
-      "_checkpointArmNote": "TWO ARMS, TWO COPIES, same basename mb_v7_prod. wsl: /home/telltale/higgs_v3_merged/mb_v7_prod. darwin: the SAME directory rsynced to ~/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_prod, sha-verified per weight file. Promoted 2026-09-10 after the --tail-s 0.25 retrain fixed the EOS failure that made v6 unusable (4.5% long at pace 13.3, vs the thirdreich reference 5.2%; field notes 4n.53/4n.54). PREVIOUS: wsl mb_h2lm_prod, darwin mb_h2lm_prod. TWO ARMS, TWO COPIES. wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod -- the merged HF directory re-made on 2026-09-08 from night2/runs/mb_h2lm/ckpt-920 (the dip; holdout 3.73813; 746 train rows, long tier 536 clips 15-149 s + 210 short + 45 micro). darwin: the SAME directory rsynced to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/mb_h2lm_prod), sha-verified. This is a RESTORATION: mb_v3_prod held this slot 2026-09-08 01:2x-14:xx and was retired by ear.",
-      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/mb_v7_prod - the v7 retrain (ckpt-704, holdout 3.9137), merged 2026-09-10. It is NOT the higgs-models naming convention because a certificate is bound to the exact directory that was rendered against, so a re-merge is a new directory and a new certificate. PREVIOUS wsl dir: mb_h2lm_prod. PREVIOUS darwin dir: mb_h2lm_prod. wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod is what the served arm renders; darwin: runtime/higgs-models/mb_h2lm_prod is what the MLX arm renders. A re-merge under the same name is a different model and re-measures; this one is byte-identical in provenance to the 2026-09-06 promotion (same ckpt-920, same merge script), so its 2026-09-06/07 measurements still stand.",
+      "_checkpointArmNote": "TWO ARMS, TWO COPIES, same basename mb_v7_440_prod. wsl: /home/telltale/higgs_v3_merged/mb_v7_440_prod. darwin: the SAME directory rsynced to ~/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_440_prod, sha-verified per weight file. Promoted 2026-09-11 19:03. PREVIOUS: TWO ARMS, TWO COPIES, same basename mb_v7_prod. wsl: /home/telltale/higgs_v3_merged/mb_v7_prod. darwin: the SAME directory rsynced to ~/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_prod, sha-verified per weight file. Promoted 2026-09-10 after the --tail-s 0.25 retrain fixed the EOS failure that made v6 unusable (4.5% long at pace 13.3, vs the thirdreich reference 5.2%; field notes 4n.53/4n.54). PREVIOUS: wsl mb_h2lm_prod, darwin mb_h2lm_prod. TWO ARMS, TWO COPIES. wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod -- the merged HF directory re-made on 2026-09-08 from night2/runs/mb_h2lm/ckpt-920 (the dip; holdout 3.73813; 746 train rows, long tier 536 clips 15-149 s + 210 short + 45 micro). darwin: the SAME directory rsynced to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/mb_h2lm_prod), sha-verified. This is a RESTORATION: mb_v3_prod held this slot 2026-09-08 01:2x-14:xx and was retired by ear.",
+      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/mb_v7_440_prod - mistborn v7 ckpt-440 (holdout 3.93028), merged 2026-09-11, promoted 2026-09-11 19:03 on the pause screen + ladder (temper): pausing score 80/100 in band with 0 defects, ladder band 200-700 by character spread (500-700 by rung), pace 14.48 chars/s. It replaces ckpt-704 (mb_v7_prod), which was picked by lowest holdout loss and paused long (after-sentence 1.22 s vs Kramer's 0.92, 14.1 pauses >= 2 s per 10k chars; screen score 49). Owen 2026-09-11: delete 704 from BookForge once 440 is live. Field notes 4n.66. PREVIOUS: wsl: /home/telltale/higgs_v3_merged/mb_v7_prod - the v7 retrain (ckpt-704, holdout 3.9137), merged 2026-09-10. It is NOT the higgs-models naming convention because a certificate is bound to the exact directory that was rendered against, so a re-merge is a new directory and a new certificate. PREVIOUS wsl dir: mb_h2lm_prod. PREVIOUS darwin dir: mb_h2lm_prod. wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod is what the served arm renders; darwin: runtime/higgs-models/mb_h2lm_prod is what the MLX arm renders. A re-merge under the same name is a different model and re-measures; this one is byte-identical in provenance to the 2026-09-06 promotion (same ckpt-920, same merge script), so its 2026-09-06/07 measurements still stand.",
       "license": "boson-higgs-tts-3-research-noncommercial",
       "commercialUse": false,
       "sampleRate": 24000,
@@ -225,10 +225,10 @@
       "backends": {
         "served": {
           "maxChars": 800,
-          "maxCharsSource": "catalog",
-          "safeMinChars": 500,
-          "safeMaxChars": 800,
-          "_safeBandNote": "SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). mb_h2lm: p25 281, p75 893 -> floor 300. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
+          "maxCharsSource": "length-sweep",
+          "safeMinChars": 200,
+          "safeMaxChars": 700,
+          "_safeBandNote": "MEASURED 2026-09-11 19:03 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds): band 200-700, in-band 4/96 = 4.2% (95% hi 10.2%). Winner mb_v7_440 -- band winner: fewest in-band failures, margin 0.0 renders. PREVIOUS: 500-800. SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). mb_h2lm: p25 281, p75 893 -> floor 300. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
           "_maxCharsNote": "800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 1200. NOTE THE DEVIATION FROM 'max == the longest training row': mb_h2lm's longest training row is 2268 chars / 149 s, but this checkpoint ENDS ITSELF at ~1,980 frames (~79-82 s) whatever the server ceiling -- a 2,173-char render on the Mac returned 79 s with the middle skipped (coverage 0.306), measured 2026-09-05. At the measured pace of 15.01 chars/s, 82 s is ~1,230 chars, so 1200 is the empirical ceiling and 2268 would ship a config the model cannot honour. The rule is 'the max chunk is what the model trained on' only where the model can render it.",
           "edgeFadeMs": {
             "in": 10,
@@ -241,10 +241,10 @@
         "mlx": {
           "_comment": "THE MAC'S OWN BLOCK FOR THIS FINE-TUNE, UNMEASURED on mb_v3_prod: 900 mirrors deathstalker's MLX certificate as the conservative number for the same architecture; `placeholder` says nobody has measured THIS voice on this arm. Replace both numbers and the source after a Mac sweep.",
           "maxChars": 800,
-          "maxCharsSource": "catalog",
-          "safeMinChars": 500,
-          "safeMaxChars": 800,
-          "_safeBandNote": "SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). mb_h2lm: p25 281, p75 893 -> floor 300. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
+          "maxCharsSource": "length-sweep",
+          "safeMinChars": 200,
+          "safeMaxChars": 700,
+          "_safeBandNote": "MEASURED 2026-09-11 19:03 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds): band 200-700, in-band 4/96 = 4.2% (95% hi 10.2%). Winner mb_v7_440 -- band winner: fewest in-band failures, margin 0.0 renders. PREVIOUS: 500-800. SAFE BAND = the training corpus's INTERQUARTILE RANGE, measured 2026-09-09 (field notes 4n.37.20). mb_h2lm: p25 281, p75 893 -> floor 300. Validated on thirdreich, whose IQR 532-985 predicted the measured best band 600-1000 (4/80 = 5.0% early stops [2.0-12.2], vs 18.8% below 600 and 20.3% above 1000). safeMaxChars is held at Owen's 800 ruling rather than the measured 1000; the measurement supports raising it. safeMinChars is the NEW half: before it, floor==cap==targetChars, so two 400-char paragraphs could not merge (800 > 700 cap) and a 400-char chunk shipped - which is how Owen's 2026-09-09 Mac render truncated at 323, 502 and 634 chars.",
           "_maxCharsNote": "800, OWEN'S RULING (2026-09-09): \"my models are limited to an absolute max of 800 characters before we start getting truncations\" - the cap is 800 on every fine-tune, both arms. PREVIOUS: 900, a PLACEHOLDER borrowed from deathstalker's MLX certificate; not measured on mb_v3_prod.",
           "edgeFadeMs": {
             "in": 10,
@@ -255,15 +255,15 @@
         }
       },
       "pace": {
-        "median": 15.01,
-        "mean": 14.95,
-        "p05": 13.6,
-        "p95": 16.15,
-        "p99": 16.78,
-        "n": 56,
-        "method": "as deathstalker",
-        "measuredOn": "2026-09-07",
-        "source": "served arm at temperature 0.8: night3/pace08/mistborn/t08 (100 renders, 56 clean), measured on THIS directory (mb_h2lm_prod). All six numbers are the ladder's own (p1 12.72 / p5 13.60 / median 15.01 / mean 14.95 / p95 16.15 / p99 16.78, clean_rule and band_rule inside); BookForge's recomputation matched p99 to the hundredth. Restored 2026-09-08 with the checkpoint."
+        "median": 14.48,
+        "mean": 14.52,
+        "p05": 12.57,
+        "p95": 16.35,
+        "p99": 16.95,
+        "n": 249,
+        "method": "chars = len(bank text as rendered); seconds = full wav duration as written by the engine. Per-render chars/audio_s, then the percentiles of that.",
+        "measuredOn": "2026-09-11",
+        "source": "served arm at temperature 0.8: 2026-09-11-pausing-problem/ladder_mb_v7/mb_v7_440 (480 renders, 249 clean by the documented rule), measured on THIS directory (mb_v7_440_prod). PREVIOUS (mb_h2lm_prod, 2026-09-07): median 15.01 p05 13.60 p95 16.15 p99 16.78 n 56."
       },
       "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S SEED BAND IS DERIVED FROM THE MEDIAN AND THEN RE-CENTRED ON THE BOOK (2026-09-08): paceCharsPerSec = median = 15.12, maxCharsPerSec = median x 1.2 = 18.14 (above it a take is too SHORT - an early stop) and minCharsPerSec = median / 1.3 = 11.63 (below it a take RAN ON - a babble tail). ALL THREE ARE A SEED, NOT A CEILING: narrator keeps only the band's RATIOS and re-centres them on the running median of the book's own shipped takes once ten guarded chunks are in (truncation.PaceTracker), which is what actually answers Owen's worry - 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11' - because a book that averages 17.6 BECOMES the reference and both edges move with it. The rule this replaces (the ladder's p99 x 1.15 and p05 / 1.15) could not do that, and MEASURED on the first full book rendered under it (Shift, mistborn, 1,313 chunks, 16.38 h, 2026-09-08) it was the wrong shape: the ladder bank is uniform nonfiction and Shift is fiction with dialogue, so the book's clean chunks paced 14.09 chars/s against the bank's 15.12 - the fixed long edge (11.97) fired on 340 healthy chunks at take 0 and the ladder re-rolled or split every one of them, while the short edge (19.27) sat at 1.37x the book's own pace and shipped 8 spot-aligned truncations (13-52 % of the words dropped, all at >= 1.23x the book's pace). The factors 1.2 and 1.3 are BookForge's PACE_GUARD_SHORT_FACTOR and PACE_GUARD_LONG_FACTOR. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker). NOTE: mistborn paces 11 % slower than deathstalker (p05 13.38 sits UNDER the 14.5 default long edge), which is why the band is per voice.",
       "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train, dip checkpoint 920), cut from the ADOBE-ENHANCED, DIALOGUE-FREE Kramer narration spans. Restored 2026-09-08 as the definitive voice after mb_v3 -- a 27 h corpus that mixed those Adobe masters with roformer-denoised full books -- was rejected on long-form listening: Owen, 'prosody is good but the voices/clips we used definitely werent normalized via adobe. i can hear quality differences between them.' More data did not smooth the source step out, so the dataset rule for this voice is now Adobe-cleaned material only, narration only, text AI-cleaned with the BookForge CLI, then aligned.",
@@ -273,7 +273,7 @@
         "ref": "owenmorgan/mistborn-higgs-v3"
       },
       "_sourceNote": "WHERE A MACHINE DOWNLOADS THIS CHECKPOINT FROM (Settings -> Higgs -> Download): a PRIVATE HuggingFace repo under Owen's account. Re-uploaded 2026-09-08 with the mb_h2lm weights, replacing the mb_v3 weights that briefly held the repo; see _promotionNote for the sha256 a downloaded copy must match.",
-      "_promotionNote": "PROMOTED 2026-09-10 11:20 to mb_v7_prod (ckpt-704, holdout 3.9137). THE RETRAIN THAT MADE THIS SHIPPABLE: the previous v6 model was unusable - it did not emit EOS and ran to the token cap on a large share of renders (mistborn 58%, deathstalker 29%) with a median 37.9 s of trailing silence, caused by RETAINED post-chunk pauses (slice_vtt --tail-s 4.0). Re-sliced at --tail-s 0.25 and retrained: 4.5% long at its own pace 13.3 (thirdreich reference measures 5.2%); trailing silence median 0.22 s. Owen Morgan v7 was the positive control (0/24, same corpus, only the tail changed). Field notes 4n.53/4n.54. Merged dir sha256_16 11338e6474c661e3. PREVIOUS ARM DIRS: wsl /home/telltale/higgs_v3_merged/mb_v7_prod, darwin runtime/higgs-models/mb_v7_prod. HuggingFace deliberately NOT updated - Owen has not given a green light."
+      "_promotionNote": "PROMOTED 2026-09-11 19:03. Winner mb_v7_440 (band winner: fewest in-band failures, margin 0.0 renders). Band 200-700 from the length ladder: in-band 4/96 = 4.2% (95% hi 10.2%). Merged dir /home/telltale/higgs_v3_merged/mb_v7_440_prod, sha256 4b359ed367775eb363b16ed7484ba74ae078636c4401f94349e8736447ef0539. maxCharsSource=length-sweep. HuggingFace NOT updated - Owen has not given the green light."
     },
     {
       "id": "owen",
