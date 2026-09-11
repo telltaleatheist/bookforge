@@ -1127,12 +1127,36 @@ async function runRvcTrain(args) {
     if (args['preload-dataset']) argv.push('--preload-dataset');
     await run('run-training', argv);
   }
+  // INSTALL WHAT WAS TRAINED. ultimate_rvc finishes by writing <name>_best.pth and
+  // <name>.index into its TRAINING directory and stops; BookForge lists voices from
+  // voice_models/<name>/, so a model that trained perfectly is invisible to the app until it
+  // is copied across. Nothing errors - the voice is simply missing from the dropdown.
   const outDir = path.join(modelsDir, 'rvc', 'voice_models', voice);
+  if (stages.includes('train') && !fs.existsSync(outDir)) {
+    const inst = path.join(root, 'pipeline', 'rvc', 'install_rvc_voice.py');
+    if (fs.existsSync(inst)) {
+      const argv = [inst, voice, '--models-dir', modelsDir];
+      if (args.label) argv.push('--label', String(args.label));
+      if (args.matches) argv.push('--matches', String(args.matches));
+      // Never fatal: the weights exist either way, and failing the verb here would mark a
+      // successful train as FAILED in the chain's markers.
+      const code = await new Promise((resolve) => {
+        const child = spawn(python, argv, { cwd: root, stdio: 'inherit', env });
+        child.on('error', () => resolve(-1));
+        child.on('close', resolve);
+      });
+      if (code !== 0) {
+        console.log('[rvc-train] install step exited ' + code + ' - the trained weights are still in');
+        console.log('[rvc-train] ' + path.join(modelsDir, 'rvc', 'training', voice) + ' and can be installed by hand.');
+      }
+    }
+  }
   if (fs.existsSync(outDir)) {
     console.log('[rvc-train] ' + voice + ' -> ' + outDir);
     for (const f of fs.readdirSync(outDir)) console.log('            ' + f);
   } else {
-    console.log('[rvc-train] NOTE: no voice_models/' + voice + ' yet (run the train stage to produce it)');
+    console.log('[rvc-train] NOTE: nothing in voice_models/' + voice + '. The trained weights, if any,');
+    console.log('[rvc-train]       are under ' + path.join(modelsDir, 'rvc', 'training', voice) + '.');
   }
 }
 
