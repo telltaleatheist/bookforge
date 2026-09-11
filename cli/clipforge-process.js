@@ -1450,7 +1450,11 @@ async function runMergeTiers(args) {
   const rowsDir = path.resolve(args.rows);
   const tier = String(args.tier);
   const books = String(args.books).split(',').map((b) => b.trim()).filter(Boolean);
-  const pairs = books.map((b) => path.join(build, b + '_' + tier) + ':' + path.join(rowsDir, b + '_' + tier + '_rows.json'));
+  // merge_corpora.py splits each pair on the first ':' NOT followed by '/', so a Windows drive
+  // letter (E:\...) must be given with forward slashes or the split lands on the drive colon
+  // (the old merge_mb7.sh used cygpath -m for exactly this reason).
+  const fwd = (p) => p.split(String.fromCharCode(92)).join('/');
+  const pairs = books.map((b) => fwd(path.join(build, b + '_' + tier)) + ':' + fwd(path.join(rowsDir, b + '_' + tier + '_rows.json')));
   const argv = [path.join(build, String(args.out)), path.join(rowsDir, String(args.out) + '_rows.json'), ...pairs];
   await spawnTraining(python, path.join(cwd, 'merge_corpora.py'), argv, cwd, 'merge-tiers');
 }
