@@ -207,18 +207,46 @@ function translateModelDirForSpawn(dir: string): string {
 const STREAM_BATCH_CEILING_DEFAULT = 16;
 let streamBatchCeilingCache: number | null = null;
 
-// HIGGS STREAMS IN FIXED GROUPS OF 4 — Owen's ruling of 2026-09-06 ("it's
-// significantly faster than Orpheus, so I don't know that we need the batching
-// ladder; set batching to 4 and render it in groups"). This ONE number is the
-// scheduler's in-flight depth (getMaxConcurrentSentences), the pool's dispatch
-// width (batchWidth = min(STREAM_RAMP_WIDTH, ceiling)), the serve door's
+// HIGGS STREAMS ONE ROW AT A TIME, IN READING ORDER — since 2026-09-11, on a
+// measurement, replacing Owen's ruling of 2026-09-06 ("it's significantly faster
+// than Orpheus, so I don't know that we need the batching ladder; set batching
+// to 4 and render it in groups"). This ONE number is the scheduler's in-flight
+// depth (getMaxConcurrentSentences), the pool's dispatch width
+// (batchWidth = min(STREAM_RAMP_WIDTH, ceiling)), the serve door's
 // NARRATOR_HIGGS3_MLX_BATCH (the read-ahead group width in
-// HiggsV3MlxEngine.generate_batch_stream) and the `deviceWorkers` the extension is
-// shown — so a Higgs Listen session renders the row being waited on solo and
-// everything behind it in groups of at most 4. Not tier-derived: a Higgs row at
-// the deathstalker 900-char target is ~3,300 positions deep, and the memory
-// budgeter would narrow a wide ask anyway; 4 is a latency choice, not a memory one.
-export const HIGGS_STREAM_BATCH_WIDTH = 4;
+// HiggsV3MlxEngine.generate_batch_stream) and the `deviceWorkers` the extension
+// is shown.
+//
+// WHY 1 AND NOT 4 (measured 2026-09-11, deathstalker, MLX, M1 Ultra, through
+// this pool's own spawn plan — tools/smoke-serve-spawn.js --real):
+//
+//     solo row   65 / 116 / 197 / 319 chars   ->  1.8 / 2.1 / 2.1 / 2.0x realtime
+//     4 rows     ~140 chars each  (29.0 s audio in 14.4 s)  ->  2.0x
+//     4 rows     ~270 chars each  (62.7 s audio in 30.7 s)  ->  2.0x
+//
+// WIDTH BUYS NOTHING for Higgs at Listen depths: a 4-row group is exactly as
+// fast as four solo rows back to back. Orpheus is the opposite (12.7 chars/s
+// solo vs 30+ at width 8 — the batch-width note below), which is the only
+// reason a group was ever the default shape here. What a group DOES cost is
+// atomicity: the 3–4 rows behind the solo opener land together, ~2x their
+// combined audio after they were dispatched, i.e. 0.5–1x the opener's own
+// duration AFTER the opener has finished playing. Measured: a 7.5 s opener
+// landed at 3.6 s, rows 1–3 at 13.0–13.9 s — a ~2 s hole after the first
+// sentence, ~8 s when the sentences are paragraph-length. At width 1 each row
+// lands at half its own duration while the previous one plays, so the buffer
+// only grows; the one hole left is a second sentence longer than everything
+// played before it, which the extension's projection gate reasons about.
+//
+// Owen, 2026-09-11, on the fast-start numbers ("the current pause is about 30
+// seconds. if its shorter than that it might be worth our time to switch"):
+// "lets switch it and ill test it out. if it wont work, we'll switch it back."
+// Switching back is this one number.
+//
+// Not tier-derived, and not a memory choice: the budgeter would narrow a wide
+// ask anyway. It is also the width the voice's maxChars certificate was
+// measured at (single-row), so the "batched Higgs MLX rendering is
+// UNCERTIFIED" warning no longer applies to Listen.
+export const HIGGS_STREAM_BATCH_WIDTH = 1;
 
 function streamBatchCeiling(): number {
   // Per ENGINE, before the cache: the selection can change at runtime (Settings,

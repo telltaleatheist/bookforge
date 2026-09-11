@@ -424,11 +424,15 @@ export interface Settings {
    *  no filesystem, so the server expands it (and refuses a relative path). */
   recordingsDir: string;
   /**
-   * "Buffer before playing" — ON by default, and ON is the behaviour this extension
-   * has always had: a block waits until enough of it is rendered that the generator
-   * cannot be caught, then plays through without a hole. That costs ~30s before the
-   * first word on Orpheus, because a sentence only exists once its whole batch
-   * retires.
+   * "Buffer before playing" — OFF by default since 2026-09-11 (it was ON, the
+   * behaviour this extension had always had). ON: a block waits until enough of it
+   * is rendered that the generator cannot be caught, then plays through without a
+   * hole. That costs ~30s before the first word, because a sentence only exists
+   * once its whole batch retires. Owen, 2026-09-11, on Higgs's measured fast-start
+   * numbers (first word ~2-4 s in, one ~2 s hiccup after the opener at the old
+   * 4-row width, none at width 1): "lets switch it and ill test it out. if it wont
+   * work, we'll switch it back." Switching back is this one default — and a value
+   * a person has toggled in the popup lives in chrome.storage and wins over it.
    *
    * OFF is FAST START (Owen's ruling of 2026-09-04): the speak carries
    * `fastStart:true`, the server streams each sentence in sub-sentence chunks as it
@@ -455,9 +459,9 @@ export const DEFAULT_SETTINGS: Settings = {
   volume: 1,
   recordSpeed: 1,
   recordingsDir: DEFAULT_RECORDINGS_DIR,
-  // ON: the gate that has always been here. Fast start is opt-OUT of seamlessness,
-  // never the default.
-  bufferBeforePlaying: true
+  // OFF since 2026-09-11 (see the field's note): fast start is the default, the
+  // gate is opt-IN. Was `true` — fast start opt-OUT — from 2026-09-04.
+  bufferBeforePlaying: false
 };
 
 export async function loadSettings(): Promise<Settings> {
