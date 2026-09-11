@@ -242,12 +242,42 @@ export class ReaderStreamBridge {
     // the TTS API server gives the extension's text.
     const { speakableListenText } = await import('./listen-text.js');
     const speakable = speakableListenText(text);
-    // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
-    // audiobook path reads for ORPHEUS_MAX_CHARS. Unconditional since 2026-09-05:
-    // the ternary that guarded it fell back to splitForTts's XTTS default for any
-    // other engine, and there is no other streaming engine left.
-    const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
-    const sentences = splitForTts(speakable, 'en', maxChars);
+    // THE UNIT ON THE WIRE IS PER ENGINE — the same branch the TTS API server
+    // makes, for the same reasons (see its comment, and listen-chunks.ts):
+    // Orpheus streams one sentence per row because width, not row length, is its
+    // throughput; Higgs streams ramped chunks of one or more sentences because it
+    // renders one row at a time at a flat 2.0x and row length is the only lever
+    // on prosody and seam latency.
+    //
+    // Until 2026-09-11 this was one unconditional orpheusStreamMaxChars call
+    // whose comment said there was no other streaming engine left. Higgs landed
+    // on 2026-09-06 and the line kept resolving the ORPHEUS catalog's entry for a
+    // same-named voice — both catalogs ship a `deathstalker`.
+    let sentences: string[];
+    if (getSelectedEngineName() === 'higgs') {
+      const { higgsPreflight } = await import('./higgs-spawn.js');
+      const { higgsVoiceCapsForModel } = await import('./higgs-models.js');
+      const { packListenChunks, listenBandFromCaps, describeListenChunks } =
+        await import('./listen-chunks.js');
+      let band;
+      try {
+        // higgsVoiceCapsForModel defaults to THIS MACHINE'S arm; never re-derive it.
+        band = listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)));
+      } catch (err) {
+        this.send(ws, {
+          type: 'error',
+          requestId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      const units = splitForTts(speakable, 'en', band.maxChars);
+      sentences = packListenChunks(units, band);
+      console.log(`[ReaderStream] Higgs Listen: ${describeListenChunks(units.length, sentences, band)}`);
+    } else {
+      const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
+      sentences = splitForTts(speakable, 'en', maxChars);
+    }
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
       return;

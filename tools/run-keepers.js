@@ -137,6 +137,12 @@ const SUITES = [
   'test-alignable-text',
   'test-sentence-abbreviations',
   'test-text-normalization',
+  // The Listen packer's ramp. One sentence per Higgs row put a render's worth of
+  // latency on every sentence boundary; packing to the band from the first chunk
+  // would stall playback instead. Both failures are silent — the listener hears a
+  // gap on a machine that is working perfectly — so the ramp inequality itself is
+  // asserted over every chunk of every fixture.
+  'test-listen-chunks',
   'test-narration-reading-law',
   // The arbiter that starts and stops the text-pass vLLM (Owen, 2026-09-08:
   // "build that piece"). Every branch is driven through the module's injected

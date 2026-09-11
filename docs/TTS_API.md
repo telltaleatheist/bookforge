@@ -160,6 +160,11 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 // The server segmented your text. Arrives before any audio. Array order = sentenceIndex order.
 // startSentence echoes the index generation begins at — check it (and the sentence
 // list) against your cached prefix before splicing resumed audio onto it.
+// A "sentence" here is an OPAQUE INDEXED UNIT, not a promise of one sentence: on
+// Higgs the server packs consecutive sentences into one row (ramped 300 chars →
+// the voice's band) so the model chooses the prosody across a paragraph instead of
+// seaming at every full stop. Index by position, highlight by the text you are
+// given, and never re-split it yourself.
 
 {"type": "chunk", "requestId": "...", "sentenceIndex": 0, "seq": 0,
  "data": "<base64 pcm16>", "duration": 0.82, "sampleRate": 24000}
