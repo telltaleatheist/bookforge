@@ -104,6 +104,20 @@ interface AlignStepConfig {
   device?: 'cpu' | 'gpu';
   /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */
   metadata?: { title?: string; bookTitle?: string; author?: string; year?: string };
+  /**
+   * The gap the ASSEMBLY of this session will leave between chapters, so the
+   * transcript this row measures is measured on the assembly's ruler.
+   *
+   * ABSENT IS NOT ZERO — it means the run that composed this row did not choose,
+   * and `resolveChapterGap` (shared/audio/chapter-gap.ts) answers with
+   * `DEFAULT_CHAPTER_GAP`, which is what the assembly doors do with an unstated
+   * gap too. Nothing composes this field today (the narration run stopped
+   * composing align rows on 2026-09-08; what is left is the CLI and a restored
+   * queue file), so it is threaded rather than invented: a row that states a gap
+   * is aligned for it, and a row that states none is aligned for the default the
+   * assembly behind it will use.
+   */
+  chapterGap?: number;
 }
 
 export const alignStep: StepModule = {
@@ -206,6 +220,10 @@ export const alignStep: StepModule = {
           processDir,
           language,
           device,
+          // The assembly's ruler, passed through rather than defaulted here —
+          // see the field's own note. Absent resolves to the house gap inside
+          // the job, which is what the assembly behind this row will use.
+          chapterGap: config.chapterGap,
           // The BOOK's title, never the act label the row also carries.
           metadata: {
             title: config.metadata?.bookTitle,

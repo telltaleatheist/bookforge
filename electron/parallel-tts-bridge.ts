@@ -4831,7 +4831,19 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
       // claim — which is exactly the run Owen described ("a gpu job after tts
       // finishes"). `resolveAlignDevice` turns it into cuda or mps and refuses by
       // name on a machine with neither; that refusal lands in `result.error`.
-      { processDir, language, device: 'gpu' },
+      {
+        processDir,
+        language,
+        device: 'gpu',
+        // THE SAME NUMBER `runAssembly` RESOLVES, off the same field, so the
+        // transcript this phase measures and the audiobook the next phase builds
+        // are on ONE ruler. Absent is not zero here either: it resolves to
+        // `DEFAULT_CHAPTER_GAP`, which is exactly what the assembly does with an
+        // unstated gap. Without it the aligner measured at gap 0 and assembly
+        // sealed the file untouched — 3 s of drift per chapter boundary on every
+        // book between 2026-09-09 and 2026-09-11.
+        chapterGap: session.config.chapterGap,
+      },
       null,
     );
     const seconds = Math.round((Date.now() - started) / 1000);

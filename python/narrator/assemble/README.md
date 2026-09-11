@@ -196,6 +196,15 @@ writes the MEASURED sentence transcript, assembly never rewrites a measurement,
 and nothing in the file records what it was timed for. Assembly logs which value
 it used whenever it seals a measured transcript with a non-zero gap in play.
 
+**And the app did not, for two days.** BookForge's post-render alignment
+(`electron/coverage-align-job.ts`) passed no `--chapter-gap` from the gap's first
+day (2026-09-09) until 2026-09-11, so every book assembled in between carries a
+sentence transcript that drifts earlier by the gap at each chapter boundary (a
+15-chapter book: 45 s). It now passes the same resolved value both assembly doors
+pass, and assembly refuses a transcript that ends more than 5 s EARLY as well as
+one that ends late — a transcript short of its own audio means the two were
+measured on different rulers.
+
 Tests: `tests/test_assemble_chapter_gap.py` (21 cases, real ffmpeg - including a
 concat that would lose the gap on a blocksize mismatch and a boundary extract
 that proves the added audio is actually SILENT).

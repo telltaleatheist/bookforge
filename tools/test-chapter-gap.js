@@ -24,6 +24,17 @@
  *    quietly ignored it.
  *  - THE RUN DESCRIPTION CARRIES IT to the assembly step, or the dialog's
  *    control does nothing at all.
+ *  - THE ALIGNER IS MEASURED ON THE SAME RULER. `narrator align` writes the
+ *    measured `<stem>.sentences.vtt` and assembly seals that file UNTOUCHED, so
+ *    an alignment run without the assembly's `--chapter-gap` writes cues that
+ *    drift earlier by the gap at every chapter boundary. That is not a
+ *    hypothetical: the gap reached the assembler on 2026-09-09 (efe021a2) and
+ *    did not reach `coverage-align-job.ts` until 2026-09-11, so every book
+ *    assembled in between carries a drifting transcript — the Pokemon book's
+ *    cues ended 45 s early over 15 boundaries and nothing said so.
+ *  - AND THE GATE THAT WOULD HAVE SAID SO reads BOTH directions. A transcript
+ *    that ends early is a book measured on another ruler; a transcript that ends
+ *    late is a truncated export. One tolerance, two verdicts, both refused.
  */
 'use strict';
 const assert = require('assert');
@@ -42,6 +53,33 @@ for (const m of [GAP_MODULE, RUN_MODULE]) {
 
 const { DEFAULT_CHAPTER_GAP, MAX_CHAPTER_GAP, resolveChapterGap } = require(GAP_MODULE);
 const { buildNarrationSteps } = require(RUN_MODULE);
+
+/*
+ * THE ALIGN DOOR'S ARGV, AND THE GATE'S ARITHMETIC.
+ *
+ * `coverage-align-job.js` imports `electron` for `app.getPath` and nothing on
+ * this path calls it, so one stub is enough — the same stub `cli/coverage-align.js`
+ * and the argv snapshot use. `coverageAlignArgs` is pure given its inputs, which
+ * is exactly why it was split out of `runCoverageAlign`: the flag can be read
+ * here without an aligner, a GPU or an app.
+ */
+const Module = require('module');
+const originalResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request === 'electron') return 'electron-stub';
+  return originalResolve.call(this, request, ...rest);
+};
+require.cache['electron-stub'] = {
+  id: 'electron-stub', filename: 'electron-stub', loaded: true,
+  exports: {
+    app: { getAppPath: () => REPO, getPath: () => REPO, isPackaged: false },
+    BrowserWindow: class {},
+  },
+};
+const { coverageAlignArgs } = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job.js'));
+const {
+  TRANSCRIPT_LENGTH_TOLERANCE, transcriptLengthVerdict,
+} = require(path.join(REPO, 'dist', 'shared', 'audio', 'transcript-length.js'));
 
 const tests = [];
 let passed = 0, failed = 0;
@@ -145,6 +183,106 @@ test('an upstream enhancement pass does NOT take the gap off the assembly', () =
   assert.strictEqual(assembly.config.chapterGap, 2);
   assert.strictEqual(assembly.config.sentenceGap, undefined,
     'the sentence gap moved upstream; the chapter gap has nowhere to move to');
+});
+
+// ── the aligner's command line ──────────────────────────────────────────────
+//
+// The transcript is a MEASUREMENT and assembly never rewrites one, so the number
+// on `narrator align --chapter-gap` has to be the number on the assembler's
+// `--chapter_gap`. Two spellings (narrator's own subcommand vs the compat door),
+// one resolver.
+
+const SPAWN_INPUTS = {
+  reportPath: 'E:/lib/projects/Twain-a1b2/tts/hash/coverage.json',
+  device: 'cuda',
+  alignEnv: { python: '/home/fake/envs/qwen-align/bin/python' },
+};
+const alignArgv = (over = {}) => coverageAlignArgs(
+  Object.assign({
+    processDir: 'E:/lib/projects/Twain-a1b2/tts/hash',
+    language: 'en',
+    device: 'gpu',
+  }, over),
+  SPAWN_INPUTS,
+);
+/** The value that follows a flag in an argv, or undefined when the flag is absent. */
+const valueOf = (argv, flag) => {
+  const at = argv.indexOf(flag);
+  return at < 0 ? undefined : argv[at + 1];
+};
+
+test('the align door carries --chapter-gap at all', () => {
+  assert.ok(alignArgv().includes('--chapter-gap'),
+    'narrator align writes the transcript assembly seals; without this flag it writes it at '
+    + 'gap 0 and the cues drift by the gap at every chapter boundary');
+});
+
+test("--chapter-gap is narrator's spelling on the align subcommand", () => {
+  const argv = alignArgv();
+  assert.ok(!argv.includes('--chapter_gap'),
+    'the underscore spelling is the assembly compat door\'s; align would refuse it');
+});
+
+test('ABSENT resolves to the house default on the aligner too, not to zero', () => {
+  assert.strictEqual(valueOf(alignArgv(), '--chapter-gap'), String(DEFAULT_CHAPTER_GAP));
+  assert.strictEqual(valueOf(alignArgv(), '--chapter-gap'), '3',
+    'a caller that states nothing gets the gap its assembly will get');
+});
+
+test('an explicit zero reaches the aligner as zero', () => {
+  assert.strictEqual(valueOf(alignArgv({ chapterGap: 0 }), '--chapter-gap'), '0',
+    'the butt-joined book must be measured butt-joined');
+});
+
+test('a stated gap reaches the aligner as stated', () => {
+  assert.strictEqual(valueOf(alignArgv({ chapterGap: 4.5 }), '--chapter-gap'), '4.5');
+});
+
+test('the aligner and the assembler resolve the SAME number', () => {
+  for (const stated of [undefined, 0, 1.5, 4.5, MAX_CHAPTER_GAP]) {
+    assert.strictEqual(
+      valueOf(alignArgv({ chapterGap: stated }), '--chapter-gap'),
+      String(resolveChapterGap(stated)),
+      `the align door disagrees with the resolver at ${stated}`);
+  }
+});
+
+test('a nonsense gap is refused by the align door, never measured', () => {
+  assert.throws(() => alignArgv({ chapterGap: -1 }), /chapterGap/);
+});
+
+// ── the gate that catches a transcript on the wrong ruler ───────────────────
+
+test('a transcript that ends a chapter-gap-per-boundary early is REFUSED', () => {
+  // The Pokemon book: 15 boundaries x 3 s = 45 s of silence the aligner never
+  // knew about, so its last cue lands 45 s before the audio ends.
+  const audio = 6 * 3600;
+  assert.strictEqual(transcriptLengthVerdict(audio, audio - 45), 'transcript-short');
+});
+
+test('a transcript that ends after the audio is still the truncated export', () => {
+  const audio = 6 * 3600;
+  assert.strictEqual(transcriptLengthVerdict(audio, audio + 10), 'transcript-long');
+});
+
+test('the legitimate tail after the last cue passes', () => {
+  const audio = 6 * 3600;
+  assert.strictEqual(transcriptLengthVerdict(audio, audio - 1), 'ok');
+  assert.strictEqual(transcriptLengthVerdict(audio, audio + 1), 'ok');
+});
+
+test('the tolerance is the same in both directions, and it is 5 s', () => {
+  assert.strictEqual(TRANSCRIPT_LENGTH_TOLERANCE, 5);
+  const audio = 1000;
+  assert.strictEqual(transcriptLengthVerdict(audio, audio - 5), 'ok');
+  assert.strictEqual(transcriptLengthVerdict(audio, audio + 5), 'ok');
+  assert.strictEqual(transcriptLengthVerdict(audio, audio - 5.1), 'transcript-short');
+  assert.strictEqual(transcriptLengthVerdict(audio, audio + 5.1), 'transcript-long');
+});
+
+test('an unmeasurable audio length is a verdict, not a shrug', () => {
+  assert.strictEqual(transcriptLengthVerdict(null, 1000), 'unmeasurable');
+  assert.strictEqual(transcriptLengthVerdict(NaN, 1000), 'unmeasurable');
 });
 
 // ── run ─────────────────────────────────────────────────────────────────────

@@ -132,6 +132,28 @@
  * exactly that suffix on both doors and required the remainder to compare
  * byte-equal (it did), and the two assembly keys were the ONLY ones that moved -
  * every other door and all three PLAN arms are untouched.
+ *
+ * 2026-09-11, THE ALIGN DOOR's `flags` literal a fourth time, for the OTHER HALF
+ * of that same gap. Two tokens appended:
+ *
+ *     '--chapter-gap', String(chapterGap)
+ *
+ * The gap reached the assembler on 2026-09-09 and never reached the ALIGNER, and
+ * the aligner is what writes the measured `<stem>.sentences.vtt` assembly seals
+ * into the m4b untouched — so every book assembled between then and now carries a
+ * transcript that drifts earlier by the gap at each chapter boundary (the Pokemon
+ * book, 15 boundaries, 45 s). narrator spells it `--chapter-gap` on the `align`
+ * subcommand where the compat door spells it `--chapter_gap`; two spellings, one
+ * number, one resolver (`shared/audio/chapter-gap.resolveChapterGap`).
+ *
+ * Unconditional for the same reason the assembly doors' is, and the argv moved
+ * into an exported pure function (`coverage-align-job.coverageAlignArgs`) so
+ * `tools/test-chapter-gap.js` can assert the resolved value on it without
+ * spawning an aligner — the anchor and the literal are otherwise untouched.
+ * Checked, not assumed: the re-baseline masked exactly that appended pair and
+ * required the remainder of the align literal to compare byte-equal, required
+ * every other door to compare byte-equal, and the three PLAN arms were not
+ * regenerated (the fixture drives this phase with its own argv).
  */
 'use strict';
 const assert = require('assert');
@@ -237,8 +259,14 @@ const REQUIRED = {
    *   --python       the whisperx env. Absent, narrator refuses BY NAME rather
    *                  than picking an interpreter — which is the behaviour we
    *                  want and the one thing this door must not leave to chance.
+   *   --chapter-gap  THE ASSEMBLY'S RULER. The cues this run writes are sealed
+   *                  into a book assembled with silence between its chapters;
+   *                  aligned without it they drift earlier by the gap at every
+   *                  boundary, and assembly never rewrites a measurement. Absent
+   *                  from this door from 2026-09-09 to 2026-09-11, silently.
    */
-  align: ['--session-dir', '--report', '--language', '--device', '--python'],
+  align: ['--session-dir', '--report', '--language', '--device', '--python',
+    '--chapter-gap'],
 };
 for (const [door, must] of Object.entries(REQUIRED)) {
   check(`${door}: carries ${must.join(' ')}`, () => {

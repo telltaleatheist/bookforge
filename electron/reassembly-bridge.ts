@@ -29,6 +29,11 @@ import { coverageReportPath, summarizeCoverageReport } from './coverage-align-jo
 import { seedSessionAuthorship } from './session-authorship';
 import { chooseSentenceTranscript, SENTENCE_VTT_SUFFIX } from '../shared/queue/sentence-transcript';
 import { resolveChapterGap } from '../shared/audio/chapter-gap';
+// The completeness gate's arithmetic, pure and shared so it can be tested
+// without an m4b — see the gate itself, below.
+import {
+  TRANSCRIPT_LENGTH_TOLERANCE, transcriptLengthVerdict,
+} from '../shared/audio/transcript-length';
 import { parseAssemblyPrepare } from '../shared/queue/assembly-prepare';
 
 /**
@@ -2429,6 +2434,11 @@ export async function startReassembly(
         // promoted or registered. A measurement that cannot be made is a refusal
         // too, not a shrug: promoting an unverifiable file is how this defect
         // shipped the first time.
+        //
+        // AND IT RUNS IN BOTH DIRECTIONS (2026-09-11). A transcript that ends
+        // materially EARLY is not a shorter book, it is a book measured on
+        // another ruler — the two halves disagree and one of them is wrong — and
+        // that is refused by its own name below.
         if (outputPath && fs.existsSync(outputPath) && sealVttSource && fs.existsSync(sealVttSource)) {
           const lastCueEnd = lastVttCueEndSeconds(fs.readFileSync(sealVttSource, 'utf8'));
           if (lastCueEnd !== null) {
@@ -2439,18 +2449,63 @@ export async function startReassembly(
             } catch (probeErr) {
               probeError = (probeErr as Error).message;
             }
-            const shortfall = m4bSeconds === null ? null : lastCueEnd - m4bSeconds;
-            if (m4bSeconds === null || (shortfall as number) > 5) {
-              const detail = m4bSeconds === null
-                ? `its duration could not be measured (${probeError})`
-                : `it carries ${(m4bSeconds / 3600).toFixed(2)}h of audio but its own transcript `
-                  + `ends at ${(lastCueEnd / 3600).toFixed(2)}h — ${((shortfall as number) / 60).toFixed(1)} `
-                  + 'minutes of narration are missing from the file';
-              const error = `Assembly produced an incomplete audiobook: ${detail}. `
-                + 'The file was NOT promoted; it remains in the staging directory for diagnosis.';
-              reassemblyLog.error('Truncated/unverifiable m4b refused at finalize', {
-                jobId, outputPath, m4bSeconds, lastCueEnd, probeError,
-              });
+            /*
+             * SYMMETRIC SINCE 2026-09-11. It used to refuse only a transcript
+             * that ended AFTER the audio (the truncated export). A transcript
+             * that ends well BEFORE the audio is the same class of disagreement
+             * read from the other side — the two were measured on different
+             * rulers — and it shipped for two days: the aligner was never given
+             * the assembly's `--chapter-gap`, so the cues drifted earlier by the
+             * gap at every chapter boundary and this gate waved it through.
+             */
+            const verdict = transcriptLengthVerdict(m4bSeconds, lastCueEnd);
+            if (verdict !== 'ok') {
+              const difference = m4bSeconds === null ? null : lastCueEnd - m4bSeconds;
+              const markers = totalChapters > 0
+                ? `${totalChapters} chapter marker(s)`
+                : 'an unknown number of chapter markers';
+              let detail: string;
+              let error: string;
+              if (verdict === 'unmeasurable') {
+                detail = `its duration could not be measured (${probeError})`;
+                error = `Assembly produced an incomplete audiobook: ${detail}. `
+                  + 'The file was NOT promoted; it remains in the staging directory for diagnosis.';
+              } else if (verdict === 'transcript-long') {
+                detail = `it carries ${((m4bSeconds as number) / 3600).toFixed(2)}h of audio but its `
+                  + `own transcript ends at ${(lastCueEnd / 3600).toFixed(2)}h — `
+                  + `${((difference as number) / 60).toFixed(1)} minutes of narration are missing `
+                  + 'from the file';
+                error = `Assembly produced an incomplete audiobook: ${detail}. `
+                  + 'The file was NOT promoted; it remains in the staging directory for diagnosis.';
+              } else {
+                /*
+                 * THE TRANSCRIPT AND THE AUDIO WERE MEASURED ON DIFFERENT RULERS.
+                 * Named as its own failure rather than folded into "truncated",
+                 * because the file is complete and the remedy is the opposite
+                 * one: re-measure, do not re-assemble.
+                 */
+                detail = `the audio runs ${((m4bSeconds as number) / 3600).toFixed(2)}h `
+                  + `(${(m4bSeconds as number).toFixed(1)}s) and its own transcript ends at `
+                  + `${(lastCueEnd / 3600).toFixed(2)}h (${lastCueEnd.toFixed(1)}s) — the `
+                  + `transcript stops ${(-(difference as number)).toFixed(1)}s short of the audio `
+                  + `over ${markers}`;
+                error = `The transcript and the audio were measured on different rulers: ${detail}. `
+                  + 'The audio is complete; what does not fit it is the measurement. The likely '
+                  + 'cause is a transcript aligned at a different chapter gap than this assembly '
+                  + `used (this run assembled at ${resolveChapterGap(config.chapterGap)}s between `
+                  + 'chapters). Re-run the alignment for this session so it is measured at the '
+                  + "assembly's chapter gap, or run Generate sentences on the finished file. The "
+                  + 'file was NOT promoted; it remains in the staging directory for diagnosis.';
+              }
+              reassemblyLog.error(
+                verdict === 'transcript-short'
+                  ? 'Transcript measured on a different ruler refused at finalize'
+                  : 'Truncated/unverifiable m4b refused at finalize',
+                {
+                  jobId, outputPath, m4bSeconds, lastCueEnd, verdict, difference,
+                  totalChapters, tolerance: TRANSCRIPT_LENGTH_TOLERANCE, probeError,
+                },
+              );
               console.error(`[REASSEMBLY] ${error}`);
               resolve({ success: false, error });
               return;

@@ -100,6 +100,9 @@ import { publishBridgeEvent } from './bridge-events';
 import { buildNarratorSpawn } from './narrator-spawn';
 import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
+// The ONE resolver both assembly doors read the gap through — see the config
+// field below, and CLAUDE.md §"Three seconds between chapters".
+import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { seedSessionAuthorship } from './session-authorship';
 // The machine's own capability answer — see `resolveAlignDevice`.
 import { systemProbe } from './components/system-probe';
@@ -133,6 +136,22 @@ export interface CoverageAlignConfig {
    * door, which has no queue row to read it from; the queue always passes it.
    */
   metadata?: { title?: string; author?: string; year?: string };
+  /**
+   * SECONDS OF SILENCE THE ASSEMBLY OF THIS SESSION WILL LEAVE BETWEEN CHAPTERS.
+   *
+   * The aligner writes a MEASUREMENT — `<stem>.sentences.vtt`, the transcript
+   * assembly seals into the m4b untouched — so it has to be measured on the same
+   * ruler the audio is built on. narrator's `align` takes the same gap the
+   * assembler takes, and a transcript aligned at one gap and sealed into a book
+   * assembled at another drifts by the gap at every chapter boundary.
+   *
+   * ABSENT IS NOT ZERO. Absent means this caller did not choose, and resolves
+   * through `resolveChapterGap` (shared/audio/chapter-gap.ts) to
+   * `DEFAULT_CHAPTER_GAP` — the SAME resolver the two assembly doors use, so the
+   * transcript and the m4b are measured on one ruler. An explicit 0 is a real
+   * answer (the butt-joined book) and is honoured.
+   */
+  chapterGap?: number;
 }
 
 export interface CoverageAlignProgress {
@@ -365,6 +384,78 @@ async function resolveAlignDevice(
 }
 
 /**
+ * THE ALIGN COMMAND LINE, AS A VALUE.
+ *
+ * Split out of `runCoverageAlign` so the argv can be READ without spawning an
+ * aligner, a GPU or an Electron app — `tools/test-chapter-gap.js` asserts the
+ * chapter gap on it, and `tools/narrator-argv-extract.js` pins the whole literal.
+ * Nothing else changed when it moved: the array below is the array that was
+ * inside the spawn, and `runCoverageAlign` is its only caller in the app.
+ */
+export function coverageAlignArgs(
+  config: CoverageAlignConfig,
+  spawnInputs: {
+    /** Where the report goes — always `coverageReportPath(config.processDir)`. */
+    reportPath: string;
+    /** The RESOLVED torch device name: 'cpu', 'mps' or 'cuda'. */
+    device: string;
+    /** The aligner env, for its interpreter. See `resolveQwenAlignEnv`. */
+    alignEnv: { python: string };
+  },
+): string[] {
+  const { reportPath, device, alignEnv } = spawnInputs;
+  // ONE RESOLVER, THE ASSEMBLY'S. Absent is the house default, not zero; a
+  // nonsense gap is refused by name here rather than measured.
+  const chapterGap = resolveChapterGap(config.chapterGap);
+  const args = [
+    'align',
+    '--session-dir', config.processDir,
+    '--report', reportPath,
+    '--language', config.language,
+    // QWEN3, ALWAYS, AND NEVER RESOLVED AT RUNTIME. narrator's own
+    // DEFAULT_BACKEND is still whisperx (an unchanged default is its contract);
+    // the APP's door is qwen3 by Owen's ruling of 2026-09-08, so it says so.
+    '--backend', 'qwen3',
+    // The resolved device NAME. Stated rather than left to the CLI's own
+    // default so a reader of the job log can see which processor measured the
+    // book without going to look up what narrator defaults to.
+    '--device', device,
+    // The qwen-align interpreter. Absent, narrator refuses BY NAME rather than
+    // picking one, which is the behaviour we want everywhere else and the one
+    // thing this door must not leave to chance. It is passed EVEN WHEN the
+    // narrator parent is already running in that env (the WSL arm): the model
+    // then lives in a child process on both platforms, so `align/env.run_jobs`'s
+    // named worker refusals are the same failure on both, and the argv is one
+    // argv rather than two.
+    '--python', alignEnv.python,
+    // THE POOL IS A CPU THING. A GPU row holds the single GPU slot for one
+    // model on one card, and N processes there would fight over the same
+    // memory rather than over spare cores — so it says 1 out loud rather than
+    // leaning on the CLI default.
+    '--workers', String(device === 'cpu' ? ALIGN_CPU_WORKERS : 1),
+    /*
+     * THE ASSEMBLY'S CHAPTER GAP, ON THE ALIGNER'S COMMAND LINE.
+     *
+     * CLAUDE.md §"Three seconds between chapters": *"`narrator align` takes the
+     * SAME `--chapter-gap` and must be given the same value — it writes a
+     * measurement and assembly never rewrites one."* This door did not, from the
+     * gap's first day (efe021a2, 2026-09-09) until 2026-09-11, and every book
+     * assembled in between carries a sentence transcript that drifts by the gap
+     * at every chapter boundary — the Pokemon book's cues ran 45 s short over 15
+     * boundaries, and nothing said so, because assembly seals a measured
+     * transcript exactly as it finds it.
+     *
+     * narrator spells it `--chapter-gap` on the `align` subcommand and
+     * `--chapter_gap` on the assembly compat door. Two spellings, one number.
+     * Unconditional, like the assembly doors': an explicit 0 is a real answer
+     * and a truthiness spread would eat it.
+     */
+    '--chapter-gap', String(chapterGap),
+  ];
+  return args;
+}
+
+/**
  * Run the coverage alignment for one session. Progress flows out-of-band via
  * 'coverage-align:progress', as the denoise and reassembly jobs do.
  */
@@ -423,33 +514,32 @@ export async function runCoverageAlign(
   const hfHome = qwenAlignCacheDir(app.getPath('userData'));
   fs.mkdirSync(hfHome, { recursive: true });
 
-  const args = [
-    'align',
-    '--session-dir', config.processDir,
-    '--report', reportPath,
-    '--language', config.language,
-    // QWEN3, ALWAYS, AND NEVER RESOLVED AT RUNTIME. narrator's own
-    // DEFAULT_BACKEND is still whisperx (an unchanged default is its contract);
-    // the APP's door is qwen3 by Owen's ruling of 2026-09-08, so it says so.
-    '--backend', 'qwen3',
-    // The resolved device NAME. Stated rather than left to the CLI's own
-    // default so a reader of the job log can see which processor measured the
-    // book without going to look up what narrator defaults to.
-    '--device', device,
-    // The qwen-align interpreter. Absent, narrator refuses BY NAME rather than
-    // picking one, which is the behaviour we want everywhere else and the one
-    // thing this door must not leave to chance. It is passed EVEN WHEN the
-    // narrator parent is already running in that env (the WSL arm): the model
-    // then lives in a child process on both platforms, so `align/env.run_jobs`'s
-    // named worker refusals are the same failure on both, and the argv is one
-    // argv rather than two.
-    '--python', alignEnv.python,
-    // THE POOL IS A CPU THING. A GPU row holds the single GPU slot for one
-    // model on one card, and N processes there would fight over the same
-    // memory rather than over spare cores — so it says 1 out loud rather than
-    // leaning on the CLI default.
-    '--workers', String(device === 'cpu' ? ALIGN_CPU_WORKERS : 1),
-  ];
+  /*
+   * THE RULER, RESOLVED AND SAID OUT LOUD BEFORE ANYTHING SPAWNS.
+   *
+   * Resolved HERE as well as inside `coverageAlignArgs` (the resolver is pure, so
+   * both calls are the same number) for two reasons: the log line names which
+   * gap this transcript is being measured for — the fact this door was missing
+   * until 2026-09-11 — and a nonsense gap is refused as a RESULT rather than as a
+   * throw. `runPostRenderAlignment` states that this job never throws, and an
+   * exception out of here would fail a render whose audio is intact.
+   */
+  let chapterGap: number;
+  try {
+    chapterGap = resolveChapterGap(config.chapterGap);
+  } catch (err) {
+    const error = `This alignment was queued with a chapter gap the assembler cannot realize, so `
+      + `the transcript could not be measured for it: ${
+        err instanceof Error ? err.message : String(err)}`;
+    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error };
+  }
+  console.log(
+    `[COVERAGE-ALIGN] chapter gap ${chapterGap}s (${
+      config.chapterGap === undefined ? 'the house default — this caller stated none' : 'stated'
+    }) — the transcript is measured for an assembly at that gap.`,
+  );
+  const args = coverageAlignArgs(config, { reportPath, device, alignEnv });
 
   const plan = buildNarratorSpawn({
     // No engine: this is a tools-env door. `PHASE_ENGINE.align` is 'refused',
