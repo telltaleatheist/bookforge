@@ -1156,6 +1156,11 @@ async function runRvcTrain(args) {
       '--vocoder', String(args.vocoder || 'HiFi-GAN'),
       '--index-algorithm', String(args['index-algorithm'] || 'Auto'),
       '--pretrained-type', String(args['pretrained-type'] || 'Default')];
+    // A non-HiFi-GAN vocoder (RefineGAN, MRF HiFi-GAN) cannot use the stock pretrains - the
+    // fork raises IncompatibleVocoderError - so it needs --pretrained-type Custom plus the name
+    // of a directory under <models>/rvc/pretraineds/custom/ whose name ENDS in the rate
+    // (refinegan_32k): the fork reads the rate from the last three characters.
+    if (args['custom-pretrained']) argv.push('--custom-pretrained', String(args['custom-pretrained']));
     if (args['no-overtraining-detect']) argv.push('--no-detect-overtraining');
     else argv.push('--detect-overtraining', '--overtraining-threshold',
       String(args['overtraining-threshold'] || 50));
