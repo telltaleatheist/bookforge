@@ -101,7 +101,10 @@
     "quire:paginate": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/quire-paginate.js",
     "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
     "quire:viewer-bench": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/epub-viewer-harness.js",
-    "build:quire-vendor": "node -e \"require('fs').cpSync('packages/quire/vendor','dist/packages/quire/vendor',{recursive:true})\""
+    "build:quire-vendor": "node -e \"require('fs').cpSync('packages/quire/vendor','dist/packages/quire/vendor',{recursive:true})\"",
+    "temper": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --open",
+    "temper:bg": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --detach --open",
+    "temper:stop": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --stop"
   },
   "prettier": {
     "printWidth": 100,
