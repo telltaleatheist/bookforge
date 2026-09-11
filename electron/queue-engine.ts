@@ -242,8 +242,14 @@ export interface JobSpec {
   /**
    * Whether these steps are runnable the moment they exist. THREE-WAY.
    *
-   * `true` — runnable whatever the engine is doing. For work whose ordering was
-   * the scheduling decision (the Foundry host queue; main's foundry-narrate).
+   * `true` — runnable whatever the engine is doing, for work whose ordering was
+   * ITSELF the scheduling decision. NO DOOR IN THE APP PASSES IT TODAY: the
+   * Foundry host queue did until 2026-09-11, and dropped it because passing it
+   * was how a clean-text press started itself on an idle queue (see the ruling
+   * in `enqueue` below, and in `foundryHostQueue.enqueue`); main's narration
+   * door has only ever used the ordinary one. It stays because the case is
+   * real — a caller that can honestly say the press WAS the scheduling — and
+   * because `false` is meaningless without it.
    *
    * `false` — held, explicitly. Composing a run must not be the moment it commits
    * the GPU: this is how "queue these four and run them overnight" stays a thing
@@ -665,9 +671,13 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    * there live work here" — anything running, or claimed and about to be.
    *
    * So the rule is three-way, and only the middle one is new:
-   *   release === true   → runnable, whatever the engine is doing (the host
-   *                        queue's door, and main's foundry-narrate door: work
-   *                        ordered through a seam was scheduled by the asking)
+   *   release === true   → runnable, whatever the engine is doing. No door
+   *                        passes it now. The Foundry host queue's did, written
+   *                        two days BEFORE this rule existed and never revisited
+   *                        against it, which is how "add a cleaning job" started
+   *                        one on an idle queue (Owen, 2026-09-11); it now passes
+   *                        nothing and takes the answer below, which serves the
+   *                        August case too because that queue was moving
    *   release === false  → held, explicitly. STAGING SURVIVES: this is how you
    *                        park a plan beside a live queue, and the keeper's
    *                        "Planned book" is exactly that case

@@ -645,27 +645,44 @@ export const foundryHostQueue = {
    * through `runJob` before it had returned the row Foundry is waiting for. See
    * EnqueueOptions in queue-engine.ts.
    *
-   * EVERYTHING ARRIVES RELEASED. Reads used to arrive held, inherited from
-   * Foundry, whose reasoning was that hours of GPU must never be spent by the
-   * act of configuring them.
+   * A ROW FOUNDRY HANDS US TAKES THE ENGINE'S OWN THREE-WAY ANSWER: it joins a
+   * queue that is already moving, and waits for Start on one that is idle. This
+   * door passes no `release` at all, which is how it asks for that answer
+   * (`queue-engine.enqueue`).
    *
-   * That reasoning is sound IN FOUNDRY'S OWN PANE, where Add and Start are two
-   * gestures a step apart in one window: adding composes a batch, Start commits
-   * to it. It does not survive the crossing. Owen's ruling, 2026-08-21: "it wont
-   * be in the bookforge queue unless i intentionally, specifically sent it there
-   * because its ready. if it makes it to the bookforge queue, it means its ready
-   * to run."
+   * IT TOOK TWO RULINGS TO GET HERE, and they are not in conflict — the second
+   * one contains the first.
    *
-   * ROUTING HERE IS ALREADY THE DELIBERATE ACT, so the hold asked a second time
-   * for a commitment the person had made by sending it — and asking twice is not
-   * free. He added a VLM read, watched the card sit empty behind a finished TTS
-   * job, and started it by hand: queue running, GPU idle, nothing ahead of it,
-   * and the work sat because it waited on a gesture that had already happened.
+   * Reads used to arrive HELD, inherited from Foundry, whose reasoning was that
+   * hours of GPU must never be spent by the act of configuring them. That is
+   * sound IN FOUNDRY'S OWN PANE, where Add and Start are two gestures a step
+   * apart in one window: adding composes a batch, Start commits to it. Owen,
+   * 2026-08-21: "it wont be in the bookforge queue unless i intentionally,
+   * specifically sent it there because its ready. if it makes it to the
+   * bookforge queue, it means its ready to run." He had added a VLM read,
+   * watched the card sit empty behind a finished TTS job, and started it by
+   * hand: queue running, GPU idle, nothing ahead of it, and the work sat. So
+   * this door began passing `release: true` and EVERYTHING arrived released.
+   *
+   * Two days later the engine learned the distinction that ruling was actually
+   * drawing. Owen, 2026-08-23: "I shouldn't have to hit start if the queue is
+   * moving. If I add something to the queue but it isn't already moving, don't
+   * start it until I hit start." `queue-engine.enqueue` grew the three-way rule
+   * around `queueIsMoving()` — and this door's `release: true`, written before
+   * it existed, went straight past it.
+   *
+   * WHICH IS THE BUG OWEN HIT ON 2026-09-11: "when i add a cleaning job, it
+   * automatically starts it instead of just adding it to the queue as
+   * expected." Composing work is not the moment it commits the GPU; an idle
+   * queue's first row still waits for Start, exactly as a row added through
+   * BookForge's own door does. The August case is served unchanged, because
+   * that queue WAS moving — a TTS job had just cleared it and the run was
+   * live, so the read joins the run and nothing is asked of him twice.
+   *
    * A held step is invisible to the pump BY DESIGN (it only ever claims
-   * `queued`), so nothing else was ever going to pick it up.
-   *
-   * The guard the hold provided is not lost, it moved: it now lives at the door
-   * into this queue, which is a door the user walks through on purpose.
+   * `queued`), which is why this is the whole of the decision: there is no
+   * other path by which a held row gets picked up, and no path by which a
+   * released one does not.
    */
   enqueue(request: FoundryJobRequest, parentStep: string | null, projectDir: string): FoundryJobRow {
     /*
@@ -781,7 +798,6 @@ export const foundryHostQueue = {
         config: config as unknown as Record<string, unknown>,
         sourceRef: { kind: 'none' },
       }],
-      release: true,
     }, { deferPump: true });
 
     const step = job.steps[0];

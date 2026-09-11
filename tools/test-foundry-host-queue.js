@@ -304,31 +304,86 @@ test('a persisted row with no projectDir does not crash the shelf push', async (
 test('enqueue returns the row SYNCHRONOUSLY and starts nothing on that stack', async () => {
   const mod = await fresh('sync');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
-  engine.start();
 
-  const row = host.foundryHostQueue.enqueue(readRequest(), null, PROJ);
+  /*
+   * SET UP ON A MOVING QUEUE, deliberately. This case is about the DEFERRAL,
+   * and a row that arrives held would satisfy "nothing ran inside enqueue" for
+   * a reason that has nothing to do with deferring — which is the same hole the
+   * old version of this test had from the other side. So an earlier read is
+   * started and left running (the fake module's promise settles only when a test
+   * resolves it), and the row below is added behind live work.
+   */
+  host.foundryHostQueue.enqueue(readRequest('running'), null, PROJ);
+  engine.start();
+  await settle();
+  assert.strictEqual(mod.runs.length, 1, 'the earlier read is what makes the queue moving');
+
+  // A rendering, not a read: it wants the CPU slot, so the read holding the GPU
+  // above cannot be what decides whether this one gets claimed.
+  const row = host.foundryHostQueue.enqueue({
+    kind: 'render',
+    inputPath: `${PROJ}\\archive\\book.pdf`,
+    outputPath: `${PROJ}\\final\\book.epub`,
+  }, null, PROJ);
   // The row exists before any await — this is Foundry's whole requirement.
   assert.ok(row && typeof row.id === 'string', 'no row came back');
-  assert.strictEqual(row.state, 'queued', 'a read must arrive ready to be claimed');
+  assert.strictEqual(row.state, 'queued', 'added to a MOVING queue, it arrives ready to be claimed');
   assert.strictEqual(
-    mod.runs.length, 0,
+    mod.runs.length, 1,
     'a step began executing inside enqueue — the pump was not deferred, and this '
     + 're-enters Foundry from inside its own enqueue call',
   );
   /*
-   * AND THEN IT RUNS. This used to assert the opposite — that nothing ran after
-   * the await either, because a read arrived held. Reads arrive released now
-   * (see foundryHostQueue.enqueue), so the deferred pump has something to claim,
-   * and asserting the run is what keeps this test honest about the deferral: a
-   * pump that never fired at all would also have satisfied the old assertion.
+   * AND THEN IT RUNS, which is what keeps this test honest about the deferral:
+   * a pump that never fired at all would also have satisfied the assertion
+   * above. It can only be asserted on a moving queue — on an idle one the row
+   * arrives held and the pump correctly claims nothing (see the two cases
+   * below).
    */
   await settle();
-  assert.strictEqual(mod.runs.length, 1, 'the deferred pump never claimed the released read');
+  assert.strictEqual(mod.runs.length, 2, 'the deferred pump never claimed the released row');
 });
 
-test('EVERY kind arrives RELEASED — routing across the seam IS the commitment', async () => {
-  await fresh('release');
+/*
+ * ── Held or released: the engine answers, not this door ─────────────────────
+ *
+ * These two cases used to be one, 'EVERY kind arrives RELEASED', because this
+ * door passed `release: true` on every row.
+ *
+ * THE HISTORY IS WORTH KEEPING because both rulings are still in force. A read
+ * used to arrive HELD, inherited from Foundry, whose reasoning was that hours of
+ * GPU must never be spent by the act of configuring them — right in THEIR pane,
+ * where Add and Start are two gestures a step apart in one window. Owen,
+ * 2026-08-21, after adding a VLM read and watching it sit on an idle card behind
+ * a finished TTS job: "if it makes it to the bookforge queue, it means its ready
+ * to run." So the hold came off — with `release: true`, which is more than that
+ * ruling asked for.
+ *
+ * Two days later the engine drew the distinction properly (`queue-engine.enqueue`,
+ * Owen 2026-08-23: "I shouldn't have to hit start if the queue is moving. If I
+ * add something to the queue but it isn't already moving, don't start it until I
+ * hit start"), and this door's `release: true` sailed past the new rule for three
+ * weeks — until Owen, 2026-09-11: "when i add a cleaning job, it automatically
+ * starts it instead of just adding it to the queue as expected."
+ *
+ * So the door now passes no `release` and takes the engine's answer. August is
+ * served by the same rule, because that queue was moving.
+ */
+
+test('on an IDLE queue every kind arrives HELD — Start is still the gesture that begins the work', async () => {
+  const mod = await fresh('held-idle');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+
+  /*
+   * START PRESSED FIRST, ON AN EMPTY QUEUE, and that is the point of pressing it
+   * here: `running` is a LATCH — Start sets it, only Pause clears it — so a queue
+   * that drained hours ago still reads as un-paused. `queueIsMoving()` asks the
+   * other question, "is there live work here", and the answer is no. Keying off
+   * the latch would spin the card up for a book added the next morning, which is
+   * exactly the surprise Owen reported on 2026-09-11.
+   */
+  engine.start();
+  await settle();
 
   const read = host.foundryHostQueue.enqueue(readRequest(), null, PROJ);
   const render = host.foundryHostQueue.enqueue({
@@ -338,21 +393,40 @@ test('EVERY kind arrives RELEASED — routing across the seam IS the commitment'
     readingsPath: `${PROJ}\\readings\\k1.jsonl`,
   }, null, PROJ);
 
-  /*
-   * A READ USED TO ARRIVE HELD, and this test asserted it. Foundry's reasoning
-   * was that hours of GPU must never be spent by the act of configuring them,
-   * which is right in THEIR pane, where Add and Start are two gestures a step
-   * apart in one window.
-   *
-   * It does not survive the crossing. Sending work into this queue is itself the
-   * commitment (Owen, 2026-08-21: "if it makes it to the bookforge queue, it
-   * means its ready to run"), so the hold asked a second time for a decision
-   * already made — and a held step is invisible to the pump by construction (it
-   * only ever claims `queued`). The result was a VLM read sitting on an idle
-   * card behind a finished TTS job, waiting on a gesture that had happened.
-   */
-  assert.strictEqual(read.state, 'queued', 'a read must arrive ready to be claimed');
-  assert.strictEqual(render.state, 'queued', 'a rendering must arrive ready to be claimed');
+  assert.strictEqual(read.state, 'held', 'a read added to an idle queue waits for Start');
+  assert.strictEqual(render.state, 'held', 'and so does a rendering — no kind is special here');
+
+  await settle();
+  assert.strictEqual(
+    mod.runs.length, 0,
+    'the queue started work nobody started — which is the whole of the 2026-09-11 report',
+  );
+});
+
+test('on a MOVING queue a row is RELEASED and joins the run — that Start has been pressed', async () => {
+  const mod = await fresh('released-moving');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+
+  // Live work first: a read, started, whose promise the test never resolves.
+  host.foundryHostQueue.enqueue(readRequest('live'), null, PROJ);
+  engine.start();
+  await settle();
+  assert.strictEqual(mod.runs.length, 1, 'nothing is running, so the queue is not moving and this proves nothing');
+
+  // Owen's August case, exactly: something added while the card is busy.
+  const render = host.foundryHostQueue.enqueue({
+    kind: 'epub',
+    inputPath: `${PROJ}\\archive\\book.pdf`,
+    outputPath: `${PROJ}\\final\\book.epub`,
+    readingsPath: `${PROJ}\\readings\\k1.jsonl`,
+  }, null, PROJ);
+  assert.strictEqual(render.state, 'queued', 'a moving queue has already been told to go');
+
+  await settle();
+  assert.strictEqual(
+    mod.runs.length, 2,
+    'it sat behind a running job waiting on a gesture that had already happened — the 2026-08-21 report',
+  );
 });
 
 // ── The dedupe that moved across the seam ───────────────────────────────────
@@ -714,7 +788,18 @@ test('a request that FOLLOWS a pending row joins that row\'s run, waits on it, a
   assert.strictEqual(epub.after, clean.id);
   assert.strictEqual(epub.forStep, 'step_future_c1', 'an export row carries forStep, their field');
   assert.strictEqual(root.after, undefined, 'a root row carries no chain field');
-  assert.strictEqual(clean.state, 'queued', 'waiting on a parent is "queued" in their vocabulary');
+  /*
+   * HELD, because the ROOT is held: this queue is idle, so the root took the
+   * engine's three-way answer (Owen, 2026-09-11: "when i add a cleaning job, it
+   * automatically starts it instead of just adding it to the queue as
+   * expected"), and a step appended to a held run is held with it — the chain
+   * waits for the one Start the root waits for, rather than for two.
+   *
+   * The vocabulary fact this used to assert — that waiting on a parent reads as
+   * "queued" on their shelf, since `held` there means "waiting for YOU" — is
+   * asserted below, once Start has been pressed and the wait is on the machine.
+   */
+  assert.strictEqual(clean.state, 'held', 'a chain under a held root waits for the root\'s Start, not its own');
 
   const runs = engine.snapshot().jobs.filter((j) => j.steps.some((s) => s.id === root.id));
   assert.strictEqual(runs.length, 1);
@@ -726,6 +811,10 @@ test('a request that FOLLOWS a pending row joins that row\'s run, waits on it, a
   engine.start();
   await settle();
   assert.strictEqual(mod.runs.length, 1, 'only the root runs; the chain waits');
+  assert.strictEqual(
+    host.foundryHostQueue.rows(PROJ).find((r) => r.id === clean.id).state, 'queued',
+    'waiting on a parent is "queued" in their vocabulary — their `held` means waiting for YOU',
+  );
   mod.runs[0].resolve();
   await settle();
   assert.strictEqual(mod.runs.length, 2, 'the root landed, so the clean-up runs');
