@@ -515,8 +515,14 @@ check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () =
 
 
 
-check('ONE engine-level sampling - 0.6 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
-  // 0.6 SINCE 2026-09-11, and it is a TRIAL rather than a certificate. Owen,
+check('ONE engine-level sampling - 0.7 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
+  // 0.7 AGAIN SINCE 2026-09-11 (late), MEASURED: the 0.6 trial fired the Mac
+  // batched length guard on 21 of 62 Tender chunks against 4 at 0.7 on the same
+  // rows and seeds (silence-token loops to the per-row cap - mlx-audio has no
+  // repetition penalty), and halved a render to 37 raw sent/min. Owen: "switch
+  // it back to 0.7". A sampling change is A/B'd on the Mac batched path first.
+  //
+  // THE 0.6 TRIAL, earlier the same day, was asked for by Owen,
   // listening to the extension's Listen path: "truncations dont really seem to
   // be a problem so far with extension streaming, but occasional gibberish is.
   // maybe we can try temp 0.6 and see if gibberish still happens there. thats
@@ -540,7 +546,7 @@ check('ONE engine-level sampling - 0.6 / 0.95 / 50 - reaches EVERY Higgs voice o
   // catalog top with its reason; a per-block deviation must carry a reason too
   // or it is refused, so 14 copies of a number can never drift.
   const engine = higgs.higgsEngineSampling();
-  assert.deepStrictEqual(engine, { temperature: 0.6, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(engine, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
   // WHAT THIS HOLDS THE CATALOG TO, and what it deliberately no longer does.
   // Until 2026-09-10 it asserted the shipped catalog carries NO per-block

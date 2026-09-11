@@ -159,9 +159,9 @@ roster, and a voice not in it is refused by name.
         "maxChars": 600,        // null on an unmeasured fine-tune => REFUSED
         "maxCharsSource": "placeholder",   // catalog | placeholder | length-sweep
         "edgeFadeMs": { "in": 10, "out": 25 },
-        // no per-block "sampling": the catalog-top ENGINE-LEVEL one (0.6 / 0.95 / 50,
-        // a TRIAL Owen asked for 2026-09-11 after hearing gibberish on the extension's
-        // Listen path; 0.7 from 2026-09-09, 0.8 "the boson default" before that) rides
+        // no per-block "sampling": the catalog-top ENGINE-LEVEL one (0.7 / 0.95 / 50,
+        // measured 2026-09-09 on gibberish and 2026-09-11 on the Mac batched path,
+        // where a 0.6 trial looped into silence to the cap on 21 of 62 chunks) rides
         // in every document and renders on both arms; a per-block deviation needs a
         // _samplingNote with its REASON.
         "referenceSecondsCap": 30,
