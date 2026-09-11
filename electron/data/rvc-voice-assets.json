@@ -48,6 +48,26 @@
       "sha256": "23f8df8636cac4e76d11225ab3ac837e9e4bd40fee4ccaa55f8492a62c9b277a",
       "bytes": 182708462,
       "version": "2026.06.24"
+    },
+    {
+      "id": "rvc-voice-mistborn",
+      "label": "Mistborn (Michael Kramer) RVC v1",
+      "modelName": "mistborn_rvc_v1",
+      "matches": "the Mistborn narrator - a SAME-VOICE cleanup model, trained on the narrator's own audio",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/mistborn_rvc_v1.tar.gz",
+      "sha256": "c7cebf5e611ab7c135d2b839b22c69eef7ac0310fff86ac8a7b6ea4f21a4a29a",
+      "bytes": 82538687,
+      "version": "2026.09.11"
+    },
+    {
+      "id": "rvc-voice-deathstalker-v3",
+      "label": "Deathstalker RVC v3",
+      "modelName": "deathstalker_rvc_v3",
+      "matches": "the Deathstalker narrator - a SAME-VOICE cleanup model, trained on the narrator's own audio",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/deathstalker_rvc_v3.tar.gz",
+      "sha256": "5120f53ddd32559a9b3e38aff915228a0b432a98c81285f4a33746b8c68e6685",
+      "bytes": 81311612,
+      "version": "2026.09.11"
     }
   ]
 }
