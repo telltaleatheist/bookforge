@@ -1897,6 +1897,12 @@ process.on('exit', () => {
   });
 
   check('the WSL arm translates catalog paths INSIDE the voice document', () => {
+    // Reads the document back off the WINDOWS side, so it can only run there. On a Mac the
+    // forced win32 arm still yields a POSIX doc path, fs.readFileSync gets a path that does
+    // not exist, and the case fails for EVERY voice - which made promote_voice's --mac step
+    // refuse every promotion at the last gate, after the 8 GB rsync had already succeeded
+    // (hit 2026-09-11 promoting sigma). Same guard the ENV-translation case above uses.
+    if (REAL_HOST !== 'win32') return;
     // NEW-3: the document used to be written with raw catalog paths, so a
     // host-native path reached the guest untranslated. It is translated at
     // write time, per arm — not stored pre-translated, which is right on the
