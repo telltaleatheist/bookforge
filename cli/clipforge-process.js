@@ -867,7 +867,13 @@ TRAINING_HELP.slice = [
   '  Then HISTOGRAM the result and adjust - a book slices in ~11 s. Deriving the numbers once',
   '  and committing is how a corpus ends up centred at p50 542, truncating where it is used.',
   '',
-  '  TAILS  --tail-s 4.0  keeps the speaker own sentence-final pause, to 40 ms before the next',
+  '  TAILS  --tail-s 0.25 (the default) CUTS the post-chunk pause 0.25 s after the last word.',
+  '                       RETIRED: --tail-s 4.0. Measured 2026-09-10 (field notes 4n.53/54): the',
+  '                       retained tail breaks the stop signal - mistborn v6 ran away on 58% of',
+  '                       renders, deathstalker v6 29%; the same corpora re-sliced at 0.25 render',
+  '                       0-4%. Internal pauses stay verbatim; this is the END of the chunk only.',
+  '                       (Superseded text below is kept for the record.)',
+  '  OLD:   --tail-s 4.0  keeps the speaker own sentence-final pause, to 40 ms before the next',
   '                       onset. A CAP, not a pad. The old 0.25 truncated every pause and is',
   '                       retired: full tails raised rendered pause 0.22 -> 1.58 s at no cost',
   '                       in early stops or coverage (4n.37.17).',
@@ -1406,9 +1412,10 @@ async function runSlice(args) {
   const argv = [];
   for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
   if (args['interp-interior']) argv.push('--interp-interior');
-  if (args['tail-s'] === undefined) {
-    console.log('[slice] NOTE: no --tail-s given, so slice_vtt uses its 0.25 default - the RETIRED cut.');
-    console.log('[slice]       Pass --tail-s 4.0 to keep the speaker own pause (field notes 4n.37.17).');
+  if (args['tail-s'] !== undefined && Number(args['tail-s']) > 0.25) {
+    console.log('[slice] WARNING: --tail-s ' + args['tail-s'] + ' retains the post-chunk pause. That is the RETIRED');
+    console.log('[slice]          setting: it breaks the stop signal (field notes 4n.53/54, mistborn v6 58% runaway).');
+    console.log('[slice]          Training corpora use 0.25. Continuing because you asked, but the ladder will say so.');
   }
   await spawnTraining(python, path.join(cwd, 'slice_vtt.py'), argv, cwd, 'slice');
 }
