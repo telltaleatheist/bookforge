@@ -254,6 +254,33 @@ export function buildHiggsSpawn(
  * on the Windows filesystem, named for `jobId`, with its contents translated for
  * the arm `kind` will take.
  */
+/**
+ * `NARRATOR_SENTENCE_GAP` for the PREP door — the silence the assembler puts after each chunk.
+ *
+ * PREP ONLY, and that is not an optimisation. `text/prep.py` writes gaps.json once, at prep,
+ * from `text/gaps.classify_gap`, whose floor this variable overrides; a worker loads a model and
+ * the assembler reads the file prep already wrote. Setting it on the other doors would suggest it
+ * does something there.
+ *
+ * WHAT IT FIXES: Higgs is `pads = false`, so every chunk join IS this number plus whatever tail
+ * the model emits. Nothing set it per voice, so `classify_gap`'s hardcoded 0.6 s default reached
+ * every Higgs voice alike, regardless of how that narrator actually pauses.
+ *
+ * The catalog's `injectS` is already NET of the model's own tail — see HiggsChunkGap, which
+ * refuses a block whose injectS + modelSelfTailS does not come to its targetJoinS.
+ *
+ * A voice with no `chunkGap` sets nothing and keeps the historical 0.6 s, so this is additive:
+ * an unmeasured voice behaves exactly as it did before.
+ */
+export function higgsChunkGapEnv(
+  model: HiggsModel,
+  kind: HiggsSpawnKind,
+): Record<string, string> {
+  if (kind !== 'prep') return {};
+  const gap = model.chunkGap;
+  if (!gap) return {};
+  return { NARRATOR_SENTENCE_GAP: String(gap.injectS) };
+}
 export function higgsEnvExtras(
   model: HiggsModel,
   jobId: string,
@@ -309,7 +336,7 @@ export function higgsEnvExtras(
   const serveScriptGuestPath =
     `${higgsEnvGuestPrefix}/bin/${sglang ? sglang.launchScript : serving.launchScript}`;
 
-  return { ...higgsMlxBatchEnv(kind, streamBatchCeiling), ...higgsSpawnEnv(model, {
+  return { ...higgsChunkGapEnv(model, kind), ...higgsMlxBatchEnv(kind, streamBatchCeiling), ...higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
     condaEnvPrefix: viaWsl ? higgsEnvGuestPrefix : undefined,

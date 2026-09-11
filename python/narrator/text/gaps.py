@@ -68,7 +68,7 @@ def classify_gap(sentence: str):
     section tier HERE (or emit an explicit [pause:X] at that break) - do NOT
     restore the blanket blank-line gap that caused the dialogue problem.
 
-    Env override: ORPHEUS_SENTENCE_GAP (the floor; 0 disables).
+    Env override: NARRATOR_SENTENCE_GAP, else ORPHEUS_SENTENCE_GAP (the floor; 0 disables).
     """
     raw = (sentence or '').strip()
     lowered = raw.lower()
@@ -78,8 +78,27 @@ def classify_gap(sentence: str):
         return float(v) if v is not None else None
 
     # Sentence-gap floor: the minimum tail every chunk gets so a chunk-to-chunk
-    # join is never bare. Override with ORPHEUS_SENTENCE_GAP.
-    sentence_gap = _env('ORPHEUS_SENTENCE_GAP')
+    # Sentence-gap floor: the minimum tail every chunk gets so a chunk-to-chunk
+    # join is never bare.
+    #
+    # TWO OVERRIDES, AND THE NEUTRAL ONE WINS. NARRATOR_SENTENCE_GAP is engine-agnostic and is
+    # what a pads=False engine sets from its own per-voice measurement; ORPHEUS_SENTENCE_GAP is
+    # the original Orpheus-only name, kept so every existing caller and doc stays correct.
+    #
+    # WHY THIS MATTERED (2026-09-11): for a pads=False engine text/prep.py stamps this value
+    # into gaps.json for EVERY chunk and the assembler realizes it as real silence, so until
+    # now every Higgs voice shipped the same 0.6 s join whatever that voice actually does.
+    # A join is (the model's own trailing silence + this), and the tail is voice-specific -
+    # measured 0.22 s on sigma. So the number a voice declares here is the INJECT, already net
+    # of its own tail; putting a TARGET here instead lands every join long by the tail. That
+    # exact confusion is recorded in orpheus-models.json as how thirdreich shipped 0.24 s long
+    # on every join.
+    #
+    # Explicit None checks rather than `or`: 0 is MEANINGFUL here - it disables the floor so
+    # chunks butt together on the model's own pauses - and falsiness would swallow it.
+    sentence_gap = _env('NARRATOR_SENTENCE_GAP')
+    if sentence_gap is None:
+        sentence_gap = _env('ORPHEUS_SENTENCE_GAP')
     if sentence_gap is None:
         sentence_gap = 0.6   # ear-approved on rohan (2026-07-12)
 

@@ -450,6 +450,75 @@ function refuseMalformedPace(model: HiggsModel, arm: string, pace: unknown): voi
 }
 
 /**
+ * THE SILENCE INSERTED AFTER EVERY CHUNK, in seconds — this voice's own number.
+ *
+ * Higgs is a `pads = false` engine: it emits BARE SPEECH and the manifest's gapBefore/gapAfter
+ * are what the assembler realizes as real silence. `text/prep.py` writes those into gaps.json at
+ * PREP time from `text/gaps.classify_gap`, whose floor is an env override. Until this field
+ * existed nothing set it per voice, so every Higgs voice shipped the same hardcoded 0.6 s.
+ *
+ * `injectS` IS THE INJECT, NOT THE TARGET JOIN, and the difference is the whole bug class here.
+ * A join is (the model's own trailing silence + the inject). That tail is voice-specific —
+ * 0.22 s measured on sigma — so:
+ *
+ *     injectS = targetJoinS - modelSelfTailS
+ *
+ * Putting the target in this field lands every join long by the tail. orpheus-models.json
+ * records that exact mistake as how thirdreich ended up 0.24 s long on every join.
+ *
+ * A NEGATIVE result is a real answer and means inject nothing: the model's tail already exceeds
+ * the target, and assembly cannot subtract silence — the remedy is the corpus tail (--tail-s).
+ * Declare 0 in that case, which also disables the floor so chunks meet on the model's own pause.
+ *
+ * Measured by `pipeline/untreated/pause_match.py` against a scored ladder run and the training
+ * corpus. RE-MEASURE AFTER A RETRAIN: tail geometry moves with the corpus.
+ */
+export interface HiggsChunkGap {
+  /** Seconds the assembler inserts after each chunk. Net of the model's own tail. */
+  injectS: number;
+  /** What the join should come to: injectS + modelSelfTailS. Recorded so the sum is checkable. */
+  targetJoinS: number;
+  /** The trailing silence the model emits by itself, measured. */
+  modelSelfTailS: number;
+  /** The narrator's own inter-sentence pause in the training clips, for reference. */
+  readerSentenceGapS?: number;
+  /** The model's inter-sentence pause INSIDE one render — its own rhythm. */
+  modelInternalGapS?: number;
+  /** Which target was chosen, since the candidates disagree and it is an ear call. */
+  rule: string;
+  /** How the numbers were counted, stated so two gaps can be compared. */
+  method: string;
+  source: string;
+  measuredOn: string;
+}
+
+/** A chunk gap is well-formed or absent, and its parts must add up. */
+function refuseMalformedChunkGap(model: HiggsModel, gap: unknown): void {
+  if (gap === undefined) return;
+  const g = gap as Partial<HiggsChunkGap> | null;
+  const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const str = (v: unknown) => typeof v === 'string' && !!v.trim();
+  if (!g || typeof g !== 'object' || !num(g.injectS) || !num(g.targetJoinS)
+      || !num(g.modelSelfTailS) || !str(g.rule) || !str(g.method) || !str(g.source)
+      || !str(g.measuredOn)) {
+    throw new Error(
+      `Higgs voice "${model.id}" has a malformed chunkGap ${JSON.stringify(gap)}. The shape is ` +
+        '{injectS, targetJoinS, modelSelfTailS, rule, method, source, measuredOn}, ' +
+        'numbers >= 0 (readerSentenceGapS and modelInternalGapS optional).',
+    );
+  }
+  // The sum is checked because the field that matters is the one a reader is most likely to fill
+  // in wrongly: injectS must be the target NET OF THE TAIL, not the target itself.
+  const sum = (g.injectS as number) + (g.modelSelfTailS as number);
+  if (Math.abs(sum - (g.targetJoinS as number)) > 0.011) {
+    throw new Error(
+      `Higgs voice "${model.id}" declares chunkGap injectS ${g.injectS} + modelSelfTailS ` +
+        `${g.modelSelfTailS} = ${sum.toFixed(3)}, which is not its targetJoinS ${g.targetJoinS}. ` +
+        'injectS is the inject, NET of the tail the model already emits — not the target join.',
+    );
+  }
+}
+/**
  * Where a `maxChars` came from — a CLOSED SET, mirroring narrator's
  * `MAX_CHARS_SOURCES` in `engine/protocol.py`, which refuses anything else.
  * The reasoning behind a number goes in `_maxCharsNote`, not here.
@@ -847,6 +916,8 @@ export interface HiggsModel {
    * measurement on deathstalker).
    */
   pace?: HiggsPace;
+  /** The silence inserted after every chunk. ONE PER VOICE, like the pace. */
+  chunkGap?: HiggsChunkGap;
   /**
    * WHERE A MACHINE CAN DOWNLOAD A `checkpoint` VOICE FROM — a HuggingFace repo,
    * private under Owen's account like the Orpheus voice repos. Settings → Higgs
@@ -1244,6 +1315,7 @@ function refuseUnstagedCheckpoint(model: HiggsModel): void {
 function refuseMalformedVoice(model: HiggsModel): void {
   refuseMalformedSource(model);
   if (model.pace !== undefined) refuseMalformedPace(model, 'voice', model.pace);
+  if (model.chunkGap !== undefined) refuseMalformedChunkGap(model, model.chunkGap);
   for (const arm of ['served', 'mlx'] as const) {
     if (model.backends?.[arm] && 'pace' in (model.backends[arm] as object)) {
       throw new Error(

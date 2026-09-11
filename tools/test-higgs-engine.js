@@ -2431,6 +2431,57 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
   assert.match(higgs.higgsVoiceUnavailableReason(clone, PICKER_USER_DATA) || '', /names a download source/);
 });
 
+check('a voice chunkGap reaches the PREP door, and only that door', () => {
+  // Higgs is pads=false: it emits bare speech, and every chunk join IS the model's own trailing
+  // silence plus whatever the assembler inserts. text/prep.py stamps that inject into gaps.json
+  // at PREP, from text/gaps.classify_gap, whose floor NARRATOR_SENTENCE_GAP overrides.
+  //
+  // Before this field existed nothing set it per voice, so classify_gap's hardcoded 0.6 s
+  // default reached EVERY Higgs voice regardless of how that narrator pauses (2026-09-11).
+  const gap = { injectS: 0.62, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
+    method: '-40 dB rel clip peak, 20 ms hop', source: 'pause_match.py', measuredOn: '2026-09-11' };
+  const m = probeVoice({
+    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } }, chunkGap: gap,
+  });
+  assert.strictEqual(spawnMod.higgsChunkGapEnv(m, 'prep').NARRATOR_SENTENCE_GAP, '0.62');
+  // The other doors load a model or read a file prep already wrote; setting it there would
+  // imply it does something.
+  for (const kind of ['worker', 'assembly', 'retake']) {
+    assert.deepStrictEqual(spawnMod.higgsChunkGapEnv(m, kind), {},
+      `${kind} was given a sentence gap, which only prep consumes`);
+  }
+  // A voice with no chunkGap sets NOTHING and keeps the historical 0.6 s default, so the field
+  // is additive: an unmeasured voice behaves exactly as it did before.
+  const bare = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } } });
+  assert.deepStrictEqual(spawnMod.higgsChunkGapEnv(bare, 'prep'), {});
+});
+
+check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', () => {
+  // THE ONE MISTAKE THIS FIELD INVITES. A join is (modelSelfTailS + injectS), so injectS must
+  // already have the tail taken out of it. Declaring the target join as the inject lands every
+  // join long by the tail — orpheus-models.json records exactly that as how thirdreich shipped
+  // 0.24 s long on every join. The validator checks the three numbers add up.
+  const wrong = { injectS: 0.84, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
+    method: 'm', source: 's', measuredOn: '2026-09-11' };
+  const m = probeVoice({
+    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } }, chunkGap: wrong,
+  });
+  let threw = null;
+  try { higgs.higgsVoicesDocument(m, WSL_DOC); } catch (e) { threw = e; }
+  assert.ok(threw, 'an inject that ignores the model tail was accepted');
+  assert.match(threw.message, /NET of the tail/);
+  // And the well-formed one passes, so the check is not simply rejecting every gap.
+  const right = probeVoice({
+    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } },
+    chunkGap: { injectS: 0.62, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
+      method: 'm', source: 's', measuredOn: '2026-09-11' },
+  });
+  higgs.higgsVoicesDocument(right, WSL_DOC);
+});
 check('a measured pace becomes the length band in the document; a malformed pace is refused', () => {
   // Owen, 2026-09-06: the guard uses the voice's recorded chars-per-second.
   // 2026-09-08: the band is SEEDED FROM THE MEDIAN (× 1.2 short, ÷ 1.3 long)
