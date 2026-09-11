@@ -810,22 +810,39 @@ function resolveTrainingPython(args, what) {
   return py;
 }
 
-async function spawnTraining(python, script, argv, cwd, label) {
+async function spawnTraining(python, script, argv, cwd, label, teeTo) {
   console.log('[' + label + '] ' + python + ' ' + path.basename(script) + ' ' + argv.join(' '));
+  // teeTo mirrors the child's output into a file BESIDE ITS OWN OUTPUT. The sigma run wrote the
+  // trainer's stdout to /tmp; WSL cleared /tmp on the next distro restart and took the whole eval
+  // history with it, so an interrupted run could not be ranked (2026-09-10). A run's log belongs
+  // in the run's own directory, which is the only place that survives the machine.
+  let sink = null;
+  if (teeTo) {
+    fs.mkdirSync(path.dirname(teeTo), { recursive: true });
+    sink = fs.createWriteStream(teeTo, { flags: 'a' });
+    sink.write('\n=== ' + new Date().toISOString() + '  ' + path.basename(script) + ' ' + argv.join(' ') + '\n');
+    console.log('[' + label + '] stdout also -> ' + teeTo);
+  }
   const code = await new Promise((resolve, reject) => {
     const child = spawn(python, [script, ...argv], {
       cwd,
-      stdio: 'inherit',
+      stdio: sink ? ['inherit', 'pipe', 'pipe'] : 'inherit',
       env: {
         ...process.env,
         PYTHONIOENCODING: 'utf-8',
+        PYTHONUNBUFFERED: '1',
         OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '2',
         MKL_NUM_THREADS: process.env.MKL_NUM_THREADS || '2',
       },
     });
+    if (sink) {
+      child.stdout.on('data', (b) => { process.stdout.write(b); sink.write(b); });
+      child.stderr.on('data', (b) => { process.stderr.write(b); sink.write(b); });
+    }
     child.on('error', reject);
     child.on('close', resolve);
   });
+  if (sink) sink.end();
   if (code !== 0) throw new Error(path.basename(script) + ' exited ' + code);
 }
 
@@ -890,6 +907,424 @@ TRAINING_HELP['merge-tiers'] = [
   '  This is the corpus-level merge, and it keeps each row OWN pool: a per-side constant once',
   '  paired clip N with a different passage and the model spoke fluent gibberish (4n.11).',
 ].join('\n');
+
+TRAINING_HELP['rvc-dataset'] = [
+  'clipforge rvc-dataset - SELECT an RVC training corpus from aligned masters (slice_rvc.py)',
+  '',
+  'THIS IS NOT `slice`. Do not reach for it because both cut a book. `slice` builds a TTS corpus:',
+  'every clip carries text, tiers are dimensioned from the length the model will SERVE, audio is',
+  'forced to 24 kHz for the Higgs codec, and the whole book goes in. An RVC corpus wants the',
+  'opposite of all four.',
+  '',
+  '  --raw <master[,master]>   book audio. NATIVE RATE IS KEPT. The 24 kHz rule is a Higgs',
+  '                            constraint that does not transfer - RVC trains at 32k/40k/48k and',
+  '                            resamples on load. A 24 kHz master (deathstalker) gets UPSAMPLED and',
+  '                            this verb says so; prefer a 44.1/48 k master where one exists.',
+  '  --vtt <vtt[,vtt]>         the aligned cue files, same order. Comma-separate a multi-book voice:',
+  '                            drawing 45 minutes from three books is what stops the corpus being',
+  '                            the first 45 minutes of book 1.',
+  '  --out <dir>               clips land in <out>/dataset, beside the manifest and the report.',
+  '                            Corpora live under E:\\training\\rvc_corpus\\<voice> (artifact rule).',
+  '  --target-minutes 45       30-60 min of pure speech is the researched band; 15 is the usable',
+  '                            floor; returns flatten past ~120 and above that this warns. RVC is a',
+  '                            SMALL-DATA method - the job is picking the best 45 minutes, not',
+  '                            emptying the book into it.',
+  '  --dry-run                 report the selection - duration, clip count, every drop reason with',
+  '                            its seconds, and the pitch/dynamics spread - and write NO audio.',
+  '',
+  '  NO CHARACTER VOICES. Owen 2026-09-10: "we should use very clearly narration only audio as the',
+  '  base for an rvc model ... we really cant use character voices at all for rvc." At 45 minutes a',
+  '  foreign timbre is a large share of the speaker embedding, which is why the leakage Owen accepts',
+  '  in a 70 h Higgs train is not acceptable here. Two mechanisms, and they are not equal:',
+  '    QUOTE MARKS are exact and free - any cue carrying a double quote is dropped by default (the',
+  '      ds_nr1 doctrine, same as the `narration` verb: TEXT SELECTS, EMBEDDINGS VERIFY).',
+  '    --exclude <json> is for what quotes cannot see: mistborn\'s chapter epigraphs are the Lord',
+  '      Ruler\'s logbook, read in a character voice and NOT quoted. Build a candidate list with',
+  '      --suggest-exclusions, read the text of each candidate, flip "drop" to false on the ones',
+  '      that are really narration, and pass the reviewed file back with --exclude.',
+  '  MEASURED RECALL, so you do not trust it further than it goes: on fe_ad2 the first-person-run',
+  '  rule found 23 candidates covering 6.3 min, of which about 17 are real epigraphs against roughly',
+  '  38 chapters. It finds candidates. It does not prove a passage is a character voice, and it',
+  '  cannot find one with no textual signal. The file is the authority; the rules seed it.',
+  '',
+  '  IT SELECTS AND NOTHING ELSE. ultimate_rvc\'s own preprocessing already does the silence',
+  '  truncation (slicer.py, max_sil_kept 500 ms), the 3.0 s / 0.3 s chunking, the peak normalization',
+  '  (MAX_AMPLITUDE 0.9, ALPHA 0.75) and the 48 Hz high-pass (--filter-audio). Applying ours first',
+  '  would fight it, so clips are byte-faithful excerpts at the source rate and source subtype.',
+  '  The verb prints the exact preprocess-dataset command; it does not run it.',
+  '',
+  '  DEPENDENCIES. Needs soundfile + numpy + scipy. whisperx-env (the `slice` default) has numpy and',
+  '  scipy but NOT soundfile, so this defaults to the clipforge-speakers env instead.',
+].join('\n');
+
+/**
+ * rvc-dataset verb - select an RVC training corpus (pipeline/untreated/slice_rvc.py).
+ *
+ * Separate from runSlice on purpose. They share a repo and a VTT reader and nothing else: one
+ * dimensions a TTS corpus from the served length and forces 24 kHz, the other picks 45 minutes of
+ * clean narration at the master's own rate and hands it to a preprocessor that owns every audio
+ * transform. Folding them into one verb would put slice's 24 kHz assert one flag away from an RVC
+ * build - the exact class of silent wrong-corpus mistake 4n.11 records.
+ *
+ * Python default is DEFAULT_SPEAKERS_PYTHON, not TRAINING_PYTHON_DEFAULT: the selector needs
+ * soundfile, which whisperx-env does not have (checked 2026-09-10).
+ */
+async function runRvcDataset(args) {
+  if (args.help) { console.log(TRAINING_HELP['rvc-dataset']); return; }
+  for (const k of ['raw', 'vtt', 'out']) {
+    if (!args[k]) throw new Error('rvc-dataset: --' + k + ' is required (see: clipforge rvc-dataset --help)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  if (!fs.existsSync(python)) {
+    throw new Error(
+      'rvc-dataset python not found: ' + python + '\n' +
+      '  The selector needs soundfile + numpy + scipy. The clipforge-speakers env has all three;\n' +
+      '  whisperx-env (what `slice` uses) has numpy and scipy but NOT soundfile.\n' +
+      '  Override with --python <exe>.');
+  }
+  const pass = ['raw', 'vtt', 'out', 'prefix', 'target-minutes', 'min-clip-s', 'max-clip-s',
+    'gap-s', 'min-start', 'max-end', 'exclude', 'exclude-cue-ids', 'suggest-exclusions',
+    'strata', 'f0-bins', 'shortlist-mult', 'min-dyn-db', 'min-snr-db', 'max-peak-dbfs',
+    'format', 'seed'];
+  const argv = [];
+  for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  for (const k of ['dry-run', 'keep-dialogue']) if (args[k]) argv.push('--' + k);
+  if (args['keep-dialogue']) {
+    console.log('[rvc-dataset] --keep-dialogue: quoted cues WILL be included. For RVC that means');
+    console.log('[rvc-dataset] character voices inside a 45-minute speaker embedding. Have a reason.');
+  }
+  if (!args.exclude && !args['suggest-exclusions']) {
+    console.log('[rvc-dataset] NOTE: no --exclude file. Quote marks still drop dialogue, but UNQUOTED');
+    console.log('[rvc-dataset]       character voices (mistborn chapter epigraphs) will be selected.');
+    console.log('[rvc-dataset]       Build a candidate list first: --suggest-exclusions <file.json>.');
+  }
+  await spawnTraining(python, path.join(cwd, 'slice_rvc.py'), argv, cwd, 'rvc-dataset');
+}
+
+// --- RVC voice-model training. Windows-side: ultimate-rvc lives in BookForge's rvc-env, not WSL.
+const RVC_MODELS_DIR_DEFAULT = path.join(
+  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
+  'BookForge', 'runtime', 'rvc-models');
+const RVC_PYTHON_DEFAULT = path.join(
+  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
+  'BookForge', 'components', 'rvc-env', 'python.exe');
+
+TRAINING_HELP['rvc-train'] = [
+  'clipforge rvc-train - train an RVC voice model from a dataset (ultimate-rvc)',
+  '',
+  '  --voice <name>        the model name. It becomes the directory under',
+  '                        <models-dir>/rvc/voice_models and the .pth/.index basename, and it is',
+  '                        what BookForge lists. Existing names are REUSED by ultimate-rvc, not',
+  '                        errored on - version the name (mistborn_rvc_v1) rather than overwrite.',
+  '  --dataset <dir>       a directory of clips, normally from `clipforge rvc-dataset`',
+  '  --sample-rate         32000 | 40000 | 48000. Match the SOURCE, do not reach for the biggest:',
+  '                        only mistborn has a true 48 kHz master; deathstalker, Owen Morgan and',
+  '                        Third Reich are 24 kHz (a Higgs artefact) and train at 32000 rather than',
+  '                        asking a vocoder to invent two octaves that were never recorded.',
+  '  --epochs 300          --batch-size 8   --save-interval 25   --gpu-id 0',
+  '  --f0-method rmvpe     rmvpe is the default and what Owen uses in the app. crepe needs',
+  '                        --hop-length and is slower for no measured gain here.',
+  '  --cpu-cores 4         ultimate-rvc defaults this to EVERY core (20 here) and each worker is a',
+  '                        fresh process that imports torch, which maps the CUDA DLLs. Twenty of',
+  '                        those exceeded the Windows commit limit outright: "The paging file is',
+  '                        too small for this operation to complete. Error loading cufft64_11.dll",',
+  '                        then BrokenProcessPool. 4 is fast enough for a 45-minute dataset and',
+  '                        leaves room for a GPU job on the other side of the machine.',
+  '  --stages a,b,c        default preprocess,extract,train. Re-run one stage after a crash without',
+  '                        redoing the others - the model dir keeps each stage\'s output.',
+  '  --models-dir <dir>    default ' + RVC_MODELS_DIR_DEFAULT,
+  '',
+  'THE THREE STAGES, AND WHY EACH IS SEPARATE',
+  '  preprocess-dataset  slices and normalises the dataset INTO the model. This is where RVC does',
+  '                      its own silence truncation, 3.0 s / 0.3 s chunking, peak normalisation and',
+  '                      48 Hz high-pass. `rvc-dataset` deliberately does none of that, so the two',
+  '                      do not fight.',
+  '  extract-features    pitch (rmvpe) + content embeddings (contentvec). GPU, minutes.',
+  '  run-training        the actual train. --detect-overtraining is ON with a 50-epoch threshold,',
+  '                      because a 45-minute dataset overfits long before 500 epochs and an',
+  '                      unattended overnight run has nobody watching the loss.',
+  '',
+  'WHY THIS VERB EXISTS AT ALL: BookForge\'s ultimate-rvc fork never registers the training app, so',
+  '`python -m ultimate_rvc.cli.main train ...` answers "No such command \'train\'". The fix is a',
+  'four-line entry point in the repo (pipeline/rvc/urvc_train.py) that attaches the app and forwards',
+  'argv - nothing under site-packages is patched, so an upgrade cannot silently undo it.',
+  '',
+  'ENV. URVC_MODELS_DIR is set for you, and it matters: ultimate_rvc otherwise derives every path',
+  'from the CURRENT WORKING DIRECTORY and will write models/ into whatever repo you happened to be',
+  'standing in. URVC_SKIP_INIT=1 is set too, or importing it downloads audio-separator weights.',
+].join('\n');
+
+async function runRvcTrain(args) {
+  if (args.help) { console.log(TRAINING_HELP['rvc-train']); return; }
+  for (const k of ['voice', 'dataset']) {
+    if (!args[k]) throw new Error('rvc-train: --' + k + ' is required (see: clipforge rvc-train --help)');
+  }
+  const dataset = path.resolve(args.dataset);
+  if (!fs.existsSync(dataset)) throw new Error('rvc-train: dataset not found: ' + dataset);
+  const nClips = fs.readdirSync(dataset).filter((f) => /\.(wav|flac|mp3)$/i.test(f)).length;
+  if (!nClips) throw new Error('rvc-train: no audio files in ' + dataset);
+
+  const root = resolveTrainingRoot(args);
+  const script = path.join(root, 'pipeline', 'rvc', 'urvc_train.py');
+  if (!fs.existsSync(script)) throw new Error('rvc-train: missing entry point ' + script);
+  const python = args.python ? path.resolve(args.python) : RVC_PYTHON_DEFAULT;
+  if (!fs.existsSync(python)) {
+    throw new Error(
+      'rvc-train python not found: ' + python + '\n' +
+      '  Needs ultimate_rvc PLUS matplotlib and tensorboard (the training extras, which the\n' +
+      '  inference path does not import). BookForge\'s rvc-env has them. Override with --python.');
+  }
+  const modelsDir = path.resolve(args['models-dir'] || RVC_MODELS_DIR_DEFAULT);
+  const sr = String(args['sample-rate'] || 40000);
+  if (!['32000', '40000', '48000'].includes(sr)) {
+    throw new Error('rvc-train: --sample-rate must be 32000, 40000 or 48000 (got ' + sr + ')');
+  }
+  const voice = String(args.voice);
+  const stages = String(args.stages || 'preprocess,extract,train').split(',').map((s) => s.trim());
+
+  const env = { ...process.env, URVC_MODELS_DIR: modelsDir, URVC_SKIP_INIT: '1', PYTHONIOENCODING: 'utf-8' };
+  const run = async (label, argv) => {
+    console.log('[rvc-train] ' + label + ': ' + argv.join(' '));
+    const code = await new Promise((resolve, reject) => {
+      const child = spawn(python, [script, ...argv], { cwd: root, stdio: 'inherit', env });
+      child.on('error', reject);
+      child.on('close', resolve);
+    });
+    if (code !== 0) throw new Error('rvc-train ' + label + ' exited ' + code);
+  };
+
+  console.log('[rvc-train] voice ' + voice + '  ' + nClips + ' clips  ' + sr + ' Hz  -> ' + modelsDir);
+  if (stages.includes('preprocess')) {
+    await run('preprocess-dataset', ['preprocess-dataset', voice, dataset,
+      '--sample-rate', sr,
+      '--split-method', String(args['split-method'] || 'Automatic'),
+      '--cpu-cores', String(args['cpu-cores'] || 4),
+      '--filter-audio', '--no-clean-audio']);
+  }
+  if (stages.includes('extract')) {
+    const argv = ['extract-features', voice,
+      '--f0-method', String(args['f0-method'] || 'rmvpe'),
+      '--embedder-model', String(args['embedder-model'] || 'contentvec'),
+      '--include-mutes', String(args['include-mutes'] !== undefined ? args['include-mutes'] : 2),
+      '--cpu-cores', String(args['cpu-cores'] || 4)];
+    if (args['gpu-id'] !== undefined) argv.push('--gpu-id', String(args['gpu-id']));
+    await run('extract-features', argv);
+  }
+  if (stages.includes('train')) {
+    const argv = ['run-training', voice,
+      '--num-epochs', String(args.epochs || 300),
+      '--batch-size', String(args['batch-size'] || 8),
+      '--save-interval', String(args['save-interval'] || 25),
+      '--vocoder', String(args.vocoder || 'HiFi-GAN'),
+      '--index-algorithm', String(args['index-algorithm'] || 'Auto'),
+      '--pretrained-type', String(args['pretrained-type'] || 'Default')];
+    if (args['no-overtraining-detect']) argv.push('--no-detect-overtraining');
+    else argv.push('--detect-overtraining', '--overtraining-threshold',
+      String(args['overtraining-threshold'] || 50));
+    if (args['gpu-id'] !== undefined) argv.push('--gpu-id', String(args['gpu-id']));
+    if (args['preload-dataset']) argv.push('--preload-dataset');
+    await run('run-training', argv);
+  }
+  const outDir = path.join(modelsDir, 'rvc', 'voice_models', voice);
+  if (fs.existsSync(outDir)) {
+    console.log('[rvc-train] ' + voice + ' -> ' + outDir);
+    for (const f of fs.readdirSync(outDir)) console.log('            ' + f);
+  } else {
+    console.log('[rvc-train] NOTE: no voice_models/' + voice + ' yet (run the train stage to produce it)');
+  }
+}
+
+TRAINING_HELP.pauses = [
+  'clipforge pauses - what a corpus TEACHES about pausing, and what a model renders (corpus_pauses.py)',
+  '',
+  'THE FINDING THIS VERB EXISTS TO CARRY (field notes 4n.63). A Higgs fine-tune does not copy its',
+  'corpus pause length, it STRETCHES it, and the stretch is multiplicative - so a corpus that pauses',
+  'a little longer renders a LOT more long pauses. Measured on identical prompts, seeds and sampling:',
+  '',
+  '      corpus median interior pause     0.50 owen    0.60 deathstalker    0.78 mistborn',
+  '      rendered pauses >= 2 s / 10k     0.0          6.0                  13.8',
+  '',
+  '  Mistborn is not defective. It is the pausiest of the three and the model magnifies that into',
+  '  ~2 h of silence in an 18 h book. Owen Morgan is clean because its WHAA master was pause-mapped',
+  '  onto GP before slicing. The lever is the corpus MEDIAN, not the tail: deathstalker has a HIGHER',
+  '  fraction of 2 s pauses at a period than mistborn and still renders half as many.',
+  '',
+  'MEASURE THE CLIPS, NOT THE SOURCE. Masters concatenate their spans gaplessly and clips are cut',
+  'from those, so upload parts and raw rips carry silence the corpus never sees. Auditing parts 16-18',
+  'of mistborn produced a confident wrong answer for exactly that reason (4n.61.4).',
+  '',
+  'TWO SIDES OF THE SAME QUESTION - give one:',
+  '  --tier <dir>          a corpus tier (metadata_train.csv + wavs/): what the model is TAUGHT',
+  '  --run <dir>           a ladder run dir (renders.json): what the model EMITS',
+  '',
+  '  --rows <json>         rows json for the tier. Needed for the punctuation table (it carries',
+  '                        src_start/src_end, which is what places a clip on the master timeline)',
+  '                        and for the per-10k-chars column.',
+  '  --vtt bk=path,...     the book VTTs, keyed by the prefix in the clip filenames. This turns on',
+  '                        PAUSE CONDITIONED ON THE TEXT CUE - the pause distribution at a period, at',
+  '                        a closing quote, at a comma. A tight spread means the pause is learnable.',
+  '  --limit 250           audit a sample spread evenly over the tier; a few hundred clips settles',
+  '                        every number here to within a few percent and takes about a minute.',
+  '  --out <json>          write the report. It carries the FULL percentile ladder, which is what',
+  '                        `normalize-pauses --target-report` quantile-maps onto.',
+  '',
+  '  Compare per 10k CHARS, not per hour: a slower voice earns more pauses per hour for free.',
+].join('\n');
+
+TRAINING_HELP['pause-match'] = [
+  'clipforge pause-match - does the model pause like the reader, and what should assembly inject?',
+  '(pause_match.py)',
+  '',
+  'Owen 2026-09-10: "calculate the pause map on some sample of the original corpus so we know what the',
+  'reader pauses look like, then calculate the pause map on some of our renders, and see if pausing',
+  'matches the original reader." It needs NO extra rendering - the ladder already made clean renders.',
+  '',
+  '  --tier <dir>  --rows <json>  --vtt bk=path,...   the corpus side (the reader)',
+  '  --run <dir>                                      a ladder run dir (the model)',
+  '  --limit 250   sample size per side      --out <json>   the verdict, for deploy',
+  '  --sentence-max-s 2.0   pauses longer than this are paragraph/scene breaks, not sentence',
+  '                         boundaries, and are excluded. Same >2 s cut the Orpheus catalog uses.',
+  '',
+  'THREE QUANTITIES THAT ARE CONSTANTLY CONFUSED:',
+  '  reader gap     what the NARRATOR leaves between sentences, from the training clips.',
+  '  internal gap   what the MODEL leaves between sentences INSIDE one render - its own rhythm, and',
+  '                 per orpheus-models.json "the thing a chunk join should imitate".',
+  '  self tail      the silence a render ENDS with. An inject stacks ON TOP of this, so a join is',
+  '                 (self_tail + inject). Confusing self tail with internal gap is recorded in that',
+  '                 same catalog as exactly how thirdreich ended up 0.24 s long on every join.',
+  '',
+  'ONE SILENCE DEFINITION FOR BOTH SIDES (pause_lib.py): -40 dB relative to each clip own peak, 20 ms',
+  'hop. RELATIVE, not absolute, and that matters - RVC output runs ~7.7 dB hotter than its source and',
+  'a fine-tune renders louder than its corpus, so an absolute floor would report a level difference as',
+  'a pause difference. The Orpheus-era measure_sentence_gaps.py uses -55 dBFS absolute; do not mix the',
+  'two tools numbers.',
+  '',
+  'THE TAIL IS MEASURED WITH NO MINIMUM LENGTH. The 0.30 s floor that filters interior pauses must not',
+  'apply to tails: a 0.12 s tail is still what an inject stacks onto. Applying it threw away 197 of 200',
+  'renders on the first run here and left a median computed from three clips.',
+  '',
+  'IT REPORTS THREE CANDIDATE INJECTS AND PICKS NONE - the choice is an ear call:',
+  '    A  match the reader             inject = reader_gap - self_tail',
+  '    B  0.75x the model rhythm       the thirdreich-era calibration; can land BELOW the floor',
+  '    C  match the model rhythm       inject = internal_gap - self_tail; equals the minChunkGap floor',
+  'A NEGATIVE INJECT IS A REAL ANSWER - the tail already exceeds the target, so inject 0.0 and fix the',
+  'corpus tail (--tail-s) instead. Assembly cannot subtract silence.',
+  '',
+  'NOT YET WIRED INTO THE HIGGS APP. higgs-models.json carries maxChars/safeMinChars/safeMaxChars but',
+  'no gap, tail or pace fields, and neither chapter-closer.ts nor normalize_gaps.py is reachable from a',
+  'Higgs render - both are Orpheus-only, as is maxCharsPerSec (ORPHEUS_MAX_CHARS_PER_SEC). So this verb',
+  'produces the numbers and deploy can record them, but nothing applies them until those fields and the',
+  'assembly hook exist on the Higgs side.',
+].join('\n');
+
+async function runPauseMatch(args) {
+  if (args.help) { console.log(TRAINING_HELP['pause-match']); return; }
+  for (const k of ['tier', 'rows', 'vtt', 'run']) {
+    if (!args[k]) throw new Error('pause-match: --' + k + ' is required (see: clipforge pause-match --help)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolvePausePython(args, 'pause-match');
+  const argv = [];
+  for (const k of ['tier', 'rows', 'vtt', 'run', 'label', 'limit', 'sentence-max-s', 'out']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  await spawnTraining(python, path.join(cwd, 'pause_match.py'), argv, cwd, 'pause-match');
+}
+
+TRAINING_HELP['normalize-pauses'] = [
+  'clipforge normalize-pauses - shorten the pauses in a book master, and move its VTT with it',
+  '(normalize_pauses.py)',
+  '',
+  '  --raw <master>        book audio. Rate and subtype are preserved (no 24 kHz rule here - this',
+  '                        runs BEFORE slice, on the master, and slice does its own conversion).',
+  '  --vtt <vtt>           its cue file. REWRITTEN. Not optional, not separable - see below.',
+  '  --out-raw / --out-vtt where the new pair goes (both required with --apply)',
+  '  --target-report <json>  a `clipforge pauses --out` report; its percentile ladder becomes the',
+  '                        target and every pause is quantile-mapped onto it. This is what was done',
+  '                        to Owen Morgan WHAA master, and Owen Morgan renders ZERO pauses over 2 s.',
+  '  --knee <s> --cap <s>  the alternative when there is no reference voice: pauses at or below the',
+  '                        knee are untouched, everything above is compressed so the longest lands on',
+  '                        the cap. Simpler, but it flattens the top of the distribution.',
+  '  --plan <json>         write the per-pause plan (which pause, how long, how much comes out)',
+  '  --apply               actually write. Without it this is a dry run that prints the before/after',
+  '                        distribution and the bucket counts, which is how you choose the target.',
+  '',
+  'THE VTT MOVES WITH THE AUDIO, ALWAYS. Trimming audio and leaving cue times alone is what produced',
+  'the 17.48 s accumulated drift in the WHAA investigation: every cue after the first cut is wrong by',
+  'the running total, so the slicer then cuts clips whose text does not match their audio and the',
+  'model learns a lie. This verb refuses --apply without --out-vtt for that reason.',
+  '',
+  'IT ONLY SHORTENS, AND ONLY BETWEEN CUES. Cuts are taken from the MIDDLE of a detected silence run',
+  'that sits between two cues, so speech is never approached. --max-remove-frac (default 10%) refuses',
+  'a plan that would take more than that out of the master: a plan that large means the detector or',
+  'the target is wrong, and is not something to widen the gate for.',
+  '',
+  'ORDER: pauses (measure) -> normalize-pauses (dry run, choose a target) -> --apply -> slice from the',
+  'NEW master and NEW vtt -> pauses again on the resulting tier to confirm it landed.',
+].join('\n');
+
+/**
+ * pauses / normalize-pauses - the pause pair. Measuring and fixing are deliberately two verbs: the
+ * measurement is read-only and safe to run on anything, the fix rewrites a master and its cue file
+ * TOGETHER and defaults to a dry run. Same python as rvc-dataset (needs soundfile + numpy).
+ */
+function resolvePausePython(args, verb) {
+  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  if (!fs.existsSync(python)) {
+    throw new Error(
+      verb + ' python not found: ' + python + '\n' +
+      '  Needs soundfile + numpy. The clipforge-speakers env has both; whisperx-env has numpy but\n' +
+      '  NOT soundfile. Override with --python <exe>.');
+  }
+  return python;
+}
+
+async function runPauses(args) {
+  if (args.help) { console.log(TRAINING_HELP.pauses); return; }
+  if (!args.tier === !args.run) {
+    throw new Error('pauses: give exactly one of --tier (a corpus tier) or --run (a ladder run dir)\n' +
+      '  (see: clipforge pauses --help)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolvePausePython(args, 'pauses');
+  const argv = [];
+  for (const k of ['tier', 'run', 'rows', 'vtt', 'label', 'limit', 'db', 'hop', 'min-pause', 'out']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  if (args.tier && !args.rows) {
+    console.log('[pauses] NOTE: no --rows, so there is no per-10k-chars column and no punctuation');
+    console.log('[pauses]       table. Rates per HOUR alone cannot be compared across voices - a');
+    console.log('[pauses]       slower narrator earns more pauses per hour for free.');
+  }
+  await spawnTraining(python, path.join(cwd, 'corpus_pauses.py'), argv, cwd, 'pauses');
+}
+
+async function runNormalizePauses(args) {
+  if (args.help) { console.log(TRAINING_HELP['normalize-pauses']); return; }
+  for (const k of ['raw', 'vtt']) {
+    if (!args[k]) throw new Error('normalize-pauses: --' + k + ' is required (see: clipforge normalize-pauses --help)');
+  }
+  if (args.apply && !(args['out-raw'] && args['out-vtt'])) {
+    throw new Error('normalize-pauses --apply needs BOTH --out-raw and --out-vtt.\n' +
+      '  The cue file must be rewritten with the same cuts or every cue after the first one is\n' +
+      '  wrong by the running total (the 17.48 s WHAA drift). Refusing to trim audio alone.');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolvePausePython(args, 'normalize-pauses');
+  const argv = [];
+  for (const k of ['raw', 'vtt', 'out-raw', 'out-vtt', 'plan', 'target-report', 'knee', 'cap',
+    'db', 'hop', 'min-pause', 'min-out', 'max-remove-frac']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  for (const k of ['allow-extend', 'apply']) if (args[k]) argv.push('--' + k);
+  if (!args.apply) console.log('[normalize-pauses] DRY RUN - nothing written. Add --apply when the target looks right.');
+  await spawnTraining(python, path.join(cwd, 'normalize_pauses.py'), argv, cwd, 'normalize-pauses');
+}
 
 async function runSlice(args) {
   if (args.help) { console.log(TRAINING_HELP.slice); return; }
@@ -962,6 +1397,18 @@ const CAMPAIGN_ROOT_DEFAULT = IS_LINUX
   ? '/mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs'
   : 'E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs';
 const GPU_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/higgs3/bin/python';
+
+// Campaign dirs are named BY DATE now - Owen 2026-09-10: "we dont use night3/night4/etc anymore.
+// we go by date. this project will be going for months." A sequence counter stops meaning anything
+// once work spans months, and it restarts per campaign. New work goes in
+// E:/training/_campaigns/YYYY-MM-DD-<slug>/.
+//
+// The stage scripts (ladder_chain.sh, pick_two.py, promote_voice.py, rebuild_train_log.py) still
+// live under the legacy stage folder of the 2026-09-01 campaign. They are NOT moved while a chain
+// is live - bash reads a script incrementally, so renaming a directory under a running job kills it
+// mid-flight. This constant is the single place that changes when they do move.
+const CAMPAIGN_STAGE_DIR = process.env.CLIPFORGE_CAMPAIGN_STAGE || 'night4';
+function stageDir(camp) { return path.join(camp, CAMPAIGN_STAGE_DIR); }
 
 function resolveCampaignRoot(args) {
   const root = args['campaign-root'] || process.env.CLIPFORGE_CAMPAIGN_ROOT || CAMPAIGN_ROOT_DEFAULT;
@@ -1081,7 +1528,8 @@ async function runTrain(args) {
   const argv = [];
   for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
   console.log('[train] GPU job. Take v3_ft/gpu_lock.sh and probe_vram.py FIRST - see --help.');
-  await spawnTraining(python, path.join(ft, 'train_lora.py'), argv, ft, 'train');
+  await spawnTraining(python, path.join(ft, 'train_lora.py'), argv, ft, 'train',
+    path.join(String(args.out), 'train_stdout.log'));
 }
 
 TRAINING_HELP.masters = [
@@ -1185,12 +1633,19 @@ function printUsage() {
     '',
     'TRAINING TOOLS (corpus in, corpus out) - wrappers over the orpheus-finetune scripts',
     '  slice        cut a book master into training clips        (slice_vtt.py)',
+    '  rvc-dataset  select 45 min of narration for an RVC train  (slice_rvc.py)',
+    '  rvc-train    train an RVC voice model from that dataset    (ultimate-rvc)',
     '  gate         score every row against its own text         (row_gate.py)',
+    '  pauses       audit what a corpus teaches / a model emits   (corpus_pauses.py)',
+    '  pause-match  does the model pause like the reader? + inject  (pause_match.py)',
+    '  normalize-pauses  shorten a master pauses + rewrite its vtt (normalize_pauses.py)',
     '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
     '  mix          encode a gated corpus into a training set   (build_higgs_mix.py)',
     '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
     '  align        align each Adobe span against its own text  (align_spans.py)',
+    '  checkpoints  rank a run\'s checkpoints by holdout loss       (pick_two.py)',
+    '  merge-lora   fold a LoRA checkpoint into servable weights   (merge_for_serving.py)',
     '  ladder       length sweep N models back to back + band calc  (ladder_chain.sh)',
     '  deploy       promote a laddered winner into BookForge       (promote_voice.py)',
     '',
@@ -1202,6 +1657,11 @@ function printUsage() {
     '',
     '  Pipeline order is the runbook in HIGGS_FIELD_NOTES 4n.41:',
     '    masters -> align -> slice -> merge-tiers -> gate -> mix -> train -> sweep -> promote',
+    '',
+    '  rvc-dataset is NOT on that line. It is the other branch off the same masters + VTTs:',
+    '    masters -> align -> rvc-dataset -> (urvc preprocess-dataset / extract / train, by hand)',
+    '  It selects 30-60 minutes of narration-only audio at the master rate and stops. See its --help',
+    '  before assuming any slice/gate/mix number transfers - almost none of them do.',
   ].join('\n'));
 }
 
@@ -1241,7 +1701,7 @@ async function runLadder(args) {
   if (args.help) { console.log(TRAINING_HELP.ladder); return; }
   requireGuestSide('ladder');
   const camp = resolveCampaignRoot(args);
-  const n4 = path.join(camp, 'night4');
+  const n4 = stageDir(camp);
   if (args.calc) {
     if (!args.runs) throw new Error('ladder --calc: --runs "<runA> <runB>" is required');
     const argv = [];
@@ -1259,6 +1719,76 @@ async function runLadder(args) {
   }
   for (const d of String(args.models).split(/\s+/).filter(Boolean)) argv.push(d);
   await spawnTraining('bash', path.join(n4, 'ladder_chain.sh'), argv, camp, 'ladder');
+}
+
+TRAINING_HELP.checkpoints = [
+  'clipforge checkpoints - rank a train run\'s checkpoints by holdout loss (pick_two.py)',
+  '',
+  '  --run-dir <dir>       a train run directory (ckpt-<step>/ ... + train_log.json)',
+  '  --n 1                 how many candidates to name. 1 is the Higgs default (Owen 2026-09-09:',
+  '                        "lets change the ladder to take the lowest loss candidate"). --n 2',
+  '                        restores the two-checkpoint comparison when a run looks unstable.',
+  '  --rebuild-log         reconstruct train_log.json from the trainer\'s stdout when the run was',
+  '                        STOPPED before it could write one. Needs --stdout <log>.',
+  '  --stdout <log>        the trainer\'s captured stdout, for --rebuild-log. `clipforge train` now',
+  '                        tees it to <out>/train_stdout.log for exactly this.',
+  '',
+  'WHY --rebuild-log EXISTS. train_lora.py used to write train_log.json only at the very end, so a',
+  'run stopped mid-flight left every checkpoint on disk and no way to order them - pick_two exits',
+  '"no train_log.json" and the ladder has nothing to rank (2026-09-10, the sigma run). The trainer',
+  'now flushes the log after every eval and on SIGINT/SIGTERM, so this should be needed only for',
+  'runs started before that fix, or after a hard kill.',
+].join('\n');
+
+async function runCheckpoints(args) {
+  if (args.help) { console.log(TRAINING_HELP.checkpoints); return; }
+  requireGuestSide('checkpoints');
+  if (!args['run-dir']) throw new Error('checkpoints: --run-dir is required (see: clipforge checkpoints --help)');
+  const camp = resolveCampaignRoot(args);
+  const n4 = stageDir(camp);
+  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const runDir = String(args['run-dir']);
+  if (args['rebuild-log']) {
+    if (!args.stdout) {
+      throw new Error('checkpoints --rebuild-log needs --stdout <trainer stdout log>.\n' +
+        '  The eval history only exists there. If the log is gone too, the run cannot be ranked\n' +
+        '  and the checkpoints have to be laddered blind - which is why train now tees it into\n' +
+        '  the run dir instead of /tmp.');
+    }
+    await spawnTraining(python, path.join(n4, 'rebuild_train_log.py'),
+      [runDir, String(args.stdout), '--apply'], camp, 'rebuild-log');
+  }
+  await spawnTraining(python, path.join(n4, 'pick_two.py'),
+    [runDir, '--n', String(args.n || 1)], camp, 'checkpoints');
+}
+
+TRAINING_HELP['merge-lora'] = [
+  'clipforge merge-lora - fold a LoRA checkpoint into the base weights (v3_ft/merge_for_serving.py)',
+  '',
+  '  --ckpt <dir>          a ckpt-<step> directory from a train run',
+  '  --out <dir>           the merged model directory, normally /home/telltale/higgs_v3_merged/<name>',
+  '  --allow-overwrite     replace an existing --out',
+  '',
+  'A CHECKPOINT IS NOT SERVABLE. Neither serving stack attaches an adapter at runtime: SGLang-Omni',
+  'has no --enable-lora for this model and the v3 talker never declares vLLM\'s SupportsLoRA. So the',
+  'adapter is merged into the base weights first. CPU only, about a minute, ~8 GB per merged copy.',
+  '',
+  'This is the same step `deploy` runs. It is a verb of its own because the ladder needs a merged',
+  'directory BEFORE there is anything to deploy, and doing it by hand is how a ladder ends up',
+  'pointed at a checkpoint dir that no server can load.',
+].join('\n');
+
+async function runMergeLora(args) {
+  if (args.help) { console.log(TRAINING_HELP['merge-lora']); return; }
+  requireGuestSide('merge-lora');
+  for (const k of ['ckpt', 'out']) {
+    if (!args[k]) throw new Error('merge-lora: --' + k + ' is required (see: clipforge merge-lora --help)');
+  }
+  const camp = resolveCampaignRoot(args);
+  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const argv = ['--lora', String(args.ckpt), '--out', String(args.out)];
+  if (args['allow-overwrite']) argv.push('--allow-overwrite');
+  await spawnTraining(python, path.join(camp, 'v3_ft', 'merge_for_serving.py'), argv, camp, 'merge-lora');
 }
 
 TRAINING_HELP.deploy = [
@@ -1354,7 +1884,7 @@ async function runDeploy(args) {
   for (const k of ['apply', 'push', 'mac']) if (args[k]) argv.push('--' + k);
   if (!args.apply) console.log('[deploy] DRY RUN - no files written. Add --apply when the winner looks right.');
   const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
-  await spawnTraining(python, path.join(camp, 'night4', 'promote_voice.py'), argv, camp, 'deploy');
+  await spawnTraining(python, path.join(stageDir(camp), 'promote_voice.py'), argv, camp, 'deploy');
 }
 
 async function main() {
@@ -1376,12 +1906,19 @@ async function main() {
   if (verb === 'verify') return runVerify(args);
   if (verb === 'chain') return runChainVerb(args);
   if (verb === 'slice') return runSlice(args);
+  if (verb === 'rvc-dataset') return runRvcDataset(args);
+  if (verb === 'rvc-train') return runRvcTrain(args);
+  if (verb === 'pauses') return runPauses(args);
+  if (verb === 'pause-match') return runPauseMatch(args);
+  if (verb === 'normalize-pauses') return runNormalizePauses(args);
   if (verb === 'gate') return runGate(args);
   if (verb === 'merge-tiers') return runMergeTiers(args);
   if (verb === 'mix') return runMix(args);
   if (verb === 'train') return runTrain(args);
   if (verb === 'masters') return runMasters(args);
   if (verb === 'align') return runAlign(args);
+  if (verb === 'checkpoints') return runCheckpoints(args);
+  if (verb === 'merge-lora') return runMergeLora(args);
   if (verb === 'ladder') return runLadder(args);
   if (verb === 'deploy') return runDeploy(args);
   if (verb === 'help') return printUsage();

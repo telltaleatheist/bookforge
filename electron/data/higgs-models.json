@@ -236,13 +236,6 @@
           },
           "referenceSecondsCap": 30,
           "allowedControls": [],
-          "sampling": {
-            "temperature": 0.7,
-            "topP": 0.95,
-            "topK": 50,
-            "repetitionPenalty": 1.1
-          },
-          "_samplingNote": "THE REASON: this voice generates pauses far longer than anything in its own training data, and nothing was discouraging them. Measured 2026-09-10 on Shift (mb_v7_prod, 1798 chunks, 18.0 h) against the corpus it was cut from (The Final Empire, Michael Kramer, 24.7 h, silences read straight off the audio and joined to the 22,850-cue VTT through the EPUB's paragraphs): the NARRATOR pauses a median 0.36 s within a paragraph and 0.51 s at a paragraph break, with 2.6 pauses/h over 2 s and 0.6/h over 3 s. The MODEL pauses a median 1.12 s, with 130 pauses/h over 2 s and 35.7/h over 3 s -- 50x and 60x -- and a 13.56 s maximum against the narrator's 4.78 s. Silence is 32.1% of the model's book and 15.5% of the narrator's, and the book paces 12.95 chars/s against the catalog's 15.01. It is not imitating the corpus, so re-slicing the corpus is not the lever. A pause is a RUN OF REPEATED silence frames and repetition_penalty was 1.0 -- the identity -- because the checkpoint's generation_config.json says 1.0 and the engine-level block cannot state the key. This is the same shape as the Orpheus MLX pause regression, which was mlx_lm's 20-token repetition-penalty window and was cured by widening it (CLAUDE.md, 'The MLX rep-penalty window was the pause regression'). 1.1 is vLLM's Orpheus reference value. UNMEASURED ON HIGGS: unlike every other number in this file, this one is a hypothesis Owen asked for on 2026-09-10, not a ladder result. Higgs is 8 codebooks at 25 Hz behind a delay pattern, so the penalty falls on EVERY repeated audio code in the 4,096-position context, not only on silence -- sustained vowels and tones are also repetition. Measure a fixed slice (pause p90, coverage, ECAPA) before a full book, and record the result here. SERVED ARM ONLY, and that is structural: mlx-audio's higgs_audio_v3 has no repetition penalty at all, so the Mac renders this voice without it and the two arms genuinely differ until a Mac lever exists.",
           "_maxCharsSourceNote": "'catalog' = declared here, backed by the training session's mb2 measurement on SGLang-Omni at 16 wide (50 Fuhrer chunks packed at 1200: 0 early stops, 0 gibberish, 6/50 damaged) plus the self-termination measurement above; not a length sweep."
         },
         "mlx": {
