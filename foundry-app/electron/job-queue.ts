@@ -3128,6 +3128,21 @@ function nextStartable(): Job | null {
   for (const job of jobs) {
     if (job.state !== 'queued') continue;
     /*
+     * A ROW THAT ALREADY HOLDS A SLOT HAS BEEN PICKED, whatever its state says.
+     * The slot is set the moment `pump` chooses a row, and `runInSlot` marks the
+     * row running before its first await — but the slot is the claim, and the
+     * picker reads the claim rather than trusting that every start path will
+     * always flip the state in time. Without this line the queue spun the host
+     * to death twice on 2026-09-11: a CPU-lane row (two lanes) was picked, its
+     * slot held, and its start awaited `materializeDeferred` before anything set
+     * `running`, so the synchronous `for (;;)` in `pump` — inside which no
+     * microtask ever runs — saw the same queued row, the same one free lane, and
+     * picked it again, forever, one `runInSlot` promise per turn until the heap
+     * hit 8 GB. The GPU lane escaped only because its one slot made `canStart`
+     * false after the first pick.
+     */
+    if (slots.has(job.id)) continue;
+    /*
      * ── AND A ROW WAITING ON A PROMISE IS SKIPPED, NOT BLOCKED ────────────────
      *
      * `Job.after` names the row this one is downstream of, and the board is
@@ -3483,6 +3498,23 @@ async function runInSlot(job: Job, slot: Slot): Promise<void> {
      * branch above uses, for the same reason: there is nothing to spawn and the
      * person is owed the reason.
      */
+    /*
+     * MARKED RUNNING BEFORE THE FIRST AWAIT, and that ordering is the point. Until
+     * Wave 56 (688c888) `executeJob` did this as the first synchronous thing after
+     * the pick, and everything that reads state — the picker, `remove`, which
+     * splices a QUEUED row out from under whatever holds it — could take "queued"
+     * to mean "nobody has this". `materializeDeferred` put an await in front of
+     * that mark, and for as long as it was pending the row was both claimed and
+     * queued: `remove` would take it away while its start went on to run it, and
+     * the picker would choose it again (see `nextStartable`, which now also reads
+     * the slot). Materialising a deferred request is a ledger read and a plan,
+     * which is work on this row's behalf; "Starting…" is the honest word for it,
+     * and the message `executeJob` writes a moment later is the same one.
+     */
+    job.state = 'running';
+    job.startedAt = Date.now();
+    job.message = `Starting ${path.basename(job.inputPath)}…`;
+    changed();
     let request = held;
     try {
       request = await materializeDeferred(held, job);

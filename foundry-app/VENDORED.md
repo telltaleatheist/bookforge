@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **a9ee9e3** — *fix(dock): a host act pressed from the menu names what the tree's card names — the promise first, an EPUB import as itself, and a throw as a sentence* |
+| Source sha | **3b13392** — *fix(queue): the pump picks a row once — the picker reads the slot, and a start marks running before its first await* |
 | Copied on | 2026-09-11 |
-| Copied by | `git -C <foundry> archive a9ee9e3 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 3b13392 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1200,3 +1200,14 @@ a9ee9e3 (only .DS_Store and this folder's two notes differ); the `Job` wire shap
 BookForge's re-declaration in electron/foundry-host-queue.ts needed no edit; no dep movement
 (package.json / package-lock.json byte-identical to 2b44cc7). IPC-CHANNELS.md refreshed from
 `a9ee9e3:docs/` (+19 lines, the channels 03ff788's page intake added).
+**3b13392 (copied 2026-09-11, Mac) — the pump picks a row once.** Since 688c888 (2026-09-07) `runInSlot`
+awaited `materializeDeferred` BEFORE anything marked the row running, and `nextStartable` never consulted
+`slots`, so a two-lane CPU row (every export) was re-picked on every turn of the synchronous `for (;;)`
+pump — one `runInSlot` promise per turn until the host's V8 heap hit its 8 GB cap. That is what killed
+BookForge twice on 2026-09-11: at 12:21 when the Tender cleanup landed and its chained export became
+startable, and at 12:31 the moment Owen pressed Narrate (which orders an export). Both crash reports:
+`node::OnFatalError` out of GC = JS heap out of memory. Fixed: the picker skips a row that already holds a
+slot, and a start marks the row running synchronously before its first await. Test:
+`test/cpu-lane-pump.test.ts`. Behavioural note for this side's mirror: a deferred row now reads `running`
+while its request is being materialised, where it read `queued` until the engine spawned. Tree
+diff-verified against foundry/app at 3b13392; no dep movement; IPC-CHANNELS.md unchanged.
