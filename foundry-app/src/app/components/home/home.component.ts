@@ -98,10 +98,21 @@ import { UiService } from '../../core/ui.service';
           Hosted it says what it always said: there is no workspace there
           (\`IntakeWorkspaceService.available\`), so promising one would be an
           invitation to a door that is not in the wall.
+
+          AND A PDF NOW HAS TWO MEANINGS, WHICH THE RECTANGLE HAS TO ADMIT
+          (Owen, 2026-09-10: \`"give me the ability to drag/drop a pdf into a
+          new book, not just images. if i do, it should take each page as an
+          individual image."\`). The window asks which one at the drop
+          (\`App.sortPdfs\`) — but a veil that promised only "open it" would be
+          a person never learning the second meaning exists, because the card
+          only appears once they have already dropped something.
         -->
         <div class="target">
           @if (workspace.available()) {
-            <span>Drop a PDF anywhere in this window — or photographs, to make a book from</span>
+            <span>
+              Drop a PDF anywhere in this window — to read it, or to take it apart into pages —
+              or photographs, to make a book from
+            </span>
           } @else {
             <span>Drop a PDF anywhere in this window</span>
           }

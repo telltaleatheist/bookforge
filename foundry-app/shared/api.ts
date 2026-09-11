@@ -1461,6 +1461,45 @@ export interface FoundryApi {
     mintCommit(mintId: string): Promise<LedgerStep>;
     /** Give up. Nothing is left behind and no step is appended. */
     mintAbort(mintId: string): Promise<void>;
+    /**
+     * ── A DROPPED PDF, TAKEN APART INTO THE PAGES IT IS PICTURES OF ─────────
+     *
+     * Owen, 2026-09-10: *"give me the ability to drag/drop a pdf into a new
+     * book, not just images. if i do, it should take each page as an individual
+     * image."* A scan whose pages are photographs of paper needs the light
+     * table; the container a scanner wrapped them in changes nothing about the
+     * cropping and splitting that has to happen next.
+     *
+     * THE SPLIT OF LABOUR IS THE MINT'S, READ BACKWARDS. The RENDERER
+     * rasterizes, because pdf.js lives there and main has no rasterizer at all;
+     * MAIN stages the pages on disk and answers with paths, because `intake`
+     * above takes paths and the whole design of this is that a page of an
+     * exploded PDF is, from intake onward, indistinguishable from a photograph
+     * off a phone. Nothing downstream learns a PDF was involved.
+     *
+     * ONE PAGE PER CALL, for `mintPage`'s reason exactly: a 300-page scan is
+     * gigabytes of PNG and a call carrying the book would hold all of it in one
+     * heap.
+     *
+     * PNG AND NOT JPEG, which is the one place this differs from the mint. The
+     * staged file becomes intake's ORIGINAL, and intake takes a PNG's bytes as
+     * the working copy byte for byte (`intakePhotos`) — so the pixels pdf.js
+     * drew are the pixels the light table crops, with no encoder in between and
+     * no ringing baked into a bilevel scan that OCR then has to read through.
+     */
+    pdfStageBegin(): Promise<string>;
+    /** One rasterized page. Answers where it landed, for `intake` to copy. */
+    pdfStagePage(stageId: string, name: string, png: ArrayBuffer): Promise<string>;
+    /**
+     * The staged pages have been copied into a project, or abandoned. Releasing
+     * twice is releasing once.
+     *
+     * SEPARATE FROM THE LAST PAGE because the two doors let go at different
+     * moments: a drop on a light table intakes and releases in one breath, and a
+     * drop on Home leaves the pages on the workspace table until somebody says
+     * which book they are.
+     */
+    pdfStageRelease(stageId: string): Promise<void>;
   };
   onDocumentOpened(listener: (absolutePath: string) => void): () => void;
   /**

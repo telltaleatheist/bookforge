@@ -11,9 +11,8 @@ import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
  */
 import {
   canCleanFrom, canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom,
-  canTranslateFrom,
+  canTranslateFrom, hostActAimFrom,
 } from '@shared/stages';
-import { standsOnAnArrival } from '@shared/ledger';
 import { fold } from '@shared/original';
 
 import { BookStacksService } from '../../core/book-stacks.service';
@@ -1095,13 +1094,16 @@ export class ActionMenuComponent {
    * (`exportEpubFromStep`, electron/mount.ts) and then runs the work, which is
    * Owen's ruling and the reason this branch exists.
    *
-   * THE POSITION IS NO LONGER RESOLVED AT ALL FROM THIS MENU (Owen's ruling,
-   * 2026-08-24, inside the branch): a finished EPUB is named by file whenever
-   * one exists, and a position parked on an arrival gets a sentence instead of
-   * the old `hostActPositionFrom` hop onto the reading — the hop that cast and
-   * narrated the German text of a book whose English export was on screen. The
-   * mapping itself survives in shared/stages.ts for the TREE's row presses,
-   * where the row pressed says which lineage was meant.
+   * WHAT THE PRESS NAMES IS `hostActAimFrom` (shared/stages.ts), since
+   * 2026-09-11, and the argument for its order is written there. In short: the
+   * promise the window stands on wins; then a finished EPUB is named by file
+   * whenever one exists (Owen's ruling, 2026-08-24); then the position, which
+   * names itself — including an EPUB import, which IS the book — while a
+   * position parked on a SCAN gets a sentence instead of the old
+   * `hostActPositionFrom` hop onto the reading, the hop that cast and narrated
+   * the German text of a book whose English export was on screen. The mapping
+   * itself survives in shared/stages.ts for the TREE's row presses, where the
+   * row pressed says which lineage was meant.
    *
    * AN ACT THAT CONSUMES ONLY THE FINISHED FILE keeps every refusal it had. It
    * has said it reads an export and nothing else, so a press has to name one, and
@@ -1118,6 +1120,30 @@ export class ActionMenuComponent {
    * a button that cannot grey itself out against a fact this deep in the model.
    */
   protected async runHostAct(operationId: string): Promise<void> {
+    /*
+     * ── AND NOTHING THIS PRESS CAN THROW IS ALLOWED TO BE SILENT ──────────────
+     *
+     * The tree's footer got this wrapper on 2026-09-08 (`run`, open-documents),
+     * after Owen pressed Narrate on a running promise and got no card, no notice
+     * and no line in the terminal — the signature of an uncaught throw in a click
+     * handler, which reaches the hosted window's devtools console where nobody is
+     * looking. This menu is the second door onto the same acts and had no
+     * wrapper, so on 2026-09-11 the dock's Narrate could still do exactly that.
+     * The refusals below return quietly by design; what is left to catch is a
+     * program error, which the person in front of the button should be told.
+     */
+    try {
+      await this.hostActPressed(operationId);
+    } catch (err) {
+      const label = this.hostOps.offer(operationId)?.label ?? 'This act';
+      this.notices.notice.set(
+        `“${label}” could not be started: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      console.error('[dock] the host act press threw', err);
+    }
+  }
+
+  private async hostActPressed(operationId: string): Promise<void> {
     const dir = this.target();
     if (dir === null) return;
     /*
@@ -1142,79 +1168,76 @@ export class ActionMenuComponent {
     if (!await this.unapplied.cleared(dir, 'host')) return;
     if (this.hostOps.offersFor('book').some((offer) => offer.id === operationId)) {
       /*
-       * ── THE PRESS NAMES A FILE, AND NEVER A RESOLUTION — Owen's ruling ──────
+       * ── WHAT THE PRESS NAMES IS ONE RULE, AND IT LIVES IN SHARED ────────────
        *
-       * (2026-08-24): *"yes, it should name the file im actually exporting.
-       * not generically."* The ruling has a body count. This branch used to
-       * speak THE POSITION for any act declaring the book currency — and the
-       * position is wherever the pointer happens to be parked, which on
-       * evangelische-kirche was the mint: `hostActPositionFrom` mapped that
-       * arrival to the newest READ, the read is the GERMAN scan, the host
-       * auto-cast a German EPUB and narrated it, twice, while Owen sat looking
-       * at the English export he had just forged. The dock is a coarse
-       * surface; it must hand the host a CONCRETE file whenever one exists.
+       * `hostActAimFrom` (shared/stages.ts) holds the order the facts are read
+       * in and the argument for each: the promise the window stands on wins
+       * outright (Owen, 2026-09-07 — the grayed card is a position and every
+       * surface answers for it); then the finished export on screen, then the one
+       * finished export (Owen, 2026-08-24 — *"name the file im actually
+       * exporting"*); then the position, which names itself unless it is an
+       * arrival, and an arrival names itself only when it IS the book (an EPUB
+       * import — the same answer the tree gives that row). This method's job is
+       * to gather those facts honestly and to say each refusal as a sentence on
+       * the strip, which is this menu's own habit for a button that cannot grey
+       * itself out against a fact this deep in the model.
        *
-       * So, in order of how much the press can honestly know:
-       *  - THE EXPORT BEING VIEWED, when the focused tab is one of this
-       *    project's finished EPUBs — the strongest possible reading of
-       *    "the file im actually exporting".
-       *  - THE ONE FINISHED EPUB, when the tray holds exactly one.
-       *  - A SENTENCE for several unviewed — the same pick-in-the-tree answer
-       *    the file-consuming branch below has always given.
-       *  - With NO export at all, the make-one path survives — that is Owen's
-       *    own earlier ruling ("i dont think its intuitive to know you have to
-       *    create an epub before you can narrate") — but only from a position
-       *    that names ITSELF. A position parked on an ARRIVAL no longer maps
-       *    silently to the reading (the exact hop that chose German): it gets
-       *    a sentence, because a press from the scan's row is a press from
-       *    nowhere in particular about a book with more than one possible
-       *    text.
+       * THE FACTS, AND WHERE EACH COMES FROM. The promise is `promiseIn` rather
+       * than a test on `standingIn`'s answer, because "is the window aimed at a
+       * promise here" is a question the ledger mirror already answers by name.
+       * The export on screen is the focused tab when it is one of this project's
+       * finished EPUBs — the strongest possible reading of "the file im actually
+       * exporting". The position and ledger are the mirror's, read after the
+       * unapplied gate so an Apply that just moved the pointer is what gets named.
        */
       const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-      const finished = (held?.exports ?? []).filter((made) => made.kind === 'epub');
-      if (finished.length > 0) {
-        const tab = this.stage.activeDocument();
-        const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
-          ? finished.find((made) => fold(tab.path) === fold(`${dir}/final/${made.file}`)) ?? null
-          : null;
-        const target = viewing ?? (finished.length === 1 ? finished[0]! : null);
-        if (target === null) {
+      const finished = (held?.exports ?? [])
+        .filter((made) => made.kind === 'epub')
+        .map((made) => made.file);
+      const tab = this.stage.activeDocument();
+      const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
+        ? finished.find((file) => fold(tab.path) === fold(`${dir}/final/${file}`)) ?? null
+        : null;
+      const promise = this.ledger.promiseIn(dir);
+      const aim = hostActAimFrom({
+        promised: promise === null ? null : this.ledger.standingIn(dir),
+        finished,
+        viewing,
+        standing: this.ledger.standingIn(dir),
+        ledger: this.ledger.historyFor(dir)?.ledger ?? null,
+      });
+      if (aim.kind === 'node') {
+        this.press(operationId, dir, aim.nodeId);
+        return;
+      }
+      switch (aim.why) {
+        case 'several-exports':
           this.notices.notice.set(
             'This book has more than one finished export, so which one this should work from is '
             + 'not obvious from here. Open the one you mean, or start it from its row in the '
             + 'library tree.',
           );
           return;
-        }
-        this.press(operationId, dir, exportNodeId(target.file));
-        return;
+        case 'no-position':
+          /*
+           * `standingIn` answers null while a project's history is still in
+           * flight — `hasBookAt` deliberately reads that silence as "not the
+           * import" so the button is not greyed on a guess — and a press in that
+           * window has nothing to send. Saying so is the honest answer.
+           */
+          this.notices.notice.set(
+            'This book’s history has not finished loading in this window, so there is no step to '
+            + 'run this from yet. Give it a moment and press again.',
+          );
+          return;
+        case 'a-scan':
+          this.notices.notice.set(
+            'This book is standing on its scan, and there is no finished export to name — so '
+            + 'running this from here would be a guess about which text you mean. Export the book '
+            + 'first, or press the act on the step you mean in the library tree.',
+          );
+          return;
       }
-      const standing = this.ledger.standingIn(dir);
-      if (standing === null) {
-        /*
-         * NO POSITION TO NAME. `standingIn` answers null while a project's
-         * history is still in flight — `hasBookAt` deliberately reads that
-         * silence as "not the import" so the button is not greyed on a guess —
-         * and a press in that window has nothing to send. Saying so is the honest
-         * answer; sending the root would be a fabricated provenance, and the host
-         * echoes this id into every row it pushes back.
-         */
-        this.notices.notice.set(
-          'This book’s history has not finished loading in this window, so there is no step to '
-          + 'run this from yet. Give it a moment and press again.',
-        );
-        return;
-      }
-      if (standsOnAnArrival(standing)) {
-        this.notices.notice.set(
-          'This book is standing on its scan, and there is no finished export to name — so '
-          + 'running this from here would be a guess about which text you mean. Export the book '
-          + 'first, or press the act on the step you mean in the library tree.',
-        );
-        return;
-      }
-      this.press(operationId, dir, standing.id);
-      return;
     }
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
     /*

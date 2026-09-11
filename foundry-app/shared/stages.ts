@@ -53,6 +53,7 @@
  * row is "would this be possible if I were standing here", which is the same
  * question with a different step in it.
  */
+import { exportNodeId } from './host-ops';
 import { importedAsEpub, standsOnAnArrival } from './ledger';
 import { bookRow } from './original';
 import type { LedgerStep, ProjectLedger, ProjectSummary } from './types';
@@ -414,6 +415,96 @@ export function hostActPositionFrom(
   }
   if (reading !== null) return reading;
   return importedAsEpub(ledger) ? standing : null;
+}
+
+/**
+ * WHAT A HOST ACT PRESSED FROM THE DOCK SHOULD NAME — the action menu's half of
+ * the question `hostActPositionFrom` answers for a tree row.
+ *
+ * ── Why the dock needs a rule of its own ────────────────────────────────────
+ *
+ * A tree row says which lineage was meant by being the row pressed. The dock is
+ * pressed over a BOOK, and has to work out what the person means from what the
+ * window knows: what they clicked last, what is on screen, what the tray holds,
+ * where the pointer is parked. Those facts arrived at different times and can
+ * disagree, so the order they are read in IS the rule — and it lived inline in
+ * the component until 2026-09-11, when Owen pressed Narrate on the dock over a
+ * book standing on a promised cleanup and it did nothing the tree's own Narrate
+ * button on that cleanup's card did. Two doors onto one act, answering
+ * differently, is the shape this codebase refuses everywhere else; the rule is a
+ * function so a test can hold the two doors together.
+ *
+ * ── The answers, in the order they are asked ────────────────────────────────
+ *
+ * THE PROMISE THE WINDOW STANDS ON, FIRST AND OUTRIGHT. Owen (2026-09-07): *"if
+ * i queue cleanup, i want a grayed out step to appear where the item will be
+ * when it finishes … i should be able to run jobs against the grayed out row."*
+ * Clicking the grayed card is the most recent and most deliberate thing the
+ * person did, and `LedgerService.standOnPromise` leaves the document pane
+ * exactly where it was — so an export ON SCREEN in that state is yesterday's
+ * evidence, not today's intent, and reading the tray first would narrate an old
+ * EPUB while the person stood on the cleanup they had just ordered. The id sent
+ * is the promise's own (`Job.mints`), which main resolves to the row to wait
+ * behind (`pendingRowAt`, electron/ipc.ts) — the same id the tree's card sends,
+ * so the two doors reach the host as one press.
+ *
+ * THE FINISHED EXPORT BEING VIEWED, then THE ONE FINISHED EXPORT — Owen's
+ * 2026-08-24 ruling, *"it should name the file im actually exporting. not
+ * generically."* Several unviewed is a refusal: the dock cannot choose between
+ * them and must not guess.
+ *
+ * NO POSITION is a refusal: history is still in flight and there is nothing to
+ * send. Sending the root would be a fabricated provenance the host echoes into
+ * every row it pushes back.
+ *
+ * A POSITION THAT NAMES ITSELF is sent as itself — every row but an arrival.
+ *
+ * AN ARRIVAL THAT IS THE BOOK is sent as itself: a project that arrived as an
+ * EPUB has that row as its book (`importedAsEpub`), exactly as
+ * `hostActPositionFrom` answers for the tree's import row. Refusing it — which
+ * this menu did until 2026-09-11, with a sentence about "its scan" — was the
+ * whole of Owen's Tender Is the Flesh report: an EPUB import standing on its
+ * import row was told it stood on a scan, while the tree's press on the same row
+ * went through. AN ARRIVAL THAT IS NOT THE BOOK stays a refusal, and this is
+ * where the dock and the tree deliberately part: the tree maps the scan's row to
+ * the newest reading because the row pressed says which lineage was meant, and
+ * the dock does not take that hop, because from the dock a press on the scan is
+ * a press from nowhere in particular about a book with more than one possible
+ * text (the German-EPUB night the 08-24 ruling is about).
+ */
+export type HostActAim =
+  | { readonly kind: 'node'; readonly nodeId: string }
+  | { readonly kind: 'refuse'; readonly why: 'several-exports' | 'no-position' | 'a-scan' };
+
+export interface HostActAimInput {
+  /** The promised step this window is standing on in this project, or null. */
+  readonly promised: LedgerStep | null;
+  /** The finished EPUBs in the tray, by file name. */
+  readonly finished: readonly string[];
+  /** Of those, the one on screen — by the same file name — or null. */
+  readonly viewing: string | null;
+  /** The ledger's position, or null while its history is still in flight. */
+  readonly standing: LedgerStep | null;
+  /** The ledger itself, read only to tell an EPUB import from a scan. */
+  readonly ledger: ProjectLedger | null;
+}
+
+export function hostActAimFrom(input: HostActAimInput): HostActAim {
+  if (input.promised !== null) return { kind: 'node', nodeId: input.promised.id };
+  if (input.finished.length > 0) {
+    const viewed = input.viewing !== null && input.finished.includes(input.viewing)
+      ? input.viewing
+      : null;
+    const file = viewed ?? (input.finished.length === 1 ? input.finished[0]! : null);
+    if (file === null) return { kind: 'refuse', why: 'several-exports' };
+    return { kind: 'node', nodeId: exportNodeId(file) };
+  }
+  if (input.standing === null) return { kind: 'refuse', why: 'no-position' };
+  if (!standsOnAnArrival(input.standing)) return { kind: 'node', nodeId: input.standing.id };
+  if (input.ledger !== null && importedAsEpub(input.ledger)) {
+    return { kind: 'node', nodeId: input.standing.id };
+  }
+  return { kind: 'refuse', why: 'a-scan' };
 }
 
 /**

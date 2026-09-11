@@ -104,6 +104,108 @@ export function isPhotographName(name: string): boolean {
 }
 
 /**
+ * ── A PDF IS A STACK OF PHOTOGRAPHS SOMEBODY ALREADY BOUND ──────────────────
+ *
+ * Owen, 2026-09-10: *"give me the ability to drag/drop a pdf into a new book,
+ * not just images. if i do, it should take each page as an individual image.
+ * theres a book that is just a bunch of scanned images that need to be cropped
+ * and split and stuff"*.
+ *
+ * That is the exact case this stage was built for arriving in the one container
+ * it could not read. A scan whose pages are photographs of paper needs the light
+ * table — the crop, the split, the turn — and the fact that a scanner wrapped
+ * them in a PDF before Foundry ever saw them changes nothing about the work.
+ *
+ * SO THE PDF IS EXPLODED, NOT READ. Each page is rasterized to one PNG and
+ * handed to the ordinary intake, which copies, hashes and catalogues it exactly
+ * as it does a photograph off a phone. Nothing downstream of intake learns that
+ * these pages arrived together: the recipe, the editor, the mint and the read
+ * see a pile of pictures, which is what they are.
+ *
+ * ── IT IS NOT IN `PHOTOGRAPH_TYPES`, AND THAT IS THE INVARIANT ──────────────
+ *
+ * `.pdf` must never join that set. Intake COPIES what it is given and decodes it
+ * as one frame; a PDF handed to it would be one refusal, correctly. The
+ * explosion happens strictly upstream, in the renderer, where pdf.js already
+ * lives — and what reaches intake is a directory of PNGs that pass the set above
+ * on their own merits. Two doors, one gate.
+ */
+export function isPdfName(name: string): boolean {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return name.slice(dot).toLowerCase() === '.pdf';
+}
+
+/**
+ * Nominal dots per inch a PDF page is rasterized at on its way to the table.
+ *
+ * THE SAME NUMBER THE MINT DECLARES ON THE WAY OUT (`MINT_DPI`, and it is 300
+ * there for the same reason): a PDF page box is in points, 72 to the inch, and
+ * 300 dpi is the resolution a page of paper is scanned at. A book that came in
+ * as a 300 dpi scan therefore comes out of this at roughly the pixels it was
+ * scanned with — no invented detail, and nothing thrown away either.
+ *
+ * IT IS NOT READ OFF THE EMBEDDED IMAGE, which was considered and refused. A
+ * page that is one full-bleed scan could in principle be rasterized at exactly
+ * that image's own resolution; a page that is two images, or an image under a
+ * text layer, or a scan with a black border drawn over it, could not. One
+ * number that is right for every page beats a clever one that is exactly right
+ * for the easy pages and arbitrary for the rest.
+ */
+export const PDF_PAGE_DPI = 300;
+
+/**
+ * The longest edge a rasterized page may have, in pixels.
+ *
+ * A GUARD ON THE CANVAS, NOT A QUALITY SETTING. Browsers cap a canvas's area
+ * and its longest side, and the cap is not the same on every platform; a PDF
+ * declaring an A0 poster page would ask for 9,900 px at 300 dpi and come back
+ * as a blank canvas with no error at all — the silent failure this project
+ * refuses to ship. So an oversized page is rasterized smaller, uniformly, and
+ * the scale it actually got is what the page is.
+ *
+ * 5000 px is over an A3 page at this dpi and well inside every current cap.
+ */
+export const PDF_PAGE_MAX_EDGE = 5000;
+
+/**
+ * The scale to hand pdf.js for a page whose box is `width` x `height` POINTS.
+ *
+ * Shared rather than inlined at the one call site because the guard above is a
+ * rule about the output, and a rule stated in prose beside a constant is a rule
+ * with two readings the first time anybody else needs the same number.
+ */
+export function pdfPageScale(width: number, height: number): number {
+  const wanted = PDF_PAGE_DPI / 72;
+  const longest = Math.max(width, height) * wanted;
+  return longest > PDF_PAGE_MAX_EDGE ? PDF_PAGE_MAX_EDGE / Math.max(width, height) : wanted;
+}
+
+/**
+ * What one exploded page is called on the light table.
+ *
+ * THE NAME IS THE ONLY WORD A SENTENCE ABOUT THIS PAGE CAN USE. Intake stores
+ * the basename it was handed and the card prints it, so a page of a PDF has to
+ * arrive already carrying its own name — there is nothing else to call it by
+ * once the staging directory is gone.
+ *
+ * ZERO-PADDED TO THE BOOK'S OWN WIDTH, so a card that says `scan p0007` sorts
+ * beside `scan p0100` in every listing that ever sees it, including a person's
+ * eyes. The stem is the PDF's, with its extension off: somebody who drops two
+ * scans into one book can tell whose page is whose.
+ */
+export function pdfPageName(stem: string, index: number, total: number): string {
+  const width = Math.max(3, String(total).length);
+  return `${stem} p${String(index + 1).padStart(width, '0')}.png`;
+}
+
+/** A dropped PDF's name with its extension off — the stem `pdfPageName` builds on. */
+export function pdfStem(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot <= 0 ? name : name.slice(0, dot);
+}
+
+/**
  * The pages a mint would produce, in the order it would produce them.
  *
  * ── THE THIRD TIME THIS RULE HAS HAD MORE THAN ONE BODY ─────────────────────

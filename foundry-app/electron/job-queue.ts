@@ -733,10 +733,10 @@ const slots = new Map<string, Slot>();
  * `cancelHere` looks here when the slot is not this row, and `shutdown` stops
  * every one of them.
  *
- * NO LONGER EMPTY STANDALONE. It was — nothing called `runJob` without a host
+ * NO LONGER EMPTY STANDALONE. It was — nothing ran detached without a host
  * queue to have scheduled it — until exports started running under the dialog
- * that asked for them (`runNow`), which goes through `runJob` in both worlds for
- * the same reason a host's run does: the deciding already happened, at the
+ * that asked for them (`runNow`), which goes through `runDetached` in both worlds
+ * for the same reason a host's run does: the deciding already happened, at the
  * button. Every reader of this map wants exactly that run counted — the drain
  * holds while it lives, its ✕ reaches it, and `shutdown` stops it.
  */
@@ -1079,6 +1079,43 @@ function hostQueue(): FoundryHostQueue | null {
 const hostRowsByProject = new Map<string, readonly FoundryJobRow[]>();
 
 /**
+ * THE ROWS OF OURS THAT ARE A HOST'S ROW SEEN FROM THE INSIDE — the twins, and
+ * the one thing a hosted shelf must not draw beside the host's own list.
+ *
+ * ── What a twin is ─────────────────────────────────────────────────────────
+ *
+ * `runJob` is the seam door (electron/mount.ts): the host's pump has chosen one
+ * of ITS rows and asks this app to run it now, and this app mints a row of its
+ * own for it because the landings, the settle, the guards and the ✕ are all
+ * things a ROW carries (`runJob` argues it at length). That row is not a second
+ * piece of work. It is the host's row seen from the side that spawns the engine,
+ * and the host is already publishing the other half of it through
+ * `setHostQueueRows` — so the two are one job filed in two lists, which is
+ * exactly the shape `shelfJobs`' never-a-merge rule exists to keep off a screen.
+ *
+ * ── The night it was drawn twice ───────────────────────────────────────────
+ *
+ * Between 2026-09-08 (`shelfJobs` began drawing every LIVE row of ours, for the
+ * deferred export that was visible in neither window) and this line, the twin
+ * passed that filter. ONE Clean text ordered in BookForge drew TWO grayed
+ * "Cleaned for narration" cards under one step, both running, both 4% (Owen,
+ * 2026-09-11). They were identical by construction: the tree keys a promised
+ * card on `Job.mints` and `promisedBy` copies that onto the twin verbatim, and
+ * `admitPending` (shared/pending.ts) skips a promise whose step has LANDED —
+ * never one that is already promised by another row.
+ *
+ * ── KEYED ON THE ROW ITSELF, so the mark cannot outlive what it is about ────
+ *
+ * A set of ids would have to be swept at all five places a row leaves `jobs`,
+ * and the sixth one added later would leak a mark that no row answers for. This
+ * queue mutates rows in place and never replaces one — `copyOf` exists precisely
+ * so that what leaves this module is a copy — so a row's identity is as durable
+ * as its id, and a WeakSet forgets the mark in the same breath the row is
+ * forgotten.
+ */
+const hostScheduled = new WeakSet<Job>();
+
+/**
  * WHAT A WINDOW DRAWS — the host's rows where there is a host queue, ours where
  * there is not.
  *
@@ -1098,19 +1135,23 @@ const hostRowsByProject = new Map<string, readonly FoundryJobRow[]>();
  * host-ordered run that is writing into a folder somebody is about to erase.
  * This is about what is DRAWN, not about what is known.
  *
- * ── THE ONE EXCEPTION, AND IT IS AN EXCEPTION THAT CANNOT DISAGREE ──────────
+ * ── THE EXCEPTION, AND IT IS AN EXCEPTION THAT CANNOT DISAGREE ─────────────
  *
- * An env install is appended. BookForge asked for it after seeing one vanish
- * from the shelf mid-download — *"an install is real work with real progress and
- * the shelf is the window's answer to what is this machine doing"* — and it is
- * safe for a reason that is structural rather than careful: AN ENV INSTALL NEVER
- * ROUTES (16e — it is a precondition of the engine running at all, not GPU work,
- * and sending one through a host queue would deadlock the first install behind a
- * job that needs it). So an install exists in exactly one of the two lists, by
- * construction, and no row can be drawn twice — which is the entire hazard the
- * never-a-merge rule above exists to prevent. That rule is unchanged for
- * everything it was written about: every row that CAN be in both lists is drawn
- * from the host's alone.
+ * Our own LIVE rows are appended — the env install BookForge asked for after
+ * seeing one vanish from the shelf mid-download (*"an install is real work with
+ * real progress and the shelf is the window's answer to what is this machine
+ * doing"*), the mint, and the export a host ordered through `exportEpubFromStep`
+ * that waits behind its parent. What makes that safe is structural rather than
+ * careful: NONE OF THEM HAS A ROW IN THE HOST'S LIST. An install never routes
+ * (16e), a mint never routes, and an export the host ordered through the mount
+ * seam was never filed in the host's queue at all — so each exists in exactly
+ * one of the two lists and no row can be drawn twice.
+ *
+ * THE ROWS THAT CAN BE IN BOTH LISTS ARE THE TWINS `runJob` MINTS, and they are
+ * filtered out by name (`hostScheduled`, where the argument and the night it was
+ * drawn twice both live). So the rule above is unchanged for everything it was
+ * written about: every row that CAN be in both lists is drawn from the host's
+ * alone. What is added is only work the host's list has never heard of.
  */
 export function shelfJobs(): Job[] {
   if (hostQueue() === null) return listJobs();
@@ -1134,10 +1175,21 @@ export function shelfJobs(): Job[] {
    * app's list at the settle and does not accumulate in anybody's shelf. What is
    * drawn is work this app is doing or is about to, which is exactly what a
    * queue is for.
+   *
+   * AND NEVER A TWIN. The rows `runJob` mints for work the HOST scheduled are
+   * the host's rows seen from the inside — the host is publishing its half
+   * through `setHostQueueRows` and this would publish ours beside it, which is
+   * one job drawn twice and is how one Clean text became two identical grayed
+   * cards (`hostScheduled`, 2026-09-11). They stay in `jobs`, where every reader
+   * that counts real work goes on counting them: `listJobs`, `foundryBusy` and
+   * the delete guards, `clearFinished`, the chain verdicts. This is about what is
+   * DRAWN. A gesture cannot land on an undrawn row, and the host's own row keeps
+   * the ✕ that reaches the host.
    */
   const alive = jobs.filter(
-    (job) => NEVER_ROUTED[job.kind]
-      || job.state === 'held' || job.state === 'queued' || job.state === 'running',
+    (job) => !hostScheduled.has(job)
+      && (NEVER_ROUTED[job.kind]
+        || job.state === 'held' || job.state === 'queued' || job.state === 'running'),
   );
   return [...rows, ...alive.map(copyOf)];
 }
@@ -4586,31 +4638,69 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
  * exception here: it is a fact about a row, reported the way this queue has always
  * reported it.
  */
-export async function runJob(
+export async function runJob(request: EngineRequest, opts: RunOptions = {}): Promise<Job> {
+  /*
+   * EVERY CALLER OF THIS DOOR IS THE HOST, BY CONSTRUCTION, and that is what
+   * lets the row below be marked as the host's twin without anybody being asked.
+   * It is exported for electron/mount.ts and reached from nowhere inside this
+   * app: `runNow`, the other detached door, calls `runDetached` itself and says
+   * there that its run is nobody's twin. So "a host scheduled this" is a fact
+   * about WHICH DOOR WAS OPENED rather than a claim passed in and trusted.
+   */
+  return runDetached(request, opts, true);
+}
+
+/**
+ * WHAT WHOEVER SCHEDULED A DETACHED RUN HANDS IT — named once, because two doors
+ * spell it: the seam's (`runJob`) and the dialog's (`runNow`).
+ */
+interface RunOptions {
+  /**
+   * The project's position at the moment the person pressed — carried by the
+   * host from its own `enqueue` and handed straight back, never re-read here.
+   * `Job.parentStep` holds the whole argument: a pointer that moves while a row
+   * waits must not change what the run is recorded as being made from, and
+   * hosted the waiting is longer, not shorter.
+   */
+  parentStep?: string | null;
+  /** Every line the engine writes, as it writes it. The row gets them too. */
+  onProgress?: (line: string) => void;
+  /**
+   * STOP THIS RUN — mapped onto exactly what the ✕ does to a running job.
+   *
+   * It is `cancelHere` and not `cancel`, deliberately: this row is Foundry's
+   * own, and a cancel that routed would hand our id to the host's list, which
+   * has never heard of it, while the engine went on reading. An abort that
+   * arrives before the child exists is the same gesture the shelf makes on a
+   * job waiting for the reading server — the row settles `cancelled` and the
+   * run notices at the next checkpoint.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * ONE RUN, OFF THE BOARD — everything `runJob` above says, and the body the
+ * dialog's door (`runNow`) shares with it.
+ *
+ * The two doors differ in exactly one thing, and it is not what the run DOES:
+ * whether the work was scheduled by a host, which decides whether the row minted
+ * here is a twin of a row the host is drawing already. Everything else — the
+ * mint, the abort, the deferral, `executeJob`, the landing — is one path,
+ * deliberately, on the rule this file states everywhere else: a hosted run and a
+ * standalone run are the same run.
+ */
+async function runDetached(
   request: EngineRequest,
-  opts: {
-    /**
-     * The project's position at the moment the person pressed — carried by the
-     * host from its own `enqueue` and handed straight back, never re-read here.
-     * `Job.parentStep` holds the whole argument: a pointer that moves while a row
-     * waits must not change what the run is recorded as being made from, and
-     * hosted the waiting is longer, not shorter.
-     */
-    parentStep?: string | null;
-    /** Every line the engine writes, as it writes it. The row gets them too. */
-    onProgress?: (line: string) => void;
-    /**
-     * STOP THIS RUN — mapped onto exactly what the ✕ does to a running job.
-     *
-     * It is `cancelHere` and not `cancel`, deliberately: this row is Foundry's
-     * own, and a cancel that routed would hand our id to the host's list, which
-     * has never heard of it, while the engine went on reading. An abort that
-     * arrives before the child exists is the same gesture the shelf makes on a
-     * job waiting for the reading server — the row settles `cancelled` and the
-     * run notices at the next checkpoint.
-     */
-    signal?: AbortSignal;
-  } = {},
+  opts: RunOptions,
+  /**
+   * DID SOMEBODY ELSE'S SCHEDULER ORDER THIS — true at the seam, false at the
+   * dialog, and it decides one thing only: whether the row below is marked as the
+   * host's own row seen from the inside (`hostScheduled`) and therefore left out
+   * of the hosted shelf, which is already drawing the host's half of it. A run the
+   * dialog asked for is nobody's twin — no list anywhere else holds a row for it —
+   * so it is marked nothing and stays drawn for as long as it lasts.
+   */
+  viaHost: boolean,
 ): Promise<Job> {
   const parentStep = opts.parentStep ?? null;
   /*
@@ -4661,6 +4751,15 @@ export async function runJob(
     createdAt: Date.now(),
   };
   jobs.push(job);
+  /*
+   * AND IT IS THE HOST'S ROW SEEN FROM THE INSIDE, when the host is the one that
+   * scheduled it. Marked HERE, at the mint, because this is the only moment
+   * anything can tell — a row carries no record of which door minted it, and by
+   * the time the shelf is composed the twin is indistinguishable from a row this
+   * app ordered for itself. `hostScheduled` holds the whole of why the shelf must
+   * draw one of the two and not both.
+   */
+  if (viaHost) hostScheduled.add(job);
   requests.set(job.id, request);
   changed();
 
@@ -4787,13 +4886,15 @@ export async function runJob(
  * that never waited. `settled` has already fired by then, so nothing that
  * listens for endings misses one.
  *
- * ── It never routes, and hosted it is invisible by construction ─────────────
+ * ── It never routes, and hosted the row is ours rather than the host's ──────
  *
  * A host queue takes over the DECIDING, and there is nothing here to decide:
  * the export runs at the press, exactly as `exportEpubFromStep` (the host's own
- * unattended door) has always stayed internal. Hosted, the shelf draws the
- * host's rows plus our NEVER_ROUTED kinds — an export row is neither, so it is
- * drawn nowhere and no gesture can reach it but the dialog's own await.
+ * unattended door) has always stayed internal. So no row for this exists in the
+ * host's list, which is why it is `runDetached(…, false)` and not `runJob`: it is
+ * nobody's twin, and the hosted shelf draws it for the seconds it lasts with its
+ * ✕ reaching it through `ourRow` (2026-09-08). What it must never be is marked
+ * `hostScheduled`, which would hide a row that nothing else is drawing.
  *
  * ── The dedupe stays at this door ───────────────────────────────────────────
  *
@@ -4835,7 +4936,10 @@ export async function runNow(
   const already = pendingFor(productOf(request));
   if (already) return copyOf(already);
 
-  const job = await runJob(request, { parentStep });
+  // NOT `runJob`: that door is the seam's and marks its row as a host's twin.
+  // This run was decided here, at the button, and nothing anywhere else holds a
+  // row for it — see the paragraph above and `hostScheduled`.
+  const job = await runDetached(request, { parentStep }, false);
 
   /*
    * OUT OF THE LIST, NOW THAT EVERYTHING READ FROM IT. The landings, the

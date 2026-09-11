@@ -14,12 +14,13 @@ import type {
 } from '@shared/types';
 
 import {
-  arrangementOf, halvesOf, isWholeFrameTurned, joinedQuad, sameShape, splitFromFraction,
-  turnedLike, turnQuad, turnsOf, WHOLE_FRAME,
+  arrangementOf, halvesOf, isPdfName, isWholeFrameTurned, joinedQuad, sameShape,
+  splitFromFraction, turnedLike, turnQuad, turnsOf, WHOLE_FRAME,
 } from '@shared/capture';
 import type { CaptureCard } from '../components/capture-grid/capture-grid.component';
 import { api } from './foundry';
 import { NoticeService } from './notice.service';
+import { PdfPagesService } from './pdf-pages.service';
 
 /**
  * THE LIGHT TABLE'S STATE — the recipe, and every rule about changing it.
@@ -63,6 +64,7 @@ import { NoticeService } from './notice.service';
 @Injectable({ providedIn: 'root' })
 export class CaptureService {
   private readonly notices = inject(NoticeService);
+  private readonly pdfPages = inject(PdfPagesService);
 
   private readonly directory = signal<string | null>(null);
   private readonly door = signal<string | null>(null);
@@ -409,6 +411,9 @@ export class CaptureService {
    * and said aloud rather than dropped silently: that happens for a drag out of
    * another application's virtual folder, and the person deserves to know their
    * photograph did not arrive.
+   *
+   * A PDF IS THE ONE FILE THAT DOES NOT SIMPLY BECOME A PATH — it becomes as
+   * many paths as it has pages. See the block inside.
    */
   async intake(projectDir: string, files: readonly File[]): Promise<CaptureIntaken | null> {
     /*
@@ -427,16 +432,67 @@ export class CaptureService {
      */
     if (api === null) return null;
     const paths: string[] = [];
-    for (const file of files) {
-      const path = api.pathForFile(file);
-      // COUNTED, NOT ANNOUNCED HERE. A per-file notice inside this loop
-      // overwrites itself: drag in twenty photographs out of another
-      // application's virtual folder and the bar shows the twentieth name and
-      // nothing about the other nineteen. The one sentence at the end says how
-      // many, beside everything else that happened.
-      if (path !== '') paths.push(path);
+    /*
+     * ── A PDF IN THE DROP IS TAKEN APART BEFORE ANY OF IT CROSSES ──────────
+     *
+     * Owen, 2026-09-10: *"give me the ability to drag/drop a pdf into a new
+     * book, not just images. if i do, it should take each page as an individual
+     * image."*
+     *
+     * ON THE LIGHT TABLE THERE IS NO SECOND MEANING TO ASK ABOUT. A PDF dropped
+     * on Home could be a book to open or a book to take apart, and the shell
+     * asks (`App.onDrop`). Here the person is standing in a capture project
+     * looking at cards of pages: the only thing a PDF can mean is more of them.
+     * It used to mean a refusal — *".pdf is not a photograph this stage reads"* —
+     * which was main correctly answering a question this side should never have
+     * let it be asked.
+     *
+     * WHAT INTAKE RECEIVES IS PNGs, and it never learns otherwise. Each page is
+     * rasterized and staged (`PdfPagesService`), and the staged paths join the
+     * photographs in ONE call, in the order they were dropped, so a folder of
+     * loose photos and a scan handed over in one gesture land as one book in the
+     * order the person handed them over.
+     *
+     * THE STAGING IS RELEASED IN A `finally` AND NOT ON THE HAPPY PATH. Intake
+     * has copied the bytes into the project by then, so what is being deleted is
+     * the second copy — and a throw that skipped the release would leave a
+     * scan's worth of PNGs in %TEMP% until the next drop swept them.
+     */
+    const stages: string[] = [];
+    let unreadable = 0;
+    try {
+      for (const file of files) {
+        if (isPdfName(file.name)) {
+          // No thumbnails: intake makes its own from the file it copies, and a
+          // second encode per page here would be thrown away unlooked at.
+          const exploded = await this.pdfPages.explode(file, false);
+          if (exploded === null) {
+            // Null is two things. A scan that would not open is no reason to
+            // lose the photographs beside it, so the drop goes on. STOP MEANT
+            // THE WHOLE DROP — but what has already been staged still goes in,
+            // because those pages exist and the person watched them arrive.
+            if (this.pdfPages.stopped()) break;
+            continue;
+          }
+          stages.push(exploded.stageId);
+          for (const page of exploded.pages) paths.push(page.path);
+          continue;
+        }
+        const path = api.pathForFile(file);
+        // COUNTED, NOT ANNOUNCED HERE. A per-file notice inside this loop
+        // overwrites itself: drag in twenty photographs out of another
+        // application's virtual folder and the bar shows the twentieth name and
+        // nothing about the other nineteen. The one sentence at the end says how
+        // many, beside everything else that happened.
+        if (path === '') unreadable += 1;
+        else paths.push(path);
+      }
+      return await this.intakePaths(projectDir, paths, unreadable);
+    } finally {
+      for (const stageId of stages) {
+        await api.capture.pdfStageRelease(stageId).catch(() => undefined);
+      }
     }
-    return this.intakePaths(projectDir, paths, files.length - paths.length);
   }
 
   /**
@@ -478,6 +534,16 @@ export class CaptureService {
   ): Promise<CaptureIntaken | null> {
     if (api === null) return null;
     if (paths.length === 0) {
+      /*
+       * SILENT WHEN THERE IS NOTHING TO BE SILENT ABOUT. `unreadable` is the
+       * count the caller could not turn into a path; zero of those AND no paths
+       * means the drop was accounted for somewhere else and already spoken
+       * about — a PDF whose explosion was cancelled or refused, which said so in
+       * its own words. A sentence here would be this method's guess at a failure
+       * it did not witness, and "None of those 0 files could be read" is a
+       * sentence about nothing.
+       */
+      if (unreadable === 0) return null;
       this.notices.notice.set(
         unreadable === 1
           ? 'That file could not be read from where it was dragged from.'

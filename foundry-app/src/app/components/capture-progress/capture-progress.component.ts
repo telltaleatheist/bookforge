@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 
 import { CaptureService } from '../../core/capture.service';
+import { PdfPagesService } from '../../core/pdf-pages.service';
 
 /**
  * READING PHOTOGRAPHS — the minute the app cannot answer, made visible.
@@ -26,6 +27,33 @@ import { CaptureService } from '../../core/capture.service';
  * do nothing for over a second — and a project half full of originals with a
  * recipe that does not list them. Half an intake is a worse thing to own than a
  * finished one somebody did not want.
+ *
+ * ── IT DRAWS TWO PASSES NOW, AND THE SECOND ONE CAN BE STOPPED ─────────────
+ *
+ * A dropped PDF is rasterized page by page before any of it reaches intake
+ * (`PdfPagesService`), which is the same shape of wait for the same person and
+ * belongs on the same card rather than in a second one invented beside it. The
+ * numbers, the bar and the filename line are identical; two things differ, and
+ * both are true rather than decorative.
+ *
+ * THE LEAD SENTENCE, because the two waits are not the same wait. An intake
+ * blocks MAIN and the window really cannot answer; a rasterizing pass runs in
+ * THIS process with the UI thread free between pages, so a card that told
+ * somebody the window may not answer would be a lie in the more alarming
+ * direction.
+ *
+ * AND A STOP BUTTON, WHICH THE INTAKE DELIBERATELY HAS NOT GOT. The intake's
+ * refusal is argued above and stands: a wasm decode cannot be interrupted. A
+ * page is a canvas render taking a fraction of a second, so stopping is
+ * immediate in the only sense a person can perceive — and a 600-page scan
+ * dropped by accident is minutes of work with, until now, nothing to do but
+ * watch it. Nothing has been intaken while this runs, so what stopping leaves
+ * behind is a staging directory that deletes itself and a library untouched.
+ *
+ * BOTH ARE NEVER ON SCREEN AT ONCE. The explosion finishes before the intake it
+ * feeds is asked for (`CaptureService.intake`), so these two `@if`s are a
+ * sequence and not a stack — which is why they may share a z-index and a scrim
+ * without either having an opinion about the other.
  *
  * ── `done` SITS ONE BEHIND `file`, BY CONTRACT ──────────────────────────────
  *
@@ -72,6 +100,40 @@ import { CaptureService } from '../../core/capture.service';
             Each photograph is decoded once and kept as an upright copy. The
             window may not answer while one is being read.
           </p>
+        </div>
+      </div>
+    }
+
+    @if (pdfPages.progress(); as run) {
+      <!-- No click handler on the scrim, for the reason the intake's has none:
+           there is nothing to dismiss TO. The stop is a button that says what it
+           does, on the card, where somebody can decide to press it. -->
+      <div class="scrim"></div>
+
+      <div class="card" role="dialog" aria-modal="true" aria-label="Reading a PDF">
+        <header class="head">
+          <span class="title">Reading the pages of a PDF</span>
+        </header>
+
+        <div class="body">
+          <p class="count">{{ run.done }} of {{ run.total }}</p>
+          <p class="file">{{ run.file }}</p>
+
+          <div class="track" role="progressbar"
+               [attr.aria-valuenow]="run.done"
+               [attr.aria-valuemin]="0"
+               [attr.aria-valuemax]="run.total">
+            <div class="fill" [style.width.%]="pdfPercent()"></div>
+          </div>
+
+          <p class="lead">
+            Each page is drawn once and kept as an image, to be cropped and split
+            on the light table. Nothing is added to a book until this finishes.
+          </p>
+
+          <div class="row">
+            <button type="button" class="ghost" (click)="pdfPages.cancel()">Stop</button>
+          </div>
         </div>
       </div>
     }
@@ -145,14 +207,37 @@ import { CaptureService } from '../../core/capture.service';
     }
 
     .lead { margin: 12px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
+    /* The stop sits at the end of its own row rather than under the lead, so it
+       is where every other card in this app puts the button that ends something. */
+    .row { display: flex; justify-content: flex-end; margin-top: 14px; }
+    .ghost {
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+    .ghost:hover { background: var(--bg-input); }
   `],
 })
 export class CaptureProgressComponent {
   protected readonly captures = inject(CaptureService);
+  protected readonly pdfPages = inject(PdfPagesService);
 
   /** Guarded against a zero total, which would be a division rather than a bar. */
   protected readonly percent = computed(() => {
     const run = this.captures.intakeProgress();
+    if (run === null || run.total === 0) return 0;
+    return Math.round((run.done / run.total) * 100);
+  });
+
+  /** The same arithmetic over the other pass. Two signals, one guard each. */
+  protected readonly pdfPercent = computed(() => {
+    const run = this.pdfPages.progress();
     if (run === null || run.total === 0) return 0;
     return Math.round((run.done / run.total) * 100);
   });

@@ -338,6 +338,9 @@ const api: FoundryApi = {
     mintPage: (mintId, index, jpeg) => ipcRenderer.invoke('capture:mint-page', mintId, index, jpeg),
     mintCommit: (mintId) => ipcRenderer.invoke('capture:mint-commit', mintId),
     mintAbort: (mintId) => ipcRenderer.invoke('capture:mint-abort', mintId),
+    pdfStageBegin: () => ipcRenderer.invoke('capture:pdf-stage-begin'),
+    pdfStagePage: (stageId, name, png) => ipcRenderer.invoke('capture:pdf-stage-page', stageId, name, png),
+    pdfStageRelease: (stageId) => ipcRenderer.invoke('capture:pdf-stage-release', stageId),
   },
   onDocumentOpened: (listener) => subscribe<string>('document:opened', listener),
   onDocumentRelocated: (listener) =>

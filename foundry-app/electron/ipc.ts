@@ -33,6 +33,9 @@ import {
   mintPage,
   onIntakeProgress,
   openCapture,
+  pdfStageBegin,
+  pdfStagePage,
+  pdfStageRelease,
   removePhotos,
   writeRecipe,
 } from './capture';
@@ -2265,6 +2268,25 @@ export function registerIpc(): void {
     mintPage(mintId, index, jpeg));
   ipcMain.handle('capture:mint-commit', (_event, mintId: string) => mintCommit(mintId));
   ipcMain.handle('capture:mint-abort', (_event, mintId: string) => mintAbort(mintId));
+  /*
+   * THE PDF EXPLOSION IS A SESSION TOO, AND FOR THE MINT'S REASON REVERSED.
+   *
+   * A dropped PDF becomes one PNG per page. The renderer rasterizes — pdf.js is
+   * over there — and these three doors are main putting the pages on disk so
+   * that `capture:intake` above can copy them in exactly as it copies a
+   * photograph. One page per call, because a 300-page scan is gigabytes and a
+   * call that carried the book would hold all of it in one heap.
+   *
+   * NOTHING HERE ADMITS ANYTHING, because nothing here is a path the renderer
+   * named: main chooses the directory, the renderer supplies bytes and a
+   * basename, and the basename is checked rather than trusted (`pdfStagePage`).
+   * The release is separate from the last page because the two callers let go at
+   * different moments — see the function's own note.
+   */
+  ipcMain.handle('capture:pdf-stage-begin', () => pdfStageBegin());
+  ipcMain.handle('capture:pdf-stage-page', (_event, stageId: string, name: string, png: ArrayBuffer) =>
+    pdfStagePage(stageId, name, png));
+  ipcMain.handle('capture:pdf-stage-release', (_event, stageId: string) => pdfStageRelease(stageId));
   ipcMain.handle('ledger:read', (_event, projectDir: string) => readStepLedger(projectDir));
   ipcMain.handle('ledger:go', (_event, projectDir: string, stepId: string) =>
     goToStep(projectDir, stepId));

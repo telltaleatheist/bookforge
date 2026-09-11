@@ -3,6 +3,8 @@ import {
 } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 
+import { isPdfName } from '@shared/capture';
+
 import { InspectorComponent } from './components/inspector/inspector.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { ExportDialogComponent } from './components/export-dialog/export-dialog.component';
@@ -25,8 +27,10 @@ import { ToastTrayComponent } from './components/toast-tray/toast-tray.component
 import { BookStacksService } from './core/book-stacks.service';
 import { CaptureService } from './core/capture.service';
 import { OpenDocumentsService, pathIsProject } from './core/documents.service';
+import { ConfirmService } from './core/confirm.service';
 import { IntakeWorkspaceService, isWorkspaceImage } from './core/intake-workspace.service';
 import { NoticeService } from './core/notice.service';
+import { PdfPagesService } from './core/pdf-pages.service';
 import { PositionSyncService } from './core/position-sync.service';
 import { ProjectsService } from './core/projects.service';
 import { StageService } from './core/stage.service';
@@ -362,6 +366,15 @@ export class App {
    * decision about the drop rather than about any surface.
    */
   private readonly shelf = inject(IntakeWorkspaceService);
+  /**
+   * The rasterizer that turns a dropped PDF into a pile of pages, and the card
+   * that asks which of the two things a dropped PDF means. Both are here for the
+   * shelf's reason one line up: this handler is the one place that sees the
+   * whole drop, and "is this a book to open or a book to take apart" is a
+   * question about the GESTURE, not about any surface.
+   */
+  private readonly pdfPages = inject(PdfPagesService);
+  private readonly confirm = inject(ConfirmService);
   private readonly stage = inject(StageService);
   private readonly notices = inject(NoticeService);
   private readonly stacks = inject(BookStacksService);
@@ -750,9 +763,16 @@ export class App {
    * workspace, so hosted the veil says what it always said.
    */
   protected readonly dropSays = computed(() => {
-    if (this.intaking() !== null) return 'Drop photographs to add them';
+    /*
+     * A LIGHT TABLE TAKES A PDF TOO NOW, and the veil says so — the same
+     * sentence `onDrop` acts on, off the same tab, so the two cannot drift.
+     * "Photographs" alone was true until `CaptureService.intake` learned to
+     * explode a scan, and a person holding one over the table would have read a
+     * promise that did not include what they were holding.
+     */
+    if (this.intaking() !== null) return 'Drop photographs to add them, or a PDF to take apart';
     return this.shelf.available()
-      ? 'Drop a PDF to open it, or photographs to make a book from'
+      ? 'Drop a PDF to open or take apart, or photographs to make a book from'
       : 'Drop a PDF to open it';
   });
 
@@ -844,6 +864,40 @@ export class App {
      * not keeping.
      */
     const images = this.shelf.available() ? files.filter(isWorkspaceImage) : [];
+    /*
+     * ── AND A PDF NOW MEANS TWO THINGS, SO THE DROP IS ASKED ABOUT ───────────
+     *
+     * Owen, 2026-09-10: *"give me the ability to drag/drop a pdf into a new
+     * book, not just images. if i do, it should take each page as an individual
+     * image. theres a book that is just a bunch of scanned images that need to
+     * be cropped and split and stuff"*.
+     *
+     * An image has exactly one useful meaning here and is sorted silently, one
+     * paragraph down. A PDF has TWO, and both are things this app does for a
+     * living: it is a book to OPEN — the gesture this window has had since the
+     * first day and the one most drops mean — or it is a bound stack of
+     * photographs to TAKE APART onto the light table. Nothing about the file
+     * says which; the same scan is both, on different evenings.
+     *
+     * SO IT IS ASKED RATHER THAN GUESSED, and asked ONCE for the whole drop
+     * rather than once per file — somebody handing over four scans at a time
+     * means the same thing by all four, and four stacked cards would be this app
+     * making them say it four times. The card is deferred to `sortPdfs` because
+     * it is a round trip and this handler must not become async: the files list
+     * off a `DragEvent` does not survive an await.
+     *
+     * A LIGHT TABLE IN FRONT NEEDS NO CARD AT ALL and never reaches here — the
+     * intake door above takes the whole drop, and a PDF dropped on a table of
+     * page cards has only ever had one meaning (`CaptureService.intake`).
+     *
+     * HOSTED, THERE IS NO WORKSPACE AND SO NO SECOND MEANING. `available` is the
+     * one place that decides it, for the reason images fall through there too: a
+     * project born in a hosted window would land in a library the host is not
+     * keeping.
+     */
+    const pdfs = this.shelf.available() ? files.filter((file) => isPdfName(file.name)) : [];
+    if (pdfs.length > 0) void this.sortPdfs(pdfs);
+
     if (images.length > 0) {
       this.shelf.take(images);
       /*
@@ -861,8 +915,87 @@ export class App {
     // Every file, not just the first: a drop of three books is three tabs, which
     // is the whole reason there are tabs.
     for (const file of files) {
-      if (images.includes(file)) continue;
+      // A PDF's tab is opened by `sortPdfs` if that is what the person says they
+      // meant. Opening it here as well would put the book on screen before the
+      // card asking whether they wanted it there had been answered.
+      if (images.includes(file) || pdfs.includes(file)) continue;
       void this.documents.openDropped(file);
+    }
+  }
+
+  /**
+   * Ask what the dropped PDFs are, and do it.
+   *
+   * ── THE DISMISSAL DOES NOTHING, DELIBERATELY ────────────────────────────────
+   *
+   * Escape, the scrim, or another dialog opening over this one answers `nothing`
+   * — no tab, no pages, no toast. The alternative considered was to fall back to
+   * opening, on the grounds that it is what the window did before this card
+   * existed and it is cheap to undo. It is out because a dismissal is a person
+   * saying "not this", and answering it with an action is the card overruling
+   * them; the gesture is a drag away from being repeated, and the file is still
+   * wherever they dragged it from.
+   *
+   * ── THE PAGES ARE READ ONE PDF AT A TIME ────────────────────────────────────
+   *
+   * Sequentially, not in parallel: each explosion holds a canvas the size of a
+   * page and a pdf.js worker, and two at once would double both to finish no
+   * sooner — the work is the rasterizing, and it is already using the machine.
+   * It also keeps the progress card telling one true story rather than two
+   * interleaved ones.
+   */
+  private async sortPdfs(pdfs: readonly File[]): Promise<void> {
+    const one = pdfs.length === 1;
+    const answer = await this.confirm.put({
+      title: one ? pdfs[0]!.name : `${pdfs.length} PDFs`,
+      message: one
+        ? 'What is this?'
+        : 'What are these?',
+      detail: [
+        one
+          ? 'Open it to read it, or take it apart into one image per page — for a scan whose '
+            + 'pages are photographs that still need cropping, splitting and straightening.'
+          : 'Open them to read them, or take them apart into one image per page — for scans whose '
+            + 'pages are photographs that still need cropping, splitting and straightening.',
+        'Pages land in the workspace, where you choose which of them become a book.',
+      ],
+      choices: [
+        { key: 'open', label: one ? 'Open it' : 'Open them' },
+        { key: 'pages', label: one ? 'Make a book from its pages' : 'Make books from their pages' },
+      ],
+      preferred: 'open',
+      dismissed: 'nothing',
+      checkbox: null,
+    });
+
+    if (answer.key === 'open') {
+      for (const file of pdfs) void this.documents.openDropped(file);
+      return;
+    }
+    if (answer.key !== 'pages') return;
+
+    /*
+     * THE PANEL IS OPENED BEFORE THE FIRST PAGE IS DRAWN, not after the last.
+     * The workspace lives inside it, and the reason is the one written where
+     * images do the same: a drop that landed behind a collapsed 30-pixel stub is
+     * a drop that vanished. Here it matters more, because the rasterizing takes
+     * minutes and the person should be able to watch the cards arrive.
+     */
+    this.ui.documentsShown.set(true);
+    for (const file of pdfs) {
+      const exploded = await this.pdfPages.explode(file, true);
+      if (exploded !== null) {
+        this.shelf.takePages(exploded);
+        continue;
+      }
+      /*
+       * A NULL IS TWO DIFFERENT THINGS AND THEY ARE ANSWERED DIFFERENTLY. A scan
+       * that would not open is no reason to lose the three beside it, so the
+       * loop goes on. STOP MEANT ALL OF THEM — somebody who pressed it once and
+       * then watched the next PDF start would be pressing it four times to end
+       * one gesture.
+       */
+      if (this.pdfPages.stopped()) return;
     }
   }
 }

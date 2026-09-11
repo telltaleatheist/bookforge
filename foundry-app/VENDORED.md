@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **2b44cc7** — *fix(app): the Clean text picker's 16-bit entry is the MLX tag on Apple Silicon* |
-| Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 2b44cc7 app | tar -x --strip-components=1` |
+| Source sha | **a9ee9e3** — *fix(dock): a host act pressed from the menu names what the tree's card names — the promise first, an EPUB import as itself, and a throw as a sentence* |
+| Copied on | 2026-09-11 |
+| Copied by | `git -C <foundry> archive a9ee9e3 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1186,3 +1186,17 @@ dep movement.
 `cleanTextModelsFor(mlx)`; preload exposes `arch` beside `platform` (a preload field, not a channel —
 IPC-CHANNELS unchanged). Measured 32 vs 61 blocks/min, llama.cpp vs MLX runner, same weights. Tree
 diff-verified, no dep movement.
+**03ff788 / 37eb95b / a9ee9e3 (copied 2026-09-11, Mac) — the hosted shelf draws ONE card per job, and the
+dock's host act aims where the tree's card aims.** 03ff788: a dropped PDF can be the pages of a book
+(`core/pdf-pages.service.ts`, capture/intake changes). 37eb95b: `runJob` marks the local twin it mints for
+HOST-scheduled work (`hostScheduled`, a WeakSet at the mint) and `shelfJobs()` hosted no longer draws it beside
+the host's own row — Owen's double "Cleaned for narration" card, which appeared the moment BookForge's pump
+ran the row. a9ee9e3: `runHostAct` (the dock) resolves its target through `hostActAimFrom` (shared/stages.ts):
+a PROMISE being stood on wins ahead of the finished-export fork (which would have narrated an OLD export),
+an EPUB import row names itself (the scan refusal stays), and the press is wrapped so a throw becomes a
+notice — Owen's "the narrate tile didnt work, but the narrate button on the card did". Tests added:
+`test/hosted-shelf.test.ts`, `test/host-act-aim.test.ts`. Tree diff-verified against foundry/app at
+a9ee9e3 (only .DS_Store and this folder's two notes differ); the `Job` wire shape is unchanged, so
+BookForge's re-declaration in electron/foundry-host-queue.ts needed no edit; no dep movement
+(package.json / package-lock.json byte-identical to 2b44cc7). IPC-CHANNELS.md refreshed from
+`a9ee9e3:docs/` (+19 lines, the channels 03ff788's page intake added).

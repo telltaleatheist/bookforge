@@ -6,6 +6,7 @@ import { api, hosted } from './foundry';
 import { CaptureService } from './capture.service';
 import { OpenDocumentsService } from './documents.service';
 import { NoticeService } from './notice.service';
+import type { StagedPdf } from './pdf-pages.service';
 
 /**
  * THE INTAKE WORKSPACE — the table photographs land on before anybody has said
@@ -90,6 +91,17 @@ export class IntakeWorkspaceService {
    */
   readonly items = signal<readonly WorkspaceImage[]>([]);
 
+  /**
+   * The PDF staging directories this table is keeping alive.
+   *
+   * NOT DERIVED FROM `items`, because the question it answers is "what did we
+   * ask main to hold open", and the answer has to survive the moment the last
+   * card referencing a stage is removed — that is precisely when the stage must
+   * be released, and an id read off the list at that point is already gone. See
+   * `sweep`.
+   */
+  private readonly staged = new Set<string>();
+
   readonly count = computed(() => this.items().length);
   readonly holding = computed(() => this.items().length > 0);
 
@@ -137,6 +149,9 @@ export class IntakeWorkspaceService {
         name: file.name,
         path,
         url: URL.createObjectURL(file),
+        // A file the person dragged from their own disk. Nothing here may ever
+        // delete it — see `WorkspaceImage.stage`.
+        stage: null,
       });
     }
     if (arrived.length > 0) this.items.update((held) => [...held, ...arrived]);
@@ -155,6 +170,78 @@ export class IntakeWorkspaceService {
     if (unreadable > 0) {
       said.push(
         `${unreadable} could not be read from where ${unreadable === 1 ? 'it was' : 'they were'} dragged from.`,
+      );
+    }
+    if (said.length > 0) this.notices.notice.set(said.join(' '));
+  }
+
+  /**
+   * Take the pages of a PDF somebody exploded onto this table.
+   *
+   * ── WHY IT IS A SECOND DOOR AND NOT `take` WITH A FLAG ─────────────────────
+   *
+   * `take` above is handed browser `File` objects and does two things with each:
+   * asks the preload for its path, and makes a thumbnail URL from its bytes.
+   * Neither applies here. The pages are ALREADY on disk — main staged them, and
+   * the path it answered with is the only one there is — and their thumbnails
+   * were made from the canvas they were drawn on, at a size that can be held in
+   * memory (`PdfPagesService`, which argues both). Routing them through `take`
+   * would mean fabricating `File` objects in order to derive facts we were just
+   * handed, which is the mistake `intakePaths` was split out to stop.
+   *
+   * DEDUPLICATED BY PATH LIKE EVERYTHING ELSE HERE, which for staged pages is
+   * belt and braces — a staging directory is fresh per explosion, so two of its
+   * pages cannot collide — but it is the same fold as the drop door and there is
+   * no case for a second rule. Dropping the SAME PDF twice therefore does land
+   * two sets of cards, correctly: they are two staging directories, and the
+   * person will get one book out of whichever set they select. Intake is
+   * content-addressed, so a book made from both would hold each page once.
+   */
+  takePages(exploded: StagedPdf): void {
+    if (api === null || !this.available()) return;
+    const already = new Set(this.items().map((item) => fold(item.path)));
+    const arrived: WorkspaceImage[] = [];
+    for (const page of exploded.pages) {
+      const key = fold(page.path);
+      if (already.has(key)) continue;
+      already.add(key);
+      arrived.push({
+        id: key,
+        name: page.name,
+        path: page.path,
+        // Empty rather than null: this table's cards draw an `img` off it, and
+        // a page whose thumbnail failed to encode is better as a blank card
+        // than as a missing one. `explode` only ever hands back a null url for
+        // the door that draws no cards at all, which is not this one.
+        url: page.url ?? '',
+        stage: exploded.stageId,
+      });
+    }
+    if (arrived.length > 0) {
+      this.staged.add(exploded.stageId);
+      this.items.update((held) => [...held, ...arrived]);
+    } else {
+      // Nothing landed, so nothing is holding the staging open. Released here
+      // rather than left to `sweep`, which only ever looks at stages this table
+      // took responsibility for.
+      void api.capture.pdfStageRelease(exploded.stageId).catch(() => undefined);
+    }
+
+    const said: string[] = [];
+    if (arrived.length > 0) {
+      said.push(
+        arrived.length === 1
+          ? `One page came out of ${exploded.stem}. Select it and right-click to make a book from it.`
+          : `${arrived.length} pages came out of ${exploded.stem}. `
+            + 'Select some and right-click to make a book from them.',
+      );
+    }
+    if (exploded.refused.length > 0) {
+      // NAMED AND COUNTED, never swallowed: a book quietly short a leaf is the
+      // failure this app refuses to ship, and the page numbers are in the names.
+      said.push(
+        `${exploded.refused.length} would not draw `
+        + `(${exploded.refused.map((each) => each.file).join(', ')}).`,
       );
     }
     if (said.length > 0) this.notices.notice.set(said.join(' '));
@@ -224,13 +311,16 @@ export class IntakeWorkspaceService {
     return true;
   }
 
-  /** Let some of them go — the thumbnails' URLs with them. */
+  /** Let some of them go — the thumbnails' URLs, and any emptied staging, with them. */
   release(ids: readonly string[]): void {
     const going = new Set(ids);
+    let left: readonly WorkspaceImage[] = [];
     this.items.update((held) => {
       for (const item of held) if (going.has(item.id)) URL.revokeObjectURL(item.url);
-      return held.filter((item) => !going.has(item.id));
+      left = held.filter((item) => !going.has(item.id));
+      return left;
     });
+    this.sweep(left);
   }
 
   /**
@@ -249,6 +339,41 @@ export class IntakeWorkspaceService {
   clear(): void {
     for (const item of this.items()) URL.revokeObjectURL(item.url);
     this.items.set([]);
+    this.sweep([]);
+  }
+
+  /**
+   * Delete the staging directory of any exploded PDF nothing is pointing at.
+   *
+   * ── THE ONLY FILES THIS SERVICE IS ALLOWED TO DELETE ────────────────────────
+   *
+   * A dropped photograph's path is the person's own file, sitting where they
+   * dragged it from, and this table would sooner leak than touch it — which is
+   * why the permission is carried per item (`WorkspaceImage.stage`) rather than
+   * inferred from anything about the path. A staged page's path is a copy main
+   * made for the sole purpose of being handed to intake; once no card names it,
+   * it is a scan's worth of PNGs in %TEMP% that nothing will ever ask for again.
+   *
+   * COMPUTED FROM WHAT IS LEFT, not from what went. Two cards of one PDF removed
+   * one at a time must not free the staging under the other one, and the honest
+   * way to say that is to look at the survivors. `left` is passed in rather than
+   * read back off the signal because both callers have just written it, and a
+   * re-read is a chance for the two to be a beat apart.
+   *
+   * BEST EFFORT AND UNAWAITED. A directory that will not delete is wasted space
+   * in a place the OS already treats as disposable, and main sweeps every
+   * staging it is not holding open before it makes the next one
+   * (`pdfStageBegin`). Nothing on screen depends on this having happened.
+   */
+  private sweep(left: readonly WorkspaceImage[]): void {
+    if (api === null) return;
+    const bridge = api;
+    const kept = new Set(left.map((item) => item.stage).filter((stage) => stage !== null));
+    for (const stage of this.staged) {
+      if (kept.has(stage)) continue;
+      this.staged.delete(stage);
+      void bridge.capture.pdfStageRelease(stage).catch(() => undefined);
+    }
   }
 }
 
@@ -276,6 +401,18 @@ export interface WorkspaceImage {
   path: string;
   /** The thumbnail's source. Revoked when this item leaves the table. */
   url: string;
+  /**
+   * The PDF explosion this page came out of, or null for a file off the disk.
+   *
+   * A DROPPED PHOTOGRAPH'S `path` IS THE PERSON'S OWN FILE and this table has no
+   * business ever deleting it. A page of an exploded PDF's `path` is a copy main
+   * made in a staging directory that only exists to be handed to intake — so it
+   * has to be swept when the last page of that PDF leaves the table, and this is
+   * the only handle anything has on it. Null is the older, ordinary case, and
+   * the difference is exactly "may I delete this file": never, versus once
+   * nobody is pointing at it.
+   */
+  stage: string | null;
 }
 
 /** Windows spells one file three ways; the table compares them folded. */

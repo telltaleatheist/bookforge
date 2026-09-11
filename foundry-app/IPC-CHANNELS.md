@@ -14,6 +14,22 @@ it to say so would be a new name for this file to audit plus an old one to prove
 retired, paid for a door whose behaviour is unchanged; it is the family's door,
 spelled after its eldest member.
 
+**THREE MORE DOORS ON 2026-09-10 — the `capture:pdf-stage-*` trio, so the count
+is 114.** A PDF dropped on the app can now mean "take this apart into one image
+per page" as well as "open this" (Owen: *"give me the ability to drag/drop a pdf
+into a new book, not just images. if i do, it should take each page as an
+individual image"*). The RENDERER rasterizes, because pdf.js lives there and main
+has no rasterizer at all; these three are main putting the pages on disk so that
+`capture:intake` — unchanged, and this is the point — copies them in exactly as
+it copies a photograph off a phone. `pdf-stage-begin` opens a staging directory
+under %TEMP% and sweeps every one it is not holding open; `pdf-stage-page` takes
+one page's PNG and answers where it landed, one page per call so a 300-page scan
+is never resident in one heap; `pdf-stage-release` deletes the directory, and is
+separate from the last page because the two callers let go at different moments —
+a light table intakes and releases in one breath, a drop on Home leaves the pages
+on the workspace table until somebody says which book they are. `capture:` now
+keeps twelve doors and its intake-progress push.
+
 **THE COUNT IN THIS FILE WAS 96 AND THE SOURCE MEASURES 108.** Counted by script
 over `app/electron/ipc.ts` for this regeneration: **108 `ipcMain.handle` call
 sites, 108 distinct channel names, zero `ipcMain.on`**; 107 before the door above.
@@ -454,6 +470,9 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `capture:mint-begin` | Open a mint: the page list with pixel-space quads and output sizes, one id to write against. Refuses by name until the mint merge. |
 | `capture:mint-commit` | Close the mint: assemble the rectified pages into an image-only PDF, file it in `archive/` with a live copy and a `documents` origin row, set the manifest archive, append the step. |
 | `capture:mint-page` | One rasterized page's JPEG, renderer to main, so no full-book buffer ever exists in one heap. Refuses by name until the mint merge. |
+| `capture:pdf-stage-begin` | Open a staging directory for one dropped PDF, sweeping every leftover this run is not holding open. Answers the id the other two are addressed by. |
+| `capture:pdf-stage-page` | One rasterized PDF page's PNG, renderer to main, staged under a checked basename; answers the path `capture:intake` will copy from. |
+| `capture:pdf-stage-release` | The staged pages are in a project, or abandoned: delete the directory. Releasing twice is releasing once. |
 | `capture:recipe-load` | The recipe plus a fresh door token — how a reopened project gets its light table back. |
 | `capture:recipe-save` | The whole recipe document, validated before it touches disk. |
 | `capture:remove` | Remove photographs from a capture project's bank — the one door that deletes something irreplaceable, and the surface has already asked by name and count. |
