@@ -211,3 +211,59 @@ CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to th
 
 CLIFF MARGIN:
   - the bin ABOVE the cap (1000) fails 11.1% - expected, that is the cap doing its job
+
+
+### sigma - ladder chart (512 renders, pace 15.6 chars/s, /mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs/night4/runs/sigma_ladder/ds_sigma_prod)
+
+```
+RUNG CURVE (target size +/-12%; modes = which failures, not just how many)
+  rung     n    fail   95% hi   modes
+    100    32      6%      20%   cov 2
+    200    32     12%      28%   cov 4
+    300    32      9%      24%   cov 3, short 2
+    400    32      3%      16%   cov 1
+    500    32      0%      11%   -
+    600    32      0%      11%   -
+    700    32      0%      11%   -
+    800    32      0%      11%   -
+    900    32      0%      11%   -
+   1000    32      3%      16%   cov 1
+   1100    32      0%      11%   -
+   1200    32      3%      16%   long 1
+   1300    32     25%      42%   cov 7, long 2, short 1
+   1400    32     47%      64%   cov 11, long 5, short 1
+   1500    32     16%      32%   cov 1, long 4
+   1600    32     16%      32%   cov 3, long 2, short 1
+
+CHARACTER SPREAD (actual chars - this is what the packer emits, and what sets the band)
+  chars          n    fail   95% hi   modes
+      0-100     16   12.5%    36.0%   cov 2
+    100-200     32    0.0%    10.7%   -
+    200-300     32   12.5%    28.1%   cov 4
+    300-400     32    9.4%    24.2%   cov 3, short 2
+    400-500     32    3.1%    15.7%   cov 1
+    500-600     40    0.0%     8.8%   -
+    600-700     20    0.0%    16.1%   -
+    700-800     60    0.0%     6.0%   -
+    800-900     20    5.0%    23.6%   cov 1
+    900-1000    48    0.0%     7.4%   -
+   1000-1100    36    0.0%     9.6%   -
+   1100-1200    28   10.7%    27.2%   cov 1, long 2
+   1200-1300    36   36.1%    52.4%   cov 10, long 4, short 1
+   1300-1400    40   22.5%    37.5%   cov 6, long 4, short 1
+   1400-1500    36   25.0%    41.1%   cov 5, long 4, short 1
+   1500-1600     4    0.0%    49.0%   -
+
+CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to the wider)
+    500-1100     1/224  =   0.4%  95% hi   2.5%  width 600
+    400-1100     2/256  =   0.8%  95% hi   2.8%  width 700
+    500-1000     1/188  =   0.5%  95% hi   3.0%  width 500
+    600-1100     1/184  =   0.5%  95% hi   3.0%  width 500
+    500-800      0/120  =   0.0%  95% hi   3.1%  width 300
+```
+
+**BAND 500-1100** - 1/224 = 0.4% (95% hi 2.5%), the cleanest unbroken run of bins.
+
+CLIFF MARGIN:
+  - the bin BELOW the floor (500) fails 3.1% - the floor sits on a cliff; a higher floor with a safe bin under it is worth a slightly worse bound
+  - the bin ABOVE the cap (1100) fails 10.7% - expected, that is the cap doing its job
