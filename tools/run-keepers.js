@@ -127,6 +127,11 @@ const SUITES = [
   'test-processing-chain',
   'test-queue-engine',
   'test-queue-bench',
+  // The only thing that knows what is happening inside an MLX decode. Its
+  // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a
+  // carry that survives the wrong batch boundary counts chunks twice — and the
+  // carry rule is invisible from the call site, which only reads the field.
+  'test-mlx-batch-progress',
   'test-derived-sentences',
   // The assembly seals THIS RUN'S transcript, chosen by stem, and its finalize
   // resolves whatever the body does. Both halves of the 2026-09-07 hang.

@@ -2,16 +2,26 @@
  * Within-batch progress for the Orpheus MLX audiobook path.
  *
  * On Mac the Orpheus engine renders a full-width static batch (~96 rows) in ONE
- * BatchGenerator decode that runs 5-7 minutes. Every sentence file in that batch
- * lands at the very end, so the queue's chunk bar is frozen for the whole decode
- * and then jumps 96 chunks at once. The only signal that exists inside the decode
- * is the engine's throttled heartbeat line (orpheus.py `_convert_mlx_batch`):
+ * BatchGenerator decode that runs 5-7 minutes. Every sentence FILE in that batch
+ * lands at the very end, and so does every completion line the worker prints —
+ * so a bar counting completions alone is frozen for the whole decode and then
+ * jumps 96 chunks at once. The only signal that exists inside the decode is the
+ * engine's throttled heartbeat line (orpheus.py `_convert_mlx_batch`):
  *
  *   [ORPHEUS] MLX batch generating: 95 rows, ~1259 tokens (step 1260/3400), 12/95 rows done, batch 1/2
  *
- * This module turns that line into a monotone 0-1 fraction the UI can draw as a
- * secondary bar. It is deliberately dependency-free (no electron, no session
- * types) so the parsing/monotonicity rules can be exercised directly.
+ * Rows RETIRE individually inside that decode (each hits EOS on its own step),
+ * and `12/95 rows done` is the engine counting them. This module turns the line
+ * into two things:
+ *
+ *  - `fraction`, a monotone 0-1 for a secondary bar (no longer drawn in the
+ *    desktop UI — see `rowsRetiredInCall` — but still on the wire);
+ *  - `rowsRetiredInCall`, the rows retired so far across the WHOLE engine call,
+ *    which the bridge folds into the chunk count so the Mac's chunk bar ticks
+ *    off rows as they exit the batch, the way the PC's does (Owen, 2026-09-11).
+ *
+ * It is deliberately dependency-free (no electron, no session types) so the
+ * parsing/carry-over rules can be exercised directly.
  *
  * BACKWARD COMPATIBILITY: the older engine printed only
  *   [ORPHEUS] MLX batch generating: 95 rows, ~1259 tokens (step 1260)
@@ -61,6 +71,20 @@ export interface ActiveBatchProgress {
   batchNo?: number;
   batchCount?: number;
   /**
+   * Rows retired so far across the WHOLE engine call — this batch's `rowsDone`
+   * plus every earlier sub-batch of the same call (`batch 1/2`, `batch 2/2`).
+   *
+   * The unit the CALLER cares about: one engine call renders one contiguous run
+   * of chunks, and every row that has retired inside it is a chunk whose audio
+   * exists, whatever sub-batch it retired in. `rowsDone` alone resets to 0 at
+   * every sub-batch boundary, so folding THAT into a chunk count would make the
+   * count fall back by a whole sub-batch each time one ended.
+   *
+   * Optional only for the wire: an object restored from a queue.json written by
+   * a build that predates this field has none. Always set by advanceBatch.
+   */
+  rowsRetiredInCall?: number;
+  /**
    * When THIS batch's decode began (epoch ms), so a surface can say how long it
    * has been running. Set when the batch is first seen and carried unchanged
    * through its heartbeats; a new batch restarts it.
@@ -77,6 +101,13 @@ export interface ActiveBatchProgress {
 export interface ActiveBatchState extends ActiveBatchProgress {
   /** Last decode step seen — a non-increasing step means a NEW batch started. */
   lastStep: number;
+  /**
+   * Rows retired by the EARLIER sub-batches of the engine call this batch belongs
+   * to. 0 for the first sub-batch and for any batch whose lineage cannot be
+   * proven (see advanceBatch) — a fresh call starts the count over, because its
+   * rows are chunks the bridge has not yet counted anywhere.
+   */
+  retiredBefore: number;
   /** Identity of the batch this state describes (see batchKey). */
   key: string;
   updatedAt: number;
@@ -133,11 +164,35 @@ function batchKey(hb: MlxHeartbeat): string {
  * token estimate leads early (before any row retires) and the row count takes
  * over once rows start finishing, and the changeover would otherwise step
  * backwards (32% of the token budget spent, but only 1 of 95 rows retired).
+ *
+ * `retiredBefore` carries ACROSS a sub-batch boundary of the same engine call,
+ * and only there. One call can be split into several batches ("batch 2/3"), and
+ * `rowsDone` restarts at 0 in each — so the next sub-batch inherits the rows the
+ * previous ones retired, and `rowsRetiredInCall` keeps rising for the whole call.
+ * The lineage test is deliberately strict (same batchCount, batchNo exactly one
+ * higher): anything else is treated as a FRESH call and starts at 0, because
+ * over-carrying would credit chunks twice in the count the bridge folds it into.
+ * A last heartbeat that reported no `rows done` contributes its full width — the
+ * batch ended, so every row in it retired.
  */
 export function advanceBatch(prev: ActiveBatchState | undefined, hb: MlxHeartbeat): ActiveBatchState {
   const key = batchKey(hb);
   const step = hb.step ?? 0;
   const sameBatch = prev !== undefined && prev.key === key && step > prev.lastStep;
+
+  const isNextSubBatch = prev !== undefined
+    && !sameBatch
+    && hb.batchNo !== undefined
+    && prev.batchNo !== undefined
+    && hb.batchCount !== undefined
+    && prev.batchCount !== undefined
+    && hb.batchCount === prev.batchCount
+    && hb.batchNo === prev.batchNo + 1;
+  const retiredBefore = sameBatch
+    ? prev!.retiredBefore
+    : isNextSubBatch
+      ? prev!.retiredBefore + (prev!.rowsDone ?? prev!.rowsTotal)
+      : 0;
 
   // No row count and no token cap = nothing to build a fraction out of. Say so
   // (absent) instead of publishing a zero that looks like a stalled bar.
@@ -162,6 +217,8 @@ export function advanceBatch(prev: ActiveBatchState | undefined, hb: MlxHeartbea
     fraction,
     batchNo: hb.batchNo,
     batchCount: hb.batchCount,
+    retiredBefore,
+    rowsRetiredInCall: retiredBefore + (hb.rowsDone ?? 0),
     // Carried for the SAME batch, restarted for a new one — the same test that
     // resets the fraction, for the same reason: batches are independent units.
     startedAt: sameBatch ? prev!.startedAt ?? now : now,
@@ -181,6 +238,7 @@ export function toActiveBatchProgress(state: ActiveBatchState): ActiveBatchProgr
     fraction: state.fraction,
     batchNo: state.batchNo,
     batchCount: state.batchCount,
+    rowsRetiredInCall: state.rowsRetiredInCall,
     startedAt: state.startedAt,
   };
 }

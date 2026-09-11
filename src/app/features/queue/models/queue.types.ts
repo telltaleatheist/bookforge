@@ -109,10 +109,11 @@ export interface JobStageProgress {
  * ActiveBatchProgress in electron/mlx-batch-progress.ts (the renderer can't import
  * from electron/, same pattern as JobStageProgress).
  *
- * On Mac, Orpheus renders ~96 chunks as ONE atomic 5-7 minute decode whose files all
- * land at the end, so the chunk bar is frozen for the whole batch. This is what moves
- * during that window. Every field is what the engine actually reported — nothing is
- * defaulted, and the whole object is absent when no batch is decoding.
+ * On Mac, Orpheus renders ~96 chunks as ONE 5-7 minute decode whose files all land at
+ * the end — but its ROWS retire one at a time, and the bridge folds those retired rows
+ * into the chunk count (2026-09-11), so the chunk bar moves during the decode and this
+ * page draws no second bar from it. Every field is what the engine actually reported —
+ * nothing is defaulted, and the whole object is absent when no batch is decoding.
  */
 export interface ActiveBatchProgress {
   rowsTotal: number;
@@ -123,6 +124,13 @@ export interface ActiveBatchProgress {
   fraction?: number;
   batchNo?: number;
   batchCount?: number;
+  /**
+   * Rows retired across the whole engine call (this batch's `rowsDone` plus the
+   * sub-batches before it, which each restart their own count at 0). The number the
+   * bridge folds into the chunk count. Absent on a job restored from a queue.json
+   * written before the field existed.
+   */
+  rowsRetiredInCall?: number;
   /**
    * When THIS batch's decode began (epoch ms). Timed separately from the step:
    * the step's elapsed folds in the model load and every batch before this one,
@@ -164,9 +172,10 @@ export interface QueueJob {
   // ("Rendering 21 sentences together · 2,949 tokens") is the only proof of life
   // between one bucket landing and the next.
   stageDetail?: string;
-  // Live progress inside the MLX batch being decoded. Unlike stageDetail this is
-  // BLANKED when the bridge reports none — a finished batch must not leave a full
-  // secondary bar sitting under the chunk bar.
+  // Live progress inside the MLX batch being decoded. Nothing on this page draws a
+  // bar from it any more — its retired rows are folded into the chunk count by the
+  // bridge — but it is still carried: BLANKED when the bridge reports none, so a
+  // surface that does draw one (the Bookshelf queue view) never keeps a full bar.
   activeBatch?: ActiveBatchProgress;
   // Counted work inside the preparing stage (the number-normalization pass).
   // Blanked when the bridge reports none, exactly like activeBatch.

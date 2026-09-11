@@ -2275,11 +2275,13 @@ export interface AggregatedProgress {
   // bucket heartbeat, or which chunk is being repaired. A bucket can run 4 minutes
   // with no completion, and without this the bar is indistinguishable from a hang.
   stageDetail?: string;
-  // Progress WITHIN the MLX batch currently decoding (Mac/Orpheus only). The chunk
-  // bar cannot move during a batch — all ~96 sentence files land at once when it
-  // ends — so this is the only thing that moves for 5-7 minutes. ABSENT whenever no
-  // batch is generating (vLLM, XTTS, between batches): absent means absent, never a
-  // fabricated zero. See mlx-batch-progress.ts.
+  // Progress WITHIN the MLX batch currently decoding (Mac/Orpheus only). Since
+  // 2026-09-11 its retired rows are folded into completedSentences, so the chunk
+  // bar itself moves during a batch and the desktop UI no longer draws a second
+  // bar from this; it stays on the wire for the surfaces that still read it (the
+  // Bookshelf queue view) and for `rowsRetiredInCall`, which IS the fold's input.
+  // ABSENT whenever no batch is generating (vLLM, XTTS, between batches): absent
+  // means absent, never a fabricated zero. See mlx-batch-progress.ts.
   activeBatch?: ActiveBatchProgress;
   // Progress WITHIN the preparing stage, when prep is doing counted work before
   // e2a is even spawned — today the number-normalization pass, which walks the
@@ -2765,6 +2767,22 @@ interface ConversionSession {
   stageDetail?: string;
   // ETA calculation - exclude model setup time
   firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
+  /**
+   * MONOTONE high-water mark of the chunk count the UI is SHOWN: real completions
+   * plus the rows already retired inside the MLX batch decoding right now (see
+   * emitProgress). Only ever rises within a run — a batch landing, or a retake
+   * round re-rendering chunks already counted, must not walk the bar backwards.
+   */
+  displayedCompletedHighWater?: number;
+  /**
+   * When the SHOWN count first moved. The ETA's zero, and deliberately not
+   * `firstSentenceCompletedTime`: on MLX that one is stamped when a whole batch
+   * lands, minutes after the first row retired, and dividing the shown count by
+   * the time since then reports a rate the job never ran at.
+   * `firstSentenceCompletedTime` keeps its meaning (first real completion) because
+   * the analytics record measures real completions.
+   */
+  firstDisplayedProgressTime?: number;
   // Rolling sample of how much AUDIO the rendered chunks actually contain — the only
   // measurement that makes the realtime factor a measurement rather than an estimate.
   // See probeAudioSeconds.
@@ -4520,9 +4538,10 @@ function startWorker(
         emitProgress(session);
       }
 
-      // The only signal that exists INSIDE an MLX batch. A batch is atomic — all its
-      // rows land together — so this is the sole proof of life for 5-7 minutes, and
-      // now the sole source of movement for the UI's within-batch bar.
+      // The only signal that exists INSIDE an MLX batch. The FILES land together,
+      // but the rows retire one at a time and this line counts them — so it is both
+      // the proof of life for 5-7 minutes and the source of the chunk bar's movement
+      // during the decode (emitProgress folds in rowsRetiredInCall).
       const beat = parseMlxHeartbeat(line);
       if (beat) {
         worker.activeBatch = advanceBatch(worker.activeBatch, beat);
@@ -6795,7 +6814,9 @@ function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, ended
 }
 
 /**
- * The MLX batch to show under the chunk bar, or undefined when none is decoding.
+ * The MLX batch decoding right now, or undefined when none is. Its retired rows
+ * are what emitProgress folds into the chunk count; the object itself still rides
+ * the wire for the surfaces that draw it.
  *
  * Batch state is per-worker (each worker drives its own BatchGenerator) but the
  * payload carries one, so the freshest heartbeat wins. In practice Orpheus/MLX
@@ -6845,22 +6866,72 @@ function emitProgress(session: ConversionSession): void {
   probeAudioSeconds(session);
 
   // For resume jobs, add baseline (already completed before this session)
-  const totalCompleted = session.isResumeJob && session.baselineCompleted !== undefined
-    ? session.baselineCompleted + sentencesDoneInSession
-    : sentencesDoneInSession;
+  const baselineCompleted = session.isResumeJob && session.baselineCompleted !== undefined
+    ? session.baselineCompleted
+    : 0;
+  const totalCompleted = baselineCompleted + sentencesDoneInSession;
 
-  const percentage = Math.min(100, (totalCompleted / session.prepInfo.totalSentences) * 100);
-  const remainingSentences = session.prepInfo.totalSentences - totalCompleted;
+  // ── Rows that have exited the batch decoding RIGHT NOW ─────────────────────
+  //
+  // "on the PC, when im running TTS, it shows the chunks counting up as they
+  //  finish. but on mac, it shows an additional batching progress bar and
+  //  counter. … as it stands, it sits at 0/1200 (for example) until the whole
+  //  batch finishes, and then it ticks up to 64/1200. is there any way we could
+  //  just get rid of the special batch progress bar and show chunks ticking off
+  //  like on the pc?" — Owen, 2026-09-11
+  //
+  // Rows retire one at a time inside an MLX decode and the engine counts them in
+  // its heartbeat; only the worker's COMPLETION lines wait for the whole call.
+  // So the honest live count is real completions plus the rows already retired in
+  // the call being decoded, and that is what the chunk bar and the ETA are given.
+  //
+  // Two honesty caveats, both deliberate:
+  //  - the shown count can run AHEAD OF THE FILES ON DISK by the current call's
+  //    retired rows; those rows have been generated but their FLACs are written
+  //    when the call returns;
+  //  - a RETAKE round (the length guard re-rendering chunks that were already
+  //    counted) retires rows that add nothing new, so the count can over-run by
+  //    that round's size until later completions catch up.
+  // The high-water mark below is why neither ever walks the bar backwards.
+  //
+  // The raw sentence/word/char accruals are NOT folded — they are exact per-chunk
+  // counts banked when a chunk lands, and there is nothing exact to bank for a row
+  // still inside the decode. The readout derives sentences/min as
+  // chunks/min × (rawSentencesDone / chunksDone) (shared/queue/rate-window), so
+  // while a batch is mid-flight that ratio is measured over slightly more chunks
+  // than it has counts for and reads a few percent LOW, recovering at every
+  // landing. Understating a derived rate is the honest side of that trade;
+  // scaling the raw counts to match would be inventing counts.
+  const inFlightRetired = session.workers.reduce(
+    (sum, w) => sum + (w.activeBatch?.rowsRetiredInCall ?? 0), 0);
+  const shownTotal = Math.max(
+    session.displayedCompletedHighWater ?? 0,
+    Math.min(session.prepInfo.totalSentences, totalCompleted + inFlightRetired),
+  );
+  session.displayedCompletedHighWater = shownTotal;
+  const shownInSession = Math.max(0, shownTotal - baselineCompleted);
 
-  // Track when first sentence completes (excludes model loading time from ETA)
+  const percentage = Math.min(100, (shownTotal / session.prepInfo.totalSentences) * 100);
+  const remainingSentences = session.prepInfo.totalSentences - shownTotal;
+
+  // Track when first sentence completes. NOT the ETA's zero any more — this is
+  // the first REAL completion, which is what the analytics record's work clock
+  // (measureThroughput) is measured from.
   if (sentencesDoneInSession > 0 && !session.firstSentenceCompletedTime) {
     session.firstSentenceCompletedTime = now;
-    console.log(`[PARALLEL-TTS] First sentence completed - ETA timing starts now (setup took ${Math.round((now - session.startTime) / 1000)}s)`);
+    console.log(`[PARALLEL-TTS] First sentence completed (setup took ${Math.round((now - session.startTime) / 1000)}s)`);
+  }
+  // The ETA's zero: the first time the SHOWN count moved, which on MLX is the
+  // first row that exited the batch rather than the first batch that landed.
+  if (shownInSession > 0 && !session.firstDisplayedProgressTime) {
+    session.firstDisplayedProgressTime = now;
+    console.log(`[PARALLEL-TTS] First chunk rendered - ETA timing starts now (setup took ${Math.round((now - session.startTime) / 1000)}s)`);
   }
 
-  // For ETA calculation, use time since first sentence completed (excludes model setup)
-  // This gives much more accurate ETAs since model loading can take 30-60+ seconds
-  const etaBaseTime = session.firstSentenceCompletedTime || session.startTime;
+  // For ETA calculation, use time since the first chunk was rendered (excludes
+  // model setup). This gives much more accurate ETAs since model loading can take
+  // 30-60+ seconds.
+  const etaBaseTime = session.firstDisplayedProgressTime || session.startTime;
   const workElapsedSeconds = (now - etaBaseTime) / 1000;
 
   // Track progress history for this session (for sliding window ETA calculation)
@@ -6868,8 +6939,9 @@ function emitProgress(session: ConversionSession): void {
     progressHistory.set(session.jobId, []);
   }
   const history = progressHistory.get(session.jobId)!;
-  // Store sentencesDoneInSession (not totalCompleted) so window-based rate is correct
-  history.push({ completedSentences: sentencesDoneInSession, timestamp: now });
+  // Store the SHOWN session count (not totalCompleted) so the window-based rate is
+  // both session-relative and measured over the same unit the bar moves in.
+  history.push({ completedSentences: shownInSession, timestamp: now });
 
   // Remove old samples outside the window
   const windowStart = now - ETA_SAMPLE_WINDOW;
@@ -6883,18 +6955,18 @@ function emitProgress(session: ConversionSession): void {
   // Use work rate for stability, window-based for responsiveness once we have enough data
   let estimatedRemaining = 0;
 
-  // For ETA, we need at least 1 sentence done and some time elapsed since first completion
-  // Use > 1 because when firstSentenceCompletedTime is set, sentencesDoneInSession is 1
-  // and workElapsedSeconds is 0, which would cause division issues
-  if (sentencesDoneInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+  // For ETA, we need at least 1 chunk done and some time elapsed since the first one
+  // Use > 1 because when firstDisplayedProgressTime is set, shownInSession is at its
+  // first value and workElapsedSeconds is 0, which would cause division issues
+  if (shownInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
     // Primary: Use work rate (excludes model setup time for accuracy)
-    const workRate = sentencesDoneInSession / workElapsedSeconds;
+    const workRate = shownInSession / workElapsedSeconds;
     estimatedRemaining = Math.round(remainingSentences / workRate);
 
     // If we have enough window data, blend with window rate for responsiveness
     if (history.length >= MIN_SAMPLES_FOR_ETA) {
       const oldestSample = history[0];
-      const sentencesInWindow = sentencesDoneInSession - oldestSample.completedSentences;
+      const sentencesInWindow = shownInSession - oldestSample.completedSentences;
       const timeInWindow = (now - oldestSample.timestamp) / 1000;
 
       if (sentencesInWindow > 0 && timeInWindow > 5) {
@@ -6927,8 +6999,12 @@ function emitProgress(session: ConversionSession): void {
     // Absent when the sentence count is unknown. Deliberately NOT defaulted to the chunk
     // count — a reader seeing chunks labelled as sentences cannot tell the difference.
     totalRawSentences: session.prepInfo.totalRawSentences,
-    completedSentences: totalCompleted,
-    completedInSession: sentencesDoneInSession, // For accurate ETA calculation
+    // The SHOWN counts — real completions plus this call's retired rows, monotone.
+    // The analytics record is NOT built from these (measureThroughput reads the
+    // workers' own completion tallies), so job-analytics.json keeps recording
+    // chunks that actually landed.
+    completedSentences: shownTotal,
+    completedInSession: shownInSession, // For accurate ETA calculation
     rawCompletedInSession: rawSentencesDoneInSession, // EXACT real sentences this session (precise sentences/min)
     rawWordsCompletedInSession: rawWordsDoneInSession,
     rawCharsCompletedInSession: rawCharsDoneInSession,
@@ -6942,12 +7018,12 @@ function emitProgress(session: ConversionSession): void {
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining,
-    message: (session.downloadNote && sentencesDoneInSession === 0)
+    message: (session.downloadNote && shownInSession === 0)
       ? session.downloadNote
-      : (session.orpheusMemNote && sentencesDoneInSession === 0)
+      : (session.orpheusMemNote && shownInSession === 0)
         ? session.orpheusMemNote
         : session.isResumeJob
-          ? `Resuming: ${sentencesDoneInSession} new`
+          ? `Resuming: ${shownInSession} new`
           : `${activeWorkers} ${activeWorkers === 1 ? 'worker' : 'workers'}`,
     // The resolved Orpheus memory level, for a persistent queue badge.
     orpheusMemoryLevel: session.orpheusMemLevel,

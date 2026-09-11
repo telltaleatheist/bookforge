@@ -10,8 +10,8 @@
 
 import { Component, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActiveBatchProgress, JobStageProgress, PrepSubProgress } from '../../models/queue.types';
-import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
+import { JobStageProgress, PrepSubProgress } from '../../models/queue.types';
+import { prepFraction, prepLabel } from '@shared/queue/bench';
 
 @Component({
   selector: 'app-stage-bars',
@@ -49,18 +49,11 @@ import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
             </div>
           }
         }
-        @if (batch(); as b) {
-          @if (stage.status === 'running') {
-            <div class="batch-row">
-              @if (b.fraction !== undefined) {
-                <div class="batch-track">
-                  <div class="batch-fill" [style.width.%]="b.fraction * 100"></div>
-                </div>
-              }
-              <span class="batch-text">{{ batchLabel(b) }}</span>
-            </div>
-          }
-        }
+        <!-- The MLX batch had its own row here until 2026-09-11. Its rows retire
+             one at a time, the bridge folds them into the chunk count, and the
+             CONVERT stage bar above now moves during the decode — so a second bar
+             saying the same thing in a different unit was removed. The detail
+             line still names what is being rendered together. -->
       }
     </div>
   `,
@@ -127,9 +120,10 @@ import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
       white-space: nowrap;
     }
 
-    /* The within-batch bar. Deliberately quieter than every other bar here — half
-       the height, a muted fill, indented with the detail line — because it measures
-       a sub-unit of the running stage, not the stage itself. */
+    /* The sub-stage bar (today the prep pass; the MLX batch used it until
+       2026-09-11). Deliberately quieter than every other bar here — half the
+       height, a muted fill, indented with the detail line — because it measures a
+       sub-unit of the running stage, not the stage itself. */
     .batch-row {
       display: flex;
       align-items: center;
@@ -146,11 +140,10 @@ import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
       overflow: hidden;
     }
 
-    /* The Mac/MLX bar. A 55%-transparent color-mix let the dark track show
-       through a fill already close to it in value, so on Mac runs — the only
-       runs that draw this row — it read as an empty track. Quiet is now a
-       lighter grey at full opacity: still subordinate to the stage bar above,
-       but visibly a bar. */
+    /* A 55%-transparent color-mix let the dark track show through a fill already
+       close to it in value, so this row read as an empty track. Quiet is now a
+       lighter grey at full opacity: still subordinate to the stage bar above, but
+       visibly a bar. */
     .batch-fill {
       height: 100%;
       background: var(--progress-fill-quiet);
@@ -210,34 +203,20 @@ import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
 export class StageBarsComponent {
   readonly stages = input.required<JobStageProgress[]>();
   /**
-   * What the RUNNING stage is doing right now, shown beneath it. For stages whose
-   * percentage genuinely cannot move for minutes — an MLX batch renders 7-23
-   * sentences as one atomic unit — this is the only thing distinguishing work from
-   * a hang. Omitted when the bridge has nothing specific to say.
+   * What the RUNNING stage is doing right now, shown beneath it — "Rendering 21
+   * chunks together · 2,949 tokens" while an MLX batch decodes. The stage's bar
+   * moves through that batch now (its retired rows are folded into the chunk
+   * count), so this says WHAT is being rendered rather than THAT anything is.
+   * Omitted when the bridge has nothing specific to say.
    */
   readonly detail = input<string | undefined>(undefined);
-  /**
-   * Progress inside the batch the running stage is decoding right now, when one is.
-   *
-   * The MLX audiobook path renders ~96 chunks as a single atomic 5-7 minute decode:
-   * the stage's own percentage cannot move until every one of them lands at once.
-   * This is the only thing that moves in between. Absent for every other engine and
-   * between batches — and absent means nothing is drawn, not a bar at zero.
-   */
-  readonly batch = input<ActiveBatchProgress | undefined>(undefined);
-
-  /**
-   * "batch 12/95 sentences · 1.3k tokens". The shared one (shared/queue/bench.ts)
-   * because the bench card draws the same batch and must word it identically.
-   */
-  readonly batchLabel = batchLabel;
 
   /**
    * Counted work inside the PREPARING stage, when there is some.
    *
-   * The same shape as `batch` one stage earlier and for the same reason: the
-   * number-normalization pass walks a whole book through a local model before
-   * e2a is spawned, and "Preparing book" cannot move while it does.
+   * The number-normalization pass walks a whole book through a local model before
+   * e2a is spawned, and "Preparing book" cannot move while it does — so this is
+   * the one sub-stage bar left here, and absent means nothing is drawn.
    */
   readonly prep = input<PrepSubProgress | undefined>(undefined);
 

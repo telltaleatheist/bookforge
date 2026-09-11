@@ -41,7 +41,7 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
-import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
+import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { ElectronService } from '../../core/services/electron.service';
@@ -216,20 +216,12 @@ import type { BookPlanView } from './services/queue-tray.service';
                   </div>
                 }
 
-                <!-- Inside the MLX batch. The stage bar above it is HONESTLY at
-                     0% — not one sentence file has landed — while most of the
-                     batch's rows have finished, so without this the card says
-                     nothing is happening for ten minutes at a time. -->
-                @if (busy.activeBatch; as batch) {
-                  <div class="batch-row">
-                    @if (batch.fraction !== undefined) {
-                      <span class="bar thin batch">
-                        <i [style.width.%]="batch.fraction * 100"></i>
-                      </span>
-                    }
-                    <span class="batch-text">{{ batchLabel(batch) }}</span>
-                  </div>
-                }
+                <!-- There is no second bar for the MLX batch any more (removed
+                     2026-09-11). The batch's rows retire one at a time and the
+                     bridge folds them into the chunk count, so the CHUNK bar is
+                     what moves during the decode — the same thing the PC shows,
+                     and one bar instead of two. The detail line above still says
+                     what is being rendered together. -->
 
                 <!-- The measurements. Rate is the number a long render is judged
                      by; absent until an honest window exists, never estimated.
@@ -834,10 +826,10 @@ import type { BookPlanView } from './services/queue-tray.service';
        landed yet, and it must not out-shout the bar that measures work that
        has. Short track, the words carrying the detail.
 
-       This is the MLX/Mac bar — on Windows an Orpheus batch reports per chunk
-       and this never draws, so its dimness was only ever visible on Mac runs,
-       and only there did it have to be legible. Quiet is now a lighter grey
-       against a real track, not a fill the same value as the track. */
+       The MLX batch bar was the other user of this row until 2026-09-11, when
+       the batch's retired rows moved into the chunk bar itself; the prep pass
+       keeps it. Quiet is a lighter grey against a real track, not a fill the
+       same value as the track — it was invisible in dark mode as the latter. */
     .batch-row {
       display: flex;
       align-items: center;
@@ -1313,11 +1305,6 @@ export class QueueComponent {
     if (refusal !== null) throw refusal;
   }
 
-  /**
-   * "batch 83/94 sentences · 3.3k tokens". Shared with the queue page's step
-   * rows (shared/queue/bench.ts) — one batch, one wording.
-   */
-  readonly batchLabel = batchLabel;
   /** Both shared, so the shelf and this card word the prep pass identically. */
   readonly prepLabel = prepLabel;
   readonly prepFraction = prepFraction;

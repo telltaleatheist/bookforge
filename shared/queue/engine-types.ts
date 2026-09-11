@@ -253,11 +253,14 @@ export interface JobStageProgress {
  * Progress WITHIN the MLX batch a TTS worker is decoding right now. Mirrors
  * ActiveBatchProgress in electron/mlx-batch-progress.ts.
  *
- * On Mac, Orpheus renders ~96 chunks as ONE atomic 5-7 minute decode whose files
- * all land at the end, so the chunk bar is frozen for the whole batch. This is
- * what moves during that window. Every field is what the engine actually
- * reported — nothing is defaulted, and the whole object is absent when no batch
- * is decoding.
+ * On Mac, Orpheus renders ~96 chunks as ONE 5-7 minute decode whose files all
+ * land at the end — but its ROWS retire one at a time, and the engine counts
+ * them. Since 2026-09-11 the bridge folds `rowsRetiredInCall` into the chunk
+ * count, so the chunk bar ticks off rows as they exit the batch (the way the
+ * PC's does) and the desktop UI draws no second bar. The object stays on the
+ * wire for the Bookshelf queue view, which still draws one. Every field is what
+ * the engine actually reported — nothing is defaulted, and the whole object is
+ * absent when no batch is decoding.
  */
 export interface ActiveBatchProgress {
   rowsTotal: number;
@@ -268,6 +271,13 @@ export interface ActiveBatchProgress {
   fraction?: number;
   batchNo?: number;
   batchCount?: number;
+  /**
+   * Rows retired across the whole engine call — this batch's `rowsDone` plus the
+   * sub-batches before it ("batch 1/2", "batch 2/2"), which each restart their
+   * own count at 0. This is the number the chunk count is folded from. Absent on
+   * an object restored from a queue.json written before the field existed.
+   */
+  rowsRetiredInCall?: number;
   /**
    * When THIS batch's decode began (epoch ms). Timed separately from the step:
    * the step's elapsed folds in the model load and every batch before this one,
@@ -325,7 +335,9 @@ export interface StepProgress {
   /**
    * Live progress inside the MLX batch being decoded. Unlike `stages` this is
    * BLANKED when the bridge reports none — a finished batch must not leave a
-   * full secondary bar sitting under the chunk bar.
+   * full secondary bar sitting under the chunk bar on a surface that draws one
+   * (today only the Bookshelf queue view; the desktop UI folds the batch's
+   * retired rows into the chunk bar instead — see ActiveBatchProgress).
    */
   activeBatch?: ActiveBatchProgress;
   /**
