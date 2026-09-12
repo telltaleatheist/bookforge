@@ -2295,10 +2295,21 @@ class PerChunkGateTest(unittest.TestCase):
     lands seconds from where the sentence's share of the audio puts it, and the
     collapse becomes an invariant that today's seam arithmetic already makes
     unreachable (tested directly, because `align_session` cannot produce it).
-    The same aligner, the same failure, a different amount of damage - which is
-    why the gate that matters for the whole-book door
-    (`electron/scripts/align_audiobook.py`) is the same constant applied where a
-    sentence really can move.
+
+    THE SHIFT CHECK IS GONE (2026-09-12), AND THESE TESTS SAY SO. From
+    2026-09-08 the gate also refused a seam more than `GATE_MAX_SHIFT_S` from
+    its PROPORTIONAL position and shipped the proportional estimate instead.
+    Mutineer's Moon measured that check: it fired on 239 of 966 chunks and put
+    2,164 of 6,215 cues on the guess, and against a whisper word-time truth 21
+    of the 23 cues more than a second off were those guesses (whole chunks 2-3 s
+    late, one 4.6 s) while the measured cues sat within half a second. The guess
+    is off by more than 2 s whenever a chunk holds a pause, so the check could
+    only fire when the guess was wrong, and then it shipped the guess. The
+    seam-far-from-proportional cases below now assert that the MEASUREMENT
+    ships; the two checks that stand on the measurement's own evidence (order,
+    collapse) stay. The constant stays too, for the whole-book door
+    (`electron/scripts/align_audiobook.py`), whose anchor is a rough-transcript
+    time rather than a character share.
     """
 
     #: 12 s a chunk at the manifest's 24 kHz - long enough that a seam can miss
@@ -2382,43 +2393,50 @@ class PerChunkGateTest(unittest.TestCase):
         self.assertEqual(self._gated(result['document']), [])
         self.assertEqual([c.estimated for c in result['cues']], [False, False])
 
-    # ---- shift, the check that actually fires -------------------------------
+    # ---- shift: a seam far from its proportional share SHIPS (2026-09-12) ----
 
-    def test_a_seam_placed_seconds_LATE_is_gated_and_estimated(self):
-        """The Mac's +3.5 s case as this door can express it: the aligner puts
-        the second sentence's words at the very end of the chunk, so its cue
-        starts 3.5 s after its share of the audio says it should."""
+    def test_a_seam_placed_seconds_LATE_ships_as_measured(self):
+        """The aligner puts the second sentence's words at the very end of the
+        chunk, so its cue starts 3.5 s after its share of the characters says
+        it should. Until 2026-09-11 that refused the chunk and shipped the
+        share; on Mutineer's Moon that is exactly the shape of a chunk with a
+        pause in it (chunk 601: every cue 2-3 s late once the guess replaced
+        the measurement). The measurement ships, unmarked, and the report
+        carries no gate error."""
         self.placement[self.TEXT] = [(0.0, 0.5), (0.5, 8.0),
                                      (11.0, 11.4), (11.4, 11.8)]
         result = self._align([self.TEXT])
-        gated = self._gated(result['document'])
-        self.assertEqual([index for index, _message in gated], [0])
-        self.assertIn('gate/shift', gated[0][1])
-        self.assertIn('sentence 1', gated[0][1])
-        # ...and the chunk ships the ESTIMATE, marked as one.
-        self.assertTrue(all(c.estimated for c in result['cues']))
-        self.assertAlmostEqual(result['cues'][1].start_s, 6.0, places=3)
+        self.assertEqual(self._gated(result['document']), [])
+        self.assertEqual([c.estimated for c in result['cues']], [False, False])
+        # The seam is the middle of the gap between the words: (8.0 + 11.0) / 2.
+        self.assertAlmostEqual(result['cues'][1].start_s, 9.5, places=3)
 
-    def test_a_seam_placed_seconds_EARLY_is_gated(self):
-        """The -7.8 s case: everything crammed into the first second."""
+    def test_a_seam_placed_seconds_EARLY_ships_as_measured(self):
+        """Everything crammed into the first second - 5.75 s from the
+        proportional seam, in the other direction. Same answer."""
         self.placement[self.TEXT] = [(0.0, 0.05), (0.05, 0.10),
                                      (0.20, 0.30), (0.30, 0.40)]
         result = self._align([self.TEXT])
-        gated = self._gated(result['document'])
-        self.assertEqual([index for index, _message in gated], [0])
-        self.assertIn('gate/shift', gated[0][1])
-
-    def test_the_shift_limit_is_GATE_MAX_SHIFT_S_and_a_smaller_miss_passes(self):
-        """A seam 1.5 s from proportional is inside the band the Mac's GOOD
-        prose chunks sat in, and must survive; 2.0 s is where the two
-        populations separate."""
-        self.assertEqual(R.GATE_MAX_SHIFT_S, 2.0)
-        # Words 1 and 2 straddle a raw seam at 7.5 s: 1.5 s from 6.0.
-        self.placement[self.TEXT] = [(0.0, 0.5), (0.5, 7.0),
-                                     (8.0, 8.5), (8.5, 9.0)]
-        result = self._align([self.TEXT])
         self.assertEqual(self._gated(result['document']), [])
-        self.assertAlmostEqual(result['cues'][1].start_s, 7.5, places=3)
+        self.assertEqual([c.estimated for c in result['cues']], [False, False])
+        self.assertAlmostEqual(result['cues'][1].start_s, 0.15, places=3)
+
+    def test_GATE_MAX_SHIFT_S_is_still_the_whole_book_doors_two_seconds(self):
+        """The constant outlives the per-chunk check: `align_audiobook.py`
+        imports it as the band an interpolated sentence may sit from its
+        rough-transcript anchor, and that door is unchanged."""
+        self.assertEqual(R.GATE_MAX_SHIFT_S, 2.0)
+        self.assertIn('GATE_MAX_SHIFT_S', R.__all__)
+
+    def test_the_gate_no_longer_reads_the_proportional_estimate(self):
+        """`gate_refusal` takes the measured cues and the chunk index and
+        nothing else - no span, no text, no heading flag - because the only
+        thing it may compare a measurement against is the measurement. A
+        signature that still accepted the estimate's inputs would be an
+        invitation to put the comparison back."""
+        import inspect
+        params = list(inspect.signature(R.gate_refusal).parameters)
+        self.assertEqual(params, ['measured', 'chunk_index'])
 
     # ---- order --------------------------------------------------------------
 
@@ -2458,9 +2476,7 @@ class PerChunkGateTest(unittest.TestCase):
             SentenceCue(chunk_index=7, sentence_index=1, start_s=100.0,
                         end_s=112.0, text='Ccccc ddddd.', quality=dict(quality)),
         )
-        refusal = R.gate_refusal(collapsed, chunk_index=7, chunk_start_s=100.0,
-                                 chunk_end_s=112.0, text=self.TEXT,
-                                 is_heading=False)
+        refusal = R.gate_refusal(collapsed, chunk_index=7)
         self.assertIsNotNone(refusal)
         self.assertIn('gate/collapse', refusal)
         self.assertIn('100.000s', refusal)
@@ -2491,10 +2507,11 @@ class PerChunkGateTest(unittest.TestCase):
     def test_a_gated_chunk_does_not_touch_its_neighbours(self):
         """"So a heading never drags the following prose chunk with it": the
         gated chunk is estimated ALONE and the chunks around it keep their
-        measured cues."""
+        measured cues. Gated on ORDER (the second sentence's words placed
+        backwards) - the shift check that used to trip this test is gone."""
         texts = [self.TEXT, self.TEXT2, self.TEXT3]
-        self.placement[self.TEXT2] = [(0.0, 0.5), (0.5, 8.0),
-                                      (11.0, 11.4), (11.4, 11.8)]
+        self.placement[self.TEXT2] = [(0.0, 0.5), (0.5, 5.0),
+                                      (7.0, 8.0), (6.5, 7.5)]
         result = self._align(texts)
         gated = self._gated(result['document'])
         self.assertEqual([index for index, _message in gated], [1])

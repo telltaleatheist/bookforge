@@ -299,10 +299,19 @@ check('the gate is one constant, in one place, imported by the whole-book door',
   const run = read('python/narrator/align/run.py');
   assert.ok(/^GATE_MAX_SHIFT_S = 2\.0$/m.test(run),
     'narrator/align/run.py owns GATE_MAX_SHIFT_S');
-  assert.ok(/def gate_refusal\(/.test(run));
-  for (const stage of ['gate/shift', 'gate/order', 'gate/collapse']) {
+  // The per-chunk gate takes the cues and the chunk index and NOTHING ELSE
+  // (2026-09-12): the shift check compared a measurement to the proportional
+  // guess and shipped the guess on disagreement — on Mutineer's Moon that put a
+  // third of the book's cues 2-4.6 s off. A signature that still took the
+  // estimate's inputs (span, text, heading flag) is how it would come back.
+  assert.ok(/def gate_refusal\(measured: Sequence, \*, chunk_index: int\) -> Optional\[str\]:/.test(run),
+    'gate_refusal(measured, *, chunk_index) — no span, no text, no heading flag');
+  for (const stage of ['gate/order', 'gate/collapse']) {
     assert.ok(run.includes(stage), `the gate must name its check: ${stage}`);
   }
+  assert.ok(!/gate\/shift/.test(run.replace(/"""[\s\S]*?"""|#[^\n]*/g, '')),
+    'the per-chunk gate must not compare a measurement to the proportional '
+    + 'estimate (gate/shift may be mentioned in prose, never raised)');
   assert.ok(/stage='gate'/.test(run),
     "a gated chunk must be recorded under stage 'gate' and estimated, exactly "
     + 'like one the aligner could not place');

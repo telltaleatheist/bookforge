@@ -245,24 +245,33 @@ float32 on cpu.
 faster-whisper - it runs that stage in the whisperx env through its own
 `--rough-python` and aligns in this one.
 
-### The per-chunk gate (`run.gate_refusal`, `GATE_MAX_SHIFT_S = 2.0`)
+### The per-chunk gate (`run.gate_refusal`)
 
-qwen3 never refuses, so `align_session` checks where it put things before the
+qwen3 never refuses, so `align_session` checks what it was handed before the
 cues are accepted. A chunk that fails is recorded in the report's `errors` under
 stage **`gate`** and ESTIMATED, exactly like one the aligner could not place at
-all - same code path, same `NOTE estimated chunk <i>` in the VTT.
+all - same code path, same `NOTE estimated chunk <i>` in the VTT. Both checks
+stand on the measurement's own evidence:
 
 | check | fires when |
 |---|---|
-| `gate/shift` | a cue's start is more than `GATE_MAX_SHIFT_S` from the start the PROPORTIONAL estimate would have given it |
 | `gate/order` | a cue's `quality['monotonic']` is False - the sentence's own words were placed backwards |
 | `gate/collapse` | two cues of one chunk share a start |
 
-**2.0 s is a first estimate, from the Mac bake-off**, and it is written down in
-one place: the five gross misses there were +3.5 s, -7.8 s and three tiny chunks
-collapsed onto one position 2.1-5.7 s away, while every prose chunk it placed
-well sat within 1.5 s of proportional. `electron/scripts/align_audiobook.py`
-imports this constant rather than restating it.
+**There was a third, `gate/shift`, and it is gone (2026-09-12).** It refused a
+cue more than `GATE_MAX_SHIFT_S` (2.0 s) from the start the PROPORTIONAL estimate
+would have given it, and shipped the estimate. Mutineer's Moon (Higgs, 966
+chunks, Mac, 2026-09-12) measured it: 239 chunks refused, 2,164 of 6,215 cues
+shipped as guesses, and against faster-whisper word times 21 of the 23 cues more
+than a second off were those guesses (whole chunks 2-3 s late, one 4.6 s) while
+the measured cues sat within half a second. The proportional guess is wrong by
+more than 2 s whenever a chunk holds a pause, so the check could only fire when
+the guess was wrong - and then it shipped the guess. It was removed rather than
+widened; `gate_refusal(measured, *, chunk_index)` no longer takes the estimate's
+inputs at all. `GATE_MAX_SHIFT_S` stays defined in `run.py` because
+`electron/scripts/align_audiobook.py` imports it for the whole-book door, where
+the reference is a rough transcript's word time. docs/ALIGNMENT.md has the
+numbers.
 
 **WHAT THIS DOOR CANNOT LOSE, AND WHY THE GATE IS SMALLER THAN IT SOUNDS.**
 `sentences.sentence_cues` builds every cue inside the chunk's own manifest span:
@@ -272,7 +281,7 @@ another chunk's audio here, and a SINGLE-SENTENCE chunk - which is what a headin
 is - cannot be moved at all. The 59 heading misses the Shift bake-off found cost
 this door nothing; the gate is about the INTERIOR of a multi-sentence chunk. The
 door where a sentence really can land seconds away is the whole-book one, and
-that is where the same constant does the heavy lifting.
+that is where `GATE_MAX_SHIFT_S` does its work.
 
 ### Why the default did not move
 

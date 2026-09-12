@@ -37,10 +37,26 @@ says the cue is a guess.
 AND FOR A CHUNK WHOSE MEASUREMENT THIS MODULE DOES NOT BELIEVE (2026-09-08,
 stage `gate`). The qwen3 backend has no confidence and never refuses - it PLACES
 a window whose text does not match the speech - so `gate_refusal` checks each
-chunk's measured cues against the proportional estimate for the same chunk and
-against their own quality dicts, and a chunk that fails is recorded and
-estimated exactly like one the aligner could not place. `GATE_MAX_SHIFT_S` is
-the one number.
+chunk's measured cues against their own quality dicts (words placed backwards)
+and against each other (two cues on one start), and a chunk that fails is
+recorded and estimated exactly like one the aligner could not place.
+
+THE GATE NO LONGER COMPARES A MEASUREMENT TO THE PROPORTIONAL GUESS
+(2026-09-12). From 2026-09-08 to 2026-09-11 it also refused any cue that sat
+more than `GATE_MAX_SHIFT_S` from where the sentence's share of the characters
+would have put it, and shipped the guess instead. Mutineer's Moon (Higgs,
+deathstalker, 966 chunks, 2026-09-12) measured what that does: the check fired
+on 239 chunks - a quarter of the book, 2,164 of 6,215 cues - and against a
+whisper word-time truth 21 of the 23 cues more than a second off were those
+estimates (runs of consecutive cues all 2-3 s late, up to 4.6 s), while the
+measured cues sat within half a second. The guess is off by more than 2 s
+whenever a chunk carries a pause or an uneven pace, which Higgs chunks do, and
+the check can only fire when the guess disagrees with the measurement - so
+every fire replaced a measurement with the exact guess it had just been tested
+against. A check that cannot improve the transcript is not a check.
+`GATE_MAX_SHIFT_S` stays defined here for the whole-book door
+(`electron/scripts/align_audiobook.py`), where a sentence's coarse anchor is a
+rough-transcript time rather than a character share.
 
 An earlier design stopped at the first failure and wrote nothing, with
 `--continue-on-error` as the opt-in sweep. That made a 50-chunk book with 5
@@ -194,10 +210,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
             continue
         # THE GATE. A measurement this module cannot believe is estimated
         # instead, and says so - see `gate_refusal`.
-        refusal = gate_refusal(measured, chunk_index=chunk.index,
-                               chunk_start_s=start, chunk_end_s=end,
-                               text=chunk.text,
-                               is_heading=chunk.kind == 'heading')
+        refusal = gate_refusal(measured, chunk_index=chunk.index)
         if refusal is not None:
             _estimate(chunk, start, end, stage='gate', message=refusal,
                       cues=cues, errors=errors, log=log)
@@ -230,24 +243,24 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     return {'document': document, 'cues': cues}
 
 
-#: How far a MEASURED cue's start may sit from the PROPORTIONAL start the same
-#: sentence would have been given, before this module stops believing the
-#: measurement and estimates the whole chunk instead. Seconds.
+#: THE WHOLE-BOOK DOOR'S BAND, in seconds: how far an INTERPOLATED sentence's
+#: aligned time may sit from its coarse anchor (a rough-transcript time) in
+#: `electron/scripts/align_audiobook.py` before that door reverts it onto the
+#: anchor and tags it `matched=suspect`. That script imports this name rather
+#: than restating the number, which is why it lives here.
 #:
-#: THIS IS A FIRST ESTIMATE, NOT A MEASUREMENT, and it is chosen from the Mac
-#: bake-off of 2026-09-08 (M-series, mps bf16, Shift's first hour, 61 chunk
-#: starts scored against the assembled m4b): qwen3's five gross misses were
-#: +3.5 s, -7.8 s and three tiny chunks collapsed onto ONE position 2.1-5.7 s
-#: from where they belong, while every prose chunk it placed well sat within
-#: 1.5 s of its proportional position. 2.0 s is the gap between those two
-#: populations. Widen it if a real book's good chunks start tripping it; the
-#: number is here, once, so that is one edit.
+#: It was ALSO the per-chunk gate's shift limit from 2026-09-08 to 2026-09-11,
+#: measured against the proportional (character-share) start of each sentence.
+#: It is not any more - see `gate_refusal` and the module docstring: on
+#: Mutineer's Moon that comparison threw away a quarter of the book's
+#: measurements and shipped guesses that were 2-4.6 s off. The number itself
+#: (2.0 s, the gap between the Mac bake-off's good population at <=1.5 s and its
+#: gross misses at 2.1-7.8 s) was chosen for a comparison against a ROUGH
+#: TRANSCRIPT's word time, and that is the only comparison it is used in now.
 GATE_MAX_SHIFT_S = 2.0
 
 
-def gate_refusal(measured: Sequence, *, chunk_index: int,
-                 chunk_start_s: float, chunk_end_s: float, text: str,
-                 is_heading: bool) -> Optional[str]:
+def gate_refusal(measured: Sequence, *, chunk_index: int) -> Optional[str]:
     """Do this chunk's MEASURED cues survive a sanity check? None = yes.
 
     WHY A GATE AT ALL. qwen3 has no confidence and never refuses (see
@@ -255,26 +268,23 @@ def gate_refusal(measured: Sequence, *, chunk_index: int,
     PLACED, not rejected. On Shift that was 59 headings and tiny chunks, and on
     the Mac's first hour it was five gross misses including three tiny chunks
     all predicted at one position. The aligner will not tell a caller that
-    happened, so the caller measures it - against the one other answer it has,
-    the proportional estimate over the chunk's own real audio.
+    happened, so the caller looks at what it was handed - and ONLY at what it
+    was handed. Every check here stands on the measurement's own evidence.
 
     WHAT IS ALREADY SAFE, AND SO IS NOT CHECKED HERE. `sentences.sentence_cues`
     builds every cue INSIDE the chunk's own manifest span: the first cue starts
-    at `chunk_start_s` and the last ends at `chunk_end_s`, whatever the aligner
+    at the chunk's start and the last ends at its end, whatever the aligner
     said, and the interior seams are clamped to `MIN_CUE_S` apart. So a chunk
     can never be dragged onto another chunk's audio by this door, and a
     single-sentence chunk - which is what a heading is - cannot be moved at all.
     That is why the gross-miss mode costs this door nothing on headings and why
     the gate is about the INTERIOR of a multi-sentence chunk. The door where a
     sentence really can land seconds away is the whole-book one,
-    `electron/scripts/align_audiobook.py`, which gates on the same constant
-    against its own coarse expectation.
+    `electron/scripts/align_audiobook.py`, which gates against a rough
+    transcript's word times.
 
-    THE THREE CHECKS:
+    THE TWO CHECKS:
 
-      shift      a cue whose start is more than `GATE_MAX_SHIFT_S` from the
-                 start the proportional estimate would have given it. This is
-                 the one that fires in practice.
       order      a cue whose `quality['monotonic']` is False - the alignment
                  placed this sentence's words backwards. `sentence_cues` already
                  guarantees the between-cue half of monotonic for any chunk it
@@ -285,6 +295,24 @@ def gate_refusal(measured: Sequence, *, chunk_index: int,
                  the Mac's worst case took (1857.5 / 1859.1 / 1861.1 s all
                  predicted at 1855.43) and because a future change to that
                  arithmetic must not be able to reintroduce it silently.
+
+    THE CHECK THAT IS GONE, AND WHY (2026-09-12). There was a third, `shift`:
+    a cue more than `GATE_MAX_SHIFT_S` from the start the PROPORTIONAL estimate
+    (`assemble/sentence_vtt.proportional_cues`, characters over the chunk's
+    audio) would have given it refused the whole chunk, which then shipped
+    that estimate. It was the one that fired in practice, and it was measured
+    on Mutineer's Moon (Higgs `deathstalker`, 966 chunks, rendered on the Mac
+    2026-09-12): 239 chunks refused, 2,164 of the book's 6,215 cues shipped as
+    guesses; against a faster-whisper word-time truth over 16 windows, 21 of
+    the 23 cues more than a second off were those guesses - whole chunks 2-3 s
+    late, one 4.6 s - and the measured cues sat within half a second. The
+    proportional guess is wrong by more than 2 s whenever a chunk holds a pause
+    or reads unevenly, which a Higgs chunk often does, and the check could only
+    fire when the guess disagreed with the measurement: every fire replaced a
+    measurement with the very guess it had been tested against. Owen: "text
+    alignment is completely wrong" on a book whose measurements were right.
+    A gate whose reference is worse than what it judges cannot improve the
+    file, so it is not a gate; it is gone rather than widened.
 
     Returns the refusal SENTENCE - naming the check and the numbers - so the
     caller can put it in the report's `errors` under stage 'gate'.
@@ -313,27 +341,6 @@ def gate_refusal(measured: Sequence, *, chunk_index: int,
                 f'gate/order: chunk {chunk_index} sentence {cue.sentence_index} '
                 f'has words the aligner placed out of order, so its cue is not a '
                 f'reading of this sentence')
-
-    expected = proportional_cues(
-        chunk_index=chunk_index, chunk_start_s=chunk_start_s,
-        chunk_end_s=chunk_end_s, text=text, is_heading=is_heading)
-    if len(expected) != len(measured):
-        # Both sides run the SAME splitter (`split_chunk_sentences`) over the
-        # same text, so this cannot differ - and if it ever does, the two lists
-        # are not about the same sentences and comparing them position by
-        # position would compare a cue with somebody else's expectation.
-        return (
-            f'gate/shift: chunk {chunk_index} measured {len(measured)} cue(s) but '
-            f'splits into {len(expected)} sentence(s); the measured cues and the '
-            f'proportional estimate are not about the same text')
-    for cue, guess in zip(measured, expected):
-        shift = abs(cue.start_s - guess.start_s)
-        if shift > GATE_MAX_SHIFT_S:
-            return (
-                f'gate/shift: chunk {chunk_index} sentence {cue.sentence_index} '
-                f'was placed at {cue.start_s:.3f}s, {shift:.3f}s from the '
-                f'{guess.start_s:.3f}s its share of the chunk\'s audio gives it '
-                f'(limit {GATE_MAX_SHIFT_S:.1f}s)')
     return None
 
 

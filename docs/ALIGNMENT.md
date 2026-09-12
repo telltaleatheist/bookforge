@@ -164,24 +164,18 @@ native) the door works.
 ## The gate
 
 qwen3 places a window whose text does not match the speech rather than refusing
-it, and it publishes no confidence to catch that with. Both doors therefore gate
-on POSITION, against the same constant:
-
-**`GATE_MAX_SHIFT_S = 2.0`** — `python/narrator/align/run.py`, imported by
-`align_audiobook.py` rather than restated. It is a **first estimate, not a
-measurement**, and it comes from the Mac data above: the real misses were
-+3.5 / −7.8 s and collapses of 2.1–5.7 s, while every well-placed prose chunk sat
-within 1.5 s of its proportional position. 2.0 s is the gap between those two
-populations.
+it, and it publishes no confidence to catch that with. Each door therefore checks
+what it was handed — and the two doors check against DIFFERENT references,
+because they have different ones available.
 
 **Per-chunk door** (`run.gate_refusal`): a chunk whose measured cues fail is
 recorded in the report's `errors` under stage **`gate`** and estimated through the
 same path as one the aligner could not place — so the failure is named and the
-transcript says the cue is a guess.
+transcript says the cue is a guess. Both checks stand on the measurement's own
+evidence:
 
 | check | fires when |
 |---|---|
-| `gate/shift` | a cue's start is more than 2.0 s from its proportional start |
 | `gate/order` | the sentence's own words were placed backwards (`quality['monotonic']` is False) |
 | `gate/collapse` | two cues of one chunk share a start |
 
@@ -192,6 +186,42 @@ which is what a heading is — cannot be moved at all. The 59 heading misses cos
 that door nothing; the gate is about the interior of a multi-sentence chunk.
 `gate/collapse` is unreachable under today's seam arithmetic and is kept as an
 invariant so a future change cannot reintroduce it silently.
+
+**The `gate/shift` check this door HAD, and why it is gone (2026-09-12).** From
+2026-09-08 to 2026-09-11 the per-chunk door also refused any cue whose start sat
+more than `GATE_MAX_SHIFT_S` from its PROPORTIONAL start — the character-share
+estimate from `assemble/sentence_vtt.proportional_cues` — and shipped that
+estimate for the whole chunk. Mutineer's Moon (Higgs `deathstalker`, 966 chunks,
+10.2 h, rendered on the Mac 2026-09-12 with the chapter-gap fix in) measured what
+that does:
+
+| | |
+|---|---|
+| chunks the shift check refused | **239 of 966** |
+| cues shipped as the proportional guess | **2,164 of 6,215** (35 %) |
+| cues > 1 s off, against faster-whisper word times over 16 windows | 23 of 109 |
+| …of which were the guess, not the measurement | **21** |
+| measured cues, typical offset | −0.2 to −0.4 s (whisper's own onset bias) |
+| worst guess | 4.6 s; whole chunks 2–3 s late in runs |
+
+The proportional guess is off by more than 2 s whenever a chunk holds a pause or
+reads unevenly — which a Higgs chunk often does (see the hole guard in
+`engine/higgs/truncation.py`) — and the check could only fire when the guess
+disagreed with the measurement. So every fire replaced a measurement with the
+very guess it had just been tested against, and the transcript the player
+followed was a third guesses. Owen's report was "text alignment is completely
+wrong" on a book whose measurements were within half a second. A check whose
+reference is worse than what it judges cannot improve the file; it was removed
+rather than widened, and `gate_refusal` now takes the cues and the chunk index
+and nothing else, so the estimate's inputs cannot find their way back in.
+
+**`GATE_MAX_SHIFT_S = 2.0`** stays in `python/narrator/align/run.py`, imported by
+`align_audiobook.py` rather than restated, because the WHOLE-BOOK door still
+gates on it — against a rough transcript's word time, which is a measurement,
+not a character share. The number came from the Mac data above: the real misses
+were +3.5 / −7.8 s and collapses of 2.1–5.7 s, while every well-placed prose
+chunk sat within 1.5 s. It was chosen for that comparison and is now used only
+there.
 
 **Whole-book door**, where a sentence really can land seconds away:
 
