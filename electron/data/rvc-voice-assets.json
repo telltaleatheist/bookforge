@@ -68,6 +68,16 @@
       "sha256": "5120f53ddd32559a9b3e38aff915228a0b432a98c81285f4a33746b8c68e6685",
       "bytes": 81311612,
       "version": "2026.09.11"
+    },
+    {
+      "id": "rvc-voice-deathstalker-d3000-v1",
+      "label": "Deathstalker RVC v1 (3000 Degrees)",
+      "modelName": "deathstalker_rvc_v1",
+      "matches": "the Deathstalker narrator (3000 Degrees source) - SAME-VOICE cleanup",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/deathstalker_rvc_v1.tar.gz",
+      "sha256": "c9d3fea887c4875da5c2848e929f7d891059bc2b40219e22a85e28a61ff1e777",
+      "bytes": 184681783,
+      "version": "2026.09.12"
     }
   ]
 }
