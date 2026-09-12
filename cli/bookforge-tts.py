@@ -1,22 +1,57 @@
-#!/usr/bin/env python3
-r"""bookforge-tts — run TTS (and later other) jobs THROUGH BookForge's built
-pipeline, from the command line, without launching the app.
+r"""bookforge-tts — BookForge's own pipeline, headless, from the command line.
 
-Why this exists: BookForge's Orpheus render path is a "well-oiled machine" — WSL
-wedge-proofing (TERM->verify->`wsl -t` kill ladder, wedge latch, never-SIGKILL a
-guest GPU proc), vLLM `gpu_memory_utilization` memory tiers + safe GPU sizing, and
-custom-model resolution — all living in its compiled TypeScript. Reimplementing any
-of that in an outer script would drift from the real thing. So this CLI does NOT
-reimplement it: it drives the actual compiled worker pool (via cli/orpheus-render.js
-under an electron shim). BookForge must be BUILT (dist/electron present) but need
-NOT be running.
+WHAT THIS IS. Every command drives the app's OWN compiled code: the exported
+functions in dist/electron/ that the queue steps and the IPC handlers call,
+reached through a thin adapter in cli/. Nothing is reimplemented, deliberately —
+a CLI run inherits every guard unchanged, which is what makes a defect found here
+a defect in the app. `tools/test-cli-parity.js` defends that: each adapter must
+require the COMPILED module and call the exact symbol the app's own step calls.
 
-    bookforge-tts --tts --engine=orpheus --voice=rohan \
-        --input passage.txt --out sample.wav [--tier fast]
+    bookforge-tts --tts --voice zac --input book.epub --out sample.wav
 
-Commands are a registry (COMMANDS) so adding e.g. --ai-cleanup later is one entry;
-every job-level flag a real TTS job takes is passed straight through to the engine
-adapter. Nothing is silently defaulted — a missing required arg fails loudly.
+HOW TO READ THIS HELP. Below, every flag sits in a group whose title says who
+reads it. For ONE command — its flags, what it refuses by name, and examples you
+can paste — ASK THAT COMMAND:
+
+    bookforge-tts --tts --help
+    bookforge-tts --audiobook --help
+    bookforge-tts --pass --help
+
+BUILD FIRST. BookForge must be BUILT; it need not be running.
+
+    npx tsc -p tsconfig.electron.json                       # the code
+    cp -R electron/data electron/prompts dist/electron/     # the assets tsc does not copy
+
+(`npm run build:electron` does both. On a tsc-only build, every command that
+touches a component — --generate-epub, --rvc, --generate-sentences — dies with
+"Failed to load built-in RVC voice assets", because the component system loads
+dist/electron/data/*.json at import time.)
+
+THE COMMANDS. Exactly one is required.
+
+  --tts                 render a book, a passage or bare test chunks to a WAV
+  --audiobook           the shipped M4B end to end: render -> denoise -> assemble -> register
+  --assemble            assemble (and optionally denoise) a session already rendered
+  --align               force-align a rendered session; writes coverage.json
+  --denoise             the final-denoise step over a session's cached sentences
+  --rvc-enhance         the RVC step over a session's cached sentences
+  --retake              Correct Sentences: list / retake / commit / revert / cleanup
+  --pass                a processing pass on a project: simplify, translate, footnote-refs
+  --prep                the narration door alone: captions and notes out, numbers as words
+  --narration-text      the narration text cleanup on a book, replacing it in place
+  --clean-lines         a file of lines through that same cleanup, written back by position
+  --clean               the hosted Foundry window's "Clean text" press, with no window
+  --ai-cleanup          ai-bridge.cleanupEpub over a LOOSE epub (repair and/or TTS prep)
+  --ai-simplify         the same call with simplifyForChildren + a mode
+  --generate-sentences  audio -> a sentence VTT (whisper, or epub-align with the book as truth)
+  --generate-epub       read a project's PDF into its book (foundry vlm-convert)
+  --rvc                 convert ONE finished audio file through an RVC voice, memory-safely
+
+Commands are a registry (COMMANDS), the flags a second one (COMMAND_FLAGS) that
+says which command reads which — and the per-command help is generated from it,
+so it cannot describe a flag the parser does not have. Nothing is silently
+defaulted: a missing required arg fails loudly, and a flag the chosen door cannot
+honour is refused BY NAME rather than accepted and dropped.
 """
 import argparse
 import json
@@ -25,6 +60,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 # THIS PROGRAM'S OUTPUT IS UTF-8, AND SAYS SO.
@@ -1651,117 +1687,761 @@ COMMANDS = {
     "rvc": cmd_rvc,
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WHO READS WHICH FLAG — the data the help is GENERATED from (2026-09-12)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Owen, 2026-09-12: *"ideally the bookforge cli would make it pretty
+# straightforward how to use it by its flags and such."* Until this pass `--help`
+# was 529 lines of ONE flat usage line mixing 17 command selectors with ~130
+# option flags. Every flag's own help text was good; nothing said which command
+# could read it, so the only way to learn that a `--voice` means nothing to
+# `--assemble` was to run it and read the refusal.
+#
+# So ownership is DATA, and `--<command> --help` is rendered from it plus the
+# SAME add_argument calls the real parser is built from (see _FlagRegistry). A
+# second parser written by hand for that view would drift, and a help page that
+# names a flag the parser does not have is worse than no help page.
+#
+#   reads     — what this command's cmd_* function, and the helpers it calls
+#               (_audiobook_spawn, _higgs_override, _mlx_tuning_env,
+#               _session_target_argv, _run_ai), puts on the adapter's argv or into
+#               the spawn env. Derived from the code, not from intent.
+#   refuses   — the flags it fails on BY NAME, each with the reason it gives.
+#               Conditional refusals state the condition ("on --engine higgs:").
+#   doc       — which app door this drives, from the cmd_* docstring.
+#   usage     — the one line a reader copies.
+#   examples  — every one of them dry-run first; an example a dry run refuses is
+#               a bug in the example.
+#
+# A flag in NEITHER list is accepted and decides nothing. Three exist, and they
+# are named in cli/README.md rather than quietly removed: --voice-token (never
+# reaches an adapter on the render door), --family on --narration-text (read only
+# by --pass), and the ORPHEUS_* env seams on --assemble (which renders nothing).
+COMMAND_FLAGS = {
+    "tts": {
+        "usage": "bookforge-tts --tts --voice ID (--input FILE | --text STR) --out FILE [options]",
+        "doc": """Render a book, a passage, or bare test chunks to a WAV — the app's own render path.
 
-def build_parser():
-    # The epilog names the sibling adapters, so `--help` lists every action this
-    # CLI can reach — not only the ones argparse owns. Their argument grammars
-    # are their own (verbs, repeated --file), which is why they are run directly
-    # rather than wrapped in a flat flag namespace that would have to invent a
-    # second spelling for each of their options.
-    epilog = "Sibling adapters (their own grammars — run them directly):\n" + "".join(
-        f"  node {name}\n      {what}\n" for name, what in SIBLING_ADAPTERS.items())
-    p = argparse.ArgumentParser(prog="bookforge-tts", description=__doc__, epilog=epilog,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", help="CLI settings file (aliases + defaults). "
-                   "Default search: $BOOKFORGE_CLI_CONFIG, cli/bookforge-cli.json, ~/.bookforge-cli.json")
+--mode tts (default) is the AUDIOBOOK/BATCH path: parallel-tts-bridge ->
+renderRangeHeadless -> the prep packs the chunks -> the worker. --mode streaming is
+the LISTEN path: the app's real tts-api-server driven over the protocol in
+docs/TTS_API.md, so the run goes through handleSpeak, splitForTts and the pool's
+batch ladder exactly as pressing play does.
+
+The narration prep runs first, automatically (see --prep). The per-sentence FLACs
+are flat-concatenated into a BARE WAV — no chapters, cover or metadata; for the
+book the app ships, use --audiobook.""",
+        "reads": [
+            "--config", "--dry-run", "--engine", "--mode", "--voice", "--input", "--text",
+            "--out", "--title", "--library", "--language", "--model-dir", "--checkpoint-dir",
+            "--note", "--models-dir", "--tier", "--sentence-gap", "--temperature", "--top-p",
+            "--min-p", "--top-k", "--rep-penalty", "--safe-band", "--max-chars",
+            "--batch-width", "--mem-budget-gb", "--as-chunks", "--max-chunks",
+            "--keep-sentences", "--keep-session", "--read-ahead", "--skip-text-cleanup",
+            "--orpheus-install", "--conda-env",
+        ],
+        "refuses": [
+            ("--model-dir", "on --engine higgs: a Higgs checkpoint is --checkpoint-dir"),
+            ("--checkpoint-dir", "orpheus names --model-dir; streaming has no per-request seam"),
+            ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
+            ("--min-p", "on --engine higgs: narrator's v3 engines have no min_p knob"),
+            ("--rep-penalty", "on --engine higgs: no repetition-penalty knob"),
+            ("--safe-band", "orpheus packs to --max-chars; streaming packs to the voice's cap"),
+            ("--batch-width", "orpheus sizes its batch from --tier; Windows uses HIGGS_MAX_NUM_SEQS"),
+            ("--mem-budget-gb", "same as --batch-width: Higgs on the Mac only"),
+            ("--as-chunks", "with an .epub the app's packer chunks it; a stream block is a paragraph"),
+            ("--max-chunks", "in --mode streaming: bound the blocks with --read-ahead"),
+            ("--title", "in --mode streaming: it names a packed book, and streaming packs nothing"),
+            ("--library", "in --mode streaming: no session and no narration cut is written"),
+            ("--language", "in --mode streaming: only 'en' (that path packs and preps nothing)"),
+            ("--voice-token", "streaming binds a voice by id; in tts mode it reaches NO adapter"),
+        ],
+        "examples": [
+            'bookforge-tts --tts --voice zac --input book.epub --out sample.wav',
+            '# one chunk per line, narrated as printed, capped at the first 20:\n'
+            'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl \\\n'
+            '    --as-chunks --max-chunks 20 --out chunks.wav',
+            '# a checkpoint under test, on the MAC (MLX reads it here, so the path must exist here):\n'
+            'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl --as-chunks \\\n'
+            '    --out mb440.wav --checkpoint-dir \\\n'
+            '    "$HOME/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_440_prod"',
+            '# the same on the PC: the reading happens in the WSL guest, so the path is\n'
+            '# GUEST-native and is NOT stat\'d here:\n'
+            'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl --as-chunks \\\n'
+            '    --out mb616.wav --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616',
+            '# the Listen path, reading only two blocks ahead:\n'
+            'bookforge-tts --tts --mode streaming --voice deathstalker --input article.txt \\\n'
+            '    --out listen.wav --read-ahead 2',
+        ],
+    },
+    "audiobook": {
+        "usage": "bookforge-tts --audiobook --project DIR --voice ID [options]",
+        "doc": """Build the FULL audiobook (M4B) the app ships, headless.
+
+It chains the exact high-level calls the app's queue makes: prepareNarrationInput
+(the narration door), renderRangeHeadless (the tts-conversion core),
+runFinalDenoise when the denoise is on, then startReassembly — producing
+<project>/output/<Title>. <Author>.m4b with chapters, cover and metadata, and
+registering it in the manifest.
+
+The input EPUB is the project's RECORDED book (manifest-service.bookForAct, the
+door every act in the app resolves through); --input overrides it. Output lands in
+its canonical project location, so there is no --out. It RESUMES by default —
+--fresh re-renders from scratch.""",
+        "reads": [
+            "--config", "--dry-run", "--project", "--engine", "--voice", "--input",
+            "--language", "--model-dir", "--checkpoint-dir", "--note", "--models-dir",
+            "--tier", "--sentence-gap", "--temperature", "--top-p", "--min-p", "--top-k",
+            "--rep-penalty", "--safe-band", "--max-chars", "--batch-width", "--mem-budget-gb",
+            "--fresh", "--skip-text-cleanup", "--keep-session", "--de-ring", "--assembly-gap",
+            "--final-denoise", "--no-final-denoise", "--orpheus-install", "--conda-env",
+        ],
+        "refuses": [
+            ("--max-chunks", "a capped book is not an audiobook: it would be filed in the "
+                             "project's own output/ as THE audiobook, with chapters and metadata "
+                             "claiming to be the whole thing. Use --tts --max-chunks N"),
+            ("--as-chunks", "that renders each paragraph of a TEXT input as one chunk; this door "
+                            "narrates the project's recorded book"),
+            ("--title", "the project's own title names the book"),
+            ("--library", "the project decides its library: <library>/projects/<slug>"),
+            ("--as-new-version", "that files a SECOND audiobook beside the project's; "
+                                 "--audiobook makes the project's own"),
+            ("--version-voice", "it means nothing without --as-new-version"),
+            ("--model-dir", "on --engine higgs: name the checkpoint under test with --checkpoint-dir"),
+            ("--checkpoint-dir", "on --engine orpheus: name the model directory with --model-dir"),
+            ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
+            ("--min-p", "on --engine higgs: no min_p knob"),
+            ("--rep-penalty", "on --engine higgs: no repetition-penalty knob"),
+            ("--safe-band", "on --engine orpheus: it packs to --max-chars"),
+            ("--batch-width", "Higgs on the Mac only (on Windows the width is the server's "
+                              "admission width, HIGGS_MAX_NUM_SEQS)"),
+            ("--mem-budget-gb", "Higgs on the Mac only, as above"),
+        ],
+        "examples": [
+            'bookforge-tts --audiobook --project "<library>/projects/<slug>" --voice deathstalker',
+            'bookforge-tts --audiobook --project "<library>/projects/<slug>" --engine higgs \\\n'
+            '    --voice mistborn --de-ring --assembly-gap 0.7',
+            '# MAC: a checkpoint under test, as a whole book\n'
+            'bookforge-tts --audiobook --project "<library>/projects/<slug>" --engine higgs \\\n'
+            '    --voice mistborn --checkpoint-dir \\\n'
+            '    "$HOME/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_440_prod"',
+            '# PC: the same checkpoint, guest-native path\n'
+            'bookforge-tts --audiobook --project "<library>/projects/<slug>" --engine higgs \\\n'
+            '    --voice mistborn --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616',
+            '# ignore the cached session and re-render from scratch, tier forced:\n'
+            'bookforge-tts --audiobook --project "<library>/projects/<slug>" --voice deathstalker \\\n'
+            '    --fresh --tier light --dry-run',
+        ],
+    },
+    "assemble": {
+        "usage": "bookforge-tts --assemble --project DIR (--final-denoise | --no-final-denoise) [options]",
+        "doc": """Assemble a project's ALREADY-RENDERED sentences into the M4B — no TTS.
+
+The app's Assemble over a cached session: the same denoise-job.runFinalDenoise
+then reassembly-bridge.startReassembly the full build calls, over the project's
+cached set in stages/03-tts/sessions/. It is the SAME adapter as --audiobook run
+with --assemble-only; there is no second assembly implementation.
+
+--final-denoise or --no-final-denoise is REQUIRED. Whether the denoise ran is a
+fact about the CHAIN that produced these sentences — its own queue row in the app
+— and this door reads no engine flag to infer it from. The engine comes from the
+session's own session-state.json.""",
+        "reads": [
+            "--config", "--dry-run", "--project", "--sentences-dir", "--as-new-version",
+            "--version-voice", "--final-denoise", "--no-final-denoise", "--de-ring",
+            "--assembly-gap", "--keep-session", "--language",
+        ],
+        "refuses": [
+            ("--voice", "the voice was decided when the sentences were rendered"),
+            ("--input", "--assemble reads no book: --input names the EPUB a RENDER would read"),
+            ("--fresh", "a render choice; --assemble renders nothing"),
+            ("--skip-text-cleanup", "a narration choice; --assemble narrates nothing"),
+            ("--checkpoint-dir", "a render choice; the cached audio is already rendered"),
+            ("--safe-band", "a render choice, as above"),
+            ("--top-k", "a render choice, as above"),
+            ("--batch-width", "a render choice, as above"),
+            ("--mem-budget-gb", "a render choice, as above"),
+            ("--max-chunks", "generation is already done"),
+            ("--as-chunks", "generation is already done"),
+            ("--title", "the project's own title names the book"),
+            ("--library", "the project decides its library"),
+            ("--final-denoise", "alongside --sentences-dir: the denoise DERIVES a new set from "
+                                "the raw cache, while --sentences-dir names the set to assemble. "
+                                "Denoise first, then assemble the directory that pass wrote"),
+        ],
+        "examples": [
+            'bookforge-tts --assemble --project "<library>/projects/<slug>" --final-denoise',
+            'bookforge-tts --assemble --project "<library>/projects/<slug>" --no-final-denoise \\\n'
+            '    --de-ring --assembly-gap 0.7',
+            '# file an enhancement pass\'s output BESIDE the project\'s audiobook:\n'
+            'bookforge-tts --assemble --project "<library>/projects/<slug>" --as-new-version \\\n'
+            '    --sentences-dir "<session>/chapters/sentences-rvc-rvc-voice-sigma"',
+            'bookforge-tts --assemble --project "<library>/projects/<slug>" --no-final-denoise --dry-run',
+        ],
+    },
+    "align": {
+        "usage": "bookforge-tts --align (--project DIR | --process-dir DIR) --align-language CODE",
+        "doc": """Force-align a rendered session and write its coverage report.
+
+Drives coverage-align-job.runCoverageAlign — the one function
+electron/queue-steps/align.ts calls. Every rendered chunk is force-aligned and
+<processDir>/coverage.json is written: text with no aligned audio is a truncation,
+audio with no text an insertion. It audits the WHOLE book, always writes both
+outputs, and exits 0 whenever the run happened.
+
+Since 2026-09-08 this is the ONLY door that queues an align row — the app's
+narration run no longer composes one. The report lands where coverageReportPath()
+says, which is where both assembly spawns look, so an align from here satisfies an
+assembly from anywhere: run --align, then --assemble, with no extra flag.
+
+--align-language is required and deliberately separate from --language (which
+carries a render default of en): the aligner loads a per-language wav2vec2
+checkpoint, and one pointed at the wrong language scores every word badly — which
+the guard reads as "the audio did not say the text".""",
+        "reads": ["--config", "--dry-run", "--project", "--process-dir", "--align-language"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --align --project "<library>/projects/<slug>" --align-language en',
+            'bookforge-tts --align --process-dir "<session>" --align-language de',
+            'bookforge-tts --align --project "<library>/projects/<slug>" --align-language en --dry-run',
+        ],
+    },
+    "denoise": {
+        "usage": "bookforge-tts --denoise (--project DIR | --process-dir DIR) [options]",
+        "doc": """Run the FINAL-DENOISE step over a rendered session — its own row in the app.
+
+Drives denoise-job.runFinalDenoise, the one function
+electron/queue-steps/final-denoise.ts calls, with the null window the queue passes
+headlessly: gap-normalize the raw cached sentences, then the block roformer, into
+the session's DURABLE chapters/sentences-denoised/. A second run over the same
+session reuses that set and says so.
+
+--sentences-dir is this pass reading ANOTHER pass's output ("convert first, then
+denoise"). The job refuses it alongside --sentence-gap rather than ignoring one of
+them: a gap can only be applied to raw audio, so a call stating both is a
+composition bug.""",
+        "reads": ["--config", "--dry-run", "--project", "--process-dir", "--sentences-dir",
+                  "--sentence-gap"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --denoise --project "<library>/projects/<slug>"',
+            'bookforge-tts --denoise --project "<library>/projects/<slug>" --sentence-gap 0.6',
+            '# denoise what the RVC pass wrote, instead of the raw cache:\n'
+            'bookforge-tts --denoise --process-dir "<session>" \\\n'
+            '    --sentences-dir "<session>/chapters/sentences-rvc-rvc-voice-sigma"',
+        ],
+    },
+    "rvc-enhance": {
+        "usage": "bookforge-tts --rvc-enhance (--project DIR | --process-dir DIR) --rvc-voice-id ID [options]",
+        "doc": """Run the RVC-ENHANCEMENT step over a session's PER-SENTENCE cache.
+
+Drives rvc-job.runRvcEnhancement, the one function
+electron/queue-steps/rvc-enhancement.ts calls. It writes a durable derived set,
+chapters/sentences-rvc-<voice>/, which assembly then reads via --sentences_dir —
+so the recipe is --rvc-enhance, then --assemble --as-new-version --sentences-dir.
+
+NOT --rvc, which is rvc-bridge.convertFileRvcChunked over ONE FINISHED AUDIO FILE.
+Two different jobs with two different outputs, and the tuning flags are spelled
+--enhance-* here so an unset value stays unset and urvc's own default applies,
+exactly as in the app.""",
+        "reads": ["--config", "--dry-run", "--project", "--process-dir", "--rvc-voice-id",
+                  "--enhance-index-rate", "--enhance-protect-rate", "--enhance-f0-method",
+                  "--n-semitones", "--hop-length", "--sentences-dir", "--sentence-gap"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --rvc-enhance --project "<library>/projects/<slug>" \\\n'
+            '    --rvc-voice-id builtin:deathstalker-sigma',
+            'bookforge-tts --rvc-enhance --project "<library>/projects/<slug>" \\\n'
+            '    --rvc-voice-id rvc-voice-sigma --enhance-index-rate 0.3 --enhance-protect-rate 0.1',
+            'bookforge-tts --rvc-enhance --process-dir "<session>" \\\n'
+            '    --rvc-voice-id rvc-voice-sigma --dry-run',
+        ],
+    },
+    "retake": {
+        "usage": "bookforge-tts --retake --project DIR [--retake-action ACTION] [options]",
+        "doc": """CORRECT SENTENCES — list, retake, approve, revert, headless.
+
+The app's Correct Sentences panel is five exported functions in
+correct-sentences-bridge behind five IPC handlers; this drives the same five, and
+--retake-action picks one:
+
+  list     what the cache holds, cue by cue      (getCorrectSentencesSession)
+  retake   render fresh takes for --indices      (generateCandidates)
+  commit   approve one take by path              (commitSentence)
+  revert   restore from .orig-backup/            (revertSentence)
+  cleanup  drop the candidate scratch            (cleanupCandidates)
+
+Every take is sample_fmt-matched to the book's existing FLACs, so it drops into
+the cache without breaking the concat. Ctrl+C aborts through the CLI's own
+AbortController, as the app's IPC layer does.""",
+        "reads": ["--config", "--dry-run", "--project", "--retake-action", "--indices",
+                  "--takes", "--index", "--count", "--take", "--sentence-text"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --retake --project "<library>/projects/<slug>"',
+            'bookforge-tts --retake --project "<library>/projects/<slug>" --index 120 --count 40',
+            'bookforge-tts --retake --project "<library>/projects/<slug>" --retake-action retake \\\n'
+            '    --indices 12,40 --takes 3',
+            'bookforge-tts --retake --project "<library>/projects/<slug>" --retake-action commit \\\n'
+            '    --index 12 --take "<scratch>/take2/12.flac"',
+            'bookforge-tts --retake --project "<library>/projects/<slug>" --retake-action revert --index 12',
+        ],
+    },
+    "pass": {
+        "usage": "bookforge-tts --pass --project DIR --kind simplify|translate|footnote-refs [options]",
+        "doc": """Run ONE of the app's PROCESSING PASSES on a project.
+
+Every pass is a queue row in the app, and every row is queue-steps/pass.ts calling
+processing-passes.runProcessingPass over a config
+processing-chain.planProcessingChain laid out. This drives that pair, so the run
+stages, records its ledger row, writes provenance and promotes a working copy
+exactly as pressing the button does.
+
+NOT --ai-cleanup/--ai-simplify, which are ai-bridge.cleanupEpub over a LOOSE epub
+(file in, file out, no project record). NOT Foundry's "Clean text", which is
+--clean. The fourth pass kind, narration-text, has its own command because it also
+has a bare-EPUB door. The API key travels in the process env, never argv.""",
+        "reads": ["--config", "--dry-run", "--project", "--kind", "--family", "--provider",
+                  "--model", "--api-key", "--ollama-url", "--custom-instructions",
+                  "--simplify-mode", "--test-mode", "--test-chunks", "--source-lang",
+                  "--target-lang", "--translation-prompt"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --pass --project "<library>/projects/<slug>" --kind footnote-refs',
+            'bookforge-tts --pass --project "<library>/projects/<slug>" --kind simplify \\\n'
+            '    --simplify-mode learner --provider ollama --model gemma3:12b',
+            'bookforge-tts --pass --project "<library>/projects/<slug>" --kind translate \\\n'
+            '    --source-lang en --target-lang de --provider claude --model claude-sonnet-4-5',
+            '# a project holding two book chains needs to be told which one:\n'
+            'bookforge-tts --pass --project "<library>/projects/<slug>" --kind footnote-refs \\\n'
+            '    --family "<stem of the file the chain was minted from>" --dry-run',
+        ],
+    },
+    "prep": {
+        "usage": "bookforge-tts --prep (--project DIR | --input FILE) [--library DIR] [--dry-run]",
+        "doc": """The NARRATION DOOR on its own — captions and notes out, numbers as words.
+
+Drives prepareNarrationInput (parallel-tts-bridge), the SAME export the app's queue
+calls before every render, so you can prep now and render later (Owen, 2026-09-02).
+Two passes: the cut (.epub only — photo captions, the endnote apparatus and <sup>
+reference numbers, through writeNarrationEpub), then the numbers (every passage
+with a digit goes to the model Settings names, and every edit is checked against
+the validator's 13 dispositions).
+
+It writes a prepared copy and the .edits.json beside it, then stops. The copy is
+content-addressed by (input sha, rule version, model), so a later --tts or
+--audiobook on the same input reuses it with NO second model call.
+
+NOT --ai-cleanup, which repairs an epub's prose. This repairs nothing; it only
+decides what the narrator is handed.""",
+        "reads": ["--config", "--dry-run", "--project", "--input", "--library"],
+        "refuses": [
+            ("--library", "with --project: the project path decides the library "
+                          "(<library>/projects/<slug>), so a second one would name a different "
+                          "place than the render will look in"),
+        ],
+        "examples": [
+            'bookforge-tts --prep --project "<library>/projects/<slug>"',
+            'bookforge-tts --prep --input book.epub',
+            'bookforge-tts --prep --input passage.txt --library "<library>"',
+            'bookforge-tts --prep --input book.epub --dry-run',
+        ],
+    },
+    "narration-text": {
+        "usage": "bookforge-tts --narration-text (--project DIR | --input FILE) [--dry-run]",
+        "doc": """The NARRATION TEXT CLEANUP on a book, replacing it in place — the failsafe.
+
+Owen, 2026-09-05: *"the bookforge clean text action outside of foundry is a
+failsafe in case the user forgets and just wants to get it done immediately. it
+won't be treated as the standard method."*
+
+The pass itself is the ENGINE's: this spawns `foundry clean-text --epub <book>
+--out <staging>` and lands the staging on the book with one rename. Three stages,
+in order: punctuation canonicalization, the deterministic number rules, then the
+model on every block. It writes the book back, STAMPED, plus
+<stem>.narration-text.json — and the stamp is the point, because it is what every
+consumer downstream reads to tell a cleaned book from an uncleaned one.
+
+THE STANDARD METHOD IS THE HOSTED STEP (--clean), where the cleanup is a position
+on the document chain. This door produces a FILE, and a re-export loses it.""",
+        "reads": ["--config", "--dry-run", "--project", "--input"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --narration-text --project "<library>/projects/<slug>"',
+            'bookforge-tts --narration-text --input book.epub',
+            'bookforge-tts --narration-text --input book.epub --dry-run',
+        ],
+    },
+    "clean-lines": {
+        "usage": "bookforge-tts --clean-lines --input FILE --language CODE [--output FILE] [--keep-model]",
+        "doc": """A FILE OF LINES through the narration text cleanup, written back BY POSITION.
+
+One training transcript per line in, the same lines cleaned out, in ONE process:
+the model loads once, the context window is pinned from the longest line, every
+line is asked at temperature 0, and the model unloads at the end (Owen,
+2026-09-07). Behind it is `foundry clean-text --book` — BookForge writes a book
+file with one paragraph block per line and spawns the same binary, model and
+endpoint the hosted Clean text press uses.
+
+Line N out is line N in, blanks stay blank, so a caller can zip it against an
+audio list by position. A killed run keeps its records
+(<stem>.clean-lines/lines.records.jsonl) and the next run asks only about the
+lines with no answer. A line the engine never answered is NEVER copied through as
+if it had been cleaned.""",
+        "reads": ["--config", "--dry-run", "--input", "--output", "--language", "--keep-model"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --clean-lines --input lines.txt --language en',
+            'bookforge-tts --clean-lines --input lines.txt --output cleaned.txt --language en',
+            '# leave the model loaded for several runs back to back:\n'
+            'bookforge-tts --clean-lines --input lines.txt --language en --keep-model',
+        ],
+    },
+    "clean": {
+        "usage": "bookforge-tts --clean (--project DIR | --foundry-project DIR) [options]",
+        "doc": """THE HOSTED FOUNDRY WINDOW'S "Clean text" PRESS, with no window.
+
+Not a headless re-implementation of it: the adapter calls the same compiled
+functions in the same order the button walks through — planCleanup
+(workspace:plan-clean, which materialises the position's own book and mints the
+records, stamp and step id), the CleanRequest clean-dialog.add() composes field for
+field, and runJob, the seam queue-steps/foundry-job.ts hands a Foundry row to. So
+it LANDS A LEDGER STEP, writes the same records and stamp, and can be timed
+against the app it is a run of.
+
+Where it stands is where the project stands: the step is positionOf the project's
+ledger and canCleanFrom is asked about it, so a position the dialog would not offer
+the button from refuses here too. The engine is the locally-BUILT foundry
+(--foundry-dist), because --concurrency arrived in 1.2.0 and the installed
+component can be months older.""",
+        "reads": ["--config", "--dry-run", "--project", "--foundry-project", "--model",
+                  "--ollama", "--concurrency", "--keep-model", "--foundry-dist"],
+        "refuses": [],
+        "examples": [
+            'bookforge-tts --clean --project "<library>/projects/<slug>"',
+            'bookforge-tts --clean --project "<library>/projects/<slug>" \\\n'
+            '    --model qwen3.5:9b-mlx-bf16 --concurrency 8',
+            '# the Foundry project directly, when the mapping is not the question:\n'
+            'bookforge-tts --clean --foundry-project "<library>/foundry/projects/<key>"',
+            'bookforge-tts --clean --project "<library>/projects/<slug>" --dry-run',
+        ],
+    },
+    "ai-cleanup": {
+        "usage": "bookforge-tts --ai-cleanup --input FILE --provider NAME --stages ocr|tts|both [options]",
+        "doc": """OCR/formatting cleanup of a LOOSE epub through the real ai-bridge pipeline.
+
+Drives aiBridge.cleanupEpub: the same 8000-char chunking, the per-provider prompts,
+num_ctx / think:false / keep_alive / temperature, the [SKIP] / truncation /
+copyright / repetition safeguards, and the cleaned.diff.json +
+cleanup-progress.json checkpoint outputs. File in, file out — no project record.
+
+--stages is REQUIRED and the pipeline refuses to guess: ocr is the per-chunk
+scanner-damage pass and stops at repaired.epub; tts is the deterministic prep only
+(footnote markers, quotes, numbers) and writes cleaned.epub in seconds — the right
+choice for a born-digital EPUB; both does repair then prep.
+
+Cloud providers (claude, openai) run OFF-GPU, so they are safe alongside a render.
+The key travels in the process env, never argv.""",
+        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--api-key",
+                  "--output-dir", "--stages", "--custom-instructions", "--detailed-cleanup",
+                  "--cleanup-prompt", "--chunk-size", "--temperature", "--ollama-url",
+                  "--parallel-workers", "--no-parallel", "--test-mode", "--test-chunks"],
+        "refuses": [
+            ("--test-chunks", "without --test-mode: a cap that looked set and was not is the "
+                              "failure this rule exists to end"),
+        ],
+        "examples": [
+            '# a SCANNED book with a cloud provider (key from ANTHROPIC_API_KEY):\n'
+            'bookforge-tts --ai-cleanup --input book.epub --provider claude \\\n'
+            '    --model claude-sonnet-4-5 --stages both --output-dir ./out',
+            '# a born-digital epub — the deterministic prep only, seconds, no model pass:\n'
+            'bookforge-tts --ai-cleanup --input book.epub --provider ollama \\\n'
+            '    --model cogito:14b --stages tts --output-dir ./out',
+            '# repair scanner damage and STOP (repaired.epub), first 3 chunks as a test:\n'
+            'bookforge-tts --ai-cleanup --input book.epub --provider ollama --model cogito:14b \\\n'
+            '    --stages ocr --test-mode --test-chunks 3',
+        ],
+    },
+    "ai-simplify": {
+        "usage": "bookforge-tts --ai-simplify --input FILE --provider NAME --simplify-mode MODE [options]",
+        "doc": """Simplify a LOOSE epub — cleanupEpub with simplifyForChildren + a mode.
+
+The SAME call as --ai-cleanup, with the simplify flag and one of three modes:
+dejargon (academic prose), destiffen (translated prose), learner (a B1-B2 rewrite).
+By default it ALSO cleans, which is the app's default; --no-cleanup makes it
+simplify-only.
+
+Output is simplified.epub in --output-dir (default: alongside the input). File in,
+file out — for the PROJECT act, with its ledger row and provenance, use
+--pass --kind simplify.""",
+        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--api-key",
+                  "--output-dir", "--simplify-mode", "--no-cleanup", "--stages",
+                  "--custom-instructions", "--detailed-cleanup", "--cleanup-prompt",
+                  "--chunk-size", "--temperature", "--ollama-url", "--parallel-workers",
+                  "--no-parallel", "--test-mode", "--test-chunks"],
+        "refuses": [
+            ("--test-chunks", "without --test-mode: a cap that looked set and was not is the "
+                              "failure this rule exists to end"),
+        ],
+        "examples": [
+            'bookforge-tts --ai-simplify --input book.epub --provider ollama \\\n'
+            '    --model cogito:14b --simplify-mode learner',
+            '# simplify ONLY (skip the cleanup pass), first 3 chunks:\n'
+            'bookforge-tts --ai-simplify --input book.epub --provider claude \\\n'
+            '    --model claude-sonnet-4-5 --simplify-mode dejargon --no-cleanup \\\n'
+            '    --test-mode --test-chunks 3',
+            'bookforge-tts --ai-simplify --input book.epub --provider ollama \\\n'
+            '    --model cogito:14b --simplify-mode destiffen --output-dir ./out --dry-run',
+        ],
+    },
+    "generate-sentences": {
+        "usage": "bookforge-tts --generate-sentences --audio FILE --out FILE [--epub FILE] [options]",
+        "doc": """Audio -> a sentence-level VTT, through the app's real machinery. Two modes.
+
+WHISPER (default): faster-whisper transcription (transcribe_audiobook.py in the
+bundled e2a env, GPU-arbitrated) — the words are inferred from the audio, so ASR
+spelling errors are possible.
+
+EPUB-ALIGN (--epub given): the ebook text is GROUND TRUTH and WhisperX forced
+alignment supplies only the timing (align_audiobook.py). The book's own words with
+real audio timings — what a training dataset or a read-along wants.
+
+Everything below --epub in the flag list is epub-align only and refused without
+it. --embed also seals the VTT into the m4b as a verified mov_text subtitle track,
+which is the app's embed-only model.""",
+        "reads": ["--config", "--dry-run", "--audio", "--out", "--epub", "--whisper-model",
+                  "--device", "--embed", "--language", "--report", "--min-hole",
+                  "--rough-cache", "--align-workers", "--snap-silence", "--no-snap-silence",
+                  "--no-paragraph-split", "--report-min-hole"],
+        "refuses": [
+            ("--whisper-model", "with --epub: epub-align's rough model is fixed"),
+            ("--report", "without --epub: coverage compares the ebook against the audio"),
+            ("--min-hole", "without --epub: it tunes epub-vs-audio hole detection"),
+            ("--rough-cache", "without --epub: only epub-align has a rough transcribe pass to cache"),
+            ("--align-workers", "without --epub: it sizes the epub-align worker pool"),
+            ("--snap-silence", "without --epub: whisper mode has no cue seams to snap "
+                               "(and it is mutually exclusive with --no-snap-silence)"),
+            ("--no-snap-silence", "without --epub, as above"),
+            ("--no-paragraph-split", "without --epub: it changes ebook segmentation"),
+            ("--report-min-hole", "without --epub, as above"),
+        ],
+        "examples": [
+            'bookforge-tts --generate-sentences --audio book.m4b --out book.vtt --whisper-model small',
+            '# the book as truth, WhisperX for timing:\n'
+            'bookforge-tts --generate-sentences --audio book.m4b --epub book.epub --out book.vtt',
+            '# also seal the VTT into the m4b, and write the coverage report:\n'
+            'bookforge-tts --generate-sentences --audio book.m4b --epub book.epub --out book.vtt \\\n'
+            '    --embed --report',
+            '# keep it off a busy GPU and cache the rough pass while iterating:\n'
+            'bookforge-tts --generate-sentences --audio part2.mp3 --epub book.epub --out part2.vtt \\\n'
+            '    --device cpu --rough-cache --dry-run',
+        ],
+    },
+    "generate-epub": {
+        "usage": "bookforge-tts --generate-epub --project DIR [options]",
+        "doc": """Read a project's PDF into its book — the app's Convert to EPUB, headless.
+
+Drives vlm-convert.runVlmConversion, the SAME function the vlm:convert IPC handler
+calls, so one call gets all of it: the route resolution, the banked-readings
+decision and its foundry >= 0.9.0 gate, `foundry vlm-convert`, the staged EPUB
+moved onto source/<archive basename>.generated.epub, the manifest records
+(outputs.generatedEpub plus a freshly minted working copy) and the vlm-convert
+provenance entry. Nothing about a converted project says it was done from here.
+
+WHICH MACHINE reads the pages: with no --vlm-endpoint, this machine's own route,
+exactly as an unset Settings -> AI -> Reading pages means in the app (WSL on
+Windows, MLX on an Apple Silicon Mac). That setting lives in the renderer's
+bundle, which no headless process can read, so it is passed here.""",
+        "reads": ["--config", "--dry-run", "--project", "--readings", "--destination",
+                  "--variant-id", "--source-pdf", "--skip-deleted-pages", "--vlm-endpoint",
+                  "--vlm-endpoint-model", "--vlm-concurrency"],
+        "refuses": [
+            ("--source-pdf", "with --variant-id: both name the PDF to read; pass one"),
+        ],
+        "examples": [
+            'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --readings fresh',
+            '# read the pages on somebody else\'s server instead of this machine\'s route:\n'
+            'bookforge-tts --generate-epub --project "<library>/projects/<slug>" \\\n'
+            '    --vlm-endpoint http://192.168.68.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr',
+            '# add the reading BESIDE the book this project already has:\n'
+            'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --destination new-copy',
+            'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --readings fresh --dry-run',
+        ],
+    },
+    "rvc": {
+        "usage": "bookforge-tts --rvc --input FILE --out FILE --rvc-model NAME [options]",
+        "doc": """Convert a WHOLE audio file through an RVC voice model — memory-safely.
+
+Drives rvc-bridge.convertFileRvcChunked: it silence-chunks the file, converts each
+chunk in a RECYCLED worker process (each exits between batches so unified memory is
+reclaimed — a full audiobook never balloons into swap the way one long convert-dir
+does), then stitches the chunks back.
+
+The primary use is same-voice RECONSTRUCTION at --index-rate 0: background hum and
+scratchiness removed, re-rendered at 48 kHz. NOT --rvc-enhance, which is the pass
+over a session's per-sentence cache.""",
+        "reads": ["--config", "--dry-run", "--input", "--out", "--rvc-model", "--index-rate",
+                  "--protect-rate", "--f0-method", "--chunk-seconds", "--batch-size"],
+        "refuses": [],
+        "examples": [
+            '# reconstruct an audiobook through your own voice model (48 kHz, background gone):\n'
+            'bookforge-tts --rvc --input "Marked Man.m4a" --out "Marked Man RVC.flac" \\\n'
+            '    --rvc-model deathstalker_rvc_v1 --index-rate 0 --protect-rate 0.2',
+            'bookforge-tts --rvc --input book.m4a --out book.flac --rvc-model my_rvc \\\n'
+            '    --f0-method rmvpe --chunk-seconds 600 --batch-size 4',
+            'bookforge-tts --rvc --input book.m4a --out book.flac --rvc-model my_rvc --dry-run',
+        ],
+    },
+}
+
+
+def _brief(text):
+    """A flag's help cut to its first sentence, for the per-command view.
+
+    DERIVED, never a second string. A hand-written short help would drift from the
+    long one, and the drift would land in the page a reader trusts most — the one
+    printed by `--tts --help`, which is where they went to find out what a flag
+    does. The full text is one `--help` away, and the footer says so.
+    """
+    flat = " ".join(str(text).split())
+    cut = len(flat)
+    for i in range(len(flat) - 2):
+        if flat[i] != "." or flat[i + 1] != " ":
+            continue
+        if not (flat[i + 2].isupper() or flat[i + 2] == "-"):
+            continue
+        if flat[max(0, i - 3):i + 1].lower() in ("e.g.", "i.e."):
+            continue            # "e.g. Foo" is not the end of a sentence
+        cut = i + 1
+        break
+    if cut > 118:
+        space = flat.rfind(" ", 0, 118)
+        return flat[:space if space > 0 else 118] + " …"
+    return flat[:cut]
+
+
+class _FlagRegistry:
+    """An ArgumentParser's `add_argument` surface — remembered, and re-emittable.
+
+    Every flag is registered ONCE, into the group whose title says who reads it,
+    and the registration is KEPT, so `bookforge-tts --tts --help` can re-emit the
+    subset --tts reads from the very calls the real parser is built from.
+
+    WHY NOT A SECOND PARSER. A hand-maintained per-command parser would drift from
+    the one the run is actually parsed by, and then the help would name a flag
+    argparse does not have — a worse failure than no per-command help, because a
+    reader cannot tell a stale page from a true one. This object quacks like a
+    parser on purpose (`add_argument`, same kwargs) so the registrations below read
+    as registrations and nothing has to be spelled twice.
+    """
+
+    def __init__(self):
+        self._groups = []                  # [(title, description)] — in help order
+        self._specs = []                   # [(title, flags, kwargs)]
+
+    def group(self, title, description=None):
+        self._groups.append((title, description))
+
+    def add_argument(self, *flags, **kwargs):
+        _require(self._groups,
+                 f"{flags[0]} is registered before any group() — every flag belongs to exactly "
+                 f"one group whose title says who reads it")
+        self._specs.append((self._groups[-1][0], flags, kwargs))
+
+    def flag_groups(self):
+        """{group title: [primary flag, ...]} — what tools/test-cli-flags.js checks."""
+        out = {}
+        for title, flags, _kwargs in self._specs:
+            out.setdefault(title, []).append(flags[0])
+        return out
+
+    def parser(self, description, epilog, keep=None, usage=None, brief=False, width=None):
+        """Build a real ArgumentParser from the registrations.
+
+        `keep` is a set of primary flags — the per-command view; None means all of
+        them. `brief` cuts each help to its first sentence and drops the group
+        descriptions, which is what keeps a command's page short enough to read.
+        """
+        p = argparse.ArgumentParser(
+            prog="bookforge-tts", description=description, epilog=epilog, usage=usage,
+            formatter_class=_formatter_class(width))
+        for title, desc in self._groups:
+            rows = [(flags, kwargs) for (t, flags, kwargs) in self._specs
+                    if t == title and (keep is None or flags[0] in keep)]
+            if not rows:
+                continue
+            grp = p.add_argument_group(title, None if brief else desc)
+            for flags, kwargs in rows:
+                grp.add_argument(*flags, **(dict(kwargs, help=_brief(kwargs["help"]))
+                                            if brief and kwargs.get("help") else kwargs))
+        return p
+
+
+def _formatter_class(width):
+    """RawDescriptionHelpFormatter, optionally at a stated width.
+
+    The width matters for the per-command pages: argparse reads the terminal, and
+    a piped `--tts --help` falls back to 80 columns, which wraps every one-line
+    flag onto two and pushes the page past what anyone reads in one screen.
+    """
+    if width is None:
+        return argparse.RawDescriptionHelpFormatter
+
+    class _Fixed(argparse.RawDescriptionHelpFormatter):
+        def __init__(self, prog):
+            super().__init__(prog, max_help_position=30, width=width)
+
+    return _Fixed
+
+
+def _flag_registry():
+    """Every flag, registered once, into the group whose title says who reads it.
+
+    THE ORDER AND THE GROUPING ARE THE DOCUMENTATION. Before 2026-09-12 these were
+    one flat list, so `--help` opened with a single usage line carrying 17 command
+    selectors and ~130 options and no way to tell which went with which. The flags
+    themselves are UNCHANGED — same dest, same default, same choices, same
+    behaviour; this is a re-registration, defended by tools/test-cli-flags.js and
+    tools/tests/test-cli-flag-parity.sh.
+    """
+    p = _FlagRegistry()          # quacks like an ArgumentParser; see the class
+
+    p.group("Commands (pick one)",
+            "Exactly one is required. `--<command> --help` prints only that command's flags,\n"
+            "what it refuses by name, and copy-pasteable examples.")
     for name in COMMANDS:                         # command selector flags
         p.add_argument(f"--{name}", action="store_true",
-                       help=f"run the '{name}' command")
-    p.add_argument("--engine", default="orpheus",
-                   help="TTS engine: orpheus or higgs (default orpheus). Both render (--mode tts) "
-                        "and both stream (--mode streaming, since 2026-09-05); the ARM is chosen "
-                        "by the platform inside the bridge — Mac MLX, Windows/WSL SGLang — never "
-                        "by a flag here.")
-    p.add_argument("--mode", default="tts", choices=["tts", "streaming"],
-                   help="render path: 'tts' = audiobook/batch (default, the shipped path), "
-                        "'streaming' = Listen (one sentence per vLLM sequence)")
-    p.add_argument("--language", default="en", help="language code (default en)")
-    p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)")
-    p.add_argument("--voice-token", dest="voice_token", help="prompt token override (tts mode only)")
-    p.add_argument("--read-ahead", dest="read_ahead", type=int, default=None,
-                   help="streaming: how many following blocks to read ahead "
-                        "(default: all of them, as the extension does)")
-    p.add_argument("--model-dir", dest="model_dir",
-                   help="ORPHEUS custom model directory (overrides voice resolution). A Higgs "
-                        "checkpoint under test is --checkpoint-dir")
-    p.add_argument("--checkpoint-dir", dest="checkpoint_dir",
-                   help="--engine higgs: a checkpoint directory to render THIS run with, "
-                        "instead of the catalog's. --voice stays required and is the base voice "
-                        "whose certificate (caps, pace, band) the checkpoint borrows — which is "
-                        "what makes the two comparable. On the Mac it must exist here; on "
-                        "Windows it must be a guest-native /home/... path (the WSL arm)")
-    p.add_argument("--note", dest="note",
-                   help="why this render was run, stamped onto the Higgs override. Default: the "
-                        "command as typed plus this machine's hostname")
-    p.add_argument("--title", dest="title",
-                   help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
-                        "carries (default: the input's basename, or 'CLI passage' for --text)")
-    p.add_argument("--library", dest="library",
-                   help="--tts / --prep --input: the library root whose tmp/ holds the sessions "
-                        "and the narration cuts (the app's <library>/tmp, unless Settings states "
-                        "a narrator scratch folder). Default: the root this machine chose in "
-                        "BookForge (userData/library-root.json). Refused wherever a --project "
-                        "already decides the library (--audiobook, --assemble, --prep --project)")
-    p.add_argument("--models-dir", dest="models_dir",
-                   help="override the Orpheus models directory to discover voices in")
+                       help=COMMAND_FLAGS[name]["doc"].split("\n")[0])
+
+    p.group("Render input and output (--tts, --audiobook)",
+            "What goes in, what comes out, and which project or file it is. --project is also\n"
+            "the target of --assemble, --align, --denoise, --rvc-enhance, --retake, --pass,\n"
+            "--prep, --narration-text, --clean and --generate-epub.")
     p.add_argument("--input", help="what to render (--tts): an .epub (a book), a .txt/.md "
                    "(paragraphs separated by blank lines) or a .jsonl (one chunk per row) — the "
                    "last two are packed into a one-chapter EPUB by the app's own writer; "
                    "text file to stream (--tts --mode streaming); EPUB override (--audiobook); "
-                   "the .epub or .txt to prep (--prep)")
+                   "the .epub or .txt to prep (--prep)", metavar="FILE")
     p.add_argument("--text", help="literal text to render (--tts: packed into a one-chapter "
-                   "EPUB, paragraphs separated by blank lines) or to stream (--mode streaming)")
-    p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)")
-    p.add_argument("--keep-model", dest="keep_model", action="store_true",
-                   help="--clean-lines / --clean: leave the model loaded when the run ends "
-                        "(default: the weights are released)")
-    p.add_argument("--foundry-project", dest="foundry_project",
-                   help="--clean: the Foundry project dir directly, instead of resolving it "
-                        "from --project's manifest")
-    p.add_argument("--foundry-dist", dest="foundry_dist",
-                   help="--clean: which built Foundry to drive (default: foundry-app/dist, "
-                        "the build the running app executes)")
-    p.add_argument("--concurrency", type=int, default=None,
-                   help="--clean: blocks in flight at once (default: the engine's own, 4). "
-                        "Changes the speed, never the text.")
-    p.add_argument("--ollama", help="--clean: the Ollama endpoint (default: app-settings ollamaUrl)")
-    p.add_argument("--out", help="output .wav path")
+                   "EPUB, paragraphs separated by blank lines) or to stream (--mode streaming)",
+                   metavar="STR")
+    p.add_argument("--title", dest="title",
+                   help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
+                        "carries (default: the input's basename, or 'CLI passage' for --text)",
+                   metavar="STR")
+    p.add_argument("--out", help="output .wav path", metavar="FILE")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
                    "--generate-epub: the project whose PDF is read into its book. "
-                   "--prep: the project whose book is prepped (same 'Latest' resolution)")
-    p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
-                   help="GPU memory tier (default: auto — safe-sized to free VRAM)")
-    p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
-                   help="deterministic inter-clip gap in seconds (tts path; default 0.6)")
-    p.add_argument("--temperature", type=float, default=None,
-                   help="sampling temperature. TTS: Orpheus (default 0.6; higher = livelier "
-                        "prosody, more runaway risk). AI cleanup/simplify: model temperature "
-                        "(default 0.1 clamp; 0=deterministic). Consumed by whichever mode runs.")
-    p.add_argument("--top-p", dest="top_p", type=float, default=None,
-                   help="tts: Orpheus nucleus sampling top_p (default 0.8)")
-    p.add_argument("--min-p", dest="min_p", type=float, default=None,
-                   help="tts: Orpheus min_p — drop tokens below this fraction of the top "
-                        "token's probability (default 0 = off; vLLM + MLX batch paths). "
-                        "Cuts the rare-junk tail without flattening variety like lowering top_p")
-    p.add_argument("--top-k", dest="top_k", type=int, default=None,
-                   help="tts: HIGGS top_k — rides the voice document as "
-                        "higgsOverride.sampling.topK. Orpheus has no top_k seam and refuses it "
-                        "by name")
-    p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
-                   help="tts: Orpheus repetition penalty (default 1.1). narrator's v3 Higgs "
-                        "engines have no such knob and refuse it by name")
-    p.add_argument("--safe-band", dest="safe_band",
-                   help="--engine higgs: the chunk band as MIN-MAX characters, e.g. 200-700 "
-                        "(higgsOverride.safeMinChars/safeMaxChars). The band's WIDTH decides the "
-                        "in-band rate; Orpheus packs to --max-chars instead")
-    p.add_argument("--batch-width", dest="batch_width", type=int, default=None,
-                   help="--engine higgs on the MAC: the MLX arm's per-run group width "
-                        "(env NARRATOR_HIGGS3_MLX_BATCH). On Windows the width is the catalog's "
-                        "server admission width (HIGGS_MAX_NUM_SEQS) and this is refused by name")
-    p.add_argument("--mem-budget-gb", dest="mem_budget_gb", type=float, default=None,
-                   help="--engine higgs on the MAC: the MLX arm's memory budget in GB "
-                        "(env NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB). Windows: refused, see above")
+                   "--prep: the project whose book is prepped (same 'Latest' resolution)",
+                   metavar="DIR")
+    p.add_argument("--mode", default="tts", choices=["tts", "streaming"],
+                   help="render path: 'tts' = audiobook/batch (default, the shipped path), "
+                        "'streaming' = Listen (one sentence per vLLM sequence)")
+    p.add_argument("--read-ahead", dest="read_ahead", type=int, default=None,
+                   help="streaming: how many following blocks to read ahead "
+                        "(default: all of them, as the extension does)", metavar="N")
     p.add_argument("--as-chunks", dest="as_chunks", action="store_true",
                    help="--tts with a .txt/.md/.jsonl (or --text) input: render each paragraph/row "
                         "as exactly ONE generation chunk (settings.sentencePerParagraph → "
@@ -1770,14 +2450,14 @@ def build_parser():
     p.add_argument("--max-chunks", dest="max_chunks", type=int, default=None,
                    help="--tts only: cap generation at N chunks (settings.testMode + "
                         "testSentences, the pair the app's own settings carry). Refused with "
-                        "--audiobook: a capped book is not an audiobook")
-    p.add_argument("--max-chars", dest="max_chars", type=int,
-                   help="the packing cap in chars. --engine higgs: higgsOverride.maxChars, held "
-                        "against the base voice's certificate. --engine orpheus: env "
-                        "ORPHEUS_MAX_CHARS (tts path; default 350, no sentence "
-                        "cap — ear-validated for EOS-safe ≤20s/2048-recipe voices; 450 "
-                        "fails everywhere. The packed-runaway was the long-clip TRAINING "
-                        "recipe, not packing)")
+                        "--audiobook: a capped book is not an audiobook", metavar="N")
+    p.add_argument("--library", dest="library",
+                   help="--tts / --prep --input: the library root whose tmp/ holds the sessions "
+                        "and the narration cuts (the app's <library>/tmp, unless Settings states "
+                        "a narrator scratch folder). Default: the root this machine chose in "
+                        "BookForge (userData/library-root.json). Refused wherever a --project "
+                        "already decides the library (--audiobook, --assemble, --prep --project)",
+                   metavar="DIR")
     p.add_argument("--keep-sentences", dest="keep_sentences", action="store_true",
                    help="tts path: also copy the per-sentence FLACs to <out>.sentences/")
     p.add_argument("--keep-session", dest="keep_session", action="store_true",
@@ -1785,27 +2465,232 @@ def build_parser():
     p.add_argument("--fresh", action="store_true",
                    help="--audiobook: ignore any cached session and re-render from scratch "
                         "(default: resume — skip sentences already rendered in a prior run)")
+    p.add_argument("--skip-text-cleanup", dest="skip_text_cleanup", action="store_true",
+                   help="--audiobook: do NOT run the narration text cleanup, and tell the render "
+                        "door so — the book is read exactly as printed. The app's \"No, narrate "
+                        "as printed\" button, headless")
+
+    p.group("Model choice (--tts, --audiobook): engine, voice, checkpoint under test",
+            "The ARM is never a flag: renderRangeHeadless routes by platform (Mac MLX,\n"
+            "Windows/WSL SGLang). These say WHICH model reads the tokens, not which machine.")
+    p.add_argument("--engine", default="orpheus",
+                   help="TTS engine: orpheus or higgs (default orpheus). Both render (--mode tts) "
+                        "and both stream (--mode streaming, since 2026-09-05); the ARM is chosen "
+                        "by the platform inside the bridge — Mac MLX, Windows/WSL SGLang — never "
+                        "by a flag here.", metavar="NAME")
+    p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)",
+                   metavar="ID")
+    p.add_argument("--voice-token", dest="voice_token", help="prompt token override (tts mode only)",
+                   metavar="TOKEN")
+    p.add_argument("--model-dir", dest="model_dir",
+                   help="ORPHEUS custom model directory (overrides voice resolution). A Higgs "
+                        "checkpoint under test is --checkpoint-dir", metavar="DIR")
+    p.add_argument("--checkpoint-dir", dest="checkpoint_dir",
+                   help="--engine higgs: a checkpoint directory to render THIS run with, "
+                        "instead of the catalog's. --voice stays required and is the base voice "
+                        "whose certificate (caps, pace, band) the checkpoint borrows — which is "
+                        "what makes the two comparable. On the Mac it must exist here; on "
+                        "Windows it must be a guest-native /home/... path (the WSL arm)",
+                   metavar="DIR")
+    p.add_argument("--models-dir", dest="models_dir",
+                   help="override the Orpheus models directory to discover voices in",
+                   metavar="DIR")
+
+    p.group("Higgs sampling and caps (--engine higgs)",
+            "Higgs sampling rides the VOICE DOCUMENT (ParallelTtsSettings.higgsOverride), never\n"
+            "the process env. --temperature and --top-p are shared with Orpheus and listed under\n"
+            "their own groups; on a Higgs run they ride the override instead of ORPHEUS_*.")
+    p.add_argument("--top-k", dest="top_k", type=int, default=None,
+                   help="tts: HIGGS top_k — rides the voice document as "
+                        "higgsOverride.sampling.topK. Orpheus has no top_k seam and refuses it "
+                        "by name", metavar="N")
+    p.add_argument("--safe-band", dest="safe_band",
+                   help="--engine higgs: the chunk band as MIN-MAX characters, e.g. 200-700 "
+                        "(higgsOverride.safeMinChars/safeMaxChars). The band's WIDTH decides the "
+                        "in-band rate; Orpheus packs to --max-chars instead", metavar="MIN-MAX")
+    p.add_argument("--max-chars", dest="max_chars", type=int,
+                   help="the packing cap in chars. --engine higgs: higgsOverride.maxChars, held "
+                        "against the base voice's certificate. --engine orpheus: env "
+                        "ORPHEUS_MAX_CHARS (tts path; default 350, no sentence "
+                        "cap — ear-validated for EOS-safe ≤20s/2048-recipe voices; 450 "
+                        "fails everywhere. The packed-runaway was the long-clip TRAINING "
+                        "recipe, not packing)", metavar="N")
+    p.add_argument("--note", dest="note",
+                   help="why this render was run, stamped onto the Higgs override. Default: the "
+                        "command as typed plus this machine's hostname", metavar="TEXT")
+
+    p.group("Orpheus sampling (--engine orpheus)",
+            "Orpheus sampling rides the ORPHEUS_* process env, which is where the bridge's worker\n"
+            "spawn reads it. --min-p and --rep-penalty are refused by name on a Higgs run, which\n"
+            "has no such knob. --temperature is under Settings and environment (the AI doors read\n"
+            "it too).")
+    p.add_argument("--top-p", dest="top_p", type=float, default=None,
+                   help="tts: Orpheus nucleus sampling top_p (default 0.8)", metavar="P")
+    p.add_argument("--min-p", dest="min_p", type=float, default=None,
+                   help="tts: Orpheus min_p — drop tokens below this fraction of the top "
+                        "token's probability (default 0 = off; vLLM + MLX batch paths). "
+                        "Cuts the rare-junk tail without flattening variety like lowering top_p",
+                   metavar="M")
+    p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
+                   help="tts: Orpheus repetition penalty (default 1.1). narrator's v3 Higgs "
+                        "engines have no such knob and refuse it by name", metavar="R")
+
+    p.group("Mac MLX tuning",
+            "Mac-only, and not as an omission: higgsMlxBatchEnv honours these over the catalog's\n"
+            "ceiling. On Windows a Higgs render is SERVED and the width is the server's admission\n"
+            "width (HIGGS_MAX_NUM_SEQS), so both are refused by name there.")
+    p.add_argument("--batch-width", dest="batch_width", type=int, default=None,
+                   help="--engine higgs on the MAC: the MLX arm's per-run group width "
+                        "(env NARRATOR_HIGGS3_MLX_BATCH). On Windows the width is the catalog's "
+                        "server admission width (HIGGS_MAX_NUM_SEQS) and this is refused by name",
+                   metavar="N")
+    p.add_argument("--mem-budget-gb", dest="mem_budget_gb", type=float, default=None,
+                   help="--engine higgs on the MAC: the MLX arm's memory budget in GB "
+                        "(env NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB). Windows: refused, see above",
+                   metavar="GB")
+
+    p.group("Assembly (--assemble, --audiobook)",
+            "The two calls the app's Assemble makes over a session: runFinalDenoise, then\n"
+            "startReassembly. --assemble REQUIRES --final-denoise or --no-final-denoise.")
     p.add_argument("--final-denoise", dest="final_denoise", action="store_true",
-                   help="--audiobook: force the final-audio denoise pass ON (block-based "
+                   help="--audiobook/--assemble: force the final-audio denoise pass ON "
+                        "(block-based "
                         "roformer over the rendered sentences, pre-assembly; strips the "
                         "hiss bed hiss-trained voices reproduce). Default: on for "
                         "--engine orpheus, off for every other engine")
     p.add_argument("--no-final-denoise", dest="no_final_denoise", action="store_true",
-                   help="--audiobook: force the final-audio denoise pass OFF")
-    p.add_argument("--dry-run", dest="dry_run", action="store_true",
-                   help="print the resolved spawn + env overrides and exit (no GPU)")
-    p.add_argument("--orpheus-install", dest="orpheus_install",
-                   help="override the e2a/Orpheus install path the worker uses")
-    p.add_argument("--conda-env", dest="conda_env",
-                   help="override the WSL conda env for Orpheus")
-    # --- AI cleanup / simplify (--ai-cleanup, --ai-simplify) ---
-    p.add_argument("--provider", choices=["claude", "openai", "ollama", "local"],
-                   help="AI provider for --ai-cleanup/--ai-simplify")
-    p.add_argument("--model", help="AI model name (claude/openai/ollama model; local resolves its own)")
-    p.add_argument("--api-key", dest="api_key",
-                   help="cloud API key (else ANTHROPIC_API_KEY/OPENAI_API_KEY env). Passed via env, not argv")
+                   help="--audiobook/--assemble: force the final-audio denoise pass OFF. "
+                        "REQUIRED on --assemble (with its twin above): whether the denoise ran "
+                        "is a fact about the chain that produced those sentences")
+    p.add_argument("--de-ring", dest="de_ring", action="store_true",
+                   help="--audiobook/--assemble: apply the voice's per-voice post-render "
+                        "notch/comb (the filter that strips SNAC tonal ringing) at the final "
+                        "encode. OPT-IN, same as the app's assemble step")
+    p.add_argument("--assembly-gap", dest="assembly_gap", type=float, default=None,
+                   help="--audiobook/--assemble: the inter-sentence gap in seconds re-laid by "
+                        "the pass in FRONT of assembly. Distinct from --sentence-gap, which is "
+                        "the gap the worker bakes into each FLAC at render time. Omit to let the "
+                        "voice's models.json value decide (or no gap step, if it declares none)",
+                   metavar="SEC")
+    p.add_argument("--as-new-version", dest="as_new_version", action="store_true",
+                   help="--assemble: file the result BESIDE the project's audiobook instead of "
+                        "replacing it — a manifest variant under a filename carrying the voice. "
+                        "What the app does for a run that converted sentences it did not render")
+    p.add_argument("--version-voice", dest="version_voice",
+                   help="--assemble: the RVC voice id the second version is NAMED after. Read off "
+                        "a `sentences-rvc-<voice>` directory name when --sentences-dir names one; "
+                        "required for any other set", metavar="ID")
+
+    p.group("Alignment (--align)",
+            "coverage-align-job.runCoverageAlign over a rendered session. Its language is its own\n"
+            "flag on purpose - see the help below.")
+    p.add_argument("--align-language", dest="align_language",
+                   help="--align: the language the wav2vec2 checkpoint is loaded for. REQUIRED "
+                        "and deliberately separate from --language, which carries a render "
+                        "default: an aligner pointed at the wrong language scores every word "
+                        "badly, and the coverage guard reads that as a book that was not read",
+                   metavar="CODE")
+
+    p.group("Denoise / RVC (--denoise, --rvc-enhance, --rvc)",
+            "Two session passes (--denoise, --rvc-enhance) and one whole-file conversion (--rvc).\n"
+            "The enhance flags are spelled --enhance-* so an unset value stays unset and urvc's\n"
+            "own default applies, exactly as in the app.")
+    p.add_argument("--process-dir", dest="process_dir",
+                   help="--denoise/--rvc-enhance/--align: the session's process dir, named "
+                        "directly instead of resolved from --project's cached session (all three "
+                        "resolve it through the one rule the app's own steps use)", metavar="DIR")
+    p.add_argument("--sentences-dir", dest="sentences_dir",
+                   help="--denoise/--rvc-enhance: the set this pass reads, when an EARLIER pass "
+                        "produced it (the 'convert first, then denoise' order and its mirror). "
+                        "The job refuses it alongside --sentence-gap rather than ignoring one. "
+                        "--assemble: the set to ASSEMBLE — an enhancement pass's durable output, "
+                        "e.g. <session>/chapters/sentences-rvc-<voice>/. Nothing is derived: the "
+                        "set is assembled as it is, so --final-denoise is refused alongside it",
+                   metavar="DIR")
+    p.add_argument("--rvc-voice-id", dest="rvc_voice_id",
+                   help="--rvc-enhance: the RVC asset id (e.g. builtin:deathstalker-sigma). "
+                        "Not --rvc-model, which is the urvc FOLDER name the whole-file --rvc takes",
+                   metavar="ID")
+    p.add_argument("--enhance-index-rate", dest="enhance_index_rate", type=float, default=None,
+                   help="--rvc-enhance: index influence 0-1. Omit to leave urvc on its own "
+                        "default, which is what the app's step does", metavar="R")
+    p.add_argument("--enhance-protect-rate", dest="enhance_protect_rate", type=float, default=None,
+                   help="--rvc-enhance: consonant/breath protection (INVERTED — lower protects "
+                        "more, 0.5 is off). Omit for urvc's own default", metavar="R")
+    p.add_argument("--n-semitones", dest="n_semitones", type=float, default=None,
+                   help="--rvc-enhance: pitch shift in semitones. Omit for urvc's own default",
+                   metavar="N")
+    p.add_argument("--hop-length", dest="hop_length", type=int, default=None,
+                   help="--rvc-enhance: f0 analysis hop (crepe-family only). Omit for urvc's own",
+                   metavar="N")
+    p.add_argument("--enhance-f0-method", dest="enhance_f0_method",
+                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"],
+                   help="--rvc-enhance: pitch extraction. Omit for urvc's own default")
+    p.add_argument("--rvc-model", dest="rvc_model",
+                   help="rvc: voice-model folder name (e.g. deathstalker_rvc_v1)", metavar="NAME")
+    p.add_argument("--index-rate", dest="index_rate", type=float, default=0.0,
+                   help="rvc: index influence 0-1 (default 0.0 — same-voice cleanup; the "
+                        "app uses 0.5, but the CLI's primary use is reconstruction)", metavar="R")
+    p.add_argument("--protect-rate", dest="protect_rate", type=float, default=0.2,
+                   help="rvc: consonant/breath protection 0-0.5 (default 0.2 — favors "
+                        "cleanup; raise toward 0.33 if sibilants get harsh)", metavar="R")
+    p.add_argument("--f0-method", dest="f0_method",
+                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"], default="rmvpe",
+                   help="rvc: pitch extraction (default rmvpe — best for narration; crepe is music)")
+    p.add_argument("--chunk-seconds", dest="chunk_seconds", type=float, default=600.0,
+                   help="rvc: silence-chunk length for memory-safe conversion (default 600). "
+                        "A single convert-dir over a multi-hour file OOMs; chunks are recycled.",
+                   metavar="SEC")
+    p.add_argument("--batch-size", dest="batch_size", type=int, default=4,
+                   help="rvc: chunks per worker process before it's recycled to free memory "
+                        "(default 4 — bounds peak unified-memory).", metavar="N")
+
+    p.group("Correct sentences (--retake)",
+            "The app's Correct Sentences panel: five exported functions, one per --retake-action.")
+    p.add_argument("--retake-action", dest="retake_action", default="list",
+                   choices=["list", "retake", "commit", "revert", "cleanup"],
+                   help="--retake: which of the panel's five doors to open (default list)")
+    p.add_argument("--indices", help="--retake-action retake: sentence indices, e.g. 12,40",
+                   metavar="LIST")
+    p.add_argument("--takes", type=int, default=None,
+                   help="--retake-action retake: how many fresh takes per sentence (default 3)",
+                   metavar="N")
+    p.add_argument("--index", type=int, default=None,
+                   help="--retake-action commit/revert: the sentence index. "
+                        "--retake-action list: the index to start listing from", metavar="N")
+    p.add_argument("--count", type=int, default=None,
+                   help="--retake-action list: how many cues to print (default 20)", metavar="N")
+    p.add_argument("--take", help="--retake-action commit: the approved take's .flac path",
+                   metavar="FILE")
+    p.add_argument("--sentence-text", dest="sentence_text",
+                   help="--retake: the DISPLAY text to render/commit instead of the book's "
+                        "words. Absent means the words did not change, which is a different act "
+                        "from changing them to the same string", metavar="STR")
+
+    p.group("Processing passes (--pass)",
+            "processing-chain.planProcessingChain + processing-passes.runProcessingPass - the pair\n"
+            "queue-steps/pass.ts calls. The provider/model flags are under Settings and environment.")
+    p.add_argument("--kind", choices=["simplify", "translate", "footnote-refs"],
+                   help="--pass: which processing pass to run over the project's book")
+    p.add_argument("--family", help="--pass/--narration-text: which book chain, by id or by the "
+                                    "stem of the file it was minted from. Required only when the "
+                                    "project holds more than one", metavar="ID")
+    p.add_argument("--source-lang", dest="source_lang",
+                   help="--pass --kind translate: the language the book is in", metavar="CODE")
+    p.add_argument("--target-lang", dest="target_lang",
+                   help="--pass --kind translate: the language to translate it into",
+                   metavar="CODE")
+    p.add_argument("--translation-prompt", dest="translation_prompt",
+                   help="--pass --kind translate: file whose contents REPLACE the default "
+                        "translation prompt", metavar="FILE")
+
+    p.group("AI cleanup / simplify",
+            "ai-bridge.cleanupEpub over a LOOSE epub: file in, file out, no project record. The\n"
+            "provider, model, key and Ollama URL are under Settings and environment; --temperature\n"
+            "is the model temperature here.")
     p.add_argument("--output-dir", dest="output_dir",
-                   help="AI: output dir for cleaned.epub/simplified.epub (default: alongside input)")
+                   help="AI: output dir for cleaned.epub/simplified.epub (default: alongside input)",
+                   metavar="DIR")
     p.add_argument("--simplify-mode", dest="simplify_mode",
                    choices=["dejargon", "destiffen", "learner"],
                    help="--ai-simplify mode: dejargon (academic) / destiffen (translated) / learner (B1-B2)")
@@ -1816,16 +2701,28 @@ def build_parser():
                         "(-> repaired.epub); tts = footnote/quote/number prep only "
                         "(-> cleaned.epub, seconds); both = repair then prep. REQUIRED")
     p.add_argument("--custom-instructions", dest="custom_instructions",
-                   help="AI: extra instructions appended to the prompt")
+                   help="AI: extra instructions appended to the prompt", metavar="STR")
     p.add_argument("--detailed-cleanup", dest="detailed_cleanup", action="store_true",
                    help="AI: enable the detailed-cleanup pass (app parity: useDetailedCleanup)")
     p.add_argument("--cleanup-prompt", dest="cleanup_prompt",
-                   help="AI: file whose contents REPLACE the default cleanup prompt")
+                   help="AI: file whose contents REPLACE the default cleanup prompt",
+                   metavar="FILE")
     p.add_argument("--chunk-size", dest="chunk_size", type=int,
-                   help="AI: override prose chunk size in chars (testing; default 8000)")
-    p.add_argument("--ollama-url", dest="ollama_url",
-                   help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)")
-    # --- PDF -> EPUB conversion (--generate-epub) ---
+                   help="AI: override prose chunk size in chars (testing; default 8000)",
+                   metavar="N")
+    p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
+                   help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)",
+                   metavar="N")
+    p.add_argument("--no-parallel", dest="no_parallel", action="store_true",
+                   help="AI: force sequential chunk processing")
+    p.add_argument("--test-mode", dest="test_mode", action="store_true",
+                   help="AI: process only the first N chunks (default 5)")
+    p.add_argument("--test-chunks", dest="test_chunks", type=int,
+                   help="AI: N chunks for --test-mode (default 5)", metavar="N")
+
+    p.group("Foundry (--generate-epub, --clean)",
+            "foundry vlm-convert (--generate-epub) and the hosted window's Clean text press\n"
+            "(--clean, --clean-lines). --model/--ollama override what the dialog seeds itself from.")
     p.add_argument("--readings", choices=["fresh", "reuse"],
                    help="--generate-epub: what to do with the page answers already banked for "
                         "this PDF. fresh = archive them and read the whole book again; reuse = "
@@ -1839,9 +2736,11 @@ def build_parser():
                         "own and leaves the existing book untouched")
     p.add_argument("--variant-id", dest="variant_id",
                    help="--generate-epub: which PDF version to read, for a project holding more "
-                        "than one (a project with two PDFs and no choice is refused, not guessed)")
+                        "than one (a project with two PDFs and no choice is refused, not guessed)",
+                   metavar="ID")
     p.add_argument("--source-pdf", dest="source_pdf",
-                   help="--generate-epub: the PDF to read, by path. Must be inside the project")
+                   help="--generate-epub: the PDF to read, by path. Must be inside the project",
+                   metavar="FILE")
     p.add_argument("--skip-deleted-pages", dest="skip_deleted_pages", action="store_true",
                    help="--generate-epub: leave out the pages the WORKING COPY marks deleted "
                         "(the app's 'Create EPUB' on the working-copy row). Refused by name when "
@@ -1849,16 +2748,37 @@ def build_parser():
     p.add_argument("--vlm-endpoint", dest="vlm_endpoint",
                    help="--generate-epub: OpenAI-compatible base URL that reads the pages, e.g. "
                         "http://127.0.0.1:8000/v1. Omitted = this machine's own route (the WSL "
-                        "vLLM reader on Windows, MLX on an Apple Silicon Mac)")
+                        "vLLM reader on Windows, MLX on an Apple Silicon Mac)", metavar="URL")
     p.add_argument("--vlm-endpoint-model", dest="vlm_endpoint_model",
                    help="--generate-epub: model name to request from --vlm-endpoint "
-                        "(default: foundry's own registry entry for it)")
+                        "(default: foundry's own registry entry for it)", metavar="NAME")
     p.add_argument("--vlm-concurrency", dest="vlm_concurrency", type=int, default=None,
-                   help="--generate-epub: pages in flight at the endpoint (default: foundry's own)")
-    # --- sentence generation (--generate-sentences) ---
-    p.add_argument("--audio", help="generate-sentences: audio file (m4b/mp3/wav)")
+                   help="--generate-epub: pages in flight at the endpoint (default: foundry's own)",
+                   metavar="N")
+    p.add_argument("--foundry-project", dest="foundry_project",
+                   help="--clean: the Foundry project dir directly, instead of resolving it "
+                        "from --project's manifest", metavar="DIR")
+    p.add_argument("--foundry-dist", dest="foundry_dist",
+                   help="--clean: which built Foundry to drive (default: foundry-app/dist, "
+                        "the build the running app executes)", metavar="DIR")
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="--clean: blocks in flight at once (default: the engine's own, 4). "
+                        "Changes the speed, never the text.", metavar="N")
+    p.add_argument("--ollama", help="--clean: the Ollama endpoint (default: app-settings ollamaUrl)",
+                   metavar="URL")
+    p.add_argument("--keep-model", dest="keep_model", action="store_true",
+                   help="--clean-lines / --clean: leave the model loaded when the run ends "
+                        "(default: the weights are released)")
+    p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)",
+                   metavar="FILE")
+
+    p.group("Sentences (--generate-sentences)",
+            "Audio -> a sentence VTT. Everything below --epub is epub-align only and refused\n"
+            "without it, because whisper mode has no ebook to be truth.")
+    p.add_argument("--audio", help="generate-sentences: audio file (m4b/mp3/wav)", metavar="FILE")
     p.add_argument("--epub", help="generate-sentences: epub whose TEXT becomes the transcript "
-                                  "(switches to epub-align: WhisperX timing, book-as-truth)")
+                                  "(switches to epub-align: WhisperX timing, book-as-truth)",
+                   metavar="FILE")
     p.add_argument("--whisper-model", dest="whisper_model",
                    choices=["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"],
                    help="generate-sentences (whisper mode): model size (default small)")
@@ -1875,29 +2795,30 @@ def build_parser():
                    help="generate-sentences (epub-align only): also write a coverage JSON — "
                         "epub sentence runs the narrator never read, and audio ranges with no "
                         "epub match (ads/intros), each with text + timestamp anchors. "
-                        "Optional path (default: <out>.coverage.json)")
+                        "Optional path (default: <out>.coverage.json)", metavar="FILE")
     p.add_argument("--min-hole", dest="min_hole", type=float, default=None,
                    help="generate-sentences (epub-align only): minimum unmatched-audio duration "
                         "in seconds treated as a hole — drives both the --report entries and "
                         "whisper-fallback cue filling (default 30). 0 = catch EVERY gap and "
-                        "fill each with whisper cues")
+                        "fill each with whisper cues", metavar="SEC")
     p.add_argument("--rough-cache", dest="rough_cache", nargs="?", const="", default=None,
                    help="generate-sentences (epub-align only): cache the rough whisper transcript "
                         "so re-runs skip the ~30-40 min transcribe pass while iterating on the "
                         "align stage. Optional path (default: <out>.roughcache.json next to the VTT). "
-                        "Opt-in — omit for no caching")
+                        "Opt-in — omit for no caching",
+                   metavar="FILE")
     p.add_argument("--align-workers", dest="align_workers", type=int, default=None,
                    help="generate-sentences (epub-align only): parallel wav2vec2 align worker "
                         "count. Omit to auto-size (conservative: reserves 12GB headroom for a "
                         "concurrent WSL vLLM lane, so it may pick 1 worker even with RAM free). "
                         "Each worker budgets ~5GB and the pool self-shrinks under memory pressure; "
-                        "raise this only when the GPU/WSL lane is known idle")
-    # --- epub-align boundary accuracy (2026-09-03) ---
+                        "raise this only when the GPU/WSL lane is known idle",
+                   metavar="N")
     p.add_argument("--snap-silence", dest="snap_silence", type=float, default=None,
                    help="generate-sentences (epub-align only): pull each cue seam onto the middle "
                         "of the nearest detected silence within this many seconds (default 0.6). "
                         "Bounded, so a snap can correct a CTC-frame boundary but can never create "
-                        "drift")
+                        "drift", metavar="SEC")
     p.add_argument("--no-snap-silence", dest="no_snap_silence", action="store_true",
                    help="generate-sentences (epub-align only): keep the raw forced-alignment cue "
                         "times (pre-2026-09-03 behavior)")
@@ -1912,121 +2833,133 @@ def build_parser():
                         "unless you ask. Report-only — --min-hole still governs whisper-fallback "
                         "cues in the VTT. NOTE it measures 'cue longer than a slow reading of its "
                         "text', not literal unmatched audio, so low values fire on brisk "
-                        "narration; for measured dead air read lowSpeechCues in the report")
-    p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
-                   help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
-    p.add_argument("--no-parallel", dest="no_parallel", action="store_true",
-                   help="AI: force sequential chunk processing")
-    p.add_argument("--test-mode", dest="test_mode", action="store_true",
-                   help="AI: process only the first N chunks (default 5)")
-    p.add_argument("--test-chunks", dest="test_chunks", type=int,
-                   help="AI: N chunks for --test-mode (default 5)")
-    # --- RVC voice conversion (--rvc). Reuses --input (audio) and --out (result). ---
-    p.add_argument("--rvc-model", dest="rvc_model",
-                   help="rvc: voice-model folder name (e.g. deathstalker_rvc_v1)")
-    p.add_argument("--index-rate", dest="index_rate", type=float, default=0.0,
-                   help="rvc: index influence 0-1 (default 0.0 — same-voice cleanup; the "
-                        "app uses 0.5, but the CLI's primary use is reconstruction)")
-    p.add_argument("--protect-rate", dest="protect_rate", type=float, default=0.2,
-                   help="rvc: consonant/breath protection 0-0.5 (default 0.2 — favors "
-                        "cleanup; raise toward 0.33 if sibilants get harsh)")
-    p.add_argument("--f0-method", dest="f0_method",
-                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"], default="rmvpe",
-                   help="rvc: pitch extraction (default rmvpe — best for narration; crepe is music)")
-    p.add_argument("--chunk-seconds", dest="chunk_seconds", type=float, default=600.0,
-                   help="rvc: silence-chunk length for memory-safe conversion (default 600). "
-                        "A single convert-dir over a multi-hour file OOMs; chunks are recycled.")
-    p.add_argument("--batch-size", dest="batch_size", type=int, default=4,
-                   help="rvc: chunks per worker process before it's recycled to free memory "
-                        "(default 4 — bounds peak unified-memory).")
-    # --- assembly (--audiobook, --assemble) ---
-    p.add_argument("--de-ring", dest="de_ring", action="store_true",
-                   help="--audiobook/--assemble: apply the voice's per-voice post-render "
-                        "notch/comb (the filter that strips SNAC tonal ringing) at the final "
-                        "encode. OPT-IN, same as the app's assemble step")
-    p.add_argument("--assembly-gap", dest="assembly_gap", type=float, default=None,
-                   help="--audiobook/--assemble: the inter-sentence gap in seconds re-laid by "
-                        "the pass in FRONT of assembly. Distinct from --sentence-gap, which is "
-                        "the gap the worker bakes into each FLAC at render time. Omit to let the "
-                        "voice's models.json value decide (or no gap step, if it declares none)")
-    p.add_argument("--skip-text-cleanup", dest="skip_text_cleanup", action="store_true",
-                   help="--audiobook: do NOT run the narration text cleanup, and tell the render "
-                        "door so — the book is read exactly as printed. The app's \"No, narrate "
-                        "as printed\" button, headless")
-    # --- the enhancement passes over a session (--denoise, --rvc-enhance) ---
-    p.add_argument("--process-dir", dest="process_dir",
-                   help="--denoise/--rvc-enhance: the session's process dir, named directly "
-                        "instead of resolved from --project's cached session")
-    p.add_argument("--align-language", dest="align_language",
-                   help="--align: the language the wav2vec2 checkpoint is loaded for. REQUIRED "
-                        "and deliberately separate from --language, which carries a render "
-                        "default: an aligner pointed at the wrong language scores every word "
-                        "badly, and the coverage guard reads that as a book that was not read")
-    p.add_argument("--sentences-dir", dest="sentences_dir",
-                   help="--denoise/--rvc-enhance: the set this pass reads, when an EARLIER pass "
-                        "produced it (the 'convert first, then denoise' order and its mirror). "
-                        "The job refuses it alongside --sentence-gap rather than ignoring one. "
-                        "--assemble: the set to ASSEMBLE — an enhancement pass's durable output, "
-                        "e.g. <session>/chapters/sentences-rvc-<voice>/. Nothing is derived: the "
-                        "set is assembled as it is, so --final-denoise is refused alongside it")
-    p.add_argument("--as-new-version", dest="as_new_version", action="store_true",
-                   help="--assemble: file the result BESIDE the project's audiobook instead of "
-                        "replacing it — a manifest variant under a filename carrying the voice. "
-                        "What the app does for a run that converted sentences it did not render")
-    p.add_argument("--version-voice", dest="version_voice",
-                   help="--assemble: the RVC voice id the second version is NAMED after. Read off "
-                        "a `sentences-rvc-<voice>` directory name when --sentences-dir names one; "
-                        "required for any other set")
-    p.add_argument("--rvc-voice-id", dest="rvc_voice_id",
-                   help="--rvc-enhance: the RVC asset id (e.g. builtin:deathstalker-sigma). "
-                        "Not --rvc-model, which is the urvc FOLDER name the whole-file --rvc takes")
-    p.add_argument("--enhance-index-rate", dest="enhance_index_rate", type=float, default=None,
-                   help="--rvc-enhance: index influence 0-1. Omit to leave urvc on its own "
-                        "default, which is what the app's step does")
-    p.add_argument("--enhance-protect-rate", dest="enhance_protect_rate", type=float, default=None,
-                   help="--rvc-enhance: consonant/breath protection (INVERTED — lower protects "
-                        "more, 0.5 is off). Omit for urvc's own default")
-    p.add_argument("--n-semitones", dest="n_semitones", type=float, default=None,
-                   help="--rvc-enhance: pitch shift in semitones. Omit for urvc's own default")
-    p.add_argument("--hop-length", dest="hop_length", type=int, default=None,
-                   help="--rvc-enhance: f0 analysis hop (crepe-family only). Omit for urvc's own")
-    p.add_argument("--enhance-f0-method", dest="enhance_f0_method",
-                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"],
-                   help="--rvc-enhance: pitch extraction. Omit for urvc's own default")
-    # --- correct sentences (--retake) ---
-    p.add_argument("--retake-action", dest="retake_action", default="list",
-                   choices=["list", "retake", "commit", "revert", "cleanup"],
-                   help="--retake: which of the panel's five doors to open (default list)")
-    p.add_argument("--indices", help="--retake-action retake: sentence indices, e.g. 12,40")
-    p.add_argument("--takes", type=int, default=None,
-                   help="--retake-action retake: how many fresh takes per sentence (default 3)")
-    p.add_argument("--index", type=int, default=None,
-                   help="--retake-action commit/revert: the sentence index. "
-                        "--retake-action list: the index to start listing from")
-    p.add_argument("--count", type=int, default=None,
-                   help="--retake-action list: how many cues to print (default 20)")
-    p.add_argument("--take", help="--retake-action commit: the approved take's .flac path")
-    p.add_argument("--sentence-text", dest="sentence_text",
-                   help="--retake: the DISPLAY text to render/commit instead of the book's "
-                        "words. Absent means the words did not change, which is a different act "
-                        "from changing them to the same string")
-    # --- processing passes (--pass) ---
-    p.add_argument("--kind", choices=["simplify", "translate", "footnote-refs"],
-                   help="--pass: which processing pass to run over the project's book")
-    p.add_argument("--family", help="--pass/--narration-text: which book chain, by id or by the "
-                                    "stem of the file it was minted from. Required only when the "
-                                    "project holds more than one")
-    p.add_argument("--source-lang", dest="source_lang",
-                   help="--pass --kind translate: the language the book is in")
-    p.add_argument("--target-lang", dest="target_lang",
-                   help="--pass --kind translate: the language to translate it into")
-    p.add_argument("--translation-prompt", dest="translation_prompt",
-                   help="--pass --kind translate: file whose contents REPLACE the default "
-                        "translation prompt")
+                        "narration; for measured dead air read lowSpeechCues in the report",
+                   metavar="SEC")
+
+    p.group("Settings and environment (all commands)",
+            "The flags several commands share, and the process-env seams the compiled pipeline\n"
+            "reads. --config names the settings file whose aliases and defaults fill anything\n"
+            "not typed (explicit flags always win).")
+    p.add_argument("--config", help="CLI settings file (aliases + defaults). "
+                   "Default search: $BOOKFORGE_CLI_CONFIG, cli/bookforge-cli.json, ~/.bookforge-cli.json",
+                   metavar="FILE")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="print the resolved spawn + env overrides and exit (no GPU)")
+    p.add_argument("--language", default="en", help="language code (default en)", metavar="CODE")
+    p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
+                   help="GPU memory tier (default: auto — safe-sized to free VRAM)")
+    p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
+                   help="deterministic inter-clip gap in seconds (tts path; default 0.6)",
+                   metavar="SEC")
+    p.add_argument("--temperature", type=float, default=None,
+                   help="sampling temperature. TTS: Orpheus (default 0.6; higher = livelier "
+                        "prosody, more runaway risk). AI cleanup/simplify: model temperature "
+                        "(default 0.1 clamp; 0=deterministic). Consumed by whichever mode runs.",
+                   metavar="T")
+    p.add_argument("--orpheus-install", dest="orpheus_install",
+                   help="override the e2a/Orpheus install path the worker uses", metavar="PATH")
+    p.add_argument("--conda-env", dest="conda_env",
+                   help="override the WSL conda env for Orpheus", metavar="NAME")
+    p.add_argument("--provider", choices=["claude", "openai", "ollama", "local"],
+                   help="AI provider for --ai-cleanup/--ai-simplify")
+    p.add_argument("--model", help="AI model name (claude/openai/ollama model; local resolves its own)",
+                   metavar="NAME")
+    p.add_argument("--api-key", dest="api_key",
+                   help="cloud API key (else ANTHROPIC_API_KEY/OPENAI_API_KEY env). Passed via env, not argv",
+                   metavar="KEY")
+    p.add_argument("--ollama-url", dest="ollama_url",
+                   help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)",
+                   metavar="URL")
+
     return p
 
 
+def _epilog():
+    """The siblings, then one canonical line per command.
+
+    The sibling adapters keep argument grammars of their own (verbs, repeated
+    --file), so they are run directly rather than wrapped in this flat flag
+    namespace — which would mean inventing a second spelling for every option they
+    already have. Naming them here is what makes `--help` list every action this
+    CLI can reach, not only the ones argparse owns.
+    """
+    siblings = "Sibling adapters (their own grammars — run them directly):\n" + "".join(
+        f"  node {name}\n      {what}\n" for name, what in SIBLING_ADAPTERS.items())
+    lines = ["", "Examples (one per command; `--<command> --help` has more):"]
+    for name in COMMANDS:
+        first = COMMAND_FLAGS[name]["examples"][0].split("\n")
+        lines += [f"  {row}" for row in first if not row.lstrip().startswith("#")]
+    return siblings + "\n".join(lines) + (
+        "\n\nOne command's flags, refusals and examples on their own:"
+        "\n  bookforge-tts --<command> --help\n")
+
+
+def build_parser():
+    """The parser a run is parsed by — every flag, grouped by who reads it.
+
+    THE USAGE LINE IS STATED, not generated. Argparse's own ran 72 lines — every
+    selector and every option, run together — which is the artefact Owen was
+    looking at on 2026-09-12 when he asked for a CLI that says how to use it. It
+    was also reprinted in front of every error message. One line naming the shape,
+    pointing at the groups below, carries everything it did.
+    """
+    return _flag_registry().parser(
+        description=__doc__, epilog=_epilog(),
+        usage="bookforge-tts --<command> [options]\n"
+              "       exactly one command is required — they are listed first, under\n"
+              "       \"Commands (pick one)\". For one command on its own:\n"
+              "       bookforge-tts --<command> --help")
+
+
+def _command_help(name):
+    """Print ONE command's page: usage, what it drives, its flags, its refusals,
+    its examples. Generated from COMMAND_FLAGS + the same registrations."""
+    spec = COMMAND_FLAGS[name]
+    # Wrapped at the page's own width, with a hanging indent, so one long reason
+    # cannot push the flag list off the screen it was meant to fit on.
+    refused = "".join(
+        textwrap.fill(f"refused: {flag} — {why}", width=98,
+                      initial_indent="  ", subsequent_indent="           ") + "\n"
+        for flag, why in spec["refuses"])
+    epilog = ""
+    if refused:
+        epilog += "\nRefused by name (the flag is wrong for this door, not ignored):\n" + refused
+    epilog += "\nExamples:\n" + "\n".join(
+        "\n".join(f"  {row}" for row in ex.split("\n")) for ex in spec["examples"])
+    epilog += ("\n\nEvery flag's full help, and every other command:  bookforge-tts --help\n"
+               "Nothing here is reimplemented — these drive the app's own compiled code\n"
+               "(the contract is tools/test-cli-parity.js).\n")
+    parser = _flag_registry().parser(
+        description=spec["doc"], epilog=epilog, usage=spec["usage"],
+        # The command's own selector is NOT in the list: the usage line above
+        # already carries it, and a one-row "Commands (pick one)" group repeating
+        # the description three lines higher is the padding this page exists to cut.
+        keep=set(spec["reads"]), brief=True, width=100)
+    parser.print_help()
+
+
+def _per_command_help(argv):
+    """`bookforge-tts --tts --help` — in either order — is --tts's own page.
+
+    TWO selectors plus --help is the ordinary full help: naming two commands is
+    already an error this CLI states, and picking one of them to explain would
+    answer a question nobody asked.
+    """
+    if not any(a in ("-h", "--help") for a in argv):
+        return False
+    picked = [n for n in COMMANDS if f"--{n}" in argv]
+    if len(picked) != 1:
+        return False
+    _command_help(picked[0])
+    return True
+
+
 def main():
+    # `bookforge-tts --tts --help` is --tts's OWN page, and is answered before
+    # argparse sees the line: argparse's --help is the whole flat list, which is
+    # exactly the page a reader asking about one command did not want.
+    if _per_command_help(sys.argv[1:]):
+        return 0
     args = build_parser().parse_args()
     # Resolve the CLI settings file (aliases + defaults) BEFORE dispatch, so the command
     # handlers see filled-in args. Explicit CLI flags always win.
@@ -2035,7 +2968,10 @@ def main():
     # argparse maps --ai-cleanup -> args.ai_cleanup; normalize dashes to match.
     selected = [n for n in COMMANDS if getattr(args, n.replace("-", "_"))]
     _require(len(selected) == 1,
-             "specify exactly one command flag, e.g. --tts")
+             f"specify exactly one command flag, e.g. --tts "
+             f"(got {len(selected)}: {' '.join('--' + n for n in selected) or 'none'}). "
+             f"`bookforge-tts --help` lists all {len(COMMANDS)}; "
+             f"`bookforge-tts --<command> --help` explains one")
     sys.exit(COMMANDS[selected[0]](args))
 
 

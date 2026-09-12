@@ -1,6 +1,6 @@
-# bookforge-tts — headless CLI for BookForge's real TTS pipeline
+# bookforge-tts — headless CLI for BookForge's real pipeline
 
-Run TTS jobs **through BookForge's actual compiled pipeline** from the command line,
+Run BookForge's jobs **through its actual compiled pipeline** from the command line,
 without launching the app. Nothing is reimplemented: the CLI drives the real
 `dist/electron` modules, so it inherits every guard unchanged — the WSL wedge-proofing
 (TERM → verify → `wsl -t` kill ladder, never-SIGKILL a guest GPU proc, wedge latch),
@@ -8,6 +8,43 @@ the vLLM `gpu_memory_utilization` memory tiers + safe GPU sizing, and custom-mod
 resolution.
 
 BookForge must be **built** (`dist/electron` present) but **need not be running**.
+
+## `--<command> --help` is the reference
+
+**Ask the command.** Since 2026-09-12 the CLI documents itself: every flag is
+registered in a group whose title says who reads it, and one command's own page —
+its usage line, which app door it drives, only the flags it reads, the flags it
+**refuses by name** with the reason, and copy-pasteable examples — is one flag away:
+
+```bash
+python cli/bookforge-tts.py --help              # every flag, grouped by who reads it
+python cli/bookforge-tts.py --tts --help        # just --tts: ~35 flags, 14 refusals, 5 examples
+python cli/bookforge-tts.py --assemble --help   # and why --voice is refused here
+```
+
+Owen, 2026-09-12: *"ideally the bookforge cli would make it pretty straightforward
+how to use it by its flags and such."* Before that, `--help` was one flat usage line
+mixing 17 command selectors with ~130 options: every flag's own text was good and
+nothing said which command could read it.
+
+**The ownership is data, not prose.** `COMMAND_FLAGS` in `cli/bookforge-tts.py` holds,
+per command, the flags its `cmd_*` function (and `_audiobook_spawn`, `_higgs_override`,
+`_mlx_tuning_env`, `_session_target_argv`, `_run_ai`) actually puts on the adapter's
+argv or into the spawn env, the ones it refuses and why, and its examples. The
+per-command page is generated from it plus the **same** `add_argument` calls the real
+parser is built from (`_FlagRegistry`) — a hand-written second parser would drift and
+then name a flag argparse does not have. `tools/test-cli-flags.js` checks every entry
+against the parser, that each flag sits in exactly one group, and that each page exits
+0, fits under 120 lines, carries examples and does not leak another command's flags.
+
+**Three flags are accepted and decide nothing**, named here rather than quietly
+removed (found while deriving the map, 2026-09-12):
+
+| flag | what happens |
+|---|---|
+| `--voice-token` | refused in `--mode streaming`, and in `--mode tts` it reaches **no adapter** — `cmd_tts` never puts it on the argv, though its help says "tts mode only". Use `--model-dir`, or a settings-file voice alias (which carries the token). |
+| `--family` on `--narration-text` | its help says `--pass/--narration-text`, but only `cmd_pass` reads it; a project with two chains cannot be steered from this door. |
+| the `ORPHEUS_*` env seams on `--assemble` | `--tier`, `--sentence-gap`, `--max-chars`, `--temperature`, `--top-p`, `--min-p`, `--rep-penalty`, `--models-dir`, `--orpheus-install`, `--conda-env` and `--engine` all still reach the spawn env of a run that **renders nothing**. `--assemble`'s render-choice refusals (`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`) stop at those five. |
 
 ## Build first
 

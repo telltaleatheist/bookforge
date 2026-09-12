@@ -342,5 +342,136 @@ check('--voice stays required: a checkpoint borrows a voice\'s certificate', () 
     '--voice');
 });
 
+// ─── THE HELP IS PART OF THE SURFACE (2026-09-12) ───────────────────────────
+//
+// Owen: *"ideally the bookforge cli would make it pretty straightforward how to
+// use it by its flags and such."* So the help is defended like any other
+// behaviour. What can rot: a flag registered outside a group (it then prints in
+// argparse's anonymous "options:" heap and nothing says who reads it), a
+// COMMAND_FLAGS entry naming a flag the parser does not have (a help page that
+// lies), and a per-command page growing past what anyone reads in one screen or
+// leaking another command's flags.
+//
+// The map and the groups are read out of the module itself, not scraped from its
+// source: the point is what the PARSER was built with.
+const INTROSPECT = `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("bft", "cli/bookforge-tts.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+reg = m._flag_registry()
+parser = m.build_parser()
+print(json.dumps({
+  "groups": reg.flag_groups(),
+  "flags": [a.option_strings[0] for a in parser._actions if a.option_strings],
+  "commands": {k: {"reads": v["reads"], "refuses": [f for f, _why in v["refuses"]],
+                   "usage": v["usage"], "examples": v["examples"]}
+               for k, v in m.COMMAND_FLAGS.items()},
+  "registry": list(m.COMMANDS),
+}))
+`;
+
+function introspect() {
+  const r = spawnSync(PY, ['-c', INTROSPECT], { cwd: REPO, encoding: 'utf8' });
+  assert.strictEqual(r.status, 0,
+    `introspection failed:\n${r.stdout || ''}${r.stderr || ''}`);
+  return JSON.parse(r.stdout);
+}
+const CLI = introspect();
+
+/** One command's --<cmd> --help page, as text. */
+const helpCache = new Map();
+function commandHelp(name) {
+  if (!helpCache.has(name)) helpCache.set(name, run(`--${name}`, '--help'));
+  return helpCache.get(name);
+}
+
+check('every parser flag belongs to exactly one group', () => {
+  const owners = new Map();
+  for (const [title, flags] of Object.entries(CLI.groups)) {
+    for (const flag of flags) {
+      assert.ok(!owners.has(flag),
+        `${flag} is registered in two groups: "${owners.get(flag)}" and "${title}"`);
+      owners.set(flag, title);
+    }
+  }
+  for (const flag of CLI.flags) {
+    if (flag === '-h') continue;                 // argparse's own
+    assert.ok(owners.has(flag),
+      `${flag} is in no group — it would print in argparse's anonymous "options:" `
+      + 'heap, where nothing says which command reads it');
+  }
+  assert.strictEqual(owners.size, CLI.flags.length - 1,
+    'a group names a flag the parser does not have');
+});
+
+check('every flag in COMMAND_FLAGS exists on the parser', () => {
+  const known = new Set(CLI.flags);
+  assert.deepStrictEqual(Object.keys(CLI.commands).sort(), CLI.registry.slice().sort(),
+    'COMMAND_FLAGS covers exactly the COMMANDS registry');
+  for (const [name, spec] of Object.entries(CLI.commands)) {
+    for (const list of ['reads', 'refuses']) {
+      for (const flag of spec[list]) {
+        assert.ok(known.has(flag), `COMMAND_FLAGS["${name}"].${list} names ${flag}, `
+          + 'which is not a flag on the parser — a help page that lies');
+      }
+    }
+    // Usage and examples are copy-pasteable or they are worse than nothing: every
+    // flag they spell must be one this command actually reads.
+    const shown = new Set(`${spec.usage}\n${spec.examples.join('\n')}`
+      .match(/--[a-z0-9][a-z0-9-]*/g) || []);
+    for (const flag of shown) {
+      if (flag === `--${name}`) continue;
+      assert.ok(spec.reads.includes(flag),
+        `COMMAND_FLAGS["${name}"] shows ${flag} in its usage/examples, but does not read it`);
+    }
+  }
+});
+
+check('every --<command> --help exits 0, fits a screen, and names its own flags', () => {
+  for (const [name, spec] of Object.entries(CLI.commands)) {
+    const res = commandHelp(name);
+    assert.strictEqual(res.rc, 0, `--${name} --help exited ${res.rc}\n${res.out.slice(0, 400)}`);
+    const lines = res.out.replace(/\n$/, '').split('\n');
+    assert.ok(lines.length < 120,
+      `--${name} --help is ${lines.length} lines — past what anyone reads in one screen`);
+    assert.ok(res.out.includes('Examples'), `--${name} --help carries no Examples`);
+    assert.ok(spec.reads.some((flag) => res.out.includes(flag)),
+      `--${name} --help names none of the flags it reads`);
+    assert.ok(res.out.includes(spec.usage.split(' ').slice(0, 3).join(' ')),
+      `--${name} --help carries no usage line for the command`);
+  }
+});
+
+// Two concrete pairs, because "does not leak" is only testable against a flag
+// that unambiguously belongs to somebody else.
+check('a command\'s page does not name another command\'s exclusive flags', () => {
+  for (const [name, alien] of [['tts', '--indices'], ['retake', '--checkpoint-dir'],
+                               ['assemble', '--max-chars'], ['rvc', '--rvc-voice-id']]) {
+    const owner = Object.entries(CLI.commands)
+      .filter(([, s]) => s.reads.includes(alien)).map(([n]) => n);
+    assert.ok(!owner.includes(name),
+      `${alien} is read by --${name}, so it is the wrong flag to test leakage with`);
+    assert.ok(!commandHelp(name).out.includes(alien),
+      `--${name} --help mentions ${alien}, which belongs to --${owner.join('/--')}`);
+  }
+});
+
+check('the full --help still lists every command selector', () => {
+  const res = run('--help');
+  assert.strictEqual(res.rc, 0, `--help exited ${res.rc}`);
+  for (const name of CLI.registry) {
+    assert.ok(res.out.includes(`--${name}`), `--help does not list --${name}`);
+  }
+  assert.ok(res.out.includes('Commands (pick one)'),
+    'the selectors sit in a group that says they are the commands');
+  // Two selectors plus --help is the ordinary full help, not a guess at which one
+  // the question was about.
+  const both = run('--tts', '--audiobook', '--help');
+  assert.strictEqual(both.rc, 0, 'two selectors + --help still exits 0');
+  assert.ok(both.out.includes('Commands (pick one)') && both.out.includes('--generate-epub'),
+    'two selectors + --help is the FULL help');
+});
+
 console.log(`\n${passed}/${passed + failed} passed`);
 process.exit(failed === 0 ? 0 : 1);
