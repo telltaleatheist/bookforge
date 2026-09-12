@@ -543,3 +543,83 @@ class RejectKeepingTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _speech(seconds: float) -> np.ndarray:
+    """Audio that reads as speech to the hole scan: a flat 0.1 (-20 dBFS) line."""
+    return np.full(int(seconds * RATE), 0.1, dtype=np.float32)
+
+
+def _take_with_hole(chars: int, hole_seconds: float) -> np.ndarray:
+    """A take of the NORMAL length for `chars` whose middle is `hole_seconds` of
+    silence - the Fuhrer (5) shape (13.flac: 44.5 s, complete text, 11.3 s hole)."""
+    total = chars / PACE
+    side = max(0.5, (total - hole_seconds) / 2)
+    return np.concatenate([_speech(side), np.zeros(int(hole_seconds * RATE), dtype=np.float32),
+                           _speech(side)])
+
+
+class HoleGuardTest(unittest.TestCase):
+    """Fix B, 2026-09-11 (pausing-problem channel, finetuning-pc-1 leading): the
+    silence loop the rate band cannot see, and the split-child gap it shipped
+    through."""
+
+    def test_interior_hole_ignores_tails_and_measures_the_middle(self):
+        self.assertEqual(truncation.interior_hole_seconds(np.zeros(RATE * 10, dtype=np.float32), RATE), 0.0)
+        tails_only = np.concatenate([np.zeros(RATE * 8, dtype=np.float32), _speech(2), np.zeros(RATE * 8, dtype=np.float32)])
+        self.assertEqual(truncation.interior_hole_seconds(tails_only, RATE), 0.0)
+        holed = np.concatenate([_speech(3), np.zeros(RATE * 6, dtype=np.float32), _speech(3)])
+        self.assertAlmostEqual(truncation.interior_hole_seconds(holed, RATE), 6.0, places=1)
+        self.assertEqual(truncation.interior_hole_seconds(np.zeros(0, dtype=np.float32), RATE), 0.0)
+
+    def test_a_hole_over_the_ceiling_fires_and_the_clean_reroll_ships(self):
+        text = 'x' * 600
+        takes = [_take_with_hole(600, 6.0), audio_for(600)]
+        render = lambda t, s: takes.pop(0)   # noqa: E731
+        events = []
+        out = truncation.render_guarded(render, text, 7, sample_rate=RATE, max_chars_per_sec=20.0,
+                                        min_chars_per_sec=14.5, base_seed=1, on_event=events.append)
+        self.assertEqual(events[0]['action'], 'hole')
+        self.assertEqual(events[0]['side'], 'hole')
+        self.assertGreater(events[0]['hole_seconds'], 5.0)
+        self.assertEqual(events[-1]['action'], 'rerolled')
+        self.assertEqual(len(out), len(audio_for(600)))
+
+    def test_a_hole_under_the_ceiling_is_a_pause_and_passes(self):
+        text = 'x' * 600
+        events = []
+        out = truncation.render_guarded(lambda t, s: _take_with_hole(600, 4.0), text, 7, sample_rate=RATE,
+                                        max_chars_per_sec=20.0, min_chars_per_sec=14.5, base_seed=1,
+                                        on_event=events.append)
+        self.assertEqual(events, [])
+        self.assertAlmostEqual(len(out) / RATE, 600 / PACE, delta=0.2)
+
+    def test_between_two_holed_takes_the_smaller_hole_ships(self):
+        text = 'x' * 160    # one 'sentence': cannot split, so rung 3 must pick
+        takes = [_take_with_hole(160, 7.0), _take_with_hole(160, 5.5)]
+        events = []
+        out = truncation.render_guarded(lambda t, s: takes.pop(0), text, 7, sample_rate=RATE,
+                                        max_chars_per_sec=20.0, min_chars_per_sec=14.5, base_seed=1,
+                                        on_event=events.append)
+        self.assertEqual(events[-1]['action'], 'accepted-off-length')
+        self.assertEqual(events[-1]['shipped_side'], 'hole')
+        self.assertAlmostEqual(truncation.interior_hole_seconds(out, RATE), 5.5, places=1)
+
+    def test_a_split_child_under_MIN_GUARD_CHARS_is_still_judged_on_the_long_side(self):
+        # Two sentences, ~250 chars: the parent runs long twice and splits into
+        # two halves UNDER MIN_GUARD_CHARS (150). Before fix B the halves had no
+        # long side, so a child that ran to the cap shipped (Fuhrer (5) chunk 8).
+        text = ('The first sentence of this chunk is long enough to matter here, and it keeps going a while. '
+                'And the second sentence of this chunk is about the same length as the first one, more or less.')
+        self.assertLess(len(text), 2 * truncation.MIN_GUARD_CHARS)
+        self.assertGreaterEqual(len(text), truncation.MIN_GUARD_CHARS)
+        render = FakeRender(lambda t, s, n: False, long=lambda t, s, n: n <= 3)
+        events = []
+        out = truncation.render_guarded(render, text, 7, sample_rate=RATE, max_chars_per_sec=20.0,
+                                        min_chars_per_sec=14.5, base_seed=1, on_event=events.append)
+        child_fires = [e for e in events if e.get('depth') == 1 and e['action'] == 'long']
+        self.assertTrue(child_fires, f'no long-side verdict on a split child: {[(e.get("depth"), e["action"]) for e in events]}')
+        self.assertLess(len(child_fires[0]['text'] if 'text' in child_fires[0] else 'x' * 149), 150)
+        self.assertEqual(events[-1]['action'], 'rerolled')
+        self.assertEqual(events[-1]['depth'], 1)
+        self.assertGreater(len(out), 0)

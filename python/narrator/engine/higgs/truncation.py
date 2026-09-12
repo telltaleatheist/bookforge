@@ -171,6 +171,24 @@ GUARD_EVENT_PREFIX = '[HIGGS3][HIGGS_GUARD_EVENT] '
 #: 150 chars, median 8.5 chars/s, p99 15.2 - not one over the short edge).
 MIN_GUARD_CHARS = 150
 
+#: The longest INTERIOR silence a take may carry before it is a hole - a run of
+#: the model sitting in silence at a sentence join and taking a while to leave
+#: it, which the rate band cannot see: a 7-11 s hole inside a 45 s chunk moves
+#: the chunk from ~14 to ~11-12 chars/s, still over the floor, and ships
+#: (Fuhrer (5), 2026-09-11: 12 of 88 chunks carried one >=3 s, the worst 11.6 s;
+#: one split child shipped its last sentence DROPPED plus 18.5 s of silence).
+#: MEASURED ceiling for a real pause: the reader's own max over 24.6 h of
+#: The Final Empire is 5.02 s and that is a chapter break; the training corpora
+#: (mb7_l, tr3_l) max at 4.0-4.5 s (the slicer's --gap-s 4). So 5.0 fires on
+#: nothing a narrator does and on every hole anyone could hear. Not lower: the
+#: 4.5-5 s band has not been listened to (bookforge-mac-1, 2026-09-11).
+#: Silence = 10 ms frames whose peak is under HOLE_FLOOR (-34 dBFS absolute),
+#: the same gate the pause maps that set this number used; leading and trailing
+#: silence are NOT holes (the short/long band already prices them).
+MAX_HOLE_SECONDS = 5.0
+HOLE_FLOOR = 0.02
+HOLE_HOP_SECONDS = 0.01
+
 #: Guarded takes the tracker sees before its reference moves from the recorded
 #: pace to the book's own median. Ten is one batch on the served arm; a median
 #: of fewer is one odd chunk.
@@ -247,6 +265,8 @@ class LengthVerdict:
     chars_per_second: float
     max_chars_per_sec: float   # above this: too SHORT (0 disables)
     min_chars_per_sec: float   # below this: too LONG  (0 disables)
+    hole_seconds: float = 0.0      # the longest interior silence in the take
+    max_hole_seconds: float = 0.0  # above this: a HOLE (0 disables)
 
     @property
     def short(self) -> bool:
@@ -258,25 +278,65 @@ class LengthVerdict:
                 and self.chars_per_second < self.min_chars_per_sec)
 
     @property
+    def hole(self) -> bool:
+        return self.max_hole_seconds > 0 and self.hole_seconds > self.max_hole_seconds
+
+    @property
     def off_length(self) -> bool:
-        return self.short or self.long
+        return self.short or self.long or self.hole
 
     @property
     def side(self) -> Optional[str]:
-        return 'short' if self.short else ('long' if self.long else None)
+        if self.short:
+            return 'short'
+        if self.long:
+            return 'long'
+        return 'hole' if self.hole else None
+
+
+def interior_hole_seconds(audio, sample_rate: int) -> float:
+    """The longest run of silence strictly INSIDE `audio`, in seconds: frames of
+    `HOLE_HOP_SECONDS` whose peak is under `HOLE_FLOOR`, with the leading and
+    trailing runs excluded (those are tails, priced by the band). 0.0 for an
+    empty, all-silent or hole-free take."""
+    if audio is None or len(audio) == 0:
+        return 0.0
+    hop = max(1, int(round(HOLE_HOP_SECONDS * sample_rate)))
+    samples = np.asarray(audio, dtype=np.float32)
+    frames = len(samples) // hop
+    if frames < 3:
+        return 0.0
+    peaks = np.abs(samples[:frames * hop]).reshape(frames, hop).max(axis=1)
+    quiet = peaks < HOLE_FLOOR
+    loud = np.flatnonzero(~quiet)
+    if len(loud) < 2:
+        return 0.0                      # no interior: silence touches an end
+    # Only runs between the first and last loud frame are interior.
+    inner = quiet[loud[0]:loud[-1] + 1]
+    longest = run = 0
+    for q in inner:
+        run = run + 1 if q else 0
+        if run > longest:
+            longest = run
+    return longest * hop / float(sample_rate)
 
 
 def check(text: str, audio, sample_rate: int, max_chars_per_sec: float,
-          min_chars_per_sec: float = 0.0) -> LengthVerdict:
-    """Is `audio` the wrong length for `text`? Characters per second against
-    the band; a threshold of 0 disables that side."""
+          min_chars_per_sec: float = 0.0,
+          max_hole_seconds: float = 0.0) -> LengthVerdict:
+    """Is `audio` the wrong length for `text`, or holed? Characters per second
+    against the band, and the longest interior silence against
+    `max_hole_seconds`; a threshold of 0 disables that side."""
     chars = len((text or '').strip())
     seconds = float(len(audio)) / float(sample_rate) if audio is not None else 0.0
     cps = (chars / seconds) if seconds > 0 else float('inf')
+    hole = interior_hole_seconds(audio, sample_rate) if max_hole_seconds > 0 else 0.0
     return LengthVerdict(chars=chars, seconds=round(seconds, 3),
                          chars_per_second=round(cps, 2) if cps != float('inf') else cps,
                          max_chars_per_sec=float(max_chars_per_sec),
-                         min_chars_per_sec=float(min_chars_per_sec))
+                         min_chars_per_sec=float(min_chars_per_sec),
+                         hole_seconds=round(hole, 2),
+                         max_hole_seconds=float(max_hole_seconds))
 
 
 def tracker_for(voice, default_max: float, default_min: float) -> PaceTracker:
@@ -517,8 +577,14 @@ class _LadderTask:
                 f'while it was waiting on {self.stage}.')
         max_edge, min_edge = self.plan.edges()
         chars = len((self.text or '').strip())
-        long_edge = min_edge if chars >= MIN_GUARD_CHARS else 0.0
-        verdict = check(self.text, audio, self.plan.sample_rate, max_edge, long_edge)
+        # The short-chunk exemption is for headings and lines of dialogue, whose
+        # seconds are mostly the silence around them. A split CHILD is neither:
+        # it is half of a chunk that already ran away, and the likeliest text in
+        # the book to run away again - Fuhrer (5) chunk 8's 140-char half shipped
+        # its last sentence dropped plus 18.5 s of silence through this gap.
+        long_edge = min_edge if (chars >= MIN_GUARD_CHARS or self.depth > 0) else 0.0
+        verdict = check(self.text, audio, self.plan.sample_rate, max_edge, long_edge,
+                        max_hole_seconds=MAX_HOLE_SECONDS)
 
         if self.stage == 'take0':
             if not verdict.off_length:
@@ -575,10 +641,17 @@ class _LadderTask:
         the render never refuses (Owen, 2026-09-05), and the coverage audit
         names the chunk."""
         centre = expected_chars_per_sec(max_edge, min_edge)
-        best, best_verdict = min(
-            self.takes,
-            key=lambda tv: abs(math.log(max(tv[1].chars_per_second, 1e-9)) - math.log(centre))
-            if tv[1].chars_per_second != float('inf') else float('inf'))
+
+        def distance(tv):
+            # A holed take loses to any take without one, and between two holed
+            # takes the smaller hole wins - otherwise a re-roll that closed the
+            # hole but landed 5% long would lose to the original on length alone.
+            verdict = tv[1]
+            hole = verdict.hole_seconds if verdict.hole else 0.0
+            if verdict.chars_per_second == float('inf'):
+                return (hole, float('inf'))
+            return (hole, abs(math.log(max(verdict.chars_per_second, 1e-9)) - math.log(centre)))
+        best, best_verdict = min(self.takes, key=distance)
         self.plan.on_event({**self.base, 'action': 'accepted-off-length', 'rung': 'accept',
                             'shipped_side': best_verdict.side,
                             'seconds_shipped': best_verdict.seconds,
