@@ -46,6 +46,13 @@ THE COMMANDS. Exactly one is required.
   --generate-sentences  audio -> a sentence VTT (whisper, or epub-align with the book as truth)
   --generate-epub       read a project's PDF into its book (foundry vlm-convert)
   --rvc                 convert ONE finished audio file through an RVC voice, memory-safely
+  --crucible-add        record a Crucible inference server (name, url, bearer token)
+  --crucible-remove     forget one
+  --crucible-list       every registered server, tokens masked
+  --crucible-ping       is there a Crucible at that address? (unauthenticated)
+  --crucible-info       its backend, GPU and advertised capabilities
+  --crucible-health     its status, queue depth and resident models
+  --crucible-echo       the handshake end to end: a file out, the same bytes back
 
 Commands are a registry (COMMANDS), the flags a second one (COMMAND_FLAGS) that
 says which command reads which — and the per-command help is generated from it,
@@ -94,6 +101,7 @@ RVC_ENHANCE = REPO_ROOT / "cli" / "rvc-enhance.js"              # the rvc-enhanc
 CORRECT_SENTENCES = REPO_ROOT / "cli" / "correct-sentences.js"  # retake / commit / revert one sentence
 PASS_ADAPTER = REPO_ROOT / "cli" / "pass.js"                    # simplify / translate / footnote-refs
 COVERAGE_ALIGN = REPO_ROOT / "cli" / "coverage-align.js"        # the align STEP (coverage-align-job)
+CRUCIBLE = REPO_ROOT / "cli" / "crucible.js"                    # the Crucible server registry + handshake
 
 # Sibling adapters with argument grammars of their own — named in the epilog so
 # `--help` lists every action this CLI can reach, not only the ones argparse owns.
@@ -1675,6 +1683,141 @@ def cmd_pass(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CRUCIBLE — the inference server, reached through the app's own registry
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Crucible (C:\Users\tellt\Projects\crucible, docs/DESIGN.md) is one inference
+# server for all of Owen's apps: it runs models and returns bytes. These seven
+# commands are BookForge's half of the phase-1 handshake, and they all drive one
+# adapter over the app's own compiled registry (electron/crucible/servers.ts).
+# Phase 1 changes nothing else in the app — the CLI is the only consumer.
+
+# The three read routes and the echo pick a REGISTERED server with --server;
+# --name is how --crucible-add and --crucible-remove name the entry itself. One
+# sentence, so the four commands that refuse it say the same thing.
+_NAME_IS_NOT_THE_PICKER = ("{cmd}: a registered server is picked with --server; --name is how "
+                           "--crucible-add and --crucible-remove name the entry")
+
+
+def _crucible(args, argv, what, redacted=None):
+    """Spawn cli/crucible.js with `argv`, the way every other adapter is spawned.
+
+    `redacted` is the argv to PRINT when it differs from the one to run — the
+    only command where it does is --crucible-add with a literal --token, whose
+    value must not land in a log line (or a terminal scrollback) just because it
+    was typed. --token-file exists so it need not be typed at all.
+    """
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(CRUCIBLE.is_file(), f"missing adapter {CRUCIBLE}")
+    _require((REPO_ROOT / "dist" / "electron" / "crucible" / "servers.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/crucible/servers.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(CRUCIBLE)] + argv
+    shown = ["node", "--require", str(NODE_STUB), str(CRUCIBLE)] + (
+        redacted if redacted is not None else argv)
+    if args.dry_run:
+        print(f"[bookforge-tts] DRY RUN — crucible {what}, nothing is called")
+        print("  spawn:", " ".join(shown))
+        return 0
+    print(f"[bookforge-tts] crucible {what} ->", " ".join(shown), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_crucible_add(args):
+    """Record a Crucible server: its name, base URL and bearer token.
+
+    Drives crucible/servers.addServer — the same function the app will call when
+    phase 2 gives this a settings row. Refuses a duplicate name, a URL with no
+    scheme and an empty token, each by name; nothing here is defaulted.
+    """
+    _require(not args.server,
+             "--crucible-add: --crucible-add is what CREATES the entry the other commands "
+             "name with --server; this one names it with --name")
+    _require(bool(args.name), "--name <n> is required for --crucible-add")
+    _require(bool(args.url), "--url <u> is required for --crucible-add "
+                             "(the base URL, without /v1)")
+    _require(bool(args.token) or bool(args.token_file),
+             "--crucible-add needs the bearer token: --token <t>, or --token-file <path> "
+             "so it does not sit in your shell history")
+    _require(not (args.token and args.token_file),
+             "--token and --token-file both name the bearer token; pass one")
+
+    argv = ["--add", "--name", args.name, "--url", args.url]
+    shown = list(argv)
+    if args.token_file:
+        token_file = str(_user_path(args.token_file))
+        argv += ["--token-file", token_file]
+        shown += ["--token-file", token_file]
+    else:
+        argv += ["--token", args.token]
+        shown += ["--token", "****"]
+    return _crucible(args, argv, f"add {args.name}", redacted=shown)
+
+
+def cmd_crucible_remove(args):
+    """Forget a Crucible server. Refuses a name that is not registered."""
+    _require(not args.server,
+             "--crucible-remove: the entry being removed is named with --name, as it was added")
+    _require(bool(args.name), "--name <n> is required for --crucible-remove")
+    return _crucible(args, ["--remove", "--name", args.name], f"remove {args.name}")
+
+
+def cmd_crucible_list(args):
+    """Every registered Crucible server — tokens masked to their last four."""
+    _require(not args.server, "--crucible-list: this lists them all; --server picks one for a call")
+    _require(not args.name,
+             "--crucible-list: nothing is being named — see --crucible-add / --crucible-remove")
+    return _crucible(args, ["--list"], "list")
+
+
+def cmd_crucible_ping(args):
+    """GET /v1/ping — is there a Crucible at that address at all?
+
+    Unauthenticated by design, so "wrong address" and "wrong token" are two
+    different answers. It is NOT a token check; --crucible-health is.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-ping"))
+    _require(bool(args.server), "--server <n> is required for --crucible-ping")
+    return _crucible(args, ["--ping", "--server", args.server], f"ping {args.server}")
+
+
+def cmd_crucible_info(args):
+    """GET /v1/info — the server's backend, GPU and advertised capabilities."""
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-info"))
+    _require(bool(args.server), "--server <n> is required for --crucible-info")
+    return _crucible(args, ["--info", "--server", args.server], f"info {args.server}")
+
+
+def cmd_crucible_health(args):
+    """GET /v1/health — status, queue depth and resident models."""
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-health"))
+    _require(bool(args.server), "--server <n> is required for --crucible-health")
+    return _crucible(args, ["--health", "--server", args.server], f"health {args.server}")
+
+
+def cmd_crucible_echo(args):
+    """The phase-1 handshake end to end: a file out, the same bytes back.
+
+    Submits an `echo` job with the file inline, streams the SSE events to stderr
+    as they arrive, downloads the artifact to --out (default <file>.echo), writes
+    the provenance sidecar beside it, and exits 0 ONLY if the bytes are
+    identical. No model is loaded and no GPU is touched — what this proves is the
+    token, the API version, the queue, the stream, the artifact and the sidecar.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-echo"))
+    _require(not args.input,
+             "--crucible-echo: --input is the render door's input flag; the bytes to echo "
+             "are --file")
+    _require(bool(args.server), "--server <n> is required for --crucible-echo")
+    _require(bool(args.file), "--file <path> is required for --crucible-echo")
+    argv = ["--echo", "--server", args.server, "--file", str(_user_path(args.file))]
+    if args.out:
+        argv += ["--out", str(_user_path(args.out))]
+    return _crucible(args, argv, f"echo -> {args.server}")
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
@@ -1709,6 +1852,16 @@ COMMANDS = {
     "generate-sentences": cmd_generate_sentences,
     "generate-epub": cmd_generate_epub,
     "rvc": cmd_rvc,
+    # Crucible — the inference server (crucible docs/DESIGN.md). Phase 1 is the
+    # handshake: the registry, the three read routes, and the echo job. Nothing
+    # in the app reads these yet; the CLI is the only consumer, by design.
+    "crucible-add": cmd_crucible_add,
+    "crucible-remove": cmd_crucible_remove,
+    "crucible-list": cmd_crucible_list,
+    "crucible-ping": cmd_crucible_ping,
+    "crucible-info": cmd_crucible_info,
+    "crucible-health": cmd_crucible_health,
+    "crucible-echo": cmd_crucible_echo,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2317,6 +2470,138 @@ over a session's per-sentence cache.""",
             'bookforge-tts --rvc --input book.m4a --out book.flac --rvc-model my_rvc --dry-run',
         ],
     },
+    "crucible-add": {
+        "usage": "bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)",
+        "doc": """Record a Crucible inference server: its name, base URL and bearer token.
+
+Crucible is one inference server for all of Owen's apps — it runs models and
+returns bytes, and never knows what an audiobook is (the spec is
+C:\\Users\\tellt\\Projects\\crucible\\docs\\DESIGN.md). This writes the entry the
+other --crucible-* commands read, through the app's own compiled registry
+(electron/crucible/servers.ts → <userData>/crucible-servers.json).
+
+Prefer --token-file: a token typed on a command line is a token in the shell
+history. Nothing is defaulted — a duplicate name, a URL with no scheme and an
+empty token are each refused by name.""",
+        "reads": ["--config", "--dry-run", "--name", "--url", "--token", "--token-file"],
+        "refuses": [
+            ("--server", "--crucible-add is what CREATES the entry the other commands "
+                         "name with --server; this one names it with --name"),
+        ],
+        "examples": [
+            '# the WSL server on this PC, its token read from a file rather than typed:\n'
+            'bookforge-tts --crucible-add --name wsl --url http://127.0.0.1:7100 \\\n'
+            '    --token-file /tmp/crucible-token.txt',
+            '# the Mac Studio over the tailnet:\n'
+            'bookforge-tts --crucible-add --name mac \\\n'
+            '    --url http://owens-mac-studio.hs.owenmorgan.com:7100 --token-file mac-token.txt',
+            'bookforge-tts --crucible-add --name wsl --url http://127.0.0.1:7100 \\\n'
+            '    --token-file token.txt --dry-run',
+        ],
+    },
+    "crucible-remove": {
+        "usage": "bookforge-tts --crucible-remove --name N",
+        "doc": """Forget a Crucible server.
+
+Removes the entry from <userData>/crucible-servers.json through the app's own
+registry. A name that is not registered is refused by name, with the ones that
+are listed — there is no nearest match.""",
+        "reads": ["--config", "--dry-run", "--name"],
+        "refuses": [
+            ("--server", "the entry being removed is named with --name, as it was added"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-remove --name wsl',
+            'bookforge-tts --crucible-remove --name mac --dry-run',
+        ],
+    },
+    "crucible-list": {
+        "usage": "bookforge-tts --crucible-list",
+        "doc": """Every registered Crucible server — name, url, when it was added.
+
+The bearer token is shown as **** plus its last four characters: enough to tell
+two tokens apart, not enough to use one. The listing type the registry returns
+cannot carry a plaintext token at all, so this cannot leak one by accident.""",
+        "reads": ["--config", "--dry-run"],
+        "refuses": [
+            ("--server", "this lists them all; --server picks one for a call"),
+            ("--name", "nothing is being named — see --crucible-add / --crucible-remove"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-list',
+        ],
+    },
+    "crucible-ping": {
+        "usage": "bookforge-tts --crucible-ping --server N",
+        "doc": """GET /v1/ping — is there a Crucible at that address at all?
+
+The one UNAUTHENTICATED route, deliberately: it answers "is this a Crucible"
+separately from "is my token right", so a wrong address and a wrong token are
+two different refusals. It is therefore NOT a token check — --crucible-health
+is the cheapest call that proves the token.""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server; --name adds or removes one"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-ping --server wsl',
+        ],
+    },
+    "crucible-info": {
+        "usage": "bookforge-tts --crucible-info --server N",
+        "doc": """GET /v1/info — the server's backend, GPU and advertised capabilities.
+
+`cuda-linux` (Linux with an NVIDIA card, which on the PC means the server inside
+WSL2) or `mlx-darwin` (Apple Silicon). Windows is never a backend. The
+capability list is the vocabulary that server will accept as a job type — in
+phase 1 that is `echo` and nothing else.""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-info --server wsl',
+            'bookforge-tts --crucible-info --server mac',
+        ],
+    },
+    "crucible-health": {
+        "usage": "bookforge-tts --crucible-health --server N",
+        "doc": """GET /v1/health — status, queue depth and resident models.
+
+Authenticated, so unlike --crucible-ping this proves the bearer token as well as
+the address. `ok`, `warming` or `busy`; the queue depth is how many jobs are
+ahead of one submitted now.""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-health --server wsl',
+        ],
+    },
+    "crucible-echo": {
+        "usage": "bookforge-tts --crucible-echo --server N --file FILE [--out FILE]",
+        "doc": """The phase-1 handshake end to end: a file out, the same bytes back.
+
+Submits an `echo` job with the file inline, streams the SSE events to stderr as
+they arrive, downloads the artifact to --out (default <file>.echo), writes the
+provenance sidecar beside it — verbatim, snake_case keys, as the server wrote it
+— and exits 0 ONLY if the bytes are identical.
+
+No model is loaded and no GPU is touched. What it proves is the whole path
+underneath every later job type: the token, the API version, the queue, the
+event stream, the artifact download and the provenance record.""",
+        "reads": ["--config", "--dry-run", "--server", "--file", "--out"],
+        "refuses": [
+            ("--input", "the render door's input flag; the bytes to echo are --file"),
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-echo --server wsl --file sample.bin',
+            '# name the round-tripped copy yourself (the sidecar lands beside it):\n'
+            'bookforge-tts --crucible-echo --server mac --file sample.bin --out back.bin',
+        ],
+    },
 }
 
 
@@ -2454,7 +2739,9 @@ def _flag_registry():
                    help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
                         "carries (default: the input's basename, or 'CLI passage' for --text)",
                    metavar="STR")
-    p.add_argument("--out", help="output .wav path", metavar="FILE")
+    p.add_argument("--out", help="the output file: a .wav for --tts, the converted audio for "
+                   "--rvc. For --crucible-echo, the round-tripped copy — its provenance "
+                   "sidecar lands beside it (default <file>.echo)", metavar="FILE")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
                    "--generate-epub: the project whose PDF is read into its book. "
@@ -2859,6 +3146,30 @@ def _flag_registry():
                         "text', not literal unmatched audio, so low values fire on brisk "
                         "narration; for measured dead air read lowSpeechCues in the report",
                    metavar="SEC")
+
+    p.group("Crucible: the inference server (--crucible-*)",
+            "Crucible runs models and returns bytes; it never knows what an audiobook is.\n"
+            "The spec is C:\\Users\\tellt\\Projects\\crucible\\docs\\DESIGN.md. These name a\n"
+            "server in the registry at <userData>/crucible-servers.json, or a file to send.")
+    p.add_argument("--name", help="--crucible-add / --crucible-remove: the name this machine "
+                   "knows a Crucible server by (letters, digits, dot, dash, underscore). The "
+                   "other --crucible-* commands pick a registered server with --server",
+                   metavar="N")
+    p.add_argument("--url", help="--crucible-add: the server's base URL, WITHOUT /v1 — the "
+                   "client appends the version prefix itself. The scheme is required and is "
+                   "never guessed (e.g. http://127.0.0.1:7100)", metavar="U")
+    p.add_argument("--token", help="--crucible-add: the bearer token `crucible token --show` "
+                   "prints on that host. Prefer --token-file — a token typed here is a token "
+                   "in your shell history", metavar="T")
+    p.add_argument("--token-file", dest="token_file",
+                   help="--crucible-add: a file holding the bearer token (trailing newline "
+                        "trimmed). Mutually exclusive with --token; one of the two is required",
+                   metavar="FILE")
+    p.add_argument("--server", help="--crucible-ping / --crucible-info / --crucible-health / "
+                   "--crucible-echo: which REGISTERED server to call, by the name it was added "
+                   "under", metavar="N")
+    p.add_argument("--file", help="--crucible-echo: the file whose bytes are sent through the "
+                   "echo job and compared with what comes back", metavar="FILE")
 
     p.group("Settings and environment (all commands)",
             "The flags several commands share, and the process-env seams the compiled pipeline\n"
