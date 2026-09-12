@@ -1253,6 +1253,80 @@ override the resolution). Ctrl+C / SIGTERM stops it cleanly.
 
 Docker files for the NAS live in `deploy/bookshelf-server/`.
 
+## Crucible — the inference server (`--crucible-*`)
+
+[Crucible](../../crucible/docs/DESIGN.md) (`C:\Users\tellt\Projects\crucible`) is one
+inference server for all of Owen's apps: it runs models and returns bytes, and it never
+knows what an audiobook, a cleanup pass or a PDF conversion is. A client always speaks
+HTTP to it — the PC's WSL2 server, the Mac across the room and a rented droplet are all
+reached by exactly one code path, so BookForge's GPU features stop being Windows/WSL
+path-rewriting and become job types someone else's machine can serve.
+
+**Phase 1 is the handshake, and the CLI is its only consumer.** Nothing in the app calls
+this yet: no UI, no IPC, no settings row. `electron/crucible/servers.ts` is the registry
+(`<userData>/crucible-servers.json`), `cli/crucible.js` is the adapter over the compiled
+copy of it, and `@crucible/client` — pinned in `package.json` to the release tarball, so
+the URL *is* the version — is everything on the wire. The only job type is `echo`, which
+hands the bytes back: no model is loaded and no GPU is touched.
+
+```
+bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)
+bookforge-tts --crucible-remove --name N
+bookforge-tts --crucible-list
+bookforge-tts --crucible-ping   --server N     # unauthenticated: is there a Crucible there?
+bookforge-tts --crucible-info   --server N     # backend, GPU, capabilities
+bookforge-tts --crucible-health --server N     # status, queue depth, resident models
+bookforge-tts --crucible-echo   --server N --file FILE [--out FILE]
+```
+
+**The token is never printed.** `--crucible-list` shows `****` plus its last four
+characters, and the type the registry returns for a listing cannot carry a plaintext
+token at all. `--token-file` exists so the token need not be typed: a token on a command
+line is a token in the shell history — and even with `--token`, the spawn line this CLI
+echoes shows `****`.
+
+**Worked example — the Mac Studio's GPU from this PC.** Start a server on the Mac
+(`crucible init --enable-echo`, `crucible serve --host 0.0.0.0 --port 7100`), put the
+token from `crucible token --show` in a file, and:
+
+```
+$ bookforge-tts --crucible-add --name mac \
+      --url http://owens-mac-studio.hs.owenmorgan.com:7100 --token-file mac-token.txt
+added mac  http://owens-mac-studio.hs.owenmorgan.com:7100  token ****Ebi8
+
+$ bookforge-tts --crucible-info --server mac
+server        crucible@mac-studio  v0.1.0  api v1
+host          darwin/arm64
+backend       mlx-darwin
+gpu           apple Apple M1 Ultra  64.0 GiB
+capability    echo  —  no models
+
+$ bookforge-tts --crucible-echo --server mac --file sample.bin --out back.bin
+[crucible] mac http://owens-mac-studio.hs.owenmorgan.com:7100: echo sample.bin (1.00 MiB)
+[crucible] job dba54941b2914114a35c79e165190a7e
+[crucible] #1 queued {"position":1}
+[crucible] #2 progress {"fraction":0,"message":"started"}
+[crucible] #3 progress {"fraction":0,"message":"copying sample.bin"}
+[crucible] #4 artifact {"name":"sample.bin"}
+[crucible] #5 progress {"fraction":1,"message":"echoed 1 input(s)"}
+[crucible] #6 done {"artifacts":["sample.bin"]}
+artifact    ...\back.bin  (1.00 MiB)
+provenance  ...\back.bin.provenance.json  —  crucible@mac-studio v0.1.0, backend mlx-darwin, job_type echo
+identical   1048576 bytes round-tripped through mac
+```
+
+(Measured 2026-09-12, from the PC: the client is native Windows, the server is on the
+Mac Studio over the headscale tailnet, and the 1 MiB round trip came back with the same
+sha256. The `#N` numbers are the server's own monotonic SSE event ids, so a dropped
+connection can be resumed without losing or repeating one.)
+
+`--crucible-echo` exits 0 **only** if the returned bytes are identical, and it writes the
+provenance sidecar beside the artifact verbatim — snake_case keys, exactly as the server
+wrote them (DESIGN.md section 7). Every SDK failure has its own one-line message and exit
+code 1: unreachable, not-a-crucible, wrong token, wrong API version, a refusal the server
+named, a 5xx, or a payload API v1 does not describe. Nothing is retried and nothing is
+defaulted.
+
 ## Gotchas
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a
