@@ -80,8 +80,18 @@ const JSONL = path.join(TMP, 'chunks.jsonl');
 fs.writeFileSync(JSONL, '{"text":"Row one."}\n"Row two."\n', 'utf8');
 const EPUB = path.join(TMP, 'book.epub');
 fs.writeFileSync(EPUB, '');                       // never opened: the flag refusals fire first
-const CKPT = path.join(TMP, 'mb_v7_616');
-fs.mkdirSync(CKPT);
+// THE CHECKPOINT IS ARM-SHAPED, LIKE THE WRAPPER'S RULE (2026-09-12, PC run).
+// On the Mac the wrapper resolves --checkpoint-dir against cwd and stats it, so
+// the fixture is a real host directory. On Windows a Higgs render is read INSIDE
+// the WSL guest: the wrapper refuses anything but a guest-native '/…' path and
+// passes it verbatim — it cannot stat the guest — so the fixture is that string
+// and nothing on this host is created for it. A host temp dir here made three
+// checks fail on the PC for doing exactly what the rule says.
+const WIN = process.platform === 'win32';
+const CKPT = WIN ? '/home/telltale/higgs_v3_merged/mb_v7_616' : path.join(TMP, 'mb_v7_616');
+if (!WIN) fs.mkdirSync(CKPT);
+/** What the override must carry for CKPT: the resolved host path, or the guest string verbatim. */
+const CKPT_EXPECTED = WIN ? CKPT : fs.realpathSync(CKPT);
 const OUT = path.join(TMP, 'out.wav');
 
 /** Run the wrapper and return { rc, out } with stdout+stderr merged. */
@@ -127,8 +137,8 @@ check('a checkpoint + temperature reach settings.higgsOverride', () => {
   const line = res.out.split('\n').find((l) => l.trim().startsWith('higgs override: {'));
   assert.ok(line, `no "higgs override:" line\n${res.out.slice(0, 700)}`);
   const override = JSON.parse(line.slice(line.indexOf('{')));
-  assert.strictEqual(override.checkpointDir, fs.realpathSync(CKPT),
-    'the override carries the resolved checkpoint directory');
+  assert.strictEqual(override.checkpointDir, CKPT_EXPECTED,
+    'the override carries the resolved checkpoint directory (the guest string verbatim on Windows)');
   assert.strictEqual(override.sampling.temperature, 0.8,
     'the override carries temperature 0.8');
   assert.ok(override.note && override.note.includes('bookforge-tts'),
@@ -282,6 +292,10 @@ check('--note is what the override is stamped with when it is given', () => {
 });
 
 check('a --checkpoint-dir that is not a directory is refused before any render', () => {
+  // On the Mac: a host path that does not exist. On Windows the host cannot
+  // stat the guest, so the refusal the wrapper CAN make is the shape one — and
+  // a C: path is exactly the wrong shape (it would drag the weights through the
+  // 9p mount). Both refuse by name before any render.
   expectRefused('missing checkpoint',
     run('--tts', '--engine', 'higgs', '--voice', 'mistborn',
       '--checkpoint-dir', path.join(TMP, 'not-there'),
@@ -311,14 +325,17 @@ check('--tts states the narrator scratch root, as the app does at startup', () =
 });
 
 check('a --tts run with no library and no recorded one is refused by name', () => {
-  // The stub's USER_DATA follows HOME, so a fresh HOME is a machine that has
-  // never chosen a library — which is the case that must NOT silently become
-  // ~/Documents/BookForge.
+  // The stub's USER_DATA follows HOME on the Mac and APPDATA on Windows
+  // (cli/electron-stub.js mirrors app.getPath('userData')), so a fresh one is a
+  // machine that has never chosen a library — which is the case that must NOT
+  // silently become ~/Documents/BookForge. Both are pointed at the bare dir so
+  // the check means the same thing on both machines.
   const bareHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-no-library-'));
   const r = spawnSync(PY, [path.join('cli', 'bookforge-tts.py'),
     '--tts', '--engine', 'higgs', '--voice', 'mistborn', '--note', 'n',
     '--input', TXT, '--out', OUT, '--dry-run'],
-    { cwd: REPO, encoding: 'utf8', env: { ...process.env, HOME: bareHome } });
+    { cwd: REPO, encoding: 'utf8',
+      env: { ...process.env, HOME: bareHome, USERPROFILE: bareHome, APPDATA: bareHome } });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   try { fs.rmSync(bareHome, { recursive: true, force: true }); } catch { /* temp */ }
   assert.notStrictEqual(r.status, 0, `expected a non-zero exit\n${out.slice(0, 700)}`);
@@ -471,6 +488,43 @@ check('the full --help still lists every command selector', () => {
   assert.strictEqual(both.rc, 0, 'two selectors + --help still exits 0');
   assert.ok(both.out.includes('Commands (pick one)') && both.out.includes('--generate-epub'),
     'two selectors + --help is the FULL help');
+});
+
+// ── A TYPED DRIVE LETTER SURVIVES THE WRAPPER ON WINDOWS (2026-09-12) ────────
+//
+// `Path.resolve()` on Windows rewrites a mapped network drive to its UNC target:
+// the titan library `Z:\bookforge` came out of the wrapper as
+// `\\TITAN\iO\bookforge`, a spelling the app never uses and the bridge's WSL
+// mapping cannot open in the guest (the CLI defect recorded 2026-09-11). The
+// wrapper now makes a typed path absolute WITHOUT resolving it (`_user_path`).
+// Proved here with a `subst` drive — the same class of drive letter, and one
+// this check can create and remove without a share — pointed at the temp dir.
+check('a typed drive letter reaches the adapter as typed, not as its UNC/target (Windows)', () => {
+  const src = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf8');
+  assert.ok(/def _user_path\(/.test(src), 'the wrapper has ONE helper for operator-typed paths');
+  assert.ok(!/Path\(args\.[a-z_]+\)(\.expanduser\(\))?\.resolve\(\)/.test(src),
+    'no operator-typed path goes through Path.resolve() directly — every one goes through _user_path');
+  if (!WIN) return;                                   // resolve() keeps drive letters nowhere else
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-subst-'));
+  // A free letter: the first one with no drive behind it. `subst` refuses a
+  // letter in use, and a machine with Q: mapped would otherwise fail the check
+  // for the wrong reason.
+  const letter = 'QRSTUVWXY'.split('').find((l) => !fs.existsSync(`${l}:\\`));
+  assert.ok(letter, 'no free drive letter in Q–Y to subst');
+  const made = spawnSync('subst', [`${letter}:`, target], { encoding: 'utf8' });
+  assert.strictEqual(made.status, 0, `subst ${letter}: failed: ${made.stdout}${made.stderr}`);
+  try {
+    const res = run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--note', 'n',
+      '--library', `${letter}:\\`, '--input', TXT, '--out', OUT, '--dry-run');
+    expectAccepted('subst library', res);
+    const m = /\[batch\] scratch: (.+)/.exec(res.out);
+    assert.ok(m, `the scratch root is printed\n${res.out.slice(0, 700)}`);
+    assert.strictEqual(m[1].trim(), `${letter}:\\tmp`,
+      `the drive letter is kept (Path.resolve() would have given ${target}\\tmp)`);
+  } finally {
+    spawnSync('subst', [`${letter}:`, '/D'], { encoding: 'utf8' });
+    try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* temp */ }
+  }
 });
 
 console.log(`\n${passed}/${passed + failed} passed`);

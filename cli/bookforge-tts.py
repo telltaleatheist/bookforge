@@ -106,6 +106,30 @@ SIBLING_ADAPTERS = {
 }
 
 
+def _user_path(value):
+    """An ABSOLUTE `Path` for a path the operator typed - and, on Windows, the
+    path AS TYPED rather than what it resolves to.
+
+    `Path.resolve()` on Windows rewrites a mapped network drive to its UNC
+    target: `Z:\bookforge` (the titan library) comes back as
+    `\\TITAN\iO\bookforge`. The app never sees that spelling - it works in
+    drive letters - and the bridge's WSL mapping (`windowsToWslPath`) knows
+    `/mnt/<letter>` and nothing else, so a UNC path handed onward is a path the
+    guest cannot open (the CLI defect recorded on 2026-09-11: a Z: project
+    resolved to UNC). `os.path.abspath` makes the path absolute against the cwd
+    and leaves the drive letter alone.
+
+    On the Mac and Linux `resolve()` stays: it is what turns `/var/...` into
+    `/private/var/...`, which is the path the adapters compare against
+    (tools/test-cli-flags.js expects the realpath), and symlinks there are not
+    a different machine's spelling of the same directory.
+    """
+    text = os.path.expanduser(str(value))
+    if sys.platform == "win32":
+        return Path(os.path.abspath(text))
+    return Path(text).resolve()
+
+
 def _require(cond, msg):
     if not cond:
         sys.exit(f"bookforge-tts: {msg}")
@@ -297,7 +321,7 @@ def _higgs_override(args, door):
                      f"filesystem (got '{args.checkpoint_dir}')")
             override["checkpointDir"] = str(args.checkpoint_dir)
         else:
-            resolved = Path(args.checkpoint_dir).expanduser().resolve()
+            resolved = _user_path(args.checkpoint_dir)
             _require(resolved.is_dir(),
                      f"--checkpoint-dir is not a directory on this machine: {resolved}")
             override["checkpointDir"] = str(resolved)
@@ -481,8 +505,8 @@ def cmd_tts(args):
     # Resolve relative paths against the USER'S cwd — the node adapter runs with
     # cwd=REPO_ROOT, so a bare 'sample.wav' would otherwise land inside the repo (and a
     # relative --input could silently pick up a same-named repo file).
-    input_path = str(Path(args.input).resolve()) if args.input else None
-    out_path = str(Path(args.out).resolve())
+    input_path = str(_user_path(args.input)) if args.input else None
+    out_path = str(_user_path(args.out))
 
     cmd = ["node", "--require", str(NODE_STUB), str(adapter),
            "--voice", args.voice, "--out", out_path]
@@ -515,7 +539,7 @@ def cmd_tts(args):
     # from, so it resolves the one main recorded (userData/library-root.json) and
     # refuses when there is none; this flag overrides that for one run.
     if args.mode == "tts" and args.library:
-        cmd += ["--library", str(Path(args.library).expanduser().resolve())]
+        cmd += ["--library", str(_user_path(args.library))]
     if args.mode == "tts" and args.skip_text_cleanup:
         cmd += ["--skip-text-cleanup"]
     if args.mode == "tts" and args.keep_sentences:
@@ -655,7 +679,7 @@ def _audiobook_spawn(args, assemble_only):
                  f"BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
                  f"(dist/electron/{js} missing)")
 
-    project_dir = str(Path(args.project).resolve())
+    project_dir = str(_user_path(args.project))
     _require((Path(project_dir) / "manifest.json").is_file(),
              f"not a BookForge project (no manifest.json): {project_dir}")
 
@@ -693,7 +717,7 @@ def _audiobook_spawn(args, assemble_only):
         # a denoise that would derive a different directory); nothing is
         # re-decided here.
         if args.sentences_dir:
-            cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+            cmd += ["--sentences-dir", str(_user_path(args.sentences_dir))]
         if args.as_new_version:
             cmd += ["--as-new-version"]
         if args.version_voice:
@@ -711,7 +735,7 @@ def _audiobook_spawn(args, assemble_only):
         if override:
             cmd += ["--higgs-override", json.dumps(override, sort_keys=True)]
         if args.input:
-            cmd += ["--input", str(Path(args.input).resolve())]
+            cmd += ["--input", str(_user_path(args.input))]
         if args.fresh:
             cmd += ["--fresh"]
         if args.skip_text_cleanup:
@@ -892,19 +916,19 @@ def cmd_prep(args):
 
     cmd = ["node", "--require", str(NODE_STUB), str(NARRATION_PREP)]
     if args.project:
-        project_dir = str(Path(args.project).resolve())
+        project_dir = str(_user_path(args.project))
         _require((Path(project_dir) / "manifest.json").is_file(),
                  f"not a BookForge project (no manifest.json): {project_dir}")
         cmd += ["--project", project_dir]
     else:
         # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
-        cmd += ["--input", str(Path(args.input).resolve())]
+        cmd += ["--input", str(_user_path(args.input))]
         # A loose file has no project to derive a library from, and the cut and the
         # normalized copy land under <library>/tmp/narration-cuts — where a later
         # app render looks for them. Same door as --tts: the flag wins, else the
         # root main recorded, else the adapter refuses by name.
         if args.library:
-            cmd += ["--library", str(Path(args.library).expanduser().resolve())]
+            cmd += ["--library", str(_user_path(args.library))]
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — narration prep (cut + numbers), no model loaded")
@@ -961,13 +985,13 @@ def cmd_narration_text(args):
 
     cmd = ["node", "--require", str(NODE_STUB), str(NARRATION_TEXT)]
     if args.project:
-        project_dir = str(Path(args.project).resolve())
+        project_dir = str(_user_path(args.project))
         _require((Path(project_dir) / "manifest.json").is_file(),
                  f"not a BookForge project (no manifest.json): {project_dir}")
         cmd += ["--project", project_dir]
     else:
         # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
-        cmd += ["--input", str(Path(args.input).resolve())]
+        cmd += ["--input", str(_user_path(args.input))]
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — narration text cleanup, no model loaded")
@@ -999,9 +1023,9 @@ def cmd_clean_lines(args):
              "BookForge is not built - run `npx tsc -p tsconfig.electron.json` first "
              "(dist/electron/narration-clean-text.js missing)")
     cmd = ["node", "--require", str(NODE_STUB), str(CLEAN_LINES),
-           "--input", str(Path(args.input).resolve()), "--language", args.language]
+           "--input", str(_user_path(args.input)), "--language", args.language]
     if args.output:
-        cmd += ["--output", str(Path(args.output).resolve())]
+        cmd += ["--output", str(_user_path(args.output))]
     if args.keep_model:
         cmd += ["--keep-model"]
 
@@ -1039,9 +1063,9 @@ def cmd_clean(args):
              "(dist/electron/manifest-service.js missing)")
     cmd = ["node", "--require", str(NODE_STUB), str(CLEAN_STEP)]
     if args.project:
-        cmd += ["--project", str(Path(args.project).resolve())]
+        cmd += ["--project", str(_user_path(args.project))]
     if args.foundry_project:
-        cmd += ["--foundry-project", str(Path(args.foundry_project).resolve())]
+        cmd += ["--foundry-project", str(_user_path(args.foundry_project))]
     if args.model:
         cmd += ["--model", args.model]
     if args.ollama:
@@ -1051,7 +1075,7 @@ def cmd_clean(args):
     if args.keep_model:
         cmd += ["--keep-model"]
     if args.foundry_dist:
-        cmd += ["--foundry-dist", str(Path(args.foundry_dist).resolve())]
+        cmd += ["--foundry-dist", str(_user_path(args.foundry_dist))]
     if args.dry_run:
         cmd += ["--dry-run"]
         print("[bookforge-tts] DRY RUN - clean text, no model loaded")
@@ -1088,19 +1112,19 @@ def _run_ai(args, simplify):
              "--test-chunks requires --test-mode")
 
     # Resolve relative paths against the USER'S cwd (node runs with cwd=REPO_ROOT).
-    input_path = str(Path(args.input).resolve())
+    input_path = str(_user_path(args.input))
     cmd = ["node", "--require", str(NODE_STUB), str(AI_CLEAN),
            "--input", input_path, "--provider", args.provider]
     if args.model:
         cmd += ["--model", args.model]
     if args.output_dir:
-        cmd += ["--output-dir", str(Path(args.output_dir).resolve())]
+        cmd += ["--output-dir", str(_user_path(args.output_dir))]
     if args.custom_instructions:
         cmd += ["--custom-instructions", args.custom_instructions]
     if args.detailed_cleanup:
         cmd += ["--detailed-cleanup"]
     if args.cleanup_prompt:
-        cp = Path(args.cleanup_prompt).resolve()
+        cp = _user_path(args.cleanup_prompt)
         _require(cp.is_file(), f"--cleanup-prompt file not found: {args.cleanup_prompt}")
         cmd += ["--cleanup-prompt", str(cp)]
     # Which cleanup passes to run. Required for a plain cleanup — ai-clean.js refuses
@@ -1212,15 +1236,15 @@ def cmd_generate_sentences(args):
     _require(not (args.report_min_hole is not None and args.report_min_hole < 0),
              f"--report-min-hole must be >= 0 (got {args.report_min_hole})")
 
-    audio_path = str(Path(args.audio).resolve())
-    out_path = str(Path(args.out).resolve())
+    audio_path = str(_user_path(args.audio))
+    out_path = str(_user_path(args.out))
     cmd = ["node", "--require", str(NODE_STUB), str(GEN_SENTENCES),
            "--audio", audio_path, "--out", out_path]
     if args.epub:
-        cmd += ["--epub", str(Path(args.epub).resolve())]
+        cmd += ["--epub", str(_user_path(args.epub))]
     if args.report is not None:
         if args.report:
-            report_path = str(Path(args.report).resolve())
+            report_path = str(_user_path(args.report))
         else:  # bare --report: derive <out minus .vtt>.coverage.json next to the VTT
             base = out_path[:-4] if out_path.lower().endswith(".vtt") else out_path
             report_path = base + ".coverage.json"
@@ -1229,7 +1253,7 @@ def cmd_generate_sentences(args):
         cmd += ["--hole-min", str(args.min_hole)]
     if args.rough_cache is not None:
         if args.rough_cache:
-            rough_cache_path = str(Path(args.rough_cache).resolve())
+            rough_cache_path = str(_user_path(args.rough_cache))
         else:  # bare --rough-cache: derive <out minus .vtt>.roughcache.json next to the VTT
             base = out_path[:-4] if out_path.lower().endswith(".vtt") else out_path
             rough_cache_path = base + ".roughcache.json"
@@ -1261,7 +1285,7 @@ def cmd_generate_sentences(args):
 
     _require(Path(audio_path).is_file(), f"audio file not found: {args.audio}")
     if args.epub:
-        _require(Path(args.epub).resolve().is_file(), f"epub file not found: {args.epub}")
+        _require(_user_path(args.epub).is_file(), f"epub file not found: {args.epub}")
     _require(not (args.embed and not audio_path.lower().endswith(".m4b")),
              "--embed requires the audio to be an .m4b")
 
@@ -1298,7 +1322,7 @@ def cmd_generate_epub(args):
     _require(not (args.source_pdf and args.variant_id),
              "--source-pdf and --variant-id both name the PDF to read; pass one")
 
-    project_dir = str(Path(args.project).resolve())
+    project_dir = str(_user_path(args.project))
     cmd = ["node", "--require", str(NODE_STUB), str(GENERATE_EPUB), "--project", project_dir]
     if args.readings:
         cmd += ["--readings", args.readings]
@@ -1307,7 +1331,7 @@ def cmd_generate_epub(args):
     if args.variant_id:
         cmd += ["--variant-id", args.variant_id]
     if args.source_pdf:
-        cmd += ["--source-pdf", str(Path(args.source_pdf).resolve())]
+        cmd += ["--source-pdf", str(_user_path(args.source_pdf))]
     if args.skip_deleted_pages:
         cmd += ["--skip-deleted-pages"]
     if args.vlm_endpoint:
@@ -1343,8 +1367,8 @@ def cmd_rvc(args):
              "(dist/electron/rvc-bridge.js missing)")
 
     # node runs with cwd=REPO_ROOT, so resolve user paths against their cwd first.
-    input_path = str(Path(args.input).resolve())
-    out_path = str(Path(args.out).resolve())
+    input_path = str(_user_path(args.input))
+    out_path = str(_user_path(args.out))
     cmd = ["node", "--require", str(NODE_STUB), str(RVC_CONVERT),
            "--input", input_path, "--out", out_path, "--model", args.rvc_model,
            "--index-rate", str(args.index_rate), "--protect-rate", str(args.protect_rate),
@@ -1370,11 +1394,11 @@ def _session_target_argv(args, flag_owner):
     _require(not (args.project and args.process_dir),
              f"{flag_owner}: --project and --process-dir both name the session; pass one")
     if args.project:
-        project_dir = str(Path(args.project).resolve())
+        project_dir = str(_user_path(args.project))
         _require((Path(project_dir) / "manifest.json").is_file(),
                  f"not a BookForge project (no manifest.json): {project_dir}")
         return ["--project", project_dir]
-    return ["--process-dir", str(Path(args.process_dir).resolve())]
+    return ["--process-dir", str(_user_path(args.process_dir))]
 
 
 def cmd_denoise(args):
@@ -1400,7 +1424,7 @@ def cmd_denoise(args):
     cmd = ["node", "--require", str(NODE_STUB), str(FINAL_DENOISE)]
     cmd += _session_target_argv(args, "--denoise")
     if args.sentences_dir:
-        cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+        cmd += ["--sentences-dir", str(_user_path(args.sentences_dir))]
     if args.sentence_gap is not None:
         cmd += ["--sentence-gap", str(args.sentence_gap)]
 
@@ -1493,7 +1517,7 @@ def cmd_rvc_enhance(args):
     if args.enhance_f0_method:
         cmd += ["--f0-method", args.enhance_f0_method]
     if args.sentences_dir:
-        cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+        cmd += ["--sentences-dir", str(_user_path(args.sentences_dir))]
     if args.sentence_gap is not None:
         cmd += ["--sentence-gap", str(args.sentence_gap)]
 
@@ -1525,7 +1549,7 @@ def cmd_retake(args):
     _require((REPO_ROOT / "dist" / "electron" / "correct-sentences-bridge.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
              "(dist/electron/correct-sentences-bridge.js missing)")
-    project_dir = str(Path(args.project).resolve())
+    project_dir = str(_user_path(args.project))
     _require((Path(project_dir) / "manifest.json").is_file(),
              f"not a BookForge project (no manifest.json): {project_dir}")
 
@@ -1544,7 +1568,7 @@ def cmd_retake(args):
         cmd += ["--index", str(args.index)]
         if action == "commit":
             _require(bool(args.take), "--retake-action commit needs --take <path to the .flac>")
-            cmd += ["--take", str(Path(args.take).resolve())]
+            cmd += ["--take", str(_user_path(args.take))]
             if args.sentence_text:
                 cmd += ["--text", args.sentence_text]
     elif action == "list":
@@ -1588,7 +1612,7 @@ def cmd_pass(args):
         _require((REPO_ROOT / "dist" / "electron" / js).is_file(),
                  f"BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
                  f"(dist/electron/{js} missing)")
-    project_dir = str(Path(args.project).resolve())
+    project_dir = str(_user_path(args.project))
     _require((Path(project_dir) / "manifest.json").is_file(),
              f"not a BookForge project (no manifest.json): {project_dir}")
 
@@ -1623,7 +1647,7 @@ def cmd_pass(args):
         _require(bool(args.target_lang), "--kind translate needs --target-lang <code>")
         cmd += ["--source-lang", args.source_lang, "--target-lang", args.target_lang]
         if args.translation_prompt:
-            tp = Path(args.translation_prompt).resolve()
+            tp = _user_path(args.translation_prompt)
             _require(tp.is_file(), f"--translation-prompt file not found: {args.translation_prompt}")
             cmd += ["--translation-prompt", str(tp)]
 

@@ -46,6 +46,22 @@ removed (found while deriving the map, 2026-09-12):
 | `--family` on `--narration-text` | its help says `--pass/--narration-text`, but only `cmd_pass` reads it; a project with two chains cannot be steered from this door. |
 | the `ORPHEUS_*` env seams on `--assemble` | `--tier`, `--sentence-gap`, `--max-chars`, `--temperature`, `--top-p`, `--min-p`, `--rep-penalty`, `--models-dir`, `--orpheus-install`, `--conda-env` and `--engine` all still reach the spawn env of a run that **renders nothing**. `--assemble`'s render-choice refusals (`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`) stop at those five. |
 
+**On Windows, a typed path reaches the adapter AS TYPED** (2026-09-12, the PC
+review of the two commits above). Every operator path (`--project`, `--library`,
+`--input`, `--out`, `--epub`, …) used to go through `Path.resolve()`, which on
+Windows rewrites a mapped network drive to its UNC target: the titan library
+`Z:\bookforge` reached the adapters as `\\TITAN\iO\bookforge` — a spelling the
+app never uses and one the bridge's WSL mapping (`/mnt/<letter>` only) cannot
+hand to the guest. That was the "CLI resolves a Z: project to UNC" defect of
+2026-09-11. The wrapper's `_user_path` now makes a typed path absolute without
+resolving it on Windows (and still resolves symlinks on the Mac, where
+`/var → /private/var` is what the adapters compare against);
+`tools/test-cli-flags.js` proves it with a `subst` drive. The same review found
+the wrapper's Windows rules already right for the PC: `--checkpoint-dir` must be
+a guest-native `/home/…` path (the served arm loads it inside WSL), and
+`--batch-width`/`--mem-budget-gb` are refused by name (a served render's width
+is the server's).
+
 ## Build first
 
 The batch path uses a function compiled into `parallel-tts-bridge.js`. After any pull or
