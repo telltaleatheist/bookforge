@@ -128,6 +128,7 @@
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
     "@cantoo/pdf-lib": "^2.8.1",
+    "@crucible/client": "https://github.com/telltaleatheist/crucible/releases/download/v0.1.0/crucible-client-0.1.0.tgz",
     "@mozilla/readability": "^0.6.0",
     "@types/cheerio": "^0.22.35",
     "@types/express": "^5.0.6",
