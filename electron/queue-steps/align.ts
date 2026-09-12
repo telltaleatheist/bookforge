@@ -75,7 +75,7 @@ import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow } from './runtime';
 
 interface AlignProgressEvent {
   jobId: string;
@@ -86,6 +86,14 @@ interface AlignProgressEvent {
 }
 
 interface AlignStepConfig {
+  /**
+   * THE PROJECT THIS ROW IS ABOUT — `bfpPath` for a BOOK, `projectDir` for an
+   * ARTICLE, exactly one of them set. The pair and the reason are declared once
+   * in `shared/queue/narration-run.ts` (§ NarrationStepPlan), and every row of a
+   * narration plan carries one; read through `projectDirForStep`, never here.
+   */
+  bfpPath?: string;
+  projectDir?: string;
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;
@@ -147,8 +155,10 @@ export const alignStep: StepModule = {
 
     if (!sessionId || !sessionDir || !processDir) {
       // A row queued against a project rather than behind a render — the
-      // cache-only shape, same as the denoise and the assembly.
-      const projectDir = ctx.job.projectId;
+      // cache-only shape, same as the denoise and the assembly, and WHICH
+      // project is their shared rule (`projectDirForStep`, after the
+      // 2026-09-12 Starcraft incident).
+      const projectDir = projectDirForStep(ctx, config);
       if (!projectDir) {
         throw new Error(
           'This alignment row names no narration session and no project, so there is nothing '

@@ -214,7 +214,17 @@ export interface ArtifactRef {
   kind: ArtifactKind;
   /** The file or directory, absolute, when the artifact IS one. */
   path?: string;
-  /** e2a session identity. Present exactly on kind 'audio-session'. */
+  /**
+   * e2a session identity. Present exactly on kind 'audio-session'.
+   *
+   * `sessionDir` is the `ebook-<uuid>` folder and `processDir` the directory
+   * inside it holding `chapters/` and `session-state.json` — the two arguments
+   * every assembly, denoise, conversion and align bridge takes. A producer
+   * states the DURABLE pair (the project cache), never e2a's scratch, which the
+   * startup sweep clears: `tts-conversion` named the scratch session and no
+   * processDir at all until 2026-09-12, and the assembly chained behind it could
+   * not read its own input.
+   */
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;

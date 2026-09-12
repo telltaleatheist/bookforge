@@ -1256,6 +1256,105 @@ test('the pump claims in jobs[] ORDER, so a reordered run really does go first',
   assert.strictEqual(gpu.runs[1].ctx.job.title, 'A', 'and the rest follow in array order');
 });
 
+// ── The project a Foundry-ordered run does not have until a step says so ────
+
+test('a run with NO project learns it from the step that mints one', async () => {
+  /*
+   * Owen, 2026-09-12 16:31: Foundry "Clean text" on Starcraft 1 → Narrate from
+   * the pending export. A Foundry-ORDERED run is enqueued with a `documentPath`
+   * and NO `projectId` (electron/foundry-host-queue.ts) — at the press there is
+   * no BookForge project in the conversation, only a Foundry step. The project
+   * appears one step later, when `foundry-export-landing` answers "which file, in
+   * which book" and states it as `detail.projectDir`.
+   *
+   * It has to land on the JOB, because the two consumers that need it cannot
+   * reach a step's artifact: `StepFinished.projectId` is filled from the job, and
+   * the renderer's `handleStepFinished` returns early without one — so the
+   * finished M4B would be linked to no project and Studio would never reload,
+   * even with the assembly itself fixed.
+   */
+  const PROJECT = '/lib/projects/Starcraft_1._Liberty_s_Crusade_-_Jeff_Grubb_(2001)';
+  const landing = fakeModule('foundry-export-landing', { produces: 'epub', resource: () => 'wait' });
+  const tts = fakeModule('tts-conversion', { consumes: 'epub', produces: 'audio-session' });
+  const assembly = fakeModule('reassembly', { produces: 'm4b', resource: () => 'cpu' });
+  await fresh('foundry-learns-project', [landing, tts, assembly]);
+
+  const events = [];
+  const off = engine.onStepFinished((event) => events.push(event));
+  const job = engine.enqueue({
+    title: 'Clean text — Starcraft 1',
+    documentPath: '/foundry/generated/starcraft.epub',
+    steps: [
+      { type: 'foundry-export-landing', label: 'Book for narration', config: {}, sourceRef: { kind: 'none' } },
+      { type: 'tts-conversion', label: 'TTS', config: { bfpPath: PROJECT }, parentIndex: 0 },
+      { type: 'reassembly', label: 'Assembly', config: { bfpPath: PROJECT }, parentIndex: 1 },
+    ],
+  });
+  const header = () => engine.snapshot().jobs.find((j) => j.id === job.id);
+  assert.strictEqual(header().projectId, undefined, 'a Foundry-ordered run starts with none');
+
+  engine.start();
+  await settle();
+  landing.runs[0].resolve({
+    kind: 'epub', path: '/tmp/implied/starcraft.epub', detail: { projectDir: PROJECT },
+  });
+  await settle();
+
+  assert.strictEqual(header().projectId, PROJECT, 'the run learns it from the landing');
+  assert.strictEqual(events[0].type, 'foundry-export-landing');
+  assert.strictEqual(events[0].projectId, PROJECT,
+    'and the event for the step that STATED it names it too, in the same breath');
+
+  tts.runs[0].resolve({
+    kind: 'audio-session', path: `${PROJECT}/stages/03-tts/sessions/en/x/chapters/sentences`,
+    sessionId: 'c0030f67', sessionDir: `${PROJECT}/stages/03-tts/sessions/en/x`,
+    processDir: `${PROJECT}/stages/03-tts/sessions/en/x/hash`,
+    detail: { projectDir: PROJECT, language: 'en', skipAssembly: true },
+  });
+  await settle();
+  assembly.runs[0].resolve({ kind: 'm4b', path: `${PROJECT}/output/starcraft.m4b` });
+  await settle();
+
+  assert.deepStrictEqual(events.map((e) => e.projectId), [PROJECT, PROJECT, PROJECT],
+    'every step of the run names the project, which is what links the finished M4B');
+  const m4b = events[events.length - 1];
+  assert.strictEqual(m4b.type, 'reassembly');
+  assert.ok(m4b.outputPath.endsWith('.m4b'), 'and the M4B the renderer files is on the event');
+  off();
+});
+
+test("a step's OWN project fills the event when the run never had one", async () => {
+  /*
+   * The same rule the steps resolve their project by (`projectDirForStep`), so
+   * the event and the work cannot disagree: a row carrying `bfpPath` under a run
+   * with no project — and no artifact detail, because this step failed — still
+   * tells the renderer which project the news is about.
+   */
+  const PROJECT = '/lib/projects/Article_Only';
+  const tts = fakeModule('tts-conversion', { produces: 'audio-session' });
+  await fresh('row-project-on-event', [tts]);
+  const events = [];
+  const off = engine.onStepFinished((event) => events.push(event));
+  engine.enqueue({
+    title: 'Narrate',
+    steps: [{
+      type: 'tts-conversion', label: 'TTS',
+      // The ARTICLE spelling of the pair — see shared/queue/narration-run.ts.
+      config: { projectDir: PROJECT },
+      sourceRef: { kind: 'epub', path: '/a.epub' },
+    }],
+  });
+  engine.start();
+  await settle();
+  tts.runs[0].settled = true;
+  tts.runs[0].reject(new Error('Narration failed and gave no reason.'));
+  await settle();
+  assert.strictEqual(events.length, 1);
+  assert.strictEqual(events[0].success, false);
+  assert.strictEqual(events[0].projectId, PROJECT);
+  off();
+});
+
 // ── Everything else the engine refuses ──────────────────────────────────────
 
 test('a run with no steps, and a step of an unknown type, are both refused by name', async () => {

@@ -19,6 +19,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { flacDurationSeconds } from './flac-duration';
+import { findCachedSessionLayout } from './session-cache-layout';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
@@ -984,7 +985,24 @@ export async function cacheSessionToProject(
   sessionDir: string,
   projectDir: string,
   language: string
-): Promise<{ success: boolean; cachedSentencesDir?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  cachedSentencesDir?: string;
+  /**
+   * THE DURABLE SESSION, which is the whole point of this function and was not
+   * in its answer until 2026-09-12. `cachedSentencesDir` alone let
+   * `tts-conversion` hand the next step a path to the rendered chunks while
+   * still naming e2a's SCRATCH dir as the session — the dir the startup sweep
+   * clears — so the assembly chained behind it had nothing durable to read and
+   * fell back to asking the project (see `projectDirForStep`). Both are stated
+   * rather than derived from the sentences path: `cachedProcessDir` is where
+   * `session-state.json` actually ended up, and `cachedSessionDir` is the
+   * `ebook-` folder itself.
+   */
+  cachedSessionDir?: string;
+  cachedProcessDir?: string;
+  error?: string;
+}> {
   console.log(`[PARALLEL-TTS] Caching LL session to project`);
   console.log(`[PARALLEL-TTS]   sessionDir: ${sessionDir}`);
   console.log(`[PARALLEL-TTS]   projectDir: ${projectDir}`);
@@ -1003,29 +1021,19 @@ export async function cacheSessionToProject(
     // This prevents a second call from deleting the just-cached session and failing mid-copy.
     try {
       await fs.access(destDir);
-      // destDir exists — check if it contains a valid session (chapters/sentences/ somewhere)
-      let existingSentencesDir: string | null = null;
-      const directSentences = path.join(destDir, 'chapters', 'sentences');
-      try {
-        await fs.access(directSentences);
-        existingSentencesDir = directSentences;
-      } catch {
-        // Check hash subdir: ebook-{uuid}/{hash}/chapters/sentences/
-        const entries = await fs.readdir(destDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory() && !entry.name.startsWith('.')) {
-            const hashSentences = path.join(destDir, entry.name, 'chapters', 'sentences');
-            try {
-              await fs.access(hashSentences);
-              existingSentencesDir = hashSentences;
-              break;
-            } catch { /* not this subdir */ }
-          }
-        }
-      }
-      if (existingSentencesDir) {
+      // destDir exists — is there a valid session in it (chapters/sentences,
+      // flat or one hash level down)? ONE probe answers all three names now
+      // (electron/session-cache-layout.ts), so the early return says as much
+      // about the session as the full publish below does.
+      const existing = await findCachedSessionLayout(destDir);
+      if (existing) {
         console.log(`[PARALLEL-TTS] Session already cached at ${destDir}, skipping re-copy`);
-        return { success: true, cachedSentencesDir: existingSentencesDir };
+        return {
+          success: true,
+          cachedSentencesDir: existing.sentencesDir,
+          cachedSessionDir: existing.sessionDir,
+          cachedProcessDir: existing.processDir,
+        };
       }
     } catch { /* destDir doesn't exist — proceed with caching */ }
 
@@ -1053,8 +1061,11 @@ export async function cacheSessionToProject(
     }
 
     // Rewrite session-state.json paths to point at where the copy will live —
-    // on the TEMP copy, before anything existing is removed.
-    await rewriteSessionStatePaths(tempDestDir, destDir);
+    // on the TEMP copy, before anything existing is removed. What it hands back
+    // is the PROCESS DIR the published session will have: the directory it found
+    // `session-state.json` in, mapped onto `destDir`. That is the authority for
+    // the name, so nothing below reconstructs it from the sentences path.
+    const cachedProcessDir = await rewriteSessionStatePaths(tempDestDir, destDir);
 
     // THE DESTRUCTIVE HALF, AND IT COMES LAST. Removing the previous cache for
     // this language before the replacement existed is how a complete 771-chunk
@@ -1084,36 +1095,23 @@ export async function cacheSessionToProject(
     // Rename temp dir to final name
     await fs.rename(tempDestDir, destDir);
 
-    // Find the sentences directory within the cached session.
-    // e2a structure: ebook-{uuid}/{hash}/chapters/sentences/
-    let cachedSentencesDir = destDir;
-
-    // Check direct path first: ebook-{uuid}/chapters/sentences/
-    const directSentences = path.join(destDir, 'chapters', 'sentences');
-    try {
-      await fs.access(directSentences);
-      cachedSentencesDir = directSentences;
-    } catch {
-      // Check for hash subdirectory: ebook-{uuid}/{hash}/chapters/sentences/
-      try {
-        const entries = await fs.readdir(destDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory() && !entry.name.startsWith('.')) {
-            const hashSentences = path.join(destDir, entry.name, 'chapters', 'sentences');
-            try {
-              await fs.access(hashSentences);
-              cachedSentencesDir = hashSentences;
-              break;
-            } catch { /* not this subdir */ }
-          }
-        }
-      } catch { /* readdir failed */ }
-    }
+    // Where the render landed inside the published session — the same probe the
+    // idempotency check above uses, so the two branches cannot answer
+    // differently. `destDir` stays the answer of last resort it has always been:
+    // a session with no `chapters/sentences` is a session the caller cannot
+    // assemble, and that is its news to report, not this function's.
+    const layout = await findCachedSessionLayout(destDir);
+    const cachedSentencesDir = layout?.sentencesDir ?? destDir;
 
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
 
-    return { success: true, cachedSentencesDir };
+    return {
+      success: true,
+      cachedSentencesDir,
+      cachedSessionDir: destDir,
+      cachedProcessDir,
+    };
   } catch (err) {
     const error = `Failed to cache LL session to project: ${err}`;
     console.error(`[PARALLEL-TTS] ${error}`);
@@ -1175,8 +1173,14 @@ async function removeScratchSession(sessionDir: string): Promise<void> {
  *
  * Raises when there is no state file — the caller has already refused a session without
  * one (`assertPublishableSession`), so reaching here without it means the copy lost it.
+ *
+ * @returns the PROCESS DIR the session will have once published — the directory
+ *   holding `session-state.json`, mapped onto `finalDir`. It is written into the
+ *   state file below either way; returning it saves the caller reconstructing the
+ *   same path from the sentences directory, which is the kind of string surgery
+ *   that goes wrong the day a session gains a level.
  */
-async function rewriteSessionStatePaths(sessionDir: string, finalDir: string = sessionDir): Promise<void> {
+async function rewriteSessionStatePaths(sessionDir: string, finalDir: string = sessionDir): Promise<string> {
   const stateDir = await findStateDir(sessionDir);
   if (!stateDir) {
     throw new Error(
@@ -1199,6 +1203,7 @@ async function rewriteSessionStatePaths(sessionDir: string, finalDir: string = s
 
   await fs.writeFile(statePath, JSON.stringify(state, null, 2));
   console.log(`[PARALLEL-TTS] Rewrote session-state.json paths → ${finalProcessDir}`);
+  return finalProcessDir;
 }
 
 /**

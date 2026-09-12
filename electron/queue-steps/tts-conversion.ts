@@ -44,7 +44,7 @@ import {
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow } from './runtime';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
 interface TtsProgressEvent {
@@ -159,8 +159,16 @@ interface TtsConfig {
     title?: string; bookTitle?: string; author?: string; year?: string;
     coverPath?: string; outputFilename?: string;
   };
-  /** Absolute project directory. Named bfpPath for the key it has always had. */
+  /**
+   * Absolute project directory. Named bfpPath for the key it has always had;
+   * `projectDir` is the ARTICLE spelling of the same fact, and exactly one of
+   * the two is set (shared/queue/narration-run.ts § NarrationStepPlan). Read
+   * through `projectDirForStep`, which also reads what the artifact in front of
+   * this step said, so a narration chained under a Foundry export knows its
+   * project even though the RUN has no `projectId`.
+   */
   bfpPath?: string;
+  projectDir?: string;
   isArticle?: boolean;
 }
 
@@ -205,7 +213,7 @@ export const ttsConversionStep: StepModule = {
       workerCount = detectRecommendedWorkerCount().count;
     }
 
-    const projectDir = config.bfpPath ?? ctx.job.projectId ?? '';
+    const projectDir = projectDirForStep(ctx, config) ?? '';
     const conversionConfig: Record<string, unknown> = {
       workerCount,
       epubPath,
@@ -372,17 +380,39 @@ export const ttsConversionStep: StepModule = {
         throw new Error(result.error || 'Narration failed and gave no reason.');
       }
 
-      // The session is promoted to the project cache so a later step reads a
-      // durable path rather than e2a's scratch, which the startup sweep clears.
-      // Idempotent: the bridge does this too on its own success path.
-      const sessionDir = result.sessionDir;
+      /*
+       * THE SESSION IS PROMOTED TO THE PROJECT CACHE — and the artifact NAMES
+       * THE CACHED ONE. Idempotent: the bridge does this too on its own success
+       * path.
+       *
+       * It reported the cached SENTENCES and e2a's SCRATCH session until
+       * 2026-09-12, with no `processDir` at all — so the assembly chained behind
+       * it read `sessionId`/`sessionDir`/`processDir` off its input, found the
+       * third missing, and went looking for a project to ask instead. On a
+       * Foundry-ordered run there is none (see `projectDirForStep`) and Owen's
+       * Starcraft narration failed at the assembly with an hour of good audio on
+       * disk. A chained assembly now reads the whole session straight off its
+       * input; the project route stays for rows queued AGAINST a project —
+       * Studio → Versions → Assemble — which have no step in front of them.
+       *
+       * The three names come from the cache itself rather than from surgery on
+       * the sentences path (`cacheSessionToProject`, session-cache-layout.ts).
+       */
+      let sessionDir = result.sessionDir;
+      let processDir: string | undefined;
       let sentencesDir = result.outputPath;
       if (sessionDir && projectDir) {
         try {
           const cached = await cacheSessionToProject(
             sessionDir, projectDir, config.language || 'en',
           );
-          if (cached.success && cached.cachedSentencesDir) sentencesDir = cached.cachedSentencesDir;
+          if (cached.success && cached.cachedSentencesDir) {
+            sentencesDir = cached.cachedSentencesDir;
+            // Only what the cache STATED. A publish that answered the sentences
+            // and nothing else is an older answer, not a licence to guess.
+            if (cached.cachedSessionDir) sessionDir = cached.cachedSessionDir;
+            processDir = cached.cachedProcessDir;
+          }
         } catch (err) {
           console.error('[QUEUE-STEP tts] could not cache the session to the project:', err);
         }
@@ -395,6 +425,9 @@ export const ttsConversionStep: StepModule = {
         path: sentencesDir,
         sessionId: result.sessionId,
         sessionDir,
+        // Spread, not sent as undefined: absent means "this run did not cache a
+        // session", which a reading step answers by asking the project.
+        ...(processDir === undefined ? {} : { processDir }),
         detail: {
           projectDir,
           language: config.language,

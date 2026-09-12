@@ -126,6 +126,11 @@ const SUITES = [
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
   'test-queue-engine',
+  // Which project a session-consuming row is about, and the session a narration
+  // hands the row behind it. Both halves of the 2026-09-12 Starcraft failure: a
+  // Foundry-ordered run has no `projectId`, and the assembly chained under one
+  // refused a project it was carrying in its own config.
+  'test-chained-assembly-project',
   'test-queue-bench',
   // The only thing that knows what is happening inside an MLX decode. Its
   // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a

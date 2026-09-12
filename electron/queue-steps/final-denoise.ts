@@ -29,7 +29,7 @@ import { runFinalDenoise, stopFinalDenoise } from '../denoise-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow } from './runtime';
 
 interface DenoiseProgressEvent {
   jobId: string;
@@ -40,6 +40,14 @@ interface DenoiseProgressEvent {
 }
 
 interface FinalDenoiseStepConfig {
+  /**
+   * THE PROJECT THIS ROW IS ABOUT — `bfpPath` for a BOOK, `projectDir` for an
+   * ARTICLE, exactly one of them set. The pair and the reason are declared once
+   * in `shared/queue/narration-run.ts` (§ NarrationStepPlan), and every row of a
+   * narration plan carries one; read through `projectDirForStep`, never here.
+   */
+  bfpPath?: string;
+  projectDir?: string;
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;
@@ -89,8 +97,10 @@ export const finalDenoiseStep: StepModule = {
 
     if (!sessionId || !sessionDir || !processDir) {
       // A row queued before its narration existed and pointed at a project
-      // rather than a step. The project's cached session is the answer.
-      const projectDir = ctx.job.projectId;
+      // rather than a step. The project's cached session is the answer — and
+      // WHICH project is one rule for all five session-consuming steps
+      // (`projectDirForStep`, after the 2026-09-12 Starcraft incident).
+      const projectDir = projectDirForStep(ctx, config);
       if (!projectDir) {
         throw new Error(
           'This denoise row names no narration session and no project, so there is nothing '

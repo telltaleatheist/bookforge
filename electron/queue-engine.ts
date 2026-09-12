@@ -84,6 +84,14 @@ import {
   type ActiveBatchProgress,
   type PrepSubProgress,
 } from '../shared/queue/engine-types';
+/*
+ * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
+ * modules rather than restated here. It is a pure function over a config and an
+ * artifact (no Electron, no window), which is why the engine can import it from
+ * `queue-steps/runtime` without the cycle that module's other exports would
+ * imply — everything it imports is `import type`.
+ */
+import { projectDirForStep } from './queue-steps/runtime';
 
 // ────────────────────────────────────────────────────────────────────────────
 // The step-module contract
@@ -1559,6 +1567,35 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     step.progress = { ...step.progress, percent: 100 };
     step.error = undefined;
     step.wasInterrupted = false;
+    /*
+     * THE RUN LEARNS ITS PROJECT FROM THE STEP THAT MINTS IT.
+     *
+     * A Foundry-ORDERED run is enqueued with a `documentPath` and NO `projectId`
+     * (electron/foundry-host-queue.ts, `enqueue`) — at the press there is no
+     * BookForge project in the conversation, only a Foundry step. The project
+     * appears one step later: `foundry-export-landing` answers "which file, in
+     * which book" and states it as `detail.projectDir`, and `tts-conversion`
+     * repeats it.
+     *
+     * It has to be recorded on the JOB because two consumers gate on the job's
+     * projectId and neither can reach a step's artifact: `StepFinished.projectId`
+     * is filled from `job.projectId` below, and the renderer's
+     * `handleStepFinished` (src/app/features/queue/services/queue.service.ts)
+     * returns early without one — so on 2026-09-12 Owen's Starcraft narration
+     * would have finished with the m4b linked to no project and Studio never
+     * reloaded, even once the assembly itself was fixed.
+     *
+     * ONLY WHEN THE RUN HAS NONE. A run that named its project at compose time
+     * said so about the whole run; a step is in no position to correct it.
+     */
+    if (!job.projectId) {
+      const said = outcome.output.detail?.['projectDir'];
+      if (typeof said === 'string' && said !== '') {
+        job.projectId = said;
+        console.log(
+          `[QUEUE] ${job.id} had no project; ${step.type} (${step.id}) says it is ${said}.`);
+      }
+    }
   } else if (stopped && moduleFor(step.type).stopIsResumable === true) {
     // Resumable: present, not auto-picked, needs an explicit gesture. This is what
     // makes a stopped narration resumable — nothing revives `cancelled`.
@@ -1589,7 +1626,14 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     stepId: step.id,
     type: step.type,
     label: step.label,
-    projectId: job.projectId,
+    /*
+     * THE RUN'S PROJECT, OR THIS ROW'S OWN. The branch above records the run's
+     * the moment a step states one, so this fallback is for the step that STATED
+     * it — a landing row whose event is announced in the same breath — and for a
+     * row carrying `bfpPath` under a run that never had a project at all. Same
+     * rule as the steps read it by, so the event and the work cannot disagree.
+     */
+    projectId: job.projectId ?? projectDirForStep({ input: step.output, job }, step.config),
     success: step.status === 'done',
     status: step.status,
     outputPath: step.output?.path,

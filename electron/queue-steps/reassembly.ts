@@ -21,7 +21,7 @@ import { coverageReportPath, summarizeCoverageReport } from '../coverage-align-j
 import { getBfpCachedSession, startReassembly, stopReassembly } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow } from './runtime';
 
 interface ReassemblyProgressEvent {
   jobId: string;
@@ -33,6 +33,14 @@ interface ReassemblyProgressEvent {
 }
 
 interface ReassemblyStepConfig {
+  /**
+   * THE PROJECT THIS ROW IS ABOUT — `bfpPath` for a BOOK, `projectDir` for an
+   * ARTICLE, exactly one of them set. The pair and the reason are declared once
+   * in `shared/queue/narration-run.ts` (§ NarrationStepPlan), and every row of a
+   * narration plan carries one; read through `projectDirForStep`, never here.
+   */
+  bfpPath?: string;
+  projectDir?: string;
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;
@@ -109,7 +117,11 @@ export const reassemblyStep: StepModule = {
     let totalChapters = config.totalChapters;
 
     if (!sessionId || !sessionDir || !processDir) {
-      const projectDir = ctx.job.projectId;
+      // THE ROW'S OWN PROJECT FIRST, the run's last — see `projectDirForStep`
+      // and the 2026-09-12 Starcraft incident it is named for. A Foundry-ordered
+      // run has no `job.projectId`, and this row's config has carried `bfpPath`
+      // all along.
+      const projectDir = projectDirForStep(ctx, config);
       if (!projectDir) {
         throw new Error(
           'This assembly row names no narration session and no project, so there is nothing '
