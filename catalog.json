@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-11T08:56:26Z",
+  "generatedAt": "2026-09-12T08:39:43Z",
   "generator": "bookforge-catalog-indexer/1.0",
   "sources": {
     "voices": "huggingface:drewThomasson/fineTunedTTSModels/xtts-v2",
     "languages": "stanza-resources:resources_1.10.0.json"
   },
   "counts": {
-    "voices": 40,
+    "voices": 41,
     "languages": 90
   },
   "voices": [
@@ -610,6 +610,21 @@
       ],
       "ref": "ref.wav",
       "sizeBytes": 5608706806
+    },
+    {
+      "id": "TaiwanMandarin",
+      "name": "Taiwan Mandarin",
+      "lang": "zho",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/zho/TaiwanMandarin/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ref.wav",
+      "sizeBytes": 1868484151
     }
   ],
   "languages": [
