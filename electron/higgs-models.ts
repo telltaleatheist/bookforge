@@ -2171,7 +2171,7 @@ export function higgsModelForRender(
         || (merged.temperature as number) > 2) {
       throw new Error(
         `Higgs render override for "${base.id}": temperature ${JSON.stringify(merged.temperature)} `
-        + 'is outside (0, 2]. The catalog renders at 0.7 for a measured reason (a 0.6 trial fired '
+        + 'is outside (0, 2]. The catalog renders at 0.8 for a measured reason (a 0.6 trial fired '
         + 'the length guard on 21 of 62 chunks, 2026-09-11); a value past 2 is not a hotter read, '
         + 'it is a book of babble that reports success.',
       );

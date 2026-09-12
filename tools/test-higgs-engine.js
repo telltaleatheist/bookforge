@@ -519,7 +519,14 @@ check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () =
 
 
 
-check('ONE engine-level sampling - 0.7 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
+check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
+  // 0.8 SINCE 2026-09-12, Owen's ruling after the pause-map work ("Let's set temp
+  // to 0.8 across the board for Higgs in Bookforge. Streaming and rendering
+  // both."): same-chunk A/Bs put 0.8 at 4/88 guard fires against 0.7's 2/88 and
+  // 0.6's 28/88, and the SHIPPED pause tail halved at 0.8 vs 0.7. The >5 s
+  // interior-silence gate (truncation.py, Sep 12) covers 0.8's rare runaway.
+  // The history below is kept as it was.
+  //
   // 0.7 AGAIN SINCE 2026-09-11 (late), MEASURED: the 0.6 trial fired the Mac
   // batched length guard on 21 of 62 Tender chunks against 4 at 0.7 on the same
   // rows and seeds (silence-token loops to the per-row cap - mlx-audio has no
@@ -550,7 +557,7 @@ check('ONE engine-level sampling - 0.7 / 0.95 / 50 - reaches EVERY Higgs voice o
   // catalog top with its reason; a per-block deviation must carry a reason too
   // or it is refused, so 14 copies of a number can never drift.
   const engine = higgs.higgsEngineSampling();
-  assert.deepStrictEqual(engine, { temperature: 0.7, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(engine, { temperature: 0.8, topP: 0.95, topK: 50 });
   assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
   // WHAT THIS HOLDS THE CATALOG TO, and what it deliberately no longer does.
   // Until 2026-09-10 it asserted the shipped catalog carries NO per-block
@@ -3072,7 +3079,7 @@ onArm('darwin', () => {
       darwin: 'runtime/higgs-models/ds_v7_930_prod',
     });
     assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(m).sampling,
-      { temperature: 0.7, topP: 0.95, topK: 20 });
+      { temperature: 0.8, topP: 0.95, topK: 20 });
   });
 });
 
