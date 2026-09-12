@@ -7,7 +7,17 @@
     "provider": "claude",
     "model": "claude-sonnet-4-5",
     "output-dir": "C:/tmp",
-    "tier": "fast"
+    "tier": "fast",
+
+    "_comment_model": "Picking a model (2026-09-12). checkpoint-dir is a Higgs checkpoint under test, rendered against --voice's certificate (caps, pace, band): a Mac path here, a guest-native /home/... path on the PC. safe-band is MIN-MAX characters; top-k, batch-width and mem-budget-gb are Higgs-only, and the last two are Mac-MLX-only. title names the one-chapter EPUB a .txt/.jsonl input is packed as.",
+    "checkpoint_dir": "/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616",
+    "top_k": 50,
+    "safe_band": "200-700",
+    "batch_width": 62,
+    "mem_budget_gb": 40,
+    "title": "Band sweep",
+    "_comment_library": "--tts only: the library whose tmp/ holds the sessions and the narration cuts. Omitted, the CLI uses the root this machine chose in BookForge (userData/library-root.json) and refuses if there is none.",
+    "library": "/Volumes/iO/bookforge"
   },
 
   "voices": {

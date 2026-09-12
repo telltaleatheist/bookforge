@@ -32,7 +32,40 @@
  * key alive.
  */
 'use strict';
+const fs = require('fs');
 const path = require('path');
+const { USER_DATA } = require('./electron-stub.js');
+
+/**
+ * The library root THIS MACHINE chose, read from the same file main writes it to.
+ *
+ * `electron/main.ts` persists it as `<userData>/library-root.json`
+ * (`persistLibraryRoot`, `{"libraryRoot": "..."}`) precisely so the MAIN process
+ * can answer the question before the renderer exists — which is the situation a
+ * headless run is permanently in. `loadPersistedLibraryRoot` reads it back and
+ * KEEPS a path that is not currently mounted, because the library lives on an
+ * external/network volume that arrives seconds after launch; discarding it there
+ * is what used to lose the saved library on every "drive not mounted yet" launch.
+ * This reader keeps that behaviour: an offline path is still the answer.
+ *
+ * WHAT IT DOES NOT DO IS `getLibraryRoot()`'s LAST LINE. That function ends in
+ * `~/Documents/BookForge`, and it can: the app has a Settings page where the
+ * consequence is visible and changeable. A headless render that silently took
+ * that default would put a session under a directory the app never looks in, and
+ * the operator would find out by the render not being where it was expected. So
+ * this answers `null` and the caller refuses by name.
+ *
+ * @returns {string|null} the recorded library root, or null if none was ever chosen
+ */
+function readPersistedLibraryRoot() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(USER_DATA, 'library-root.json'), 'utf8'));
+    if (parsed && typeof parsed.libraryRoot === 'string' && parsed.libraryRoot.trim()) {
+      return parsed.libraryRoot;
+    }
+  } catch { /* never chosen a library, or the file is unreadable */ }
+  return null;
+}
 
 /**
  * @param {string} libraryRoot  the library the project belongs to
@@ -54,4 +87,4 @@ function applyNarratorSessionsRoot(libraryRoot) {
   return dir;
 }
 
-module.exports = { applyNarratorSessionsRoot };
+module.exports = { applyNarratorSessionsRoot, readPersistedLibraryRoot };

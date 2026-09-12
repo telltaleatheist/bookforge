@@ -553,6 +553,14 @@ export interface HiggsBackendCaps {
    */
   maxCharsSource?: HiggsMaxCharsSource | null;
   /**
+   * WHY this `maxChars` is the number — prose, read by people. The catalog has
+   * carried it on 17 blocks since the first length sweep; it is declared here so
+   * a per-run override can state its reason in the same place the catalog does
+   * (`maxCharsSource` is a CLOSED SET narrator validates, so the reasoning
+   * cannot go there). No protocol reads it.
+   */
+  _maxCharsNote?: string;
+  /**
    * THE CHUNK SIZE THE CODE PACKS TO on this arm, in characters. Owen,
    * 2026-09-05: "maxChars is what the model was trained to do, and targetChars
    * can be what the system actually uses. maxChars is informative, targetChars
@@ -881,6 +889,18 @@ export interface HiggsModel {
   backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
+  /**
+   * PRESENT ⇒ THIS MODEL IS NOT THE CATALOG'S. It was derived for ONE RUN by
+   * `higgsModelForRender` from the catalog voice named in its `id`, and this is
+   * who asked and why. Never written to `higgs-models.json`: an override is one
+   * person at one machine, and the catalog is repo-tracked and shared by two.
+   *
+   * It is load-bearing in three places, not decoration: `refuseMisshapedCheckpointPath`
+   * lets an ABSOLUTE darwin checkpoint through only for a derived model, the
+   * voice document carries it so a post-mortem can tell an override render from
+   * a catalog one, and the prep spawn logs it.
+   */
+  _overrideNote?: string;
   note?: string;
   /** A model may declare its own serving block, used INSTEAD of the shared one. */
   serving?: HiggsServingSpec;
@@ -1557,6 +1577,16 @@ function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointAr
     return;
   }
   // darwin
+  //
+  // A PER-RUN OVERRIDE IS THE ONE ABSOLUTE darwin CHECKPOINT THAT IS LEGAL, and
+  // the reason is the mirror of the reason the catalog's is not. The catalog is
+  // REPO-TRACKED and read by two machines, so `/Users/telltale/…` in it names a
+  // directory that exists on exactly one of them. An override is typed by the
+  // person sitting at THIS machine, for THIS run, and is never written to the
+  // catalog — so an absolute path is the only spelling it can have (there is no
+  // reason a merged checkpoint under test would sit inside the app's userData).
+  // `higgsModelForRender` has already proved it is a directory that exists.
+  if (model._overrideNote && path.isAbsolute(value)) return;
   if (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) {
     throw new Error(
       `Higgs voice "${model.id}": the darwin checkpoint ${JSON.stringify(value)} is absolute. ` +
@@ -1625,6 +1655,12 @@ export function higgsCheckpointDirFor(
 ): string {
   const value = higgsCheckpointPathFor(model, arm);
   if (arm === 'wsl') return value;
+  // ALREADY ABSOLUTE ⇒ ALREADY THE ANSWER. Only a per-run override gets here
+  // with one (`refuseMisshapedCheckpointPath` refuses an absolute path in the
+  // catalog by name), and joining userData onto it would produce a path inside
+  // Application Support that has never held those weights. The userData refusal
+  // below still governs every RELATIVE value, which is every catalog voice.
+  if (path.isAbsolute(value)) return value;
   if (!userDataDir || !userDataDir.trim()) {
     throw new Error(
       `Higgs voice "${model.id}": the darwin checkpoint ${JSON.stringify(value)} is relative to ` +
@@ -1906,6 +1942,276 @@ export function higgsVoiceCapsForModel(
   return caps;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rendering something the catalog has not certified
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ONE RUN'S DEVIATION FROM THE CATALOG — a merged checkpoint under test, or a
+ * knob being swept, named by the person at the keyboard instead of by the repo.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-11: "i just tried to use the cli on a merged checkpoint as a
+ * test here on the mac and it wouldnt let me … we should be able to pick any
+ * model specifically, including a checkpoint we want to test." He was right and
+ * the refusal was `resolveHiggsModel`'s: every Higgs door resolves a voice out of
+ * `higgs-models.json`, so a directory that had not been promoted into the catalog
+ * yet could not be rendered AT ALL — which is the wrong trade for a freshly
+ * merged checkpoint, whose whole purpose is to be listened to before anybody
+ * writes a certificate for it.
+ *
+ * The CLI's value is that it drives THE APP'S path (see CLAUDE.md: "CLI drives
+ * the app path"), so the answer cannot be a second spawn route that skips the
+ * catalog — that route would stop catching the app's bugs on the day it was
+ * written. It is this: derive a model from a real catalog voice, and let every
+ * door downstream keep working exactly as it does for a book.
+ *
+ * ── Why it travels in the VOICE DOCUMENT and not as a flag ──────────────────
+ *
+ * `checkpointDir` in `NARRATOR_HIGGS_VOICES` is how narrator learns a directory
+ * on BOTH arms, and they use it differently: the Mac's MLX backend LOADS the
+ * model from it (`mlx_backend.HiggsV3MlxConfig.model_dir`) and the PC's served
+ * arm STARTS ITS SERVER on it (`v3_served.checkpoint_serve_target`,
+ * `sgl_served`). So an override that lands in the document needs no per-arm code
+ * here and no new narrator flag — the same mechanism a promoted voice uses.
+ *
+ * ── What an override does NOT buy, deliberately ─────────────────────────────
+ *
+ * It is DERIVED FROM A NAMED CATALOG VOICE and all of that voice's refusals
+ * still apply (unknown id, not installed, untranscribed clip, unmeasured arm).
+ * Its caps, pace and safe band travel unchanged unless overridden, which means a
+ * checkpoint under test renders against the PRODUCTION voice's certificate. That
+ * is the point rather than a shortcut: a render whose band moved with the weights
+ * is not comparable to the book the band was measured on. Sweep the band by
+ * saying so (`safeMinChars` / `safeMaxChars`), not by accident.
+ *
+ * A `clips` base is refused with a checkpoint, because narrator's shapes are not
+ * additive: "the checkpoint IS the voice" (`config.load_voices`), and a clips
+ * entry carrying `checkpointDir` would load the fine-tune AND condition it on a
+ * zero-shot reference — a mixed condition nothing has measured, and one that
+ * still renders and still reports success.
+ *
+ * ── `note` is required ─────────────────────────────────────────────────────
+ *
+ * It goes into the voice document (`_overrideNote`) and into the prep log, so a
+ * post-mortem can tell an override render from a catalog one. A measurement
+ * whose provenance is "someone passed a directory" is a measurement nobody can
+ * repeat, and this codebase has already paid for that once: the runtime Orpheus
+ * manifest's stale `maxCharsPerSec` looked authoritative and was not.
+ */
+export interface HiggsRenderOverride {
+  /**
+   * A MERGED CHECKPOINT DIRECTORY — the weights to render with.
+   *
+   * ABSOLUTE, and in the filesystem of the arm that will load it: a host path on
+   * the Mac (proved to exist here), a GUEST-NATIVE path on the WSL arm
+   * (`/home/…`, passed verbatim — the host cannot stat it, and a `C:` path would
+   * drag 8.5 GB of weights through the 9p mount).
+   */
+  checkpointDir?: string;
+  /**
+   * temperature / topP / topK, any subset. MERGED over the engine-level sampling
+   * rather than replacing it, because narrator takes a voice's `sampling` block
+   * whole (`config._voice_sampling`: "a deviating block restates every value it
+   * means to keep") and a partial block would silently drop the rest to the
+   * checkpoint's own generation_config.json — 1.0, which nobody chose.
+   */
+  sampling?: Partial<HiggsSampling>;
+  /** This arm's packing cap, in characters. */
+  maxChars?: number;
+  /** This arm's merge floor. */
+  safeMinChars?: number;
+  /** This arm's chunk cap. */
+  safeMaxChars?: number;
+  /** WHO ASKED AND WHY. Required — see the header. */
+  note: string;
+}
+
+/**
+ * THE MODEL THIS RUN RENDERS WITH: the catalog's, or the catalog's with one
+ * run's override derived onto it.
+ *
+ * With no override this IS `resolveHiggsModel(voiceId)` — same object, same
+ * refusals, zero behavioural change for every existing caller. That identity is
+ * the reason this is the function the render doors call rather than a branch at
+ * each of them.
+ *
+ * The derived model is a DEEP COPY, so nothing an override patches can reach the
+ * catalog object a later call reads (the catalog is re-read per call, but the
+ * object it hands back is shared within one).
+ */
+export function higgsModelForRender(
+  voiceId: string | undefined | null,
+  override?: HiggsRenderOverride,
+): HiggsModel {
+  const base = resolveHiggsModel(voiceId);
+  if (!override) return base;
+
+  const note = (override.note || '').trim();
+  if (!note) {
+    throw new Error(
+      'A Higgs render override carries no `note`. It is required: the note is what the voice '
+      + 'document and the log say about WHY this run did not use the catalog, and an override '
+      + 'render nobody can attribute is a measurement nobody can repeat. Say who asked and why.',
+    );
+  }
+
+  const arm = thisMachineArm();
+  const backend = BACKEND_FOR_ARM[arm];
+  const dir = (override.checkpointDir || '').trim();
+  const derived: HiggsModel = JSON.parse(JSON.stringify(base));
+  // The id NAMES BOTH HALVES, because it is what `--higgs_voice` carries, what
+  // keys the voice document, and what the session and the analytics record. A
+  // bare "override" in a log six weeks later answers nothing.
+  const slug = dir ? path.basename(dir.replace(/[\\/]+$/, '')) : 'override';
+  derived.id = `${base.id}+${slug}`;
+  derived._overrideNote = note;
+
+  if (dir) {
+    if (base.kind === 'clips') {
+      throw new Error(
+        `Higgs render override: voice "${base.id}" is kind 'clips' (zero-shot cloning) and a `
+        + 'checkpoint cannot be derived onto it. THE CHECKPOINT IS THE VOICE — narrator says exactly '
+        + 'that in engine/higgs/config.py ("the checkpoint IS the voice - there is nothing to serve '
+        + 'without it") — so an entry carrying both would load the fine-tune AND '
+        + 'condition it on a reference clip, which is a mixed prompt nothing has measured and which '
+        + `renders anyway. Derive the override from a 'checkpoint' or 'default' voice instead `
+        + `(e.g. the voice whose certificate the test should be judged against).`,
+      );
+    }
+    if (arm === 'darwin') {
+      if (!path.isAbsolute(dir)) {
+        throw new Error(
+          `Higgs render override: the checkpoint ${JSON.stringify(dir)} is not absolute. On the `
+          + "Mac an override names a directory on THIS machine's disk, so it is an absolute host "
+          + 'path — the userData-relative spelling belongs to the catalog, which is repo-tracked '
+          + 'and has to work on two machines.',
+        );
+      }
+      let isDir = false;
+      try { isDir = fs.statSync(dir).isDirectory(); } catch { isDir = false; }
+      if (!isDir) {
+        throw new Error(
+          `Higgs render override: the checkpoint ${JSON.stringify(dir)} is not a directory on this `
+          + 'Mac. Refusing to render — narrator would load nothing from it, and the MLX backend '
+          + "would fall back to the base weights, which is a DIFFERENT SPEAKER (12 % of the "
+          + "narrator's ECAPA ceiling) rendered as a success.",
+        );
+      }
+    } else {
+      // wsl: a GUEST path, and the host cannot check it.
+      if (!dir.startsWith('/')) {
+        throw new Error(
+          `Higgs render override: the checkpoint ${JSON.stringify(dir)} is not a guest-resident `
+          + 'path. On this arm the weights are loaded INSIDE the WSL guest, so the override is the '
+          + "guest's own absolute path (\"/home/<user>/…\") and is passed verbatim — Windows "
+          + 'cannot stat it to check, which is exactly why the spelling is refused here rather '
+          + 'than guessed at. A C: drive path is not an alternative spelling: it is a different '
+          + 'directory, read over the 9p mount, which is ruinous for 8.5 GB of weights.',
+        );
+      }
+    }
+    derived.kind = 'checkpoint';
+    // ONLY THIS ARM. The other arm is not claimed: the override names a directory
+    // on the machine the person is sitting at, and writing it under both arms
+    // would assert a copy exists on a disk nobody has looked at.
+    const checkpoint: HiggsCheckpointLocations = {};
+    checkpoint[arm] = dir;
+    derived.voice = { ...derived.voice, checkpoint };
+  }
+
+  const patchedBackends = derived.backends ?? (derived.backends = {});
+  const block: HiggsBackendCaps = { ...(patchedBackends[backend] ?? {}) };
+
+  if (override.maxChars !== undefined) {
+    block.maxChars = requirePositiveInt('maxChars', override.maxChars, base.id);
+    // 'catalog' IS THE HONEST SOURCE for a number a person chose: narrator's set
+    // is closed (catalog | placeholder | length-sweep) and it refuses anything
+    // else, so claiming 'length-sweep' for a hand-picked cap would be a lie the
+    // protocol accepts. The reasoning goes in the note, which no protocol reads.
+    block.maxCharsSource = 'catalog';
+    block._maxCharsNote = `per-run override — ${note}`;
+  }
+  if (override.safeMinChars !== undefined) {
+    block.safeMinChars = requirePositiveInt('safeMinChars', override.safeMinChars, base.id);
+  }
+  if (override.safeMaxChars !== undefined) {
+    block.safeMaxChars = requirePositiveInt('safeMaxChars', override.safeMaxChars, base.id);
+  }
+  // The RELATIONAL rules (a band inside the cap, a floor below the ceiling) are
+  // NOT re-stated here: `higgsVoicesDocument` applies them to whatever model it
+  // is handed, by name and with narrator's own wording, before any spawn. One
+  // check, one message, for a catalog voice and an override alike.
+
+  if (override.sampling) {
+    // THREE LAYERS, IN THE ORDER THE CODEBASE ALREADY STATES THEM: the catalog's
+    // engine-level sampling (the number every voice renders at), then this arm's
+    // own block if it deviates (with its reason, which `higgsVoiceCapsForModel`
+    // enforces), then this run's override. Starting from the engine level rather
+    // than from the block ALONE matters for a partial block: narrator's
+    // `_voice_sampling` warns that a block replaces rather than merges, so a
+    // block stating only `repetitionPenalty` would otherwise leave the override
+    // with no temperature to validate and blame the override for the gap.
+    const inherited = {
+      ...higgsEngineSampling(),
+      ...(higgsVoiceCapsForModel(base, arm).sampling ?? {}),
+    };
+    const merged = {
+      ...inherited,
+      ...(override.sampling.temperature !== undefined ? { temperature: override.sampling.temperature } : {}),
+      ...(override.sampling.topP !== undefined ? { topP: override.sampling.topP } : {}),
+      ...(override.sampling.topK !== undefined ? { topK: override.sampling.topK } : {}),
+    };
+    // REFUSED HERE, NOT AT THE SAMPLER. narrator validates the document too, but
+    // an hour into a WSL server launch is a worse place to learn that a top_p of
+    // 95 was typed where 0.95 was meant — and a temperature of 2.5 does not
+    // fail, it babbles for a whole book.
+    if (!Number.isFinite(merged.temperature) || (merged.temperature as number) <= 0
+        || (merged.temperature as number) > 2) {
+      throw new Error(
+        `Higgs render override for "${base.id}": temperature ${JSON.stringify(merged.temperature)} `
+        + 'is outside (0, 2]. The catalog renders at 0.7 for a measured reason (a 0.6 trial fired '
+        + 'the length guard on 21 of 62 chunks, 2026-09-11); a value past 2 is not a hotter read, '
+        + 'it is a book of babble that reports success.',
+      );
+    }
+    if (!Number.isFinite(merged.topP) || (merged.topP as number) <= 0 || (merged.topP as number) > 1) {
+      throw new Error(
+        `Higgs render override for "${base.id}": topP ${JSON.stringify(merged.topP)} is outside `
+        + '(0, 1]. top_p is a probability mass, so 95 is not 0.95.',
+      );
+    }
+    if (!Number.isInteger(merged.topK) || (merged.topK as number) <= 0) {
+      throw new Error(
+        `Higgs render override for "${base.id}": topK ${JSON.stringify(merged.topK)} is not a `
+        + 'positive whole number of candidates.',
+      );
+    }
+    block.sampling = merged;
+    // THE REASON IS WRITTEN BY CONSTRUCTION. `higgsVoiceCapsForModel` refuses a
+    // block-level sampling whose `_samplingNote` does not state a reason (Owen's
+    // rule, 2026-09-06: one default everywhere, a deviation says why), and an
+    // override is exactly such a deviation — so it carries its own note rather
+    // than being the one case that is exempt.
+    block._samplingNote = `reason: per-run override — ${note}`;
+  }
+
+  patchedBackends[backend] = block;
+  return derived;
+}
+
+/** A characters figure from a person, or a refusal naming the field. */
+function requirePositiveInt(field: string, value: number, voiceId: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `Higgs render override for "${voiceId}": ${field} ${JSON.stringify(value)} is not a positive `
+      + 'whole number of characters.',
+    );
+  }
+  return value;
+}
+
 /**
  * narrator's VOICE DOCUMENT for this voice — the JSON its
  * `engine/higgs/config.py:load_voices` reads.
@@ -1978,6 +2284,13 @@ export function higgsVoicesDocument(
     );
   }
   if (model.voice.scene) entry.scene = model.voice.scene;
+  // AN OVERRIDE SAYS SO IN THE DOCUMENT. narrator's `load_voices` reads the
+  // entry key by key (`entry.get(...)`) and rejects unknown keys only inside the
+  // `sampling` block, so an extra `_overrideNote` is carried harmlessly — checked
+  // in python/narrator/engine/higgs/config.py, 2026-09-11. The document is the
+  // one artifact that survives beside a render, so this is where a post-mortem
+  // learns the weights were not the catalog's.
+  if (model._overrideNote) entry._overrideNote = model._overrideNote;
 
   // THE ARM'S OWN CAPS. A certificate is per (directory, backend), so the
   // document for the darwin arm carries the MLX block's cap and never the

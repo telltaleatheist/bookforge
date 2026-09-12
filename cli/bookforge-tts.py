@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -112,7 +113,11 @@ def _apply_cli_settings(args, settings):
                 "model_dir", "models_dir", "voice_token", "input", "text", "out",
                 "sentence_gap", "max_chars", "orpheus_install", "conda_env",
                 "custom_instructions", "parallel_workers", "test_chunks",
-                "api_key", "ollama_url", "cleanup_prompt"}
+                "api_key", "ollama_url", "cleanup_prompt",
+                # The 2026-09-12 model-picking knobs. All None-defaulted, so
+                # "the user typed it" is still distinguishable from "fill it in".
+                "checkpoint_dir", "top_k", "safe_band", "batch_width",
+                "mem_budget_gb", "title", "library"}
     for key, val in (settings.get("defaults") or {}).items():
         if key.startswith("_"):
             continue                      # _comment and friends
@@ -153,6 +158,172 @@ def _apply_cli_settings(args, settings):
             args.models_dir = eng["models_dir"]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PICKING THE MODEL: any checkpoint, any sampling, any band (2026-09-12)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Owen, 2026-09-12: *"we should be able to pick any model specifically, including
+# a checkpoint we want to test, and it should allow that... it should allow me to
+# fully control what goes in and comes out. ... make it so i can run it on the mac
+# and itll use the mac's line of logic, or the pc and itll use the pc's line of
+# logic (for sglang or mlx, etc)."*
+#
+# THE ARM IS NOT A FLAG. `renderRangeHeadless` already routes by platform — Mac
+# MLX, Windows/WSL SGLang — so the CLI's whole job is to hand every CHOICE to the
+# same settings object the app's queue builds, and to refuse nothing the app would
+# allow. Nothing here decides which machine reads the tokens.
+#
+# TWO DELIVERY SEAMS, AND THEY ARE NOT INTERCHANGEABLE:
+#   * Orpheus sampling rides the ORPHEUS_* process env, which is where the
+#     bridge's worker spawn reads it from.
+#   * Higgs sampling rides the VOICE DOCUMENT, so it travels as
+#     `ParallelTtsSettings.higgsOverride` — one JSON argument to the adapter
+#     (`--higgs-override`), parsed by cli/higgs-override.js.
+# An env var set for a Higgs render would be read by nobody, so every Orpheus-only
+# flag is refused by name on a Higgs run, and vice versa.
+
+
+def _default_note():
+    """Who ran this and why, when --note was not given: the command as typed, on
+    the machine that typed it. `note` is REQUIRED on the override because a
+    session whose sampling nobody can account for is worse than no session."""
+    return f"bookforge-tts {' '.join(sys.argv[1:])} @ {socket.gethostname()}"
+
+
+def _higgs_override(args, door):
+    """Build `ParallelTtsSettings.higgsOverride` (or None) and refuse every
+    cross-engine flag BY NAME.
+
+    `door` is 'tts' or 'audiobook' — the two render doors. Streaming and
+    --assemble refuse these flags outright (see their own blocks): a speak binds a
+    catalog voice with no per-request checkpoint seam, and an assembly renders
+    nothing.
+
+    NOTHING HERE VALIDATES A VALUE. The bridge resolves the base `fineTuned` voice
+    from the catalog and refuses a band or a cap it cannot honour, by name. A
+    second opinion here would be a second implementation of the thing under test.
+    """
+    higgs = args.engine == "higgs"
+
+    # ── The checkpoint ───────────────────────────────────────────────────────
+    _require(not (args.checkpoint_dir and not higgs),
+             "--checkpoint-dir names a Higgs checkpoint under test; Orpheus names a model "
+             "directory with --model-dir")
+    _require(not (args.model_dir and higgs),
+             "--model-dir names an Orpheus model directory; a Higgs checkpoint under test is "
+             "named by --checkpoint-dir (it borrows --voice's certificate)")
+
+    # ── Sampling: each knob belongs to exactly one engine ────────────────────
+    _require(not (args.rep_penalty is not None and higgs),
+             "--rep-penalty is an Orpheus sampling seam (ORPHEUS_REP_PENALTY); narrator's v3 "
+             "Higgs engines have no repetition-penalty knob")
+    _require(not (args.min_p is not None and higgs),
+             "--min-p is an Orpheus sampling seam (ORPHEUS_MIN_P); narrator's v3 Higgs engines "
+             "have no min_p knob")
+    _require(not (args.top_k is not None and not higgs),
+             "--top-k is a Higgs sampling field; Orpheus's worker reads ORPHEUS_TEMPERATURE / "
+             "ORPHEUS_TOP_P / ORPHEUS_MIN_P / ORPHEUS_REP_PENALTY and has no top_k seam")
+
+    # ── The band ─────────────────────────────────────────────────────────────
+    _require(not (args.safe_band and not higgs),
+             "--safe-band is the Higgs chunk band (safeMinChars/safeMaxChars); Orpheus packs "
+             "to --max-chars")
+    safe_min = safe_max = None
+    if args.safe_band:
+        parts = str(args.safe_band).split("-")
+        _require(len(parts) == 2 and all(p.strip().isdigit() for p in parts),
+                 f"--safe-band takes MIN-MAX in characters, e.g. --safe-band 200-700 "
+                 f"(got '{args.safe_band}')")
+        safe_min, safe_max = int(parts[0]), int(parts[1])
+        _require(safe_min < safe_max,
+                 f"--safe-band MIN must be below MAX (got {safe_min}-{safe_max})")
+
+    if not higgs:
+        return None
+
+    override = {}
+
+    if args.checkpoint_dir:
+        # WHERE THE DIRECTORY LIVES IS THE ARM'S QUESTION, NOT OURS.
+        #
+        # On the Mac (and Linux) the checkpoint is read by THIS machine, so the
+        # path is resolved against the user's cwd and must exist — a typo caught
+        # here costs a second instead of forty minutes into a render.
+        #
+        # On Windows the reading happens in the WSL guest, whose filesystem this
+        # host cannot stat. So the only thing that can be checked is the shape:
+        # a guest-native absolute path. Pretending to verify it would be a
+        # fallback dressed as a guard.
+        if sys.platform == "win32":
+            _require(str(args.checkpoint_dir).startswith("/"),
+                     "--checkpoint-dir must be a guest-native path starting with '/' on Windows: "
+                     "a Higgs render runs in the WSL guest and this host cannot stat the guest's "
+                     f"filesystem (got '{args.checkpoint_dir}')")
+            override["checkpointDir"] = str(args.checkpoint_dir)
+        else:
+            resolved = Path(args.checkpoint_dir).expanduser().resolve()
+            _require(resolved.is_dir(),
+                     f"--checkpoint-dir is not a directory on this machine: {resolved}")
+            override["checkpointDir"] = str(resolved)
+
+    sampling = {}
+    if args.temperature is not None:
+        sampling["temperature"] = args.temperature
+    if args.top_p is not None:
+        sampling["topP"] = args.top_p
+    if args.top_k is not None:
+        sampling["topK"] = args.top_k
+    if sampling:
+        override["sampling"] = sampling
+
+    if args.max_chars:
+        override["maxChars"] = int(args.max_chars)
+    if safe_min is not None:
+        override["safeMinChars"] = safe_min
+        override["safeMaxChars"] = safe_max
+
+    if not override:
+        return None
+    override["note"] = args.note if args.note else _default_note()
+    _ = door          # the door is part of the signature so the refusals can differ later
+    return override
+
+
+def _mlx_tuning_env(args, env):
+    """Apply the Mac MLX arm's two per-run knobs to the process env, and answer
+    which keys were set (for the dry-run print).
+
+    THESE ARE MAC-ONLY, AND NOT AS AN OMISSION. `higgsMlxBatchEnv` honours
+    `process.env.NARRATOR_HIGGS3_MLX_BATCH` / `..._MEM_BUDGET_GB` over the
+    catalog's ceiling, which is the seam. On Windows a Higgs render is SERVED, and
+    its width is the server's admission width (`HIGGS_MAX_NUM_SEQS`, set from the
+    catalog when the server is started) — not something a single run chooses. A
+    flag that silently did nothing there would be the worst outcome, so it is
+    refused by name.
+    """
+    keys = []
+    if args.batch_width is None and args.mem_budget_gb is None:
+        return keys
+    _require(args.engine == "higgs",
+             "--batch-width/--mem-budget-gb are the Higgs MLX arm's per-run knobs; Orpheus "
+             "sizes its batch from --tier")
+    _require(sys.platform != "win32",
+             "--batch-width/--mem-budget-gb are the Mac MLX arm's knobs; on Windows a Higgs "
+             "render is SERVED and the width is the catalog's server admission width "
+             "(HIGGS_MAX_NUM_SEQS), not a per-run flag")
+    if args.batch_width is not None:
+        _require(args.batch_width > 0, "--batch-width must be a positive integer")
+        env["NARRATOR_HIGGS3_MLX_BATCH"] = str(args.batch_width)
+        keys.append("NARRATOR_HIGGS3_MLX_BATCH")
+    if args.mem_budget_gb is not None:
+        _require(args.mem_budget_gb > 0, "--mem-budget-gb must be positive")
+        # "%g" so a whole number stays whole: `40`, not `40.0`. The reader parses
+        # a float either way, but an env line a human reads should say what was typed.
+        env["NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB"] = "%g" % args.mem_budget_gb
+        keys.append("NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB")
+    return keys
+
+
 def cmd_tts(args):
     """Render text -> wav through BookForge's REAL pipeline.
 
@@ -175,25 +346,36 @@ def cmd_tts(args):
              f"--engine '{args.engine}' not wired (use 'orpheus' or 'higgs')")
     _require(args.mode in ("tts", "streaming"),
              f"--mode '{args.mode}' invalid (use 'tts' or 'streaming')")
-    # Streaming stays Orpheus-only, and not as an omission: Higgs v3 is a SERVED
-    # endpoint whose codec is a delay-pattern one with no sound windowed decode
-    # (narrator's HiggsCodec.streaming_decoder() returns None on purpose), so
-    # there is no Listen path to drive. Refused by name rather than silently
-    # rendering something else.
-    _require(not (args.engine == "higgs" and args.mode == "streaming"),
-             "--engine higgs has no streaming path: v3 is a served endpoint with no "
-             "windowed decode. Use --mode tts.")
+    # HIGGS STREAMS. The refusal that stood here — "v3 is a served endpoint with
+    # no windowed decode" — was written before per-row Higgs streaming shipped on
+    # 2026-09-05; `tts-api-server.handleSpeak` has bound a Higgs voice ever since,
+    # and `streaming-engine`'s ENGINES map offers it to the Settings picker and the
+    # extension's engine menu. A CLI that refused the path the app ships was the
+    # one door that could not reproduce a Listen defect on it. Lifted 2026-09-12.
     _require(bool(args.voice), "--voice <id> is required for --tts")
     _require(bool(args.out), "--out <file.wav> is required for --tts")
     if args.mode == "tts":
-        # Renders are EPUB-only (Owen, 2026-09-05). Raw text and .txt files are the
-        # streaming adapter's input - the Listen path - and nothing else.
-        _require(bool(args.input) and str(args.input).lower().endswith(".epub"),
-                 "--tts renders an EPUB: --input <book.epub>. Renders are EPUB-only; "
-                 "--text and .txt belong to --mode streaming (the Listen path).")
-        _require(not args.text,
-                 "--text is not a render input; renders are EPUB-only. Use --mode "
-                 "streaming for raw text.")
+        # ── WHAT A RENDER MAY READ (Owen, 2026-09-12) ────────────────────────
+        #
+        # It was EPUB-only, by his 2026-09-05 ruling. He OVERRODE that on
+        # 2026-09-12: *"it should also let me run renders on anything, up to and
+        # including test chunks."* So a `.txt`/`.md` (paragraphs separated by
+        # blank lines), a `.jsonl` (one chunk per row) and a `--text` literal are
+        # render inputs now — packed into a real one-chapter EPUB by the app's own
+        # writer in the adapter, so the render path still reads exactly one format.
+        _require(bool(args.input) or bool(args.text),
+                 "--tts needs --input <book.epub|passage.txt|chunks.jsonl> or --text <str>")
+        _require(not (args.input and args.text),
+                 "--input and --text both name what to render; pass one")
+        if args.input:
+            ext = Path(str(args.input)).suffix.lower()
+            _require(ext in (".epub", ".txt", ".md", ".jsonl"),
+                     f"--tts reads .epub (a book), .txt/.md (paragraphs separated by blank "
+                     f"lines) or .jsonl (one chunk per row); '{ext or args.input}' is none of them")
+            _require(not (args.as_chunks and ext == ".epub"),
+                     "--as-chunks makes each paragraph ONE generation chunk; an EPUB is chunked "
+                     "by the app's own packer, which is what an EPUB render measures. Use a "
+                     ".txt/.md/.jsonl input (or --text), or drop --as-chunks.")
     else:
         _require(bool(args.input or args.text), "--input <file> or --text <str> is required")
     _require(bool(shutil.which("node")), "node not found on PATH")
@@ -220,6 +402,39 @@ def cmd_tts(args):
                  "--model-dir is not supported in --mode streaming (registered voices only)")
         _require((args.language or "en") == "en",
                  "--language is not supported in --mode streaming")
+        # THE OVERRIDE SEAM IS THE RENDER PATH'S. A `speak` names a catalog VOICE
+        # and the pool is already resident when it arrives — there is no
+        # per-request checkpoint, band or cap to hand it. Each of these is refused
+        # by name rather than accepted and dropped.
+        _require(not args.checkpoint_dir,
+                 "--checkpoint-dir is not supported in --mode streaming: a speak binds a "
+                 "catalog voice and there is no per-request checkpoint seam. Use --mode tts.")
+        _require(not args.safe_band,
+                 "--safe-band is the tts path's chunk band; streaming packs with the voice's "
+                 "own cap (splitForTts)")
+        _require(not args.as_chunks,
+                 "--as-chunks is a generation-chunk choice on the tts path; streaming speaks "
+                 "blocks — one block per paragraph already")
+        _require(args.max_chunks is None,
+                 "--max-chunks caps the tts path's generation; streaming reads blocks — use "
+                 "--read-ahead to bound how many")
+        _require(args.top_k is None,
+                 "--top-k rides the Higgs voice document on the tts path; a streaming speak "
+                 "carries no sampling override")
+        _require(not (args.engine == "higgs" and any(
+                     v is not None for v in (args.temperature, args.top_p,
+                                             args.min_p, args.rep_penalty))),
+                 "--temperature/--top-p/--min-p/--rep-penalty are Orpheus's env seams; on a "
+                 "Higgs run sampling rides the voice document, which a streaming speak does "
+                 "not carry. Use --mode tts, or set them in the voice.")
+        _require(not args.title,
+                 "--title names the book a text input is packed as; streaming speaks blocks "
+                 "and packs nothing")
+        # Streaming keeps no session on disk — the pool answers sentence by
+        # sentence over the socket — so there is no tmp to point at.
+        _require(not args.library,
+                 "--library names where a RENDER keeps its sessions and narration cuts; "
+                 "streaming writes neither. Use --mode tts.")
         # The streaming adapter drives the app's REAL path (tts-api-server -> stream
         # scheduler -> pool), and over that protocol a speak names a VOICE — there is no
         # per-request prompt-token seam to hand this to. Refuse rather than ignore.
@@ -236,9 +451,11 @@ def cmd_tts(args):
     cmd = ["node", "--require", str(NODE_STUB), str(adapter),
            "--voice", args.voice, "--out", out_path]
     # The batch adapter defaults to orpheus; naming it is what lets --engine higgs
-    # reach the bridge. (The streaming adapter takes no engine — see above.)
-    if args.mode == "tts":
-        cmd += ["--engine", args.engine]
+    # reach the bridge. The STREAMING adapter takes it too since 2026-09-12 — not
+    # to select an engine (that choice is persisted in tts-engine.json and is the
+    # app's to manage) but so a mismatch with the engine actually selected is
+    # refused by name instead of speaking in the other one.
+    cmd += ["--engine", args.engine]
     if input_path:
         cmd += ["--input", input_path]
     if args.text:
@@ -247,6 +464,24 @@ def cmd_tts(args):
         cmd += ["--language", args.language]
     if args.model_dir:
         cmd += ["--model-dir", args.model_dir]
+    # The Higgs checkpoint/sampling/band override — ONE JSON argument, so both
+    # render adapters parse it with the one shared parser (cli/higgs-override.js).
+    override = _higgs_override(args, door="tts") if args.mode == "tts" else None
+    if override:
+        cmd += ["--higgs-override", json.dumps(override, sort_keys=True)]
+    if args.mode == "tts" and args.as_chunks:
+        cmd += ["--as-chunks"]
+    if args.mode == "tts" and args.max_chunks is not None:
+        cmd += ["--max-chunks", str(args.max_chunks)]
+    if args.mode == "tts" and args.title:
+        cmd += ["--title", args.title]
+    # WHERE THE SESSIONS GO. The batch adapter has no project to derive a library
+    # from, so it resolves the one main recorded (userData/library-root.json) and
+    # refuses when there is none; this flag overrides that for one run.
+    if args.mode == "tts" and args.library:
+        cmd += ["--library", str(Path(args.library).expanduser().resolve())]
+    if args.mode == "tts" and args.skip_text_cleanup:
+        cmd += ["--skip-text-cleanup"]
     if args.mode == "tts" and args.keep_sentences:
         cmd += ["--keep-sentences"]
     if args.mode == "tts" and args.keep_session:
@@ -270,29 +505,54 @@ def cmd_tts(args):
         env["WSL_ORPHEUS_CONDA_ENV"] = args.conda_env
     if args.sentence_gap is not None:  # deterministic inter-clip gap (tts path)
         env["ORPHEUS_SENTENCE_GAP"] = str(args.sentence_gap)
-    if args.max_chars:                 # packing cap (tts path; read at prep by core.py)
-        env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
-    if args.temperature is not None:   # sampling overrides (worker; orpheus.py defaults
-        env["ORPHEUS_TEMPERATURE"] = str(args.temperature)  # 0.6/0.8/1.1 rule otherwise)
-    if args.top_p is not None:
-        env["ORPHEUS_TOP_P"] = str(args.top_p)
-    if args.min_p is not None:
-        env["ORPHEUS_MIN_P"] = str(args.min_p)
-    if args.rep_penalty is not None:
-        env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+    # ORPHEUS_* IS ORPHEUS'S. On a Higgs run these are read by nobody — its
+    # sampling and its caps ride the voice document (`higgsOverride` above) — so
+    # setting them here would be a value that looks honoured and is not.
+    if args.engine == "orpheus":
+        if args.max_chars:             # packing cap (tts path; read at prep by core.py)
+            env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
+        if args.temperature is not None:   # sampling overrides (worker; orpheus.py defaults
+            env["ORPHEUS_TEMPERATURE"] = str(args.temperature)  # 0.6/0.8/1.1 rule otherwise)
+        if args.top_p is not None:
+            env["ORPHEUS_TOP_P"] = str(args.top_p)
+        if args.min_p is not None:
+            env["ORPHEUS_MIN_P"] = str(args.min_p)
+        if args.rep_penalty is not None:
+            env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+    mlx_keys = _mlx_tuning_env(args, env)
 
     if args.dry_run:
         print(f"[bookforge-tts] DRY RUN — mode={args.mode}, no GPU touched")
         print("  spawn:", " ".join(cmd))
+        print("  higgs override:", json.dumps(override, sort_keys=True) if override else "(none)")
         overrides = {k: env[k] for k in (
             "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR",
             "ORPHEUS_MEMORY_TIER", "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP",
-            "ORPHEUS_MAX_CHARS", "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_REP_PENALTY",
+            "ORPHEUS_MAX_CHARS", "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_MIN_P",
+            "ORPHEUS_REP_PENALTY", *mlx_keys,
         ) if k in env}
         print("  env overrides:", overrides or "(none)")
-        return 0
+        # ── THE BATCH DOOR HAS ITS OWN DRY RUN, AND IT ANSWERS MORE ──────────
+        #
+        # Echoing the argv cannot say what book a text input became or how many
+        # chunks that is, and those are the two facts a text/jsonl render turns
+        # on. So in `--mode tts` the dry run is handed to the adapter, which packs
+        # the input book (CPU, a few kB, content-addressed) and prints the
+        # resolved settings, then stops BEFORE the narration door and the bridge —
+        # the two steps that load a model or take the card.
+        #
+        # Streaming gets the printed spawn and nothing else: that adapter's only
+        # move is to start (or attach to) the real server, which is not a dry run
+        # by any reading.
+        if args.mode != "tts":
+            return 0
+        # FLUSH FIRST. The child inherits this stdout, and python buffers when it
+        # is a pipe — so without this the adapter's lines print BEFORE the spawn
+        # they came from, which reads as though the order were the other way round.
+        sys.stdout.flush()
+        return subprocess.call(cmd + ["--dry-run"], cwd=str(REPO_ROOT), env=env)
 
-    print(f"[bookforge-tts] tts/orpheus mode={args.mode} ->", " ".join(cmd), flush=True)
+    print(f"[bookforge-tts] tts/{args.engine} mode={args.mode} ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
@@ -312,6 +572,34 @@ def _audiobook_spawn(args, assemble_only):
     # (`reassembly-bridge.narratorEngineForSession` reads session-state.json and
     # refuses a session whose two records disagree), so --assemble reads nothing
     # here rather than pretending to decide it.
+    # ── FLAG-SHAPE REFUSALS COME FIRST ───────────────────────────────────────
+    #
+    # These three describe a TEXT input, and neither of this adapter's doors has
+    # one: both work on the project's own book. They are refused before the
+    # project is even resolved, because making the operator fix a path to be told
+    # about a flag that could never have worked is a worse error message.
+    #
+    # A CAPPED BOOK IS NOT A BOOK, in particular: an M4B built from the first N
+    # chunks would be filed in the project's own output/ as THE audiobook, with
+    # chapters and metadata claiming to be the whole thing.
+    door = "--assemble" if assemble_only else "--audiobook"
+    _require(args.max_chunks is None,
+             f"--max-chunks caps generation; a capped book is not an audiobook (it would be "
+             f"filed as the project's own). Use --tts --max-chunks N, not {door}.")
+    _require(not args.as_chunks,
+             f"--as-chunks renders each paragraph of a TEXT input as one chunk; {door} works on "
+             f"the project's recorded book. Use --tts.")
+    _require(not args.title,
+             f"--title names the book a text input is packed as; {door} uses the project's "
+             f"own title")
+    # THE PROJECT DECIDES ITS LIBRARY. `<library>/projects/<slug>` is the layout
+    # every manifest path resolves against, so the adapter derives the root from
+    # the project dir itself (`path.dirname(path.dirname(projectDir))`). A flag
+    # naming a different one would put the sessions in one library while the
+    # cover, the metadata and the output landed in another.
+    _require(not args.library,
+             f"--library names the library a RENDER keeps its sessions in; {door} derives it "
+             f"from --project (<library>/projects/<slug>). Drop --library.")
     if not assemble_only:
         # Both narrator engines render a PROJECT through this door. Until
         # 2026-09-06 it refused 'higgs' ("not wired yet") while --tts wanted an
@@ -337,6 +625,7 @@ def _audiobook_spawn(args, assemble_only):
 
     cmd = ["node", "--require", str(NODE_STUB), str(ORPHEUS_AUDIOBOOK),
            "--project", project_dir]
+    override = None                   # the Higgs checkpoint/sampling/band, on the render door
     if assemble_only:
         # No generation happens, so a voice would decide nothing — refuse it by
         # name rather than accepting a value that changes nothing about the run.
@@ -348,6 +637,17 @@ def _audiobook_spawn(args, assemble_only):
         _require(not args.fresh, "--fresh is a render choice; --assemble renders nothing")
         _require(not args.skip_text_cleanup,
                  "--skip-text-cleanup is a render choice; --assemble narrates nothing")
+        # The 2026-09-12 render knobs are render choices too, every one of them.
+        # An assembly reads the cached audio; a checkpoint, a band, a sampling
+        # value or a chunk cap decides nothing about it.
+        for flag, val in (("--checkpoint-dir", args.checkpoint_dir),
+                          ("--safe-band", args.safe_band),
+                          ("--top-k", args.top_k),
+                          ("--batch-width", args.batch_width),
+                          ("--mem-budget-gb", args.mem_budget_gb)):
+            _require(val is None or val is False,
+                     f"{flag} is a render choice; --assemble runs the CACHED sentences and "
+                     f"renders nothing")
         cmd += ["--assemble-only"]
         # ASSEMBLING A DERIVED SET, AND FILING IT AS A SECOND AUDIOBOOK.
         # `--rvc-enhance` writes a durable set inside the session and, until
@@ -371,6 +671,9 @@ def _audiobook_spawn(args, assemble_only):
                  "it means nothing without --as-new-version")
         _require(bool(args.voice), "--voice <id> is required for --audiobook")
         cmd += ["--engine", args.engine, "--voice", args.voice]
+        override = _higgs_override(args, door="audiobook")
+        if override:
+            cmd += ["--higgs-override", json.dumps(override, sort_keys=True)]
         if args.input:
             cmd += ["--input", str(Path(args.input).resolve())]
         if args.fresh:
@@ -441,16 +744,20 @@ def _audiobook_spawn(args, assemble_only):
         env["WSL_ORPHEUS_CONDA_ENV"] = args.conda_env
     if args.sentence_gap is not None:
         env["ORPHEUS_SENTENCE_GAP"] = str(args.sentence_gap)
-    if args.max_chars:
-        env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
-    if args.temperature is not None:
-        env["ORPHEUS_TEMPERATURE"] = str(args.temperature)
-    if args.top_p is not None:
-        env["ORPHEUS_TOP_P"] = str(args.top_p)
-    if args.min_p is not None:
-        env["ORPHEUS_MIN_P"] = str(args.min_p)
-    if args.rep_penalty is not None:
-        env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+    # ORPHEUS_* IS ORPHEUS'S — see cmd_tts. On a Higgs render these ride
+    # `higgsOverride` instead, and setting them would look honoured and not be.
+    if args.engine == "orpheus":
+        if args.max_chars:
+            env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
+        if args.temperature is not None:
+            env["ORPHEUS_TEMPERATURE"] = str(args.temperature)
+        if args.top_p is not None:
+            env["ORPHEUS_TOP_P"] = str(args.top_p)
+        if args.min_p is not None:
+            env["ORPHEUS_MIN_P"] = str(args.min_p)
+        if args.rep_penalty is not None:
+            env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+    mlx_keys = [] if assemble_only else _mlx_tuning_env(args, env)
     # The denoise choice travels as config through startReassembly (argv above), never
     # via env. e2a still honors a FINAL_DENOISE env var as a dormant manual escape
     # hatch (its own afftdn pass) — scrub any inherited value so a shell export can't
@@ -463,10 +770,12 @@ def _audiobook_spawn(args, assemble_only):
               f"({'denoise + reassembly over the cache' if assemble_only else 'tts + reassembly'}), "
               "no GPU touched")
         print("  spawn:", " ".join(cmd))
+        print("  higgs override:", json.dumps(override, sort_keys=True) if override else "(none)")
         overrides = {k: env[k] for k in (
             "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR", "ORPHEUS_MEMORY_TIER",
             "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP", "ORPHEUS_MAX_CHARS",
-            "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_REP_PENALTY",
+            "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_MIN_P", "ORPHEUS_REP_PENALTY",
+            *mlx_keys,
         ) if k in env}
         print("  env overrides:", overrides or "(none)")
         return 0
@@ -534,6 +843,11 @@ def cmd_prep(args):
              "--prep needs --project <projectDir> or --input <file.epub|file.txt>")
     _require(not (args.project and args.input),
              "--prep: --project and --input both name what to prep; pass one")
+    # Checked BEFORE the project is resolved: a flag that could never work on this
+    # branch is wrong whether or not the path names a project.
+    _require(not (args.project and args.library),
+             "--prep --project derives the library from the project path "
+             "(<library>/projects/<slug>); --library would name a different one")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(NARRATION_PREP.is_file(), f"missing adapter {NARRATION_PREP}")
     _require((REPO_ROOT / "dist" / "electron" / "parallel-tts-bridge.js").is_file(),
@@ -549,6 +863,12 @@ def cmd_prep(args):
     else:
         # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
         cmd += ["--input", str(Path(args.input).resolve())]
+        # A loose file has no project to derive a library from, and the cut and the
+        # normalized copy land under <library>/tmp/narration-cuts — where a later
+        # app render looks for them. Same door as --tts: the flag wins, else the
+        # root main recorded, else the adapter refuses by name.
+        if args.library:
+            cmd += ["--library", str(Path(args.library).expanduser().resolve())]
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — narration prep (cut + numbers), no model loaded")
@@ -1348,7 +1668,10 @@ def build_parser():
         p.add_argument(f"--{name}", action="store_true",
                        help=f"run the '{name}' command")
     p.add_argument("--engine", default="orpheus",
-                   help="TTS engine: orpheus or higgs (default orpheus). higgs is --mode tts only.")
+                   help="TTS engine: orpheus or higgs (default orpheus). Both render (--mode tts) "
+                        "and both stream (--mode streaming, since 2026-09-05); the ARM is chosen "
+                        "by the platform inside the bridge — Mac MLX, Windows/WSL SGLang — never "
+                        "by a flag here.")
     p.add_argument("--mode", default="tts", choices=["tts", "streaming"],
                    help="render path: 'tts' = audiobook/batch (default, the shipped path), "
                         "'streaming' = Listen (one sentence per vLLM sequence)")
@@ -1359,13 +1682,35 @@ def build_parser():
                    help="streaming: how many following blocks to read ahead "
                         "(default: all of them, as the extension does)")
     p.add_argument("--model-dir", dest="model_dir",
-                   help="custom model directory (overrides voice resolution)")
+                   help="ORPHEUS custom model directory (overrides voice resolution). A Higgs "
+                        "checkpoint under test is --checkpoint-dir")
+    p.add_argument("--checkpoint-dir", dest="checkpoint_dir",
+                   help="--engine higgs: a checkpoint directory to render THIS run with, "
+                        "instead of the catalog's. --voice stays required and is the base voice "
+                        "whose certificate (caps, pace, band) the checkpoint borrows — which is "
+                        "what makes the two comparable. On the Mac it must exist here; on "
+                        "Windows it must be a guest-native /home/... path (the WSL arm)")
+    p.add_argument("--note", dest="note",
+                   help="why this render was run, stamped onto the Higgs override. Default: the "
+                        "command as typed plus this machine's hostname")
+    p.add_argument("--title", dest="title",
+                   help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
+                        "carries (default: the input's basename, or 'CLI passage' for --text)")
+    p.add_argument("--library", dest="library",
+                   help="--tts / --prep --input: the library root whose tmp/ holds the sessions "
+                        "and the narration cuts (the app's <library>/tmp, unless Settings states "
+                        "a narrator scratch folder). Default: the root this machine chose in "
+                        "BookForge (userData/library-root.json). Refused wherever a --project "
+                        "already decides the library (--audiobook, --assemble, --prep --project)")
     p.add_argument("--models-dir", dest="models_dir",
                    help="override the Orpheus models directory to discover voices in")
-    p.add_argument("--input", help="the EPUB to render (--tts; renders are EPUB-only); "
+    p.add_argument("--input", help="what to render (--tts): an .epub (a book), a .txt/.md "
+                   "(paragraphs separated by blank lines) or a .jsonl (one chunk per row) — the "
+                   "last two are packed into a one-chapter EPUB by the app's own writer; "
                    "text file to stream (--tts --mode streaming); EPUB override (--audiobook); "
                    "the .epub or .txt to prep (--prep)")
-    p.add_argument("--text", help="literal text to stream (--mode streaming only)")
+    p.add_argument("--text", help="literal text to render (--tts: packed into a one-chapter "
+                   "EPUB, paragraphs separated by blank lines) or to stream (--mode streaming)")
     p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)")
     p.add_argument("--keep-model", dest="keep_model", action="store_true",
                    help="--clean-lines / --clean: leave the model loaded when the run ends "
@@ -1399,10 +1744,37 @@ def build_parser():
                    help="tts: Orpheus min_p — drop tokens below this fraction of the top "
                         "token's probability (default 0 = off; vLLM + MLX batch paths). "
                         "Cuts the rare-junk tail without flattening variety like lowering top_p")
+    p.add_argument("--top-k", dest="top_k", type=int, default=None,
+                   help="tts: HIGGS top_k — rides the voice document as "
+                        "higgsOverride.sampling.topK. Orpheus has no top_k seam and refuses it "
+                        "by name")
     p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
-                   help="tts: Orpheus repetition penalty (default 1.1)")
+                   help="tts: Orpheus repetition penalty (default 1.1). narrator's v3 Higgs "
+                        "engines have no such knob and refuse it by name")
+    p.add_argument("--safe-band", dest="safe_band",
+                   help="--engine higgs: the chunk band as MIN-MAX characters, e.g. 200-700 "
+                        "(higgsOverride.safeMinChars/safeMaxChars). The band's WIDTH decides the "
+                        "in-band rate; Orpheus packs to --max-chars instead")
+    p.add_argument("--batch-width", dest="batch_width", type=int, default=None,
+                   help="--engine higgs on the MAC: the MLX arm's per-run group width "
+                        "(env NARRATOR_HIGGS3_MLX_BATCH). On Windows the width is the catalog's "
+                        "server admission width (HIGGS_MAX_NUM_SEQS) and this is refused by name")
+    p.add_argument("--mem-budget-gb", dest="mem_budget_gb", type=float, default=None,
+                   help="--engine higgs on the MAC: the MLX arm's memory budget in GB "
+                        "(env NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB). Windows: refused, see above")
+    p.add_argument("--as-chunks", dest="as_chunks", action="store_true",
+                   help="--tts with a .txt/.md/.jsonl (or --text) input: render each paragraph/row "
+                        "as exactly ONE generation chunk (settings.sentencePerParagraph → "
+                        "narrator's --sentence_per_paragraph), narrated as printed. Refused with "
+                        "an EPUB, which the app's own packer chunks")
+    p.add_argument("--max-chunks", dest="max_chunks", type=int, default=None,
+                   help="--tts only: cap generation at N chunks (settings.testMode + "
+                        "testSentences, the pair the app's own settings carry). Refused with "
+                        "--audiobook: a capped book is not an audiobook")
     p.add_argument("--max-chars", dest="max_chars", type=int,
-                   help="Orpheus packing cap in chars (tts path; default 350, no sentence "
+                   help="the packing cap in chars. --engine higgs: higgsOverride.maxChars, held "
+                        "against the base voice's certificate. --engine orpheus: env "
+                        "ORPHEUS_MAX_CHARS (tts path; default 350, no sentence "
                         "cap — ear-validated for EOS-safe ≤20s/2048-recipe voices; 450 "
                         "fails everywhere. The packed-runaway was the long-clip TRAINING "
                         "recipe, not packing)")

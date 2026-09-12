@@ -92,7 +92,7 @@ nothing downstream can tell; what changes is that a caller who used
 | `--device` | every spawn | **prep** normalizes it through e2a's `devices` table and records it in `device`. The worker ignores it: `detect_backend()` reads no session device |
 | `--voice` | `pushVoiceArgs:290` (custom XTTS voices only) | **prep** records it in `voice`. No Orpheus render reads it |
 | `--custom_model` / `--custom_model_dir` | `pushVoiceArgs:288-289` | **prep** records them in `custom_model`/`custom_model_dir`. No Orpheus render reads them |
-| `--sentence_per_paragraph` | `parallel-tts-bridge.ts:3248` (language-learning mode) | prep splits on `[break]` before `escape_sml` runs, so each paragraph is one chunk and the packer never runs |
+| `--sentence_per_paragraph` | `parallel-tts-bridge.ts:3248` (language-learning mode, and the CLI's `--as-chunks`) | ONE CHUNK PER SOURCE ROW, on either chunking policy. e2a policy: prep splits on `[break]` before `escape_sml` runs and the packer never runs. Paragraph policy (every Higgs job): `paragraph_packer.chunk_document` reads it off the ChapterContext and packs with floor 0 and no cap split — it ignored the flag until 2026-09-12, packing two typed paragraphs into one chunk |
 | `--skip_headings` | `parallel-tts-bridge.ts:3253` | prep suppresses the TEXT of real `h1`-`h6` headings (still parsed for chapter detection). It does NOT suppress a TOC-matched title recovered from body text, and never did |
 
 (31 rows; the paired `start`/`end`, `adapter`/`base` and

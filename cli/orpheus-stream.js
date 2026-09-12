@@ -25,6 +25,12 @@
  * Input is BLOCKS: paragraphs separated by blank lines, the same unit the extension
  * detects on a page. Block 1 is the one "play" was pressed on (a priority speak); the
  * rest are read-ahead (background speaks), which is what makes the batch shapes real.
+ *
+ * BOTH ENGINES STREAM. The file is named for Orpheus and drives whichever engine is
+ * SELECTED (`streaming-engine.getSelectedEngineName`, persisted in tts-engine.json) —
+ * per-row Higgs streaming shipped on 2026-09-05 and `handleSpeak` binds a Higgs voice
+ * the same way. `--engine` asserts the selection rather than changing it; see the
+ * check in main().
  */
 'use strict';
 const fs = require('fs');
@@ -50,6 +56,9 @@ const USAGE = `orpheus-stream.js — drive BookForge's real streaming path headl
   --text <string>       one block of text, or
   --input <file>        blocks separated by blank lines (block 1 = the one played)
   --voice <id>          voice to bind (required; sent as a BINDING speak setting)
+  --engine <id>         assert the SELECTED streaming engine is this one (orpheus|higgs).
+                        Not a switch: the selection is persisted in tts-engine.json and
+                        is the app's to manage, so a mismatch is refused by name
   --read-ahead <n>      how many following blocks to prefetch (default: all)
   --out <file.wav>      write block 1's audio
   --json                emit the timing table as JSON
@@ -84,6 +93,35 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) { console.log(USAGE); process.exitCode = 0; return; }
   if (!args.voice) throw new Error('--voice <id> is required (speak settings bind the voice)');
+
+  // ── WHICH ENGINE IS LISTENING, AND WHO GETS TO CHANGE IT (2026-09-12) ─────
+  //
+  // BOTH engines stream: `handleSpeak` binds a Higgs voice as readily as an
+  // Orpheus one, and `streaming-engine`'s ENGINES map offers both to the Settings
+  // picker and the extension's engine menu. What a speak does NOT carry is the
+  // engine — the pool is resident and its engine was fixed by `NARRATOR_ENGINE`
+  // when it spawned, so the selection is a PERSISTED app setting
+  // (`tts-engine.json` in userData), read here through the module's own
+  // `getSelectedEngineName()`.
+  //
+  // THIS ADAPTER WILL NOT REWRITE IT. `setSelectedEngineName` is the only setter
+  // and it persists — a CLI run that flipped the user's Listen engine (and, when
+  // the app is up, ended its live session doing so) would be a side effect nobody
+  // asked for, whether the server is ours or the app's. So `--engine` is an
+  // ASSERTION: it says which engine the operator believes is selected, and a
+  // mismatch is refused by name with where to change it. Silently speaking in
+  // the other engine is the one outcome that must not happen — the audio would
+  // be fine, in the wrong voice, with nothing saying so.
+  const { getSelectedEngineName } = require('../dist/electron/streaming-engine.js');
+  const selectedEngine = getSelectedEngineName();
+  if (args.engine && args.engine !== true && args.engine !== selectedEngine) {
+    throw new Error(
+      `--engine ${args.engine} but the selected streaming engine is '${selectedEngine}'. `
+      + 'The Listen engine is a persisted app setting (tts-engine.json in userData) and this '
+      + 'adapter will not rewrite it: change it in Settings -> Listen (or the extension\'s '
+      + `engine menu), then run again. To drive '${selectedEngine}' now, pass --engine ${selectedEngine}.`);
+  }
+  console.log(`[stream] engine: ${selectedEngine} (persisted selection)`);
 
   let raw = args.text;
   if (args.input) raw = fs.readFileSync(args.input, 'utf8');

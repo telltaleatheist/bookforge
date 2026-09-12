@@ -165,6 +165,11 @@ const SUITES = [
   // calls the exact symbol the app's queue step calls. See
   // docs/CLI_PARITY_AUDIT.md for the table it defends.
   'test-cli-parity',
+  // The model-picking doors on the render commands (2026-09-12): a checkpoint, a
+  // sampling value and a band reach the settings object, and every flag that
+  // belongs to the other engine / the other arm / the other door is refused BY
+  // NAME. It drives the wrapper with --dry-run; no GPU, no model, no library.
+  'test-cli-flags',
   'test-library-lock',
   'test-job-timing',
   // The throughput window itself: burst engines (Higgs lands 32 rows at once)

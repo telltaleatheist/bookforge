@@ -66,6 +66,7 @@ const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
 const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
+const { higgsOverrideFromArgs } = require('./higgs-override.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -346,8 +347,27 @@ async function main() {
     enableTextSplitting: false,
   };
   if (args['model-dir']) {
-    if (engine !== 'orpheus') throw new Error('--model-dir names an Orpheus model directory; a Higgs voice is a catalog checkpoint');
+    // TWO ENGINES, TWO SPELLINGS, AND NEITHER STANDS IN FOR THE OTHER. The old
+    // message here ("a Higgs voice is a catalog checkpoint") said what --model-dir
+    // is NOT and left the operator with nowhere to go; since 2026-09-12 there IS
+    // somewhere — a Higgs checkpoint under test rides --checkpoint-dir and borrows
+    // the named voice's certificate (caps, pace, band).
+    if (engine !== 'orpheus') {
+      throw new Error('--model-dir names an Orpheus model directory; a Higgs checkpoint under '
+        + 'test is named by --checkpoint-dir (it borrows --voice\'s certificate).');
+    }
     settings.orpheusModelDir = args['model-dir'];
+  }
+  // ── THE CHECKPOINT / SAMPLING / BAND OVERRIDE (2026-09-12) ───────────────
+  //
+  // The SAME shared parser the batch adapter uses (cli/higgs-override.js), so a
+  // `--tts` audition and an `--audiobook` build of one checkpoint are the same
+  // render. The bridge resolves the base `fineTuned` voice from the catalog and
+  // renders the override against its certificate.
+  const higgsOverride = higgsOverrideFromArgs(args, engine);
+  if (higgsOverride) {
+    settings.higgsOverride = higgsOverride;
+    console.log(`[audiobook] higgs override: ${JSON.stringify(higgsOverride)}`);
   }
 
   const t0 = Date.now();

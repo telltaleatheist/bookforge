@@ -2261,14 +2261,28 @@ check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () =>
     (total - guarded) + ' of ' + total + ' pushVoiceArgs call sites are not guarded against Higgs');
 });
 
-check('the CLI accepts higgs for --mode tts and refuses it for streaming', () => {
-  // The standing rule is that the CLI mirrors the app's code path; the branch
-  // had added an engine the headless door could not run.
+check('the CLI runs higgs on EVERY door the app runs it on', () => {
+  // The standing rule is that the CLI mirrors the app's code path (CLAUDE.md,
+  // "CLI drives the app path"), so what is asserted here is an AGREEMENT between
+  // two files and never a sentence in one of them.
+  //
+  // This check used to require that the CLI REFUSED `--mode streaming` for Higgs
+  // by name, and that was right when Higgs v3 was a served endpoint with no
+  // windowed decode. Per-row Higgs streaming shipped 2026-09-05 — the app's
+  // `tts-api-server` has bound a Higgs voice ever since — so the refusal made the
+  // CLI the one door that could not reproduce a Listen defect on it. Lifted
+  // 2026-09-12, and the assertion moved to the invariant that actually matters:
+  // the CLI permits exactly what the app implements.
   const cli = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf-8');
   assert.match(cli, /args\.engine in \("orpheus", "higgs"\)/,
     'the CLI still refuses --engine higgs');
-  assert.match(cli, /has no streaming path/,
-    'the CLI does not refuse Higgs streaming by name');
+  const apiServer = fs.readFileSync(path.join(REPO, 'electron', 'tts-api-server.ts'), 'utf-8');
+  const appStreamsHiggs = /higgsPreflight\(/.test(apiServer);
+  const cliRefusesStreaming = /has no streaming path/.test(cli);
+  assert.strictEqual(cliRefusesStreaming, !appStreamsHiggs,
+    appStreamsHiggs
+      ? 'the app streams Higgs but the CLI still refuses --mode streaming for it'
+      : 'the CLI offers Higgs streaming that the app no longer implements');
   const adapter = fs.readFileSync(path.join(REPO, 'cli', 'orpheus-batch-render.js'), 'utf-8');
   assert.match(adapter, /ttsEngine: engine/,
     'the batch adapter still hardcodes the engine');
@@ -2658,6 +2672,7 @@ if (skipWhy) {
       '                  "target_chars": one.target_chars,',
       '                  "safe_min_chars": getattr(one, "safe_min_chars", None),',
       '                  "safe_max_chars": getattr(one, "safe_max_chars", None),',
+      '                  "sampling": getattr(one, "sampling", None),',
       '                  "source": one.max_chars_source}))',
     ].join('\n');
     const py = TRUE_HOST === 'win32' ? 'python' : 'python3';
@@ -2782,6 +2797,32 @@ if (skipWhy) {
     }
   });
 
+  check('narrator ACCEPTS an OVERRIDE document — dir, merged sampling, _overrideNote', () => {
+    // THE ONE ASSERTION THAT CANNOT BE MADE FROM THIS SIDE. `_overrideNote` is a
+    // key narrator never heard of, and the reason it is safe to send is that
+    // `load_voices` reads the entry key by key rather than validating its key set
+    // — true when it was read (2026-09-11) and exactly the kind of thing that
+    // changes without anyone here noticing. The sampling block is the other half:
+    // `_voice_sampling` DOES refuse an unknown key, so a merged block has to
+    // contain only the three levers.
+    const m = higgs.higgsModelForRender('deathstalker', {
+      checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+      sampling: { temperature: 0.8 },
+      note: 'keeper: the override document must load in narrator',
+    });
+    const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
+    assert.strictEqual(r.status, 0, 'narrator refused the override document:\n' + (r.stderr || '').trim());
+    const got = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.strictEqual(got.name, 'deathstalker+ds_v8_1200_test');
+    assert.strictEqual(got.cls, 'DefaultVoice', 'an override checkpoint must be prompted TEXT-ONLY');
+    assert.strictEqual(got.checkpoint, '/home/telltale/higgs_v3_merged/ds_v8_1200_test');
+    // MERGED, not replaced: narrator's own docstring warns that a partial block
+    // leaves the rest at the checkpoint's generation_config.json (1.0, which
+    // nobody chose), so the override must arrive complete.
+    assert.deepStrictEqual(got.sampling, { temperature: 0.8, top_p: 0.95, top_k: 50 });
+    assert.strictEqual(got.max_chars, 800, "the base voice's certificate must travel unchanged");
+  });
+
   check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {
     // BookForge refuses this first (refuseUnmeasuredAdapter), so the document can
     // only be built by going round it. Doing so proves the two refusals are the
@@ -2792,6 +2833,281 @@ if (skipWhy) {
     assert.match(r.stderr, /maxChars/, 'refused for the wrong reason:\n' + r.stderr);
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. THE PER-RUN OVERRIDE — rendering something the catalog has not certified
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owen, 2026-09-11: "i just tried to use the cli on a merged checkpoint as a test
+// here on the mac and it wouldnt let me." `higgsModelForRender` is the door that
+// answers it, and what has to stay true of it is not "does it work" — it is that
+// it CHANGES NOTHING when no override is given, that it keeps every catalog
+// refusal when one is, and that what it produces is a document narrator loads
+// (section 10 runs that half against the real loader).
+//
+// The failure these guard against is the one this whole file is about: a derived
+// model that is subtly not what was asked for renders an hour of audio in a voice
+// nobody chose and reports success.
+console.log('per-run render override');
+
+// A directory that really exists, for the darwin arm's existence check. The Mac
+// is the arm where an override names a HOST path, so this is the one place in
+// this file where the filesystem is part of the contract.
+const OVERRIDE_DIR = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-merged-'));
+process.on('exit', () => { try { fs.rmSync(OVERRIDE_DIR, { recursive: true, force: true }); } catch {} });
+
+function overrideThrows(voiceId, override) {
+  try {
+    higgs.higgsModelForRender(voiceId, override);
+  } catch (err) {
+    return err;
+  }
+  return null;
+}
+
+check('NO override is the catalog, unchanged — same model, same refusals', () => {
+  // The reason every render door may call this instead of resolveHiggsModel.
+  // deepStrictEqual rather than strictEqual: the catalog is re-read per call, so
+  // the two are equal values and never the same object.
+  assert.deepStrictEqual(
+    higgs.higgsModelForRender('deathstalker'),
+    higgs.resolveHiggsModel('deathstalker'));
+  // And the refusals are still the catalog's, by identity of message.
+  const bad = overrideThrows('not-a-voice');
+  assert.ok(bad, 'an unknown voice was accepted');
+  assert.match(bad.message, /not in the catalog/);
+});
+
+check('an override DERIVES from the base voice: id names both, kind is checkpoint', () => {
+  const m = higgs.higgsModelForRender('deathstalker', {
+    checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+    note: 'keeper',
+  });
+  // The id is what `--higgs_voice` carries, what keys the document, and what
+  // session_state.json and job-analytics.json record — so it names the base
+  // voice AND the directory. "override" alone answers nothing six weeks later.
+  assert.strictEqual(m.id, 'deathstalker+ds_v8_1200_test');
+  assert.strictEqual(m.kind, 'checkpoint');
+  assert.match(m._overrideNote, /keeper/);
+  // ONLY THIS ARM. Claiming the other one asserts a copy on a disk nobody looked
+  // at — the same mistake the retired single `checkpointDir` string made.
+  assert.deepStrictEqual(m.voice.checkpoint, { wsl: '/home/telltale/higgs_v3_merged/ds_v8_1200_test' });
+  // The CATALOG is untouched: a later resolve must not see the override.
+  assert.deepStrictEqual(higgs.resolveHiggsModel('deathstalker').voice.checkpoint, {
+    wsl: '/home/telltale/higgs_v3_merged/ds_v7_930_prod',
+    darwin: 'runtime/higgs-models/ds_v7_930_prod',
+  });
+});
+
+check("a base of kind 'default' takes a checkpoint — base weights are a legal starting point", () => {
+  // The zero-shot 600 placeholder is what such a run is judged against, and it
+  // is stated rather than inherited silently: `maxCharsSource` says 'placeholder'.
+  const m = higgs.higgsModelForRender('default', {
+    checkpointDir: '/home/telltale/higgs_v3_merged/fresh_merge',
+    note: 'keeper: a fresh merge nobody has certified',
+  });
+  assert.strictEqual(m.id, 'default+fresh_merge');
+  assert.strictEqual(m.kind, 'checkpoint');
+  const caps = higgs.higgsVoiceCapsForModel(m);
+  assert.strictEqual(caps.maxChars, 600);
+  assert.strictEqual(caps.maxCharsSource, 'placeholder');
+});
+
+check("a 'clips' base + a checkpoint is REFUSED — the checkpoint IS the voice", () => {
+  const err = overrideThrows('zeroshot-deathstalker', {
+    checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+    note: 'keeper',
+  });
+  assert.ok(err, 'a clips voice accepted a checkpoint');
+  assert.match(err.message, /THE CHECKPOINT IS THE VOICE/);
+  assert.match(err.message, /zeroshot-deathstalker/, 'the refusal does not name the voice');
+});
+
+check('the WSL arm takes a GUEST path verbatim, and refuses a drive path', () => {
+  const err = overrideThrows('deathstalker', { checkpointDir: 'E:\\merged\\ds_v8', note: 'keeper' });
+  assert.ok(err, 'a Windows drive path was accepted as a guest checkpoint');
+  assert.match(err.message, /guest-resident/);
+  // 8.5 GB over the 9p mount is the measured reason, and the refusal says so.
+  assert.match(err.message, /9p/);
+});
+
+onArm('darwin', () => {
+  check('an ABSOLUTE Mac directory travels verbatim — resolver AND document', () => {
+    const m = higgs.higgsModelForRender('deathstalker', {
+      checkpointDir: OVERRIDE_DIR,
+      note: 'keeper: a merged checkpoint on this Mac',
+    });
+    // `higgsCheckpointDirFor` must NOT join userData onto it: that would name a
+    // directory inside Application Support that has never held these weights.
+    assert.strictEqual(higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), OVERRIDE_DIR);
+    // And the document — the only thing narrator reads — carries the same string.
+    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
+    assert.strictEqual(doc[m.id].checkpointDir, OVERRIDE_DIR);
+    assert.match(doc[m.id]._overrideNote, /merged checkpoint on this Mac/);
+    // The base voice's certificate travels unchanged — that is the point.
+    assert.strictEqual(doc[m.id].maxChars, 800);
+  });
+
+  check('a relative override, and a directory that does not exist, are REFUSED', () => {
+    const rel = overrideThrows('deathstalker', {
+      checkpointDir: 'runtime/higgs-models/ds_v8', note: 'keeper',
+    });
+    assert.ok(rel, 'a relative override was accepted on the Mac');
+    assert.match(rel.message, /not absolute/);
+    const gone = overrideThrows('deathstalker', {
+      checkpointDir: path.join(OVERRIDE_DIR, 'nope'), note: 'keeper',
+    });
+    assert.ok(gone, 'a missing directory was accepted');
+    assert.match(gone.message, /not a directory on this Mac/);
+    // The refusal says what the silent alternative would have cost.
+    assert.match(gone.message, /DIFFERENT SPEAKER/);
+  });
+
+  check('the CATALOG still refuses an absolute darwin path — only an override may', () => {
+    // The gate is `_overrideNote`, so a hand-edited catalog cannot borrow it: a
+    // repo-tracked absolute Mac path names a directory on exactly one machine.
+    const m = probeVoice({
+      id: 'hand-edited', kind: 'checkpoint',
+      voice: { checkpoint: { darwin: '/Users/telltale/merged/ds' } },
+      backends: { mlx: { maxChars: 800, maxCharsSource: 'catalog' } },
+    });
+    assert.throws(() => higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), /is absolute/);
+  });
+
+  check('the cap patch shows up in the caps — and keeps narrator\'s closed source set', () => {
+    const m = higgs.higgsModelForRender('deathstalker', {
+      checkpointDir: OVERRIDE_DIR,
+      maxChars: 1200, safeMinChars: 700, safeMaxChars: 1100,
+      note: 'keeper: sweeping the band the checkpoint was trained at',
+    });
+    const caps = higgs.higgsVoiceCapsForModel(m);
+    assert.strictEqual(caps.maxChars, 1200);
+    assert.strictEqual(caps.safeMinChars, 700);
+    assert.strictEqual(caps.safeMaxChars, 1100);
+    // 'catalog' is the honest source for a number a person chose: narrator's set
+    // is closed, so claiming 'length-sweep' would be a lie the protocol accepts.
+    assert.strictEqual(caps.maxCharsSource, 'catalog');
+    assert.ok(higgs.HIGGS_MAX_CHARS_SOURCES.includes(caps.maxCharsSource));
+    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
+    assert.strictEqual(doc[m.id].maxChars, 1200);
+    assert.strictEqual(doc[m.id].safeMaxChars, 1100);
+  });
+
+  check('a band OUTSIDE the cap is refused — by the document, for override and catalog alike', () => {
+    // The relational rules are NOT restated in the override path: one check, one
+    // message, narrator's wording. This proves the override reaches it.
+    const m = higgs.higgsModelForRender('deathstalker', {
+      checkpointDir: OVERRIDE_DIR, safeMaxChars: 1200, note: 'keeper',
+    });
+    assert.throws(
+      () => higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA }),
+      /safeMaxChars 1200 above its darwin cap of 800/);
+  });
+
+  check('a non-integer cap is refused by name', () => {
+    const err = overrideThrows('deathstalker', {
+      checkpointDir: OVERRIDE_DIR, maxChars: 900.5, note: 'keeper',
+    });
+    assert.ok(err, 'a fractional cap was accepted');
+    assert.match(err.message, /maxChars 900\.5 is not a positive whole number/);
+  });
+
+  check('SAMPLING merges over the engine-level block, with its reason attached', () => {
+    const m = higgs.higgsModelForRender('deathstalker', {
+      checkpointDir: OVERRIDE_DIR,
+      sampling: { temperature: 0.8 },
+      note: 'keeper: the 0.8 control Owen asked the PC to serve',
+    });
+    // MERGED, not replaced. narrator takes a voice's sampling block whole, so a
+    // lone temperature would drop top_p/top_k to the checkpoint's own
+    // generation_config.json (1.0, which nobody chose).
+    const caps = higgs.higgsVoiceCapsForModel(m);
+    assert.deepStrictEqual(caps.sampling, { temperature: 0.8, topP: 0.95, topK: 50 });
+    // And it passes the rule `higgsVoiceCapsForModel` enforces on every block
+    // that deviates — BY CONSTRUCTION, not by being exempt from it.
+    assert.match(m.backends.mlx._samplingNote, /reason/i);
+    assert.match(m.backends.mlx._samplingNote, /0\.8 control/);
+    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
+    assert.deepStrictEqual(doc[m.id].sampling, { temperature: 0.8, topP: 0.95, topK: 50 });
+  });
+
+  check('a sampling value outside its range is REFUSED by name', () => {
+    const hot = overrideThrows('deathstalker', {
+      checkpointDir: OVERRIDE_DIR, sampling: { temperature: 2.5 }, note: 'keeper',
+    });
+    assert.ok(hot, 'temperature 2.5 was accepted');
+    assert.match(hot.message, /temperature 2\.5 is outside \(0, 2\]/);
+    // A temperature past 2 does not fail — it babbles for a whole book.
+    assert.match(hot.message, /babble/);
+    const p = overrideThrows('deathstalker', {
+      checkpointDir: OVERRIDE_DIR, sampling: { topP: 95 }, note: 'keeper',
+    });
+    assert.ok(p, 'top_p 95 was accepted');
+    assert.match(p.message, /topP 95 is outside \(0, 1\]/);
+    const k = overrideThrows('deathstalker', {
+      checkpointDir: OVERRIDE_DIR, sampling: { topK: 1.5 }, note: 'keeper',
+    });
+    assert.ok(k, 'a fractional top_k was accepted');
+    assert.match(k.message, /topK 1\.5 is not a positive whole number of candidates/);
+  });
+
+  check('an EMPTY note is refused — an override nobody can attribute', () => {
+    for (const note of ['', '   ', undefined]) {
+      const err = overrideThrows('deathstalker', { checkpointDir: OVERRIDE_DIR, note });
+      assert.ok(err, `note ${JSON.stringify(note)} was accepted`);
+      assert.match(err.message, /carries no `note`/);
+    }
+  });
+
+  check('an override with NO checkpoint is still legal — sampling and caps alone', () => {
+    // Sweeping a knob on the SHIPPED weights. The id says `+override` because
+    // there is no directory to name, and the voice's own checkpoint is untouched.
+    const m = higgs.higgsModelForRender('deathstalker', {
+      sampling: { topK: 20 }, note: 'keeper: top_k sweep on the shipped voice',
+    });
+    assert.strictEqual(m.id, 'deathstalker+override');
+    assert.strictEqual(m.kind, 'checkpoint');
+    assert.deepStrictEqual(m.voice.checkpoint, {
+      wsl: '/home/telltale/higgs_v3_merged/ds_v7_930_prod',
+      darwin: 'runtime/higgs-models/ds_v7_930_prod',
+    });
+    assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(m).sampling,
+      { temperature: 0.7, topP: 0.95, topK: 20 });
+  });
+});
+
+check('the render doors resolve the voice through ONE function', () => {
+  // Four spawn sites read the voice: buildJobSpawn (which WRITES the document),
+  // the prep argv, the retake argv and the worker argv. If one resolved the
+  // catalog voice while the others resolved the override, the argv's
+  // `--higgs_voice` and the document's single key would disagree — and narrator's
+  // answer to a voice its document does not name is not a crash, it is a book in
+  // the base model's speaker. So no Higgs render door may call the voice-only
+  // door; `higgsModelForJob(settings)` is the only one that can see an override.
+  assert.strictEqual(/higgsPreflight/.test(bridgeSrc), false,
+    'parallel-tts-bridge still resolves a Higgs voice without its override');
+  const sites = bridgeSrc.match(/higgsModelForJob\(/g) || [];
+  assert.strictEqual(sites.length, 4,
+    `expected 4 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
+  // Listen stays catalog-only — a resident engine shared by every tab is not the
+  // place to load an uncertified checkpoint.
+  const pool = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
+  assert.ok(/higgsPreflight\(/.test(pool), 'the streaming pool no longer uses the catalog-only door');
+  assert.strictEqual(/higgsModelForJob/.test(pool), false,
+    'the streaming pool reads a book render override — Listen is catalog-only');
+});
+
+check('TEST MODE is capped by ONE helper, in both render doors', () => {
+  // It was four lines in startParallelConversion only, so `--test-sentences`
+  // through the queue capped the run and the same setting through the CLI
+  // rendered the whole book — a two-hour answer to a two-minute question, with
+  // nothing in the log to say the cap had been dropped.
+  const calls = bridgeSrc.match(/applyTestSentenceCap\(/g) || [];
+  assert.strictEqual(calls.length, 3, // one definition, two call sites
+    `expected the helper plus 2 call sites, saw ${calls.length} mentions`);
+  assert.match(bridgeSrc, /applyTestSentenceCap\(prepInfo, config\.settings, 'PARALLEL-TTS'\)/);
+  assert.match(bridgeSrc, /applyTestSentenceCap\(prepInfo, settings, 'renderRangeHeadless'\)/);
+});
 
 console.log(failures === 0 ? '\nALL OK' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

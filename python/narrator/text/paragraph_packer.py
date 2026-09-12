@@ -256,6 +256,10 @@ class PackReport:
     merges: int = 0
     dropped_join_tokens: int = 0
     over_budget_sentences: int = 0
+    #: Chunks emitted LONGER THAN THE CAP because the caller asked for no split
+    #: (`split_over_cap=False`). Unreachable on the default path, where an
+    #: over-cap group is sentence-split instead.
+    over_cap_chunks: int = 0
 
 
 #: GLYPHS NO NARRATOR READS ALOUD, mapped to a space: e2a's `chars_remove`
@@ -815,6 +819,7 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                     voice=None,
                     audio_budget_s: float | None = None,
                     lead_break: bool = True,
+                    split_over_cap: bool = True,
                     table_detect: bool = False) -> PackReport:
     """Tier 1. Blocks in reading order -> the chunks a render will generate.
 
@@ -854,6 +859,16 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     sentence. A single sentence longer than the cap is emitted whole and counted
     in `over_budget_sentences`: splitting it would break the one rule this policy
     exists to keep, and the engine's own guards are what catch it.
+
+    `split_over_cap=False` TURNS THE CAP OFF AT PACKING TIME — the group is
+    emitted whole however long it is, counted in `over_cap_chunks`, and printed.
+    The one caller is `sentence_per_paragraph` (one chunk per source row): there
+    the rows were chosen BY THE OPERATOR, so a row over the cap is the chunk they
+    asked for and re-packing it would answer a different question than the one
+    they typed. Nothing is lost silently — the engine's own truncation guard
+    measures every take against the voice's band and re-renders or refuses
+    (`engine/higgs/truncation.py`), which is the right place for it: prep cannot
+    know whether a long row will actually early-stop and the render can.
 
     `table_detect` is OFF by default and that is a deliberate reversal (review
     B2). The SHAPE detector is a PDF heuristic; the EPUB pipeline gets its
@@ -919,6 +934,18 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         report.dropped_join_tokens += dropped
 
         if len(spoken(text)) <= cap:
+            report.chunks.append(Chunk(text=f'{lead}{marker}{text}', kind='prose',
+                                       blocks=indices,
+                                       dropped_join_tokens=dropped))
+            return
+
+        if not split_over_cap:
+            # THE OPERATOR'S ROW, KEPT. Counted and printed, never trimmed.
+            report.over_cap_chunks += 1
+            print(f'pack_paragraphs: a chunk is {len(spoken(text))} chars against '
+                  f'a {cap}-char cap and is kept WHOLE - the caller packs one chunk '
+                  f'per source row, so the row is the chunk that was asked for; the '
+                  f"engine's truncation guard answers for it at render time.")
             report.chunks.append(Chunk(text=f'{lead}{marker}{text}', kind='prose',
                                        blocks=indices,
                                        dropped_join_tokens=dropped))
@@ -1327,7 +1354,25 @@ def make_chapter_chunker(budget, *, source_kind: str,
 
         from .chapters import EXCLUDED_EPUB_TYPES
 
-        print(f'----------\nParsing doc {idx} (paragraph policy)')
+        # ── ONE CHUNK PER SOURCE ROW, WHEN THE CALLER ASKED FOR IT ──────────
+        #
+        # `sentence_per_paragraph` means "each <p> is exactly one generation
+        # chunk": BookForge's bilingual pipeline needs it because the two
+        # languages are aligned row by row, and the CLI's `--as-chunks` needs it
+        # because a test set of 40 typed rows must arrive as 40 chunks.
+        #
+        # THE BUG THIS FIXES (2026-09-12, Owen's live run): the flag is carried on
+        # the ChapterContext and read by `chapters.filter_chapter` — which is the
+        # PARITY path, and the only path that reads it. A Higgs job is chunked by
+        # THIS function instead (`get_chapters(chapter_chunker=…)`), which packed
+        # to the floor and ignored the flag entirely, so two typed paragraphs came
+        # out as one 15 s chunk with nothing in the log to say the flag had been
+        # dropped. It is read off `ctx` rather than taken as a construction
+        # argument on purpose: a knob passed in is a knob a future caller can
+        # forget, which is precisely how it went missing here.
+        one_per_row = bool(getattr(ctx, 'sentence_per_paragraph', False))
+        print(f'----------\nParsing doc {idx} (paragraph policy'
+              f'{", one chunk per row" if one_per_row else ""})')
         body_content = doc.get_body_content()
         html = (body_content.decode('utf-8') if isinstance(body_content, bytes)
                 else body_content)
@@ -1358,11 +1403,18 @@ def make_chapter_chunker(budget, *, source_kind: str,
         shaped = sum(1 for b in blocks if b.kind == TABLE)
         if shaped:
             print(f'[tables] {shaped} table row block(s) in this document')
-        if source_kind == PDF_DERIVED:
+        if source_kind == PDF_DERIVED and not one_per_row:
             before = len(blocks)
             blocks = join_provisional_fragments(blocks)
             print(f'[tier 2] PDF-derived source: {before} blocks -> '
                   f'{len(blocks)} after joining provisional fragments')
+        elif source_kind == PDF_DERIVED:
+            # Tier 2 JOINS ROWS, so it would change the row set the caller asked
+            # to be handed back one-for-one. Skipped, and said out loud rather
+            # than left as a silent difference between two preps of one book.
+            print('[sentence_per_paragraph] tier 2 (joining provisional '
+                  'fragments) NOT run: the rows are the chunks, so nothing may '
+                  'merge two of them.')
 
         if ctx.skip_headings:
             # Same reading as `filter_chapter`: skip_headings suppresses the TEXT
@@ -1371,15 +1423,31 @@ def make_chapter_chunker(budget, *, source_kind: str,
             blocks = [Block(text='', kind=CHAPTER_START, doc=b.doc, index=b.index)
                       if b.kind == HEADING else b for b in blocks]
 
-        report = pack_paragraphs(blocks, budget, floor_chars=floor_chars,
+        # FLOOR 0 IS HOW "NO MERGE" IS SPELLED, and it is the packer's own rule
+        # rather than a second code path: a group merges only while it is UNDER
+        # the floor, and nothing is under 0. The cap comes off with
+        # `split_over_cap=False` — see that parameter for why an over-long row is
+        # the operator's chunk. Everything else about the text is unchanged
+        # (caps fold, the leading [break], item periods, table and heading
+        # markers), so a test chunk is treated exactly as the book's chunk is.
+        report = pack_paragraphs(blocks, budget,
+                                 floor_chars=0 if one_per_row else floor_chars,
                                  walls=walls, voice=voice,
-                                 audio_budget_s=audio_budget_s)
+                                 audio_budget_s=audio_budget_s,
+                                 split_over_cap=not one_per_row)
         if reports is not None:
             reports.append(report)
-        print(f'[paragraph policy] {len(blocks)} block(s) -> '
-              f'{len(report.chunks)} chunk(s); {report.merges} merge(s), '
-              f'{report.dropped_join_tokens} join token(s) dropped, '
-              f'{report.paragraphs_sentence_split} paragraph(s) sentence-split')
+        if one_per_row:
+            print(f'[sentence_per_paragraph] one chunk per source row: '
+                  f'{len(blocks)} block(s) -> {len(report.chunks)} chunk(s); the '
+                  f'{floor_chars}-char merge floor and the cap split were NOT '
+                  f'applied ({report.over_cap_chunks} chunk(s) over the cap, kept '
+                  f'whole)')
+        else:
+            print(f'[paragraph policy] {len(blocks)} block(s) -> '
+                  f'{len(report.chunks)} chunk(s); {report.merges} merge(s), '
+                  f'{report.dropped_join_tokens} join token(s) dropped, '
+                  f'{report.paragraphs_sentence_split} paragraph(s) sentence-split')
         return [c.text for c in report.chunks]
 
     return chunk_document

@@ -803,6 +803,194 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertIn('English-only', out)
 
 
+#: A ONE-DOCUMENT BOOK OF BARE `<p>` ROWS — the shape the CLI's `--as-chunks`
+#: door builds out of a .txt/.md/.jsonl input (`cli/orpheus-batch-render.js`
+#: packs the typed lines into a real EPUB with the app's own writer, one `<p>`
+#: per line). No heading, so the chunk count is the row count with nothing to
+#: explain away.
+_ROWS_CONTAINER = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf"
+    media-type="application/oebps-package+xml"/></rootfiles>
+</container>"""
+
+_ROWS_OPF = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bid">urn:uuid:narrator-rows</dc:identifier>
+    <dc:title>Typed Rows</dc:title>
+    <dc:creator>The Operator</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="text/c0001.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
+
+_ROWS_NAV = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Contents</title></head>
+<body><nav epub:type="toc"><ol>
+  <li><a href="text/c0001.xhtml">Typed Rows</a></li>
+</ol></nav></body></html>"""
+
+
+def build_rows_epub(path: str, rows) -> str:
+    """Write a book whose one document is exactly `rows` paragraphs."""
+    body = ''.join(f'<p>{row}</p>' for row in rows)
+    with zipfile.ZipFile(path, 'w') as z:
+        z.writestr(zipfile.ZipInfo('mimetype'), 'application/epub+zip',
+                   compress_type=zipfile.ZIP_STORED)
+        z.writestr('META-INF/container.xml', _ROWS_CONTAINER)
+        z.writestr('OEBPS/content.opf', _ROWS_OPF)
+        z.writestr('OEBPS/nav.xhtml', _ROWS_NAV)
+        z.writestr('OEBPS/text/c0001.xhtml',
+                   '<?xml version="1.0" encoding="utf-8"?>\n'
+                   '<html xmlns="http://www.w3.org/1999/xhtml">'
+                   '<head><title>Typed Rows</title></head>'
+                   f'<body>{body}</body></html>')
+    return path
+
+
+class HiggsSentencePerParagraphTest(_PrepDoorTest):
+    """`--sentence_per_paragraph` ON THE PARAGRAPH POLICY (every Higgs job).
+
+    MEASURED DEFECT, 2026-09-12 (Owen's live run of the CLI's `--as-chunks`
+    against a merged checkpoint): two typed `<p>` rows were rendered as ONE 15 s
+    chunk. The flag reaches `ChapterContext.sentence_per_paragraph` and the only
+    function that read it was `chapters.filter_chapter` — the e2a parity path. A
+    Higgs job is chunked by `paragraph_packer.make_chapter_chunker` instead,
+    which `get_chapters` takes IN PLACE OF `filter_chapter`, so the flag was
+    silently dropped: session-state said `policy: 'paragraph', floor_chars: 600`
+    and `total_sentences: 1` for a two-paragraph book.
+
+    Both halves are asserted here, because the fix is only right if it changed
+    nothing else: the flag now produces one chunk per row, and the SAME book
+    without it still merges to the floor exactly as before.
+    """
+
+    #: Five rows, each far under the floor, so the unflagged pack merges all of
+    #: them into one chunk — which is what makes the two tests each other's
+    #: control.
+    ROWS = (
+        'The first row is typed by hand.',
+        'The second row is a different thought.',
+        'The third row says something else again.',
+        'The fourth row is here to be counted.',
+        'The fifth row closes the set.',
+    )
+
+    #: NOT a subclass of `HiggsEngineTest`, deliberately: inheriting that class
+    #: would inherit its twenty tests and re-run every one of them against this
+    #: book, which is neither what they assert nor a second opinion about it.
+    VOICES_ENV = 'NARRATOR_HIGGS_VOICES'
+    #: THE SAFE BAND IS THE FIXTURE'S LOAD-BEARING HALF:
+    #: `v3_engine.higgs_v3_prep_budget` takes the merge FLOOR from `safeMinChars`
+    #: and the packing CAP from `safeMaxChars`, and refuses a fine-tune that
+    #: declares neither rather than packing at the base model's placeholder.
+    SAFE_MIN = 600
+    SAFE_MAX = 900
+
+    def setUp(self):
+        super().setUp()
+        self.checkpoint = os.path.join(self.root, 'ds-merged')
+        os.makedirs(self.checkpoint, exist_ok=True)
+        for name, body in (('config.json', '{}'),
+                           ('generation_config.json',
+                            '{"temperature": 1.0, "top_p": 0.95, "top_k": 50}')):
+            with open(os.path.join(self.checkpoint, name), 'w',
+                      encoding='utf-8') as handle:
+                handle.write(body)
+        self.voices_path = os.path.join(self.root, 'voices.json')
+        with open(self.voices_path, 'w', encoding='utf-8') as handle:
+            json.dump({'ds_ad4l': {'kind': 'checkpoint',
+                                   'checkpointDir': self.checkpoint,
+                                   'maxChars': 1200,
+                                   'maxCharsSource': 'length-sweep',
+                                   'safeMinChars': self.SAFE_MIN,
+                                   'safeMaxChars': self.SAFE_MAX}}, handle)
+        saved = os.environ.get(self.VOICES_ENV)
+        os.environ[self.VOICES_ENV] = self.voices_path
+
+        def restore():
+            if saved is None:
+                os.environ.pop(self.VOICES_ENV, None)
+            else:
+                os.environ[self.VOICES_ENV] = saved
+        self.addCleanup(restore)
+        self.ebook = build_rows_epub(
+            os.path.join(self.root, f'rows-{self.session_id}.epub'), self.ROWS)
+
+    def _higgs_argv(self, *, voice='ds_ad4l', extra=()):
+        """`HiggsEngineTest._higgs_argv`, the bridge's own Higgs prep argv."""
+        return ['--headless', '--ebook', self.ebook,
+                '--session', self.session_id, '--language', 'en',
+                '--tts_engine', 'higgs-v3', '--device', 'CUDA',
+                '--prep_only', '--higgs_voice', voice, *extra]
+
+    def test_the_flag_gives_one_chunk_per_row_and_records_that_it_did(self):
+        code, out = self._run(self._higgs_argv(extra=('--sentence_per_paragraph',)))
+        self.assertEqual(code, 0, out)
+        _, state = self._read_state_the_way_the_bridge_does()
+        self.assertEqual(state['total_sentences'], len(self.ROWS), out)
+        chunks = state['chapter_sentences'][0]
+        self.assertEqual(len(chunks), len(self.ROWS))
+        # EACH CHUNK IS THE ROW THAT WAS TYPED. The chunk carries the policy's
+        # leading `[break]` marker, which the engine strips before the server
+        # sees it (test_higgs_v3), so the row is what the model is asked for.
+        for row, chunk in zip(self.ROWS, chunks):
+            self.assertTrue(chunk.endswith(row), f'{chunk!r} is not {row!r}')
+        # The session SAYS how it was chunked: still the paragraph policy (same
+        # chunker, same extraction), with the floor that APPLIED, which is 0.
+        record = state['bookforge_chunking']
+        self.assertEqual(record['policy'], 'paragraph')
+        self.assertTrue(record['sentence_per_paragraph'])
+        self.assertEqual(record['floor_chars'], 0)
+        self.assertIn('truncation guard', record['why'])
+        # The voice's cap is still recorded — the render guards every take
+        # against it even though prep did not split on it.
+        self.assertEqual(record['budget']['max_chars'], self.SAFE_MAX)
+        # And the log names the mode AND the floor it set aside, so a session that
+        # came out short can be read back from the run's own output.
+        self.assertIn('[sentence_per_paragraph] one chunk per source row', out)
+        self.assertIn(f'the {self.SAFE_MIN}-char merge floor and the cap split '
+                      f'were NOT applied', out)
+
+    def test_without_the_flag_the_same_rows_still_merge_to_the_floor(self):
+        """The control. Nothing about a normal Higgs prep may move."""
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        _, state = self._read_state_the_way_the_bridge_does()
+        self.assertEqual(state['total_sentences'], 1, out)
+        record = state['bookforge_chunking']
+        self.assertEqual(record['policy'], 'paragraph')
+        self.assertNotIn('sentence_per_paragraph', record)
+        self.assertEqual(record['floor_chars'], self.SAFE_MIN)
+        self.assertNotIn('[sentence_per_paragraph]', out)
+
+    def test_a_row_OVER_the_cap_is_kept_whole_and_counted(self):
+        """The operator's chunk is the operator's chunk.
+
+        Prep does not re-pack a row it was handed: a row longer than the voice's
+        cap is exactly the question the operator asked (a length probe is the
+        obvious case), and the engine's own truncation guard is what measures the
+        take. Splitting it here would answer a different question and report
+        success.
+        """
+        long_row = 'This sentence is deliberately long. ' * 60   # ~2,160 chars, cap 900
+        self.ebook = build_rows_epub(
+            os.path.join(self.root, f'long-{self.session_id}.epub'),
+            (long_row.strip(), 'A short row after it.'))
+        code, out = self._run(self._higgs_argv(extra=('--sentence_per_paragraph',)))
+        self.assertEqual(code, 0, out)
+        _, state = self._read_state_the_way_the_bridge_does()
+        self.assertEqual(state['total_sentences'], 2, out)
+        self.assertIn('kept WHOLE', out)
+        self.assertGreater(len(state['chapter_sentences'][0][0]), self.SAFE_MAX)
+
+
 class CliPrepTest(_PrepDoorTest):
     """`python -m narrator prep` - the same call under narrator's own names."""
 

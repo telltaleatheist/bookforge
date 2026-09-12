@@ -102,6 +102,32 @@ const WIRES = [
     appDoor: 'electron/queue-steps/final-denoise.ts',
   },
   {
+    // THE RENDER CORE, FROM BOTH RENDER DOORS. This row was missing while every
+    // other command had one, which is how `--tts` could have drifted off the
+    // bridge unnoticed — and `--tts` is the door Owen renders test chunks from.
+    adapter: 'cli/orpheus-batch-render.js',
+    module: 'parallel-tts-bridge.js',
+    calls: ['renderRangeHeadless', 'prepareNarrationInput', 'stopParallelConversion'],
+    appDoor: 'electron/queue-steps/tts-conversion.ts',
+  },
+  {
+    // A TEXT INPUT IS PACKED BY THE APP'S OWN EPUB WRITER (2026-09-12). Hand-
+    // rolling a zip here would be the second implementation this file exists to
+    // forbid — and the books it made would differ from every other book the app
+    // writes, which is the one thing a render harness must not do.
+    adapter: 'cli/orpheus-batch-render.js',
+    module: 'epub-writer.js',
+    calls: ['buildEpubBuffer'],
+    appDoor: 'electron/main.ts (language-learning:finalize-content)',
+  },
+  {
+    adapter: 'cli/orpheus-audiobook-render.js',
+    module: 'parallel-tts-bridge.js',
+    calls: ['renderRangeHeadless', 'prepareNarrationInput', 'scanProjectSessions',
+            'cacheSessionToProject'],
+    appDoor: 'electron/queue-steps/tts-conversion.ts',
+  },
+  {
     adapter: 'cli/orpheus-audiobook-render.js',
     module: 'reassembly-bridge.js',
     calls: ['startReassembly', 'getSession'],

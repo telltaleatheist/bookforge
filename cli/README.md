@@ -30,7 +30,7 @@ python scripts), or copy `electron/data` into `dist/electron/` by hand.
 | `--mode`      | Path | What it exercises |
 |---------------|------|-------------------|
 | `tts` (default) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
-| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → `narrator.serve`` | **the path shipped in the app** |
+| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → `narrator.serve``. Either engine, whichever is SELECTED | **the path shipped in the app** |
 
 **The narration prep runs first, automatically.** Both render paths call
 `prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hand it
@@ -60,6 +60,10 @@ audiobook** the app actually ships (`.m4b` with chapters/cover/metadata), use
 # Default (audiobook/batch) — the path you actually use:
 python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out sample.wav
 
+# Anything, down to test chunks: one chunk per line, narrated as printed:
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
+    --input chunks.jsonl --as-chunks --max-chunks 20 --out chunks.wav
+
 # Force a memory tier and a custom gap:
 python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out sample.wav \
     --tier fast --sentence-gap 0.75 --keep-sentences
@@ -71,9 +75,203 @@ python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input 
 # Only read two blocks ahead, to see the batch shapes that makes:
 python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt --read-ahead 2
 
-# See exactly what would run, touch no GPU:
+# See exactly what would run, touch no GPU — it also PACKS the input book and
+# prints the settings object, so a text/jsonl render is reproducible before it runs:
 python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out s.wav --dry-run
 ```
+
+**Where a `--tts` run keeps its sessions.** narrator has no default sessions root
+— every spawn carries a `--session_dir` derived from the one that was stated — so
+this door states it exactly as the app does at startup (`main.ts`
+`applyNarratorScratchRoot`): the **Settings → Narrator scratch folder** override if
+there is one, else **`<library>/tmp`**, which also holds the content-addressed
+`narration-cuts/` a later run reuses. The library is the one this machine chose in
+BookForge, read from the file main persists for exactly this question
+(`<userData>/library-root.json`); **`--library <root>` overrides it for one run**,
+and a machine that has never chosen a library is **refused by name** rather than
+quietly writing into `~/Documents/BookForge`, where the app would never look for
+it. (`--audiobook` takes no `--library`: the project's own path is
+`<library>/projects/<slug>`, so it derives the root and refuses the flag. Until
+2026-09-12 the batch adapter stated nothing at all, which is why every `--tts` run
+on the Mac died before prep with *"No narrator scratch root has been stated."*)
+
+**Both engines render and both stream.** `--engine higgs --mode streaming` was
+refused here until 2026-09-12, on a claim ("v3 has no windowed decode") that
+per-row Higgs streaming made obsolete on 2026-09-05. The refusal is gone; see
+**Choosing the model** below for what `--engine` means on the streaming door.
+
+## Choosing the model: any checkpoint, any sampling, any input
+
+Owen, 2026-09-12:
+
+> *"the point of the bookforge cli is to make it so the cli goes through the same
+> high level path as the app so we can test things and watch for bugs. right now,
+> though, the tts render part of the cli isnt working. at least not on the mac. we
+> should be able to pick any model specifically, including a checkpoint we want to
+> test, and it should allow that. i just tried to use the cli on a merged
+> checkpoint as a test here on the mac and it wouldnt let me. it should also let
+> me run renders on anything, up to and including test chunks. it should allow me
+> to fully control what goes in and comes out. ... make it so i can run it on the
+> mac and itll use the mac's line of logic, or the pc and itll use the pc's line of
+> logic (for sglang or mlx, etc)."*
+
+**The arm is not a flag.** `renderRangeHeadless` already routes by platform — Mac
+MLX, Windows/WSL SGLang — so this CLI's whole job is to hand every *choice* to the
+same `ParallelTtsSettings` the app's queue builds, and to refuse nothing the app
+would allow. Nothing here decides which machine reads the tokens; `--tier` and the
+memory knobs tune whichever arm the platform picked.
+
+### A checkpoint under test
+
+A Higgs checkpoint is named with **`--checkpoint-dir`**, and **`--voice` stays
+required**: the checkpoint borrows that voice's *certificate* — its `maxChars`,
+its measured pace and its safe band — which is precisely what makes a new
+checkpoint comparable to the voice it came from. The bridge resolves the base
+voice from the catalog and renders the override against it (the session's id
+becomes `<voice>+<basename of dir>`).
+
+```bash
+# Mac (MLX reads the checkpoint on this machine, so the path must exist here):
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
+    --checkpoint-dir "/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616" \
+    --input chunks.jsonl --as-chunks --out mb616.wav
+
+# PC (the reading happens in the WSL guest, so the path is GUEST-native):
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
+    --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616 \
+    --input chunks.jsonl --as-chunks --out mb616.wav
+
+# The same checkpoint, as a whole book:
+python cli/bookforge-tts.py --audiobook --project "<dir>" --engine higgs \
+    --voice mistborn --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616
+```
+
+On the Mac (and Linux) the directory is resolved against your cwd and **must
+exist**; on Windows it must start with `/` and is **not stat'd**, because the host
+cannot see the guest's filesystem — a check that pretended otherwise would be a
+fallback dressed as a guard.
+
+Everything the checkpoint changes travels as **one JSON argument**,
+`--higgs-override`, composed by the wrapper and parsed by the single shared parser
+both render adapters use (`cli/higgs-override.js`). That is deliberate: two
+hand-rolled flag blocks would drift, and then a `--tts` audition and an
+`--audiobook` build of the same checkpoint would be two different renders with
+nothing saying so. It carries a **`note`** — who ran this and why — defaulting to
+the command as typed plus the machine's hostname; `--note` overrides it.
+
+### Sampling, caps and the band
+
+| flag | `--engine orpheus` | `--engine higgs` |
+|---|---|---|
+| `--temperature` | env `ORPHEUS_TEMPERATURE` | `higgsOverride.sampling.temperature` |
+| `--top-p` | env `ORPHEUS_TOP_P` | `higgsOverride.sampling.topP` |
+| `--top-k` | **refused** — Orpheus's worker has no `top_k` seam | `higgsOverride.sampling.topK` |
+| `--min-p` | env `ORPHEUS_MIN_P` | **refused** — narrator's v3 engines have no `min_p` |
+| `--rep-penalty` | env `ORPHEUS_REP_PENALTY` | **refused** — no repetition-penalty knob |
+| `--max-chars` | env `ORPHEUS_MAX_CHARS` | `higgsOverride.maxChars` |
+| `--safe-band MIN-MAX` | **refused** — Orpheus packs to `--max-chars` | `higgsOverride.safeMinChars` / `safeMaxChars` |
+| `--model-dir` | the Orpheus model directory | **refused** — name `--checkpoint-dir` |
+| `--checkpoint-dir` | **refused** — name `--model-dir` | the checkpoint under test |
+
+**Higgs sampling never travels as env**, and Orpheus sampling never travels in the
+override. An `ORPHEUS_TEMPERATURE` set for a Higgs render would be read by nobody,
+and a value that looks honoured and is not is the exact failure this pass exists
+to end — so the wrapper only sets the `ORPHEUS_*` seams on `--engine orpheus`.
+
+### Which arm the knobs reach
+
+| flag | Mac (MLX) | PC (WSL/SGLang) |
+|---|---|---|
+| `--tier` | env `ORPHEUS_MEMORY_TIER` — both engines | same |
+| `--batch-width` | env `NARRATOR_HIGGS3_MLX_BATCH` (Higgs only) | **refused by name** |
+| `--mem-budget-gb` | env `NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB` (Higgs only) | **refused by name** |
+| `--checkpoint-dir` | a path on this machine | a guest-native `/home/...` path |
+
+`higgsMlxBatchEnv` honours `process.env` over the catalog's ceiling for both MLX
+keys, which is the seam those two flags use. On the PC a Higgs render is **served**
+and its width is the server's *admission* width (`HIGGS_MAX_NUM_SEQS`, set from the
+catalog when the server starts) — not something one run chooses. Both are refused
+on `--engine orpheus` too, which sizes its batch from `--tier`.
+
+### Anything in, down to test chunks
+
+`--tts` was EPUB-only by Owen's 2026-09-05 ruling; he **overrode that on
+2026-09-12** (*"it should also let me run renders on anything, up to and including
+test chunks"*). Four inputs now:
+
+| input | becomes |
+|---|---|
+| `--input book.epub` | read as it is, chunked by the app's own packer |
+| `--input passage.txt` / `.md` | paragraphs separated by blank lines |
+| `--input chunks.jsonl` | one row per chunk: a JSON string, or an object with a `text` string |
+| `--text "…"` | the literal, paragraphs separated by blank lines |
+
+The last three are **packed into a real one-chapter EPUB by the app's own writer**
+(`dist/electron/epub-writer.js buildEpubBuffer`, one `<p>` per paragraph/row) —
+the render path still reads exactly one format, and the books this makes are the
+books the app makes. It lands content-addressed at
+`<os.tmpdir()>/bookforge-cli-inputs/<sha16>.epub` and the path is printed, so a
+run is reproducible and a re-run reuses both the book and the narration prep's own
+content-addressed copy. `--title` names it (default: the input's basename, or
+`CLI passage` for `--text`); the author is always `bookforge-tts`, and the chapter
+carries no title on purpose — a chapter `<h2>` would be its own chunk under
+`--as-chunks`, so the run would open by narrating the filename.
+
+```bash
+# One chunk per line, capped at the first 20, narrated as printed:
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
+    --input rejects.jsonl --as-chunks --max-chunks 20 --out rejects.wav
+
+# One literal passage:
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
+    --text "She turned the key. Nothing happened." --as-chunks --out two.wav
+```
+
+- **`--as-chunks`** makes each paragraph/row exactly ONE generation chunk
+  (`settings.sentencePerParagraph` → narrator's `--sentence_per_paragraph`).
+  Without it the prep repacks the lines to the voice's char cap and a set of 40
+  chunks renders as 9. It is **refused with an `.epub`** by name: a book is chunked
+  by the app's packer, which is what an EPUB render measures.
+- **`--max-chunks N`** caps generation at N chunks (`settings.testMode` +
+  `settings.testSentences`, the pair the app's own settings carry — the cap is
+  applied by the bridge, not by slicing the input here). **`--tts` only**: refused
+  with `--audiobook` by name, because a book built from the first N chunks would be
+  filed in the project's own `output/` as *the* audiobook, with chapters and
+  metadata claiming to be the whole thing.
+- **`--as-chunks` narrates the text as printed.** It sets the same
+  `textCleanup: 'skipped'` that `--skip-text-cleanup` does (which `--tts` now
+  accepts too), so the persisted `foundry clean-text` pass is not run and
+  `prepareNarrationInput` returns after the caption/endnote cut with **no number
+  pass** — a chunk that came back rewritten is not the chunk that was under test.
+  The cut itself is a no-op on a packed book (it only removes elements stamped
+  `caption`/`footnote`, and a packed book carries no `data-bf-cat` stamps), so
+  `1933` reaches the worker as `1933`. Drop `--as-chunks` (or pass neither
+  cleanup flag) to measure the shipped path, where the digits *are* read as words.
+
+### Streaming: `--engine` is an assertion, not a switch
+
+A `speak` names a catalog **voice**; the engine is fixed for the resident pool by
+`NARRATOR_ENGINE` when it spawns, so the selection is a persisted app setting
+(`tts-engine.json` in userData), read through
+`streaming-engine.getSelectedEngineName()`.
+
+**This CLI will not rewrite it.** `setSelectedEngineName` is the only setter and it
+persists (and ends the live session on the way), so a CLI run that flipped it would
+silently change the user's Listen engine — whether the server is ours or the
+running app's. So `--engine` on `--mode streaming` says which engine you believe
+is selected, and a **mismatch is refused by name**, pointing at Settings → Listen.
+Speaking in the other engine would be the worst available outcome: audio that is
+fine, in the wrong voice, with nothing saying so.
+
+### Refused by name, on the render doors
+
+`--assemble` refuses every one of these (`--checkpoint-dir`, `--safe-band`,
+`--top-k`, `--batch-width`, `--mem-budget-gb`, plus the input flags) because it
+renders nothing; `--audiobook` refuses `--max-chunks`, `--as-chunks` and `--title`
+because it narrates the project's recorded book; `--mode streaming` refuses
+`--checkpoint-dir`, `--safe-band`, `--as-chunks`, `--max-chunks`, `--top-k`,
+`--title` and (on Higgs) the sampling flags, because a speak carries no override.
+Every one of those is a message naming the flag and the door that does want it.
 
 ## Full audiobook (M4B) — `--audiobook`
 
@@ -147,9 +345,11 @@ python cli/bookforge-tts.py --assemble --project "<dir>" \
 python cli/bookforge-tts.py --assemble --project "<dir>" --dry-run
 ```
 
-`--voice`, `--input`, `--fresh` and `--skip-text-cleanup` are **refused by name**
-here: nothing is generated and nothing is narrated, so a value that changes nothing
-about the run is an error rather than a silent no-op.
+`--voice`, `--input`, `--fresh`, `--skip-text-cleanup` and every render knob
+(`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`,
+`--as-chunks`, `--max-chunks`, `--title`) are **refused by name** here: nothing is
+generated and nothing is narrated, so a value that changes nothing about the run is
+an error rather than a silent no-op.
 
 ### Assembling an enhancement pass's output, as a SECOND audiobook
 
@@ -414,13 +614,17 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
 
 **Job**
 - `--voice <id>` — a voice in BookForge `models.json`, or a model folder name (required).
+  With `--checkpoint-dir` it is the BASE voice whose certificate the checkpoint borrows.
 - `--input <file>` / `--text <str>` — what to render (one required for `--tts`; `--input`
-  optionally overrides the resolved EPUB for `--audiobook`).
+  optionally overrides the resolved EPUB for `--audiobook`). `--tts` reads `.epub`,
+  `.txt`/`.md` or `.jsonl` — see **Choosing the model** above.
 - `--out <file.wav>` — output WAV (required for `--tts`; unused for `--audiobook`).
 - `--project <dir>` — **`--audiobook` only**: the BookForge project; output lands in
   `<project>/output/<Title>. <Author>.m4b` (required for `--audiobook`).
 - `--language <code>` — default `en`.
-- `--mode {tts,streaming}` — render path for `--tts`; default `tts`.
+- `--mode {tts,streaming}` — render path for `--tts`; default `tts`. Both engines work
+  on both paths; on `streaming`, `--engine` asserts the persisted selection rather than
+  changing it.
 - `--read-ahead <n>` — streaming only: how many following blocks to read ahead. Default is every remaining block, which is what the extension does on a page.
 
 **Customization**
@@ -434,9 +638,30 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
   **Not `--assembly-gap`**, which is the gap the pass in front of `--assemble`/
   `--audiobook`'s reassembly re-lays. Two passes at two different times; one flag for
   both would mean a value whose meaning depended on which command read it.
-- `--model-dir <path>` — explicit model directory, bypassing `models.json` resolution.
-  Use the spawn target's namespace (a `/home/...` WSL path, or a `\\wsl$` / `C:\` path
-  the bridge will translate). *Not needed for a registered voice like `rohan`.*
+- `--model-dir <path>` — explicit ORPHEUS model directory, bypassing `models.json`
+  resolution. Use the spawn target's namespace (a `/home/...` WSL path, or a `\\wsl$` /
+  `C:\` path the bridge will translate). *Not needed for a registered voice like
+  `rohan`.* Refused on `--engine higgs`, which names a checkpoint under test with
+  `--checkpoint-dir`.
+- `--checkpoint-dir <dir>` — **`--engine higgs`**: a checkpoint directory to render THIS
+  run with, against `--voice`'s certificate. Mac/Linux: resolved here and must exist.
+  Windows: a guest-native `/home/...` path, not stat'd. See **Choosing the model**.
+- `--note <text>` — why this render was run, stamped onto the Higgs override. Default:
+  the command as typed plus this machine's hostname.
+- `--safe-band MIN-MAX` — **`--engine higgs`**: the chunk band in characters.
+- `--top-k <n>` — **`--engine higgs`**: `higgsOverride.sampling.topK`.
+- `--batch-width <n>` / `--mem-budget-gb <n>` — **`--engine higgs` on the Mac**: the MLX
+  arm's group width and memory budget (`NARRATOR_HIGGS3_MLX_BATCH` /
+  `NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB`). Refused on Windows, where the width is the
+  catalog's server admission width (`HIGGS_MAX_NUM_SEQS`).
+- `--as-chunks` — **`--tts` with a text/jsonl input**: one generation chunk per
+  paragraph/row, narrated as printed.
+- `--max-chunks <n>` — **`--tts` only**: cap generation at N chunks.
+- `--title <str>` — **`--tts` with a text/jsonl input**: the packed book's title.
+- `--library <root>` — **`--tts` only**: the library whose `tmp/` holds the sessions and
+  the narration cuts. Default: the root recorded in `<userData>/library-root.json`; no
+  recorded root and no flag is a refusal, never `~/Documents/BookForge`. Refused on
+  `--audiobook`, which derives it from `--project`.
 - `--max-chars <n>` — Orpheus packing cap in chars (env `ORPHEUS_MAX_CHARS`, read at prep by
   `core.py`; default **350**, ear-validated on the EOS-safe ≤20s/2048 voices — better prosody,
   0 guard trips). 450 silently truncates on every model; `ORPHEUS_MAX_SENTENCES` re-imposes a
@@ -461,7 +686,11 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
   sentences, run before assembly; strips the faint hiss bed hiss-trained voices
   reproduce). Default: **on** for `--engine orpheus`, off for every other engine.
   Off = zero behavioral change. Needs the RVC engine env (it carries audio-separator).
-- `--dry-run` — print the resolved spawn + env overrides and exit; no GPU.
+- `--dry-run` — print the resolved spawn, the Higgs override object and the env
+  overrides, then exit; no GPU, no model. In `--mode tts` it also hands the dry run to
+  the batch adapter, which PACKS the input book (CPU, a few kB) and prints the resolved
+  `ParallelTtsSettings` before stopping short of the narration door and the bridge — so
+  a text/jsonl render can be read back before it is paid for.
 - **Ctrl+C is safe**: the adapters trap SIGINT/SIGTERM and tear down through the real
   pipeline (wedge-safe WSL worker kill-ladder for TTS; job abort + llama-server stop for AI).
 - **One render at a time**: the GPU arbiter is per-process — don't run two CLI TTS renders
@@ -804,6 +1033,8 @@ moved into pauses.
 ### Tests
 
 ```bash
+node tools/test-cli-parity.js                                                      # the WIRE, per command
+node tools/test-cli-flags.js                                                       # the model-picking doors + every refusal
 node --require ./cli/electron-stub.js tools/tests/test-epub-align-segmentation.js  # 79
 python tools/tests/test_align_audiobook_timing.py                                  # 23
 bash   tools/tests/test-cli-flag-parity.sh                                          # 29

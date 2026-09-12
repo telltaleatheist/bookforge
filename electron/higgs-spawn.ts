@@ -81,6 +81,7 @@ import { orpheusMemoryProfile, resolveConcreteOrpheusTier } from './orpheus-memo
 import {
   higgsCheckpointArm,
   higgsMlxBaseDir,
+  higgsModelForRender,
   resolveHiggsModel,
   higgsSpawnEnv,
   higgsServingFor,
@@ -89,6 +90,7 @@ import {
   writeHiggsVoicesDocument,
   type HiggsCheckpointArm,
   type HiggsModel,
+  type HiggsRenderOverride,
 } from './higgs-models';
 
 /**
@@ -186,6 +188,34 @@ export async function higgsEnvironmentRefusal(): Promise<string | null> {
  */
 export function higgsPreflight(voiceId: string | undefined | null): HiggsModel {
   return resolveHiggsModel(voiceId);
+}
+
+/**
+ * THE SAME QUESTION FOR A JOB, which may carry a per-run override.
+ *
+ * ── Why the render doors call this and not `higgsPreflight` ─────────────────
+ *
+ * A Higgs render resolves its voice at FOUR spawn sites (buildJobSpawn, the prep
+ * argv, the retake argv, the worker argv), and three of them only want the `id`
+ * while the fourth writes the voice DOCUMENT from the model. If one of them
+ * resolved the catalog voice while the others resolved the override, the argv's
+ * `--higgs_voice` and the document's single key would disagree — and narrator's
+ * reaction to a voice its document does not name is not a crash: `load_voices`
+ * returns a map, the lookup misses, and what happens next depends on the door.
+ * A whole book in the base model's speaker is the failure this catalog exists to
+ * prevent. So all four go through ONE function, and it takes the SETTINGS rather
+ * than a voice id, because the override lives there.
+ *
+ * `higgsPreflight` stays for the STREAMING callers (Listen, the reader bridge,
+ * the TTS API server): Listen is catalog-only by design — a resident engine
+ * shared by every tab is not the place to load an uncertified checkpoint — and
+ * they have no `ParallelTtsSettings` to read an override out of.
+ */
+export function higgsModelForJob(settings: {
+  fineTuned: string;
+  higgsOverride?: HiggsRenderOverride;
+}): HiggsModel {
+  return higgsModelForRender(settings.fineTuned, settings.higgsOverride);
 }
 
 /**

@@ -215,9 +215,10 @@ import {
   HIGGS_VOICE_FLAG,
   buildHiggsSpawn,
   higgsEnvironmentRefusal,
-  higgsPreflight,
+  higgsModelForJob,
   higgsRunsInWsl,
 } from './higgs-spawn';
+import type { HiggsModel, HiggsRenderOverride } from './higgs-models';
 import {
   NARRATOR_APP_RE,
   NARRATOR_BATCH_RE,
@@ -2214,6 +2215,50 @@ export interface ParallelTtsSettings {
   // Orpheus: point every backend at an EXPLICIT model directory (the CLI --model-dir),
   // bypassing models.json/folder resolution. fineTuned is used as the voice token.
   orpheusModelDir?: string;
+  /**
+   * Higgs: render this run's voice from an EXPLICIT merged checkpoint directory
+   * and/or with explicit sampling and caps — `orpheusModelDir`'s counterpart, and
+   * deliberately not its shape.
+   *
+   * Orpheus can be pointed at a directory with one string because its voice is a
+   * prompt TOKEN. A Higgs voice is a whole certificate (the directory, this arm's
+   * cap, the safe band, the pace band, the sampling), so an override is derived
+   * onto a NAMED CATALOG VOICE — `higgsModelForRender`, which keeps every one of
+   * that voice's refusals and requires a `note` saying who asked. `fineTuned`
+   * still names the base voice; the derived id is what reaches `--higgs_voice`.
+   *
+   * It is PART OF THE SETTINGS, not a parameter, because `savePersistentState`
+   * writes the settings whole into session_state.json — so a retake or a Continue
+   * of an override render reads the same checkpoint back instead of quietly
+   * finishing the book in the catalog's voice.
+   */
+  higgsOverride?: HiggsRenderOverride;
+}
+
+/**
+ * Say ON THE LOG that this run is not the catalog's voice, and say what it is.
+ *
+ * Silent on a catalog render: absence of the line means the catalog, which is
+ * what nearly every render is. It names the BASE voice and the derived id
+ * because the derived id is what everything downstream records
+ * (`--higgs_voice`, session_state.json, job-analytics.json), and six weeks later
+ * "deathstalker+ds_v8_1200" has to be traceable to a directory and a reason.
+ */
+function logHiggsOverride(settings: ParallelTtsSettings, model: HiggsModel): void {
+  const o = settings.higgsOverride;
+  if (!o) return;
+  const caps = [
+    o.maxChars !== undefined ? `maxChars=${o.maxChars}` : null,
+    o.safeMinChars !== undefined ? `safeMinChars=${o.safeMinChars}` : null,
+    o.safeMaxChars !== undefined ? `safeMaxChars=${o.safeMaxChars}` : null,
+  ].filter(Boolean).join(' ');
+  console.log(
+    `[HIGGS] override for ${settings.fineTuned}: `
+    + `checkpointDir=${o.checkpointDir ?? '(catalog)'} `
+    + `sampling=${o.sampling ? JSON.stringify(o.sampling) : '(catalog)'} `
+    + `caps=${caps || '(catalog)'} `
+    + `→ voice ${model.id} (${o.note})`,
+  );
 }
 
 export interface AggregatedProgress {
@@ -2396,7 +2441,7 @@ function buildJobSpawn(opts: {
   const engine = narratorEngineFor(opts.settings);
   if (engine === 'higgs') {
     return buildHiggsSpawn(opts.phase, {
-      model: higgsPreflight(opts.settings.fineTuned),
+      model: higgsModelForJob(opts.settings),
       args: opts.args,
       cwd: opts.cwdHint ?? app.getPath('userData'),
       jobId: opts.jobId,
@@ -3395,8 +3440,19 @@ export async function prepareSession(
     '--prep_only'
   ];
 
+  // A PER-RUN OVERRIDE IS ANNOUNCED HERE, ONCE. Prep is the first spawn of a job
+  // and the only one that happens exactly once (there is a worker argv per worker
+  // and a retake argv per correction), so this is where the log says the weights
+  // were not the catalog's. A render nobody can attribute is a measurement nobody
+  // can repeat — the failure `_overrideNote` exists for.
+  //
+  // The branch below stays TWO LINES on purpose: tools/test-higgs-engine.js reads
+  // back 400 characters from every `pushVoiceArgs` call to prove it sits in the
+  // else of a Higgs test, and prose between the two pushes the test out of view.
   if (isHiggsJob(settings)) {
-    args.push(HIGGS_VOICE_FLAG, higgsPreflight(settings.fineTuned).id);
+    const higgsModel = higgsModelForJob(settings);
+    logHiggsOverride(settings, higgsModel);
+    args.push(HIGGS_VOICE_FLAG, higgsModel.id);
   } else {
     pushVoiceArgs(args, settings);
   }
@@ -3409,7 +3465,12 @@ export async function prepareSession(
   // caps. Sending them anyway would suggest a book's sampling had been honoured
   // when nothing read it.
 
-  // Language learning mode: preserve paragraph boundaries as sentences
+  // ONE CHUNK PER SOURCE ROW: the language-learning pipeline (the two languages
+  // are aligned row by row) and the CLI's `--as-chunks` test harness (40 typed
+  // rows must arrive as 40 chunks). Engine-agnostic here, and it had to become
+  // engine-agnostic in narrator too: prep carried the flag to a Higgs job and
+  // only the Orpheus parity path read it, so a two-paragraph book came back as
+  // one chunk (fixed 2026-09-12 in text/paragraph_packer.py).
   if (settings.sentencePerParagraph) {
     args.push('--sentence_per_paragraph');
   }
@@ -3854,7 +3915,7 @@ export async function regenerateSentenceIndices(
     // fallback). Not for Higgs: `--fine_tuned` is a prompt TOKEN and the Higgs
     // voice is a CATALOG ID, appended as `--higgs_voice` in the Higgs branch.
     if (isHiggsJob(settings)) {
-      args.push(HIGGS_VOICE_FLAG, higgsPreflight(settings.fineTuned).id);
+      args.push(HIGGS_VOICE_FLAG, higgsModelForJob(settings).id);
     } else {
       pushVoiceArgs(args, settings);
     }
@@ -4165,7 +4226,7 @@ function startWorker(
   // both — naming something the engine has no use for and leaving the real voice
   // unsaid.
   if (isHiggsJob(settings)) {
-    args.push(HIGGS_VOICE_FLAG, higgsPreflight(settings.fineTuned).id);
+    args.push(HIGGS_VOICE_FLAG, higgsModelForJob(settings).id);
   } else {
     pushVoiceArgs(args, settings);
   }
@@ -8139,12 +8200,8 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
-  // Test mode: cap total sentences to process
-  if (config.settings.testMode && config.settings.testSentences && config.settings.testSentences > 0) {
-    const originalTotal = prepInfo.totalSentences;
-    prepInfo.totalSentences = Math.min(prepInfo.totalSentences, config.settings.testSentences);
-    console.log(`[PARALLEL-TTS] Test mode: limiting to ${prepInfo.totalSentences} of ${originalTotal} sentences`);
-  }
+  // Test mode: cap total chunks to process (shared with renderRangeHeadless).
+  applyTestSentenceCap(prepInfo, config.settings, 'PARALLEL-TTS');
 
   // Calculate ranges for workers based on mode
   const isChapterMode = config.parallelMode === 'chapters';
@@ -8371,6 +8428,36 @@ export async function startParallelConversion(
  *  missing (resume). Prep is deterministic for the same input+settings, so the sentence
  *  index lines up. Copying (vs pointing) keeps assembly reading one dir. Returns the
  *  number seeded. */
+/**
+ * TEST MODE, APPLIED THE SAME WAY BY EVERY DOOR — cap the chunks a run renders.
+ *
+ * ── Why this is a function and not four lines twice ─────────────────────────
+ *
+ * It WAS four lines, in `startParallelConversion` only, and `renderRangeHeadless`
+ * — the CLI's door — did not have them. So `--test-sentences` went through the
+ * queue and was honoured, and the same setting handed to the CLI rendered the
+ * WHOLE BOOK: a two-hour answer to a two-minute question, with nothing in the
+ * log to say the cap had been dropped. Owen, 2026-09-11: "it should also let me
+ * run renders on anything, up to and including test chunks."
+ *
+ * One function, both callers, so they cannot drift again.
+ *
+ * THE UNIT IS THE GENERATION CHUNK, not the sentence, and the field's name
+ * (`testSentences`) predates the packer. `prepInfo.totalSentences` is the chunk
+ * count everywhere in this file; capping it is what stops the worker early.
+ * `Math.min`, because a cap above the book is the whole book and not an error.
+ */
+function applyTestSentenceCap(
+  prepInfo: PrepInfo,
+  settings: ParallelTtsSettings,
+  tag: string,
+): void {
+  if (!settings.testMode || !settings.testSentences || settings.testSentences <= 0) return;
+  const originalTotal = prepInfo.totalSentences;
+  prepInfo.totalSentences = Math.min(prepInfo.totalSentences, settings.testSentences);
+  console.log(`[${tag}] Test mode: limiting to ${prepInfo.totalSentences} of ${originalTotal} sentences`);
+}
+
 async function seedResumeSentences(fromDir: string, toDir: string, total: number): Promise<number> {
   let entries: string[];
   try { entries = await fs.readdir(fromDir); } catch { return 0; }
@@ -8415,6 +8502,10 @@ export async function renderRangeHeadless(
   if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
     throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
   }
+  // BEFORE anything sizes itself off the total: the worker range, the resume
+  // seeding and the completeness check all read `prepInfo.totalSentences`, so the
+  // cap has to land here or it lands nowhere.
+  applyTestSentenceCap(prepInfo, settings, 'renderRangeHeadless');
   // The ORIGINAL scratch session location (WSL-native for Orpheus-via-WSL). Captured
   // NOW because normalizeWslSessionToWindows repoints prepInfo.sessionDir later; the
   // caller needs both locations to clean up after a successful concat.

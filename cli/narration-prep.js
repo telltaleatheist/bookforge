@@ -25,7 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
-const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
+const { applyNarratorSessionsRoot, readPersistedLibraryRoot } = require('./narrator-sessions-root.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
 
 function parseArgs(argv) {
@@ -72,6 +72,23 @@ async function main() {
     console.log(`[prep] scratch: ${applyNarratorSessionsRoot(libraryRoot)}`);
   } else {
     inputPath = path.resolve(args.input);
+    // THE SAME BUG THE BATCH ADAPTER HAD, in the same shape (fixed 2026-09-12).
+    // A loose `--input` has no project to derive a library from, so this branch
+    // stated no scratch root at all — and the door writes its cut and its
+    // normalized copy under `narratorScratchRoot()/narration-cuts`, which
+    // narrator refuses to guess at. `--library` wins; else the root main
+    // recorded; else refuse, because `~/Documents/BookForge` would put the copy
+    // where the later app render will not find it and the model pass gets paid
+    // for twice.
+    const libraryRoot = args.library && args.library !== true
+      ? path.resolve(args.library)
+      : readPersistedLibraryRoot();
+    if (!libraryRoot) {
+      throw new Error(
+        'no library root: this machine has never chosen a library in BookForge '
+        + `(${path.join(USER_DATA, 'library-root.json')} is absent) — pass --library <root>`);
+    }
+    console.log(`[prep] scratch: ${applyNarratorSessionsRoot(libraryRoot)}`);
   }
   if (!fs.existsSync(inputPath)) throw new Error(`input file not found: ${inputPath}`);
 

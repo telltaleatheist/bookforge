@@ -207,6 +207,14 @@ class PrepOptions:
     orpheus_model_dir: str | None = None
     orpheus_adapter_dir: str | None = None
     orpheus_base_dir: str | None = None
+    #: ONE CHUNK PER SOURCE ROW — each `<p>` is exactly one generation chunk.
+    #:
+    #: HONOURED BY BOTH POLICIES SINCE 2026-09-12. It was read only by
+    #: `chapters.filter_chapter` (the e2a parity path), so a Higgs job — which is
+    #: chunked by `paragraph_packer` instead — packed to the merge floor and
+    #: ignored the flag: two typed paragraphs came out as one chunk, with nothing
+    #: in the log saying so. The paragraph policy now reads it off the
+    #: ChapterContext and packs with floor 0 and no cap split.
     sentence_per_paragraph: bool = False
     skip_headings: bool = False
     #: e2a wrote `args.get('bookforge_metadata', {})` and NO CLI flag ever set it,
@@ -323,10 +331,19 @@ def _chunking(options: PrepOptions, epub_book) -> tuple:
     # differently: Orpheus by token, Higgs by catalog id.
     voice = (options.higgs_voice if options.tts_engine == HIGGS_V3
              else options.fine_tuned)
+    # ONE CHUNK PER SOURCE ROW is still the PARAGRAPH policy — the same chunker,
+    # the same extraction, the same text treatment — with the merge floor at 0 and
+    # the cap split off (`paragraph_packer.chunk_document`, which reads the flag
+    # off the ChapterContext). So `policy` keeps its two values and no reader has
+    # to learn a third; what the record gains is the two facts that differ, plus
+    # the reason, because a session on disk has to say how its chunks were made.
+    # The floor is recorded as the number that APPLIED (0), never the one that was
+    # configured and ignored.
+    one_per_row = bool(options.sentence_per_paragraph)
     record = {
         'policy': CHUNKING_PARAGRAPH,
         'engine': options.tts_engine,
-        'floor_chars': options.chunking_floor_chars,
+        'floor_chars': 0 if one_per_row else options.chunking_floor_chars,
         'source_kind': source_kind,
         'walls': sorted(DEFAULT_WALLS),
         'budget': {
@@ -335,9 +352,26 @@ def _chunking(options: PrepOptions, epub_book) -> tuple:
             'max_chars_per_sec': float(budget.max_chars_per_sec(voice)),
         },
     }
-    print(f'[chunking] paragraph policy: floor={options.chunking_floor_chars} '
-          f'chars, cap={record["budget"]["max_chars"]} chars, '
-          f'source={source_kind}')
+    if one_per_row:
+        record['sentence_per_paragraph'] = True
+        record['why'] = (
+            'sentence_per_paragraph: each source row is exactly one generation '
+            'chunk, so no merge floor and no cap split ran at prep. The budget '
+            'below is the voice\'s certificate, recorded because the render still '
+            'guards every take against it; a row longer than the cap is the '
+            'operator\'s chunk and the engine\'s truncation guard answers for it.')
+        print(f'[chunking] paragraph policy, ONE CHUNK PER SOURCE ROW '
+              f'(sentence_per_paragraph): no merge floor, no cap split; '
+              f'cap={record["budget"]["max_chars"]} chars is the render\'s guard, '
+              f'source={source_kind}')
+    else:
+        print(f'[chunking] paragraph policy: floor={options.chunking_floor_chars} '
+              f'chars, cap={record["budget"]["max_chars"]} chars, '
+              f'source={source_kind}')
+    # THE CHUNKER IS GIVEN THE CONFIGURED FLOOR, even when the flag will set it
+    # aside: `chunk_document` is the one place that decides (it reads the flag off
+    # the ChapterContext), and handing it the real number is what lets its log say
+    # WHICH floor was not applied. The record above carries the floor that APPLIED.
     return make_chapter_chunker(
         budget, source_kind=source_kind,
         floor_chars=options.chunking_floor_chars, voice=voice), record
