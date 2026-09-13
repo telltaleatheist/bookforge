@@ -29,7 +29,7 @@ import { app } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 
 import { resolveLlamaServerBinary } from './llama-bridge';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import { systemProbe } from './components/system-probe';
 
 /** Long enough to be useful across a book, short enough to give the RAM back. */
@@ -97,8 +97,11 @@ export class LlamaModelServer {
     this.idleTimer = setTimeout(() => { void this.stop(); }, IDLE_SHUTDOWN_MS);
   }
 
-  private releaseGpuIfHeld(): void {
-    if (!this.holdsGpu) return;
+  /** Give up this server's claim on the card — the lease if it holds it, the unleased
+   *  registration if its acquire timed out. Unconditional because `releaseGpu` is a
+   *  no-op for an owner with neither, and gating on our own flag is how a stale one
+   *  leaks a lock. */
+  private releaseGpuClaim(): void {
     this.holdsGpu = false;
     releaseGpu(this.cfg.gpuOwner);
   }
@@ -135,12 +138,14 @@ export class LlamaModelServer {
         'The local model runtime (llama-server) is not installed with this build.');
     }
 
-    await acquireGpu(this.cfg.gpuOwner, { timeoutMs: this.cfg.gpuAcquireTimeoutMs });
-    this.holdsGpu = true;
+    const lease = await acquireGpu(this.cfg.gpuOwner, { timeoutMs: this.cfg.gpuAcquireTimeoutMs });
+    this.holdsGpu = lease.held;
+    // Proceed on a timeout (unchanged) — but recorded as what it is, not as a hold.
+    warnProceedingWithoutGpu(lease, `the ${this.cfg.modelLabel} server`);
     try {
       await this.spawnServer(binary, model.path, modelId);
     } catch (err) {
-      this.releaseGpuIfHeld();
+      this.releaseGpuClaim();
       throw err;
     }
   }
@@ -326,7 +331,7 @@ export class LlamaModelServer {
         this.proc = null;
         this.loadedModelId = null;
         this.clearPid();
-        this.releaseGpuIfHeld();
+        this.releaseGpuClaim();
         if (!settled) fail(`The ${modelLabel} exited during startup (code ${code}).`);
       });
     });
@@ -339,7 +344,7 @@ export class LlamaModelServer {
     this.ready = false;
     this.proc = null;
     this.loadedModelId = null;
-    if (!proc) { this.clearPid(); this.releaseGpuIfHeld(); return; }
+    if (!proc) { this.clearPid(); this.releaseGpuClaim(); return; }
     await new Promise<void>((resolve) => {
       const done = setTimeout(() => {
         // Escalate: a wedged llama-server holding several GB is worse than a
@@ -356,7 +361,7 @@ export class LlamaModelServer {
       proc.once('exit', () => { clearTimeout(done); resolve(); });
       try { proc.kill(); } catch { clearTimeout(done); resolve(); }
     });
-    this.releaseGpuIfHeld();
+    this.releaseGpuClaim();
   }
 
   /**

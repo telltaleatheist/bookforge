@@ -71,7 +71,7 @@ import { getRvcVoiceById, isRvcVoiceInstalled } from './rvc-models';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootstrap';
 import { componentManager } from './components/component-manager';
 import { RESEMBLE_ENV_ID } from './components/resemble-env';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import { destroyWslGuestProcesses } from './wsl-lifecycle';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1284,7 +1284,12 @@ export async function runEnhanceProcessing(
   activeRuns.set(jobId, run);
 
   const gpuOwner = `enhance:job:${jobId}`;
-  let gpuHeld = false;
+  // "Did this run ASK for the card", not "did it get it" — which is the right question
+  // for the release below, because a run whose acquire timed out is registered with the
+  // arbiter as an unleased occupant and that registration is cleared by the same door.
+  // The old `gpuHeld = true` after the await was a hold this run did not necessarily
+  // have (crucible ARCHITECTURE.md R3), and its release was then a silent no-op.
+  let gpuRequested = false;
 
   const persist = () => {
     manifest.updatedAt = new Date().toISOString();
@@ -1361,8 +1366,11 @@ export async function runEnhanceProcessing(
     // Only the separation/denoise/enhancement stages are GPU-bound.
     if (needSeparate || needDenoise || needEnhance) {
       sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
-      await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
-      gpuHeld = true;
+      gpuRequested = true;
+      const lease = await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+      // Proceed on a timeout (unchanged): the separator/enhancer stages are minutes and
+      // the run has already decoded; the stage's own load failure is the backstop.
+      warnProceedingWithoutGpu(lease, `the enhance run for job ${jobId}`);
     }
 
     if (needDecode) {
@@ -1456,7 +1464,7 @@ export async function runEnhanceProcessing(
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error, wasStopped };
   } finally {
-    if (gpuHeld) releaseGpu(gpuOwner);
+    if (gpuRequested) releaseGpu(gpuOwner);
   }
 }
 

@@ -67,7 +67,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import {
   abandonDerivedSentences,
   assertStagingSpace,
@@ -385,7 +385,10 @@ export async function runFinalDenoise(
   // torch device and must not co-reside with a running TTS/LLM job.
   const gpuOwner = `denoise:job:${jobId}`;
   sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
-  await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+  const lease = await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+  // Proceed on a timeout (unchanged): the roformer is a small model and the step is
+  // minutes, so contending is cheaper than making the user restart the chain.
+  warnProceedingWithoutGpu(lease, `the final denoise for job ${jobId}`);
 
   try {
     const set = await deriveDenoisedSentences(plan, {

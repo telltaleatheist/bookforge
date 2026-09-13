@@ -86,7 +86,7 @@ import {
   wslCondaEnvPrefix,
   wslScriptArgs,
 } from './tool-paths';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import {
   execWsl,
   wslPkillGraceful,
@@ -1012,10 +1012,19 @@ async function startServer(
   // THE LOW-PRIORITY HOLD. `GPU_OWNER_LLAMA`'s posture in gpu-arbiter.ts: the
   // text server registers a yield and steps off the card when a render asks for
   // it. A text pass is minutes; a narration is hours and is what the card is for.
-  await deps.acquireGpu(GPU_OWNER_TEXT, {
+  //
+  // THIS is the site R3 names: when the ten-minute wait ran out, the old acquire
+  // resolved like a success AND threw the yield handler away with the waiter, so
+  // the server came up on ~20 GB that nothing could ever ask it to release —
+  // the posture above silently inverted into the highest-priority hold on the box.
+  // The arbiter now keeps this handler reachable as an unleased occupant, so the
+  // next render's acquire still reaches `stopTextServer` either way. We proceed on
+  // a timeout exactly as before; what is new is that it is said out loud.
+  const lease = await deps.acquireGpu(GPU_OWNER_TEXT, {
     onYield: () => { void stopTextServer('a render asked for the card'); },
     timeoutMs: 10 * 60_000,
   });
+  warnProceedingWithoutGpu(lease, `the text server (${profile.servedName})`);
 
   let entry: RunningTextServer | null = null;
   try {

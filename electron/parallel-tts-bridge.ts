@@ -203,7 +203,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 import { ensureWslDrivesFor } from './wsl-mounts';
-import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
@@ -7129,12 +7129,19 @@ function emitProgress(session: ConversionSession): void {
 // GPU arbitration (keep the AI-cleanup LLM and the TTS engine off the GPU at once)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Release the GPU lock this job holds, if any. Idempotent — invoked from every
- *  terminal path (completion, failure, cancel) so the lock can never leak. */
+/** Give up this job's claim on the GPU. Idempotent — invoked from every terminal
+ *  path (completion, failure, cancel) so nothing can leak.
+ *
+ *  UNCONDITIONAL, not gated on `holdsGpu`: a job whose acquire timed out is on the
+ *  card WITHOUT the lease and is registered with the arbiter as an unleased occupant
+ *  (so it stays preemptable), and that registration is cleared by this same door.
+ *  `releaseGpu` is a no-op for an owner with neither claim, so a CPU job that never
+ *  asked pays nothing for the call. */
 function releaseSessionGpu(session: ConversionSession): void {
-  if (session.holdsGpu) {
-    session.holdsGpu = false;
-    releaseGpu(gpuOwnerForTts(session.jobId));
+  const wasHolding = session.holdsGpu === true;
+  session.holdsGpu = false;
+  releaseGpu(gpuOwnerForTts(session.jobId));
+  if (wasHolding) {
     console.log(`[PARALLEL-TTS] Released GPU lock for job ${session.jobId}`);
   }
 }
@@ -7261,9 +7268,19 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     console.log(`[PARALLEL-TTS] Job ${jobId} waiting for GPU (held by ${who})...`);
     emitGpuWaitProgress(session, `Waiting for the GPU (in use by ${who})…`);
   }
-  await acquireGpu(gpuOwnerForTts(jobId), { timeoutMs: 10 * 60_000 });
-  session.holdsGpu = true;
-  console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
+  // The verdict, recorded as given. `holdsGpu` drives releaseSessionGpu's log line
+  // and nothing else now, so a timed-out job no longer claims a lock it never got.
+  const lease = await acquireGpu(gpuOwnerForTts(jobId), { timeoutMs: 10 * 60_000 });
+  session.holdsGpu = lease.held;
+  if (lease.held) {
+    console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
+  } else {
+    // PROCEED — unchanged behaviour, now a decision instead of a resolved promise.
+    // The VRAM preflight immediately below is what actually rides out the other
+    // occupant, and a worker OOM-retry is the backstop under that.
+    warnProceedingWithoutGpu(lease, `TTS job ${jobId}`);
+    emitGpuWaitProgress(session, 'Starting without the GPU lock (the wait for the card ran out)…');
+  }
 
   // Evict any model the AI-cleanup step left resident in Ollama. Ollama is a SEPARATE
   // process the mutex can't coordinate; it pins the cleanup model in VRAM for its 5-min
@@ -8596,7 +8613,8 @@ export async function renderRangeHeadless(
   }
 
   // Wait for the machinery to finish and drop the session, then backstop-release the
-  // GPU (idempotent — guarded by session.holdsGpu), mirroring startParallelConversion.
+  // GPU (idempotent in the arbiter, for a lease and for an unleased registration
+  // alike), mirroring startParallelConversion.
   await new Promise<void>((resolve) => {
     const poll = setInterval(() => {
       if (!activeSessions.has(jobId)) {

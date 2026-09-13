@@ -423,6 +423,9 @@ class LlamaServer {
   private idleTimer: NodeJS.Timeout | null = null;
   // GPU arbitration: the LLM holds the shared GPU lock for as long as its server
   // is resident in VRAM, and yields it to a TTS job on request. See gpu-arbiter.
+  // This is the ARBITER'S VERDICT as given (`GpuLease.held`), never an assumption —
+  // it is not what drives the release (that is unconditional and owner-keyed), it is
+  // the record of whether this server ever actually got the card.
   private holdsGpu = false;
   private generating = 0;        // in-flight generate() calls
   private yieldPending = false;  // a TTS job asked for the GPU mid-generation
@@ -440,13 +443,14 @@ class LlamaServer {
     this.idleTimer = setTimeout(() => { void this.stop(); }, IDLE_SHUTDOWN_MS);
   }
 
-  /** Release the shared GPU lock if we hold it. Idempotent — safe to call from
-   *  any teardown path (stop, process 'close', spawn 'error'). */
-  private releaseGpuIfHeld(): void {
-    if (this.holdsGpu) {
-      this.holdsGpu = false;
-      releaseGpu(GPU_OWNER_LLAMA);
-    }
+  /** Give up this server's claim on the shared GPU. Idempotent and unconditional —
+   *  safe to call from any teardown path (stop, process 'close', spawn 'error').
+   *  Not gated on `holdsGpu`: `releaseGpu` is a no-op for an owner that holds
+   *  nothing, and gating on our own bookkeeping is how a stale flag becomes a
+   *  leaked lock. */
+  private releaseGpuClaim(): void {
+    this.holdsGpu = false;
+    releaseGpu(GPU_OWNER_LLAMA);
   }
 
   /** A TTS job wants the GPU. Step off as soon as we safely can: immediately if
@@ -490,13 +494,18 @@ class LlamaServer {
     // engine never co-reside in VRAM. Wrapped inside `this.starting` so concurrent
     // ensureStarted() callers await one acquire+spawn, not several.
     this.starting = (async () => {
-      await acquireGpu(GPU_OWNER_LLAMA, { onYield: () => this.requestYield() });
-      this.holdsGpu = true;
+      // No `timeoutMs` — the cleanup LLM is the LOW-priority holder and waits for a
+      // render as long as it takes, so this can only ever be answered `held:true`.
+      // The flag records the arbiter's VERDICT all the same rather than assuming it:
+      // an assumed hold with a no-op release is exactly the lie R3 is about, and if a
+      // timeout is ever added here the bookkeeping stays honest without a second edit.
+      const lease = await acquireGpu(GPU_OWNER_LLAMA, { onYield: () => this.requestYield() });
+      this.holdsGpu = lease.held;
       try {
         await this.spawnServer(binary, modelPath, activeId);
       } catch (err) {
         // spawn() itself may have thrown before the process handlers attached.
-        this.releaseGpuIfHeld();
+        this.releaseGpuClaim();
         throw err;
       }
     })();
@@ -617,7 +626,7 @@ class LlamaServer {
 
       proc.on('error', (err) => {
         // The GPU is no longer ours — hand it to whoever's waiting (e.g. a TTS job).
-        this.releaseGpuIfHeld();
+        this.releaseGpuClaim();
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
@@ -633,7 +642,7 @@ class LlamaServer {
         this.loadedBinary = null;
         if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
         // Process gone → VRAM freed → release the GPU lock for the next holder.
-        this.releaseGpuIfHeld();
+        this.releaseGpuClaim();
       });
     });
   }
@@ -641,7 +650,7 @@ class LlamaServer {
   async stop(): Promise<void> {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
     const proc = this.proc;
-    if (!proc) { this.ready = false; this.releaseGpuIfHeld(); return; }
+    if (!proc) { this.ready = false; this.releaseGpuClaim(); return; }
     this.ready = false;
     this.proc = null;
     this.loadedModelId = null;

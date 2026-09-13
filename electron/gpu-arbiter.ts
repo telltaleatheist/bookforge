@@ -28,6 +28,26 @@
  * The mutex is an OPTIMIZATION for correctness-of-placement, not a scarce
  * resource that must never be double-held: acquire takes a timeout so a stuck
  * holder can never wedge TTS forever, and release is idempotent.
+ *
+ * WHICH IS EXACTLY WHY ACQUIRE MUST ANSWER STRAIGHT. Because proceeding without
+ * the lease is legal here, the caller has to be TOLD that is what happened —
+ * crucible/docs/ARCHITECTURE.md R3, "you either hold the card or you do not; a
+ * caller is never handed an ambiguous answer." Until 2026-09-13 the timeout path
+ * `resolve()`d exactly like the success path, and three call sites then recorded
+ * `holdsGpu = true` for a lease they did not have, whose later release was a
+ * silent no-op. `acquireGpu` now returns a `GpuLease` verdict; double-holding
+ * stays permitted, pretending does not.
+ *
+ * UNLEASED OCCUPANTS. The same timeout dropped the waiter's `onYield`: a handler
+ * is only ever attached to a HOLDER, so a caller that gave up waiting and started
+ * anyway became un-preemptable — the text server up on ~20 GB with nothing left
+ * that could ask it to step off (text-server.ts's whole low-priority posture,
+ * evaporated). A timed-out waiter is therefore registered in `unleased` with its
+ * yield handler, every acquire nudges those occupants as well as the holder, and
+ * `releaseGpu` clears the registration by the same door. It is a NUDGE, not a
+ * wait: an acquirer never blocks on an unleased occupant stepping off (it holds
+ * no lease to wait on), so the thing that actually rides out the shutdown is the
+ * caller's own waitForFreeVram() preflight below.
  */
 
 import { spawn } from 'child_process';
@@ -40,7 +60,7 @@ export function gpuOwnerForTts(jobId: string): string {
 
 type YieldHandler = () => void;
 
-interface Holder {
+interface Occupant {
   owner: string;
   onYield?: YieldHandler;
 }
@@ -48,14 +68,49 @@ interface Holder {
 interface Waiter {
   owner: string;
   onYield?: YieldHandler;
-  resolve: () => void;
+  resolve: (lease: GpuLease) => void;
   timer?: NodeJS.Timeout;
-  /** Set when this waiter gave up (timed out) — its later release is a no-op. */
+  startedAt: number;
+  /** Set when this waiter gave up (timed out) — release must skip it on handoff. */
   abandoned?: boolean;
 }
 
-let holder: Holder | null = null;
+/**
+ * ACQUIRE'S VERDICT — the whole point of this type is that there is no third answer.
+ *
+ * `held:true`  — this owner is the holder. Its `onYield` (if any) is live, and
+ *                `releaseGpu(owner)` hands the card to the next waiter.
+ * `held:false` — the wait ran out and the caller is free to start anyway (which is
+ *                what every call site in this app chooses — a ten-minute timeout
+ *                must never silently cancel a nine-hour render), but it is NOT the
+ *                holder and must not record that it is. `heldBy` names who had the
+ *                card when the deadline passed, for the log line and nothing else.
+ *
+ * There is deliberately no `release()` closure on the held arm. Release is keyed by
+ * OWNER because the teardown that has to call it is usually somewhere the lease
+ * object never reached — a child process's 'exit' handler, a class's private
+ * `stop()`, a `finally` three functions up. One door, `releaseGpu(owner)`, and it
+ * is idempotent for a caller that holds nothing.
+ */
+export type GpuLease =
+  | { readonly held: true; readonly owner: string }
+  | {
+      readonly held: false;
+      readonly owner: string;
+      readonly reason: 'timeout';
+      readonly waitedMs: number;
+      readonly heldBy: string | null;
+    };
+
+let holder: Occupant | null = null;
 const waiters: Waiter[] = [];
+/**
+ * Owners that are ON the card WITHOUT the lease — they asked, the wait ran out, and
+ * they started anyway. They are not holders and never become holders; they are here
+ * so their `onYield` can still be reached (see the header). Keyed by owner so the
+ * registration is cleared by the same `releaseGpu(owner)` every teardown already calls.
+ */
+const unleased = new Map<string, Occupant>();
 
 export function gpuHolder(): string | null {
   return holder?.owner ?? null;
@@ -65,46 +120,84 @@ export function isGpuBusy(): boolean {
   return holder !== null;
 }
 
+/** Owners known to be on the card without the lease (diagnostics and keepers). */
+export function unleasedGpuOccupants(): string[] {
+  return [...unleased.keys()];
+}
+
 /**
- * Acquire the GPU. Resolves when this owner holds it.
+ * Ask everyone on the card EXCEPT `owner` to step off: the holder, and every
+ * occupant that timed out and started anyway. Never throws — a yield handler that
+ * blows up must not take the acquire with it.
+ */
+function nudgeOccupantsOtherThan(owner: string): void {
+  if (holder !== null && holder.owner !== owner) {
+    try { holder.onYield?.(); } catch { /* a yield handler must never break acquire */ }
+  }
+  for (const occupant of unleased.values()) {
+    if (occupant.owner === owner) continue;
+    try { occupant.onYield?.(); } catch { /* ditto */ }
+  }
+}
+
+/**
+ * Acquire the GPU. Resolves with the VERDICT — see `GpuLease`; the caller branches
+ * on `held` and never assumes.
  *
- * If another owner holds it, the current holder's `onYield` is invoked (once per
- * waiter added) to ask it to step off — e.g. the cleanup LLM unloads so a TTS job
- * can load. `timeoutMs` is a deadlock backstop: if the holder never yields within
- * the deadline, the waiter PROCEEDS WITHOUT owning the lock (logged) rather than
- * hanging forever; its later releaseGpu() is then a no-op.
+ * Every occupant other than this one is nudged to step off (`onYield`) whether or
+ * not the lock was free, because "free" only means nobody holds the LEASE — an
+ * unleased occupant can still have the card's VRAM.
+ *
+ * `timeoutMs` is a deadlock backstop: if the holder never yields within the deadline
+ * the waiter is answered `held:false` rather than hanging forever, and is registered
+ * as an unleased occupant so it stays preemptable. Without `timeoutMs` this waits
+ * indefinitely and can therefore only ever resolve `held:true`.
  */
 export function acquireGpu(
   owner: string,
   opts?: { onYield?: YieldHandler; timeoutMs?: number },
-): Promise<void> {
+): Promise<GpuLease> {
   if (!holder) {
     holder = { owner, onYield: opts?.onYield };
-    return Promise.resolve();
+    // Promoted out of the unleased set if a previous acquire by this owner timed out.
+    unleased.delete(owner);
+    nudgeOccupantsOtherThan(owner);
+    return Promise.resolve({ held: true, owner });
   }
 
-  return new Promise<void>((resolve) => {
-    const waiter: Waiter = { owner, onYield: opts?.onYield, resolve };
+  return new Promise<GpuLease>((resolve) => {
+    const waiter: Waiter = { owner, onYield: opts?.onYield, resolve, startedAt: Date.now() };
     if (opts?.timeoutMs && opts.timeoutMs > 0) {
       waiter.timer = setTimeout(() => {
         const idx = waiters.indexOf(waiter);
         if (idx >= 0) waiters.splice(idx, 1);
         waiter.abandoned = true;
+        const heldBy = holder?.owner ?? null;
+        // Not a holder — but on the card all the same if the caller proceeds, so its
+        // yield handler is kept reachable. Dropping it here is what made a timed-out
+        // text server un-preemptable for the rest of its life.
+        unleased.set(owner, { owner, onYield: opts?.onYield });
         console.warn(
           `[gpu-arbiter] ${owner} timed out after ${Math.round(opts.timeoutMs! / 1000)}s ` +
-          `waiting for GPU (held by ${holder?.owner ?? 'none'}); proceeding WITHOUT the lock`,
+          `waiting for GPU (held by ${heldBy ?? 'none'}); answered held:false — the caller ` +
+          'decides whether to proceed',
         );
-        resolve();
+        resolve({ held: false, owner, reason: 'timeout', waitedMs: Date.now() - waiter.startedAt, heldBy });
       }, opts.timeoutMs);
     }
     waiters.push(waiter);
-    // Nudge the current holder to give up the GPU.
-    try { holder?.onYield?.(); } catch { /* a yield handler must never break acquire */ }
+    nudgeOccupantsOtherThan(owner);
   });
 }
 
-/** Release the GPU. No-op unless `owner` is the current holder (idempotent). */
+/**
+ * Give up whatever claim `owner` has on the card: the lease if it holds it, and its
+ * unleased registration if it timed out and started anyway. Idempotent, and a no-op
+ * for an owner with neither — which is why every teardown may call it unconditionally
+ * rather than gating on a bookkeeping flag that could itself be wrong.
+ */
 export function releaseGpu(owner: string): void {
+  unleased.delete(owner);
   if (!holder || holder.owner !== owner) return;
   // Hand off to the next waiter that hasn't abandoned its wait.
   let next: Waiter | undefined;
@@ -112,10 +205,30 @@ export function releaseGpu(owner: string): void {
     if (next.abandoned) continue;
     if (next.timer) clearTimeout(next.timer);
     holder = { owner: next.owner, onYield: next.onYield };
-    next.resolve();
+    unleased.delete(next.owner);
+    next.resolve({ held: true, owner: next.owner });
     return;
   }
   holder = null;
+}
+
+/**
+ * Say out loud that a caller is starting on the card WITHOUT the lease.
+ *
+ * PRESERVING TODAY'S BEHAVIOUR IS THE POINT. Every acquirer in this app proceeds on
+ * a timeout and that is not this change's decision to revisit — a ten-minute wait
+ * must not cancel hours of work, and whether it should is Owen's ruling, not a side
+ * effect of a promise shape. What changes is that proceeding is now a CHOICE the
+ * call site makes in one visible line, with the contention it accepted named.
+ */
+export function warnProceedingWithoutGpu(lease: GpuLease, what: string): void {
+  if (lease.held) return;
+  console.warn(
+    `[gpu-arbiter] ${what} is starting WITHOUT the GPU lease: ${lease.owner} waited ` +
+    `${Math.round(lease.waitedMs / 1000)}s and ${lease.heldBy ?? 'nobody'} held the card at the ` +
+    'deadline. Proceeding is the deliberate choice (a timeout never cancels the work); the two ' +
+    'may now contend for VRAM and whichever loses OOMs at model load.',
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

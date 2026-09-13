@@ -16,7 +16,7 @@ import { spawn, ChildProcess } from 'child_process';
 
 import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
 import { getFfmpegPath } from './tool-paths';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import { getMainLogger } from './rolling-logger';
 
 function tlog(msg: string, data?: unknown): void {
@@ -97,8 +97,13 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
 
   const gpuOwner = `whisper-transcribe:${path.basename(outPath)}`;
   tlog(`[transcribe] waiting for GPU lock (up to ${Math.round(GPU_WAIT_MS / 60000)} min)…`);
-  await acquireGpu(gpuOwner, { timeoutMs: GPU_WAIT_MS });
-  tlog('[transcribe] GPU acquired (or wait elapsed) — spawning python');
+  // "GPU acquired (or wait elapsed)" was this line for a year — the one place the old
+  // acquire's ambiguity was written down instead of fixed. The verdict answers it.
+  const lease = await acquireGpu(gpuOwner, { timeoutMs: GPU_WAIT_MS });
+  warnProceedingWithoutGpu(lease, 'the transcription');
+  tlog(lease.held
+    ? '[transcribe] GPU lease held — spawning python'
+    : `[transcribe] starting WITHOUT the GPU lease (${lease.heldBy ?? 'nobody'} had the card) — spawning python`);
 
   try {
     return await new Promise<TranscribeResult>((resolve) => {

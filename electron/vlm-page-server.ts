@@ -73,7 +73,7 @@ import {
   getWslVlmModel,
   shouldUseWsl2ForVlm,
 } from './tool-paths';
-import { acquireGpu, releaseGpu, getGpuMemMB } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, getGpuMemMB } from './gpu-arbiter';
 
 /**
  * Loopback port the guest's server is reached on.
@@ -285,7 +285,12 @@ async function startServer(): Promise<RunningServer> {
 
   const model = getWslVlmModel()!;
 
-  await acquireGpu(GPU_OWNER, { timeoutMs: 10 * 60_000 });
+  // No `onYield`: this server is NOT preemptable by design — a page read that lost
+  // its model mid-book would have to start the book again. So on a timeout it comes
+  // up alongside whoever has the card, which the MIN_FREE_VRAM_MB gate below is the
+  // check on: it refuses by number rather than OOMing at load.
+  const lease = await acquireGpu(GPU_OWNER, { timeoutMs: 10 * 60_000 });
+  warnProceedingWithoutGpu(lease, 'the page-reader server');
 
   let entry: RunningServer | null = null;
   try {

@@ -121,6 +121,9 @@ function world(overrides = {}) {
     acquireGpu: async (owner, opts) => {
       calls.acquires.push(owner);
       state.onYield = opts && opts.onYield ? opts.onYield : null;
+      // The VERDICT, same shape as the real arbiter's GpuLease. A stub that returned
+      // undefined would be the very ambiguity this seam was fixed to remove.
+      return { held: true, owner };
     },
     releaseGpu: (owner) => { calls.releases.push(owner); },
     gpuLock: () => state.lock,

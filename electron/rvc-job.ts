@@ -59,7 +59,7 @@ import { BrowserWindow } from 'electron';
 
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import {
   abandonDerivedSentences,
   assertStagingSpace,
@@ -313,7 +313,10 @@ export async function runRvcEnhancement(
     percentage: 0,
     message: 'Waiting for the GPU…',
   });
-  await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+  const lease = await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+  // Proceed on a timeout, as this pass always has — urvc's own load failure is the
+  // backstop, and refusing here would strand a session mid-chain. Said out loud now.
+  warnProceedingWithoutGpu(lease, `the RVC pass for job ${jobId}`);
 
   /*
    * BOTH WORKING SETS ARE LOCAL. The gap set only ever feeds the conversion and

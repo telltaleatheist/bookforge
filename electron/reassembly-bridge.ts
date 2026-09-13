@@ -23,7 +23,7 @@ import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import { resolveClosedSession } from './chapter-closer';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
@@ -1530,7 +1530,10 @@ export async function startReassembly(
     // waits its turn instead of colliding.
     const gpuOwner = `rvc:reassembly:${jobId}`;
     emitStage('rvc', null, 'Waiting for the GPU…');
-    await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+    const lease = await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+    // Proceed on a timeout (unchanged): this pass sits mid-reassembly with the
+    // sentences already rendered, and refusing here would throw that run away.
+    warnProceedingWithoutGpu(lease, `the RVC enhancement for job ${jobId}`);
     try {
       reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
       emitStage('rvc', null, `Enhancing voice with ${voice.label}…`);

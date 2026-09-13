@@ -39,7 +39,7 @@ import { promisify } from 'util';
 
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { denoiseFile } from './denoise-bridge';
-import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 
 const execFileAsync = promisify(execFile);
 
@@ -558,7 +558,10 @@ export const STEP_REGISTRY: Record<string, StepEntry> = {
       // The model loads onto the RVC env's torch device; it must not co-reside
       // with a running TTS/LLM job (same lease the reassembly denoise takes).
       const owner = `clipforge:roformer:${path.basename(output)}`;
-      await acquireGpu(owner, { timeoutMs: 10 * 60_000 });
+      const lease = await acquireGpu(owner, { timeoutMs: 10 * 60_000 });
+      // Proceed on a timeout (unchanged): a ClipForge stage is seconds of model time
+      // and failing the chain over a busy card is worse than sharing it.
+      warnProceedingWithoutGpu(lease, `the ${engine} stage`);
       let result;
       try {
         result = await denoiseFile({ inputPath: input, outputPath: output, model, stem });
