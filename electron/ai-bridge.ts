@@ -11,6 +11,23 @@ import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
+// The Crucible SDK's error vocabulary. Imported for VALUE (instanceof), not just
+// for types — translateCrucibleError is the one place those eight types are
+// turned into the Error surface the rest of this file already speaks. The
+// registry itself (./crucible/servers.js) is loaded lazily at call time, like
+// llama-bridge, so a job that never names a Crucible never reads the registry.
+import {
+  CrucibleAuthError,
+  CrucibleConfigError,
+  CrucibleNotACrucible,
+  CrucibleProtocolError,
+  CrucibleRefused,
+  CrucibleServerError,
+  CrucibleUnreachable,
+  CrucibleVersionError,
+  type CrucibleClient,
+  type ModelInfo,
+} from '@crucible/client';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -159,7 +176,7 @@ export function numCtxMaxForModel(model: string): number {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local';
+export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
 
 export interface AIProviderConfig {
   provider: AIProvider;
@@ -179,6 +196,21 @@ export interface AIProviderConfig {
   // llama-bridge; `model` here is informational only.
   local?: {
     model?: string;
+  };
+  /**
+   * A Crucible inference server (crucible docs/PHASE2-LLM.md section 7).
+   *
+   * `server` NAMES an entry in <userData>/crucible-servers.json — it is not a
+   * URL and it is not a default; `model` is a Crucible model id, which must
+   * already be RESIDENT on that server (a cleanup run never loads one). Both
+   * are refused by name when missing: see crucibleConfigOf.
+   *
+   * CLI-only for now. Nothing in the app's UI, IPC or settings can select this
+   * provider, which is deliberate — the CLI is phase 2's only consumer.
+   */
+  crucible?: {
+    server: string;
+    model: string;
   };
 }
 
@@ -282,6 +314,10 @@ function getProviderModel(config: AIProviderConfig): string {
   if (config.provider === 'ollama') return config.ollama?.model || 'unknown';
   if (config.provider === 'claude') return config.claude?.model || 'unknown';
   if (config.provider === 'openai') return config.openai?.model || 'unknown';
+  // Two servers can serve the same model id, so the checkpoint's model string
+  // names the SERVER too — a resumed job must not silently continue on a
+  // different host's copy.
+  if (config.provider === 'crucible') return config.crucible ? `${config.crucible.server}/${config.crucible.model}` : 'unknown';
   return 'unknown';
 }
 
@@ -1979,7 +2015,15 @@ export async function hasModel(modelName: string): Promise<boolean> {
 /**
  * Check connection for any AI provider
  */
-export async function checkProviderConnection(provider: AIProvider, apiKey?: string): Promise<ProviderConnectionResult> {
+export async function checkProviderConnection(
+  provider: AIProvider,
+  apiKey?: string,
+  // Which REGISTERED Crucible server to test. Only the `crucible` provider has
+  // one, and it has no default — the app's IPC handler never passes it, which is
+  // exactly why asking for `crucible` without it is refused by name below rather
+  // than answered about some other machine.
+  crucibleServer?: string,
+): Promise<ProviderConnectionResult> {
   switch (provider) {
     case 'ollama':
       return checkOllamaConnection();
@@ -1989,8 +2033,47 @@ export async function checkProviderConnection(provider: AIProvider, apiKey?: str
       return checkOpenAIConnection(apiKey);
     case 'local':
       return checkLocalConnection();
+    case 'crucible':
+      return checkCrucibleConnection(crucibleServer);
     default:
       return { available: false, error: `Unknown provider: ${provider}` };
+  }
+}
+
+/**
+ * Check one Crucible server: `ping()` says something is there and speaks the
+ * protocol (it is the unauthenticated route, so it separates "wrong address"
+ * from "wrong token"), then `models()` proves the bearer token AND lists what
+ * could be talked to. The `models` a caller gets back are the RESIDENT ones —
+ * an installed-but-not-loaded model is not something a cleanup run may use, and
+ * reporting it as available would be a promise this provider then refuses to
+ * keep.
+ */
+async function checkCrucibleConnection(server?: string): Promise<ProviderConnectionResult> {
+  if (!server) {
+    return {
+      available: false,
+      error: 'crucible_server_not_named: provider "crucible" needs the name of a registered server '
+        + '(bookforge-tts --crucible-list). There is no default server.',
+    };
+  }
+  try {
+    const client = await crucibleClient(server);
+    await client.ping();
+    const rows = await client.models();
+    return { available: true, models: rows.filter((m) => m.resident).map((m) => m.id) };
+  } catch (err) {
+    const translated = translateCrucibleError(err, server);
+    // The SDK's eight types (translateCrucibleError returns a NEW Error for each
+    // and the original for anything else), plus the registry's own named
+    // refusals — an unknown server name is a refusal, not an outage. Anything
+    // else keeps its stack: a connection test does not answer "unavailable" to a
+    // programming error.
+    if (translated !== err) return { available: false, error: (translated as Error).message };
+    if (err instanceof Error && err.name === 'CrucibleRegistryError') {
+      return { available: false, error: err.message };
+    }
+    throw err;
   }
 }
 
@@ -2594,6 +2677,238 @@ async function cleanChunkWithOpenAI(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Crucible — a cleanup pass on somebody else's GPU
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Crucible (crucible docs/DESIGN.md, docs/PHASE2-LLM.md) is one inference server
+// for all of Owen's apps: it runs models and returns bytes, and never knows what
+// a cleanup pass is. This provider is BookForge's consumer of its `llm` job type
+// — the Mac Studio's GPU, or the PC's WSL2 server, reached over HTTP by exactly
+// one code path.
+//
+// Two rules it does not bend, both from PHASE2-LLM.md section 7:
+//   1. The model must ALREADY be resident. A cleanup run never loads one — that
+//      is the operator's job (`--crucible-load`), because a load evicts whatever
+//      else is resident and takes minutes, and neither belongs inside a book.
+//   2. Nothing is defaulted. `server` names a registry entry and `model` names a
+//      Crucible model id; a config missing either is refused by name.
+//
+// CLI-ONLY. Nothing in the app's UI, IPC or settings can select this provider.
+
+/** This client's name in the Crucible server's log and User-Agent. */
+const CRUCIBLE_CLIENT_NAME = 'bookforge';
+
+/**
+ * The `crucible` provider's config, or a refusal naming the missing half.
+ *
+ * Neither field is guessable — a server name is whatever this machine called the
+ * entry, and a model id is whatever that host has manifests for — so neither is
+ * defaulted. A caller that reaches here with one missing has a bug, and gets a
+ * message that says which.
+ */
+function crucibleConfigOf(config: AIProviderConfig): { server: string; model: string } {
+  const server = config.crucible?.server;
+  const model = config.crucible?.model;
+  if (!server) {
+    throw new Error('crucible_server_not_named: provider "crucible" needs crucible.server — the '
+      + 'name of an entry in the server registry (bookforge-tts --crucible-list)');
+  }
+  if (!model) {
+    throw new Error('crucible_model_not_named: provider "crucible" needs crucible.model — a '
+      + `Crucible model id (bookforge-tts --crucible-models --server ${server})`);
+  }
+  return { server, model };
+}
+
+/**
+ * A client bound to a registered Crucible server.
+ *
+ * The registry module is imported lazily (the llama-bridge pattern) because it
+ * resolves `<userData>` through Electron's `app`, and because a job using any
+ * other provider has no business reading a file full of bearer tokens.
+ */
+async function crucibleClient(server: string): Promise<CrucibleClient> {
+  const { crucibleClientFor } = await import('./crucible/servers.js');
+  return crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+}
+
+/**
+ * One SDK failure, rendered as the Error surface every other provider throws.
+ *
+ * cleanChunkWithProvider's machinery reads MESSAGES: an abort is
+ * `error.name === 'AbortError'`, a retryable transport failure is a message
+ * carrying `network`/`socket`/`timeout`/`fetch`, and anything else is fatal for
+ * the chunk. The SDK instead throws one TYPE per failure. This is the single
+ * place those two vocabularies meet, so that the retry / timeout / abort
+ * machinery applies to crucible EXACTLY as it applies to openai — where `fetch`
+ * itself supplies "fetch failed" for the same transport failures
+ * `CrucibleUnreachable` names.
+ *
+ * An abort is deliberately NOT translated: the SDK throws the DOM `AbortError`
+ * straight through, and that is the name the caller already checks for.
+ * Anything that is not one of the SDK's eight types is returned UNCHANGED — an
+ * unexpected exception keeps its stack rather than becoming a message.
+ */
+function translateCrucibleError(err: unknown, server: string): unknown {
+  const at = `crucible "${server}"`;
+  if (err instanceof CrucibleUnreachable) {
+    // "network" is the token the retry machinery keys on, so a server that is
+    // down is retried exactly as a failed fetch to api.openai.com is.
+    return new Error(`${at} network failure: ${err.message}`);
+  }
+  if (err instanceof CrucibleRefused && err.code === 'model_not_resident') {
+    return new Error(`crucible_model_not_resident: ${at} is not serving "${err.serverMessage}". `
+      + `Load it first — bookforge-tts --crucible-load --server ${server} --model <id> — a cleanup `
+      + 'run never loads a model behind your back.');
+  }
+  if (err instanceof CrucibleAuthError) {
+    return new Error(`${at} refused the token (${err.code}): ${err.serverMessage}. Re-add the `
+      + 'server with the token `crucible token --show` prints on that host.');
+  }
+  if (err instanceof CrucibleVersionError) {
+    return new Error(`${at} speaks API version ${err.serverApiVersion}, this client speaks `
+      + `${err.clientApiVersion} (${err.code}): ${err.serverMessage}. One of the two must be updated.`);
+  }
+  if (err instanceof CrucibleRefused) {
+    return new Error(`${at} refused the request (${err.status} ${err.code}): ${err.serverMessage}`);
+  }
+  if (err instanceof CrucibleServerError) {
+    return new Error(`${at} failed the request (${err.status} ${err.code}): ${err.serverMessage}. `
+      + 'The server broke; its own log says why.');
+  }
+  if (err instanceof CrucibleNotACrucible) {
+    return new Error(`${at} answered /v1/ping but is not a crucible: ${err.body}. Check the url.`);
+  }
+  if (err instanceof CrucibleProtocolError) {
+    return new Error(`${at} sent something API v1 does not describe: ${err.detail}. The server and `
+      + 'this client disagree about the protocol.');
+  }
+  if (err instanceof CrucibleConfigError) {
+    return new Error(`${at}: the client was built wrong — ${err.message}`);
+  }
+  return err;
+}
+
+/**
+ * The `/v1/models` rows for one server, as the Error surface.
+ * Used by the once-per-job residency check and by the connection test.
+ */
+async function crucibleModelRows(server: string): Promise<ModelInfo[]> {
+  const client = await crucibleClient(server);
+  try {
+    return await client.models();
+  } catch (err) {
+    throw translateCrucibleError(err, server);
+  }
+}
+
+/**
+ * The ONE residency check a cleanup job makes — at the start, not per chunk.
+ *
+ * Per-chunk it would be a `/v1/models` round trip for every 2,000 characters of
+ * a book, and it would answer a question that cannot change underneath a running
+ * job without the operator doing something deliberate elsewhere. At job start it
+ * is what turns "the 47th chunk failed" into "this job cannot run", before a
+ * single chunk is sent.
+ *
+ * Refuses by name: `crucible_unknown_model` when the host has no manifest for
+ * that id, `crucible_model_not_resident` when it has one and nothing is serving
+ * it. Never loads it — see the section header.
+ */
+async function assertCrucibleModelResident(server: string, model: string): Promise<void> {
+  const rows = await crucibleModelRows(server);
+  const row = rows.find((m) => m.id === model);
+  if (!row) {
+    const known = rows.map((m) => m.id).join(', ');
+    throw new Error(`crucible_unknown_model: crucible "${server}" has no model "${model}" `
+      + `(${rows.length === 0 ? 'it advertises none' : `known: ${known}`})`);
+  }
+  if (!row.resident) {
+    const resident = rows.filter((m) => m.resident).map((m) => m.id);
+    throw new Error(`crucible_model_not_resident: "${model}" is not resident on crucible `
+      + `"${server}" (${resident.length > 0 ? `resident: ${resident.join(', ')}` : 'nothing is resident'}). `
+      + `Load it first: bookforge-tts --crucible-load --server ${server} --model ${model}`);
+  }
+}
+
+/**
+ * Clean up a chunk of text on a Crucible server.
+ *
+ * Deliberately the same shape as cleanChunkWithOpenAI — the same 3-minute
+ * per-chunk timeout, the same chained abort, the same `max(4096, len*2)` token
+ * budget, the same temperature, the same empty-answer → `[SKIP]` trapdoor and
+ * the same extractAnswer tail — because it feeds the same safeguards. Two
+ * differences, both required by what is on the other end:
+ *
+ *  - `thinking: false`. Qwen3.5 and its kind emit `reasoning` first and
+ *    `content` after, so a bounded budget can be spent ENTIRELY on reasoning and
+ *    return a message with no content at all. A cleanup pass wants the answer.
+ *  - `finishReason === 'length'` routes through the unified `[SKIP]` split, as
+ *    the Claude path does for `max_tokens`. The OpenAI path lacks that only
+ *    because its finish_reason was never wired up; a truncated chunk is not text
+ *    to ship, whoever generated it.
+ */
+async function cleanChunkWithCrucible(
+  text: string,
+  systemPrompt: string,
+  server: string,
+  model: string,
+  abortSignal?: AbortSignal
+): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  // Chain abort signals - if parent aborts, abort this request too
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
+  try {
+    const client = await crucibleClient(server);
+    let answer;
+    try {
+      answer = await client.chat({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text },
+        ],
+        temperature: 0.1,
+        maxTokens: Math.max(4096, text.length * 2),
+        thinking: false,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw translateCrucibleError(err, server);
+    }
+
+    clearTimeout(timeoutId);
+
+    // Never `content || text`. An empty/refusal answer must go through the
+    // [SKIP] trapdoor (split → retry → register a skipped chunk), not silently
+    // return the original as a clean "0 changes" success. See no-fallbacks rule.
+    const extracted: string = answer.content;
+    if (!extracted.trim()) {
+      console.warn(`[Crucible] Empty response (finish_reason: ${answer.finishReason}) for ${text.length}-char chunk — routing through [SKIP] handling`);
+    }
+    const cleaned = extracted.trim() ? extracted : '[SKIP]';
+
+    if (answer.finishReason === 'length') {
+      console.warn(`[Crucible] hit the token budget (finish_reason: length) for ${text.length}-char chunk — routing through unified [SKIP] split`);
+      return '[SKIP]';
+    }
+
+    // Separate answer from any reasoning/answer-tag wrapper (see the Claude and
+    // OpenAI paths): an answer-tag prompt (edit-list, simplify) must not leak its
+    // tags, and an unclosed answer throws REASONING_OVERRUN.
+    return extractAnswer(cleaned, model);
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
 /**
  * Clean up a chunk of text using the configured provider with retry logic
  */
@@ -2676,6 +2991,13 @@ export async function cleanChunkWithProvider(
               throw new Error('OpenAI model not configured');
             }
             return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, chunkMeta);
+          case 'crucible': {
+            // Residency was proven once, at job start (cleanupEpub's preflight).
+            // This only resolves the two required fields, which crucibleConfigOf
+            // refuses by name rather than defaulting.
+            const { server, model } = crucibleConfigOf(config);
+            return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal);
+          }
           case 'local':
             return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
           default:
@@ -3101,6 +3423,14 @@ async function callProviderExtracted(
     case 'openai':
       if (!config.openai?.apiKey || !config.openai?.model) throw new Error('OpenAI not configured');
       return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+    case 'crucible': {
+      // `numCtx` and `numPredict` are Ollama's runner knobs and are ignored here
+      // exactly as they are for claude/openai — the Crucible engine's context is
+      // the manifest's `context_default`, fixed when the model was loaded, and
+      // the token budget travels with the chunk (see cleanChunkWithCrucible).
+      const { server, model } = crucibleConfigOf(config);
+      return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal);
+    }
     case 'local':
       return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
     default:
@@ -3941,6 +4271,11 @@ export interface EpubCleanupResult {
  * The VRAM preflight in gpu-arbiter remains the backstop.
  */
 async function releaseCleanupModel(config: AIProviderConfig): Promise<void> {
+  // Crucible is deliberately NOT unloaded here, and the symmetry is the point: a
+  // cleanup run does not load a model on someone else's server, so it does not
+  // unload one either. Residency there is the operator's decision — an unload
+  // behind their back would evict the model their next run is about to use, on a
+  // machine this job does not own (`--crucible-unload` is the door).
   if (config.provider !== 'ollama' || !config.ollama?.model) return;
   const model = config.ollama.model;
   try {
@@ -4026,6 +4361,8 @@ export async function cleanupEpub(
     ollamaModel: providerConfig.ollama?.model,
     claudeModel: providerConfig.claude?.model,
     openaiModel: providerConfig.openai?.model,
+    crucibleServer: providerConfig.crucible?.server,
+    crucibleModel: providerConfig.crucible?.model,
     useDetailedCleanup: options?.useDetailedCleanup,
     exampleCount: options?.deletedBlockExamples?.length || 0,
     useParallel: options?.useParallel,
@@ -4108,6 +4445,30 @@ export async function cleanupEpub(
       stopAIPowerBlock();
       return { success: false, error: 'OpenAI model not specified in config' };
     }
+  } else if (config.provider === 'crucible') {
+    // Both halves by name, then the ONE residency round trip this job makes.
+    // Failing here costs a second and names the fix; failing at chunk 47 costs an
+    // hour and names nothing. A refusal is returned, not thrown, because that is
+    // how every other provider's preflight reports — the message carries the
+    // machine-readable code (crucible_model_not_resident, …) at its head.
+    let crucible: { server: string; model: string };
+    try {
+      crucible = crucibleConfigOf(config);
+    } catch (err) {
+      stopAIPowerBlock();
+      return { success: false, error: (err as Error).message };
+    }
+    try {
+      await assertCrucibleModelResident(crucible.server, crucible.model);
+    } catch (err) {
+      stopAIPowerBlock();
+      // The registry's refusals (unknown server), this file's named refusals and
+      // the SDK's translated ones all arrive as Errors carrying their own cause.
+      // Anything that is not an Error is not a refusal — it keeps its stack.
+      if (!(err instanceof Error)) throw err;
+      return { success: false, error: err.message };
+    }
+    console.log(`[AI-BRIDGE] Crucible preflight passed — ${crucible.model} is resident on "${crucible.server}"`);
   } else if (config.provider === 'local') {
     const { llamaBridge } = await import('./llama-bridge.js');
     const s = await llamaBridge.status();
@@ -5013,12 +5374,15 @@ export async function cleanupEpub(
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Process all chunks (parallel or sequential)
     // ─────────────────────────────────────────────────────────────────────────
-    // Local (single llama-server) and Ollama are single-stream — never parallelize.
+    // Local (single llama-server), Ollama and Crucible are single-stream — never
+    // parallelize. Crucible serves ONE resident model from one engine process
+    // (PHASE2-LLM.md section 3), so N workers would not be N GPUs; they would be
+    // N requests queued at the same engine, with N times the peak KV.
     // The block path is sequential-only: the parallel loop is built on prose chunks
     // and finishes chapters with rebuildChapterPreservingHeadings, so letting a
     // cloud-provider simplify job in there would quietly put it back on the chunk
     // pipeline. Parallel block mode is future work, not a silent fallback.
-    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local' && !simplifyBlockMode;
+    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local' && config.provider !== 'crucible' && !simplifyBlockMode;
     const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
 
     if (useParallel && workerCount > 1) {
@@ -5803,6 +6167,11 @@ export async function cleanupEpub(
       modelName = `claude/${config.claude.model}`;
     } else if (config.provider === 'openai' && config.openai?.model) {
       modelName = `openai/${config.openai.model}`;
+    } else if (config.provider === 'crucible' && config.crucible?.model) {
+      // The SERVER is part of the identity: the same model id on the Mac and in
+      // WSL2 is two different machines, and a chars/min figure that did not say
+      // which one would be unreadable next to the other.
+      modelName = `crucible/${config.crucible.server}/${config.crucible.model}`;
     }
 
     const analytics = {

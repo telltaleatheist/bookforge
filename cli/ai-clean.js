@@ -13,6 +13,13 @@
  * Run via the electron shim:
  *   node --require ./cli/electron-stub.js cli/ai-clean.js \
  *        --input book.epub --provider claude --model claude-sonnet-4-... [--simplify --mode learner]
+ *   node --require ./cli/electron-stub.js cli/ai-clean.js \
+ *        --input book.epub --provider crucible --server mac --model qwen3.5-9b --stages ocr
+ *
+ * PROVIDER `crucible` runs the pass on a Crucible inference server's GPU instead
+ * of local Ollama (crucible docs/PHASE2-LLM.md section 7). --server names an
+ * entry in this machine's registry, --model a model that must ALREADY be
+ * resident there: the run refuses by name rather than loading one.
  *
  * The API key is read from BOOKFORGE_AI_API_KEY (env) so it never lands in argv.
  * No fallbacks: a missing key/model/provider or a failed job throws with a naming message.
@@ -35,8 +42,17 @@ function parseArgs(argv) {
   return a;
 }
 
-function buildProviderConfig(provider, model, apiKey, ollamaUrl) {
+function buildProviderConfig(provider, model, apiKey, ollamaUrl, crucibleServer) {
   switch (provider) {
+    case 'crucible':
+      // A Crucible server runs the model; BookForge only sends the chunk. Neither
+      // half is guessable — --server names an entry in this machine's registry
+      // (bookforge-tts --crucible-list) and --model a Crucible model id that must
+      // already be RESIDENT there. ai-bridge refuses by name if it is not; this
+      // run never loads it (`--crucible-load` is the operator's door).
+      if (!crucibleServer) throw new Error("provider 'crucible' needs --server <name> (a registered server: bookforge-tts --crucible-list)");
+      if (!model) throw new Error("provider 'crucible' needs --model <id> (e.g. qwen3.5-9b)");
+      return { provider, crucible: { server: crucibleServer, model } };
     case 'claude':
       if (!apiKey) throw new Error("provider 'claude' needs an API key (--api-key / BOOKFORGE_AI_API_KEY / ANTHROPIC_API_KEY)");
       if (!model) throw new Error("provider 'claude' needs --model (e.g. claude-sonnet-4-5)");
@@ -52,7 +68,7 @@ function buildProviderConfig(provider, model, apiKey, ollamaUrl) {
       // Bundled llama.cpp; the active model is resolved inside llama-bridge (active-model.json).
       return { provider, local: { model: model || undefined } };
     default:
-      throw new Error(`unknown --provider '${provider}' (claude|openai|ollama|local)`);
+      throw new Error(`unknown --provider '${provider}' (claude|openai|ollama|local|crucible)`);
   }
 }
 
@@ -61,7 +77,13 @@ async function main() {
 
   if (!args.input) throw new Error('--input <file.epub> is required');
   if (!fs.existsSync(args.input)) throw new Error(`input epub not found: ${args.input}`);
-  if (!args.provider) throw new Error('--provider <claude|openai|ollama|local> is required');
+  if (!args.provider) throw new Error('--provider <claude|openai|ollama|local|crucible> is required');
+  // --server belongs to ONE provider. Accepting it elsewhere and dropping it is
+  // the failure mode the flags keeper exists to end: a run that silently went to
+  // the local machine reads as a measurement of the remote one.
+  if (args.server !== undefined && args.provider !== 'crucible') {
+    throw new Error(`--server names a registered Crucible server and applies to --provider crucible only (got provider '${args.provider}')`);
+  }
 
   // Key precedence matches the error messages: --api-key, then the CLI-wrapper env,
   // then the conventional provider envs (so driving this file directly also works).
@@ -70,7 +92,8 @@ async function main() {
     || (args.provider === 'claude' ? process.env.ANTHROPIC_API_KEY : undefined)
     || (args.provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
   const config = buildProviderConfig(args.provider, args.model, apiKey,
-    args['ollama-url'] || process.env.OLLAMA_BASE_URL);
+    args['ollama-url'] || process.env.OLLAMA_BASE_URL,
+    args.server === true ? '' : args.server);
 
   // Options mirror the app's cleanupEpub option surface exactly.
   const options = {};
@@ -187,7 +210,10 @@ async function main() {
     ? `simplify(mode=${options.simplifyMode || 'default'}${options.enableAiCleanup ? '+cleanup' : ''})`
     : 'cleanup';
   const t0 = Date.now();
-  console.log(`[ai] ${task} via ${args.provider}${args.model ? ' ' + args.model : ''} — driving aiBridge.cleanupEpub...`);
+  const via = args.provider === 'crucible'
+    ? `crucible ${args.server}/${args.model}`
+    : `${args.provider}${args.model ? ' ' + args.model : ''}`;
+  console.log(`[ai] ${task} via ${via} — driving aiBridge.cleanupEpub...`);
 
   const r = await api.cleanupEpub(args.input, jobId, null, undefined, config, options);
   // The app is long-lived and lets the 5-min idle timer stop llama-server; the CLI

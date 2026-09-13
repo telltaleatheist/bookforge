@@ -53,6 +53,10 @@ THE COMMANDS. Exactly one is required.
   --crucible-info       its backend, GPU and advertised capabilities
   --crucible-health     its status, queue depth and resident models
   --crucible-echo       the handshake end to end: a file out, the same bytes back
+  --crucible-models     every model that server knows: installed, resident, loadable
+  --crucible-load       make one model resident (unloads whatever was)
+  --crucible-unload     hand the memory back
+  --crucible-chat       one completion against the resident model
 
 Commands are a registry (COMMANDS), the flags a second one (COMMAND_FLAGS) that
 says which command reads which — and the per-command help is generated from it,
@@ -1098,14 +1102,35 @@ def _run_ai(args, simplify):
     the app. Simplify is the same call with simplifyForChildren + a mode. The API key
     goes through the process env (BOOKFORGE_AI_API_KEY), never argv."""
     _require(bool(args.input), "--input <file.epub> is required for --ai-cleanup/--ai-simplify")
-    _require(bool(args.provider), "--provider <claude|openai|ollama|local> is required")
-    _require(args.provider in ("claude", "openai", "ollama", "local"),
-             f"--provider '{args.provider}' invalid (claude|openai|ollama|local)")
+    _require(bool(args.provider), "--provider <claude|openai|ollama|local|crucible> is required")
+    _require(args.provider in ("claude", "openai", "ollama", "local", "crucible"),
+             f"--provider '{args.provider}' invalid (claude|openai|ollama|local|crucible)")
+    # --server belongs to ONE provider. Accepted anywhere else it would be a flag
+    # that looked set and was dropped, which is the failure this CLI's whole flag
+    # discipline exists to end.
+    _require(not (args.server and args.provider != "crucible"),
+             f"--server names a registered Crucible server and applies to --provider crucible "
+             f"only (got --provider {args.provider})")
+    if args.provider == "crucible":
+        _require(bool(args.server),
+                 "--provider crucible needs --server <n>: the name this machine knows the "
+                 "Crucible server by (bookforge-tts --crucible-list). There is no default server")
+        _require(bool(args.model),
+                 "--provider crucible needs --model <id>: a Crucible model id that is ALREADY "
+                 "resident on that server (bookforge-tts --crucible-models --server "
+                 f"{args.server}). The run refuses by name rather than loading one")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(AI_CLEAN.is_file(), f"missing AI adapter {AI_CLEAN}")
     _require((REPO_ROOT / "dist" / "electron" / "ai-bridge.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
              "(dist/electron/ai-bridge.js missing)")
+    # The crucible provider resolves its server through the app's own compiled
+    # registry, which is a separate emitted file — name it rather than failing
+    # inside a dynamic import four frames down.
+    _require(not (args.provider == "crucible"
+                  and not (REPO_ROOT / "dist" / "electron" / "crucible" / "servers.js").is_file()),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/crucible/servers.js missing)")
 
     # API key for cloud providers: --api-key wins, else the conventional env var. The
     # electron code does NOT read these envs itself — the CLI sources the key and hands
@@ -1125,6 +1150,8 @@ def _run_ai(args, simplify):
            "--input", input_path, "--provider", args.provider]
     if args.model:
         cmd += ["--model", args.model]
+    if args.provider == "crucible":
+        cmd += ["--server", args.server]
     if args.output_dir:
         cmd += ["--output-dir", str(_user_path(args.output_dir))]
     if args.custom_instructions:
@@ -1818,6 +1845,83 @@ def cmd_crucible_echo(args):
     return _crucible(args, argv, f"echo -> {args.server}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CRUCIBLE llm — the operator's four verbs (crucible docs/PHASE2-LLM.md)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A Crucible serves ONE model at a time, and loading a second unloads the first.
+# Residency is therefore a decision somebody makes, not a side effect: these four
+# are how it is made, and --ai-cleanup --provider crucible REFUSES by name when
+# the model it was given is not resident rather than loading it mid-book.
+
+
+def cmd_crucible_models(args):
+    """GET /v1/models — every model this host knows, and what is true of each.
+
+    Four booleans that are four different facts: installed (weights on disk),
+    resident (an engine is serving it now), loadable (asking for it now would
+    succeed — which also depends on the accelerator guard), and the backend
+    support implied by a revision that is not "—". A row that is not loadable
+    always carries the server's own reason, because an operator cannot act on a
+    refusal with no cause.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-models"))
+    _require(not args.model,
+             "--crucible-models: this LISTS the models; --model picks one for "
+             "--crucible-load / --crucible-unload / --crucible-chat")
+    _require(bool(args.server), "--server <n> is required for --crucible-models")
+    return _crucible(args, ["--models", "--server", args.server], f"models {args.server}")
+
+
+def cmd_crucible_load(args):
+    """Make one model resident. A normal job: queued, warming..., done {resident}.
+
+    The warming lines are the engine's OWN readiness output, streamed as it
+    prints them. Refused before queuing, by name, when the model is unknown, not
+    installed, unsupported on that backend, larger than the free memory, or the
+    card is busy with work Crucible does not own. Nothing is ever evicted to make
+    room — except the previously resident model, which is the one-at-a-time rule.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-load"))
+    _require(bool(args.server), "--server <n> is required for --crucible-load")
+    _require(bool(args.model), "--model <id> is required for --crucible-load "
+                               "(see --crucible-models --server %s)" % (args.server or "N"))
+    return _crucible(args, ["--load", "--server", args.server, "--model", args.model],
+                     f"load {args.model} -> {args.server}")
+
+
+def cmd_crucible_unload(args):
+    """Hand the memory back. Also a job; `done {resident: null}` means nothing is."""
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-unload"))
+    _require(bool(args.server), "--server <n> is required for --crucible-unload")
+    _require(bool(args.model), "--model <id> is required for --crucible-unload")
+    return _crucible(args, ["--unload", "--server", args.server, "--model", args.model],
+                     f"unload {args.model} -> {args.server}")
+
+
+def cmd_crucible_chat(args):
+    """One completion against the RESIDENT model — the smallest real llm call.
+
+    Naming a model that is not resident is a 409 the server answers by name,
+    saying what IS resident instead: never a silent load, never a retry.
+    --stream prints the content deltas as they arrive; --no-thinking turns a
+    reasoning model's thinking off (omit it and the model's own default stands,
+    which for Qwen3.5 means a short budget can be spent entirely on reasoning
+    and return no content at all).
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-chat"))
+    _require(bool(args.server), "--server <n> is required for --crucible-chat")
+    _require(bool(args.model), "--model <id> is required for --crucible-chat "
+                               "(it must be the resident one)")
+    _require(bool(args.prompt), "--prompt <text> is required for --crucible-chat")
+    argv = ["--chat", "--server", args.server, "--model", args.model, "--prompt", args.prompt]
+    if args.stream:
+        argv += ["--stream"]
+    if args.no_thinking:
+        argv += ["--no-thinking"]
+    return _crucible(args, argv, f"chat {args.model} -> {args.server}")
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
@@ -1862,6 +1966,11 @@ COMMANDS = {
     "crucible-info": cmd_crucible_info,
     "crucible-health": cmd_crucible_health,
     "crucible-echo": cmd_crucible_echo,
+    # The llm job type's operator verbs (crucible docs/PHASE2-LLM.md).
+    "crucible-models": cmd_crucible_models,
+    "crucible-load": cmd_crucible_load,
+    "crucible-unload": cmd_crucible_unload,
+    "crucible-chat": cmd_crucible_chat,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2319,19 +2428,34 @@ scanner-damage pass and stops at repaired.epub; tts is the deterministic prep on
 choice for a born-digital EPUB; both does repair then prep.
 
 Cloud providers (claude, openai) run OFF-GPU, so they are safe alongside a render.
-The key travels in the process env, never argv.""",
-        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--api-key",
-                  "--output-dir", "--stages", "--custom-instructions", "--detailed-cleanup",
-                  "--cleanup-prompt", "--chunk-size", "--temperature", "--ollama-url",
-                  "--parallel-workers", "--no-parallel", "--test-mode", "--test-chunks"],
+The key travels in the process env, never argv.
+
+--provider crucible runs the model pass on a Crucible inference server's GPU
+(the Mac Studio, or the PC's WSL2 server) instead of local Ollama. It needs
+--server <n>, the name this machine knows that server by, and --model <id>, a
+Crucible model id that is ALREADY RESIDENT there: the run refuses by name
+(crucible_model_not_resident) before touching a chunk rather than loading one
+mid-book. Load it first with --crucible-load. --server is refused for every
+other provider.""",
+        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--server",
+                  "--api-key", "--output-dir", "--stages", "--custom-instructions",
+                  "--detailed-cleanup", "--cleanup-prompt", "--chunk-size", "--temperature",
+                  "--ollama-url", "--parallel-workers", "--no-parallel", "--test-mode",
+                  "--test-chunks"],
         "refuses": [
             ("--test-chunks", "without --test-mode: a cap that looked set and was not is the "
                               "failure this rule exists to end"),
+            ("--server", "for any provider but crucible: it names a registered Crucible server, "
+                         "and a flag that looked set and was dropped is the failure this rule "
+                         "exists to end"),
         ],
         "examples": [
             '# a SCANNED book with a cloud provider (key from ANTHROPIC_API_KEY):\n'
             'bookforge-tts --ai-cleanup --input book.epub --provider claude \\\n'
             '    --model claude-sonnet-4-5 --stages both --output-dir ./out',
+            "# somebody else's GPU (make the model resident first — see the doc above):\n"
+            'bookforge-tts --ai-cleanup --input book.epub --provider crucible \\\n'
+            '    --server mac --model qwen3.5-9b --stages ocr --output-dir ./out',
             '# a born-digital epub — the deterministic prep only, seconds, no model pass:\n'
             'bookforge-tts --ai-cleanup --input book.epub --provider ollama \\\n'
             '    --model cogito:14b --stages tts --output-dir ./out',
@@ -2351,15 +2475,20 @@ simplify-only.
 
 Output is simplified.epub in --output-dir (default: alongside the input). File in,
 file out — for the PROJECT act, with its ledger row and provenance, use
---pass --kind simplify.""",
-        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--api-key",
-                  "--output-dir", "--simplify-mode", "--no-cleanup", "--stages",
+--pass --kind simplify.
+
+--provider crucible works here exactly as it does for --ai-cleanup: --server <n>
+names a registered Crucible server and --model <id> a model already resident on
+it, refused by name if it is not. --server is refused for every other provider.""",
+        "reads": ["--config", "--dry-run", "--input", "--provider", "--model", "--server",
+                  "--api-key", "--output-dir", "--simplify-mode", "--no-cleanup", "--stages",
                   "--custom-instructions", "--detailed-cleanup", "--cleanup-prompt",
                   "--chunk-size", "--temperature", "--ollama-url", "--parallel-workers",
                   "--no-parallel", "--test-mode", "--test-chunks"],
         "refuses": [
             ("--test-chunks", "without --test-mode: a cap that looked set and was not is the "
                               "failure this rule exists to end"),
+            ("--server", "for any provider but crucible: it names a registered Crucible server"),
         ],
         "examples": [
             'bookforge-tts --ai-simplify --input book.epub --provider ollama \\\n'
@@ -2600,6 +2729,94 @@ event stream, the artifact download and the provenance record.""",
             'bookforge-tts --crucible-echo --server wsl --file sample.bin',
             '# name the round-tripped copy yourself (the sidecar lands beside it):\n'
             'bookforge-tts --crucible-echo --server mac --file sample.bin --out back.bin',
+        ],
+    },
+    "crucible-models": {
+        "usage": "bookforge-tts --crucible-models --server N",
+        "doc": """GET /v1/models — every model that host knows, and what is true of each.
+
+Four columns that are four different facts, and none of them implies another:
+installed (the weights are on disk), resident (an engine is serving it right
+now), loadable (asking for it now would succeed — which also depends on the
+accelerator guard, so a model can be installed and supported and still not
+loadable because someone else's process holds the card), and the revision
+pinned for THIS host's backend. A row that is not loadable prints the server's
+own reason instead of a bare "no".
+
+A revision or memory figure of "—" means this host has no backend block for that
+model at all: there is no pin to name and no estimate to print, and 0.0 GiB
+would read as "needs nothing".""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+            ("--model", "this LISTS the models; --model picks one for --crucible-load / "
+                        "--crucible-unload / --crucible-chat"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-models --server mac',
+        ],
+    },
+    "crucible-load": {
+        "usage": "bookforge-tts --crucible-load --server N --model ID",
+        "doc": """Make one model resident. A normal job, watched to `done {resident}`.
+
+ONE model is resident at a time, so loading a second unloads the first. That is
+why this is a separate operator command and not something a cleanup run does:
+--ai-cleanup --provider crucible REFUSES by name when its model is not resident
+rather than evicting whatever is, minutes into a book.
+
+The `warming` lines on stderr are the ENGINE's own readiness output, streamed as
+it prints them. Refused before queuing, by name, when the model is unknown, not
+installed, unsupported on that backend, larger than the free memory, or the card
+is busy with work Crucible does not own.""",
+        "reads": ["--config", "--dry-run", "--server", "--model"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-load --server mac --model qwen3.5-9b',
+        ],
+    },
+    "crucible-unload": {
+        "usage": "bookforge-tts --crucible-unload --server N --model ID",
+        "doc": """Hand the memory back. Also a job, watched the same way.
+
+`done {resident: null}` is the same field the load reports, saying what is
+resident NOW — which after an unload is nothing. `model_not_resident` if it was
+not resident to begin with.""",
+        "reads": ["--config", "--dry-run", "--server", "--model"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-unload --server mac --model qwen3.5-9b',
+        ],
+    },
+    "crucible-chat": {
+        "usage": "bookforge-tts --crucible-chat --server N --model ID --prompt TEXT [--stream] [--no-thinking]",
+        "doc": """One completion against the RESIDENT model — the smallest real llm call.
+
+Naming a model that is not resident is a 409 the server answers by name, its
+message saying what IS resident instead. Never a silent load, never a retry.
+
+--stream prints the content deltas as they arrive; concatenating them gives the
+same text the plain form prints. --no-thinking turns a reasoning model's
+thinking off (chat_template_kwargs enable_thinking=false, which mlx-lm reads per
+request and vLLM honours under the same name). Omit it and NOTHING is sent, so
+the model's own default stands — for Qwen3.5 that means a short token budget can
+be spent entirely on reasoning and come back with no content at all, which is
+why the cleanup path always sends thinking:false.""",
+        "reads": ["--config", "--dry-run", "--server", "--model", "--prompt", "--stream",
+                  "--no-thinking"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-chat --server mac --model qwen3.5-9b \\\n'
+            '    --prompt "Name the capital of France in one word." --no-thinking',
+            '# the same, streamed:\n'
+            'bookforge-tts --crucible-chat --server mac --model qwen3.5-9b \\\n'
+            '    --prompt "Count to five." --stream --no-thinking',
         ],
     },
 }
@@ -3165,11 +3382,27 @@ def _flag_registry():
                    help="--crucible-add: a file holding the bearer token (trailing newline "
                         "trimmed). Mutually exclusive with --token; one of the two is required",
                    metavar="FILE")
-    p.add_argument("--server", help="--crucible-ping / --crucible-info / --crucible-health / "
-                   "--crucible-echo: which REGISTERED server to call, by the name it was added "
-                   "under", metavar="N")
+    p.add_argument("--server", help="which REGISTERED Crucible server to call, by the name it "
+                   "was added under. Used by --crucible-ping / --crucible-info / "
+                   "--crucible-health / --crucible-echo / --crucible-models / --crucible-load / "
+                   "--crucible-unload / --crucible-chat, and by --ai-cleanup / --ai-simplify "
+                   "with --provider crucible. Refused for every other provider — a flag that "
+                   "looked set and was dropped is the failure this rule exists to end",
+                   metavar="N")
     p.add_argument("--file", help="--crucible-echo: the file whose bytes are sent through the "
                    "echo job and compared with what comes back", metavar="FILE")
+    p.add_argument("--prompt", help="--crucible-chat: the text sent as the user turn. One "
+                   "completion against the resident model — the smallest real llm call",
+                   metavar="TEXT")
+    p.add_argument("--stream", action="store_true",
+                   help="--crucible-chat: print the content deltas as they arrive instead of "
+                        "the finished answer. Concatenating them gives the same text")
+    p.add_argument("--no-thinking", dest="no_thinking", action="store_true",
+                   help="--crucible-chat: turn a reasoning model's thinking OFF "
+                        "(chat_template_kwargs enable_thinking=false). Omit it and nothing is "
+                        "sent, so the model's own default stands — which for Qwen3.5 means a "
+                        "short token budget can be spent entirely on reasoning and come back "
+                        "with no content at all")
 
     p.group("Settings and environment (all commands)",
             "The flags several commands share, and the process-env seams the compiled pipeline\n"
@@ -3195,9 +3428,13 @@ def _flag_registry():
                    help="override the e2a/Orpheus install path the worker uses", metavar="PATH")
     p.add_argument("--conda-env", dest="conda_env",
                    help="override the WSL conda env for Orpheus", metavar="NAME")
-    p.add_argument("--provider", choices=["claude", "openai", "ollama", "local"],
-                   help="AI provider for --ai-cleanup/--ai-simplify")
-    p.add_argument("--model", help="AI model name (claude/openai/ollama model; local resolves its own)",
+    p.add_argument("--provider", choices=["claude", "openai", "ollama", "local", "crucible"],
+                   help="AI provider for --ai-cleanup/--ai-simplify. crucible runs the pass on a "
+                        "Crucible inference server's GPU and needs --server <n> --model <id>, the "
+                        "model already resident there")
+    p.add_argument("--model", help="AI model name (claude/openai/ollama model; local resolves its "
+                        "own; crucible takes a Crucible model id such as qwen3.5-9b). Also the "
+                        "model --crucible-load / --crucible-unload / --crucible-chat act on",
                    metavar="NAME")
     p.add_argument("--api-key", dest="api_key",
                    help="cloud API key (else ANTHROPIC_API_KEY/OPENAI_API_KEY env). Passed via env, not argv",

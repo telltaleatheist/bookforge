@@ -11,10 +11,17 @@
  * WHAT CRUCIBLE IS. One inference server, many client apps: it runs models and
  * returns bytes, and never knows what an audiobook is. The spec is
  * C:\Users\tellt\Projects\crucible\docs\DESIGN.md. In phase 1 the only job type
- * is `echo`, which hands back the bytes it was given — which is exactly what
+ * was `echo`, which hands back the bytes it was given — which is exactly what
  * makes it a handshake: it proves the token, the API version, the queue, the
  * SSE stream, the artifact download and the provenance sidecar without loading
  * a model or touching a GPU.
+ *
+ * PHASE 2 adds the `llm` job type (crucible docs/PHASE2-LLM.md), and with it the
+ * four OPERATOR verbs below. They exist because residency is a decision, not a
+ * side effect: the server serves ONE model at a time, loading a second unloads
+ * the first, and a cleanup run therefore never loads one itself. Somebody has to
+ * say "put qwen3.5-9b on the Mac now" — that is --load, and it is a separate
+ * command for the same reason `ollama pull` is.
  *
  * Requires BookForge to be BUILT (dist/electron present) but NOT running:
  *   npx tsc -p tsconfig.electron.json
@@ -27,6 +34,10 @@
  *   node cli/crucible.js --info   --server <n>
  *   node cli/crucible.js --health --server <n>
  *   node cli/crucible.js --echo   --server <n> --file <path> [--out <path>]
+ *   node cli/crucible.js --models --server <n>
+ *   node cli/crucible.js --load   --server <n> --model <id>
+ *   node cli/crucible.js --unload --server <n> --model <id>
+ *   node cli/crucible.js --chat   --server <n> --model <id> --prompt <text> [--stream] [--no-thinking]
  *
  * THE TOKEN IS NEVER PRINTED. --list shows `****` and the last four characters,
  * which is enough to tell two tokens apart and not enough to use one. --add
@@ -103,6 +114,39 @@ function bytesHuman(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+/**
+ * A model's memory estimate for the table. `null` is not 0 and is not blank: the
+ * manifest has no backend block for this host, so there is no figure to print
+ * and saying `0.0 GiB` would read as "needs nothing" (PHASE2-LLM.md section 5).
+ */
+function memoryHuman(bytes) {
+  if (bytes === null) return '—';
+  return `${(bytes / (1024 ** 3)).toFixed(1)} GiB`;
+}
+
+/**
+ * Watch a job to its terminal event, printing every event on stderr the way
+ * --echo does, and hand the caller the terminal one. Shared by --load and
+ * --unload, which are ordinary jobs on the same exclusive lane as everything
+ * else — a chat request can therefore never race a load.
+ */
+async function watchJob(client, jobId, label) {
+  process.stderr.write(`[crucible] job ${jobId} (${label})\n`);
+  let terminal = null;
+  for await (const event of client.events(jobId)) {
+    process.stderr.write(`[crucible] #${event.id} ${event.event} ${JSON.stringify(event.data)}\n`);
+    if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
+      terminal = event;
+    }
+  }
+  if (terminal === null) {
+    // The SDK ends the iterator only on a terminal event or by throwing, so this
+    // is unreachable by contract. Stated rather than assumed.
+    throw new Error(`the event stream for job ${jobId} ended with no terminal event`);
+  }
+  return terminal;
 }
 
 /**
@@ -203,9 +247,11 @@ async function run(args) {
     return;
   }
 
-  const remote = Boolean(args.ping || args.info || args.health || args.echo);
+  const remote = Boolean(args.ping || args.info || args.health || args.echo
+    || args.models || args.load || args.unload || args.chat);
   if (!remote) {
-    throw new UsageError('pick a verb: --add / --remove / --list / --ping / --info / --health / --echo');
+    throw new UsageError('pick a verb: --add / --remove / --list / --ping / --info / --health / '
+      + '--echo / --models / --load / --unload / --chat');
   }
   const serverName = required(args, 'server', 'which registered crucible to call');
   // Resolved BEFORE the call, so an unknown server is a registry refusal rather
@@ -245,6 +291,117 @@ async function run(args) {
     const health = await client.health();
     const resident = health.residentModels.length ? health.residentModels.join(', ') : 'none';
     console.log(`status ${health.status}\tqueue ${health.queueDepth}\tresident ${resident}`);
+    return;
+  }
+
+  // ── --models ──────────────────────────────────────────────────────────────
+  // GET /v1/models. Four booleans that are four different facts, and none of
+  // them implies another: backendSupported (there is a block for this host's
+  // backend), installed (weights on disk), resident (an engine is serving it
+  // now), loadable (asking for it now would succeed — which also depends on the
+  // accelerator guard). A row that is not loadable ALWAYS carries the server's
+  // own reason, so the reason column is printed instead of the boolean.
+  if (args.models) {
+    const rows = await client.models();
+    if (rows.length === 0) {
+      console.log(`${serverName} advertises no models`);
+      return;
+    }
+    console.log('id\tinstalled\tresident\tloadable\trevision\tmemory');
+    for (const row of rows) {
+      const loadable = row.loadable ? 'yes' : `no: ${row.reason}`;
+      // revision is null — not "" — when this host has no backend block; the two
+      // are different answers ("no pin recorded" vs "cannot serve it here").
+      const revision = row.revision === null ? '—' : row.revision.slice(0, 12);
+      console.log(`${row.id}\t${row.installed ? 'yes' : 'no'}\t${row.resident ? 'yes' : 'no'}`
+        + `\t${loadable}\t${revision}\t${memoryHuman(row.memoryBytesEstimate)}`);
+    }
+    return;
+  }
+
+  // ── --load ────────────────────────────────────────────────────────────────
+  // A normal job: queued, then a `warming` per line of the engine's own
+  // readiness, then done {resident}. ONE model is resident at a time, so this
+  // unloads whatever was there — which is why it is an explicit operator verb
+  // and never something a cleanup run does for you.
+  if (args.load) {
+    const model = required(args, 'model', 'which model to make resident');
+    process.stderr.write(`[crucible] ${serverName} ${client.url}: load ${model}\n`);
+    const jobId = await client.loadModel(model);
+    const terminal = await watchJob(client, jobId, `load ${model}`);
+    if (terminal.event !== 'done') {
+      console.error(`[crucible] load ${model} ended ${terminal.event}: ${JSON.stringify(terminal.data)}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`resident    ${terminal.data.resident}  on ${serverName}`);
+    return;
+  }
+
+  // ── --unload ──────────────────────────────────────────────────────────────
+  // Also a job. `done {resident: null}` is the same field the load reports,
+  // saying what is resident NOW — which after an unload is nothing.
+  if (args.unload) {
+    const model = required(args, 'model', 'which model to unload');
+    process.stderr.write(`[crucible] ${serverName} ${client.url}: unload ${model}\n`);
+    const jobId = await client.unloadModel(model);
+    const terminal = await watchJob(client, jobId, `unload ${model}`);
+    if (terminal.event !== 'done') {
+      console.error(`[crucible] unload ${model} ended ${terminal.event}: ${JSON.stringify(terminal.data)}`);
+      process.exitCode = 1;
+      return;
+    }
+    const now = terminal.data.resident === null || terminal.data.resident === undefined
+      ? 'nothing' : terminal.data.resident;
+    console.log(`resident    ${now}  on ${serverName}`);
+    return;
+  }
+
+  // ── --chat ────────────────────────────────────────────────────────────────
+  // One completion against the RESIDENT model. Naming a model that is not
+  // resident is a 409 the SDK surfaces as CrucibleRefused model_not_resident,
+  // which describeSdkError prints with the server's own message naming what IS
+  // resident — never a silent load, never a retry.
+  //
+  // --no-thinking sends chat_template_kwargs {enable_thinking: false}. Omitting
+  // it sends NOTHING and leaves the model's own default alone; there is no
+  // --thinking-on/off pair defaulting to one of them, because "the model's
+  // default" is a third answer and this flag must not erase it.
+  if (args.chat) {
+    const model = required(args, 'model', 'which model to talk to (it must be the resident one)');
+    const prompt = required(args, 'prompt', 'the text to send as the user turn');
+    if (args.thinking !== undefined) {
+      throw new UsageError('--thinking is not a flag here: pass --no-thinking to turn reasoning '
+        + "off, or pass neither to leave the model's own default alone");
+    }
+    const options = { model, messages: [{ role: 'user', content: String(prompt) }] };
+    if (args['no-thinking']) options.thinking = false;
+
+    if (args.stream) {
+      process.stderr.write(`[crucible] ${serverName} ${client.url}: chat ${model} (streamed)\n`);
+      let any = false;
+      for await (const delta of client.chatStream(options)) {
+        any = true;
+        process.stdout.write(delta);
+      }
+      process.stdout.write('\n');
+      if (!any) {
+        // The SDK requires `content` on a completion, but a stream can legally
+        // carry only reasoning frames. An answer that is not there is not an
+        // empty answer — say so rather than exiting 0 on a blank line.
+        console.error('[crucible] the stream carried no content deltas — if this is a reasoning '
+          + 'model, pass --no-thinking or raise the token budget');
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    process.stderr.write(`[crucible] ${serverName} ${client.url}: chat ${model}\n`);
+    const answer = await client.chat(options);
+    console.log(answer.content);
+    process.stderr.write(`[crucible] model ${answer.model}  finish ${answer.finishReason}  `
+      + `tokens ${answer.usage.promptTokens}+${answer.usage.completionTokens}`
+      + `=${answer.usage.totalTokens}\n`);
     return;
   }
 
