@@ -1393,9 +1393,12 @@ resident    nothing  on mac
 ```
 
 (Measured 2026-09-12 from the PC against the Mac Studio over the headscale tailnet: a
-3,969-char excerpt in two 2,000-char edit-list chunks, ~47,600 chars/min end to end, no
-chunk skipped and no fallback. The same door with `--ai-simplify --simplify-mode learner`
-rewrote the same excerpt with 21 recorded changes in 34 s.)
+3,969-char excerpt as two 2,000-char edit-list chunks — 3,956 chars in 4.7 s of model
+time, ~50,500 chars/min, or ~37,800 chars/min over the 6.3 s of wall clock that includes
+starting python and node. No chunk skipped, no fallback, no change proposed: the excerpt
+is clean prose and the model returned an empty edit list, which is the correct answer.
+The same door with `--ai-simplify --simplify-mode learner` rewrote it with 21 recorded
+changes in 34 s, which is what proves the text really makes the round trip.)
 
 **With the model unloaded, the same command refuses before it touches a chunk:**
 
