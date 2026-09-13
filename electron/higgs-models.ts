@@ -1023,6 +1023,21 @@ function loadCatalog(): HiggsCatalog {
  *
  * Refused BY NAME here, before a spawn, on the same rules narrator applies at load: a band whose max
  * exceeds that arm's `maxChars`, or whose min is not below its max.
+ *
+ * ── AND A CATALOG BAND THAT DISAGREES IS REFUSED, NOT OVERWRITTEN (2026-09-13) ──────────────
+ *
+ * This merge used to assign over whatever the catalog said, silently. `thirdreich` is what that
+ * cost: its band was corrected to 500-700 on 2026-09-09 in the overlay and left at 600-1000 in
+ * `higgs-models.json` — a range the same ladder measured at 12.5% and 18.8% early stops — where it
+ * sat for four days, describing the wrong thing to every person and every other repo that read it
+ * (Crucible's voice manifest was written from that text). Nothing rendered wrong, and that is
+ * exactly why it survived: the override made the disagreement unobservable.
+ *
+ * So the copies must AGREE. The overlay owns the VALUE and the catalog keeps the EVIDENCE NOTE
+ * beside it; a voice the overlay does not name keeps its catalog band untouched, as before, and a
+ * catalog that declares no band takes the overlay's. Only a stated disagreement is refused — by
+ * name, at catalog load, in the same style as the two rules above, because a band is the one
+ * number in this file that decides how a book is cut.
  */
 function applySafeBands(cat: HiggsCatalog): void {
   const bandPath = path.join(__dirname, 'data', 'higgs-safe-bands.json');
@@ -1059,6 +1074,23 @@ function applySafeBands(cat: HiggsCatalog): void {
           `higgs-safe-bands.json: '${model.id}' (${arm}) max ${max} is above that arm's maxChars `
           + `${caps.maxChars}. Raise the cap in higgs-models.json with the evidence, or lower this.`,
         );
+      }
+      for (const [field, overlayValue, overlayKey] of [
+        ['safeMinChars', min, 'min'], ['safeMaxChars', max, 'max'],
+      ] as const) {
+        const declared = caps[field];
+        if (declared === undefined || declared === null) continue;
+        if (declared !== overlayValue) {
+          throw new Error(
+            `Higgs voice '${model.id}' (${arm}) declares ${field} ${declared} in `
+            + `electron/data/higgs-models.json and ${overlayValue} as '${overlayKey}' in `
+            + 'electron/data/higgs-safe-bands.json. The overlay owns the value and the catalog '
+            + 'keeps the evidence note beside it, so the two must state the same number — this '
+            + 'used to be overwritten in silence, which is how thirdreich described a 600-1000 '
+            + 'band for four days after it was measured at 500-700. Correct the catalog, or '
+            + 'remove its pair to let the overlay stand alone.',
+          );
+        }
       }
       caps.safeMinChars = min;
       caps.safeMaxChars = max;

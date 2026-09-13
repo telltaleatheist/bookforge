@@ -1593,20 +1593,46 @@ check('a voice on a serving stack it does not match is REFUSED', () => {
   assert.throws(() => higgs.higgsServingFor(wrong), /shared serving block is for/);
 });
 
-check('the cold start recorded is the MEASURED 297 s, under the 300 s limit', () => {
-  // narrator's READY_TIMEOUT_SECONDS is 300 and its GPU smoke measured 297 —
-  // three seconds of margin. Anything that decides a job is dead must clear it.
+check('the cold start recorded is the MEASURED 297 s, and it is the only startup number here', () => {
+  // CORRECTED 2026-09-13. This check used to read:
+  //
+  //     assert.strictEqual(spec.readyTimeoutSeconds, 300);
+  //     assert.ok(spec.coldStartSeconds < spec.readyTimeoutSeconds);
+  //
+  // justified by a comment saying "narrator's READY_TIMEOUT_SECONDS is 300 ...
+  // three seconds of margin". NARRATOR'S VALUE IS 900 (python/narrator/engine/
+  // higgs/v3_engine.py:130, READY_TIMEOUT_SECONDS = 900.0), so this was a GREEN
+  // guard laundering a false cross-repo belief — exactly the second-order
+  // finding of crucible/docs/ARCHITECTURE.md, one rung worse, because a red
+  // guard at least announces itself.
+  //
+  // `readyTimeoutSeconds` was never on the HiggsServingSpec interface and no
+  // production code read it (whole-repo grep, 2026-09-13: this keeper, the JSON
+  // and two prose notes). It is DELETED rather than corrected to 900: writing a
+  // live timeout here would need a measured cold start on this stack that
+  // nobody has taken, and that is a ruling. So the assertion that remains is
+  // the one measured number.
   const spec = higgs.higgsServingSpec();
   assert.strictEqual(spec.coldStartSeconds, 297);
-  assert.strictEqual(spec.readyTimeoutSeconds, 300);
-  assert.ok(spec.coldStartSeconds < spec.readyTimeoutSeconds);
+  assert.ok(!('readyTimeoutSeconds' in spec),
+    'readyTimeoutSeconds is back in higgs-models.json. It is not on HiggsServingSpec and nothing '
+    + 'reads it; a startup limit that lives here must be MEASURED and wired, not declared.');
 });
 
 check('the bridge watchdogs all clear that cold start', () => {
   // Read from the SOURCE, so tightening one of them without re-reading the cold
   // start fails here rather than four minutes into somebody's render.
+  //
+  // THE ANCHOR IS THE MEASURED COLD START (297 s), not a declared limit — that
+  // is what the check's name has always claimed and, since 2026-09-13, what it
+  // actually reads. STATED AND NOT ASSERTED, because the file is another
+  // owner's: narrator gives up at 900 s while WORKER_STARTUP_TIMEOUT_MS is
+  // 600 s (parallel-tts-bridge.ts:2612), whose own comment justifies itself
+  // against the stale 300 — so the bridge can kill a worker five minutes before
+  // narrator has finished waiting. Raising it is a change to that file, and a
+  // keeper that went red here would only be red at somebody else's desk.
   const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
-  const coldMs = higgs.higgsServingSpec().readyTimeoutSeconds * 1000;
+  const coldMs = higgs.higgsServingSpec().coldStartSeconds * 1000;
   for (const name of ['WORKER_STARTUP_TIMEOUT_MS', 'WORKER_PROGRESS_TIMEOUT_MS',
                       'PREP_STALL_TIMEOUT_MS']) {
     const m = src.match(new RegExp('const ' + name + ' = (\\d+) \\* 60 \\* 1000'));

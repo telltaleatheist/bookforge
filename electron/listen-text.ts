@@ -68,17 +68,62 @@ import { expandNumbersEn } from './number-expansion';
 import capsAcronyms from '../python/narrator/text/caps_acronyms.json';
 
 /**
+ * THE ONE acronym list, validated exactly as narrator validates it.
+ *
+ * A mirror of `_load_caps_acronyms` (python/narrator/text/paragraph_packer.py):
+ * both keys must be non-empty lists of upper-case tokens, and a malformed file
+ * is refused BY NAME rather than silently reducing to an empty set — an empty
+ * set here would title-case every acronym in every heading and say nothing.
+ */
+function capsAcronymCategory(key: 'lettered' | 'spokenAsWord'): readonly string[] {
+  const rows = (capsAcronyms as Record<string, unknown>)[key];
+  if (!Array.isArray(rows) || rows.length === 0
+      || !rows.every((r) => typeof r === 'string' && r && r === r.toUpperCase())) {
+    throw new Error(
+      `python/narrator/text/caps_acronyms.json: "${key}" must be a non-empty list of `
+      + 'upper-case tokens; this is the one acronym list three code paths read, and a '
+      + 'malformed entry would silently change what a caps run folds to.',
+    );
+  }
+  return rows as string[];
+}
+
+/**
  * Capitalized tokens that are read as LETTERS despite carrying a vowel — the
  * `lettered` half of THE ONE acronym list (python/narrator/text/
  * caps_acronyms.json), which narrator's caps fold reads too. It was a second
  * copy for one day (2026-09-06) and diverged that day. A miss reads "USA" as a
  * word: fix it in the JSON, and both readers move together.
+ *
+ * EXPORTED FOR THE SPELLING CONSUMER, which legitimately needs this half alone:
+ * `lettered` is what Listen SPELLS ("F B I"), and a `spokenAsWord` entry must
+ * never be spelled. The caps fold below uses the UNION instead — see
+ * `CAPS_ACRONYMS`.
  */
-export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set(capsAcronyms.lettered);
+export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set(capsAcronymCategory('lettered'));
 
-/** Capitalised tokens the caps fold keeps as printed although they carry a vowel
- *  and are not on the lettered list — their spoken reading is their own. */
-const KEEP_AS_PRINTED: ReadonlySet<string> = new Set(['WWI', 'WWII']);
+/**
+ * What the caps fold keeps as printed: `lettered` ∪ `spokenAsWord`, which is
+ * exactly narrator's `CAPS_ACRONYMS` (paragraph_packer.py `_load_caps_acronyms`,
+ * `frozenset(lettered) | frozenset(spokenAsWord)`).
+ *
+ * BOTH CATEGORIES ARE ACRONYMS TO THIS RULE — narrator's own words: "a lettered
+ * one (FBI) and a word-like one (NASA) are both kept as printed". Listen's fold
+ * read `lettered` ALONE until 2026-09-13, so all fifteen `spokenAsWord` entries
+ * were title-cased on Listen and kept in the m4b: a heading reached the engine
+ * as "Nasa" from one reader and "NASA" from the other. That is the same
+ * one-fact-two-owners shape the list was created to end.
+ *
+ * There was a second, HARD-CODED set here too (`KEEP_AS_PRINTED = ['WWI',
+ * 'WWII']`), added four lines under the comment forbidding exactly that. It was
+ * a band-aid over this missing union and it is gone; both tokens now live in the
+ * JSON, where narrator reads them as well — before that, narrator's `_is_acronym`
+ * saw the `I` as a vowel and put "Wwii" in the audiobook.
+ */
+export const CAPS_ACRONYMS: ReadonlySet<string> = new Set([
+  ...capsAcronymCategory('lettered'),
+  ...capsAcronymCategory('spokenAsWord'),
+]);
 
 const VOWEL = /[AEIOUY]/;
 
@@ -134,7 +179,7 @@ export function foldCapsRun(text: string): string {
     const letters = lettersOf(t);
     if (!letters) return true;
     const upper = letters.toUpperCase();
-    return KEEP_AS_PRINTED.has(upper) || LETTERED_ACRONYMS.has(upper) || !VOWEL.test(upper);
+    return CAPS_ACRONYMS.has(upper) || !VOWEL.test(upper);
   };
   const folded = tokens.slice(0, run).map((t) => (!t || keep(t) ? t : titleCase(t)));
   return [...folded, ...tokens.slice(run)].join(' ');
