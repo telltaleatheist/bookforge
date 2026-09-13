@@ -65,6 +65,7 @@ const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
+const { runProjectPass } = require('./processing-pass-step.js');
 const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
 const { higgsOverrideFromArgs } = require('./higgs-override.js');
 
@@ -93,6 +94,27 @@ function pruneOldSessions(projectDir, language, keepName) {
       try { fs.rmSync(path.join(dir, name), { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   }
+}
+
+/**
+ * Is the file this render is about to narrate the PROJECT'S OWN book — the one
+ * recorded on its working chain?
+ *
+ * It decides which narration-text door STEP 0a takes, and the two are not
+ * interchangeable (see the comment at the call site). Asked of
+ * `manifest-service.bookForAct`, the app's own record, and never of the path's
+ * shape: a project's book may be an exploded `<stem>.working/` directory or a
+ * zip, and a Foundry-exported EPUB variant is a real book that is on no chain at
+ * all.
+ *
+ * Only asked when the book came from `resolveInputEpub` — which has already
+ * called `bookForAct` successfully — so this second call cannot be the thing
+ * that refuses a two-chain project.
+ */
+async function bookIsOnTheProjectsChain(projectDir, inputPath, manifestSvc) {
+  const record = await manifestSvc.bookForAct(projectDir);
+  if (!record) return false;
+  return path.resolve(record.absPath) === path.resolve(inputPath);
 }
 
 async function main() {
@@ -405,12 +427,49 @@ async function main() {
     // `--skip-text-cleanup` is the operator saying what the app's "No, narrate
     // as printed" button says: don't run the pass, and tell the door, so the
     // render's log names the skip instead of guessing at an absent stamp.
+    //
+    // ── AND A PROJECT'S BOOK GOES THROUGH THE PROJECT'S OWN PASS ────────────
+    //
+    // `cli/narration-text.js:53-58` names the hazard this door used to walk
+    // into: cleaning a project's book as if it were a bare file leaves the
+    // project's ledger, provenance and NARRATION COPY describing a book that is
+    // no longer there. The narration copy is the half that costs audio — the
+    // user's strikes live in `<stem>.tts.epub` (`ensureNarrationEpub`), not in
+    // the book, and only `runProcessingPass` re-cuts it (`recutNarrationCopy`,
+    // electron/processing-passes.ts:830 and :988/:1140). `prepareNarrationInput`
+    // cuts captions and notes and passes an EMPTY deletions list, so a render
+    // handed the raw book READS EVERY STRUCK-OUT PASSAGE ALOUD.
+    //
+    // The bare-file step also could not clean this book at all: the recorded
+    // book is an exploded `<stem>.working/` directory, which `cleanTextEpub`
+    // does not read (the pass packs a tree for it — processing-passes.ts:1022)
+    // and which `prepareNarrationInput` refuses outright ("no reader for
+    // '.working'"). So --project rendering a working-chain project was broken
+    // twice over.
+    //
+    // `--input` stays the bare-file door, deliberately: a file somebody named by
+    // hand may belong to no project at all.
     const textCleanup = args['skip-text-cleanup'] ? 'skipped' : 'required';
-    const toRender = textCleanup === 'skipped'
-      ? inputPath
-      : (await runNarrationTextStep(inputPath, {})).inputPath;
+    let toRender;
     if (textCleanup === 'skipped') {
+      toRender = inputPath;
       console.log('[audiobook] --skip-text-cleanup: the book is read exactly as printed');
+    } else if (!args.input && await bookIsOnTheProjectsChain(projectDir, inputPath, manifestSvc)) {
+      console.log('[audiobook] STEP 0a/2 narration text cleanup — the PROJECT pass (ledger, provenance, narration copy)');
+      const pass = await runProjectPass(
+        projectDir, { kind: 'narration-text' }, { family: null, label: 'audiobook' });
+      // The SAME expression electron/queue-steps/pass.ts:96 uses to hand a
+      // chained narration its parent's artifact: a pass that named a narration
+      // input meant it, and everything else reads the book the pass wrote.
+      toRender = pass.narrationInputPath ?? pass.outputPath;
+      if (toRender === undefined) {
+        throw new Error(
+          'The narration text pass finished without saying which file it wrote, so this render '
+          + 'has nothing to read.');
+      }
+      console.log(`[audiobook] narrating the pass's own artifact: ${toRender}`);
+    } else {
+      toRender = (await runNarrationTextStep(inputPath, {})).inputPath;
     }
 
     const prepared = await runNarrationPrep(

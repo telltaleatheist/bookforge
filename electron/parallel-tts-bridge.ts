@@ -4723,7 +4723,11 @@ function startWorker(
         sentences: worker.completedSentences
       }).catch(() => {});
       emitProgress(session);
-      checkAllWorkersComplete(session);
+      // FLOATING BY NECESSITY — a `close` handler has nowhere to return a
+      // promise — so the rejection is caught HERE rather than becoming an
+      // unhandled one this process has no handler for.
+      void checkAllWorkersComplete(session)
+        .catch((err) => reportWorkerCompletionCrash(session, err));
     } else {
       worker.status = 'error';
       worker.error = `Worker exited with code ${code}`;
@@ -4740,7 +4744,8 @@ function startWorker(
       }).catch(() => {});
       emitProgress(session);
       // checkAllWorkersComplete will handle retries
-      checkAllWorkersComplete(session);
+      void checkAllWorkersComplete(session)
+        .catch((err) => reportWorkerCompletionCrash(session, err));
     }
   });
 
@@ -4753,7 +4758,8 @@ function startWorker(
     // Drive completion like the close handler does: a spawn-failure class that emits
     // 'error' without 'close' would otherwise leave the session alive forever (the
     // headless poll would spin; the watchdog ignores already-'error' workers).
-    checkAllWorkersComplete(session);
+    void checkAllWorkersComplete(session)
+      .catch((err) => reportWorkerCompletionCrash(session, err));
   });
 
   return workerProcess;
@@ -4963,9 +4969,80 @@ function postRenderAlignProgress(session: ConversionSession, message: string): A
 }
 
 /**
- * Check if all workers are complete and trigger assembly
+ * Check if all workers are complete and trigger assembly.
+ *
+ * ── WHY THIS IS A WRAPPER (2026-09-13) ──────────────────────────────────────
+ *
+ * The tail below is driven from a worker's `close`/`error` handler, which is not
+ * a place a promise can be returned to: every call site is a floating promise,
+ * and this process installs no `unhandledRejection` handler.
+ *
+ * Most of the tail already reports its own failures through
+ * `emitComplete(session, false, …)`. But `normalizeWslSessionToWindows` THROWS
+ * by design — there is no WSL assembly fallback any more — and it sat OUTSIDE
+ * every `try` in this function, as did `runPostRenderAlignment`, the project
+ * cache block and `stopChapterCloser`. The assembly `catch` further down carried
+ * a comment claiming it covered the normalizer; it never could, its `try` opens
+ * about a hundred and eighty lines later.
+ *
+ * What that cost, every time: no completion event, the session never removed
+ * from `activeSessions`, so `waitForBridgeEvent` (queue-steps/tts-conversion.ts,
+ * which has no timeout) left the row at "Assembling…" forever, the headless poll
+ * in `renderRangeHeadless` spun forever, and the GPU lease was never released —
+ * so every later job waited out its ten minutes and then ran unleased.
+ *
+ * So the tail is one function and this is its ONE reporting boundary: anything
+ * it throws becomes a NAMED failure on the job rather than a silence. The call
+ * sites still carry a `.catch()`, because this function must not be the last
+ * word either.
  */
 async function checkAllWorkersComplete(session: ConversionSession): Promise<void> {
+  try {
+    await completeAfterWorkers(session);
+  } catch (err) {
+    // NAMED FROM THE ERROR, not from where it was caught. The one failure that
+    // reaches here with a stage of its own is the WSL→Windows copy, and saying
+    // "assembly failed" about it sends the user to the wrong half of the
+    // pipeline — the fix is to re-run the job, not to re-encode anything.
+    const detail = err instanceof Error ? err.message : String(err);
+    const stage = detail.includes('could not be copied out of WSL')
+      ? 'Session copy failed'
+      : 'The render finished but the step after it failed';
+    // `completionError` is how a HEADLESS run learns anything at all: with no
+    // mainWindow `emitComplete` returns early, and `renderRangeHeadless` reads
+    // this field after its poll sees the session go.
+    session.completionError = `${stage}: ${detail}`;
+    console.error(`[PARALLEL-TTS] ${session.completionError}`);
+    try {
+      await logger.log('ERROR', session.jobId, session.completionError);
+      emitComplete(session, false, undefined, session.completionError);
+    } finally {
+      // The session MUST leave the map whatever else fails: it is what the
+      // headless poll and `stopParallelConversion` read, and a session left in
+      // it is the wedge this wrapper exists to end.
+      activeSessions.delete(session.jobId);
+    }
+  }
+}
+
+/**
+ * The last word on a completion handler that could not even report its own
+ * failure — `emitComplete` itself throwing, say. There is nowhere else to send
+ * this, and the alternative is the unhandled rejection the wrapper above exists
+ * to prevent.
+ */
+function reportWorkerCompletionCrash(session: ConversionSession, err: unknown): void {
+  console.error(
+    `[PARALLEL-TTS] Job ${session.jobId}: the post-worker completion handler itself failed:`, err);
+  logger.logError(
+    session.jobId, 'Post-worker completion handler failed',
+    err instanceof Error ? err : new Error(String(err)),
+  ).catch(() => {});
+  activeSessions.delete(session.jobId);
+}
+
+/** The post-worker tail itself. Called only through `checkAllWorkersComplete`. */
+async function completeAfterWorkers(session: ConversionSession): Promise<void> {
   if (session.cancelled) return;
 
   const allComplete = session.workers.every(w => w.status === 'complete');
@@ -5306,16 +5383,16 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       const workerErrors = failedWorkersList.length > 0
         ? ` (${failedWorkersList.length} worker(s) also failed)`
         : '';
-      // THE STAGE, NOT A GUESS AT IT. Everything in this try block reports as
-      // "Assembly failed" by default, but `normalizeWslSessionToWindows` now throws
-      // from BEFORE assembly — the copy of the rendered session out of the guest.
-      // Telling a user their assembly failed when the audio never left WSL sends
-      // them to look at the wrong half of the pipeline, and the fix is the opposite
-      // one (retry the job, not re-encode).
-      const stage = String(err).includes('could not be copied out of WSL')
-        ? 'Session copy failed'
-        : 'Assembly failed';
-      emitComplete(session, false, undefined, `${stage}: ${err}${workerErrors}`);
+      // ASSEMBLY, AND ONLY ASSEMBLY. This `try` opens at `runAssembly` and holds
+      // nothing else, so the stage is not a guess.
+      //
+      // It used to name a second stage here — a `normalizeWslSessionToWindows`
+      // failure — on the belief that the normalizer ran inside this block. It
+      // does not: it runs far above, outside every `try` in this function, and
+      // its throw went nowhere at all. That throw is caught by
+      // `checkAllWorkersComplete`'s wrapper now, which owns the stage naming, so
+      // there is one test of that string and not two.
+      emitComplete(session, false, undefined, `Assembly failed: ${err}${workerErrors}`);
     }
     activeSessions.delete(session.jobId);
   }
@@ -5522,7 +5599,8 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
         worker.error = `Retry aborted: GPU memory never freed up (${((r.freeMB ?? 0) / 1024).toFixed(1)} GB free after 90s)`;
         console.error(`[PARALLEL-TTS] ${worker.error}`);
         emitProgress(session);
-        void checkAllWorkersComplete(session);
+        void checkAllWorkersComplete(session)
+          .catch((err) => reportWorkerCompletionCrash(session, err));
         return;
       }
       startWorker(session, worker.id, range);

@@ -42,11 +42,28 @@
  *    `prepareNarrationInput` still cleans those inline.
  *
  * Anything else is a real run.
+ *
+ * ── WHAT COUNTS AS A BOOK IS `isBookPath`'S ANSWER, NOT `extname`'S ─────────
+ *
+ * This file asked `path.extname(resolved) !== '.epub'` until 2026-09-13 and
+ * called everything else "a plain-text audition". A working copy is an EXPLODED
+ * DIRECTORY, `<stem>.working/` — 45 of them in the live library against zero
+ * `.working.epub` zips — so that test answered "not a book" for every book the
+ * app is built to edit, and the step returned `ran: false` in silence. The
+ * consequences were the two this pass exists to prevent: the render door then
+ * took `prepareNarrationInput`'s `cleanup: 'unstamped'` branch and narrated
+ * digits as printed, and nothing re-cut the narration copy, so passages the user
+ * struck out were read aloud.
+ *
+ * The naming rule has ONE owner — `shared/document/book-path.ts`, the file
+ * written for exactly this class of failure — and this is now one of its
+ * callers, as `electron/processing-chain.ts:189` already is.
  */
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isBookPath, isExplodedBookPath } = require('../dist/shared/document/book-path.js');
 
 /** The receipt that sits beside a cleaned book. */
 function receiptPathFor(bookPath) {
@@ -64,11 +81,35 @@ async function runNarrationTextStep(inputPath, opts) {
   const resolved = path.resolve(inputPath);
   if (!fs.existsSync(resolved)) throw new Error(`input file not found: ${resolved}`);
 
-  if (path.extname(resolved).toLowerCase() !== '.epub') {
+  // NOT A BOOK AT ALL — a `.txt` audition, which has no book and no chain, and
+  // which the render door cleans inline. `isBookPath`, never `extname`: see the
+  // header for the 45 working copies the extension test used to land here.
+  if (!isBookPath(resolved)) {
     console.log(
-      `[narration-text] ${path.basename(resolved)} is not an EPUB — a plain-text audition has no `
+      `[narration-text] ${path.basename(resolved)} is not a book — a plain-text audition has no `
       + 'book chain, and the render door cleans it inline. Nothing to do.');
     return { inputPath: resolved, receiptPath: null, receipt: null, ran: false };
+  }
+
+  /*
+   * A BOOK, BUT NOT ONE THIS DOOR MAY CLEAN — and it is REFUSED, not skipped.
+   *
+   * An exploded `<stem>.working/` is a project's working copy. Cleaning it means
+   * packing the tree into an archive, running the engine, converting the result
+   * back to the book's own container and landing it with the project's ledger,
+   * provenance and narration copy all updated — which is `runNarrationTextPass`
+   * in electron/processing-passes.ts, reached from `cli/narration-text.js
+   * --project` and from `--audiobook`'s own STEP 0a. Doing a second, partial
+   * version of that here is exactly the parallel implementation the CLI exists
+   * to avoid, and doing NOTHING here is the silent defect this refusal replaces.
+   */
+  if (isExplodedBookPath(resolved)) {
+    throw new Error(
+      `${path.basename(resolved)} is a project's exploded working copy, not a bare EPUB. `
+      + 'Cleaning it is a pass on that project\'s chain — it has a ledger row, a provenance '
+      + 'record and a narration copy (the cut carrying your strikes) to re-cut, none of which '
+      + 'this bare-file failsafe can write. Run it against the project instead: '
+      + '`--narration-text --project <projectDir>`.');
   }
 
   const door = require('../dist/electron/narration-clean-text.js');

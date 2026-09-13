@@ -2741,6 +2741,28 @@ export async function startReassembly(
         // `registerAudiobookOutput` overwrites `outputs.audiobook`, which is the
         // pointer at the book's own audiobook and belongs to the reading this
         // run was started to sit beside. See electron/audiobook-variant-filing.ts.
+        //
+        // ── A FAILED REGISTRATION IS A FAILED JOB (2026-09-13) ─────────────
+        //
+        // Both arms below used to LOG and fall through to
+        // `resolve({ success: true })` at the bottom of this handler. The m4b
+        // was on disk, `outputs.audiobook` was never set, the project page and
+        // Bookshelf listed nothing, and the queue reported "Reassembly
+        // complete!" — the same shape the promotion invariant above was written
+        // against, one step later. The error log was ADDED by an earlier fix,
+        // which recorded the gap instead of closing it.
+        //
+        // `reg.skipped` is NOT a failure: it means the m4b is outside this
+        // library's projects dir, which is a legitimate place to assemble to and
+        // has nothing to file.
+        //
+        // R6: NOTHING IS DELETED HERE. The audio is good and only the filing
+        // failed, so the m4b keeps its promoted name in output/ and the failure
+        // NAMES it — the same bargain `promotionFailed` makes above (it keeps
+        // the staging dir and tells the user where the audio is). The sidecar
+        // binding below still runs, so the audiobook keeps its transcript and
+        // can simply be re-filed.
+        let registrationError: string | null = null;
         try {
           const reg = variantFiling
             ? await registerRvcAudiobookVariant(outputPath, variantFiling, {
@@ -2753,6 +2775,7 @@ export async function startReassembly(
           if (reg.skipped) {
             reassemblyLog.warn('Audiobook not registered in manifest (outside library)', { jobId, outputPath });
           } else if (!reg.success) {
+            registrationError = reg.error ?? 'the manifest service gave no reason';
             reassemblyLog.error('Failed to register audiobook in manifest', { jobId, outputPath, error: reg.error });
           } else {
             reassemblyLog.info('Registered audiobook in manifest', {
@@ -2760,6 +2783,7 @@ export async function startReassembly(
             });
           }
         } catch (regErr) {
+          registrationError = (regErr as Error).message;
           reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });
         }
 
@@ -2818,6 +2842,26 @@ export async function startReassembly(
         }
 
         mark('bind sidecars');
+
+        // The filing failure, reported now that everything that could still be
+        // done FOR the audio has been done. `outputPath` rides along on purpose:
+        // it is the whole remedy, and a failure that did not name the file would
+        // read as "the render is gone".
+        if (registrationError !== null) {
+          const msg = 'The audiobook was assembled but could not be filed in the library, so it '
+            + `will not appear on the project page or in Bookshelf (${registrationError}). `
+            + `The audio is intact at: ${outputPath}`;
+          // Staging was already emptied by a SUCCESSFUL promotion above, so
+          // there is nothing to preserve here and nothing to delete — the m4b
+          // is at its final name in output/, which is what the message names.
+          sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error: msg });
+          reassemblyLog.error('Reassembly finished but the audiobook was never registered', {
+            jobId, outputPath, error: registrationError,
+          });
+          console.error(`[REASSEMBLY] ${msg}`);
+          resolve({ success: false, outputPath, error: msg });
+          return;
+        }
 
         stages.completeAll();
         sendProgress(mainWindow, jobId, {
