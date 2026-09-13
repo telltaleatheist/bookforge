@@ -317,3 +317,57 @@ CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to th
 ```
 
 **BAND 200-700** - 11/176 = 6.2% (95% hi 10.8%), the cleanest unbroken run of bins.
+
+
+### mistborn - ladder chart (512 renders, pace 13.4 chars/s, /mnt/e/training/_campaigns/2026-09-11-mistborn-full-rvc/screen_mb_full_rvc1/ladder/mb_full_rvc1_5947)
+
+```
+RUNG CURVE (target size +/-12%; modes = which failures, not just how many)
+  rung     n    fail   95% hi   modes
+    100    32     41%      58%   cov 3, long 10, short 1
+    200    32      9%      24%   cov 2, long 1
+    300    32      3%      16%   long 1
+    400    32     16%      32%   cov 5
+    500    32      9%      24%   cov 3
+    600    32     12%      28%   cov 2, long 3
+    700    32      0%      11%   -
+    800    32      3%      16%   cov 1
+    900    32     12%      28%   cov 4
+   1000    32     19%      35%   cov 6, short 1
+   1100    32      3%      16%   cov 1
+   1200    32      9%      24%   cov 3
+   1300    32     12%      28%   cov 4
+   1400    32     25%      42%   cov 5, long 3
+   1500    32     25%      42%   cov 5, long 4, short 1
+   1600    32     44%      61%   cov 7, long 9
+
+CHARACTER SPREAD (actual chars - this is what the packer emits, and what sets the band)
+  chars          n    fail   95% hi   modes
+      0-100     12   50.0%    74.6%   cov 1, long 5
+    100-200     36   22.2%    38.1%   cov 2, long 6, short 1
+    200-300     40    7.5%    19.9%   cov 2, long 1
+    300-400     36   11.1%    25.3%   cov 4
+    400-500     28   10.7%    27.2%   cov 3
+    500-600     32    9.4%    24.2%   cov 2, long 2
+    600-700     40    5.0%    16.5%   cov 1, long 1
+    700-800     32    6.2%    20.1%   cov 2
+    800-900     32    9.4%    24.2%   cov 3
+    900-1000    48   12.5%    24.7%   cov 6, short 1
+   1000-1100    36   11.1%    25.3%   cov 4
+   1100-1200    24    4.2%    20.2%   cov 1
+   1200-1300    40   17.5%    32.0%   cov 6, long 1
+   1300-1400    40   30.0%    45.4%   cov 7, long 6, short 1
+   1400-1500    24   45.8%    64.9%   cov 6, long 7
+   1500-1600    12   25.0%    53.2%   cov 1, long 2
+
+CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to the wider)
+    200-1200    31/348  =   8.9%  95% hi  12.4%  width 1000
+    200-900     20/240  =   8.3%  95% hi  12.5%  width 700
+    200-800     17/208  =   8.2%  95% hi  12.7%  width 600
+    400-1200    24/272  =   8.8%  95% hi  12.8%  width 800
+    500-1200    21/244  =   8.6%  95% hi  12.8%  width 700
+```
+
+**BAND 200-1200** - 31/348 = 8.9% (95% hi 12.4%), the cleanest unbroken run of bins.
+
+**BAND WRITTEN: 200-800** (2026-09-12 22:27) - the chart's 200-1200 is capped at Owen's 800 ruling; head-to-head vs mb_v7_440 inside noise. Pace 13.3 chars/s (band.py now scores at each run's own pace).
