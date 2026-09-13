@@ -118,6 +118,11 @@ from .served_common import (CHECKPOINT_ENV, GuestOwnedServer,
 #: the id `/v1/models` reports. DELIBERATELY NOT `higgs-v3`: a port is not proof
 #: of identity, and the two stacks answer the same shaped endpoints, so a name
 #: that differs is one more way a leftover server on the wrong port is caught.
+#: What `CHECKPOINT_ENV` may say instead of a path, meaning "this server is on
+#: the BASE weights". Lower-cased on read. A path is always absolute, so this
+#: cannot collide with one.
+BASE_ASSERTION = 'base'
+
 SERVED_MODEL_NAME = 'higgs-v3-ds'
 
 SPEECH_PATH = '/v1/audio/speech'
@@ -664,6 +669,39 @@ class HiggsSglServedBackend(GuestOwnedServer):
             return ('environ', value or None)
         asserted = (os.environ.get(CHECKPOINT_ENV) or '').strip()
         if asserted:
+            # THE BASE SENTINEL. Until 2026-09-13 a checkpoint could only ever be
+            # asserted as a PATH, so there was no way to say "this server runs the
+            # base weights" — naming a path claimed a fine-tune and naming nothing
+            # was refused outright. A server on the base was therefore
+            # unattachable, which is not a corner: a ZERO-SHOT voice is base
+            # weights conditioned by reference clips in the request, so the whole
+            # zero-shot and streaming path runs against exactly such a server.
+            #
+            # `base` is deliberately a word a path cannot be — every real value
+            # here is absolute — and it is still an ASSERTION an operator makes,
+            # not a default. The refusal it lifts is "nothing can say"; the ones
+            # that check what it says are untouched below.
+            #
+            # AND THIS IS THE LOCAL ANSWER ONLY. Owen ruled on 2026-09-13 that
+            # the remote one is Crucible's: `GET /v1/activity` reports what is
+            # resident, from `Residency`, which knows because it did the loading.
+            #
+            # The reason that ruling was needed is worth keeping next to this
+            # code. A Higgs server CANNOT SAY WHAT WEIGHTS IT IS RUNNING —
+            # sgl-omni's `/v1/models` answers the served NAME chosen at launch
+            # (`higgs-v3-ds`), never the checkpoint path. So the only way to know
+            # is `_own_servers_on_port()` reading `/proc/<pid>/environ`, which
+            # needs the same machine AND narrator to have launched the process.
+            # The moment the server is on the Mac or a droplet there is no
+            # `/proc` to read and nothing to ask, so this whole identity check —
+            # the one that stops a book rendering in the wrong narrator — cannot
+            # work across a network at all.
+            #
+            # So do not grow this mechanism for the remote case. It is local by
+            # construction; phases 6 and 7 move the question to the layer that
+            # can answer it.
+            if asserted.lower() == BASE_ASSERTION:
+                return ('asserted-base', None)
             return ('asserted', asserted)
         return (None, None)
 
@@ -698,7 +736,9 @@ class HiggsSglServedBackend(GuestOwnedServer):
                    else 'the base weights')
                 + ', and an unidentified server would render the whole book in '
                 'whatever narrator it happens to hold. If this is your own '
-                f'server, state its model directory in {CHECKPOINT_ENV}.')
+                f'server, state its model directory in {CHECKPOINT_ENV} - or '
+                f'{CHECKPOINT_ENV}={BASE_ASSERTION} if it is serving the base '
+                'weights, which is what a zero-shot voice needs.')
         if checkpoint_dir:
             want = _guest_form(checkpoint_dir)
             if running is None:
@@ -724,8 +764,10 @@ class HiggsSglServedBackend(GuestOwnedServer):
                 f'{self.base_url} was started on {running} ({source}), which is a '
                 'merged fine-tune. Serving the base means RESTARTING on the base '
                 'snapshot.')
-        log(f'{self.LOG_TAG} serving the base weights (the server carries no '
-            f'{SERVE_MODEL_DIR_ENV})', flush=True)
+        log(f'{self.LOG_TAG} serving the base weights '
+            + (f'({CHECKPOINT_ENV}={BASE_ASSERTION}, asserted by the operator)'
+               if source == 'asserted-base'
+               else f'(the server carries no {SERVE_MODEL_DIR_ENV})'), flush=True)
 
     # -- use -----------------------------------------------------------------
 
