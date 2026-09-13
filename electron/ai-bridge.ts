@@ -2848,16 +2848,31 @@ async function assertCrucibleModelResident(server: string, model: string): Promi
  *    the Claude path does for `max_tokens`. The OpenAI path lacks that only
  *    because its finish_reason was never wired up; a truncated chunk is not text
  *    to ship, whoever generated it.
+ *  - `maxTokensOverride`. The rewrite-era `max(4096, len*2)` estimate is the
+ *    DEFAULT, not the rule: an edit-list or observation call emits a small JSON
+ *    answer whose size has nothing to do with the input's, and its caller has
+ *    already sized the budget (EDITLIST_NUM_PREDICT). Ollama takes that number
+ *    through `numPredictOverride`; this takes it the same way, and for the same
+ *    reason. Measured 2026-09-12: without it, 2 of 9 edit-list chunks on a 19 KB
+ *    EPUB hit the 4096 ceiling, and each cost 142 s in the resulting [SKIP]
+ *    split — against 1.2-1.6 s for a chunk that fitted.
  */
 async function cleanChunkWithCrucible(
   text: string,
   systemPrompt: string,
   server: string,
   model: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  maxTokensOverride?: number
 ): Promise<string> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  // Whose abort it was. The SDK throws the DOM AbortError for both, and the
+  // caller reads an AbortError as "the job was cancelled" — true when the USER
+  // cancelled, a lie when this timer fired. The Ollama path keeps the same flag
+  // for the same reason (`timedOut`), and names its timeout in the message so it
+  // is retried like any other transport stall rather than ending the chunk.
+  let timedOut = false;
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
 
   // Chain abort signals - if parent aborts, abort this request too
   if (abortSignal) {
@@ -2875,11 +2890,16 @@ async function cleanChunkWithCrucible(
           { role: 'user', content: text },
         ],
         temperature: 0.1,
-        maxTokens: Math.max(4096, text.length * 2),
+        maxTokens: maxTokensOverride ?? Math.max(4096, text.length * 2),
         thinking: false,
         signal: controller.signal,
       });
     } catch (err) {
+      if (timedOut) {
+        throw new Error(`Crucible timeout: no answer from "${server}" within ${TIMEOUT_MS / 1000}s `
+          + `for a ${text.length}-char chunk. The model may be running away on this chunk — its `
+          + `engine log on that host says how many tokens it produced.`);
+      }
       throw translateCrucibleError(err, server);
     }
 
@@ -3424,12 +3444,14 @@ async function callProviderExtracted(
       if (!config.openai?.apiKey || !config.openai?.model) throw new Error('OpenAI not configured');
       return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
     case 'crucible': {
-      // `numCtx` and `numPredict` are Ollama's runner knobs and are ignored here
-      // exactly as they are for claude/openai — the Crucible engine's context is
-      // the manifest's `context_default`, fixed when the model was loaded, and
-      // the token budget travels with the chunk (see cleanChunkWithCrucible).
+      // `numCtx` IS ignored — the Crucible engine's context is the manifest's
+      // `context_default`, fixed when the model was loaded, and nothing here can
+      // change it. `numPredict` is NOT: this door's callers are the edit-list and
+      // observation passes, whose small JSON answer has nothing to do with the
+      // input's size and whose budget they have already computed. Dropping it is
+      // what made 2 of 9 chunks truncate at 4096 and cost 142 s apiece.
       const { server, model } = crucibleConfigOf(config);
-      return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal);
+      return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal, numPredict);
     }
     case 'local':
       return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);

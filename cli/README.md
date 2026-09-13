@@ -1262,12 +1262,14 @@ HTTP to it — the PC's WSL2 server, the Mac across the room and a rented drople
 reached by exactly one code path, so BookForge's GPU features stop being Windows/WSL
 path-rewriting and become job types someone else's machine can serve.
 
-**Phase 1 is the handshake, and the CLI is its only consumer.** Nothing in the app calls
-this yet: no UI, no IPC, no settings row. `electron/crucible/servers.ts` is the registry
+**The CLI is still the only consumer.** Nothing in the app calls this: no UI, no IPC, no
+settings row. `electron/crucible/servers.ts` is the registry
 (`<userData>/crucible-servers.json`), `cli/crucible.js` is the adapter over the compiled
 copy of it, and `@crucible/client` — pinned in `package.json` to the release tarball, so
-the URL *is* the version — is everything on the wire. The only job type is `echo`, which
-hands the bytes back: no model is loaded and no GPU is touched.
+the URL *is* the version — is everything on the wire. Phase 1's job type was `echo`,
+which hands the bytes back: no model is loaded and no GPU is touched. **Phase 2 adds
+`llm`** (crucible `docs/PHASE2-LLM.md`) and with it BookForge's `crucible` AI provider,
+so `--ai-cleanup` can run on the Mac Studio's GPU instead of local Ollama.
 
 ```
 bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)
@@ -1277,6 +1279,14 @@ bookforge-tts --crucible-ping   --server N     # unauthenticated: is there a Cru
 bookforge-tts --crucible-info   --server N     # backend, GPU, capabilities
 bookforge-tts --crucible-health --server N     # status, queue depth, resident models
 bookforge-tts --crucible-echo   --server N --file FILE [--out FILE]
+
+bookforge-tts --crucible-models --server N                      # installed / resident / loadable
+bookforge-tts --crucible-load   --server N --model ID           # streams the engine's warming lines
+bookforge-tts --crucible-unload --server N --model ID
+bookforge-tts --crucible-chat   --server N --model ID --prompt TEXT [--stream] [--no-thinking]
+
+bookforge-tts --ai-cleanup  --input FILE --provider crucible --server N --model ID --stages ocr
+bookforge-tts --ai-simplify --input FILE --provider crucible --server N --model ID --simplify-mode learner
 ```
 
 **The token is never printed.** `--crucible-list` shows `****` plus its last four
@@ -1326,6 +1336,77 @@ wrote them (DESIGN.md section 7). Every SDK failure has its own one-line message
 code 1: unreachable, not-a-crucible, wrong token, wrong API version, a refusal the server
 named, a 5xx, or a payload API v1 does not describe. Nothing is retried and nothing is
 defaulted.
+
+### The `llm` job type — a cleanup pass on somebody else's GPU
+
+**One model is resident at a time, and loading a second unloads the first.** Residency is
+therefore a decision an operator makes, which is why `--crucible-load` is its own command
+and why `--ai-cleanup --provider crucible` **refuses by name** when the model it was given
+is not resident — it never loads one mid-book, on a machine the job does not own.
+
+`--crucible-models` prints four facts that are four different facts, and none of them
+implies another: `installed` (weights on disk), `resident` (an engine is serving it now),
+`loadable` (asking for it now would succeed — which also depends on the accelerator guard,
+so a model can be installed and supported and still not loadable because someone else's
+process holds the card), and the `revision` pinned for *this* host's backend. A row that
+is not loadable prints the server's own reason. A `—` in the revision or memory column
+means this host has no backend block for that model at all: there is no pin to name and no
+estimate to print, and `0.0 GiB` would read as "needs nothing".
+
+**Qwen3.5 and its kind think before they answer**, so a bounded token budget can be spent
+entirely on `reasoning` and come back with no `content` at all. The cleanup path always
+sends `thinking: false`; `--crucible-chat` sends it only with `--no-thinking`, and omitting
+the flag sends nothing so the model's own default stands.
+
+**Worked example — a cleanup pass on the Mac Studio's GPU, from this PC:**
+
+```
+$ bookforge-tts --crucible-models --server mac
+id              installed  resident  loadable                                    revision      memory
+qwen3.5-9b      yes        no        yes                                         27cdb77d9381  19.0 GiB
+qwen3.8-27b     no         no        no: no weights at ~/.crucible/models/…       6f265714824f  51.7 GiB
+
+$ bookforge-tts --crucible-load --server mac --model qwen3.5-9b
+[crucible] mac http://owens-mac-studio.hs.owenmorgan.com:7100: load qwen3.5-9b
+[crucible] job ca0e73888d3b421fb056dd4995874839 (load qwen3.5-9b)
+[crucible] #1 queued {"position":1}
+[crucible] #3 warming {"message":"checking the accelerator for qwen3.5-9b"}
+[crucible] #4 warming {"message":"27.3 GiB of 64.0 GiB unified memory available (…)"}
+[crucible] #6 warming {"message":"starting mlx-lm for qwen3.5-9b on 127.0.0.1:60531 (context 12288)…"}
+[crucible] #8 warming {"message":"mlx-lm is serving '/Users/telltale/.crucible/models/qwen3.5-9b/mlx-darwin'"}
+[crucible] #9 warming {"message":"mlx-lm generated its first token; the weights are in memory"}
+[crucible] #12 done {"artifacts":[],"resident":"qwen3.5-9b"}
+resident    qwen3.5-9b  on mac
+
+$ bookforge-tts --ai-cleanup --input stranger.epub --provider crucible \
+      --server mac --model qwen3.5-9b --stages ocr --output-dir ./out
+[ai] cleanup via crucible mac/qwen3.5-9b — driving aiBridge.cleanupEpub...
+[AI-BRIDGE] Crucible preflight passed — qwen3.5-9b is resident on "mac"
+[AI-CLEANUP] Total chunks in job: 2 across 1 non-empty chapters
+[AI-CLEANUP] Completed chunk 1/2 in 2.7s (1982 chars output)
+[AI-CLEANUP] Completed chunk 2/2 in 2.0s (1973 chars output)
+[ai] done in 5s -> ./out/repaired.epub
+[ai] chapters=1 contentSkips=0 truncated=0 copyright=0 markerMismatch=0
+
+$ bookforge-tts --crucible-unload --server mac --model qwen3.5-9b
+resident    nothing  on mac
+```
+
+(Measured 2026-09-12 from the PC against the Mac Studio over the headscale tailnet: a
+3,969-char excerpt in two 2,000-char edit-list chunks, ~47,600 chars/min end to end, no
+chunk skipped and no fallback. The same door with `--ai-simplify --simplify-mode learner`
+rewrote the same excerpt with 21 recorded changes in 34 s.)
+
+**With the model unloaded, the same command refuses before it touches a chunk:**
+
+```
+[ai] ERROR: cleanupEpub failed: crucible_model_not_resident: "qwen3.5-9b" is not resident
+on crucible "mac" (nothing is resident). Load it first: bookforge-tts --crucible-load
+--server mac --model qwen3.5-9b
+```
+
+`--server` is refused by name for every other provider, because a flag that looked set and
+was dropped is the failure this CLI's flag discipline exists to end.
 
 ## Gotchas
 
