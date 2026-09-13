@@ -6029,6 +6029,48 @@ async function resolveTtsTarget(manifest: ProjectManifest): Promise<TtsTarget | 
   return { variantId: chosen.id, absPath, exists, title, rule };
 }
 
+/**
+ * Map over `items` with at most `concurrency` in flight, preserving order.
+ *
+ * The same index-counter-plus-N-workers shape `sweepEditorState` uses, for the
+ * same reason: the library may be on a network volume, and one `Promise.all`
+ * over every project fires as many simultaneous operations as there are books.
+ * Measured against the SMB library on titan (410 projects, manifest read + stat
+ * each), that unbounded burst is not the fastest option — it is SLOWER than a
+ * bounded pool, because a share only has so many credits and the overflow queues
+ * behind itself:
+ *
+ *     workers    1      8     16     32     64    128    410
+ *     seconds  1.64   0.47   0.46   0.46   0.67   0.52   0.56
+ *
+ * The knee is 8-32 and flat across it, so 16 sits in the middle of the plateau.
+ * The win on a healthy share is modest (~0.1 s); the reason to bound it is the
+ * UNHEALTHY one, where 820 simultaneous requests against a struggling server
+ * turn a slow load into a stalled one.
+ */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker),
+  );
+  return results;
+}
+
+/** In-flight cap for the per-project reads a library listing does. See `mapBounded`. */
+const LIST_PROJECTS_CONCURRENCY = 16;
+
 export async function listProjects(filter?: { type?: ProjectType }): Promise<ManifestListResult> {
   try {
     const projectsDir = getProjectsPath();
@@ -6043,7 +6085,7 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
     const dirs = entries.filter(entry => entry.isDirectory());
 
     /**
-     * Read every manifest concurrently.
+     * Read every manifest, a bounded number at a time.
      *
      * This runs on every Studio load and is the one phase the book list genuinely
      * has to wait for, so it does the minimum work possible: the reads overlap
@@ -6051,8 +6093,11 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
      * detected from the read's own ENOENT rather than a separate existsSync — which
      * halves the filesystem round-trips against a library that may be on a synced
      * or network volume, where each one carries real latency.
+     *
+     * Overlapped, but NOT all at once — see `mapBounded` for the measurement that
+     * settled the cap.
      */
-    const results = await Promise.all(dirs.map(async (entry): Promise<ProjectManifest | null> => {
+    const results = await mapBounded(dirs, LIST_PROJECTS_CONCURRENCY, async (entry): Promise<ProjectManifest | null> => {
       const manifestPath = path.join(projectsDir, entry.name, MANIFEST_FILENAME);
 
       let content: string;
@@ -6082,7 +6127,7 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
         console.warn(`[ManifestService] Invalid manifest in ${entry.name}`);
         return null;
       }
-    }));
+    });
 
     const projects = results.filter((m): m is ProjectManifest =>
       m !== null && (!filter?.type || m.projectType === filter.type));
@@ -6103,11 +6148,14 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
     // cannot resolve a project-relative variant path without joining a directory
     // it must never join (see ResolvedProjectVariant). Absent for a book with no
     // unambiguous answer — the entry is simply not written.
+    // Bounded for the same reason the manifest reads are: this is a second stat
+    // per project, so an unbounded pass doubles the simultaneous request count
+    // against the very volume the reads have just finished hammering.
     const ttsTargets: Record<string, TtsTarget> = {};
-    await Promise.all(projects.map(async (manifest) => {
+    await mapBounded(projects, LIST_PROJECTS_CONCURRENCY, async (manifest) => {
       const target = await resolveTtsTarget(manifest);
       if (target) ttsTargets[manifest.projectId] = target;
-    }));
+    });
 
     return {
       success: true,
