@@ -83,7 +83,7 @@ const path = require('path');
 const BOOKFORGE_ANCHOR = '0f962d5f';
 
 /**
- * WHAT TIER 2 IS ASKED ABOUT — Foundry's CURRENT HEAD, resolved at run time.
+ * WHAT TIER 2 IS ASKED ABOUT — the commit THE BINARY REPORTS.
  *
  * THIS WAS A FIXED COMMIT UNTIL 2026-09-13 AND THAT WAS THE BUG. It read
  * `const FOUNDRY_SHIPPED = '9f4ee4e'` — a snapshot from 2026-09-05 — and by the
@@ -95,33 +95,99 @@ const BOOKFORGE_ANCHOR = '0f962d5f';
  * It passed through a real divergence. Foundry's `SPOKEN_AS_WORD` lost `covid`
  * (its copy was hard-coded; ours reads `caps_acronyms.json`), so `foundry
  * clean-text` ACCEPTED an edit spelling COVID letter by letter while this
- * repo's identical pass REFUSED it — two implementations, both stamping `n6`,
- * disagreeing about what the validator forbids. This keeper existed precisely
- * to catch that and could not see it.
+ * repo's identical pass REFUSED it — two implementations of ONE pass, both
+ * stamping `n6`, disagreeing about what the validator forbids. This keeper
+ * existed precisely to catch that and could not see it.
  *
  * THE DIAGNOSIS, from the Foundry session that found the second half: a keeper
  * anchored to a commit **is the same shape as the bug it guards** — a copy of a
- * fact that has to be kept current by hand, so it drifts silently, and it is
- * most silent exactly when it matters. Pinning was never the mechanism; the
- * DECISION is (see "A REGENERATED PIN IS A DECISION" above). A fixed anchor
- * removed the moment at which anyone decides.
+ * fact kept current by hand, so it drifts silently, and it is most silent
+ * exactly when it matters. Pinning was never the mechanism; the DECISION is
+ * (see "A REGENERATED PIN IS A DECISION" above). A fixed anchor removed the
+ * moment at which anyone decides.
  *
- * So the anchor moves on its own and the pins do not. When Foundry changes a
- * vendored file this keeper now FAILS — which is the point, and the failure is
- * the prompt to read their commit and answer the only question that matters:
- * a port, or a rule move? A rule move means the corpora and the renders
- * normalize differently and `NORMALIZER_VERSION` should have moved with it.
+ * ── WHY THE BINARY AND NOT THE CHECKOUT ────────────────────────────────────
  *
- * `FOUNDRY_HEAD_OVERRIDE` pins it back for one run, to bisect a failure or to
- * check a specific commit. It is deliberately an env var and not a constant:
- * a constant is what got us here.
+ * The first fix asked `git -C <foundry> rev-parse HEAD`. That is better than a
+ * constant and still wrong, because the checkout is not what runs: BookForge
+ * spawns an INSTALLED BINARY (`resolveFoundryPath`), which may be older than the
+ * checkout, newer than it, or the only foundry on a machine that has no checkout
+ * at all. Asking the checkout answers a question about a directory nobody
+ * executes.
+ *
+ * `foundry --version` prints `foundry <ver> (<short sha>)`. The sha is injected
+ * at release time (`tools/release-build.sh`, `--define FOUNDRY_GIT_COMMIT`) and
+ * inlined into the executable, so it is the identity of the bytes that will
+ * actually run. That is the anchor.
+ *
+ * A BUILD WITH NO SHA IS "CANNOT VERIFY", NEVER "USE THE CHECKOUT". A dev build
+ * (`bun run src/cli.ts`) prints `foundry <ver>` with no parenthesis, and
+ * foundry's `version.ts` is explicit that this is the truth about that build
+ * rather than a missing value. Falling back to the checkout's HEAD there would
+ * re-create the exact hazard this fix removes, and would do it precisely on a
+ * developer machine — where the checkout is most likely to be ahead of the
+ * binary. So it fails, saying which binary could not identify itself.
+ *
+ * `FOUNDRY_HEAD_OVERRIDE` pins the anchor for one run, to bisect a failure or to
+ * check a specific commit. Deliberately an env var and not a constant: a
+ * constant is what got us here.
  */
 function foundryShipped(repo) {
   const override = process.env['FOUNDRY_HEAD_OVERRIDE']?.trim();
-  if (override) return override;
-  return execFileSync('git', ['-C', repo, 'rev-parse', '--short', 'HEAD'], {
-    encoding: 'utf8',
-  }).trim();
+  if (override) return { rev: override, source: 'FOUNDRY_HEAD_OVERRIDE' };
+
+  const binary = foundryBinary(repo);
+  if (binary === null) {
+    throw new Error(
+      'no foundry binary to ask. This keeper checks the commit the BINARY '
+      + 'reports, because that is what BookForge spawns — a checkout may be '
+      + 'ahead of it, behind it, or absent.\n'
+      + 'Set FOUNDRY_CLI (the same variable electron/foundry-bridge.ts reads), '
+      + 'or FOUNDRY_HEAD_OVERRIDE to check a specific commit.',
+    );
+  }
+
+  let printed;
+  try {
+    printed = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();
+  } catch (err) {
+    throw new Error(`${binary} --version failed: ${err.message}`);
+  }
+
+  // `foundry 1.2.0 (7fbe763)` -> `7fbe763`. Short form, same as the pins carry.
+  const match = /\(([0-9a-f]{7,40})\)/.exec(printed);
+  if (match === null) {
+    throw new Error(
+      `${binary} reports "${printed}" and names no commit, so THIS KEEPER CANNOT `
+      + 'VERIFY IT.\n'
+      + 'That is the honest answer for a build made without '
+      + '--define FOUNDRY_GIT_COMMIT (a `bun run src/cli.ts` dev build), and it is '
+      + 'NOT a reason to fall back to the checkout: the checkout is most likely to '
+      + 'be ahead of the binary on exactly the machine where this happens, which '
+      + 'is the hazard this anchor exists to remove.\n'
+      + 'Build a release binary, or set FOUNDRY_HEAD_OVERRIDE if you know which '
+      + 'commit it is.',
+    );
+  }
+  return { rev: match[1], source: `${binary} --version` };
+}
+
+/**
+ * The foundry BookForge would spawn, by the same rule
+ * `electron/foundry-bridge.ts::resolveFoundryPath` uses — the env var first,
+ * then the component registry. The registry needs electron, which this script
+ * does not have, so the env var and the conventional build output are what is
+ * reachable here; a machine using a managed install must name it explicitly.
+ */
+function foundryBinary(repo) {
+  const fromEnv = process.env['FOUNDRY_CLI']?.trim();
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+  const built = path.join(
+    repo ?? foundryRepo(),
+    'dist',
+    process.platform === 'win32' ? 'foundry-windows-x64.exe' : 'foundry',
+  );
+  return fs.existsSync(built) ? built : null;
 }
 
 /** Foundry's two verbatim-copy commits. Tier 1 is asserted at these. */
@@ -355,7 +421,8 @@ function main() {
   // would otherwise read as thirteen missing files, which names the wrong
   // problem: a shallow clone or an unfetched Foundry is not a drifted copy.
   requireCommit(bookforge, BOOKFORGE_ANCHOR, 'BookForge');
-  const FOUNDRY_SHIPPED = foundryShipped(foundry);
+  const shipped = foundryShipped(foundry);
+  const FOUNDRY_SHIPPED = shipped.rev;
   for (const rev of [VENDOR_PASS, VENDOR_LEAVES, FOUNDRY_SHIPPED]) {
     requireCommit(foundry, rev, 'Foundry');
   }
