@@ -24,8 +24,11 @@
  * narrator in the tools env, captures both streams as they actually arrive, and
  * pushes them through the bridge's own compiled `spawnFailureDetail`.
  *
- * NOT a keeper in run-keepers: it needs a python env with narrator importable.
- * It IS cheap (no model, no GPU) and should be run whenever an error path moves.
+ * A KEEPER since 2026-09-13. It needs a python env with narrator importable, and
+ * that used to be the reason it was left out of run-keepers — which is how it
+ * came to crash on import and run ZERO checks for a month with nothing saying so.
+ * It is listed now and SKIPS BY NAME where the env is absent. It is cheap (no
+ * model, no GPU) and should also be run by hand whenever an error path moves.
  */
 'use strict';
 const assert = require('assert');
@@ -33,23 +36,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
-const orig = Module._resolveFilename;
-Module._resolveFilename = function (r, ...a) {
-  if (r === 'electron') return 'estub';
-  return orig.call(this, r, ...a);
-};
-require.cache['estub'] = {
-  id: 'estub', filename: 'estub', loaded: true,
-  exports: {
-    app: { getAppPath: () => REPO, getPath: () => os.tmpdir(), isPackaged: false },
-    BrowserWindow: class {},
-  },
-};
+// `cli/electron-stub.js` IS the headless Electron shim, and requiring it installs
+// the `require('electron')` interception. It is borrowed rather than re-rolled
+// because the hand-rolled stub that used to sit here answered `os.tmpdir()` for
+// EVERY getPath, so `userData` came out as %TEMP% and `resolveToolsEnv()` looked
+// for the tools env at %TEMP%\runtime\tools-env — a directory that does not
+// exist. This file then threw on import and ran zero checks, silently, since
+// 2026-08-12. The shared stub answers the real per-platform userData and throws
+// by name for any getPath nobody has thought about, which is the opposite
+// failure mode and the right one.
+require(path.join(REPO, 'cli', 'electron-stub.js'));
 const paths = require(path.join(DIST, 'narrator-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 
@@ -69,7 +69,26 @@ function stub(mod, name, fn) {
   else mod[name] = fn;
 }
 stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => false);
-const toolsPython = paths.getPythonInvocation();
+
+/**
+ * NO TOOLS ENV, NO RUN — AND THAT IS A SKIP, NOT A FAILURE.
+ *
+ * This drives a REAL python, so a checkout on which BookForge has never run
+ * first-run setup genuinely cannot execute it. That used to be the stated reason
+ * this file was kept out of run-keepers, and being kept out is precisely how it
+ * spent a month crashing on import without anyone hearing about it
+ * (crucible/docs/ARCHITECTURE.md R2). It is a keeper now, and it SKIPS BY NAME
+ * and exits 0 where the env is absent.
+ */
+let toolsPython;
+try {
+  toolsPython = paths.getPythonInvocation();
+} catch (err) {
+  console.log(`SKIP: the tools python environment is not installed on this machine, and this `
+    + `suite drives a real narrator through it — ${err && err.message ? err.message.split('\n')[0] : err}`);
+  process.exitCode = 0;
+  return;
+}
 stub(paths, 'getPythonInvocation', () => toolsPython);
 
 const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));

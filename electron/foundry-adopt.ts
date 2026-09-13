@@ -341,6 +341,17 @@ export interface FoundryProjectSignature {
  * failed project — apart from "a project this side cannot read", which IS worth
  * a line under the list.
  */
+/**
+ * The catalogue version FOUNDRY writes, and the newer of the two this side reads.
+ *
+ * OWNED BY FOUNDRY — `foundry-app/electron/projects.ts`'s `MANIFEST_VERSION`,
+ * which is both its writer and half its reader. This is a derived copy because
+ * `foundry-app/` is a sealed vendored subtree that must not be imported from or
+ * edited in place; `tools/test-foundry-manifest-version.js` reads Foundry's
+ * literal out of that source and fails when the two disagree.
+ */
+export const FOUNDRY_MANIFEST_VERSION = 2;
+
 export class NotAFoundryProjectError extends Error {
   constructor(
     message: string,
@@ -403,13 +414,30 @@ export async function readFoundryProjectSignature(
   }
   const row = parsed as Record<string, unknown>;
 
-  // Foundry reads versions 1 and 2 and refuses everything else by name. A shape
-  // this side does not know is one whose archive field it cannot trust either.
-  if (row['version'] !== 1 && row['version'] !== 2) {
+  // Foundry reads versions 1 and FOUNDRY_MANIFEST_VERSION and refuses everything
+  // else by name. A shape this side does not know is one whose archive field it
+  // cannot trust either.
+  //
+  // DERIVED, NOT TRANSCRIBED. This pair used to be two bare literals, `1` and
+  // `2`, and the accepted set on Foundry's side is `{1, MANIFEST_VERSION}` —
+  // derived, so one edit there moves its reader and both its writers together.
+  // A bump to 3 would have moved Foundry in a single line and left this site
+  // silently at {1, 2}, refusing every newly written catalogue at adopt time.
+  //
+  // The reason that would not have been caught is the part worth keeping: a
+  // developer making that bump greps `MANIFEST_VERSION` across BookForge and
+  // gets four hits, all unrelated subsystems (clipforge, enhance, manifest-
+  // service, orpheus-models) and none of them this one. The literal was
+  // invisible to the search the change calls for. `tools/test-foundry-manifest-
+  // version.js` reads the number out of the vendored Foundry source on every
+  // run, so the bump fails here instead.
+  const accepted = [1, FOUNDRY_MANIFEST_VERSION];
+  if (!accepted.includes(row['version'] as number)) {
+    const reads = accepted.join(' and ');
     throw new NotAFoundryProjectError(
-      `${catalogue} is version ${String(row['version'])}, and Foundry catalogues of versions 1 `
-      + 'and 2 are the ones BookForge knows how to read. Nothing was adopted.', 'unreadable',
-      `Catalogue version ${String(row['version'])} — BookForge reads 1 and 2.`);
+      `${catalogue} is version ${String(row['version'])}, and Foundry catalogues of versions `
+      + `${reads} are the ones BookForge knows how to read. Nothing was adopted.`, 'unreadable',
+      `Catalogue version ${String(row['version'])} — BookForge reads ${reads}.`);
   }
 
   const key = row['key'];

@@ -62,6 +62,13 @@ if (newestSource > newestCompiled) {
 }
 
 const SUITES = [
+  // The two facts found with two owners and nothing comparing them on
+  // 2026-09-13 (crucible/docs/ARCHITECTURE.md R1): the caps fold's keep-set,
+  // which narrator and Listen read DIFFERENT subsets of out of one JSON — "Nasa"
+  // on Listen, "NASA" in the m4b, and "Wwii" in both — and the Higgs safe band,
+  // where a silent overlay override let thirdreich advertise a 600-1000 range
+  // for four days after it was measured at 500-700.
+  'test-one-fact-one-owner',
   'test-higgs-engine',
   // The TWO Higgs doctors and the platform dispatch between them. Separate from
   // test-higgs-engine because that suite is about the engine id, the catalog and
@@ -220,9 +227,102 @@ const SUITES = [
   'test-bookshelf-queue-routes',
   'test-bookshelf-stream-teardown',
   'test-cli-exit-drain',
+  // ── The three silent-output defects of 2026-09-13, one check each (R1) ────
+  //
+  // A working copy is an exploded DIRECTORY, so `extname(p) !== '.epub'` said
+  // "not a book" about every book in the library and the CLI's text pass did
+  // nothing, in silence: digits narrated as printed and struck-out passages read
+  // aloud. Also holds the other half — a project renders through the PROJECT
+  // pass, which is the only route that re-cuts the copy carrying the strikes.
+  'test-cli-narration-text-gate',
+  // A failed manifest registration logged and then resolved SUCCESS: the m4b on
+  // disk, `outputs.audiobook` never set, nothing listed anywhere, "Reassembly
+  // complete!" on the row.
+  'test-reassembly-registration-failure',
+  // `normalizeWslSessionToWindows` throws by design and had no enclosing try, in
+  // a function called as a floating promise from four places, in a process with
+  // no unhandledRejection handler: the row sat at "Assembling…" forever and the
+  // GPU lease was never released. Drives the SHIPPED tail, lifted.
+  'test-worker-completion-throw',
+  // ── THE 30 THAT WERE NEVER RUN (2026-09-13) ──────────────────────────────
+  //
+  // A census found 92 of the 121 `tools/test-*.js` files listed here and 29 not,
+  // and THREE of the unlisted ones had been red since 2026-08-12 with nothing
+  // anywhere saying so: two fixtures too small to reach their own real claim
+  // after the analysis page box widened (c2413c06), and a guard that crashed on
+  // import and ran zero checks. An unrun guard in a directory listing looks like
+  // coverage and is not — crucible/docs/ARCHITECTURE.md R2. So the default is
+  // now that a `test-*.js` file IS listed here, and a suite that cannot run on
+  // some machine SKIPS BY NAME with exit 0 rather than being left out.
+  //
+  // Every one below was measured green on the PC before it was added.
+  //
+  // The two that paginate a real book under Electron. Their fixtures had to be
+  // widened to reach their own assertions again.
+  'test-analyzer-exploded-book',
+  'test-quire-cache-identity',
+  // Pagination in full. SKIPS BY NAME when BOOKFORGE_KA_EPUB does not point at
+  // the Killing America EPUB — the one fixture here that is not in the repo, and
+  // a regression test that names three specific plates, so no other book will do.
+  'test-quire',
+  // The EPUB container seam and what is read out of the markup.
+  'test-epub-container',
+  'test-epub-markup-categories',
+  'test-epub-provenance',
+  'test-exploded-working-copy',
+  'test-document-binding',
+  // The library's write paths: moving an artifact into place, deleting, resetting.
+  'test-artifact-movement',
+  'test-deletion-write-path',
+  'test-reset-book',
+  'test-retired-passes',
+  'test-version-family',
+  'test-render-beside-recording',
+  'test-session-authorship',
+  // The editor and the text it is shown.
+  'test-editor-layout',
+  'test-display-run-merge',
+  'test-chapter-openings',
+  'test-simplify-blocks',
+  'test-listen-text',
+  // The VLM half — all three are the part of the feature that is worth proving
+  // with no GPU and no server: what is banked, what is planned, what is promised.
+  'test-vlm-readings-bank',
+  'test-vlm-endpoint',
+  'test-vlm-eta',
+  // Components, upgrades and the GPU arbiter's ANSWER (pure — nothing is spawned
+  // and nothing touches a card).
+  'test-component-upgrades',
+  'test-qwen-align-env',
+  'test-gpu-arbiter',
+  'test-clean-step-door',
+  'test-foundry-manifest-version',
+  'test-tab-recorder',
+  // Drives a REAL narrator refusal through a REAL python to prove the reason
+  // reaches the user. SKIPS BY NAME where the tools env is not installed.
+  'test-narrator-refusal-surfacing',
 ];
 
+/**
+ * EVERY `tools/test-*.js` IS LISTED, OR THE LIST SAYS WHY NOT.
+ *
+ * The whole lesson of the 2026-09-13 census is that a guard nobody runs cannot
+ * go red, so leaving one off this list is not a neutral act. This makes that
+ * impossible to do silently: a new `test-*.js` file that is not in SUITES fails
+ * the run by name, and the only way past it is to add it — or to give it the
+ * skip shape (`SKIP: <reason>`, exit 0) and add it anyway.
+ */
+const onDisk = fs.readdirSync(__dirname)
+  .filter((f) => /^test-.*\.js$/.test(f))
+  .map((f) => f.replace(/\.js$/, ''));
+const unlisted = onDisk.filter((f) => !SUITES.includes(f));
+const listedButGone = SUITES.filter((s) => !onDisk.includes(s));
+
+/** A suite that could not run says so on a line of its own and exits 0. */
+const SKIP_RE = /^SKIP:\s*(.+)$/m;
+
 let failed = 0;
+const skipped = [];
 for (const suite of SUITES) {
   const file = path.join(__dirname, `${suite}.js`);
   let out = '';
@@ -233,10 +333,33 @@ for (const suite of SUITES) {
     ok = false;
     out = `${err.stdout || ''}${err.stderr || ''}`;
   }
+  const skip = ok ? SKIP_RE.exec(out) : null;
+  if (skip) {
+    skipped.push({ suite, why: skip[1].trim() });
+    console.log(`SKIP  ${suite.padEnd(32)} ${skip[1].trim().slice(0, 120)}`);
+    continue;
+  }
   const tally = out.trim().split('\n').filter((l) => /passed/.test(l)).pop() || out.trim().split('\n').pop();
   if (!ok) failed++;
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${suite.padEnd(32)} ${(tally || '').trim()}`);
   if (!ok) console.log(out.split('\n').filter((l) => /^FAIL|^ {6}/.test(l)).join('\n'));
 }
+
+if (unlisted.length) {
+  failed++;
+  console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${unlisted.length} guard(s) exist in tools/ `
+    + 'and are run by nobody — add them to SUITES, or give them the SKIP shape and add them:');
+  for (const name of unlisted) console.log(`      ${name}`);
+}
+if (listedButGone.length) {
+  failed++;
+  console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${listedButGone.length} name(s) in SUITES `
+    + 'have no file — a suite was renamed or deleted and the list was not:');
+  for (const name of listedButGone) console.log(`      ${name}`);
+}
+
+const ran = SUITES.length - skipped.length;
+console.log(`\n${ran} suite(s) ran, ${skipped.length} skipped, ${failed} failing.`);
+for (const s of skipped) console.log(`  skipped: ${s.suite} — ${s.why}`);
 console.log(failed === 0 ? '\nALL KEEPERS GREEN' : `\n${failed} SUITE(S) FAILING`);
 process.exitCode = failed === 0 ? 0 : 1;

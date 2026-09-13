@@ -44,6 +44,11 @@ function parseArgs(argv) {
   return a;
 }
 
+// An abort, not a completion: stderr only, non-zero, nothing on stdout to lose.
+// `tools/test-cli-exit-drain.js` reads this shape structurally — one line, every
+// statement writing to stderr, one `process.exit(<non-zero literal>)` — so it is
+// not flagged as an undrained exit. Spread it over several lines, make it exit 0,
+// or give it anything to say on stdout and that guard will correctly go red.
 function die(msg) { console.error(`[split] ${msg}`); process.exit(1); }
 
 (async () => {

@@ -46,6 +46,40 @@ const os = require('os');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 
+/**
+ * NO BOOK, NO RUN — AND THAT IS A SKIP, NOT A FAILURE.
+ *
+ * This suite needs a fixture that is not in the repository (see THE VARIABLE
+ * SAYS WHERE, NOT WHICH below). It used to print its explanation and
+ * `process.exit(1)`, which a runner cannot tell from a real regression — so it
+ * was simply left out of run-keepers, where being left out is how a guard rots
+ * unnoticed (crucible/docs/ARCHITECTURE.md R2). It now SKIPS BY NAME and exits
+ * 0: run-keepers lists it as skipped, with this reason, on every run.
+ *
+ * The check sits ahead of the Electron relaunch on purpose — a machine without
+ * the book should not pay for a browser to be told it has no book.
+ */
+function bookOrSkipReason() {
+  const at = process.env.BOOKFORGE_KA_EPUB;
+  if (at && fs.existsSync(at)) return { book: at };
+  return {
+    reason: 'BOOKFORGE_KA_EPUB '
+      + (at ? `names a file that is not there (${at})` : 'is not set')
+      + ' — this suite needs the Killing America EPUB, which is on the shared library, '
+      + 'not in the repo: <library>/projects/Killing_America_-_Turning_the_Tide_on_the_'
+      + 'Tsunami_of_Darkness_-_Gene_Bailey_(2024)/archive/Killing America. Bailey, Gene.epub '
+      + '(Windows Z:\\bookforge\\…, Mac /Volumes/iO/bookforge/…). The variable says WHERE '
+      + 'the book is on this machine, not WHICH book. It is only ever READ.',
+  };
+}
+
+const skip = bookOrSkipReason().reason;
+if (skip) {
+  console.log(`SKIP: ${skip}`);
+  process.exitCode = 0;
+  return;
+}
+
 if (!process.versions.electron) {
   const electron = require(path.join(__dirname, '..', 'node_modules', 'electron'));
   const result = spawnSync(electron, [__filename, ...process.argv.slice(2)], {
@@ -112,20 +146,9 @@ app.on('window-all-closed', () => { /* the harness decides when it is done */ })
  * So the fixture is fixed and its LOCATION is not — it sits on the shared
  * library, which every machine mounts at a different path.
  */
-const KA = process.env.BOOKFORGE_KA_EPUB;
-if (!KA || !fs.existsSync(KA)) {
-  console.error('test-quire needs Killing America and BOOKFORGE_KA_EPUB does not name it.');
-  console.error(KA
-    ? `  BOOKFORGE_KA_EPUB is set to a file that is not there:\n    ${KA}`
-    : '  BOOKFORGE_KA_EPUB is not set.');
-  console.error('  It is on the shared library, reachable from every machine:');
-  console.error('    <library>/projects/Killing_America_-_Turning_the_Tide_on_the_Tsunami_of'
-    + '_Darkness_-_Gene_Bailey_(2024)/archive/Killing America. Bailey, Gene.epub');
-  console.error('  e.g.  Windows  Z:\\bookforge\\...   Mac  /Volumes/iO/bookforge/...');
-  console.error('  The variable says WHERE the book is on this machine, not WHICH book — see');
-  console.error('  the note above. It is only ever READ (stamped and exploded into scratch).');
-  process.exit(1);
-}
+// Resolved once, at the top of the file, by `bookOrSkipReason()` — which has
+// already returned here if the book could not be found.
+const KA = bookOrSkipReason().book;
 
 let passed = 0;
 const failures = [];

@@ -98,12 +98,21 @@ function page(bodyInner, title = 't') {
 <html xmlns="http://www.w3.org/1999/xhtml"><head><title>${title}</title></head><body>${bodyInner}</body></html>`;
 }
 
-/** Enough prose that a document takes more than one page and a split is real. */
+/**
+ * Enough prose that a document takes more than one page and a split is real.
+ *
+ * 240 words a paragraph, not 90. The analysis page box widened from 600 to 900
+ * in c2413c06 and the fixture then fitted in exactly 3 pages, which tripped the
+ * adequacy floor in `testSourcesEqualAStampedCopy` before it reached its real
+ * claim. The word count is what carries the fixture past the floor; the
+ * paragraph counts are left alone because the checks below reason about their
+ * relative sizes.
+ */
 function prose(seed, paragraphs) {
   const out = [];
   for (let p = 0; p < paragraphs; p++) {
     const words = [];
-    for (let w = 0; w < 90; w++) words.push(`${seed}${p}w${w}`);
+    for (let w = 0; w < 240; w++) words.push(`${seed}${p}w${w}`);
     out.push(`<p>${words.join(' ')}</p>`);
   }
   return out.join('');

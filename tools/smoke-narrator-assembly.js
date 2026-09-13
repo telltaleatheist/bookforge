@@ -33,7 +33,6 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawnSync } = require('child_process');
-const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
@@ -44,7 +43,7 @@ const DIST = path.join(REPO, 'dist', 'electron');
 const GOLDEN = process.env.NARRATOR_GOLDEN;
 if (!GOLDEN) {
   console.error('Set NARRATOR_GOLDEN to the golden session directory '
-    + '(on this Windows box: C:\tmp\narrator-golden\kershaw).');
+    + String.raw`(on this Windows box: C:\tmp\narrator-golden\kershaw).`);
   process.exitCode = 1;
   return;
 }
@@ -59,18 +58,15 @@ if (!fs.existsSync(GOLDEN)) {
   return;
 }
 
-const orig = Module._resolveFilename;
-Module._resolveFilename = function (r, ...a) {
-  if (r === 'electron') return 'estub';
-  return orig.call(this, r, ...a);
-};
-require.cache['estub'] = {
-  id: 'estub', filename: 'estub', loaded: true,
-  exports: {
-    app: { getAppPath: () => REPO, getPath: () => os.tmpdir(), isPackaged: false },
-    BrowserWindow: class {},
-  },
-};
+// `cli/electron-stub.js` IS the headless Electron shim, and requiring it installs
+// the `require('electron')` interception. It is borrowed rather than re-rolled
+// because the hand-rolled stub that used to sit here answered `os.tmpdir()` for
+// EVERY getPath, so `userData` came out as %TEMP% and `resolveToolsEnv()` looked
+// for the tools env at %TEMP%\runtime\tools-env — a directory that does not
+// exist, which makes assembly refuse for a reason that has nothing to do with
+// what this smoke is measuring. The shared stub answers the real per-platform
+// userData and throws by name for any getPath nobody has thought about.
+require(path.join(REPO, 'cli', 'electron-stub.js'));
 const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));
 
 let bad = 0;

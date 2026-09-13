@@ -21,23 +21,20 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawnSync } = require('child_process');
-const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
-const orig = Module._resolveFilename;
-Module._resolveFilename = function (r, ...a) {
-  if (r === 'electron') return 'estub';
-  return orig.call(this, r, ...a);
-};
-require.cache['estub'] = {
-  id: 'estub', filename: 'estub', loaded: true,
-  exports: {
-    app: { getAppPath: () => REPO, getPath: () => os.tmpdir(), isPackaged: false },
-    BrowserWindow: class {},
-  },
-};
+// `cli/electron-stub.js` IS the headless Electron shim, and requiring it installs
+// the `require('electron')` interception. It is borrowed rather than re-rolled
+// because the hand-rolled stub that used to sit here answered `os.tmpdir()` for
+// EVERY getPath, so `userData` came out as %TEMP% and `resolveToolsEnv()` looked
+// for the tools env at %TEMP%\runtime\tools-env — a directory that does not
+// exist. This file then threw on import and ran zero checks, silently, since
+// 2026-08-12. The shared stub answers the real per-platform userData and throws
+// by name for any getPath nobody has thought about, which is the opposite
+// failure mode and the right one.
+require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));
 

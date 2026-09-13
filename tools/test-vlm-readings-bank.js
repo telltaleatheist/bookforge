@@ -177,9 +177,17 @@ check('every path prints a sentence, including the ones where nothing happens', 
   assert.match(
     describeReadingsDecision('fresh', completedByMarker, false),
     /Reading all pages fresh, as chosen when this job was added to the queue/);
+  // The old bank SURVIVES the fresh read — pinned to the module's own sentence,
+  // not paraphrased. It used to read "archived beside it and the vision model
+  // reads the whole book again", which was true of foundry before `e27a174`:
+  // `swapPendingIntoPlace` destroys the old bank by rename and there is no
+  // `archived-` directory anywhere. readings-bank.ts was corrected on 2026-09-13
+  // and this assertion was not, so it has been red ever since. The promise it
+  // guards is unchanged — only the mechanism is: a pending bank beside the live
+  // one, and the live one is replaced only once its replacement is complete.
   assert.match(
     describeReadingsDecision('fresh', completedByMarker, false),
-    /archived beside it and the vision model reads the whole book again/);
+    /the vision model reads the whole book again into a new bank beside the \d+ banked page answer\(s\) at .*, which stay until the new one is complete\./);
   assert.match(
     describeReadingsDecision('reuse', interrupted, false),
     /Using the 180 banked page answer\(s\)/);

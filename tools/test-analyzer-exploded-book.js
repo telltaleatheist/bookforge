@@ -92,11 +92,18 @@ async function refuses(fn, mustSay, what) {
 
 // ── A book, zipped, with enough in it to paginate across pages ─────────────
 
+/**
+ * 240 words a paragraph, not 80. The analysis page box widened from 600 to 900
+ * in c2413c06 and the old fixture then fitted in exactly 3 pages, which tripped
+ * the adequacy floor below and stopped this file checking anything. The word
+ * count is what carries the fixture past the floor; the paragraph counts are
+ * left alone because other checks here reason about their relative sizes.
+ */
 function prose(seed, paragraphs) {
   const out = [];
   for (let p = 0; p < paragraphs; p++) {
     const words = [];
-    for (let w = 0; w < 80; w++) words.push(`${seed}${p}w${w}`);
+    for (let w = 0; w < 240; w++) words.push(`${seed}${p}w${w}`);
     out.push(`<p>${words.join(' ')}</p>`);
   }
   return out.join('');

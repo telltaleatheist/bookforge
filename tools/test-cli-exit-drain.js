@@ -178,6 +178,68 @@ const ABORT_MARK_RE = /abort-path/;
 const INLINE_SIGNAL_RE = /process\.on\(\s*['"]SIG/;
 
 /**
+ * Blank the CONTENTS of every quoted string and template on a line, keeping its
+ * length and its delimiters. A `;` or a `(` inside a message must not be read as
+ * code. An unbalanced quote leaves the rest of the line blanked, which can only
+ * make a shape LESS recognisable — the conservative direction, which is the only
+ * direction a scan like this may fail in.
+ */
+function blankStringContents(line) {
+  return line.replace(
+    /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`/g,
+    (m) => m[0] + 'x'.repeat(Math.max(0, m.length - 2)) + m[m.length - 1]);
+}
+
+/** `function die(msg) { … }` / `const die = (msg) => { … }`, whole, on one line. */
+const ONE_LINE_HELPER_RE = new RegExp(
+  '^\\s*(?:'
+  + 'function\\s+[A-Za-z_$][\\w$]*\\s*\\([^()]*\\)'
+  + '|(?:const|let|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*(?:function\\s*)?\\([^()]*\\)\\s*(?:=>)?'
+  + ')\\s*\\{(.*)\\}\\s*;?\\s*$');
+
+/**
+ * THE `die()` HELPER SHAPE — recognised structurally, so the next one written
+ * does not have to rediscover this scan.
+ *
+ * `cli/epub-chapter-sentences.js` defines
+ * `function die(msg) { console.error(...); process.exit(1); }`, and the scan
+ * flagged it. It is an abort path, but the old recognizer was line-local and
+ * knew only two spellings — an inline `process.on('SIG…` or an `// abort-path`
+ * comment — so every future `die()` would trip it too, and the cure for a
+ * recurring false positive is people learning to ignore the guard.
+ *
+ * The shape accepted here is deliberately the narrowest one that is a `die`:
+ *
+ *   - the WHOLE declaration is on one line (a multi-line helper can do
+ *     anything between the braces, and is not read here);
+ *   - every statement in the body writes to STDERR — `console.error(…)` or
+ *     `process.stderr.write(…)`, with no nested call, so nothing can be
+ *     computed or emitted through an argument;
+ *   - exactly one `process.exit(N)`, with N a NON-ZERO integer literal.
+ *
+ * That last pair is what keeps the scan from going permissive. This guard
+ * protects STDOUT data on NORMAL COMPLETION paths; a helper that writes only to
+ * stderr and exits non-zero is by construction not one. `process.exit(0)`,
+ * anything touching `process.stdout` or `console.log`, a computed exit code, or
+ * any other statement in the body all still fail and still need the explicit
+ * `// abort-path` marker and a human's reason. The table in
+ * `testAbortHelperRecognizerIsNarrow` below is where that narrowness is held.
+ */
+function isStderrOnlyAbortHelper(line) {
+  const m = ONE_LINE_HELPER_RE.exec(blankStringContents(line.replace(/\/\/.*/, '')));
+  if (!m) return false;
+  const statements = m[1].split(';').map((s) => s.trim()).filter((s) => s !== '');
+  let exits = 0;
+  for (const statement of statements) {
+    if (/^process\.exit\(\s*[1-9]\d*\s*\)$/.test(statement)) { exits++; continue; }
+    if (/^console\.error\([^()]*\)$/.test(statement)) continue;
+    if (/^process\.stderr\.write\([^()]*\)$/.test(statement)) continue;
+    return false;                                   // anything else: not a die
+  }
+  return exits === 1;
+}
+
+/**
  * A process.exit( on line `idx` is legitimate only as an abort path: an inline
  * `process.on('SIG...` on the same line, an `// abort-path` marker on the exit
  * line itself, or one in the rationale comment block immediately above it (the
@@ -188,6 +250,7 @@ const INLINE_SIGNAL_RE = /process\.on\(\s*['"]SIG/;
 function isLegitimateAbortExit(lines, idx) {
   const line = lines[idx];
   if (ABORT_MARK_RE.test(line) || INLINE_SIGNAL_RE.test(line)) return true;
+  if (isStderrOnlyAbortHelper(line)) return true;
   for (let back = 1; back <= 20 && idx - back >= 0; back++) {
     const prev = lines[idx - back];
     if (ABORT_MARK_RE.test(prev)) return true;
@@ -226,6 +289,40 @@ function scanForBareExits() {
   console.log(`  scope: ${SCOPE_FILES.length} file(s) — ${SCOPE_FILES.join(', ')}`);
 
   await runDrainFixtures();
+
+  // A recognizer that quietly widened would disarm the scan without failing it,
+  // so what it REFUSES is asserted beside what it accepts.
+  await check('the die() recognizer accepts a stderr-only abort and nothing near it', () => {
+    const accepted = [
+      'function die(msg) { console.error(`[split] ${msg}`); process.exit(1); }',
+      "  const die = (m) => { console.error('x: ' + m); process.exit(2); };",
+      'function bail(m) { process.stderr.write(m); process.exit(1); }',
+      'function die(msg) { process.exit(1); }',
+    ];
+    const refused = [
+      // exits 0 — a SUCCESSFUL completion, which is exactly what this guards
+      'function done(msg) { console.error(msg); process.exit(0); }',
+      // writes STDOUT before exiting — the defect itself, wearing a helper's coat
+      'function die(msg) { console.log(msg); process.exit(1); }',
+      'function die(msg) { process.stdout.write(msg); process.exit(1); }',
+      // a computed code: not a literal abort
+      'function die(msg, code) { console.error(msg); process.exit(code); }',
+      // any other statement in the body — it could do anything
+      'function die(msg) { flush(); console.error(msg); process.exit(1); }',
+      'function die(msg) { console.error(fmt(msg)); process.exit(1); }',
+      // not a one-line helper at all: a bare call, and an opening brace only
+      '  process.exit(1);',
+      'function die(msg) {',
+      // a `;` hidden in the message must not be able to split the body apart
+      "function die() { console.error('a; process.exit(1)'); doWork(); process.exit(1); }",
+    ];
+    for (const line of accepted) {
+      assert.ok(isStderrOnlyAbortHelper(line), `should be read as a die() helper: ${line}`);
+    }
+    for (const line of refused) {
+      assert.ok(!isStderrOnlyAbortHelper(line), `should NOT be read as a die() helper: ${line}`);
+    }
+  });
 
   await check('no bare process.exit() on a normal completion path in scope', () => {
     const offenders = scanForBareExits();

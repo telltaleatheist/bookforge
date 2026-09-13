@@ -506,11 +506,15 @@ check('a typed drive letter reaches the adapter as typed, not as its UNC/target 
     'no operator-typed path goes through Path.resolve() directly — every one goes through _user_path');
   if (!WIN) return;                                   // resolve() keeps drive letters nowhere else
   const target = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-subst-'));
-  // A free letter: the first one with no drive behind it. `subst` refuses a
+  // A free letter: the highest one with no drive behind it. `subst` refuses a
   // letter in use, and a machine with Q: mapped would otherwise fail the check
-  // for the wrong reason.
-  const letter = 'QRSTUVWXY'.split('').find((l) => !fs.existsSync(`${l}:\\`));
-  assert.ok(letter, 'no free drive letter in Q–Y to subst');
+  // for the wrong reason. The search used to be Q–Y only, and on the PC every
+  // one of those is taken (Z: is the titan share), so this check silently did
+  // not run there — the one machine whose defect it was written for. G upward
+  // is the whole range a temporary `subst` may safely claim; the highest free
+  // letter is taken first so a low letter stays available for a real volume.
+  const letter = 'YXWVUTSRQPONMLKJIHG'.split('').find((l) => !fs.existsSync(`${l}:\\`));
+  assert.ok(letter, 'no free drive letter in G–Y to subst');
   const made = spawnSync('subst', [`${letter}:`, target], { encoding: 'utf8' });
   assert.strictEqual(made.status, 0, `subst ${letter}: failed: ${made.stdout}${made.stderr}`);
   try {
