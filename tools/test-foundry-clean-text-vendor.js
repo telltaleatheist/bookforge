@@ -251,22 +251,10 @@ const FILES = [
     ours: 'electron/tts-spoken-forms.ts',
     theirs: 'src/clean/tts-spoken-forms.ts',
     vendoredAt: VENDOR_PASS,
-    shipped: {
-      sha256: '9d7282b611effbef1c11e251db8a64d1b5a174677ff89d819dbc6c435a966d33',
-      why: 'the English word list is IMPORTED rather than read with `fs` + `__dirname` '
-        + '(electron ships a directory, foundry ships ONE FILE, so a readFileSync beside the '
-        + 'module names a path that exists in the checkout and nowhere on a user\'s machine); '
-        + 'the laziness and the named refusal are kept. REPINNED 2026-09-13 at foundry 7fbe763, '
-        + 'which added `covid` to SPOKEN_AS_WORD. That is a CONFORMANCE fix, not a rule move: '
-        + '`n6` has meant "with COVID" since BookForge 77ea83d0 (2026-09-06) created '
-        + 'caps_acronyms.json as THE ONE list, and foundry\'s hard-coded copy — ported one day '
-        + 'EARLIER — was behind the spec it already claimed. Until this fix the two '
-        + 'implementations of one pass, both stamping n6, disagreed about what the validator '
-        + 'refuses: foundry ACCEPTED an edit spelling COVID letter by letter and BookForge '
-        + 'refused it. So NORMALIZER_VERSION correctly did NOT move — a bump would assert the '
-        + 'rules changed when what changed is that one copy was wrong about rules that did not. '
-        + 'No reading table moved.',
-    },
+    // NOT sha-pinned any more. `checkSpokenAsWordAgreement` below is this file's
+    // shipped-tier check instead, and the reason is the whole point of the
+    // exercise — see that function.
+    shipped: null,
   },
   {
     ours: 'electron/narration-text-pass.ts',
@@ -392,6 +380,75 @@ function blob(repo, rev, file) {
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
+/**
+ * `src/clean/tts-spoken-forms.ts` is checked by VALUE, not by bytes, and this is
+ * the third time that decision has been forced.
+ *
+ * THE HISTORY, because it is the argument. Foundry's `SPOKEN_AS_WORD` is a
+ * hard-coded array; ours is `caps_acronyms.json`, the file whose own `_comment`
+ * calls itself *"THE ONE ACRONYM LIST, read by THREE code paths so they can never
+ * drift"*. The two have now diverged twice:
+ *
+ *   1. 2026-09-06 — `covid` was in the JSON and not in Foundry's copy. Both
+ *      stamped `n6`. Foundry's validator ACCEPTED an edit spelling COVID letter
+ *      by letter and ours REFUSED it, and because text processing is Foundry's at
+ *      runtime, the live behaviour was the permissive one. Nothing downstream
+ *      could tell the two results apart.
+ *   2. 2026-09-13 — `wwi` and `wwii` went into the JSON (an all-caps heading was
+ *      being narrated "Wwii") and not into Foundry's copy. The same divergence,
+ *      by the same mechanism, eight weeks later.
+ *
+ * A SHA PIN CANNOT TELL A CONFORMANCE FIX FROM A RULE MOVE, which is the only
+ * distinction anybody cares about here. It went red on Foundry 969dd96 — a commit
+ * that ADDED `wwi`/`wwii` and thereby made the two copies AGREE. The pin's own
+ * comment narrated incident (1) at length and then repinned; repinning again
+ * would have been the third recurrence of a defect this keeper exists to catch,
+ * written directly underneath the paragraph describing the second.
+ *
+ * WHY THE CHECK LIVES HERE AND NOT IN FOUNDRY. Foundry-pc-1, 2026-09-13:
+ * *"Foundry CANNOT read caps_acronyms.json at runtime (single binary, no
+ * checkout), so 'read the JSON' is not a shape that exists here."* That is
+ * correct and it settles ownership — a single-file binary cannot open a file in
+ * somebody else's repository, so the comparison has to be made by the side that
+ * can see both. This side can.
+ *
+ * So: parse the set out of Foundry's source, compare it as a SET to the JSON's
+ * `spokenAsWord`, lower-cased, and fail on a difference IN EITHER DIRECTION. An
+ * addition on either side that the other has not got is the defect, whichever
+ * side added it.
+ */
+function checkSpokenAsWordAgreement(atShip) {
+  const source = atShip.toString('utf8');
+  // The literal, as Foundry writes it: `export const SPOKEN_AS_WORD: ... = new
+  // Set([ 'nasa', ... ]);`. Anchored on the NAME rather than on a line number or
+  // a shape, because the name is the contract and the formatting is not.
+  const block = /SPOKEN_AS_WORD[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(source);
+  if (block === null) {
+    return 'TIER 2 src/clean/tts-spoken-forms.ts: no `SPOKEN_AS_WORD = new Set([...])` literal '
+      + 'found. Either it was renamed or it is now built some other way — and this keeper cannot '
+      + 'compare a set it cannot find. Do not delete this check to make it pass: the two copies '
+      + 'have silently diverged twice already (COVID 2026-09-06, WWI/WWII 2026-09-13).';
+  }
+  const theirs = new Set(
+    [...block[1].matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => (m[1] ?? m[2]).toLowerCase()),
+  );
+  const ours = new Set(
+    require('../python/narrator/text/caps_acronyms.json').spokenAsWord.map((w) => w.toLowerCase()),
+  );
+  const missingThere = [...ours].filter((w) => !theirs.has(w)).sort();
+  const extraThere = [...theirs].filter((w) => !ours.has(w)).sort();
+  if (missingThere.length === 0 && extraThere.length === 0) return null;
+
+  return 'TIER 2 src/clean/tts-spoken-forms.ts: SPOKEN_AS_WORD and caps_acronyms.json.spokenAsWord '
+    + 'DISAGREE, and both sides stamp the same NORMALIZER_VERSION.\n      '
+    + (missingThere.length ? `Foundry is MISSING: ${missingThere.join(', ')}. ` : '')
+    + (extraThere.length ? `Foundry has EXTRA: ${extraThere.join(', ')}. ` : '')
+    + '\n      Because all text processing is Foundry\'s at runtime, the LIVE behaviour is '
+    + 'whichever side is more permissive, and nothing downstream can tell the two results apart. '
+    + 'This is the COVID incident (2026-09-06) and the WWI/WWII one (2026-09-13) recurring. Fix '
+    + 'the list, not this keeper.';
+}
+
 function requireCommit(repo, rev, what) {
   try {
     execFileSync('git', ['-C', repo, 'rev-parse', '--verify', `${rev}^{commit}`], {
@@ -432,6 +489,7 @@ function main() {
   let carried = 0;
   let pinned = 0;
   let replaced = 0;
+  let agreed = 0;
 
   for (const entry of FILES) {
     const { ours, theirs, vendoredAt, shipped } = entry;
@@ -478,6 +536,15 @@ function main() {
         `TIER 2 ${theirs} @${FOUNDRY_SHIPPED}: gone. A file the engine still needs was renamed or `
         + 'removed, and nothing here says why.',
       );
+      continue;
+    }
+
+    if (shipped === null) {
+      // The one file checked by VALUE rather than by bytes. See
+      // `checkSpokenAsWordAgreement`.
+      const trouble = checkSpokenAsWordAgreement(atShip);
+      if (trouble === null) agreed += 1;
+      else problems.push(trouble);
       continue;
     }
 
@@ -534,12 +601,13 @@ function main() {
   );
 
   assert.strictEqual(handover, FILES.length, 'every file must be checked at its vendor commit');
-  assert.strictEqual(carried + pinned + replaced, FILES.length);
+  assert.strictEqual(carried + pinned + replaced + agreed, FILES.length);
   console.log(
     `PASS test-foundry-clean-text-vendor — handover: ${handover}/${FILES.length} byte-identical to `
     + `bookforge ${BOOKFORGE_ANCHOR} at foundry ${VENDOR_PASS}/${VENDOR_LEAVES}. `
     + `Shipped (${FOUNDRY_SHIPPED}): ${carried} carried verbatim, ${pinned} ported and pinned, `
-    + `${replaced} replaced by the engine's own driver. n6/s1 agree on both sides. (${foundry})`,
+    + `${replaced} replaced by the engine's own driver, ${agreed} checked by VALUE. `
+    + `n6/s1 agree on both sides. (${foundry})`,
   );
 }
 

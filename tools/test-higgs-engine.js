@@ -1625,22 +1625,71 @@ check('the bridge watchdogs all clear that cold start', () => {
   //
   // THE ANCHOR IS THE MEASURED COLD START (297 s), not a declared limit — that
   // is what the check's name has always claimed and, since 2026-09-13, what it
-  // actually reads. STATED AND NOT ASSERTED, because the file is another
-  // owner's: narrator gives up at 900 s while WORKER_STARTUP_TIMEOUT_MS is
-  // 600 s (parallel-tts-bridge.ts:2612), whose own comment justifies itself
-  // against the stale 300 — so the bridge can kill a worker five minutes before
-  // narrator has finished waiting. Raising it is a change to that file, and a
-  // keeper that went red here would only be red at somebody else's desk.
+  // actually reads.
   const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
   const coldMs = higgs.higgsServingSpec().coldStartSeconds * 1000;
-  for (const name of ['WORKER_STARTUP_TIMEOUT_MS', 'WORKER_PROGRESS_TIMEOUT_MS',
-                      'PREP_STALL_TIMEOUT_MS']) {
+  for (const name of ['WORKER_PROGRESS_TIMEOUT_MS', 'PREP_STALL_TIMEOUT_MS']) {
     const m = src.match(new RegExp('const ' + name + ' = (\\d+) \\* 60 \\* 1000'));
     assert.ok(m, name + ' is no longer an "<n> * 60 * 1000" literal — re-check it by hand');
     const ms = Number(m[1]) * 60 * 1000;
     assert.ok(ms > coldMs,
       name + ' is ' + ms + ' ms, which does not clear the ' + coldMs + ' ms Higgs cold start');
   }
+});
+
+check("the bridge mirrors narrator's ready timeout, and outlives it", () => {
+  // ONE FACT, TWO OWNERS — and until 2026-09-13 they disagreed by five minutes.
+  //
+  // narrator waits `READY_TIMEOUT_SECONDS` (900) for a Higgs server to answer
+  // /health, and spends that whole wait SILENT on stdout: `served_common.start()`
+  // sends the server's output to a file the backend owns, so none of the
+  // bridge's heartbeat regexes can fire while ~19 GB loads. The bridge's
+  // `WORKER_STARTUP_TIMEOUT_MS` was a flat 600 s, justified in its own comment
+  // against a belief that narrator gave up at 300 — a number that was never
+  // narrator's. A slow start was therefore killed with five minutes of
+  // narrator's patience still to run.
+  //
+  // THE PREVIOUS VERSION OF THIS KEEPER KNEW AND SAID SO IN A COMMENT, and
+  // deliberately did not assert it because the bridge was "another owner's
+  // file". That is the second-order finding of crucible/docs/ARCHITECTURE.md in
+  // its mildest form: a fact that is written down where nothing can go red.
+  // It is asserted now, in both directions.
+  //
+  // NARRATOR IS AUTHORITATIVE, and for a reason rather than by seniority: it
+  // owns the wait, it measured the cold start (297 s worst case, this catalog),
+  // and its `wait_ready` raises the moment the process actually dies — so the
+  // patience is only ever paid while something is genuinely still coming up.
+  // The bridge carries a MIRROR of the number and derives its own budget from
+  // it; this check is what makes the mirror real.
+  const engine = fs.readFileSync(
+    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'v3_engine.py'), 'utf-8');
+  const narrator = engine.match(/READY_TIMEOUT_SECONDS\s*=\s*([\d.]+)/);
+  assert.ok(narrator, 'narrator no longer declares READY_TIMEOUT_SECONDS in v3_engine.py');
+  const narratorMs = Math.round(Number(narrator[1]) * 1000);
+
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
+  const mirror = src.match(/const NARRATOR_HIGGS_READY_TIMEOUT_MS = (\d+) \* 1000/);
+  assert.ok(mirror,
+    'the bridge no longer mirrors narrator READY_TIMEOUT_SECONDS as '
+    + 'NARRATOR_HIGGS_READY_TIMEOUT_MS — if it reads it some better way, retire this half');
+  assert.strictEqual(Number(mirror[1]) * 1000, narratorMs,
+    'the bridge mirrors ' + Number(mirror[1]) + ' s of narrator patience; narrator waits '
+    + (narratorMs / 1000) + ' s. One of the two moved.');
+
+  // And the ordering the mirror exists to guarantee: the bridge's verdict lands
+  // AFTER narrator's, so a worker killed as "stuck" is one narrator has already
+  // stopped waiting on.
+  const derived = src.match(
+    /const WORKER_STARTUP_TIMEOUT_MS = NARRATOR_HIGGS_READY_TIMEOUT_MS \+ (\d+) \* 60 \* 1000/);
+  assert.ok(derived,
+    'WORKER_STARTUP_TIMEOUT_MS is no longer derived from NARRATOR_HIGGS_READY_TIMEOUT_MS. '
+    + 'A flat literal here is how it came to be 300 s short of narrator in the first place.');
+  const startupMs = narratorMs + Number(derived[1]) * 60 * 1000;
+  assert.ok(startupMs > narratorMs,
+    'WORKER_STARTUP_TIMEOUT_MS (' + startupMs + ' ms) does not outlive narrator\'s '
+    + narratorMs + ' ms wait — the bridge would kill a worker narrator is still waiting on');
+  assert.ok(startupMs > higgs.higgsServingSpec().coldStartSeconds * 1000,
+    'WORKER_STARTUP_TIMEOUT_MS does not clear the measured Higgs cold start');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1719,6 +1768,52 @@ check('the checked-in patch scripts introduce their markers AND remove the trim'
   }
 });
 
+check('the sentinel report is ONE name in THREE files, and they agree', () => {
+  // FOUR COPIES OF ONE STRING, which is four chances for the campaign this
+  // check belongs to (crucible/docs/ARCHITECTURE.md: one fact, two owners,
+  // nothing comparing them) to happen inside the fix for it.
+  //
+  //   1. the PATCH declares it and the emitted site-packages file carries it —
+  //      electron/scripts/higgs/patch_sentinel_filter.py, V3_MARKER;
+  //   2. the DOCTOR greps for it to tell a v3 env from a v1/v2 one —
+  //      electron/tool-paths.ts, HIGGS_PATCHES staleMarker;
+  //   3. NARRATOR exports it to the server and reads the file back —
+  //      python/narrator/engine/higgs/v3_served.py, SENTINEL_REPORT_ENV;
+  //   4. CRUCIBLE mirrors the doctor's table so a server can answer "is this env
+  //      sound" without a BookForge checkout — crucible/crucible/narratorpatches.py.
+  //
+  // The fourth is another repo's and is NOT read here; it is named so that
+  // whoever changes this string knows there is a fourth copy to carry. The
+  // three that live in this repo are compared, because a disagreement between
+  // them is silent in every direction: narrator exports a variable the patched
+  // file does not read (no report is ever written, and the proof refuses a
+  // healthy server), or the doctor greps a string the patch does not write
+  // (every correct env reports STALE forever).
+  const patch = fs.readFileSync(
+    path.join(REPO, 'electron', 'scripts', 'higgs', 'patch_sentinel_filter.py'), 'utf-8');
+  const declared = patch.match(/^V3_MARKER = "([^"]+)"/m);
+  assert.ok(declared, 'patch_sentinel_filter.py no longer declares V3_MARKER');
+  const name = declared[1];
+
+  const row = toolPaths.HIGGS_PATCHES.find((p) => p.id === 'higgs-sentinel-filter');
+  assert.strictEqual(row.staleMarker, name,
+    'the doctor greps "' + row.staleMarker + '" but the patch writes "' + name + '"');
+
+  const served = fs.readFileSync(
+    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'v3_served.py'), 'utf-8');
+  const narrator = served.match(/^SENTINEL_REPORT_ENV = '([^']+)'/m);
+  assert.ok(narrator, 'v3_served.py no longer declares SENTINEL_REPORT_ENV');
+  assert.strictEqual(narrator[1], name,
+    'narrator exports ' + narrator[1] + ' but the patched file reads ' + name);
+
+  // And the string has to be one a v1/v2 file CANNOT contain, or "stale" means
+  // nothing. The retired v2 marker was a fragment of an English warning; this
+  // one is the variable name, which is the contract that must not drift.
+  assert.ok(!patch.includes('final=%s, window=%d frames\'')
+    && !/^V2_MARKER/m.test(patch),
+    'the retired v2 marker is still declared — two stale markers is no stale marker');
+});
+
 check('the RETIRED patch_tail_trim.py is gone from the shipped scripts', () => {
   // It was superseded on 2026-09-05 and deleted rather than left beside its
   // replacement. The two edit the same file and must never stack; a retired
@@ -1733,10 +1828,18 @@ check('the RETIRED patch_tail_trim.py is gone from the shipped scripts', () => {
 });
 
 check('the WSL scripts are LF — a CRLF shebang is a bad interpreter', () => {
+  // DIRECTORIES ARE SKIPPED, and that is a fix rather than an exemption: this
+  // read every entry as a file, so the first subdirectory to appear here made
+  // the check die on EISDIR — which reads as "the scripts have CRLF" in the
+  // keeper output and is nothing of the kind. (2026-09-13: a test loaded
+  // patch_sentinel_filter.py with importlib and left a `__pycache__/` beside
+  // it.) A directory has no shebang; there is nothing here to assert about one.
   const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
-  for (const f of fs.readdirSync(dir)) {
-    const buf = fs.readFileSync(path.join(dir, f));
-    assert.ok(!buf.includes('\r'), `${f} contains CR bytes and will not run under bash`);
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const buf = fs.readFileSync(path.join(dir, entry.name));
+    assert.ok(!buf.includes('\r'),
+      `${entry.name} contains CR bytes and will not run under bash`);
   }
 });
 

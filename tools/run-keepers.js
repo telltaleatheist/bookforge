@@ -102,6 +102,15 @@ const SUITES = [
   // silent in the worst way: a book with 36 minutes of good audio becomes
   // unassemblable again because one row decided to fail on what it found.
   'test-coverage-audit-reports',
+  // What the guard decided about a chunk, and the two ways to lose it silently:
+  // reading "we were not told" as "it was fine", and knowing the ladder's words
+  // on this side so they can drift from what the ladder actually did. Both are
+  // live — `hole` was found missing from the written verdict list on 2026-09-13
+  // while the Crucible half was being wired, and the pinned @crucible/client
+  // discards `guard` inside readChunk(), which this suite MEASURES rather than
+  // assumes. Before it, a guard fire's only record was a WARN line in a shared
+  // daily text file (ARCHITECTURE.md R4).
+  'test-chunk-guard-ledger',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

@@ -967,6 +967,87 @@ class LifecycleTest(V3TestCase):
             backend.wait_ready(5)
         self.assertIn('status 1', str(caught.exception))
 
+    def misbound_backend(self, bound, healthy_ports):
+        """A LAUNCHING backend whose port scan and health probe are staged.
+
+        The scan itself is `/proc`-reading python inside the distro and there is
+        no way to make a real sgl-omni misbind on demand, so the two FACTS it
+        gathers are injected and what is tested is the JUDGEMENT built on them -
+        which is the half that was missing, not the half that was wrong.
+        """
+        dead = FakeV3Server(healthy=False)
+        self.addCleanup(dead.close)
+        backend = HiggsV3ServedBackend(base_url=dead.base_url,
+                                       serve_script='/campaign/serve_v3.sh')
+        self.addCleanup(backend._close_log)
+        backend._bound_ports = lambda: list(bound)
+        backend._answers_health = lambda port: port in healthy_ports
+        return backend, int(dead.base_url.rsplit(':', 1)[-1])
+
+    def test_a_server_answering_on_ANOTHER_port_is_refused_BY_NAME(self):
+        """MEASURED: told 8200, sgl-omni bound 57877 and said nothing, while
+        narrator polled 8200 for the whole 900 s patience. The server is up and
+        can never appear where it was asked for, so there is nothing to wait
+        for."""
+        backend, asked = self.misbound_backend(
+            bound=[{'pid': 4242, 'port': 57877}], healthy_ports={57877})
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend._refuse_if_misbound()
+        message = str(caught.exception)
+        self.assertIn('57877', message)
+        self.assertIn(str(asked), message)
+        self.assertIn('4242', message)
+
+    def test_an_INTERNAL_socket_on_another_port_is_NOT_a_misbind(self):
+        """vLLM's engine-core and SGLang's schedulers are separate processes that
+        inherit our environment and open TCP sockets of their own. The marker
+        alone would refuse every healthy launch; the second fact - that the
+        stranger port answers OUR health endpoint - is what makes the difference.
+        """
+        backend, _ = self.misbound_backend(
+            bound=[{'pid': 4242, 'port': 41001}, {'pid': 4243, 'port': 41002}],
+            healthy_ports=set())
+        backend._refuse_if_misbound()          # must not raise
+
+    def test_the_port_we_ASKED_for_is_never_a_misbind(self):
+        backend, asked = self.misbound_backend(bound=[], healthy_ports=set())
+        backend._bound_ports = lambda: [{'pid': 4242, 'port': asked}]
+        backend._answers_health = lambda port: True
+        backend._refuse_if_misbound()          # must not raise
+
+    def test_ATTACH_mode_never_asks_the_question(self):
+        """The operator named the URL; there is no port we asked for to be
+        missed, and a scan there would be a spawn for nothing."""
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+
+        def explode():
+            raise AssertionError('attach mode scanned for bound ports')
+
+        backend._bound_ports = explode
+        backend._refuse_if_misbound()
+
+    def test_wait_ready_refuses_a_misbind_instead_of_timing_out(self):
+        """The whole point: the failure arrives as a named refusal, not as a
+        timeout that points at cold starts and flashinfer."""
+        backend, _ = self.misbound_backend(
+            bound=[{'pid': 4242, 'port': 34529}], healthy_ports={34529})
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.wait_ready(2)
+        self.assertIn('34529', str(caught.exception))
+
+    def test_a_scan_that_CANNOT_RUN_is_a_refusal_not_a_shrug(self):
+        """An unanswerable question about our own process is not a "no" - the
+        same ruling `_own_servers_on_port` already makes."""
+        backend, _ = self.misbound_backend(bound=[], healthy_ports=set())
+
+        def broken():
+            raise HiggsV3ServerError('the bound-port scan failed (exit 2): boom')
+
+        backend._bound_ports = broken
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend._refuse_if_misbound()
+        self.assertIn('bound-port scan failed', str(caught.exception))
+
     def test_the_launch_command_invokes_their_script(self):
         backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
         command = backend.launch_command()
@@ -1500,134 +1581,217 @@ class SentinelFilterProbeTest(V3TestCase):
 
 
 class SentinelProofTest(V3TestCase):
-    """PROOF (a) OF THE SENTINEL FILTER: the server's own log, READ.
+    """PROOF (a) OF THE SENTINEL FILTER: the RECORDS the patch writes, read.
 
     The patch's two halves are proved in two different places. (b) "no one-frame
     trim left in the stage processor" is a static grep BookForge's Higgs doctor
-    runs before any server starts. (a) is this: the decode path says what it did,
-    in the server's log - and until 2026-09-05 narrator threw that away on
-    `subprocess.DEVNULL`, which is why the TODO existed.
+    runs before any server starts. (a) is this: the decode path says what it did.
 
-    THE FIXTURES ARE LOG LINES because that is the interface. vLLM's logger emits
-    `WARNING <date> [<file>:<line>] <message>`; on the certified build the three
-    lines the filter can write are `higgs_audio_v3.py:403` (the trailing ramp),
-    `:126` (a sync interior drop) and `:119` (a chunk with no audio at all). The
-    matching is on the MESSAGE, not on the line number - a number is a property
-    of the patch's layout and the queued one-line fix for the count below moves
-    all three - so these fixtures carry a locator that is deliberately NOT what
-    is matched.
+    UNTIL 2026-09-13 IT SAID SO IN ENGLISH, and narrator ran three regexes over
+    the server's LOG FILE to read it - crucible/docs/ARCHITECTURE.md rule R4's
+    headline case, a log line promoted to an API that nothing versions and
+    nothing tests. Two of these tests exist because that version was not merely
+    fragile, it was WRONG: it passed on an empty log, and it expected the exact
+    "2 frame(s)" line that patch v2 exists to eliminate.
+
+    THE FIXTURES ARE JSON RECORDS because that is now the interface -
+    `patch_sentinel_filter.py` v3's `_sentinel_report`, one per filter
+    invocation, appended to the file named in `HIGGS_SENTINEL_REPORT`.
     """
 
-    # A CLEAN chunk, and it is not zero frames: the patch counts out-of-range
-    # frames BEFORE it trims the trailing run, so it counts the model's normal
-    # 2-frame EOC ramp and mislabels it "outside the trailing run".
-    ASYNC_2 = ('WARNING 09-05 12:00:01 [higgs_audio_v3.py:403] higgs_audio_v3 '
-               '(async): 2 frame(s) carry a stream sentinel outside the trailing run')
-    ASYNC_3 = ('WARNING 09-05 12:00:02 [higgs_audio_v3.py:403] higgs_audio_v3 '
-               '(async): 3 frame(s) carry a stream sentinel outside the trailing run')
-    SYNC_INTERIOR = ('WARNING 09-05 12:00:03 [higgs_audio_v3.py:126] higgs_audio_v3 '
-                     '(sync): 1 interior sentinel frame(s) dropped (248/249 frames '
-                     'kept) -- this is not an expected shape')
-    EMPTY_CHUNK = ('WARNING 09-05 12:00:04 [higgs_audio_v3.py:119] higgs_audio_v3 '
-                   '(sync): every frame carried a stream sentinel; emitting no audio '
-                   'for this chunk')
-    NOISE = 'INFO 09-05 12:00:00 [api_server.py:1] Started server process [1234]'
+    #: A clean sync chunk: every frame in range, nothing dropped.
+    SYNC_CLEAN = {'v': 3, 'path': 'sync', 'total': 249, 'kept': 249, 'interior': 0}
+    #: A clean FINAL async window: the trailing EOC ramp trimmed by identity,
+    #: nothing out of range left behind. On patch v2+ this is what every good
+    #: chunk looks like - and it writes NO log line at all, which is precisely
+    #: why the old log-grep proof could not see it.
+    ASYNC_CLEAN_FINAL = {'v': 3, 'path': 'async', 'final': True, 'window': 97,
+                         'trimmed': 2, 'outside': 0}
+    #: A clean NON-final window: nothing trimmed (only the final one is), nothing
+    #: out of range.
+    ASYNC_CLEAN_MID = {'v': 3, 'path': 'async', 'final': False, 'window': 128,
+                       'trimmed': 0, 'outside': 0}
+    #: THE DEFECT: sentinel frames still out of range on the FINAL window after
+    #: the identity trim. They were substituted with codec code 0 - a valid code
+    #: that decodes to real sound on the end of that chunk.
+    ASYNC_FINAL_LEFTOVER = {'v': 3, 'path': 'async', 'final': True, 'window': 97,
+                            'trimmed': 2, 'outside': 3}
+    #: NOT a defect: the same count on a non-final window is the left-context
+    #: region Stage 1 discards by frame count anyway.
+    ASYNC_MID_LEFTOVER = {'v': 3, 'path': 'async', 'final': False, 'window': 128,
+                          'trimmed': 0, 'outside': 3}
+    SYNC_INTERIOR = {'v': 3, 'path': 'sync', 'total': 249, 'kept': 248,
+                     'interior': 1}
+    EMPTY_CHUNK = {'v': 3, 'path': 'sync', 'total': 249, 'kept': 0, 'interior': 0}
 
-    def write_log(self, *lines):
-        path = os.path.join(self.dir, 'serve_current.log')
+    def write_report(self, *records):
+        path = os.path.join(self.dir, 'serve_current.log.sentinel.jsonl')
         with open(path, 'w', encoding='utf-8') as handle:
-            handle.write('\n'.join(lines) + '\n')
+            for record in records:
+                handle.write(json.dumps(record) + '\n')
         return path
 
     def attached_to(self, path):
-        """A backend in ATTACH mode whose log the OPERATOR named.
+        """A backend in ATTACH mode whose report the OPERATOR named.
 
         Through the documented door - the environment variable - rather than by
         setting the attribute, so what is tested is the contract an operator has.
         """
         if path is not None:
-            os.environ[v3_served.SERVER_LOG_ENV] = path
+            os.environ[v3_served.SENTINEL_REPORT_ENV] = path
         else:
-            os.environ.pop(v3_served.SERVER_LOG_ENV, None)
-        self.addCleanup(os.environ.pop, v3_served.SERVER_LOG_ENV, None)
+            os.environ.pop(v3_served.SENTINEL_REPORT_ENV, None)
+        self.addCleanup(os.environ.pop, v3_served.SENTINEL_REPORT_ENV, None)
         return HiggsV3ServedBackend(base_url=self.server.base_url)
 
-    def test_a_log_of_two_frame_lines_PASSES_and_reports_what_it_read(self):
-        path = self.write_log(self.NOISE, self.ASYNC_2, self.NOISE, self.ASYNC_2,
-                              self.ASYNC_2)
+    def test_clean_records_PASS_and_report_what_they_read(self):
+        path = self.write_report(self.SYNC_CLEAN, self.ASYNC_CLEAN_MID,
+                                 self.ASYNC_CLEAN_FINAL)
         report = self.attached_to(path).verify_sentinel_filter()
-        self.assertEqual(report['log'], path)
-        self.assertEqual(report['trailingRampLines'], 3)
-        self.assertEqual(report['framesPerLine'], 2)
+        self.assertEqual(report['report'], path)
+        self.assertEqual(report['records'], 3)
+        self.assertEqual(report['syncRecords'], 1)
+        self.assertEqual(report['asyncRecords'], 2)
         self.assertEqual(report['syncInteriorDrops'], 0)
-        self.assertEqual(report['linesRead'], 5)
+        self.assertEqual(report['trailingFramesTrimmed'], 2)
+        self.assertEqual(report['nonFinalSubstitutions'], 0)
 
-    def test_a_THREE_frame_line_is_refused_BY_NAME(self):
-        """Any count but 2 is a sentinel the trailing-run trim did not reach -
-        and those frames were substituted with codec code 0, a VALID code that
+    def test_an_EMPTY_report_is_REFUSED_rather_than_passing(self):
+        """THE REGRESSION THAT MOTIVATED ALL OF THIS.
+
+        The log-grep version's `test_a_log_with_no_sentinel_lines_at_all_PASSES`
+        asserted the OPPOSITE of this, and was right to within its own means: it
+        could not tell "the filter ran cleanly" from "nothing was rendered" or
+        "the message was re-worded", so it chose to pass. Records make the two
+        distinguishable - the filter writes one for EVERY invocation, clean ones
+        included - so an empty file is now exactly what it looks like: no
+        evidence, which must never read as no problem.
+        """
+        path = self.write_report()
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('holds no records', message)
+        self.assertIn(path, message)
+
+    def test_leftover_sentinels_on_the_FINAL_window_are_refused_BY_NAME(self):
+        """Out of range AFTER the identity trim, on the final window, is a
+        sentinel the trim could not reach - substituted with codec code 0, which
         decodes to real sound."""
-        path = self.write_log(self.ASYNC_2, self.ASYNC_3)
+        path = self.write_report(self.ASYNC_CLEAN_FINAL,
+                                 self.ASYNC_FINAL_LEFTOVER)
         with self.assertRaises(HiggsV3ServerError) as caught:
             self.attached_to(path).verify_sentinel_filter()
         message = str(caught.exception)
         self.assertIn('sentinel proof FAILED', message)
-        self.assertIn('3 sentinel frame(s)', message)
+        self.assertIn('3 frame(s)', message)
+        self.assertIn('FINAL async window', message)
         self.assertIn(path, message)
-        self.assertIn('higgs_audio_v3.py:403', message,
-                      'the offending line itself must be quoted back')
+        self.assertIn('"outside": 3', message.replace("'", '"'),
+                      'the offending record itself must be quoted back')
 
-    def test_NO_LOG_AT_ALL_is_refused_the_proof_needs_the_stream(self):
+    def test_EXACTLY_TWO_leftover_frames_are_refused_not_welcomed(self):
+        """THE OTHER HALF OF THE R2 CASE, and the sharper one.
+
+        The log-grep proof did not merely pass on an empty log - it also passed
+        on a log FULL of the exact line patch v2 exists to eliminate, because
+        `EXPECTED_TRAILING_SENTINEL_FRAMES` was 2 and 2 is what v1 printed for
+        the EOC ramp it counted before trimming. A guard that is green for two
+        opposite reasons is not a guard. Under v2's ordering the trailing run is
+        already gone when the count is taken, so 2 left on a FINAL window is two
+        sentinel frames that became codec code 0 - the single most likely real
+        defect, and the one reading the old check treated as health.
+        """
+        path = self.write_report(
+            dict(self.ASYNC_FINAL_LEFTOVER, outside=2),
+            dict(self.ASYNC_FINAL_LEFTOVER, outside=2))
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('sentinel proof FAILED', message)
+        self.assertIn('2 frame(s)', message)
+
+    def test_the_same_count_on_a_NON_final_window_is_counted_not_refused(self):
+        """Off the final window those frames can only be the left-context region
+        Stage 1 discards by frame count. Refusing on them would fail correct
+        servers; they are surfaced as a number instead."""
+        path = self.write_report(self.ASYNC_MID_LEFTOVER, self.ASYNC_CLEAN_FINAL)
+        report = self.attached_to(path).verify_sentinel_filter()
+        self.assertEqual(report['nonFinalSubstitutions'], 3)
+        self.assertEqual(report['finalWindowSubstitutions'], 0)
+
+    def test_NO_REPORT_AT_ALL_is_refused_the_proof_needs_the_records(self):
         """An attached server whose operator named nothing. narrator will not
-        guess a path: a stale log from an earlier run would let this pass on
+        guess a path: a stale report from an earlier run would let this pass on
         evidence from a server that is no longer up."""
         backend = self.attached_to(None)
-        self.assertIsNone(backend.proof_log())
+        self.assertIsNone(backend.proof_report())
         with self.assertRaises(HiggsV3ServerError) as caught:
             backend.verify_sentinel_filter()
         message = str(caught.exception)
-        self.assertIn('no server log to read', message)
-        self.assertIn(v3_served.SERVER_LOG_ENV, message)
-        self.assertIn('serve_current.log', message,
-                      'the refusal should say where the training side tees')
+        self.assertIn('no sentinel report to read', message)
+        self.assertIn(v3_served.SENTINEL_REPORT_ENV, message)
 
-    def test_a_NAMED_log_that_does_not_exist_is_refused_too(self):
-        missing = os.path.join(self.dir, 'nothing-here.log')
+    def test_a_NAMED_report_that_does_not_exist_is_refused_too(self):
+        missing = os.path.join(self.dir, 'nothing-here.jsonl')
         with self.assertRaises(HiggsV3ServerError) as caught:
             self.attached_to(missing).verify_sentinel_filter()
-        self.assertIn('could not be read', str(caught.exception))
-        self.assertIn(missing, str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn('could not', message)
+        self.assertIn(missing, message)
+        self.assertIn('stale', message,
+                      'the refusal should name what a v1/v2 env looks like')
 
     def test_a_SYNC_interior_drop_is_refused(self):
         """The sync path takes the FULL filter, so an interior drop is a frame
         that failed the token test between two good ones - never observed
         offline, and a hole in the middle of that chunk's audio."""
-        path = self.write_log(self.ASYNC_2, self.SYNC_INTERIOR)
+        path = self.write_report(self.SYNC_CLEAN, self.SYNC_INTERIOR)
         with self.assertRaises(HiggsV3ServerError) as caught:
             self.attached_to(path).verify_sentinel_filter()
         message = str(caught.exception)
         self.assertIn('SYNC path', message)
         self.assertIn('INTERIOR', message)
-        self.assertIn('higgs_audio_v3.py:126', message)
 
     def test_a_chunk_with_no_audio_at_all_is_refused(self):
-        path = self.write_log(self.EMPTY_CHUNK)
+        path = self.write_report(self.EMPTY_CHUNK)
         with self.assertRaises(HiggsV3ServerError) as caught:
             self.attached_to(path).verify_sentinel_filter()
         self.assertIn('NO audio', str(caught.exception))
 
-    def test_a_log_with_no_sentinel_lines_at_all_PASSES(self):
-        """Zero ramp lines is not a failure. The refusals here are "a count that
-        is not 2" and "there is no stream"; requiring a line would make the proof
-        depend on how many chunks happened to be rendered before it ran."""
-        report = self.attached_to(self.write_log(self.NOISE)).verify_sentinel_filter()
-        self.assertEqual(report['trailingRampLines'], 0)
+    def test_a_record_from_ANOTHER_PATCH_GENERATION_is_refused(self):
+        """A v2 env writes no report at all, so this is the corruption / mixed-env
+        case. Skipping the record would be the same silent pass by another
+        route."""
+        old = dict(self.SYNC_CLEAN, v=2)
+        path = self.write_report(self.SYNC_CLEAN, old)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('v=2', message)
+        self.assertIn('line 2', message)
+
+    def test_a_TORN_line_is_refused_rather_than_skipped(self):
+        path = self.write_report(self.SYNC_CLEAN)
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write('{"v": 3, "path": "sy\n')
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        self.assertIn('not JSON', str(caught.exception))
+        self.assertIn('line 2', str(caught.exception))
+
+    def test_an_UNKNOWN_path_name_is_refused(self):
+        path = self.write_report(dict(self.SYNC_CLEAN, path='streaming'))
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        self.assertIn("'streaming'", str(caught.exception))
 
     def test_the_engine_says_UNAVAILABLE_rather_than_passing_silently(self):
-        """Attached, no named log: `load_engine` must not call the proof, and
+        """Attached, no named report: `load_engine` must not call the proof, and
         must not report success either. "Not proved" and "proved" have to look
         different in a run log."""
         backend = self.attached_to(None)
-        self.assertIsNone(backend.proof_log())
+        self.assertIsNone(backend.proof_report())
         lines = []
         real = v3_served.log
         v3_served.log = lambda *a, **k: lines.append(a[0] if a else '')
@@ -1638,8 +1802,194 @@ class SentinelProofTest(V3TestCase):
             v3_served.log = real
         # The engine logs through its own module, so assert on the outcome that
         # matters: the load did not raise, and the backend it built has no proof
-        # stream to read.
-        self.assertIsNone(engine.server.proof_log())
+        # records to read.
+        self.assertIsNone(engine.server.proof_report())
+
+
+class SentinelRecordShapeTest(unittest.TestCase):
+    """THE PRODUCER AND THE CONSUMER OF THE RECORDS, COMPARED.
+
+    `verify_sentinel_filter` reads fields out of a file written by
+    `electron/scripts/higgs/patch_sentinel_filter.py`, which is spliced into a
+    third-party module inside a conda env inside WSL. Nothing about that seam
+    is type-checked, imported or exercised by either side's tests, and the only
+    place the two shapes meet at runtime is a box with a 24 GB card on it.
+
+    That is the exact shape of the defect this whole change is repairing - a
+    fact with two owners and nothing comparing them - so it is compared HERE,
+    statically, by reading the patch's own literals. A field renamed on one side
+    would otherwise surface as `int(record.get('outside', 0))` quietly reading 0
+    for ever: a proof that passes on every render because it is looking at a key
+    nobody writes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Read the patch's constants by PARSING it, never by importing it.
+
+        An `importlib` load would run the module and leave a `__pycache__/`
+        beside it - which is not a theoretical tidiness point: it broke
+        `tools/test-higgs-engine.js`'s "the WSL scripts are LF" keeper the first
+        time this test ran, because that check `readdirSync`s this directory and
+        reads every entry as a file (EISDIR on the new directory). A test must
+        not write into the tree it inspects, and `ast` answers the question
+        without executing anything.
+        """
+        import ast
+        repo = os.path.dirname(_PYTHON_ROOT)
+        cls.path = os.path.join(repo, 'electron', 'scripts', 'higgs',
+                                'patch_sentinel_filter.py')
+        cls.ast = ast
+        tree = ast.parse(open(cls.path, encoding='utf-8').read())
+        cls.constants = {}
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
+                cls.constants[target.id] = node.value.value
+        for name in ('HELPER', 'ASYNC_NEW', 'V3_MARKER'):
+            if name not in cls.constants:
+                raise AssertionError(
+                    f'patch_sentinel_filter.py no longer declares {name} as a '
+                    'module-level string literal, so this comparison cannot be made')
+
+    def records_in(self, source, node=None):
+        """Every `_sentinel_report({...})` literal in a fragment, as dicts."""
+        found = []
+        for call in self.ast.walk(node or self.ast.parse(source)):
+            if not isinstance(call, self.ast.Call):
+                continue
+            if getattr(call.func, 'id', None) != '_sentinel_report':
+                continue
+            literal = call.args[0]
+            self.assertIsInstance(
+                literal, self.ast.Dict,
+                'a record built anywhere but at the call site cannot be compared here')
+            found.append({k.value: getattr(v, 'value', None)
+                          for k, v in zip(literal.keys, literal.values)})
+        return found
+
+    def test_the_block_the_patch_splices_in_is_VALID_PYTHON(self):
+        """It is spliced into somebody else's module and compiled there. A
+        syntax error would be found on a box with a GPU, after a ~19 GB load."""
+        self.ast.parse(self.constants['HELPER'])
+
+    def test_the_MARKER_the_doctor_greps_is_narrator_s_OWN_variable_name(self):
+        self.assertEqual(self.constants['V3_MARKER'], v3_served.SENTINEL_REPORT_ENV)
+        self.assertIn(v3_served.SENTINEL_REPORT_ENV, self.constants['HELPER'],
+                      'the spliced block does not read the variable narrator exports')
+
+    def test_every_record_the_patch_writes_carries_THIS_version(self):
+        records = self.records_in(self.constants['HELPER'])
+        records += self.records_in('if True:\n' + self.constants['ASYNC_NEW'])
+        self.assertTrue(records, 'the patch writes no records at all')
+        for record in records:
+            self.assertEqual(record.get('v'), v3_served.SENTINEL_REPORT_VERSION,
+                             f'a record is written at v={record.get("v")!r} while '
+                             f'narrator refuses anything but '
+                             f'v={v3_served.SENTINEL_REPORT_VERSION}: {record}')
+
+    def test_the_FIELDS_the_proof_reads_are_the_fields_the_patch_writes(self):
+        """Key by key, both directions. A field the proof reads and the patch
+        does not write reads as 0 for ever (a proof that always passes); a field
+        the patch writes and the proof does not read is a defect nobody is
+        looking at."""
+        sync = [r for r in self.records_in(self.constants['HELPER'])
+                if r.get('path') == 'sync']
+        asynchronous = [r for r in self.records_in('if True:\n' + self.constants['ASYNC_NEW'])
+                        if r.get('path') == 'async']
+        self.assertTrue(sync and asynchronous)
+        for record in sync:
+            self.assertEqual(set(record), {'v', 'path', 'total', 'kept', 'interior'},
+                             f'the sync record shape moved: {sorted(record)}')
+        for record in asynchronous:
+            self.assertEqual(set(record),
+                             {'v', 'path', 'final', 'window', 'trimmed', 'outside'},
+                             f'the async record shape moved: {sorted(record)}')
+
+    def test_the_patch_REFUSES_TO_EMIT_a_file_with_the_records_missing(self):
+        """Its own pre-write invariant, so a re-cut that drops a call site fails
+        at apply time rather than producing an env that renders fine and proves
+        nothing."""
+        source = open(self.path, encoding='utf-8').read()
+        self.assertIn('REPORT_CALLS_MISSING', source)
+        self.assertIn('V3_MARKER_MISSING', source)
+
+
+class SentinelReportChannelTest(V3TestCase):
+    """THE REPORT IS A CHANNEL NARRATOR OWNS, not a file it hopes exists.
+
+    Three properties, each of which was a way the old log-grep proof could be
+    handed the wrong evidence:
+
+      * the server is TOLD where to write, by the same object that decides where
+        to read, so the two can never name different files;
+      * the path is translated for the arm the SERVER runs on;
+      * it is TRUNCATED at launch, so last run's records cannot certify this run.
+    """
+
+    def launching_backend(self, **kwargs):
+        dead = FakeV3Server(healthy=False)
+        self.addCleanup(dead.close)
+        backend = HiggsV3ServedBackend(
+            base_url=dead.base_url, serve_script='/campaign/serve_v3.sh', **kwargs)
+        self.addCleanup(backend._close_log)
+        return backend
+
+    def test_the_wrapper_EXPORTS_the_path_the_backend_will_read(self):
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        self.assertEqual(backend.proof_report(),
+                         path + v3_served.SENTINEL_REPORT_SUFFIX)
+        exports = backend._launch_exports()
+        self.assertIn(v3_served.SENTINEL_REPORT_ENV + '=', exports)
+        # On this arm (native Linux in CI, Windows on owens-pc) the exported form
+        # is the SERVER's view of the same file. What must hold everywhere is
+        # that the basename is the one narrator reads - a different name there
+        # would leave the server writing a file nothing ever opens.
+        self.assertIn(os.path.basename(backend.proof_report()).replace('\\', '/'),
+                      exports.replace('\\', '/'))
+
+    def test_the_report_is_TRUNCATED_when_a_server_is_launched(self):
+        """A report is append-only from the server's side - several decode
+        workers write to it at once - so nothing else would ever clear it, and a
+        file left from the previous run in the same session dir would let this
+        run's proof pass on the last run's evidence."""
+        import subprocess
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        stale = backend.proof_report()
+        with open(stale, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps(SentinelProofTest.ASYNC_FINAL_LEFTOVER) + '\n')
+
+        class _FakeProc:
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+        real = subprocess.Popen
+        subprocess.Popen = lambda command, **kwargs: _FakeProc()
+        try:
+            backend.start()
+        finally:
+            subprocess.Popen = real
+        self.assertEqual(os.path.getsize(stale), 0,
+                         'the previous run\'s records survived a launch')
+
+    def test_an_ADOPTED_server_stops_claiming_our_report(self):
+        """`start()` adopts a server already on the port. Its decode path writes
+        wherever ITS launcher pointed it, so the file we would have written is
+        not the evidence and `proof_report` must stop naming it - the same rule
+        `proof_log` follows, and the same flag."""
+        os.environ.pop(v3_served.SENTINEL_REPORT_ENV, None)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       serve_script='/campaign/serve_v3.sh')
+        self.assertEqual(backend.proof_report(), backend.sentinel_report)
+        backend.start()                      # the fake server is already healthy
+        self.addCleanup(backend._close_log)
+        self.assertIsNone(backend.proof_report())
 
 
 class ServerLogIsOwnedTest(V3TestCase):

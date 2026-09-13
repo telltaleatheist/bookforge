@@ -1155,11 +1155,21 @@ export const HIGGS_PATCHES: ReadonlyArray<{
     // band-aided file as patched.
     marker: '_filter_sentinel_frames',
     absentMarker: '[:, :-1]',
-    // v2 of the patch (2026-09-05): v1 substituted sentinels with 0 BEFORE the
-    // identity trim, so the trim found nothing and every chunk ended in an
-    // audible burst. v2's async warning carries these fields; a file with the
-    // marker but without them is a v1 env and is reported STALE.
-    staleMarker: 'final=%s, window=%d frames',
+    // v3 of the patch (2026-09-13): the filter writes a STRUCTURED RECORD per
+    // invocation to `$HIGGS_SENTINEL_REPORT`, and narrator reads those records
+    // instead of grepping the server's log file with three regexes
+    // (crucible/docs/ARCHITECTURE.md R4 — a log line is never load-bearing).
+    // A file carrying `_filter_sentinel_frames` but not this variable name is a
+    // v1 or v2 env: it renders correctly but produces NO evidence narrator can
+    // read, so the proof would refuse at load time. STALE is the honest report
+    // and the installer re-applies.
+    //
+    // IT WAS `final=%s, window=%d frames` — a fragment of v2's warning text,
+    // i.e. the doctor certifying an env by recognising an English sentence.
+    // That was the same defect one layer out, and re-wording the warning would
+    // have made a correctly patched env report STALE. A variable name is a
+    // contract; a sentence is not.
+    staleMarker: 'HIGGS_SENTINEL_REPORT',
     why:
       'Without it every rendered chunk ends with ~240 ms of audible garbage — the ' +
       'ramp-down sentinels are substituted with codec code 0, which is a VALID code ' +

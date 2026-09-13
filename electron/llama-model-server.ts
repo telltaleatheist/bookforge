@@ -24,6 +24,7 @@
  * feature that owns them.
  */
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import { app } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
@@ -35,6 +36,8 @@ import { systemProbe } from './components/system-probe';
 /** Long enough to be useful across a book, short enough to give the RAM back. */
 const IDLE_SHUTDOWN_MS = 5 * 60_000;
 const STARTUP_TIMEOUT_MS = 3 * 60_000;
+/** How often `/health` is asked while the weights load. Cheap loopback GET. */
+const HEALTH_POLL_MS = 500;
 
 /** What a server needs to know about the model it was asked to load. */
 export interface ResolvedModel {
@@ -261,8 +264,67 @@ export class LlamaModelServer {
     this.clearPid();
   }
 
+  /**
+   * Refuse, by name, if anything is already on our loopback port.
+   *
+   * THE PORT HAS TO BE OURS BEFORE "THE PORT ANSWERS" MEANS ANYTHING. Readiness
+   * below is a `/health` poll, and a server someone else left on this port
+   * answers `/health` with a cheerful 200 while holding a completely different
+   * model — this instance would then declare itself ready, send every prompt to
+   * a stranger, and report the stranger's answers as its own. Meanwhile our own
+   * llama-server would have died of EADDRINUSE, which the exit handler can no
+   * longer report because the promise is already settled.
+   *
+   * So the question is asked BEFORE the spawn, and a busy port is a failure with
+   * a name rather than something to wait through. This is the same lesson the
+   * Higgs stack learned the expensive way (served_common.py `_refuse_if_misbound`:
+   * sgl-omni, told 8200, silently bound 57877 and narrator polled 8200 for
+   * fifteen minutes) — "something is listening" is necessary and never
+   * sufficient.
+   *
+   * The bind-and-close leaves a small window before llama-server's own bind. It
+   * is not the whole guard, it is the half that produces a GOOD MESSAGE: if a
+   * stranger wins that window, llama-server exits on its own bind failure and
+   * `proc.on('exit')` rejects, because the readiness promise is not settled by
+   * anything a stranger can say.
+   */
+  private assertPortFree(): Promise<void> {
+    const { port, logTag, modelLabel } = this.cfg;
+    return new Promise<void>((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          reject(new Error(
+            `Port ${port} is already in use, so the ${modelLabel} cannot start `
+            + `there. That port is this app's private loopback port for `
+            + `[${logTag}]; something else on it would answer health checks and `
+            + `receive every prompt meant for this model. Stop whatever is `
+            + `holding port ${port} and try again.`));
+          return;
+        }
+        reject(new Error(
+          `Could not check whether port ${port} is free for the ${modelLabel}: `
+          + `${err.message}`));
+      });
+      probe.listen(port, '127.0.0.1', () => probe.close(() => resolve()));
+    });
+  }
+
+  /** True when the server on our port answers `/health` with 200. */
+  private async healthy(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.endpoint}/health`);
+      return res.ok;
+    } catch {
+      // Nothing listening yet, or listening and not accepting. Both are "not
+      // ready", which is what the caller is polling for.
+      return false;
+    }
+  }
+
   private async spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
     const { logTag, modelLabel, port, contextSize } = this.cfg;
+    await this.assertPortFree();
     const { ngl, note } = await this.computeNgl();
     console.log(`[${logTag}] ${modelId}: -ngl ${ngl}, -c ${contextSize} (${note})`);
     return new Promise<void>((resolve, reject) => {
@@ -294,30 +356,68 @@ export class LlamaModelServer {
       this.recordPid(proc.pid);
 
       let settled = false;
+      // Assigned once the health poll below exists; `fail` may fire before then
+      // (a spawn `error` lands synchronously on some platforms), so it must be
+      // safe to call with nothing to stop.
+      let stopPolling: () => void = () => { /* no poll yet */ };
       const fail = (message: string) => {
         if (settled) return;
         settled = true;
+        stopPolling();
         clearTimeout(timer);
         try { proc.kill(); } catch { /* ignore */ }
         reject(new Error(message));
       };
       const timer = setTimeout(
-        () => fail(`The ${modelLabel} did not load within 3 minutes.`),
+        () => fail(
+          `The ${modelLabel} never answered 200 on ${this.endpoint}/health `
+          + 'within 3 minutes.'),
         STARTUP_TIMEOUT_MS);
 
-      // Readiness comes from the log line, not from a poll loop: llama-server
-      // binds the port before the weights are in, so a successful connect is not
-      // a promise that it can answer.
-      const watch = (chunk: Buffer) => {
-        const text = chunk.toString();
-        if (!settled && /server is listening|HTTP server listening|starting the main loop/i.test(text)) {
+      // ── READINESS IS `/health`, NOT A LOG LINE ────────────────────────────
+      //
+      // It used to be `/server is listening|HTTP server listening|starting the
+      // main loop/i` tested against every stdout and stderr chunk, and the
+      // comment defending that was HALF RIGHT in a way worth keeping: a
+      // successful TCP connect is NOT a promise that this server can answer,
+      // because llama-server binds the port before the weights are in. Correct —
+      // and the conclusion drawn from it was wrong. The answer to "a connect is
+      // not enough" is the endpoint whose entire purpose is that distinction:
+      // llama-server's `/health` returns 503 while the model loads and 200 once
+      // it can serve. Three alternations of English were standing in for it.
+      //
+      // Why this was worth changing (crucible/docs/ARCHITECTURE.md R4 — a log
+      // line is never load-bearing): those three phrases are llama.cpp's, not
+      // ours. Upstream re-words a startup banner and this server never becomes
+      // ready; it is killed at the three-minute timeout with a message about
+      // loading, on a process that was serving happily the whole time. Nothing
+      // versions that contract, nothing tests it, and it does not survive the
+      // server moving off this box at all.
+      //
+      // The three properties the log line had are all kept. It cannot resolve
+      // early, because `/health` is 503 until the weights are in. It cannot
+      // resolve on somebody else's server, because `assertPortFree` ran before
+      // the spawn. It still fails fast on a dead process, because `exit` and
+      // `error` reject and the poll stops with them.
+      const poll = setInterval(() => {
+        if (settled) return;
+        void this.healthy().then((ok) => {
+          if (!ok || settled) return;
           settled = true;
+          clearInterval(poll);
           clearTimeout(timer);
           this.ready = true;
           this.touch();
           resolve();
-        }
-        // Keep the tail for diagnosis; llama-server is chatty, so only errors.
+        });
+      }, HEALTH_POLL_MS);
+      stopPolling = () => clearInterval(poll);
+
+      // The output is still READ, and still only for a human: llama-server is
+      // chatty, so keep the tail of anything that looks like trouble. Nothing
+      // branches on it.
+      const watch = (chunk: Buffer) => {
+        const text = chunk.toString();
         if (/error|failed|unable/i.test(text)) {
           console.warn(`[${logTag}] llama-server:`, text.trim().split('\n').slice(-2).join(' '));
         }

@@ -72,6 +72,34 @@ left in this file. Their one-line fix for the count changes this file's bytes
 and therefore lands as a NEW server build with its own certificate — see
 docs/HIGGS_ENGINE.md on what a certificate binds.
 
+**v2 FIXED THAT COUNT and the paragraph above describes v1.** v2 trims the
+trailing run by identity BEFORE counting, so on a correct v2/v3 build the async
+warning does not fire at all on a clean final window and "expect exactly 2" is
+no longer true of anything. narrator carried the v1 expectation
+(`EXPECTED_TRAILING_SENTINEL_FRAMES = 2`) until 2026-09-13, which meant its
+proof passed on a log with no lines in it AND on a log full of the exact lines
+v2 exists to eliminate. That is fixed on the narrator side by reading the
+records this file now writes rather than the sentences.
+
+── v3: THE STRUCTURED REPORT (2026-09-13) ───────────────────────────────────
+crucible/docs/ARCHITECTURE.md rule R4: *a log line is never load-bearing.* The
+whole of proof (a) used to be `v3_served.verify_sentinel_filter` opening the
+server's LOG FILE and running three regexes over it to decide whether a 19 GB
+model could render a book — which made vLLM's log formatter, this file's English
+and the log's own lifetime into an API nothing versions and nothing tests.
+
+So the filter now ALSO writes a machine-readable record per invocation to the
+file named in `$HIGGS_SENTINEL_REPORT` (`_sentinel_report`). The warnings are
+UNCHANGED and still go to the log for a human; the records are what narrator
+reads. Clean invocations are recorded too, because the proof's first assertion
+is that the decode path ran at all and an absent line must never read as a clean
+one. See `_sentinel_report` for why a write failure is not swallowed.
+
+THIS CHANGES THIS FILE'S BYTES, so it lands as a NEW server build with its own
+certificate, exactly as the paragraph above says the count fix would — and the
+doctor's `staleMarker` reports every v1 and v2 env as STALE until the installer
+re-applies it. That is the intended, loud consequence.
+
 PROVENANCE: transcribed from
     E:\\training\\_campaigns\\2026-09-01-cod-full-rebuild\\higgs\\work\\patch_sentinel_filter.py
 (owens-pc, 2026-09-04). Every anchor, helper and replacement below is
@@ -82,10 +110,17 @@ of being hardcoded to /home/telltale, so this ships; and the supersession of
 patch_tail_trim.py is handled explicitly instead of being assumed (see
 `base_source`).
 
-MEASURED on the certifying box, 2026-09-05, vllm-omni 0.28.0:
+MEASURED on the certifying box, 2026-09-05, vllm-omni 0.28.0, BY THE v2 RECIPE:
     pristine higgs_audio_v3.py    sha256 376ca5647773cb191634b266b03bfefe490c080ef9f75aed045f1f31c9a19fb4
     patched by this recipe        sha256 0b36f6507dd11653253bbebb278c3657e5d17a2a52f78018cd0bddd45a7ac210
     `[:, :-1]` occurrences        2 pristine, 0 patched
+
+THE PATCHED SHA IS v2's AND IS NO LONGER WHAT THIS SCRIPT EMITS — v3's report
+writer and its four record calls change the bytes. It is kept because the
+PRISTINE sha still identifies the vllm-omni 0.28.0 source this recipe's anchors
+were cut against, and because a certificate that named the v2 output must be
+recognisable as the one being superseded. The v3 output's sha is OWED and can
+only be taken on a box with the env installed.
 
 IDEMPOTENT, and it MUST be re-run after any pip upgrade in the env, which
 replaces the file and silently reverts the patch.
@@ -150,6 +185,63 @@ def read(path: str) -> str:
 
 HELPER = '''
 
+import json as _sentinel_json
+import os as _sentinel_os
+
+#: Read ONCE, at import. The server exports it from narrator's wrapper before
+#: the process starts, so it is set by the time this module loads; reading it
+#: per call would make a mid-run environment edit change what a certificate
+#: means. `os` and `json` are imported under private names because this block is
+#: spliced into somebody else's module and must not depend on, or shadow, what
+#: that module happens to import.
+_SENTINEL_REPORT_PATH = _sentinel_os.environ.get("HIGGS_SENTINEL_REPORT") or ""
+_SENTINEL_REPORT_FD = None
+
+
+def _sentinel_report(record) -> None:
+    """Append ONE JSON record describing what the filter just did.
+
+    PATCH v3 (bookforge 2026-09-13), and it exists because of crucible/docs/
+    ARCHITECTURE.md rule R4: *a log line is never load-bearing*. Until today the
+    only evidence this filter produced was three `logger.warning` messages, and
+    narrator's `v3_served.verify_sentinel_filter` GREPPED THE SERVER'S LOG FILE
+    with three regexes to decide whether a 19 GB model was allowed to render a
+    book. That made vLLM's log formatter an API: re-word a warning, change the
+    logger's format string, let the log rotate, and the proof either passes on
+    nothing or refuses a healthy server - silently, in the first case.
+
+    Two audiences, two channels. The warnings below are UNCHANGED and still go
+    to the log for a human. This file is the machine's copy: one record per
+    invocation, clean ones included, so that "no evidence" can never be read as
+    "no problem". narrator truncates it at every launch, so a record in it is
+    always this server's.
+
+    NO FALLBACK ON FAILURE. If the path is named and cannot be opened, the
+    exception propagates out of the decode path and the request fails. That is
+    deliberate: a server that cannot write its proof must not render a book, and
+    the very first thing narrator sends after /health is a ~1 s probe render, so
+    the failure lands there and not four hours into a chapter. When the variable
+    is UNSET nothing is written at all - that is an operator running this env by
+    hand, and narrator refuses the proof by name rather than inventing a path.
+    """
+    global _SENTINEL_REPORT_FD
+    if not _SENTINEL_REPORT_PATH:
+        return
+    if _SENTINEL_REPORT_FD is None:
+        _SENTINEL_REPORT_FD = _sentinel_os.open(
+            _SENTINEL_REPORT_PATH,
+            _sentinel_os.O_WRONLY | _sentinel_os.O_CREAT | _sentinel_os.O_APPEND,
+            0o644)
+    # ONE write() of a short line to an O_APPEND fd. The server decodes on
+    # several worker processes at once and they all inherit this path; append
+    # mode plus a single sub-PIPE_BUF write is what keeps their records from
+    # interleaving into an unparseable line.
+    _sentinel_os.write(
+        _SENTINEL_REPORT_FD,
+        (_sentinel_json.dumps(record, separators=(",", ":"), sort_keys=True)
+         + "\\n").encode("utf-8"))
+
+
 def _filter_sentinel_frames(codes_qt: "torch.Tensor", where: str = "") -> "torch.Tensor":
     """Keep only frames whose codebooks are ALL real codes. [Q, T] -> [Q, T'].
 
@@ -169,10 +261,14 @@ def _filter_sentinel_frames(codes_qt: "torch.Tensor", where: str = "") -> "torch
     total = int(valid.numel())
     kept = int(valid.sum())
     if kept == total:
+        _sentinel_report({"v": 3, "path": "sync", "total": total,
+                          "kept": kept, "interior": 0})
         return codes_qt
     if kept == 0:
         logger.warning("higgs_audio_v3%s: every frame carried a stream sentinel; "
                        "emitting no audio for this chunk", where)
+        _sentinel_report({"v": 3, "path": "sync", "total": total,
+                          "kept": 0, "interior": 0})
         return codes_qt[:, :0]
     idx = valid.nonzero(as_tuple=True)[0]
     lo, hi = int(idx[0]), int(idx[-1])
@@ -181,6 +277,8 @@ def _filter_sentinel_frames(codes_qt: "torch.Tensor", where: str = "") -> "torch
         logger.warning("higgs_audio_v3%s: %d interior sentinel frame(s) dropped "
                        "(%d/%d frames kept) -- this is not an expected shape",
                        where, interior, kept, total)
+    _sentinel_report({"v": 3, "path": "sync", "total": total,
+                      "kept": kept, "interior": interior})
     return codes_qt[:, valid]
 
 
@@ -262,10 +360,13 @@ ASYNC_NEW = """    # PATCHED (patch_sentinel_filter.py v2). Order matters and v1
     #     Only the trailing run: Stage 1 trims left_context_size /
     #     right_holdback_size by FRAME COUNT, so removing a leading or interior
     #     frame here would desync those trims and cut real speech.
-    if finished and window_row_end_exclusive == n_rows and de_delayed.shape[-1] >= 2:
+    _final = bool(finished and window_row_end_exclusive == n_rows)
+    _trimmed = 0
+    if _final and de_delayed.shape[-1] >= 2:
         _before = de_delayed.shape[-1]
         de_delayed = _trim_trailing_sentinel_frames(de_delayed)
-        actual_chunk = max(actual_chunk - (_before - de_delayed.shape[-1]), 0)
+        _trimmed = _before - de_delayed.shape[-1]
+        actual_chunk = max(actual_chunk - _trimmed, 0)
 
     # (2) Anything out of range that REMAINS is not the trailing run. On a
     #     non-final window it can only be the left-context region Stage 1
@@ -282,12 +383,34 @@ ASYNC_NEW = """    # PATCHED (patch_sentinel_filter.py v2). Order matters and v1
             (de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0),
             torch.zeros_like(de_delayed),
             de_delayed,
-        )"""
+        )
+    # (3) THE MACHINE'S COPY of (1) and (2), one record per window, clean ones
+    #     included. `final` is what makes `outside` readable: on the FINAL
+    #     window the trailing run has already been removed by identity, so
+    #     anything still out of range is a sentinel the trim could not reach and
+    #     it has just been turned into codec code 0 - real, audible sound at the
+    #     end of a chunk. On a non-final window the same count is the left
+    #     context Stage 1 discards by frame count anyway. One number, two
+    #     meanings, and the log line could not tell narrator which it was
+    #     looking at without narrator parsing `final=` back out of English.
+    _sentinel_report({"v": 3, "path": "async", "final": _final,
+                      "window": int(_oor_mask.numel()),
+                      "trimmed": int(_trimmed), "outside": _oor})"""
 
-#: What a v2-patched file carries that a v1-patched one does not: the warning's
-#: `final=` field. The doctor greps for it (tool-paths.ts HIGGS_PATCHES
-#: `staleMarker`) so a v1 env is reported as STALE rather than ok.
-V2_MARKER = "final=%s, window=%d frames"
+#: What a v3-patched file carries that v1 and v2 do not: the name of the
+#: STRUCTURED REPORT the filter writes. The doctor greps for it (tool-paths.ts
+#: HIGGS_PATCHES `staleMarker`) so a v1 or v2 env is reported as STALE rather
+#: than ok.
+#:
+#: IT WAS `final=%s, window=%d frames` UNTIL 2026-09-13 - a fragment of the v2
+#: warning's format string, which is to say the doctor certified the env by
+#: recognising a sentence. That is the same defect one layer out as the one v3
+#: fixes (crucible/docs/ARCHITECTURE.md R4): re-word the warning and a correctly
+#: patched env reports STALE. `HIGGS_SENTINEL_REPORT` is a VARIABLE NAME, which
+#: is a contract with narrator rather than a phrase, and it is the single thing
+#: that distinguishes a v3 file: the report writer, the sync record and the
+#: async record are all unreachable without it.
+V3_MARKER = "HIGGS_SENTINEL_REPORT"
 
 
 def base_source(path: str, orig: str) -> str:
@@ -346,12 +469,14 @@ def main():
         return
 
     live = read(path)
-    if MARKER in live and V2_MARKER in live:
+    if MARKER in live and V3_MARKER in live:
         print("ALREADY_PATCHED " + path)
         return
     if MARKER in live:
-        # A v1-patched file: rebuild from .orig so the async order is fixed.
-        print("STALE_V1_PATCH " + path + " - re-applying as v2")
+        # A v1- or v2-patched file: rebuild from .orig. v1 had the async order
+        # backwards; v2 had the right order but no structured report, so its
+        # only evidence was three English sentences in a log.
+        print("STALE_PATCH " + path + " - re-applying as v3")
 
     src = base_source(path, orig)
 
@@ -378,8 +503,18 @@ def main():
         print("ORDER_ERROR: async substitution precedes the identity trim",
               file=sys.stderr)
         sys.exit(3)
-    if V2_MARKER not in src:
-        print("V2_MARKER_MISSING: the async warning does not carry the v2 fields",
+    # v3 invariant: the structured report must actually be reachable. Both
+    # record calls and the writer that serves them are checked on the bytes,
+    # because a file carrying the variable name in a COMMENT and nowhere else
+    # would pass the doctor's `staleMarker` grep while writing nothing, and
+    # narrator's refusal would then name a missing file instead of a half patch.
+    if V3_MARKER not in src:
+        print("V3_MARKER_MISSING: the filter does not read HIGGS_SENTINEL_REPORT",
+              file=sys.stderr)
+        sys.exit(3)
+    if src.count("_sentinel_report({") != 4:
+        print("REPORT_CALLS_MISSING: expected 4 _sentinel_report({...}) calls "
+              "(3 sync, 1 async), found " + str(src.count("_sentinel_report({")),
               file=sys.stderr)
         sys.exit(3)
 
@@ -397,6 +532,7 @@ def main():
     print("PATCHED " + path)
     print("  sync  : full token-identity filter (_filter_sentinel_frames)")
     print("  async : identity trim of the trailing run FIRST, then warn+substitute the rest (v2)")
+    print("  report: one JSON record per window to $HIGGS_SENTINEL_REPORT (v3)")
     print("  revert: python patch_sentinel_filter.py <env-prefix> --revert")
 
 

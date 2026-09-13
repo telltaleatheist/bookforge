@@ -243,6 +243,7 @@ import {
   runCoverageAlign,
   stopCoverageAlign,
 } from './coverage-align-job';
+import { recordGuardEvent, takeChunkGuards } from './chunk-guard-ledger';
 import { resolveQwenAlignEnv } from './qwen-aligner';
 
 /**
@@ -2609,7 +2610,45 @@ let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
 
 // Watchdog configuration - detect stuck workers
-const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
+/**
+ * NARRATOR'S PATIENCE FOR A HIGGS SERVER, MIRRORED — `READY_TIMEOUT_SECONDS`
+ * in python/narrator/engine/higgs/v3_engine.py, which is 900.0.
+ *
+ * NARRATOR OWNS THIS NUMBER and this is a copy of it, pinned by
+ * `tools/test-higgs-engine.js` ("the bridge mirrors narrator's ready timeout"),
+ * which reads the python and goes red if either side moves. It is a mirror and
+ * not a read because the two live in different languages in different processes
+ * and the only runtime channel between them is the worker's spawn — asking
+ * would cost a process to learn a constant.
+ *
+ * WHY THE BRIDGE HAS TO KNOW IT AT ALL. A Higgs worker spends its whole cold
+ * start SILENT on stdout: `served_common.start()` sends the server's stdout and
+ * stderr to a FILE the backend owns, deliberately, so nothing the server prints
+ * while it loads ~19 GB reaches the worker's pipes, and none of the watchdog's
+ * heartbeats can fire. The worker is not stuck, it is inside `wait_ready`.
+ * Whatever the watchdog's startup budget is, it must therefore be LONGER than
+ * narrator's, or the bridge kills a healthy worker that narrator is still
+ * legitimately waiting on.
+ *
+ * IT WAS NOT. Until 2026-09-13 this was a flat 10 minutes justified in its own
+ * comment against a belief that narrator gave up at 300 s — which was never
+ * true; narrator's value has been 900 (see the same keeper's note on the
+ * `readyTimeoutSeconds` field that was deleted for asserting the same false
+ * 300). So a slow Higgs start was killed at 600 s with FIVE MINUTES of
+ * narrator's patience still to run, and the retries then raced the dying server
+ * for the card.
+ */
+const NARRATOR_HIGGS_READY_TIMEOUT_MS = 900 * 1000;
+/**
+ * How long a worker may show no progress at all before it is killed.
+ *
+ * DERIVED, not declared: narrator's ready timeout plus two minutes. The margin
+ * is two watchdog ticks (it polls every 30 s) plus room for the worker's own
+ * startup either side of the wait, so the bridge's verdict always lands AFTER
+ * narrator has given its own — a worker killed here is one narrator has already
+ * stopped waiting on, which is the only state in which "stuck" is true.
+ */
+const WORKER_STARTUP_TIMEOUT_MS = NARRATOR_HIGGS_READY_TIMEOUT_MS + 2 * 60 * 1000;
 // A live MLX batch now emits a ~15s heartbeat (orpheus.py _convert_mlx_batch ->
 // GENERATION_ACTIVITY_RE), so a healthy worker refreshes this timer continuously.
 // 12 min is the backstop for a GENUINE hang (no heartbeat at all), widened from 5 min
@@ -4515,11 +4554,35 @@ function startWorker(
       // Guard fires are why this job log gets read after the fact. The audio and
       // the full record live in ORPHEUS_REJECT_DIR; this is the index into them,
       // and unlike worker-output.log it is not truncated on the next run.
+      //
+      // THE LOG LINE IS NO LONGER THE ONLY COPY (2026-09-13). Until this change
+      // it was: the parsed object went to `<library>/logs/audiobook-<date>.log`
+      // and nowhere else — a per-DAY, per-LIBRARY text file that nothing counted
+      // and nothing attached to the render, while `job-analytics.json`, the app's
+      // actual durable per-render report, carried no guard fields at all. That is
+      // crucible/docs/ARCHITECTURE.md R4 exactly: a log line is never
+      // load-bearing. The line stays, because it is good human evidence and it
+      // indexes the reject dir; the RECORD now goes to the ledger, which is the
+      // same sink a Crucible-rendered chunk's `guard` feeds
+      // (electron/chunk-guard-ledger.ts).
+      //
+      // A guard event carries no index key we can rely on being named the same
+      // way in both engines, and a record we cannot file under a chunk is a
+      // record we must not silently drop either — so the ledger refuses it by
+      // name and the refusal reaches the job log rather than the console, where
+      // it would be lost in the worker's stream.
       const guardEvent = parseOrpheusGuardEvent(line);
       if (guardEvent) {
         logger.log('WARN', session.jobId,
           `Orpheus guard: ${String(guardEvent.reason ?? 'unknown')} on sentence ${String(guardEvent.sentence_index ?? '?')}`,
           guardEvent).catch(() => {});
+        try {
+          recordGuardEvent(session.jobId, guardEvent);
+        } catch (err) {
+          logger.log('ERROR', session.jobId,
+            `guard event could not be recorded: ${err instanceof Error ? err.message : String(err)}`,
+            guardEvent).catch(() => {});
+        }
       }
 
       // Parse progress - support both output formats:
@@ -7660,7 +7723,20 @@ function emitComplete(
     averageRawSentencesPerMinuteAllRuns: historicalRawRate,
     numberOfRuns: persistentState?.runs.length || 1,
     originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
-    runs: persistentState?.runs || []
+    runs: persistentState?.runs || [],
+    // WHAT THE GUARD DECIDED ABOUT THIS RENDER'S CHUNKS (2026-09-13).
+    //
+    // job-analytics.json is the app's durable per-render report and it held
+    // throughput and nothing else, so the only record of a truncation, a re-roll
+    // or an accepted-off-length take was a WARN line in a shared daily text file
+    // (crucible/docs/ARCHITECTURE.md R4: a log line is never load-bearing). This
+    // is that record, rolled up: an OPEN map of narrator's own verdict words —
+    // never a list this side knows — with `unknown` counted SEPARATELY and its
+    // reasons named, because unknown is not clean. See chunk-guard-ledger.ts.
+    //
+    // It POPS the ledger, which is why it is read exactly once, here, on the one
+    // path every finished render passes through.
+    guard: takeChunkGuards(session.jobId),
   };
 
   const progress: AggregatedProgress = {
@@ -8998,7 +9074,13 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     averageRawSentencesPerMinuteAllRuns: historicalRawRate,
     numberOfRuns: persistentState?.runs.length || 1,
     originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
-    runs: persistentState?.runs || []
+    runs: persistentState?.runs || [],
+    // The same roll-up the completion path takes, for the same reason, and it
+    // POPS here too. A cancelled render's guard fires are the most interesting
+    // ones there are — the run was stopped while they were happening — and if
+    // only the completion path popped, a cancel would leave a 1,400-entry map of
+    // take records alive for the life of the process.
+    guard: takeChunkGuards(session.jobId),
   };
 
   // 'stopped', not 'error' — see AggregatedProgress.phase. And no `error` field: a stop

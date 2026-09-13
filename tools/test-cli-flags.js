@@ -499,12 +499,50 @@ check('the full --help still lists every command selector', () => {
 // wrapper now makes a typed path absolute WITHOUT resolving it (`_user_path`).
 // Proved here with a `subst` drive — the same class of drive letter, and one
 // this check can create and remove without a share — pointed at the temp dir.
+/**
+ * Release any `subst` drive this suite left behind on an earlier run.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT A BAND-AID. The check below creates a
+ * `subst` drive and releases it in a `finally`, which is correct and is not
+ * enough: a `subst` mapping is MACHINE-WIDE state that outlives the process that
+ * made it, and a process that is KILLED never reaches its `finally`. On
+ * 2026-09-13 this checkout was found with G: through Y: — nineteen letters,
+ * every single one available — mapped to dead `%TEMP%/bf-subst-*` directories,
+ * left behind by keeper runs a harness timeout had killed. The check then failed
+ * with "no free drive letter in G–Y", which reads as an environment problem and
+ * is really this test eating the machine one letter at a time. It also breaks
+ * anything else that wants a letter, which is a real cost on a box that maps a
+ * NAS share.
+ *
+ * So the cleanup needs an owner that is still alive after the kill, and the only
+ * honest one is THE NEXT RUN OF THE SUITE THAT CREATED THEM: it is the one thing
+ * that knows `bf-subst-` is its own naming convention and can tell its own litter
+ * from a mapping somebody meant to have. Nothing whose target lacks that marker
+ * is touched, ever.
+ */
+function reapStaleSubstDrives() {
+  if (!WIN) return;
+  const listed = spawnSync('subst', [], { encoding: 'utf8' }).stdout || '';
+  // Split on LF and trim; a CRLF's `\r` is removed by the `.trim()` below, so
+  // this needs no regex.
+  for (const raw of listed.split('\n')) {
+    // `subst` prints `G:\: => C:\path`: the letter is the first character and
+    // the target is everything past the arrow.
+    const line = raw.trim();
+    const arrow = line.indexOf(' => ');
+    if (arrow < 0) continue;
+    if (!line.slice(arrow + 4).includes('bf-subst-')) continue;
+    spawnSync('subst', [`${line[0]}:`, '/D'], { encoding: 'utf8' });
+  }
+}
+
 check('a typed drive letter reaches the adapter as typed, not as its UNC/target (Windows)', () => {
   const src = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf8');
   assert.ok(/def _user_path\(/.test(src), 'the wrapper has ONE helper for operator-typed paths');
   assert.ok(!/Path\(args\.[a-z_]+\)(\.expanduser\(\))?\.resolve\(\)/.test(src),
     'no operator-typed path goes through Path.resolve() directly — every one goes through _user_path');
   if (!WIN) return;                                   // resolve() keeps drive letters nowhere else
+  reapStaleSubstDrives();
   const target = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-subst-'));
   // A free letter: the highest one with no drive behind it. `subst` refuses a
   // letter in use, and a machine with Q: mapped would otherwise fail the check
@@ -514,7 +552,8 @@ check('a typed drive letter reaches the adapter as typed, not as its UNC/target 
   // is the whole range a temporary `subst` may safely claim; the highest free
   // letter is taken first so a low letter stays available for a real volume.
   const letter = 'YXWVUTSRQPONMLKJIHG'.split('').find((l) => !fs.existsSync(`${l}:\\`));
-  assert.ok(letter, 'no free drive letter in G–Y to subst');
+  assert.ok(letter, 'no free drive letter in G–Y to subst, even after reaping '
+    + "this suite's own stale mappings — something else holds them");
   const made = spawnSync('subst', [`${letter}:`, target], { encoding: 'utf8' });
   assert.strictEqual(made.status, 0, `subst ${letter}: failed: ${made.stdout}${made.stderr}`);
   try {
@@ -526,7 +565,13 @@ check('a typed drive letter reaches the adapter as typed, not as its UNC/target 
     assert.strictEqual(m[1].trim(), `${letter}:\\tmp`,
       `the drive letter is kept (Path.resolve() would have given ${target}\\tmp)`);
   } finally {
-    spawnSync('subst', [`${letter}:`, '/D'], { encoding: 'utf8' });
+    const undone = spawnSync('subst', [`${letter}:`, '/D'], { encoding: 'utf8' });
+    // A cleanup failure is not an operation failure and must not fail the check
+    // — but it must not be SILENT either, because what it leaks is MACHINE-WIDE
+    // and outlives this process. Say so, and let the reaper take it next run.
+    if (undone.status !== 0) {
+      console.error(`  !! could not release ${letter}: — ${undone.stdout}${undone.stderr}`);
+    }
     try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* temp */ }
   }
 });

@@ -260,31 +260,60 @@ SERVER_DEFAULT_SAMPLING = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50,
 #: exactly like the training side's `serve_current.log`.
 SERVER_LOG_NAME = 'higgs-v3-server.log'
 
-#: WHAT A CLEAN CHUNK LOOKS LIKE IN THAT LOG, and it is not zero.
+#: WHERE THE SENTINEL FILTER WRITES ITS RECORDS, and the one variable that makes
+#: proof (a) a real channel instead of a log scrape.
 #:
-#: `patch_sentinel_filter.py` counts out-of-range frames in the async path
-#: BEFORE it trims the trailing run, so it counts the model's normal 2-frame EOC
-#: ramp and prints it as "outside the trailing run". That is an INSTRUMENTATION
-#: BUG in the patch, measured by the fine-tuning session 2026-09-05 in
-#: sequential and concurrent renders alike: the frames are trimmed correctly and
-#: the audio is right. So the expected reading is exactly 2 per line, and any
-#: OTHER count is the thing worth refusing on - that is what a sentinel the trim
-#: does not reach would print.
-EXPECTED_TRAILING_SENTINEL_FRAMES = 2
+#: `electron/scripts/higgs/patch_sentinel_filter.py` v3 reads this out of its own
+#: process environment at import and appends one JSON record per filter
+#: invocation - clean ones included. narrator exports it into the launch wrapper
+#: beside HIGGS_HOST/HIGGS_PORT/HIGGS_MODEL_DIR, so in LAUNCH mode the path the
+#: server writes and the path narrator reads are decided in one place and cannot
+#: name different files. In ATTACH mode narrator reads the variable out of its
+#: OWN environment: an operator who started the server by hand states the same
+#: file here that they gave it, exactly as they state its log in SERVER_LOG_ENV.
+#: There is NO DEFAULT, for the same reason: a stale report from an earlier run
+#: would let this proof pass on evidence from a server that is no longer up.
+SENTINEL_REPORT_ENV = 'HIGGS_SENTINEL_REPORT'
 
-#: The three lines the sentinel filter can write, matched by MESSAGE and not by
-#: `file:line`. On the certified build they are `higgs_audio_v3.py:403` (async),
-#: `:126` (sync interior) and `:119` (everything was a sentinel) - but a line
-#: number is a property of the patch's layout, and the whole point of a
-#: certificate is that the patch may be re-cut (the one-line fix for the count
-#: above will move all three). The MESSAGE text is what the patch owns.
-_ASYNC_SENTINEL_RE = re.compile(
-    r'higgs_audio_v3 \(async\): (\d+) frame\(s\) carry a stream sentinel '
-    r'outside the trailing run')
-_SYNC_INTERIOR_RE = re.compile(
-    r'higgs_audio_v3 \(sync\): (\d+) interior sentinel frame\(s\) dropped')
-_EMPTY_CHUNK_RE = re.compile(
-    r'higgs_audio_v3[^:]*: every frame carried a stream sentinel')
+#: The suffix narrator appends to `launch_log` to name the report it owns. It
+#: rides beside the log deliberately: one per SESSION when the engine gave us a
+#: process dir, one per INSTANCE otherwise, truncated at every launch - the same
+#: three properties the log has, for the same reason (two workers must never
+#: share one, and last run's evidence must never certify this run).
+SENTINEL_REPORT_SUFFIX = '.sentinel.jsonl'
+
+#: The record `v` this narrator reads. A record carrying any other version is
+#: REFUSED rather than skipped: it means the env holds a patch generation this
+#: code was not written against, and quietly ignoring the records would be the
+#: "no evidence reads as no problem" failure this whole proof exists to prevent.
+SENTINEL_REPORT_VERSION = 3
+
+# ── THREE REGEXES OVER THE SERVER'S LOG FILE LIVED HERE UNTIL 2026-09-13 ─────
+#
+# `_ASYNC_SENTINEL_RE`, `_SYNC_INTERIOR_RE` and `_EMPTY_CHUNK_RE` matched the
+# three `logger.warning` messages the sentinel filter can write, and
+# `verify_sentinel_filter` opened the server's LOG FILE and ran them over every
+# line to decide whether a 19 GB model could render a book. That is
+# crucible/docs/ARCHITECTURE.md rule R4's headline example - a log line that
+# became an API nothing versions and nothing tests. vLLM re-words a warning, or
+# the log formatter changes, or the file rotates, and the proof either refuses a
+# healthy server or, far worse, passes on nothing at all.
+#
+# It also carried a belief that was already FALSE. The deleted constant
+# `EXPECTED_TRAILING_SENTINEL_FRAMES = 2` documented v1 of the patch, which
+# counted out-of-range frames BEFORE it trimmed the trailing run and so counted
+# the model's normal 2-frame EOC ramp. **v2 (2026-09-05) reordered exactly
+# that**: it trims by identity first, so on a correct build the async warning
+# does not fire on a clean final window at all. Against a v2 env the old proof
+# therefore passed two different ways it should not have - vacuously, on a log
+# with no matching lines, and on a log full of the very "2 frame(s)" lines v2
+# exists to eliminate, because 2 was what it expected.
+#
+# The fix is at the SOURCE: patch v3 writes one structured record per filter
+# invocation to `$HIGGS_SENTINEL_REPORT` (SENTINEL_REPORT_ENV), and
+# `verify_sentinel_filter` reads records. The warnings are untouched and still
+# go to the log for a human - R4's instruction is "promote the fact to an event",
+# never "stop logging".
 
 #: Total reference audio the server accepts. 42 s returns HTTP 400.
 MAX_REFERENCE_SECONDS = 30.0
@@ -958,6 +987,14 @@ class HiggsV3ServedBackend(GuestOwnedServer):
         self._named_log = (os.environ.get(SERVER_LOG_ENV) or '').strip() or None
         self.launch_log = ((server_log or '').strip()
                            or self.default_launch_log('narrator-higgs3'))
+        # THE SENTINEL REPORT, the machine-readable half of the same evidence.
+        # Same two-path shape as the log and for the same reasons: ours when we
+        # launch (named from `launch_log`, so it inherits its per-session or
+        # per-instance uniqueness), the operator's when we attach. See
+        # SENTINEL_REPORT_ENV for why there is no default on the attach side.
+        self.sentinel_report = self.launch_log + SENTINEL_REPORT_SUFFIX
+        self._named_report = (os.environ.get(SENTINEL_REPORT_ENV)
+                              or '').strip() or None
         # Which of the two is the PROOF stream is decided by which mode this
         # backend is in, and `start()` corrects it if it adopts a server that
         # was already up (that server's output is not ours either).
@@ -988,6 +1025,46 @@ class HiggsV3ServedBackend(GuestOwnedServer):
     # .GuestOwnedServer`'s - they are the same problem on both stacks and were
     # solved once. What is below is vllm-omni's own launch line.
 
+    def proof_report(self):
+        """The sentinel report a proof reads, or None.
+
+        Exactly `proof_log`'s shape, one line below it: ours when we launched
+        the server, the operator's named file when we attached to (or adopted)
+        somebody else's, and None when neither. `_log_is_ours` is the single
+        flag both follow, because the two files are one decision - the streams
+        of a server we did not start are not ours to read either, and `start()`
+        clears that flag when it adopts a server that was already up.
+        """
+        return self.sentinel_report if self._log_is_ours else self._named_report
+
+    def _open_log(self) -> None:
+        """Open the launch log AND truncate the sentinel report.
+
+        THE REPORT IS TRUNCATED HERE, at the one moment narrator is about to
+        launch a server it owns - after `start()` has ruled out attach mode, an
+        already-running process of ours and an adoptable stranger, and
+        immediately before the Popen. A report is APPEND-ONLY from the server's
+        side (several decode workers write to it at once), so nothing else would
+        ever clear it, and a file left over from the previous run in the same
+        session dir would let this run's proof pass on the last run's evidence.
+        That is the precise hazard SERVER_LOG_ENV's comment refuses to guess a
+        path over, and it must not come back in through the report.
+
+        Failure is LOUD, exactly as it is for the log: a server whose evidence
+        goes nowhere renders ~19 GB worth of audiobook that nothing can certify.
+        """
+        super()._open_log()
+        try:
+            with open(self.sentinel_report, 'wb'):
+                pass
+        except OSError as exc:
+            raise HiggsV3ServerError(
+                f'Higgs v3: could not truncate the sentinel report '
+                f'{self.sentinel_report} ({exc}). That file is where the '
+                'patched decode path records what it did to every chunk, and '
+                'a run that cannot clear it would be proved by the PREVIOUS '
+                "run's records.") from exc
+
     def _launch_exports(self) -> str:
         """The `export ...` prefix of the wrapper: every launch-script knob
         narrator has an opinion about, stated explicitly.
@@ -999,11 +1076,20 @@ class HiggsV3ServedBackend(GuestOwnedServer):
         """
         host_port = self.base_url.split('://', 1)[-1].rstrip('/')
         host, _, port = host_port.rpartition(':')
+        # THE REPORT PATH IS EXPORTED IN THE FORM THE SERVER SEES. narrator may
+        # be a Windows process launching the server inside the distro, in which
+        # case the same file is `C:\...` here and `/mnt/c/...` there - the same
+        # split `serve_script` and `checkpoint_dir` already have, and getting it
+        # wrong would leave the server writing a path that does not exist while
+        # narrator waited to read one that was never created.
+        report = (_to_wsl(self.sentinel_report) if sys.platform == 'win32'
+                  else self.sentinel_report)
         exports = [
             f'{SERVE_HOST_ENV}={shlex.quote(host)}',
             f'{SERVE_PORT_ENV}={shlex.quote(port)}',
             f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
             f'{OWNER_ENV}={shlex.quote(self.owner_id())}',
+            f'{SENTINEL_REPORT_ENV}={shlex.quote(report)}',
         ]
         if self.checkpoint_dir:
             target = (_to_wsl(self.checkpoint_dir) if sys.platform == 'win32'
@@ -1078,99 +1164,173 @@ class HiggsV3ServedBackend(GuestOwnedServer):
         return ['bash', '-c', self._wrapper()]
 
     def verify_sentinel_filter(self) -> dict:
-        """PROOF (a) OF THE SENTINEL FILTER: read the server's own log.
+        """PROOF (a) OF THE SENTINEL FILTER: read the records the patch WRITES.
 
         The other half, (b) "no one-frame trim left in the stage processor", is
         a static grep BookForge's doctor runs before any server starts. This is
-        the half that needs the running decode path to say what it did, and
-        until 2026-09-05 narrator threw that away on `subprocess.DEVNULL`.
+        the half that needs the running decode path to say what it did.
+
+        IT USED TO GREP THE SERVER'S LOG FILE. Three regexes over vLLM's
+        formatted warnings decided whether a 19 GB model could render a book -
+        crucible/docs/ARCHITECTURE.md R4's headline example, and a proof that
+        could pass on nothing at all the moment a message was re-worded. Patch
+        v3 (2026-09-13) now appends one JSON record per filter invocation to the
+        file named in SENTINEL_REPORT_ENV, and this reads those records. The
+        warnings still go to the log, unchanged, for a human to read.
 
         WHAT IS ASSERTED, and why each one:
 
-          * THE STREAM EXISTS. No log, or an unreadable one, is a REFUSAL - the
-            proof is the stream, and "no evidence" must never read as "no
-            problem". (An attached server with no operator-named log has no
-            stream at all; `load_engine` reports the proof UNAVAILABLE in that
-            case rather than calling this, and calling it anyway refuses by
-            name.)
-          * EVERY ASYNC SENTINEL LINE REPORTS EXACTLY
-            `EXPECTED_TRAILING_SENTINEL_FRAMES` = 2. Not zero: the patch counts
-            before it trims, so a correct chunk prints the normal 2-frame EOC
-            ramp (see that constant). A line reporting any OTHER count is a
-            sentinel the trailing-run trim did not reach, and that is refused BY
-            NAME with the count and the line.
+          * THE REPORT EXISTS AND IS NOT EMPTY. No report, an unreadable one, or
+            one with zero records is a REFUSAL. The filter records EVERY
+            invocation including clean ones, so an empty file means the decode
+            path did not run, or ran in an env whose patch predates the report -
+            and "no evidence" must never read as "no problem". THIS IS THE
+            ASSERTION THE LOG-GREP VERSION COULD NOT MAKE: a log with no
+            matching lines was indistinguishable from a clean render, and it
+            passed.
+          * EVERY RECORD IS THIS VERSION. A record carrying any `v` but
+            SENTINEL_REPORT_VERSION is an env holding a patch generation this
+            code was not written against; skipping it would be the same silent
+            pass by another route.
           * ZERO SYNC-PATH INTERIOR DROPS. The sync path takes the FULL filter,
             so an interior drop there is a frame that failed the token test
             while sitting between two good ones - not an expected shape on any
             real generation, and never observed offline. One is a refusal.
-          * ZERO EMPTY CHUNKS. "every frame carried a stream sentinel" means the
-            filter emitted no audio for a chunk at all.
+          * ZERO EMPTY CHUNKS (a sync record whose `kept` is 0): every frame of
+            that chunk carried a stream sentinel, so it produced no audio at all.
+          * ZERO OUT-OF-RANGE FRAMES LEFT ON A FINAL ASYNC WINDOW. This is the
+            assertion the old one was groping for and had backwards. Patch v2
+            removes the trailing sentinel run BY IDENTITY before it counts, so
+            on the FINAL window anything still out of range is a sentinel the
+            trim could not reach - and it was then substituted with codec code
+            0, a VALID code that decodes to real, audible sound on the end of
+            that chunk. The old check expected exactly `2` there, which is what
+            v1 printed and what v2 exists to eliminate.
+          * A NON-FINAL window's leftovers are COUNTED, NOT REFUSED. There they
+            can only be the left-context region Stage 1 discards by frame count
+            anyway (patch_sentinel_filter.py, async step 2). The count is
+            returned so a ledger can carry it; it is not evidence of damage, and
+            refusing on it would fail correct servers.
 
-        Returns a report - log path, lines scanned, async lines seen and the
-        frame count they agree on - so a caller can put it in a ledger.
+        Returns a report - path, records read, per-path counts - so a caller can
+        put it in a ledger.
         """
-        path = self.proof_log()
+        path = self.proof_report()
         if not path:
             raise HiggsV3ServerError(
-                'Higgs v3 sentinel proof: there is no server log to read. This '
-                'backend attached to a server it did not start, so its output went '
-                f'wherever that operator sent it. Name it in {SERVER_LOG_ENV} '
-                '(the training side tees to <campaign>/higgs/v3_ft/logs/'
-                'serve_current.log, overwritten per start) - narrator will not '
-                'guess a path, because a stale log from an earlier run would let '
-                'this proof pass on evidence from a server that is no longer up.')
+                'Higgs v3 sentinel proof: there is no sentinel report to read. '
+                'This backend attached to a server it did not start, so the file '
+                'its decode path writes is wherever that operator pointed it. '
+                f'Name it in {SENTINEL_REPORT_ENV} - the SAME path that server '
+                'carries in its own environment - and narrator will read it. '
+                'narrator will not guess one, because a stale report from an '
+                'earlier run would let this proof pass on evidence from a server '
+                'that is no longer up.')
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as handle:
-                lines = handle.read().splitlines()
+            with open(path, 'r', encoding='utf-8') as handle:
+                raw = handle.read().splitlines()
         except OSError as exc:
             raise HiggsV3ServerError(
-                f'Higgs v3 sentinel proof: the server log {path} could not be read '
-                f'({exc}). The proof IS the stream - refusing to report a render as '
-                'proved when nothing was read.') from exc
+                f'Higgs v3 sentinel proof: the sentinel report {path} could not '
+                f'be read ({exc}). The proof IS the record - refusing to report a '
+                'render as proved when nothing was read. An env still carrying '
+                'patch v1 or v2 writes no report at all, and BookForge\'s Higgs '
+                'doctor reports that env as patch:higgs-sentinel-filter=stale.'
+            ) from exc
 
-        async_counts = []
-        for line in lines:
-            found = _ASYNC_SENTINEL_RE.search(line)
-            if found:
-                frames = int(found.group(1))
-                async_counts.append(frames)
-                if frames != EXPECTED_TRAILING_SENTINEL_FRAMES:
-                    raise HiggsV3ServerError(
-                        f'Higgs v3 sentinel proof FAILED in {path}: a chunk reported '
-                        f'{frames} sentinel frame(s) outside the trailing run, not the '
-                        f'{EXPECTED_TRAILING_SENTINEL_FRAMES} that the patch\'s '
-                        'count-before-trim instrumentation prints for a normal EOC '
-                        'ramp. Any other count is a sentinel the trailing-run trim did '
-                        f'not reach, and those frames were substituted with codec code '
-                        f'0 - a VALID code that decodes to real sound. The line was: '
-                        f'{line.strip()}')
+        counts = {'sync': 0, 'async': 0}
+        non_final_substitutions = 0
+        trailing_frames_trimmed = 0
+        for number, text in enumerate(raw, start=1):
+            text = text.strip()
+            if not text:
                 continue
-            interior = _SYNC_INTERIOR_RE.search(line)
-            if interior:
+            try:
+                record = json.loads(text)
+            except ValueError as exc:
                 raise HiggsV3ServerError(
-                    f'Higgs v3 sentinel proof FAILED in {path}: the SYNC path dropped '
-                    f'{interior.group(1)} INTERIOR sentinel frame(s) - a frame that '
-                    'failed the token test while sitting between two good ones. That '
-                    'is not an expected shape on any real generation and has never '
-                    'been observed offline; the filter drops it and logs rather than '
-                    'splicing silently, which is what this line is. The audio for that '
-                    f'chunk has a frame missing from its middle. The line was: '
-                    f'{line.strip()}')
-            if _EMPTY_CHUNK_RE.search(line):
+                    f'Higgs v3 sentinel proof: {path} line {number} is not JSON '
+                    f'({exc}): {text[:200]!r}. The filter emits one compact record '
+                    'per line with a single write() to an O_APPEND fd; a torn line '
+                    'means something other than the filter is writing to this '
+                    'file.') from exc
+            if not isinstance(record, dict):
                 raise HiggsV3ServerError(
-                    f'Higgs v3 sentinel proof FAILED in {path}: a chunk was emitted '
-                    'with NO audio - every one of its frames carried a stream '
-                    f'sentinel. The line was: {line.strip()}')
+                    f'Higgs v3 sentinel proof: {path} line {number} is a '
+                    f'{type(record).__name__}, not a record: {text[:200]!r}')
+            if record.get('v') != SENTINEL_REPORT_VERSION:
+                raise HiggsV3ServerError(
+                    f'Higgs v3 sentinel proof: {path} line {number} carries '
+                    f'v={record.get("v")!r}, not v={SENTINEL_REPORT_VERSION}. That '
+                    'is a patch generation this narrator was not written against. '
+                    'Re-run the installer so the env carries the matching '
+                    'patch_sentinel_filter.py; a render made against the other one '
+                    'is not read as proved by this one.')
+            where = record.get('path')
+            if where == 'sync':
+                counts['sync'] += 1
+                interior = int(record.get('interior', 0))
+                if interior:
+                    raise HiggsV3ServerError(
+                        f'Higgs v3 sentinel proof FAILED in {path}: the SYNC path '
+                        f'dropped {interior} INTERIOR sentinel frame(s) - a frame '
+                        'that failed the token test while sitting between two good '
+                        'ones. That is not an expected shape on any real generation '
+                        'and has never been observed offline; the filter drops it '
+                        'and records it rather than splicing silently. The audio '
+                        'for that chunk has a frame missing from its middle. The '
+                        f'record was: {text}')
+                if int(record.get('total', 0)) and not int(record.get('kept', 0)):
+                    raise HiggsV3ServerError(
+                        f'Higgs v3 sentinel proof FAILED in {path}: a chunk was '
+                        'emitted with NO audio - every one of its frames carried a '
+                        f'stream sentinel. The record was: {text}')
+            elif where == 'async':
+                counts['async'] += 1
+                trailing_frames_trimmed += int(record.get('trimmed', 0))
+                outside = int(record.get('outside', 0))
+                if outside and record.get('final') is True:
+                    raise HiggsV3ServerError(
+                        f'Higgs v3 sentinel proof FAILED in {path}: {outside} '
+                        'frame(s) of the FINAL async window were still out of range '
+                        'AFTER the trailing sentinel run had been removed by '
+                        'identity. Those are sentinels the trim could not reach, '
+                        'and they were then substituted with codec code 0 - a VALID '
+                        'code that decodes to real sound on the end of that chunk. '
+                        f'The record was: {text}')
+                if not record.get('final'):
+                    non_final_substitutions += outside
+            else:
+                raise HiggsV3ServerError(
+                    f'Higgs v3 sentinel proof: {path} line {number} names path '
+                    f'{where!r}, which is neither "sync" nor "async": {text[:200]!r}')
 
-        log(f'[HIGGS3] sentinel proof OK: {len(async_counts)} trailing-ramp line(s), '
-            f'all reporting {EXPECTED_TRAILING_SENTINEL_FRAMES} frame(s); 0 sync '
-            f'interior drops; {len(lines)} line(s) read from {path}', flush=True)
+        total = counts['sync'] + counts['async']
+        if not total:
+            raise HiggsV3ServerError(
+                f'Higgs v3 sentinel proof: {path} holds no records. The filter '
+                'writes one for EVERY invocation, clean ones included, so an empty '
+                'report means the decode path never ran under this narrator - '
+                'refusing to report a render as proved on an empty file. This is '
+                'exactly the case the old log-grep proof PASSED: a log with no '
+                'matching lines looked the same as a clean render.')
+
+        log(f'{self.LOG_TAG} sentinel proof OK: {total} record(s) from {path} '
+            f'({counts["sync"]} sync, {counts["async"]} async); 0 sync interior '
+            f'drops, 0 empty chunks, 0 out-of-range frames on a final window; '
+            f'{trailing_frames_trimmed} trailing sentinel frame(s) trimmed, '
+            f'{non_final_substitutions} non-final left-context substitution(s)',
+            flush=True)
         return {
-            'log': path,
-            'linesRead': len(lines),
-            'trailingRampLines': len(async_counts),
-            'framesPerLine': EXPECTED_TRAILING_SENTINEL_FRAMES,
+            'report': path,
+            'records': total,
+            'syncRecords': counts['sync'],
+            'asyncRecords': counts['async'],
             'syncInteriorDrops': 0,
+            'emptyChunks': 0,
+            'finalWindowSubstitutions': 0,
+            'trailingFramesTrimmed': trailing_frames_trimmed,
+            'nonFinalSubstitutions': non_final_substitutions,
         }
 
     def _models_payload(self) -> list:

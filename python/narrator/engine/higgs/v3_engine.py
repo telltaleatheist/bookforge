@@ -634,21 +634,24 @@ class HiggsV3Engine:
                     'is nothing of that kind to prove.', flush=True)
             elif self.config.probe_sentinel_filter:
                 self.server.probe_sentinel_filter()
-                # PROOF (a), on the log the probe render just wrote into. It is
-                # skipped only when there is no stream to read at all - an
-                # attached server whose operator named no log - and that is said
-                # out loud rather than passed over, because "not proved" and
-                # "proved" must never look the same in a run log.
-                if self.server.proof_log():
+                # PROOF (a), on the RECORDS the probe render just wrote. It used
+                # to be `proof_log()` and a grep of the server's log file; since
+                # 2026-09-13 the patch writes structured records and this reads
+                # those (crucible/docs/ARCHITECTURE.md R4). Skipped only when
+                # there is no report to read at all - an attached server whose
+                # operator named none - and that is said out loud rather than
+                # passed over, because "not proved" and "proved" must never look
+                # the same in a run log.
+                if self.server.proof_report():
                     self.server.verify_sentinel_filter()
                 else:
                     log('[HIGGS3] token-level sentinel proof UNAVAILABLE: attached '
                         'to a server this process did not start and no '
-                        f'{v3_served.SERVER_LOG_ENV} was named, so there is no log '
-                        'to read. The static half of the proof (no one-frame trim '
-                        'left in the stage processor) is unaffected - it is a grep '
-                        'the Higgs doctor runs before any server starts.',
-                        flush=True)
+                        f'{v3_served.SENTINEL_REPORT_ENV} was named, so there is no '
+                        'sentinel report to read. The static half of the proof (no '
+                        'one-frame trim left in the stage processor) is unaffected '
+                        '- it is a grep the Higgs doctor runs before any server '
+                        'starts.', flush=True)
         except BaseException:
             self.server.stop()
             raise

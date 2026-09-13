@@ -112,6 +112,51 @@ export interface TTSJobAnalytics {
   // Cancellation info (if job was cancelled)
   wasCancelled?: boolean;
   completedSentencesAtCancel?: number;
+
+  /**
+   * WHAT THE ENGINE'S GUARD DECIDED ABOUT THIS RENDER'S CHUNKS (2026-09-13).
+   *
+   * Built by `electron/chunk-guard-ledger.ts`, which is the one sink both render
+   * paths feed — the local worker's `[…_GUARD_EVENT]` stdout lines and a remote
+   * Crucible `tts` job's per-chunk `guard`. Before it, the only record of a
+   * truncation, a re-roll or an accepted-off-length take was a WARN line in a
+   * shared per-day text log, which nothing counted
+   * (crucible/docs/ARCHITECTURE.md R4: a log line is never load-bearing).
+   *
+   * Optional because every record written before that date has none, and an
+   * absent field here means "this run predates the ledger" — which is itself a
+   * third kind of not-knowing and must not be drawn as a clean render.
+   *
+   * TWO RULES FOR ANY READER OF THIS:
+   *
+   * 1. `unknown` is NOT `clean`. It is counted separately and deliberately kept
+   *    out of `byVerdict`. A chunk whose verdict never reached us is a chunk we
+   *    know nothing about; folding it in would report a whole book rendered
+   *    through a pin that cannot speak the field as flawless.
+   * 2. `byVerdict` is an OPEN map. Its keys are narrator's retake-ladder
+   *    vocabulary — `clean`, `short`, `long`, `hole`, `rerolled`, `resplit`,
+   *    `accepted-off-length` today — and the ladder is free to grow one. Render
+   *    whatever keys are there; do not switch on a list held on this side, which
+   *    would make the renderer a second owner of words it does not define.
+   */
+  guard?: {
+    /** How many chunks the ledger heard anything at all about. */
+    chunks: number;
+    /** Verdict word → chunk count. Open map; see rule 2 above. */
+    byVerdict: Record<string, number>;
+    /** Chunks with no verdict. Never inside `byVerdict`; see rule 1 above. */
+    unknown: number;
+    /**
+     * Why they are unknown, by name — `narrator-did-not-say` (the server looked
+     * and the engine had nothing), `events-only` (the local stdout channel
+     * carries take records and never the conclusion) or `sdk-drops-the-field`
+     * (the pinned @crucible/client discards `guard` before the app sees it).
+     * Sums to `unknown`.
+     */
+    unknownBy: Record<string, number>;
+    /** Which channels fed this render: `narrator-stdout`, `crucible-chunk`. */
+    sources: string[];
+  };
 }
 
 export interface CleanupJobAnalytics {

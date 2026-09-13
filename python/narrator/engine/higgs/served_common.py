@@ -101,6 +101,13 @@ GUEST_COMMAND_TIMEOUT_SECONDS = 10 * 60
 #: How long the guest-side watchdog sleeps between looks at the owner.
 WATCHDOG_INTERVAL_SECONDS = 3
 
+#: How often `wait_ready` asks whether the server it launched went to a port
+#: nobody asked for. Not every second: the scan is a process spawn (`wsl.exe` on
+#: the Windows arm) and a misbind is a permanent state, so answering it half a
+#: minute late costs half a minute out of a fifteen-minute patience and saves
+#: the other fourteen and a half.
+MISBIND_CHECK_INTERVAL_SECONDS = 30.0
+
 #: WHICH SERVING STACK THIS JOB RENDERS ON. BookForge sets it from the catalog's
 #: `serving.stack`, on every arm and every phase, exactly as it sets
 #: HIGGS_MAX_NUM_SEQS - and for the same reason: the two stacks want different
@@ -295,6 +302,53 @@ def pgid_of(pid):
     return int(stat[stat.rindex(')') + 2:].split()[2])
 """
 
+    #: `_misbound_ports`'s program: every TCP port a process carrying OUR marker
+    #: is LISTENING on, as `[{'pid', 'port'}]`.
+    #:
+    #: THE INVERSE QUESTION to `_OWN_SERVERS_SCAN`'s. That one asks "who is on
+    #: the port I asked for"; this asks "where did the thing I launched actually
+    #: go". See `_refuse_if_misbound` for the measurement that made the second
+    #: question necessary.
+    _BOUND_PORTS_SCAN = _LISTENERS_PY + r"""
+import json, sys
+mark = sys.argv[1]
+inode_port = {}
+for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+    try:
+        rows = open(table).read().splitlines()[1:]
+    except OSError:
+        continue
+    for row in rows:
+        f = row.split()
+        if len(f) < 10 or f[3] != '0A':
+            continue
+        inode_port[f[9]] = int(f[1].rsplit(':', 1)[1], 16)
+found = []
+for entry in os.listdir('/proc'):
+    if not entry.isdigit():
+        continue
+    pid = int(entry)
+    if owner_of(pid) != mark:
+        continue
+    try:
+        fds = os.listdir('/proc/%s/fd' % entry)
+    except OSError:
+        continue
+    ports = set()
+    for fd in fds:
+        try:
+            target = os.readlink('/proc/%s/fd/%s' % (entry, fd))
+        except OSError:
+            continue
+        if target.startswith('socket:['):
+            port = inode_port.get(target[8:-1])
+            if port is not None:
+                ports.add(port)
+    for port in sorted(ports):
+        found.append({'pid': pid, 'port': port})
+print(json.dumps(found))
+"""
+
     #: `_own_servers_on_port`'s program: one JSON list of the marked listeners,
     #: each with the MODEL DIRECTORY its own environ carries (None when the
     #: launcher exported none - the base weights).
@@ -409,6 +463,91 @@ print(pgid)
             raise HiggsServerError(
                 f'Higgs: the ownership scan for port {port} printed '
                 f'{out.stdout[:200]!r}, not JSON.') from exc
+
+    def _bound_ports(self) -> list:
+        """Every `{'pid', 'port'}` a process carrying OUR marker is listening on.
+
+        Raises if the scan cannot run, for the same reason
+        `_own_servers_on_port` does: an unanswerable question about our own
+        process is not a "no".
+        """
+        argv = self._guest_argv(['python3', '-c', self._BOUND_PORTS_SCAN,
+                                 self.owner_id()])
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=GUEST_COMMAND_TIMEOUT_SECONDS)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HiggsServerError(
+                f'Higgs: could not scan for the ports our own server bound '
+                f'({exc}); refusing to decide whether it came up on the port it '
+                'was told to use.') from exc
+        if out.returncode != 0:
+            raise HiggsServerError(
+                f'Higgs: the bound-port scan failed (exit {out.returncode}): '
+                f'{out.stderr.strip()[:400]}')
+        try:
+            return json.loads(out.stdout.strip() or '[]')
+        except ValueError as exc:
+            raise HiggsServerError(
+                f'Higgs: the bound-port scan printed {out.stdout[:200]!r}, '
+                'not JSON.') from exc
+
+    def _answers_health(self, port: int) -> bool:
+        """True when something on `port` answers OUR health endpoint with 200."""
+        host = self.base_url.split('://', 1)[-1].rstrip('/').rpartition(':')[0]
+        try:
+            with urllib.request.urlopen(f'http://{host}:{port}{self.HEALTH_PATH}',
+                                        timeout=3) as response:
+                return response.status == 200
+        except (urllib.error.URLError, OSError):
+            return False
+
+    def _refuse_if_misbound(self) -> None:
+        """Refuse, BY NAME, when our server came up on a port nobody asked for.
+
+        MEASURED: `sgl-omni` does not fail when the port it is given is busy. It
+        SILENTLY BINDS A RANDOM ONE - told 8200, it took 57877, and on the next
+        start 34529 - while narrator polled 8200. `/health` on 8200 never
+        answers, the process never dies, so `wait_ready` sat out its entire
+        patience (fifteen minutes on the v3 default) waiting for a condition
+        that had already been made impossible, and then reported a timeout that
+        pointed at cold starts and flashinfer. Nothing in that sequence was
+        wrong except the question being asked.
+
+        SO "THE PORT IS LISTENING" IS NECESSARY AND NOT SUFFICIENT: it has to be
+        THE PORT WE ASKED FOR, and a mismatch is a failure with a name rather
+        than more waiting. There is nothing to wait for - the server is up, the
+        render will never reach it, and a second launch onto the same busy port
+        would do the same thing again.
+
+        TWO FACTS ARE REQUIRED BEFORE REFUSING, because one is not enough. A
+        process carrying our marker listening on some other port is ORDINARY:
+        vLLM's engine-core and SGLang's schedulers are separate processes that
+        inherit our environment and open TCP sockets of their own, so the marker
+        alone would refuse every healthy launch. The second fact is that the
+        stranger port ANSWERS OUR HEALTH ENDPOINT with 200 - which an internal
+        IPC socket does not, and a misbound server does.
+
+        Only ever called while LAUNCHING: in attach mode the operator named the
+        URL and there is no "port we asked for" to be missed.
+        """
+        if not self.serve_script:
+            return
+        asked = int(self.base_url.rsplit(':', 1)[-1].rstrip('/'))
+        for row in self._bound_ports():
+            port = int(row['port'])
+            if port == asked or not self._answers_health(port):
+                continue
+            raise HiggsServerError(
+                f'Higgs: the server narrator launched (pid {row["pid"]}) is '
+                f'answering {self.HEALTH_PATH} on port {port}, NOT on port '
+                f'{asked}, which is the port it was told to bind and the port '
+                'every render would be sent to. This is what sgl-omni does when '
+                'the port it is given is already busy: it takes a random free '
+                'one and says nothing (measured on owens-pc - told 8200, bound '
+                '57877, then 34529). Waiting is pointless, because the server is '
+                'already up and can never appear on the port that was asked for. '
+                f'Free port {asked} - something else is on it - and start again.')
 
     def _server_on_port(self):
         """The server listening on our port that carries OUR marker (any
@@ -556,11 +695,22 @@ print(pgid)
         """Poll the health endpoint until it answers, or `timeout` seconds pass.
 
         Returns False on timeout rather than raising - a slow start is the
-        caller's decision, and cold starts are minutes on both stacks. RAISES if
-        the process we launched has DIED, naming its exit status: waiting out a
-        timeout on a corpse is the failure mode this exists to avoid.
+        caller's decision, and cold starts are minutes on both stacks. RAISES on
+        the two states where waiting can no longer produce an answer:
+
+          * THE PROCESS WE LAUNCHED HAS DIED, naming its exit status. Waiting out
+            a timeout on a corpse is the failure mode this originally existed to
+            avoid.
+          * THE SERVER IS UP ON THE WRONG PORT (`_refuse_if_misbound`). Also a
+            state the wait can never leave, and until 2026-09-13 it was
+            indistinguishable from a slow cold start - which on the v3 default
+            means fifteen minutes of patience spent on something that had already
+            happened. Checked on an interval rather than every second because the
+            scan is a process spawn (a `wsl.exe` one on the Windows arm) and a
+            misbind is answered just as usefully half a minute late.
         """
         deadline = time.time() + float(timeout)
+        next_bind_check = time.time() + MISBIND_CHECK_INTERVAL_SECONDS
         while time.time() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
                 raise HiggsServerError(
@@ -569,7 +719,15 @@ print(pgid)
                     + self.READY_FAILURE_HINT)
             if self.ping():
                 return True
+            if time.time() >= next_bind_check:
+                self._refuse_if_misbound()
+                next_bind_check = time.time() + MISBIND_CHECK_INTERVAL_SECONDS
             time.sleep(1.0)
+        # ONE LAST LOOK BEFORE REPORTING A TIMEOUT. A misbind that happened in
+        # the final interval would otherwise be reported as "the server did not
+        # come up", which is the message that sent an afternoon after flashinfer
+        # and gpu-memory-utilization while sgl-omni sat healthy on port 57877.
+        self._refuse_if_misbound()
         return False
 
     def start(self) -> None:
