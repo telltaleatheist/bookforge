@@ -1274,8 +1274,8 @@ so `--ai-cleanup` can run on the Mac Studio's GPU instead of local Ollama.
 ```
 bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)
 bookforge-tts --crucible-remove --name N
-bookforge-tts --crucible-list
-bookforge-tts --crucible-ping   --server N     # unauthenticated: is there a Crucible there?
+bookforge-tts --crucible-list                  # local first (from its config.toml), then remotes
+bookforge-tts --crucible-ping   --server N     # N = local, or a registered remote; unauthenticated
 bookforge-tts --crucible-info   --server N     # backend, GPU, capabilities
 bookforge-tts --crucible-health --server N     # status, queue depth, resident models
 bookforge-tts --crucible-echo   --server N --file FILE [--out FILE]
@@ -1288,6 +1288,18 @@ bookforge-tts --crucible-chat   --server N --model ID --prompt TEXT [--stream] [
 bookforge-tts --ai-cleanup  --input FILE --provider crucible --server N --model ID --stages ocr
 bookforge-tts --ai-simplify --input FILE --provider crucible --server N --model ID --simplify-mode learner
 ```
+
+**Two kinds of server, one owner each (2026-09-13).** `--server local` is the Crucible on
+*this* machine — inside WSL2 on Windows, read through the distro in Settings → Add-ons —
+and it is never registered: every call reads its token from the server's own
+`config.toml` (`$CRUCIBLE_HOME`, default `~/.crucible`), so there is no copy to go stale
+when `crucible init --force` mints a new one. The registry holds **remote** servers
+only, the machines whose tokens you pasted because no other source exists for them.
+`--crucible-add` refuses a loopback URL by name (`local_is_not_registered`), and an entry
+from before this rule is refused at use (`stale_local_entry`) with the fix in the message:
+remove it and say `--server local`. `--crucible-list` prints the local server first, or
+the named reason there is none (`no_local_config`, `no_wsl_distro`) — a laptop that only
+ever renders on the Mac is a stated fact, not an error.
 
 **The token is never printed.** `--crucible-list` shows `****` plus its last four
 characters, and the type the registry returns for a listing cannot carry a plaintext

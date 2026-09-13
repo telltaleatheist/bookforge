@@ -26,10 +26,17 @@
  * Requires BookForge to be BUILT (dist/electron present) but NOT running:
  *   npx tsc -p tsconfig.electron.json
  *
+ * TWO KINDS OF SERVER (2026-09-13). `--server local` is the Crucible on THIS
+ * machine — inside WSL2 on Windows — read from its own config.toml on every
+ * call, so its token is never copied anywhere. The registry (--add/--remove/
+ * --list) holds REMOTE servers only; a loopback URL is refused by name, and a
+ * pre-rule entry for the local server is refused at use with the fix in the
+ * message. electron/crucible/local.ts says why.
+ *
  * Usage:
  *   node cli/crucible.js --add --name <n> --url <u> (--token <t> | --token-file <path>)
  *   node cli/crucible.js --remove --name <n>
- *   node cli/crucible.js --list
+ *   node cli/crucible.js --list                       # local first, then remotes
  *   node cli/crucible.js --ping   --server <n>
  *   node cli/crucible.js --info   --server <n>
  *   node cli/crucible.js --health --server <n>
@@ -233,17 +240,23 @@ async function run(args) {
   }
 
   // ── --list ────────────────────────────────────────────────────────────────
-  // The listing type cannot carry a plaintext token; see electron/crucible/servers.ts.
+  // The local server first, read from its own config.toml (never the registry),
+  // then every registered remote. Neither listing type can carry a plaintext
+  // token; see electron/crucible/servers.ts. A machine with no local Crucible
+  // is a stated fact on the first line, not an error and not an empty line.
   if (args.list) {
+    const here = servers.describeLocal();
+    if (here.present) {
+      console.log(`local\t${here.url}\ttoken ${here.tokenMasked}\t${here.serverName}  (${here.configPath})`);
+    } else {
+      console.log(`local\t—\t${here.code}: ${here.reason}`);
+    }
     const rows = servers.listServers();
-    if (rows.length === 0) {
-      console.log(`no crucible servers registered  —  ${servers.registryPath()}`);
-      return;
-    }
     for (const row of rows) {
-      console.log(`${row.name}\t${row.url}\ttoken ${row.tokenMasked}\tadded ${row.added}`);
+      const stale = row.stale === null ? '' : `\tSTALE (${row.stale}): remove it and use --server local`;
+      console.log(`${row.name}\t${row.url}\ttoken ${row.tokenMasked}\tadded ${row.added}${stale}`);
     }
-    console.log(`\n${rows.length} server(s)  —  ${servers.registryPath()}`);
+    console.log(`\n${rows.length} remote server(s)  —  ${servers.registryPath()}`);
     return;
   }
 
@@ -471,8 +484,11 @@ run(parseArgs(process.argv.slice(2))).catch((err) => {
     process.exitCode = 1;
     return;
   }
-  // The registry's own named refusals, and this file's argument refusals.
-  if (err instanceof UsageError || (err instanceof Error && err.name === 'CrucibleRegistryError')) {
+  // The registry's own named refusals, the local server's (no config.toml, no
+  // WSL distro, a key the server itself would refuse), and this file's argument
+  // refusals.
+  if (err instanceof UsageError || (err instanceof Error
+      && (err.name === 'CrucibleRegistryError' || err.name === 'CrucibleLocalError'))) {
     console.error(`[crucible] ${err.message}`);
     process.exitCode = 1;
     return;
