@@ -115,12 +115,21 @@ MEASURED on the certifying box, 2026-09-05, vllm-omni 0.28.0, BY THE v2 RECIPE:
     patched by this recipe        sha256 0b36f6507dd11653253bbebb278c3657e5d17a2a52f78018cd0bddd45a7ac210
     `[:, :-1]` occurrences        2 pristine, 0 patched
 
-THE PATCHED SHA IS v2's AND IS NO LONGER WHAT THIS SCRIPT EMITS — v3's report
-writer and its four record calls change the bytes. It is kept because the
-PRISTINE sha still identifies the vllm-omni 0.28.0 source this recipe's anchors
-were cut against, and because a certificate that named the v2 output must be
-recognisable as the one being superseded. The v3 output's sha is OWED and can
-only be taken on a box with the env installed.
+THE 0b36f65 SHA ABOVE IS v2's AND IS NO LONGER WHAT THIS SCRIPT EMITS — v3's
+report writer and its four record calls change the bytes. It is kept because a
+certificate that named the v2 output must stay recognisable as the one being
+superseded.
+
+MEASURED BY THE v3 RECIPE, owens-pc, 2026-09-13, env `higgs3`, vllm-omni 0.28.0:
+    patched by this recipe        sha256 3cb29e6a735b026972d78844c7b05859aca481a1a5f9dfeb195f213f870375a8
+
+This is directly comparable to v2's rather than merely newer: the `.orig` it was
+rebuilt from hashes to 376ca564… — the SAME pristine source the v2 line names — so
+the only difference between the two patched shas is this recipe. That is the
+whole reason the pristine sha is carried, and it is the check to repeat before
+trusting any future number here: measure `.orig` first, and if it is not
+376ca564… then the package moved and BOTH patched shas describe a file that no
+longer exists.
 
 IDEMPOTENT, and it MUST be re-run after any pip upgrade in the env, which
 replaces the file and silently reverts the patch.
