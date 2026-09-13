@@ -1269,7 +1269,12 @@ copy of it, and `@crucible/client` — pinned in `package.json` to the release t
 the URL *is* the version — is everything on the wire. Phase 1's job type was `echo`,
 which hands the bytes back: no model is loaded and no GPU is touched. **Phase 2 adds
 `llm`** (crucible `docs/PHASE2-LLM.md`) and with it BookForge's `crucible` AI provider,
-so `--ai-cleanup` can run on the Mac Studio's GPU instead of local Ollama.
+so `--ai-cleanup` can run on the Mac Studio's GPU instead of local Ollama. **Phase 3 adds
+`tts`** (`docs/PHASE3-TTS.md`) — a voice roster, a residency pair, and a render door that
+writes `<index>.flac` where assembly and resume already look — and **phase 4 adds the
+accelerator probe** (`docs/PHASE4-AUDIO.md` section 5), which is the one call that answers
+what BookForge's own GPU arbitration is otherwise guessing at. The SDK pin is
+`crucible-client-0.3.0.tgz`.
 
 ```
 bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)
@@ -1284,6 +1289,12 @@ bookforge-tts --crucible-models --server N                      # installed / re
 bookforge-tts --crucible-load   --server N --model ID           # streams the engine's warming lines
 bookforge-tts --crucible-unload --server N --model ID
 bookforge-tts --crucible-chat   --server N --model ID --prompt TEXT [--stream] [--no-thinking]
+
+bookforge-tts --crucible-voices       --server N                # installed / resident / loadable
+bookforge-tts --crucible-load-voice   --server N --voice ID     # streams narrator's warming lines
+bookforge-tts --crucible-unload-voice --server N --voice ID
+bookforge-tts --crucible-accelerator  --server N                # what is on the card, and whose
+bookforge-tts --crucible-render --server N --voice ID --rung K --file CHUNKS --out DIR
 
 bookforge-tts --ai-cleanup  --input FILE --provider crucible --server N --model ID --stages ocr
 bookforge-tts --ai-simplify --input FILE --provider crucible --server N --model ID --simplify-mode learner
@@ -1349,7 +1360,7 @@ implies another: `installed` (weights on disk), `resident` (an engine is serving
 `loadable` (asking for it now would succeed — which also depends on the accelerator guard,
 so a model can be installed and supported and still not loadable because someone else's
 process holds the card), and the `revision` pinned for *this* host's backend. A row that
-is not loadable prints the server's own reason. A `—` in the revision or memory column
+is not loadable prints the server's own reason. An `n/a` in the revision or memory column
 means this host has no backend block for that model at all: there is no pin to name and no
 estimate to print, and `0.0 GiB` would read as "needs nothing".
 
@@ -1411,7 +1422,110 @@ on crucible "mac" (nothing is resident). Load it first: bookforge-tts --crucible
 `--server` is refused by name for every other provider, because a flag that looked set and
 was dropped is the failure this CLI's flag discipline exists to end.
 
+### The `tts` job type — a voice roster, a residency pair, and a render door
+
+**A voice is to `tts` what a model is to `llm`**, and one card holds one thing — which since
+phase 3 may be a voice or a model. So `--crucible-voices` reads exactly like
+`--crucible-models`, `--crucible-load-voice` / `--crucible-unload-voice` are watched exactly
+like the model pair, and `--crucible-health` now also prints the resident `kind`, because
+`chat()` against a server with a *voice* resident is `model_not_resident` and the id alone
+does not say so.
+
+`--crucible-render` is the job. `--file` holds the chunks: one per line, the index being the
+0-based **line number**, or a `.jsonl` of `{"index": N, "text": "..."}` rows when the indices
+are not `0..n-1` (a retake of three sentences of a rendered book). A blank line is refused by
+name — skipping one would renumber every chunk after it, and an index is a file name. Each
+FLAC and its provenance sidecar are fetched as the artifact event lands, overlapped with the
+next chunk still generating, and renamed into `--out`, so `<index>.flac` only ever exists
+complete: BookForge's resume test is "the file exists and exceeds 1024 bytes", which a
+half-written FLAC would pass. The bytes cross the wire even from a server on localhost —
+there is no shared mount, ever.
+
+`--rung` is required and never defaulted. It is `take` on the wire; the flag is spelled
+differently because `--take` is already the `--retake` door's approved-`.flac` **path**. Rung
+0 is the engine's own sampling, which is a rung and not an absence, and a rung past the end
+of the ladder is `unknown_take` rather than a silent clamp.
+
+**`capped` and `tokens` print `unknown`, not `false` and not `0`.** narrator does not put its
+frame cap on the wire at the pinned sha, so Crucible publishes `null` rather than guessing,
+and `null` means "narrator did not say". Read as `false` it would call **every runaway a long
+sentence**, silently, which is the exact failure the `chunk` event exists to prevent.
+
+**A failed chunk is reported and the run continues** — one bad sentence never sinks the other
+1,399 — so a successful job can still have failures. They are named on `done`, printed, and
+the exit code is 1: an operator who asked for N files and got fewer has not had the thing
+they asked for.
+
+**Worked example — a host where `crucible install tts` has never run.** This is what a fresh
+machine looks like, and the reason column is the whole point of the table:
+
+```
+$ bookforge-tts --crucible-voices --server wsl
+id            kind        engine    lang  installed  resident  revision      max_chars  rate   takes  memory    loadable
+deathstalker  checkpoint  higgs-v3  en    no         no        d732c38e9a50  800        24000  1      17.7 GiB  no: the tts env for higgs-v3 is not ready: no venv at /tmp/crucible-cli/envs/tts-higgs-v3 — run `crucible install tts`
+mistborn      checkpoint  higgs-v3  en    no         no        d13914e5d943  800        24000  1      17.7 GiB  no: the tts env for higgs-v3 is not ready: no venv at /tmp/crucible-cli/envs/tts-higgs-v3 — run `crucible install tts`
+sigma         checkpoint  higgs-v3  en    no         no        379150a908ff  1100       24000  1      17.7 GiB  no: the tts env for higgs-v3 is not ready: no venv at /tmp/crucible-cli/envs/tts-higgs-v3 — run `crucible install tts`
+
+$ bookforge-tts --crucible-load-voice --server wsl --voice mistborn
+[crucible] wsl http://127.0.0.1:7455: load voice mistborn
+[crucible] crucible "wsl" refused the request (409 env_missing): cannot load 'mistborn': no
+venv at /tmp/crucible-cli/envs/tts-higgs-v3 — run `crucible install tts`
+
+$ bookforge-tts --crucible-render --server wsl --voice mistborn --rung 0 \
+      --file chunks.txt --out ./flacs
+[crucible] wsl http://127.0.0.1:7455: render mistborn take 0 en, 3 chunk(s) from chunks.txt
+[crucible] crucible "wsl" refused the request (409 env_missing): cannot load 'mistborn': no
+venv at /tmp/crucible-cli/envs/tts-higgs-v3 — run `crucible install tts`
+```
+
+The refusal is the same one `--crucible-voices` stated in advance, it names the env AND the
+command that installs it, and the render is refused **before the job is queued** — nothing
+was uploaded and no directory was created. (Measured 2026-09-13 on owens-pc against a
+disposable server in WSL2 with no tts env installed. **The render SUCCESS path — the `chunk`
+lines, the FLACs, the sidecars, the `rendered N of M` summary — has not been exercised**: it
+needs an installed tts env and the card, and both were busy.)
+
+### The accelerator probe — who actually holds the card
+
+`--crucible-accelerator` is `nvidia-smi --query-compute-apps` as the load guard runs it, plus
+free/used/total, plus what Crucible has resident, plus a flag per holder saying whether that
+pid is one of this server's own engines. **It reports and it never evicts.**
+
+Three of its answers are refusals to answer, and are printed as such rather than as zeroes:
+
+- a holder's memory prints `unknown` where the driver will not give a per-process figure
+  (WDDM, permissions). A `0` there would say a process holding 8 GB is holding none.
+- an **empty holder list is not an idle card**. Under WSL2 — the host BookForge runs on — the
+  driver shim answers the compute-app query with an empty list while a process inside that
+  same VM holds many gigabytes, and `unattributed` is then the only honest report.
+- a probe that cannot read the card answers `503 accelerator_unreadable`, which prints as
+  "cannot see its accelerator". That is **ask again**, never "the card is free".
+
+```
+$ bookforge-tts --crucible-accelerator --server wsl
+backend       cuda-linux
+gpu           nvidia NVIDIA GeForce RTX 3090 Ti  24.0 GiB total
+free          5.5 GiB
+used          18.4 GiB
+desktop       3.0 GiB held back for this host's own desktop
+unattributed  15.4 GiB in use that no listed holder accounts for
+resident      nothing - crucible holds none of this card
+holders       the driver listed NONE - which is not the same as an idle card; read `unattributed` above
+detail        5.5 GiB free of 24.0 GiB, 0 compute app(s), desktop allowance 3.0 GiB
+```
+
+That reading is the WSL2 case exactly: measured 2026-09-13 while an overnight fine-tune held
+the 3090 Ti, the driver listed **zero** compute apps and `unattributed` was the only field
+that said the card was busy. A client reading only `holders` would have called it idle.
+
+**Nothing in the app calls this.** What wiring it into the queue's GPU admission would take —
+which registry entry it resolves, why an unreachable server must mean the step does not
+start, and what has to be cached so admission is never an HTTP call — is written up in
+[docs/CRUCIBLE_ACCELERATOR_PROBE.md](../docs/CRUCIBLE_ACCELERATOR_PROBE.md). No code for it
+exists.
+
 ## Gotchas
+
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a
   Windows `python.exe` into `C:/Program Files/Git/home/...`. Pass WSL paths (e.g.

@@ -57,6 +57,11 @@ THE COMMANDS. Exactly one is required.
   --crucible-load       make one model resident (unloads whatever was)
   --crucible-unload     hand the memory back
   --crucible-chat       one completion against the resident model
+  --crucible-voices     every voice that server knows: installed, resident, loadable
+  --crucible-load-voice make one voice resident (one card holds one thing)
+  --crucible-unload-voice  hand the memory back
+  --crucible-accelerator   what is on the card, who holds it, whose it is
+  --crucible-render     render chunks to <index>.flac through the tts job type
 
 Commands are a registry (COMMANDS), the flags a second one (COMMAND_FLAGS) that
 says which command reads which — and the per-command help is generated from it,
@@ -1922,6 +1927,142 @@ def cmd_crucible_chat(args):
     return _crucible(args, argv, f"chat {args.model} -> {args.server}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CRUCIBLE tts + the accelerator probe (crucible docs/PHASE3-TTS.md, PHASE4-AUDIO.md)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A voice is to `tts` what a model is to `llm`, and ONE CARD HOLDS ONE THING —
+# which since phase 3 may be a voice or a model. So these mirror the llm verbs
+# exactly: a roster (--crucible-voices beside --crucible-models), a residency
+# pair, and one real job (--crucible-render beside --crucible-chat). The
+# accelerator probe is the read that says who actually holds the card.
+#
+# Still no UI, no IPC, no settings row: the CLI is the only consumer.
+
+_VOICE_IS_NOT_THE_MODEL = ("{cmd}: a voice is named with --voice — for `tts` the voice IS the "
+                           "model on the wire. --model names an llm model for --crucible-load / "
+                           "--crucible-unload / --crucible-chat")
+
+
+def cmd_crucible_voices(args):
+    """GET /v1/voices — every voice that host knows, and what is true of each.
+
+    The same four booleans --crucible-models prints, meaning the same four
+    things: installed (weights on disk), resident (narrator is serving it now),
+    loadable (everything this host needs is in place), and the backend support
+    implied by a revision that is not "n/a". `loadable` is a fact about the DISK
+    and deliberately does not run nvidia-smi, so a voice can say yes here and
+    still be refused at load time with accelerator_busy — that question is
+    --crucible-accelerator's.
+
+    A row that is not loadable carries the server's own reason, and on a machine
+    where `crucible install tts` has never run that reason names the missing env
+    AND the command that installs it. It is printed in the column's place.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-voices"))
+    _require(not args.voice,
+             "--crucible-voices: this LISTS the voices; --voice picks one for "
+             "--crucible-load-voice / --crucible-unload-voice / --crucible-render")
+    _require(bool(args.server), "--server <n> is required for --crucible-voices")
+    return _crucible(args, ["--voices", "--server", args.server], f"voices {args.server}")
+
+
+def cmd_crucible_load_voice(args):
+    """Make one voice resident. A normal job: queued, warming..., done {resident}.
+
+    One card holds one thing, so this unloads whatever was on it — a model as
+    readily as another voice. Refused before queuing, by name, for every reason a
+    model load is (unknown, not installed, unsupported on that backend, larger
+    than the free memory, the card busy with work Crucible does not own) plus one
+    of its own: env_missing, when the tts env for this voice's narrator engine
+    has not been installed. --crucible-voices states that in advance.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-load-voice"))
+    _require(not args.model, _VOICE_IS_NOT_THE_MODEL.format(cmd="--crucible-load-voice"))
+    _require(bool(args.server), "--server <n> is required for --crucible-load-voice")
+    _require(bool(args.voice), "--voice <id> is required for --crucible-load-voice "
+                               "(see --crucible-voices --server %s)" % (args.server or "N"))
+    return _crucible(args, ["--load-voice", "--server", args.server, "--voice", args.voice],
+                     f"load-voice {args.voice} -> {args.server}")
+
+
+def cmd_crucible_unload_voice(args):
+    """Hand the memory back. `done {resident: null}` once narrator has exited.
+
+    voice_not_resident if it was not loaded — INCLUDING when a model holds the
+    card, which the server names as its own refusal rather than as "nothing is
+    loaded", because the two call for different next moves.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-unload-voice"))
+    _require(not args.model, _VOICE_IS_NOT_THE_MODEL.format(cmd="--crucible-unload-voice"))
+    _require(bool(args.server), "--server <n> is required for --crucible-unload-voice")
+    _require(bool(args.voice), "--voice <id> is required for --crucible-unload-voice")
+    return _crucible(args, ["--unload-voice", "--server", args.server, "--voice", args.voice],
+                     f"unload-voice {args.voice} -> {args.server}")
+
+
+def cmd_crucible_accelerator(args):
+    """GET /v1/accelerator — what is on the card, who holds it, whose it is.
+
+    It REPORTS and it never evicts. Three of its answers are refusals to answer
+    and are printed as such rather than as zeroes: a holder's bytes may be
+    `unknown` (the driver will not give per-process figures under WDDM), an EMPTY
+    holder list is not an idle card (under WSL2 the driver shim lists no compute
+    apps while a process inside that VM holds 17 GB — `unattributed` is then the
+    only honest report), and a 503 accelerator_unreadable means the probe could
+    not see the card at all, which is "ask again" and never "the card is free".
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-accelerator"))
+    _require(bool(args.server), "--server <n> is required for --crucible-accelerator")
+    return _crucible(args, ["--accelerator", "--server", args.server], f"accelerator {args.server}")
+
+
+def cmd_crucible_render(args):
+    """One `tts` job: chunks in, <index>.flac out, written where resume looks.
+
+    --file holds the chunks: one per line (index = the 0-based line number), or a
+    .jsonl of {"index": N, "text": "..."} rows when the indices are not 0..n-1.
+    A blank line is refused by name, because skipping one would renumber every
+    chunk after it and an index is a file name.
+
+    The FLACs and their provenance sidecars are fetched as each artifact event
+    lands — overlapped with the next chunk still generating — and renamed into
+    --out, so <index>.flac only ever exists complete. The bytes cross the wire
+    even from a server on localhost: there is no shared mount, ever.
+
+    The voice need NOT be resident; a render owns the exclusive lane for its
+    whole duration and loads its own voice if it has to. --rung is required and
+    never defaulted: 0 is the engine's own sampling, which is a rung and not an
+    absence, and a rung past the end of the ladder is unknown_take rather than a
+    silent clamp. The per-(voice, backend) character cap is not checked here — it
+    is on the voice row (--crucible-voices, max_chars) and the server refuses an
+    over-long chunk by name.
+    """
+    _require(not args.name, _NAME_IS_NOT_THE_PICKER.format(cmd="--crucible-render"))
+    _require(not args.model, _VOICE_IS_NOT_THE_MODEL.format(cmd="--crucible-render"))
+    _require(not args.text,
+             "--crucible-render: the chunks to render are a FILE, named with --file. --text is "
+             "literal text for the --tts door, and reading a literal here would turn "
+             "`--text \"a sentence\"` into a search for a file of that name")
+    _require(bool(args.server), "--server <n> is required for --crucible-render")
+    _require(bool(args.voice), "--voice <id> is required for --crucible-render "
+                               "(see --crucible-voices --server %s)" % (args.server or "N"))
+    _require(bool(args.file), "--file <path> is required for --crucible-render: the chunks, one "
+                              "per line, or a .jsonl of {\"index\": N, \"text\": \"...\"} rows")
+    _require(bool(args.out), "--out <dir> is required for --crucible-render: the directory the "
+                             "<index>.flac files and their provenance sidecars are written into")
+    _require(args.rung is not None,
+             "--rung <k> is required for --crucible-render: which rung of the voice's take ladder "
+             "to render at (`take` on the wire). It is never defaulted — 0 is the engine's own "
+             "sampling, which is a RUNG and not an absence, and a take the caller did not choose "
+             "is a silent substitution (--crucible-voices says how many rungs each voice has)")
+    _require(args.rung >= 0, f"--rung must be 0 or more, got {args.rung}")
+    argv = ["--render", "--server", args.server, "--voice", args.voice,
+            "--language", args.language, "--take", str(args.rung),
+            "--text", str(_user_path(args.file)), "--out", str(_user_path(args.out))]
+    return _crucible(args, argv, f"render {args.voice} -> {args.server}")
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
@@ -1971,6 +2112,13 @@ COMMANDS = {
     "crucible-load": cmd_crucible_load,
     "crucible-unload": cmd_crucible_unload,
     "crucible-chat": cmd_crucible_chat,
+    # The tts job type's operator verbs (crucible docs/PHASE3-TTS.md) and the
+    # accelerator probe (docs/PHASE4-AUDIO.md section 5).
+    "crucible-voices": cmd_crucible_voices,
+    "crucible-load-voice": cmd_crucible_load_voice,
+    "crucible-unload-voice": cmd_crucible_unload_voice,
+    "crucible-accelerator": cmd_crucible_accelerator,
+    "crucible-render": cmd_crucible_render,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2819,6 +2967,142 @@ why the cleanup path always sends thinking:false.""",
             '    --prompt "Count to five." --stream --no-thinking',
         ],
     },
+    "crucible-voices": {
+        "usage": "bookforge-tts --crucible-voices --server N",
+        "doc": """GET /v1/voices — every voice that host knows, and what is true of each.
+
+A voice is to `tts` what a model is to `llm`, and the four booleans mean the
+same four things: installed (weights on disk), resident (narrator is serving it
+now), loadable (everything this host needs is in place), and the backend
+support implied by a revision that is not "n/a". `loadable` is a fact about the
+DISK and deliberately does not run nvidia-smi, so a voice can say yes here and
+still be refused at load time with accelerator_busy — that question belongs to
+--crucible-accelerator.
+
+A row that is not loadable prints the server's own reason instead of a bare
+"no", and on a host where `crucible install tts` has never run that reason
+names the env that is missing AND the command that installs it. max_chars is
+CHARACTERS and is the cap this voice is packed to on THIS backend.""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+            ("--voice", "this LISTS the voices; --voice picks one for --crucible-load-voice / "
+                        "--crucible-unload-voice / --crucible-render"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-voices --server wsl',
+        ],
+    },
+    "crucible-load-voice": {
+        "usage": "bookforge-tts --crucible-load-voice --server N --voice ID",
+        "doc": """Make one voice resident. A normal job, watched to `done {resident}`.
+
+ONE CARD HOLDS ONE THING, and since phase 3 that thing may be a voice or a
+model — so loading a voice unloads whichever it was. That is why this is an
+operator command and not something a render quietly does on the side.
+
+The `warming` lines on stderr are narrator's own readiness output. Refused
+before queuing, by name, for every reason a model load is — unknown, not
+installed, unsupported on that backend, larger than the free memory, the card
+busy with work Crucible does not own — plus one of its own: env_missing, when
+the tts env for this voice's narrator engine has never been installed.
+--crucible-voices says so in advance, and names the command that fixes it.""",
+        "reads": ["--config", "--dry-run", "--server", "--voice"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+            ("--model", "for `tts` the voice IS the model on the wire, and it is named with "
+                        "--voice; --model names an llm model for --crucible-load"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-load-voice --server wsl --voice mistborn',
+        ],
+    },
+    "crucible-unload-voice": {
+        "usage": "bookforge-tts --crucible-unload-voice --server N --voice ID",
+        "doc": """Hand the memory back. Also a job, watched the same way.
+
+`done {resident: null}` once narrator has exited and the card is back.
+voice_not_resident if it was not loaded — INCLUDING when a MODEL holds the card,
+which the server states as its own refusal rather than as "nothing is loaded",
+because the two call for different next moves.""",
+        "reads": ["--config", "--dry-run", "--server", "--voice"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+            ("--model", "a voice is named with --voice; --model is --crucible-unload's word"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-unload-voice --server wsl --voice mistborn',
+        ],
+    },
+    "crucible-accelerator": {
+        "usage": "bookforge-tts --crucible-accelerator --server N",
+        "doc": """GET /v1/accelerator — what is on the card, who holds it, whose it is.
+
+The nvidia-smi query the load guard runs, plus free/used/total, plus what
+Crucible itself has resident, plus a flag per holder saying whether that pid is
+one of this server's own engines. It REPORTS and it never evicts.
+
+THREE ANSWERS ARE REFUSALS TO ANSWER, and are printed as such rather than as
+zeroes. A holder's memory prints `unknown` where the driver will not give a
+per-process figure (WDDM, permissions) — a 0 there would say a process holding
+8 GB is holding none. An EMPTY holder list is not an idle card either: under
+WSL2, which is the host BookForge runs on, the driver shim lists no compute apps
+while a process inside that same VM holds 17 GB, and `unattributed` is then the
+only honest report that the card is busy. And a probe that cannot read the card
+answers 503 accelerator_unreadable, which this prints as "cannot see its
+accelerator" — that is "ask again", never "the card is free".""",
+        "reads": ["--config", "--dry-run", "--server"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+        ],
+        "examples": [
+            'bookforge-tts --crucible-accelerator --server wsl',
+        ],
+    },
+    "crucible-render": {
+        "usage": "bookforge-tts --crucible-render --server N --voice ID --rung K "
+                 "--file CHUNKS --out DIR",
+        "doc": """One `tts` job: chunks in, <index>.flac out, where resume already looks.
+
+--file holds the chunks: one per line, the index being the 0-based LINE NUMBER,
+or a .jsonl of {"index": N, "text": "..."} rows when the indices are not
+0..n-1. A blank line is refused by name — skipping one would renumber every
+chunk after it, and an index is a file name.
+
+Each FLAC and its provenance sidecar are fetched as the artifact event lands,
+overlapped with the next chunk still generating, and renamed into --out, so
+<index>.flac only ever exists complete and only ever beside the record of which
+voice, which revision and which server made it. The bytes cross the wire even
+from a server on localhost: there is no shared mount, ever.
+
+The voice need NOT be resident — a render owns the exclusive lane for its whole
+duration and loads its own voice if it has to, which is the one asymmetry with
+--crucible-chat. Each chunk's measurement is printed as it lands; `capped` and
+`tokens` print `unknown` rather than `false`, because narrator does not put its
+frame cap on the wire and reading that null as false would call every runaway a
+long sentence. A failed chunk is reported and the run continues, and the exit
+code is 1 if any chunk produced no audio.""",
+        "reads": ["--config", "--dry-run", "--server", "--voice", "--language", "--rung",
+                  "--file", "--out"],
+        "refuses": [
+            ("--name", "a registered server is picked with --server"),
+            ("--model", "for `tts` the voice IS the model on the wire, and it is named with "
+                        "--voice"),
+            ("--text", "the chunks are a FILE, named with --file; --text is literal text for "
+                       "the --tts door, and reading a literal here would turn "
+                       "`--text \"a sentence\"` into a search for a file of that name"),
+        ],
+        "examples": [
+            '# three chunks, one per line, at the engine\'s own sampling:\n'
+            'bookforge-tts --crucible-render --server wsl --voice mistborn --rung 0 \\\n'
+            '    --file chunks.txt --out "<session>/chapters/sentences"',
+            '# indices that are not 0..n-1 — a retake of three sentences of a rendered book:\n'
+            'bookforge-tts --crucible-render --server wsl --voice deathstalker --rung 1 \\\n'
+            '    --file retakes.jsonl --out "<session>/chapters/sentences"',
+            'bookforge-tts --crucible-render --server wsl --voice mistborn --rung 0 \\\n'
+            '    --file chunks.txt --out /tmp/flacs --dry-run',
+        ],
+    },
 }
 
 
@@ -2956,9 +3240,12 @@ def _flag_registry():
                    help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
                         "carries (default: the input's basename, or 'CLI passage' for --text)",
                    metavar="STR")
-    p.add_argument("--out", help="the output file: a .wav for --tts, the converted audio for "
-                   "--rvc. For --crucible-echo, the round-tripped copy — its provenance "
-                   "sidecar lands beside it (default <file>.echo)", metavar="FILE")
+    p.add_argument("--out", help="the output file, and for --crucible-render a directory. A .wav "
+                   "for --tts, the converted audio for --rvc; for --crucible-echo the "
+                   "round-tripped copy, whose provenance sidecar lands beside it (default "
+                   "<file>.echo); for --crucible-render one <index>.flac per rendered chunk, each "
+                   "with its own sidecar, written where assembly and resume already look",
+                   metavar="FILE")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
                    "--generate-epub: the project whose PDF is read into its book. "
@@ -3006,8 +3293,10 @@ def _flag_registry():
                         "and both stream (--mode streaming, since 2026-09-05); the ARM is chosen "
                         "by the platform inside the bridge — Mac MLX, Windows/WSL SGLang — never "
                         "by a flag here.", metavar="NAME")
-    p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)",
-                   metavar="ID")
+    p.add_argument("--voice", help="voice id, as the chosen door names them. A BookForge "
+                   "models.json id / model folder on --tts and --audiobook; a CRUCIBLE voice id "
+                   "(the server's own, listed by --crucible-voices) on --crucible-load-voice / "
+                   "--crucible-unload-voice / --crucible-render", metavar="ID")
     p.add_argument("--voice-token", dest="voice_token", help="prompt token override (tts mode only)",
                    metavar="TOKEN")
     p.add_argument("--model-dir", dest="model_dir",
@@ -3383,14 +3672,31 @@ def _flag_registry():
                         "trimmed). Mutually exclusive with --token; one of the two is required",
                    metavar="FILE")
     p.add_argument("--server", help="which REGISTERED Crucible server to call, by the name it "
-                   "was added under. Used by --crucible-ping / --crucible-info / "
-                   "--crucible-health / --crucible-echo / --crucible-models / --crucible-load / "
-                   "--crucible-unload / --crucible-chat, and by --ai-cleanup / --ai-simplify "
-                   "with --provider crucible. Refused for every other provider — a flag that "
+                   "was added under. Used by every --crucible-* command that speaks to a server "
+                   "(--crucible-ping / --info / --health / --echo / --models / --load / --unload "
+                   "/ --chat / --voices / --load-voice / --unload-voice / --accelerator / "
+                   "--render), and by --ai-cleanup / --ai-simplify with --provider crucible. "
+                   "Refused for every other provider — a flag that "
                    "looked set and was dropped is the failure this rule exists to end",
                    metavar="N")
-    p.add_argument("--file", help="--crucible-echo: the file whose bytes are sent through the "
-                   "echo job and compared with what comes back", metavar="FILE")
+    # ONE SENTENCE COVERING BOTH DOORS, because the per-command page prints only
+    # the first one (_brief) — a first sentence naming only --crucible-echo would
+    # describe the echo flag on --crucible-render's own help page.
+    p.add_argument("--file", help="the file a --crucible-* command sends: the bytes to round-trip "
+                   "(--crucible-echo), or the chunks to render (--crucible-render). The chunks "
+                   "are one per line, the index being the 0-based LINE NUMBER, or a .jsonl of "
+                   "{\"index\": N, \"text\": \"...\"} rows when the indices are not 0..n-1; a "
+                   "blank line is refused, because skipping one would renumber every chunk after "
+                   "it and an index is a file name", metavar="FILE")
+    p.add_argument("--rung", type=int, default=None,
+                   help="--crucible-render: which rung of the voice's take ladder to render at "
+                        "(`take` on the wire; the name differs because --take is already the "
+                        "--retake door's approved-.flac PATH). REQUIRED and never defaulted — 0 "
+                        "is the engine's own sampling, which is a rung and not an absence, and a "
+                        "take the caller did not choose is a silent substitution. A rung past the "
+                        "end of the ladder is unknown_take and is never clamped; "
+                        "--crucible-voices says how many rungs each voice has",
+                   metavar="K")
     p.add_argument("--prompt", help="--crucible-chat: the text sent as the user turn. One "
                    "completion against the resident model — the smallest real llm call",
                    metavar="TEXT")
