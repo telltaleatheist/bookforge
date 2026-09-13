@@ -97,7 +97,55 @@ import threading
 
 import numpy as np
 
+# THE ONE ENV READER (narrator/env.py). Top-level and `os`-only, so importing it
+# here does not pull `narrator.engine` into this module's scope - which is
+# deliberately empty of it until after `ready` has been sent (see `main`).
+from ..env import env_number
+
 DEFAULT_SAMPLERATE = 24000
+
+#: THE STREAMING KNOBS, and the numbers an unset one means.
+#:
+#: `ORPHEUS_STREAM_BATCH` and `ORPHEUS_STREAM_RAMP` ARE NOT THIS PACKAGE'S TO
+#: CHOOSE - electron/orpheus-worker-pool.ts owns them
+#: (`STREAM_BATCH_CEILING_DEFAULT`, `STREAM_RAMP_WIDTH`) and sets both on every
+#: spawn it makes. The numbers below are what a worker started WITHOUT that
+#: spawn runs at (`python -m narrator.serve`, the CLI, the tests), and they are
+#: held equal to the owner's by `tests/test_serve_stream_env.py` so the two
+#: copies cannot drift. `ORPHEUS_STREAM_GAP` has no owner anywhere else; that
+#: default is narrator's own.
+STREAM_BATCH_ENV = 'ORPHEUS_STREAM_BATCH'
+STREAM_RAMP_ENV = 'ORPHEUS_STREAM_RAMP'
+STREAM_WARM_MAX_ENV = 'ORPHEUS_STREAM_WARM_MAX'
+STREAM_GAP_ENV = 'ORPHEUS_STREAM_GAP'
+
+STREAM_BATCH_DEFAULT = 16
+STREAM_RAMP_DEFAULT = 8
+STREAM_GAP_DEFAULT_SEC = 0.3
+
+
+def stream_batch_cap() -> int:
+    """The widest group `_generate_batch_mlx_ordered` will build."""
+    return int(env_number(STREAM_BATCH_ENV, STREAM_BATCH_DEFAULT, int, 1,
+                          'the streaming batch width, in rows'))
+
+
+def stream_ramp_width() -> int:
+    """The scheduler's first-wave width, warmed at load so it pays no lazy
+    compile in front of the first sentence."""
+    return int(env_number(STREAM_RAMP_ENV, STREAM_RAMP_DEFAULT, int, 1,
+                          'the streaming first-wave ramp width, in rows'))
+
+
+def stream_warm_max() -> int:
+    """The widest shape `_warmup` pays to pre-compile.
+
+    LAYERED, not fallen back to: an unset `ORPHEUS_STREAM_WARM_MAX` means "warm
+    whatever the grouping cap is", which is `ORPHEUS_STREAM_BATCH`'s answer -
+    and if THAT is garbage it raises here rather than quietly becoming 16.
+    """
+    return int(env_number(STREAM_WARM_MAX_ENV, stream_batch_cap(), int, 1,
+                          'the widest streaming batch worth warming, in rows'))
 
 
 def _graceful_exit(signum, frame):
@@ -428,10 +476,14 @@ def audio_to_pcm16_base64(audio_array) -> str:
 # concatenates them with no gap. A ~0.3s pad gives natural breathing AND masks the
 # brief <audio> blob-reload at each sentence boundary (the reload lands in silence).
 # Tunable via ORPHEUS_STREAM_GAP (0 disables).
-try:
-    STREAM_GAP_SEC = max(0.0, float(os.environ.get('ORPHEUS_STREAM_GAP', '0.3')))
-except (TypeError, ValueError):
-    STREAM_GAP_SEC = 0.3
+#
+# READ THROUGH `env_number`, so `ORPHEUS_STREAM_GAP=0,3` raises at import naming
+# the variable instead of becoming 0.3 and padding every sentence of a session
+# the operator thought they had changed. A NEGATIVE gap is refused for the same
+# reason it used to be clamped to 0: it is not a shorter pause, it is a typo.
+STREAM_GAP_SEC = float(env_number(STREAM_GAP_ENV, STREAM_GAP_DEFAULT_SEC,
+                                  float, 0.0,
+                                  'the inter-sentence gap, in seconds'))
 
 
 #: The sample rate the LOADED engine produces. DEFAULT_SAMPLERATE until one is
@@ -945,20 +997,15 @@ class OrpheusStreamServer:
         # The GROUPING cap can be much wider than anything worth warming: the pool
         # ramps batch width up to it, and the wide rungs are only ever reached behind
         # a buffer many sentences deep. ORPHEUS_STREAM_WARM_MAX is the widest shape
-        # worth paying for at load; it falls back to the grouping cap.
-        try:
-            n = int(os.environ.get('ORPHEUS_STREAM_WARM_MAX')
-                    or os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
-        except ValueError:
-            n = 16
-        if n < 1:
-            n = 1
-        try:
-            ramp = int(os.environ.get('ORPHEUS_STREAM_RAMP', '8'))
-        except ValueError:
-            ramp = 8
-        # A ramp of 1 or of the full width is already covered by the other two shapes.
-        ramp = max(1, min(ramp, n))
+        # worth paying for at load; UNSET means the grouping cap.
+        n = stream_warm_max()
+        ramp = stream_ramp_width()
+        # A ramp of 1 or of the full width is already covered by the other two
+        # shapes. Clamped DOWN to the warm max only - warming a shape wider than
+        # anything this worker will ever group is time paid for nothing. The
+        # `max(1, ...)` that used to guard the other end is gone: both numbers
+        # now come back >= 1 or raise, so it could only ever have hidden a zero.
+        ramp = min(ramp, n)
         widths = sorted({w for w in (ramp, n) if w > 1})
         shapes = ', '.join(str(w) for w in (1, *widths))
         send_response('status', {'message': f'Warming up voice (widths {shapes})...'})
@@ -1471,12 +1518,7 @@ class OrpheusStreamServer:
         ordinary per-item failure with message 'cancelled' (the sweep in `finally`),
         and batch_done fires exactly as it always does.
         """
-        try:
-            cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
-        except (TypeError, ValueError):
-            cap = 16
-        if cap < 1:
-            cap = 1
+        cap = stream_batch_cap()
 
         orph = self.orph
         emitted = set()  # positions in `items` already emitted (crash-safety)
@@ -1656,11 +1698,40 @@ class OrpheusStreamServer:
         a streamed row is never re-rendered: the engine logs the truncation guard's
         verdict and the audio stands.
 
-        The retake ladder and the truncation guard for NON-streamed rows live inside
-        generate_batch_stream (that is what "exactly as today" means for them), so
-        unlike _generate_batch_mlx_ordered this method does not run _guard_truncation
-        itself - running it here would be a second, divergent copy of a ladder the
-        engine has already applied.
+        ORPHEUS's retake ladder and truncation guard for NON-streamed rows live
+        inside generate_batch_stream (that is what "exactly as today" means for
+        them), so unlike _generate_batch_mlx_ordered this method does not run
+        _guard_truncation itself - running it here would be a second, divergent
+        copy of a ladder the engine has already applied.
+
+        THAT IS TRUE OF ORPHEUS AND FALSE OF BOTH HIGGS ARMS, and the paragraph
+        above said it of all of them until 2026-09-13. Higgs's streamed rows go
+        through a bare `render_audio` - `v3_engine.render_rows_streaming` and
+        `mlx_backend`'s two stream paths - with NO GuardPlan, no PaceTracker, no
+        re-roll, no split ladder, no hole check, and no `guard` on the wire. The
+        `generate_batch` door routes a `render_many`-capable engine to
+        _emit_guarded_batch, but the `stream: true` test above returns before that
+        test is ever reached, so nothing streamed is guarded.
+
+        OWEN RULED ON IT (2026-09-13), and the ruling is that this stays: "streaming
+        can stay unguarded. it needs speed over all else. i believe it's been
+        unguarded this whole time. if it becomes a problem we can add a guard
+        later." It has - the serve world has never guarded a Higgs row - so this is
+        the status quo affirmed rather than a regression accepted.
+
+        WHAT IT COSTS, written down because the ruling deserves its price next to
+        it: every streamed Higgs row ships whatever the model produced. Listen with
+        "buffer before playing" off, Crucible's streaming door (which sets
+        `stream: true` on EVERY row, so the whole batch lands here), and the browser
+        extension's zero-shot path all take takes the audiobook world would have
+        caught - the seconds-long render of a thousand-character chunk, and the
+        run-on that keeps going. The book path is unaffected: it goes through the
+        render door, which sends no `stream` flag anywhere.
+
+        So do not "fix" this by reaching for _emit_guarded_batch here. The absence
+        is deliberate and priced. What is NOT acceptable is this docstring claiming
+        a guard that does not run - a guard asserted in prose and absent in code is
+        worse than an admitted absence, because it stops anyone looking.
 
         THREADING: on MLX the SNAC decode runs on the engine's decoder thread, so
         on_chunk (and possibly on_row) is called from a thread that is not this one.

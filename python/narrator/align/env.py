@@ -349,6 +349,26 @@ def run_jobs(python_exe: str, jobs: Sequence[dict],
                 [python_exe, '-m', 'narrator.align.worker'],
                 stdin=infile, stdout=subprocess.PIPE, stderr=errfile,
                 env=worker_environment(threads=threads_each),
+                # `cwd` IS LOAD-BEARING, and its absence was a live defect.
+                #
+                # `python -m` puts the CURRENT WORKING DIRECTORY at the front of
+                # `sys.path`, ahead of everything `PYTHONPATH` names. So without
+                # this, which `narrator` the worker imports depended on wherever
+                # the PARENT happened to be standing - not on `package_root()`
+                # two lines up, which exists precisely to answer that question.
+                #
+                # An ambient dependency in a production spawn, and it was found
+                # the way those usually are: `test_align.py::WorkerPoolTest`
+                # points `PYTHONPATH` at a fake tree and the real package on the
+                # cwd shadowed it, so the tests ran the REAL worker while
+                # believing they drove the fake. They passed from the repo root
+                # and failed from `python/` - a guard whose colour depended on
+                # the directory it was invoked from, which is R2's tolerated red
+                # in its most confusing form.
+                #
+                # Pinning cwd to the same root `PYTHONPATH` gets makes the two
+                # agree by construction instead of by luck.
+                cwd=package_root(),
             )
             children.append({'number': number, 'proc': proc, 'deal': deal,
                              'errfile': errfile, 'count': 0, 'error': None})

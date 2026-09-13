@@ -735,6 +735,14 @@ def run_worker(request: WorkerRequest, engine_factory=None) -> dict:
     Higgs) also offers `CONTINUOUS_BATCH = True` and `convert_many`, and the take
     then keeps `BATCH_SIZE` rows in flight for its whole length instead of
     flushing pools - see `_render_continuous`.
+
+    OF THAT LIST, `convert`, `convert_batch` and `_write_silence` are DECLARED on
+    `engine/protocol.py`'s `Engine` and checked against every engine
+    (`tests/test_engine_protocol.py`); the rest are this worker's own extended
+    surface and are not. `_write_silence` joined the declared half on
+    2026-09-13 - it had been listed here and required at line 1113 while the
+    protocol named it nowhere, which is precisely how it came to exist on one
+    engine out of four.
     """
     # Sentence indices whose output file may be half-written right now. A
     # cooperative stop (SIGTERM -> SystemExit) can land mid-conversion; the except
@@ -1101,9 +1109,20 @@ def _write_empty_sentence_silence(engine, index: int) -> None:
     require `{i}.flac` to exist for every index, so skipping without writing
     anything left a permanently un-assemblable hole. e2a wrote 0.1 s of zeros with
     torchaudio (`worker_core._write_empty_sentence_silence`); the engine's
-    `_write_silence` is that same code (`orpheus.py:4139`), so the worker calls it
-    rather than keeping a second copy - identical bytes, and torchaudio stays
-    inside `engine/`.
+    `_write_silence` is that same code, so the worker calls it rather than keeping
+    a second copy - identical bytes, and torchaudio stays inside `engine/`.
+
+    `_write_silence` IS A DECLARED MEMBER OF `engine/protocol.py`'s `Engine`
+    since 2026-09-13, and the length it writes is that module's
+    `EMPTY_SENTENCE_SILENCE_SEC`. It was not before: this line had required it of
+    every engine since the e2a port while the protocol named it nowhere, so
+    nothing compared the requirement to the implementations and only Orpheus had
+    one. A blanked sentence (`render/retake.py` coerces overrides with `str(v)`
+    and accepts '') therefore reached a Higgs engine as an `AttributeError`,
+    which `run_worker`'s own `except Exception` turned into an aborted take -
+    every LATER chunk unrendered, with an error nobody could act on.
+    `tests/test_engine_protocol.py::EmptySentenceSilenceTest` drives this
+    function against every engine for that reason.
 
     NOTE, unchanged from e2a: a digital-silence FLAC is about 100 bytes, below the
     1024-byte resume floor, so this index is listed as missing by every later scan

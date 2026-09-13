@@ -1036,6 +1036,166 @@ class RenderManySerialTest(unittest.TestCase):
         engine._write_sentence.assert_not_called()
 
 
+class _FailingRenders(_SerialRenders):
+    """`_SerialRenders` with a chosen take raised instead of returned.
+
+    `fail_at` is `{chunk index: [take numbers that raise]}`, counted over that
+    chunk's OWN text the way the pace table is - so "take 0 fails" and "the
+    re-roll fails" are both expressible, and a split half is never bent.
+    """
+
+    class Boom(RuntimeError):
+        pass
+
+    def __init__(self, fail_at, cps=None, watch=None):
+        super().__init__(cps=cps, watch=watch)
+        self.fail_at = {int(k): set(v) for k, v in fail_at.items()}
+        self._seen = {}
+
+    def __call__(self, text, seed=None, index=0):
+        first = self._full_text.get(index, text)
+        if text == first:
+            take = self._seen.get(index, 0)
+            self._seen[index] = take + 1
+            if take in self.fail_at.get(index, ()):
+                self.calls.append((index, text, seed))
+                raise self.Boom(f'decode came back misaligned for chunk {index}')
+        return super().__call__(text, seed=seed, index=index)
+
+
+class RenderManySerialFailureTest(unittest.TestCase):
+    """ONE CHUNK'S FAILURE COSTS ONE CHUNK - the serial arm, 2026-09-13.
+
+    THE DEFECT. `_render_many_serial` called `render_audio` with no `try`, and
+    `render_many`'s docstring justified that with "THIS ARM NEVER YIELDS
+    `audio is None`... a slice that fails raises". That rationale is about BATCH
+    WIDTH - a batch that failed for a reason batching CAUSED is precisely the
+    fact a per-item retry hides - and at the SHIPPED DEFAULT (`BATCH_ENV` unset
+    -> `BATCH_SIZE = 1`) there is no slice for it to be about. So one chunk's
+    decode failure, one `HiggsMlxStreamMisaligned`, took the whole call down and
+    `serve/worker.py` reported every row not yet emitted as 'Batch generation
+    failed': THE MAC FAILED A BOOK WHERE THE PC FAILED A SENTENCE.
+
+    The served arm has always done it the other way - `HiggsV3Engine.
+    convert_many`: "This chunk's failure, named, and the take goes on" - and one
+    contract cannot have two answers. The width-failure raise stays where its
+    reason is true: `_render_many_rounds` (asserted by `BatchFailureTest`).
+    """
+
+    def test_one_chunks_failure_is_one_None_and_the_rest_still_render(self):
+        renders = _FailingRenders(fail_at={1: [0]})
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
+        out = list(engine.render_many(rows))
+
+        self.assertEqual([index for index, _a, _v in out], [0, 1, 2])
+        # The failed chunk: audio None AND verdict None - the shared contract's
+        # failure signal, which serve/worker.py turns into the ordinary
+        # 'No audio generated' item rather than silence dressed as a success.
+        self.assertEqual(out[1][1], None)
+        self.assertEqual(out[1][2], None)
+        # Its neighbours are untouched, and each rendered exactly once.
+        for position in (0, 2):
+            self.assertIsNotNone(out[position][1])
+            self.assertEqual(out[position][2]['verdict'], 'clean')
+        self.assertEqual([i for i, _t, _s in renders.calls], [0, 1, 2])
+        engine._write_sentence.assert_not_called()
+
+    def test_a_failure_PART_WAY_UP_THE_LADDER_abandons_the_whole_chunk(self):
+        """Take 0 was off-length and the RE-ROLL raised. There is no audio to
+        ship - the take that would have been accepted is the one that failed
+        (`GuardPlan.abandon`) - so the chunk leaves the ladder, its split rung is
+        never reached, and it never appears in `finished()`."""
+        renders = _FailingRenders(fail_at={0: [1]},
+                                  cps={0: [_SerialRenders.SHORT_CPS]})
+        engine = _serial_engine(renders)
+        out = list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+
+        self.assertEqual([(i, a is None) for i, a, _v in out],
+                         [(0, True), (1, False)])
+        # Take 0, then the re-roll that raised - and NOT the two split halves the
+        # ladder would have asked for next.
+        self.assertEqual([i for i, _t, _s in renders.calls], [0, 0, 1])
+
+    def test_the_failed_chunk_is_struck_off_in_flight(self):
+        """`in_flight` is the caller's list and a cooperative stop deletes the
+        half-written file of everything named in it. A chunk that will never be
+        written again must not stay named."""
+        held = []
+        renders = _FailingRenders(fail_at={1: [0]}, watch=held)
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
+        out = list(engine.render_many(rows, in_flight=held))
+
+        self.assertEqual(len(out), 2)
+        self.assertEqual(held, [], 'a failed chunk was left in flight')
+
+    def test_the_ladder_is_left_EMPTY_by_a_failed_chunk(self):
+        """`abandon` deletes the chunk's whole subtree and pops its records and
+        its verdict, so a book's worth of failures cannot accumulate inside one
+        long call - and nothing can later hand out a verdict for a chunk that
+        shipped no audio. The plan is captured on the way past, because that is
+        the only place it exists."""
+        plans = []
+        real_plan = truncation.GuardPlan
+
+        def _capture(*args, **kwargs):
+            plan = real_plan(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        renders = _FailingRenders(fail_at={0: [1], 2: [0]},
+                                  cps={0: [_SerialRenders.SHORT_CPS]})
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
+        with mock.patch.object(truncation, 'GuardPlan', _capture):
+            out = list(engine.render_many(rows))
+
+        self.assertEqual([(i, a is None) for i, a, _v in out],
+                         [(0, True), (1, False), (2, True)])
+        self.assertEqual(len(plans), 1, 'one plan for the whole call')
+        plan = plans[0]
+        self.assertEqual(plan.pending, 0, 'a failed chunk was left on the ladder')
+        self.assertEqual(plan.finished(), [])
+        for index in (0, 2):
+            with self.subTest(chunk=index):
+                self.assertIsNone(plan.verdict(index),
+                                  'a chunk that shipped no audio still has a '
+                                  'verdict on file')
+
+    def test_a_BASE_exception_still_unwinds(self):
+        """`Exception`, not `BaseException`. A `KeyboardInterrupt` (and the
+        `SystemExit` a cooperative stop raises, and the `GeneratorExit` a
+        consumer that closed this generator sends) is not this chunk's failure,
+        and the rows behind it are not owed a render."""
+        renders = _SerialRenders()
+
+        def interrupted(text, seed=None, index=0):
+            if index == 1:
+                raise KeyboardInterrupt()
+            return renders(text, seed=seed, index=index)
+
+        engine = _serial_engine(interrupted)
+        with self.assertRaises(KeyboardInterrupt):
+            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+
+    def test_ABOVE_width_one_a_failed_SLICE_still_RAISES(self):
+        """The other half of the ruling, restated here so the two live side by
+        side: the per-chunk path is the SERIAL arm's, and widening does not buy
+        a per-item retry. `BatchFailureTest` asserts the message names the width
+        and the rows."""
+        engine = _engine(ceiling=4, budget=42.0)
+        engine.config.seed = 1234
+        engine._budget = mock.Mock(cap_frames=lambda text: 300)
+        engine._seed_for = lambda index: 500 + index
+        engine._mlx_prompts_for = lambda texts: [(None, 700) for _t in texts]
+        engine._generate_delayed_rows_batch = mock.Mock(
+            side_effect=RuntimeError('metal out of memory'))
+        with self.assertRaises(RuntimeError) as caught:
+            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+        self.assertIn('rows [0, 1]', str(caught.exception))
+
+
 # AT THE BOTTOM, WHERE IT HAS TO BE. This block sat at line 631 of a 1039-line
 # file until 2026-09-13, so `python test_higgs_mlx_batch.py` ran everything above
 # it and silently skipped the 408 lines below - RetakeBatchTest and

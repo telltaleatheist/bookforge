@@ -50,10 +50,17 @@ from narrator.engine.protocol import (BackendSpec, Budget, ClipsVoice,  # noqa: 
 
 # The members `Engine` names. Kept as a literal so a member SILENTLY dropped
 # from the protocol is a failure here rather than an unnoticed relaxation.
+#
+# `_write_silence` IS ON THE LIST, underscore and all. It was required by
+# `render/worker.py` and named in `run_worker`'s own docstring while the
+# protocol declared it nowhere, so nothing compared the requirement to the
+# implementations and only Orpheus had one - an empty sentence reached a Higgs
+# engine as an AttributeError and aborted the take at that chunk. The leading
+# underscore is history, not privacy (2026-09-13).
 ENGINE_MEMBERS = ('ENGINE_ID', 'SAMPLE_RATE', 'pads', 'edge_fade', 'backend',
                   'voice', 'backend_spec', 'codec', 'budget', 'stop_policy',
                   'resolve_load_voice', 'convert', 'convert_batch',
-                  'generate_batch_stream', 'cleanup')
+                  '_write_silence', 'generate_batch_stream', 'cleanup')
 
 
 def _load_assembler_profiles():
@@ -119,10 +126,16 @@ class ProtocolConformanceTest(unittest.TestCase):
 
         The member set is computed rather than read off `__protocol_attrs__`,
         which only exists from Python 3.12 - and the WSL Orpheus env is 3.11.
+
+        DUNDERS are what is filtered out, not every underscore: `_write_silence`
+        is a declared member (see ENGINE_MEMBERS), and a filter that dropped it
+        would have gone on saying the surface was complete while the one member
+        nothing implemented sat outside the count. `typing` leaves `_is_protocol`
+        and friends in `vars()` too, but none of them is callable.
         """
         declared = set(Engine.__annotations__)
         declared |= {name for name, value in vars(Engine).items()
-                     if not name.startswith('_') and callable(value)}
+                     if not name.startswith('__') and callable(value)}
         self.assertEqual(sorted(declared), sorted(ENGINE_MEMBERS))
 
     def test_orpheus_engine_satisfies_the_engine_protocol(self):
@@ -542,6 +555,116 @@ class ChunkWriterTest(unittest.TestCase):
                      and getattr(node.func.value, 'id', None) == 'torchaudio']
             with self.subTest(module=name):
                 self.assertEqual(calls, [], f'{name} still writes with torchaudio')
+
+
+class EmptySentenceSilenceTest(unittest.TestCase):
+    """`_write_silence`, on EVERY engine, DRIVEN BY THE CALLER THAT NEEDS IT.
+
+    THE DEFECT THIS WOULD HAVE CAUGHT (found 2026-09-13). `render/worker.py`
+    has called `engine._write_silence(index)` for an empty sentence since the
+    e2a port, and `run_worker`'s docstring lists it among the methods an engine
+    must offer - but `engine/protocol.py`'s `Engine` declared it nowhere, so
+    nothing ever compared the requirement to the implementations. Only
+    `OrpheusEngine` had one.
+
+    It is REACHABLE, not theoretical: `render/retake.py` coerces override values
+    with `str(v)` and accepts `''`, so a Studio "Correct Sentences" run that
+    blanks a sentence lands here, as does any whitespace-only row in session
+    state. On a Higgs engine that was an `AttributeError`, caught by the take's
+    own `except Exception` - so the take ABORTED AT THAT CHUNK and every later
+    chunk went unrendered, with an error nobody could act on.
+
+    Two things are asserted, because either alone would have let it through:
+    the protocol DECLARES the member (`ENGINE_MEMBERS`, and the isinstance
+    checks above - a class missing it is not an `Engine`), and every engine's
+    implementation actually writes the file the assembler needs.
+    """
+
+    #: Every engine narrator can hand to `run_worker`. A new one has to be added
+    #: here, which is the point.
+    ENGINES = ('orpheus', 'higgs-v3-served', 'higgs-v3-mlx', 'higgs-v2-scaffold')
+
+    def _engine(self, which, directory):
+        """A bare engine with only what the silence writer reads."""
+        from types import SimpleNamespace
+        config = SimpleNamespace(sentences_dir=directory, audio_format='flac')
+        if which == 'orpheus':
+            engine = _bare(OrpheusEngine)
+            engine.params = {'samplerate': 24000}
+        elif which == 'higgs-v3-served':
+            from narrator.engine.higgs import HiggsV3Engine
+            engine = _bare(HiggsV3Engine, backend='vllm-omni')
+        elif which == 'higgs-v3-mlx':
+            from narrator.engine.higgs import HiggsV3MlxEngine
+            engine = _bare(HiggsV3MlxEngine, backend='mlx')
+        elif which == 'higgs-v2-scaffold':
+            engine = _bare(HiggsEngine, backend='transformers')
+        else:
+            raise AssertionError(f'no fixture for engine {which!r}')
+        engine.config = config
+        return engine
+
+    def test_every_engine_writes_the_empty_sentence_its_caller_asks_for(self):
+        """Through `render/worker.py`'s own function, not through the method
+        directly: the bug was in the SEAM between that caller and the engines,
+        so the caller is what drives the test."""
+        import shutil
+        import tempfile
+        import soundfile as sf
+        from narrator.render.worker import _write_empty_sentence_silence
+        for which in self.ENGINES:
+            directory = tempfile.mkdtemp(prefix='narrator-silence-')
+            self.addCleanup(shutil.rmtree, directory, True)
+            with self.subTest(engine=which):
+                _write_empty_sentence_silence(self._engine(which, directory), 7)
+                path = os.path.join(directory, '7.flac')
+                self.assertTrue(os.path.isfile(path),
+                                'the index has no file, so assembly has a hole')
+                info = sf.info(path)
+                # THE SAME WRITER CONTRACT as a rendered chunk beside it: mixed
+                # bit depths in one session are what ffmpeg's concat demuxer
+                # drops frames on, silently (see ChunkWriterTest).
+                self.assertEqual(info.subtype, 'PCM_16')
+                self.assertEqual(info.format, 'FLAC')
+                self.assertEqual(info.channels, 1)
+                self.assertEqual(info.samplerate, 24000)
+
+    def test_the_length_is_ONE_number_for_every_engine(self):
+        """Two engines writing two lengths would put two different holes in one
+        book's timeline, so the number lives on the protocol and both sides read
+        it. 0.1 s is e2a's, ported unchanged."""
+        import shutil
+        import tempfile
+        import soundfile as sf
+        from narrator.engine.protocol import EMPTY_SENTENCE_SILENCE_SEC
+        self.assertEqual(EMPTY_SENTENCE_SILENCE_SEC, 0.1)
+        frames = set()
+        for which in self.ENGINES:
+            directory = tempfile.mkdtemp(prefix='narrator-silence-')
+            self.addCleanup(shutil.rmtree, directory, True)
+            self._engine(which, directory)._write_silence(0)
+            frames.add(sf.info(os.path.join(directory, '0.flac')).frames)
+        self.assertEqual(frames, {int(24000 * EMPTY_SENTENCE_SILENCE_SEC)})
+
+    def test_it_is_silence_and_it_stays_under_the_resume_floor(self):
+        """Not merely short - ZERO. And small enough that the index is re-listed
+        by every later scan (RESUME_MIN_BYTES is 1024, and the rewrite is
+        idempotent); a clip that crept over the floor would make a blank
+        sentence look rendered."""
+        import shutil
+        import tempfile
+        import numpy as np
+        import soundfile as sf
+        from narrator.render.worker import RESUME_MIN_BYTES
+        for which in self.ENGINES:
+            directory = tempfile.mkdtemp(prefix='narrator-silence-')
+            self.addCleanup(shutil.rmtree, directory, True)
+            with self.subTest(engine=which):
+                self._engine(which, directory)._write_silence(3)
+                path = os.path.join(directory, '3.flac')
+                audio, _rate = sf.read(path, dtype='float32')
+                self.assertEqual(np.max(np.abs(audio)), 0.0)
+                self.assertLessEqual(os.path.getsize(path), RESUME_MIN_BYTES)
 
 
 class EdgeFadeIsRequiredTest(unittest.TestCase):

@@ -150,11 +150,20 @@ class AudioMixin:
                  format=container)
 
     def _write_silence(self, sentence_index: int) -> bool:
-        """Write a tiny silent clip for an empty sentence."""
+        """Write a tiny silent clip for an empty sentence.
+
+        `Engine._write_silence` (engine/protocol.py) is the contract, and the
+        LENGTH is that module's `EMPTY_SENTENCE_SILENCE_SEC` rather than the
+        0.1 that stood here: every engine now has one of these, and two of them
+        writing two lengths would put two different holes in one book.
+        """
         import numpy as np
+        from ..protocol import EMPTY_SENTENCE_SILENCE_SEC
         rate = self.params['samplerate']
-        self.write_chunk_file(self._sentence_file(sentence_index),
-                              np.zeros(int(rate * 0.1), dtype=np.float32), rate)
+        self.write_chunk_file(
+            self._sentence_file(sentence_index),
+            np.zeros(int(rate * EMPTY_SENTENCE_SILENCE_SEC), dtype=np.float32),
+            rate)
         return True
 
     def _save_audio(self, sentence_index: int, audio_np, lead_gap: float = 0.0,

@@ -79,8 +79,8 @@ from typing import Optional
 
 import numpy as np
 
-from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
-                        SpeechRequest, StopPolicy)
+from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
+                        DefaultVoice, EdgeFade, SpeechRequest, StopPolicy)
 from ..log import log
 from . import served_common
 from . import sgl_served
@@ -900,6 +900,19 @@ class HiggsV3Engine:
         sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
                  format=self.config.audio_format.upper())
         return True
+
+    def _write_silence(self, sentence_number: int) -> bool:
+        """An empty sentence's placeholder clip - see `Engine._write_silence`.
+
+        THROUGH `_write_sentence`, which is the whole point of there being one
+        writer on this arm: the silence lands with the same subtype and the same
+        container as every rendered chunk beside it. Nothing is generated - an
+        empty chunk has nothing to say and `render_audio` refuses it by name.
+        """
+        return self._write_sentence(
+            sentence_number,
+            np.zeros(int(self.SAMPLE_RATE * EMPTY_SENTENCE_SILENCE_SEC),
+                     dtype=np.float32))
 
     def convert_batch(self, items) -> list:
         """`items` through the SAME pool as a continuous take, and one bool per

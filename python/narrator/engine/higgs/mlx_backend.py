@@ -112,8 +112,10 @@ from typing import Optional
 
 import numpy as np
 
+from ...env import env_number
 from ..log import log
-from ..protocol import BackendSpec, ClipsVoice, DefaultVoice, StopPolicy
+from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
+                        DefaultVoice, StopPolicy)
 from . import truncation, v3_served
 from .prompt import clean_text
 from .v3_engine import HiggsV3Defaults, apply_v3_voice_defaults
@@ -159,47 +161,34 @@ CACHE_LIMIT_ENV = 'HIGGS_MLX_CACHE_LIMIT_GB'
 CACHE_LIMIT_DEFAULT_GB = 8.0
 
 
-def _env_number(name: str, default, cast, minimum, what: str):
-    """One env variable -> a number, or a ValueError NAMING THE VARIABLE.
-
-    Garbage is never coerced and never defaulted past: a width or a budget read
-    from a typo would silently render a whole book at the wrong memory profile,
-    and "it fell back to the default" is exactly the sentence nobody can debug.
-    """
-    raw = (os.environ.get(name) or '').strip()
-    if not raw:
-        return default
-    try:
-        value = cast(raw)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f'{name}={raw!r} is not a number. It is {what}; unset it for the '
-            f'default ({default:g}).') from None
-    if value < minimum:
-        raise ValueError(
-            f'{name}={raw!r} is below {minimum:g}. It is {what}; unset it for '
-            f'the default ({default:g}).')
-    return value
+# `_env_number` USED TO BE DEFINED HERE. It moved to `narrator/env.py` on
+# 2026-09-13, unchanged, because it states a POLICY - garbage is refused by
+# name, never coerced, never defaulted past - and `serve/worker.py` was breaking
+# that policy in four places while this module enforced it in three. A rule with
+# one implementation inside one backend is a rule the rest of the tree cannot
+# obey (ARCHITECTURE.md R1). No alias is left behind: nothing outside this
+# module ever imported the private name, and a shim kept "just in case" is a
+# second name for the one thing this move existed to stop having two of.
 
 
 def mlx_batch_ceiling() -> int:
     """`BATCH_SIZE`: the widest batch this process will ever generate at once."""
-    return int(_env_number(BATCH_ENV, 1, int, 1,
-                           'the widest Higgs MLX batch, in rows'))
+    return int(env_number(BATCH_ENV, 1, int, 1,
+                          'the widest Higgs MLX batch, in rows'))
 
 
 def mlx_mem_budget_gb() -> float:
     """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget."""
-    return float(_env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
-                             'the Higgs MLX batch memory budget, in GB'))
+    return float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                            'the Higgs MLX batch memory budget, in GB'))
 
 
 def mlx_cache_limit_gb() -> float:
     """The pinned MLX buffer cache, in GB. The SAME variable `load_engine` sets
     `mx.set_cache_limit` from - read here so the headroom math subtracts the
     memory that was actually pinned rather than a number of its own."""
-    return float(_env_number(CACHE_LIMIT_ENV, CACHE_LIMIT_DEFAULT_GB, float, 0.0,
-                             'the pinned MLX buffer cache, in GB'))
+    return float(env_number(CACHE_LIMIT_ENV, CACHE_LIMIT_DEFAULT_GB, float, 0.0,
+                            'the pinned MLX buffer cache, in GB'))
 
 
 def _log(message: str) -> None:
@@ -1543,6 +1532,19 @@ class HiggsV3MlxEngine:
                  format=self.config.audio_format.upper())
         return True
 
+    def _write_silence(self, sentence_number: int) -> bool:
+        """An empty sentence's placeholder clip - see `Engine._write_silence`.
+
+        THROUGH `_write_sentence`, for the reason that writer exists: the
+        silence lands with the same subtype and container as every rendered
+        chunk beside it. Nothing is generated - `render_audio` refuses an empty
+        chunk by name, and the ladder's door refuses one before any prefill.
+        """
+        return self._write_sentence(
+            sentence_number,
+            np.zeros(int(self.SAMPLE_RATE * EMPTY_SENTENCE_SILENCE_SEC),
+                     dtype=np.float32))
+
     def convert(self, sentence_number: int, sentence: str) -> bool:
         """Render one chunk to `<sentences_dir>/<n>.<audio_format>`, through
         the truncation ladder (`truncation.render_guarded`, shared with the
@@ -1676,11 +1678,31 @@ class HiggsV3MlxEngine:
         part-way up the ladder - re-rolling, or waiting on its split halves -
         stays named. It is the caller's list and is mutated in place.
 
-        THIS ARM NEVER YIELDS `audio is None`. The shared contract with the
-        served arm says a None means that chunk failed; here a slice that fails
-        raises instead, naming its width and its rows (`_batch_failure`),
-        because Owen struck the per-item retry on 2026-09-05 and a batch that
-        failed for a reason batching CAUSED is precisely the fact a retry hides.
+        WHICH ARM RAISES, AND WHY ONLY THAT ONE (corrected 2026-09-13).
+
+        `audio is None` is the shared contract's "this chunk failed", and the
+        SERIAL arm (`_render_many_serial`, the shipped default width) yields it,
+        exactly as the served arm does at `HiggsV3Engine.convert_many`: the
+        render is wrapped, the chunk is struck off the ladder with
+        `plan.abandon`, and the take goes on. One bad sentence costs one
+        sentence.
+
+        THE WIDTH FAILURE STILL RAISES, on `_render_many_rounds` only: a SLICE
+        that fails takes the call down, naming its width and its rows
+        (`_batch_failure`), because Owen struck the per-item retry on 2026-09-05
+        and a batch that failed for a reason BATCHING CAUSED - a left-padded
+        prefill, a shared cache, a width the memory could not hold - is
+        precisely the fact a per-item retry hides. That rationale is about
+        WIDTH, and at `BATCH_SIZE = 1` there is no slice for it to be about:
+        letting it stand there meant one chunk's decode failure, one
+        `HiggsMlxStreamMisaligned`, reported every row not yet emitted as
+        'Batch generation failed' on a machine that had rendered nothing as a
+        batch. The Mac failed a book where the PC failed a sentence.
+
+        THE DOOR ABOVE IS STILL A WHOLE-CALL REFUSAL and is deliberately not
+        part of that: a chunk that is only markers, or that carries a control
+        token, is refused BEFORE any render, for both arms, because it is an
+        INPUT defect rather than a render failure and the caller handed it in.
 
         NOT THREAD-SAFE, and deliberately not made so: `GuardPlan` is one
         batch's on one thread, and every `add` / `round` / `offer` / `finished`
@@ -1727,6 +1749,22 @@ class HiggsV3MlxEngine:
         `render_audio` per take, never a one-row slab, because a batch of one is
         not byte for byte the single-row path and nothing on this backend widens
         on its own (`generate_batch_stream`, rung 2, states the same rule).
+
+        ONE CHUNK'S FAILURE COSTS ONE CHUNK, which is the whole difference
+        between this arm and `_render_many_rounds`, and it is the served arm's
+        rule verbatim (`HiggsV3Engine.convert_many`: "This chunk's failure,
+        named, and the take goes on"). A take that raises - a decode that came
+        back misaligned (`HiggsMlxStreamMisaligned`), a codec that refused its
+        frames, a row the sampler could not finish - abandons that chunk's whole
+        tree (`GuardPlan.abandon`: a chunk part-way up the ladder has no audio
+        to ship, because the take that would have been accepted is the one that
+        failed), strikes it off `in_flight`, and yields `(index, None, None)`.
+        The chunks behind it still render.
+
+        `Exception`, NOT `BaseException`: a `GeneratorExit` from a consumer that
+        closed this generator, a `KeyboardInterrupt`, and the `SystemExit` a
+        cooperative stop raises must all still unwind - none of them is this
+        chunk's failure, and the rows behind them are not owed a render.
         """
         for index, text in cleaned:
             plan.add(index, text)
@@ -1736,8 +1774,24 @@ class HiggsV3MlxEngine:
                 request = plan.next_request()
                 if request is None:
                     break
-                plan.offer(request, self.render_audio(
-                    request.text, seed=request.seed, index=request.index))
+                try:
+                    take = self.render_audio(request.text, seed=request.seed,
+                                             index=request.index)
+                except Exception as exc:
+                    # NAMED on the host's log stream first, the way the served
+                    # arm names it: the tuple tells a caller THAT the chunk
+                    # failed and the line tells them why.
+                    _log(f'sentence {request.index} failed: '
+                         f'{type(exc).__name__}: {exc}')
+                    failed = plan.abandon(request)
+                    if failed in held:
+                        held.remove(failed)
+                    yield failed, None, None
+                    # The abandoned chunk's whole tree is gone from the plan, so
+                    # the next `next_request()` is ASKED - and answers None -
+                    # rather than assumed. Nothing else is in flight on this arm.
+                    continue
+                plan.offer(request, take)
             yield from self._decided(plan, held)
 
     def _render_many_rounds(self, plan, cleaned, held):

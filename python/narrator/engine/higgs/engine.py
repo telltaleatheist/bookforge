@@ -39,7 +39,8 @@ import os
 
 import numpy as np
 
-from ..protocol import BackendSpec, ClipsVoice, EdgeFade, StopPolicy
+from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
+                        EdgeFade, StopPolicy)
 from .codec import HiggsCodec
 from .config import (HiggsBudget, HiggsConfig, HiggsDefaults, higgs_stop_policy)
 from .prompt import (DEFAULT_SCENE, DEFAULT_SYSTEM_PROMPT,
@@ -197,16 +198,37 @@ class HiggsEngine:
         gapBefore/gapAfter around it. That is what `pads = False` MEANS, and it
         is the one behavioural difference an assembly has to honour.
         """
+        return self._write_sentence(
+            sentence_number,
+            self.render_audio(sentence, seed=self._seed_for(sentence_number)))
+
+    def _write_sentence(self, sentence_number: int, audio) -> bool:
+        """The chunk file, EXACTLY AS DECODED - no trim, no fade, no pad.
+
+        EXTRACTED from `convert` on 2026-09-13, when `_write_silence` became a
+        declared member of the protocol and this engine needed one. The two v3
+        engines already had a single writer each for exactly this reason: a
+        second `sf.write` is how a subtype or a container drifts between two
+        paths that must land byte-identically.
+
+        PCM_16, stated - the same writer contract every narrator chunk uses.
+        See engine/orpheus/audio.py:write_chunk_file for why the bit depth is
+        never left to a library default.
+        """
         import soundfile as sf
         path = self._sentence_file(sentence_number)
-        audio = self.render_audio(sentence, seed=self._seed_for(sentence_number))
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # PCM_16, stated - the same writer contract every narrator chunk uses.
-        # See engine/orpheus/audio.py:write_chunk_file for why the bit depth is
-        # never left to a library default.
         sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
                  format=self.config.audio_format.upper())
         return True
+
+    def _write_silence(self, sentence_number: int) -> bool:
+        """An empty sentence's placeholder clip - see `Engine._write_silence`.
+        Nothing is generated: `render_audio` refuses an empty chunk by name."""
+        return self._write_sentence(
+            sentence_number,
+            np.zeros(int(self.SAMPLE_RATE * EMPTY_SENTENCE_SILENCE_SEC),
+                     dtype=np.float32))
 
     def convert_batch(self, items) -> list:
         """SERIAL, on purpose - see the module docstring. One bool per item, in

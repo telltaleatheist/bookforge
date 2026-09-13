@@ -673,6 +673,14 @@ class Budget(Protocol):
 # Engine
 # ---------------------------------------------------------------------------
 
+#: How long an EMPTY sentence's placeholder clip is, in seconds. ONE number for
+#: every engine, declared here because `Engine._write_silence` is what reads it
+#: and two engines writing two lengths would put two different holes in one
+#: book's timeline. 0.1 s is e2a's, ported unchanged
+#: (`worker_core._write_empty_sentence_silence`); it is deliberately small
+#: enough that the FLAC lands under the 1024-byte resume floor.
+EMPTY_SENTENCE_SILENCE_SEC = 0.1
+
 
 @runtime_checkable
 class Engine(Protocol):
@@ -745,6 +753,36 @@ class Engine(Protocol):
     def convert_batch(self, items: Sequence[Tuple[int, str]]) -> Sequence[bool]:
         """Render many chunks. One bool per item, in order."""
 
+    def _write_silence(self, sentence_number: int) -> bool:
+        """Write `EMPTY_SENTENCE_SILENCE_SEC` of digital silence at this index,
+        through the SAME chunk writer `convert` uses. True on success.
+
+        A REQUIRED MEMBER, and the leading underscore is history rather than
+        privacy: `render/worker.py:_write_empty_sentence_silence` has called it
+        on whatever engine it was handed since the e2a port, and `run_worker`'s
+        own docstring has listed it among the methods an engine must offer -
+        while this protocol declared it nowhere, so nothing ever compared the
+        requirement to the implementations. Only Orpheus had one. An empty
+        sentence (Studio's "Correct Sentences" blanking a row, or any
+        whitespace-only row in session state - `render/retake.py` coerces with
+        `str(v)` and accepts '') therefore reached a Higgs engine as an
+        `AttributeError`, was caught by the take's own `except Exception`, and
+        ABORTED THE TAKE AT THAT CHUNK: every later chunk went unrendered,
+        reported as an error nobody could act on.
+
+        WHY THE FILE MUST EXIST AT ALL. Sentence indices are POSITIONAL -
+        assembly and `detect_completed_chapters` require `{i}.<format>` for
+        every index - so skipping an empty sentence without writing anything
+        leaves a permanently un-assemblable hole. The clip is deliberately
+        below the 1024-byte resume floor, so the index is re-listed and
+        rewritten on every later pass; that rewrite is idempotent and cheap,
+        and assembly correctness needs only the file.
+
+        THROUGH THE ENGINE'S OWN WRITER, never a second `sf.write`: one
+        subtype (PCM_16) and one container on every path, which is what stops
+        the mixed bit depths ffmpeg's concat demuxer drops frames on.
+        """
+
     def generate_batch_stream(self, texts: Sequence[str], voices, stream_rows,
                               on_chunk, on_row, should_stop=None) -> None:
         """In-memory batch render with per-row streaming.
@@ -769,6 +807,7 @@ __all__ = [
     'ClipsVoice',
     'Codec',
     'DescriptionVoice',
+    'EMPTY_SENTENCE_SILENCE_SEC',
     'Engine',
     'ReferenceClip',
     'ServedBackend',
