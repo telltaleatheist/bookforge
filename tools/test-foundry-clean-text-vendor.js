@@ -83,14 +83,46 @@ const path = require('path');
 const BOOKFORGE_ANCHOR = '0f962d5f';
 
 /**
- * The Foundry commit BookForge's `foundry-app/` snapshot is taken at.
+ * WHAT TIER 2 IS ASKED ABOUT — Foundry's CURRENT HEAD, resolved at run time.
  *
- * NOT the release tag (`ca7a666`, which only bumps package manifests). It is the
- * app snapshot, because that is what this repository actually carries, and the
- * question tier 2 answers is "does the code we ship still hold the rules we
- * handed over" rather than "was the copy correct on the day it was made".
+ * THIS WAS A FIXED COMMIT UNTIL 2026-09-13 AND THAT WAS THE BUG. It read
+ * `const FOUNDRY_SHIPPED = '9f4ee4e'` — a snapshot from 2026-09-05 — and by the
+ * time anyone looked, Foundry was **46 commits past it, 7 of them touching
+ * `src/clean/`**. So a keeper whose stated question is "does the code we ship
+ * still hold the rules we handed over" was answering it about an engine nobody
+ * runs, and passing.
+ *
+ * It passed through a real divergence. Foundry's `SPOKEN_AS_WORD` lost `covid`
+ * (its copy was hard-coded; ours reads `caps_acronyms.json`), so `foundry
+ * clean-text` ACCEPTED an edit spelling COVID letter by letter while this
+ * repo's identical pass REFUSED it — two implementations, both stamping `n6`,
+ * disagreeing about what the validator forbids. This keeper existed precisely
+ * to catch that and could not see it.
+ *
+ * THE DIAGNOSIS, from the Foundry session that found the second half: a keeper
+ * anchored to a commit **is the same shape as the bug it guards** — a copy of a
+ * fact that has to be kept current by hand, so it drifts silently, and it is
+ * most silent exactly when it matters. Pinning was never the mechanism; the
+ * DECISION is (see "A REGENERATED PIN IS A DECISION" above). A fixed anchor
+ * removed the moment at which anyone decides.
+ *
+ * So the anchor moves on its own and the pins do not. When Foundry changes a
+ * vendored file this keeper now FAILS — which is the point, and the failure is
+ * the prompt to read their commit and answer the only question that matters:
+ * a port, or a rule move? A rule move means the corpora and the renders
+ * normalize differently and `NORMALIZER_VERSION` should have moved with it.
+ *
+ * `FOUNDRY_HEAD_OVERRIDE` pins it back for one run, to bisect a failure or to
+ * check a specific commit. It is deliberately an env var and not a constant:
+ * a constant is what got us here.
  */
-const FOUNDRY_SHIPPED = '9f4ee4e';
+function foundryShipped(repo) {
+  const override = process.env['FOUNDRY_HEAD_OVERRIDE']?.trim();
+  if (override) return override;
+  return execFileSync('git', ['-C', repo, 'rev-parse', '--short', 'HEAD'], {
+    encoding: 'utf8',
+  }).trim();
+}
 
 /** Foundry's two verbatim-copy commits. Tier 1 is asserted at these. */
 const VENDOR_PASS = 'f2e3c2d';
@@ -134,12 +166,19 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'fb55a0d3385aa19e597bbb12e01a7c85eafb7888dfd258465880db3e8c63d8e0',
+      sha256: 'aae1de6d6955b555c3c944f43432226eb4c02286be66cb8035851217f8f03205',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
         + 'document tree, replaced by src/clean/run.ts); the unreferenced `droppedWords` and '
-        + '`READING_STRUCTURE` deleted. No validator and no disposition moved.',
+        + '`READING_STRUCTURE` deleted. REPINNED 2026-09-13 at foundry HEAD for cd89ee7, which '
+        + 'made clean-text ask in PARALLEL (translate\'s worker pool, DEFAULT_CLEAN_CONCURRENCY '
+        + '= 4). VERIFIED a port and not a rule move rather than taken on the commit message: '
+        + 'its three hunks touch only the constant block after NORMALIZER_VERSION and the body '
+        + 'of `askAboutEach`, which is the DRIVER. No rule table, no validator, no '
+        + '`ruleRewrites`/`settleByRules`/`validateNumberEdits` logic is in the diff. '
+        + 'Temperature stays 0 and the retry rules re-ask at the same settings, so the requests '
+        + 'overlap and the text does not. No validator and no disposition moved.',
     },
   },
   {
@@ -147,11 +186,20 @@ const FILES = [
     theirs: 'src/clean/tts-spoken-forms.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'c09e87644d030de2503132efd7466e51eaa559a8a72639dbf6c1164c6eb43b9a',
-      why: 'the English word list is IMPORTED rather than read with `fs` + `__dirname`. Electron '
-        + 'ships a directory and foundry ships ONE FILE, so a readFileSync beside the module '
-        + 'names a path that exists in the checkout and nowhere on a user\'s machine. The '
-        + 'laziness and the named refusal are kept. No reading table moved.',
+      sha256: '9d7282b611effbef1c11e251db8a64d1b5a174677ff89d819dbc6c435a966d33',
+      why: 'the English word list is IMPORTED rather than read with `fs` + `__dirname` '
+        + '(electron ships a directory, foundry ships ONE FILE, so a readFileSync beside the '
+        + 'module names a path that exists in the checkout and nowhere on a user\'s machine); '
+        + 'the laziness and the named refusal are kept. REPINNED 2026-09-13 at foundry 7fbe763, '
+        + 'which added `covid` to SPOKEN_AS_WORD. That is a CONFORMANCE fix, not a rule move: '
+        + '`n6` has meant "with COVID" since BookForge 77ea83d0 (2026-09-06) created '
+        + 'caps_acronyms.json as THE ONE list, and foundry\'s hard-coded copy — ported one day '
+        + 'EARLIER — was behind the spec it already claimed. Until this fix the two '
+        + 'implementations of one pass, both stamping n6, disagreed about what the validator '
+        + 'refuses: foundry ACCEPTED an edit spelling COVID letter by letter and BookForge '
+        + 'refused it. So NORMALIZER_VERSION correctly did NOT move — a bump would assert the '
+        + 'rules changed when what changed is that one copy was wrong about rules that did not. '
+        + 'No reading table moved.',
     },
   },
   {
@@ -307,6 +355,7 @@ function main() {
   // would otherwise read as thirteen missing files, which names the wrong
   // problem: a shallow clone or an unfetched Foundry is not a drifted copy.
   requireCommit(bookforge, BOOKFORGE_ANCHOR, 'BookForge');
+  const FOUNDRY_SHIPPED = foundryShipped(foundry);
   for (const rev of [VENDOR_PASS, VENDOR_LEAVES, FOUNDRY_SHIPPED]) {
     requireCommit(foundry, rev, 'Foundry');
   }
