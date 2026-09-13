@@ -196,9 +196,39 @@ export function vlmReadingsPath(pdfSha256: string): string {
   );
 }
 
-/** foundry's completion marker, beside the readings it belongs to. */
+/**
+ * foundry's completion marker for THIS bank: `<bank>.completed.json`.
+ *
+ * THIS READ THE WRONG PATH UNTIL 2026-09-13, and the consequence was silent. It
+ * returned `<dirname>/completed.json` — foundry's own pre-`bc12296` convention —
+ * while foundry has written `<bank-without-.jsonl>.completed.json` since. So the
+ * marker was NEVER FOUND, `completedAt` was permanently null, and a finished
+ * conversion read as an interrupted one: `defaultReadingsChoice` opened on
+ * Fresh instead of Reuse and offered to re-read a book that was already done.
+ * The refusals below are careful to tell "cannot read this file" from "no run
+ * completed" — and the path bug quietly produced the second answer for every
+ * book, which is the failure they exist to prevent.
+ *
+ * WHY FOUNDRY MOVED IT, because the reason is the rule and not a detail
+ * (`foundry/src/vlm/readings.ts:296-314`): naming the marker after its
+ * DIRECTORY assumes a run owns that directory, and that is false the moment two
+ * books share one — which is what the app does, banking every book into a single
+ * `readings/` directory. Measured on a real install: one marker stamped by
+ * whichever conversion finished last, sitting beside two banks; asked about the
+ * other book it answered with the first book's marker, and the run archived a
+ * complete bank and re-read a hundred pages.
+ *
+ * Naming it after the bank makes the pairing structural, and it degrades the one
+ * safe way: a marker that is not found is a RESUME, and a resume with nothing
+ * missing reads no pages and costs no GPU.
+ *
+ * DERIVED THE SAME WAY FOUNDRY DERIVES IT, deliberately — strip a trailing
+ * `.jsonl` case-insensitively and append `.completed.json`. `path.dirname` +
+ * a constant is what was wrong here; anything that is not foundry's own
+ * transformation of the bank's path will drift from it again.
+ */
 function completionMarkerPath(readingsPath: string): string {
-  return path.join(path.dirname(readingsPath), 'completed.json');
+  return `${path.resolve(readingsPath).replace(/\.jsonl$/i, '')}.completed.json`;
 }
 
 /**

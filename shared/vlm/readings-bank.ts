@@ -29,13 +29,28 @@
  * queue and theres a cache present, it should ask if i want to use the cached
  * path or overwrite it/delete it before starting."
  *
- * ── Nothing is deleted ──────────────────────────────────────────────────────
+ * ── The old bank outlives its replacement ───────────────────────────────────
  *
- * "Read all pages fresh" ARCHIVES: foundry rotates the bank into
- * `archived-<timestamp>/` beside it and reads the book again. A page costs
- * GPU-minutes and a book costs hours, so the answers stay on disk where a person
- * can find them. What the user gets is the live bank gone, which is the whole of
- * what "clear the cache" has to mean for the trap to be gone.
+ * "Read all pages fresh" reads the book again, and the answers a page cost
+ * GPU-minutes to produce are not thrown away while that happens.
+ *
+ * HOW, CORRECTED 2026-09-13. This said foundry "ARCHIVES: rotates the bank into
+ * `archived-<timestamp>/` beside it", and the user-facing sentence below said
+ * the banked answers "are archived beside it, never deleted". Both were true of
+ * foundry before `e27a174` and are false now: there is no `archived-` directory
+ * anywhere in foundry (grep returns only the historical prose and an unrelated
+ * EPUB rotation), and `swapPendingIntoPlace` DESTROYS the old bank by rename.
+ *
+ * What replaced archiving is better and the reason the guarantee still holds:
+ * a fresh read writes into a PENDING bank beside the live one, and the live one
+ * is only replaced once its replacement is complete — foundry's own commit says
+ * it, "a bank is never destroyed until its replacement exists". So the old
+ * answers survive exactly as long as they are the only answers, which is the
+ * property that matters, and an interrupted fresh read costs nothing because
+ * the pending is resumable.
+ *
+ * The user-visible promise is therefore unchanged and the mechanism is not.
+ * This block describes the mechanism, so it had to move.
  *
  * This module is PURE — main measures the bank, the renderer shows the dialog,
  * and both read the same sentences from here so they cannot describe the same
@@ -250,9 +265,9 @@ export function describeReadingsDecision(
   }
   if (choice === 'fresh') {
     return (
-      `Reading all pages fresh, as chosen when this job was added to the queue: the ${bank.pages} `
-      + `banked page answer(s) at ${bank.path} are archived beside it and the vision model reads `
-      + 'the whole book again.'
+      `Reading all pages fresh, as chosen when this job was added to the queue: the vision model `
+      + `reads the whole book again into a new bank beside the ${bank.pages} banked page answer(s) `
+      + `at ${bank.path}, which stay until the new one is complete.`
     );
   }
   return (
