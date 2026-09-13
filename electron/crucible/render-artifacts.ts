@@ -54,17 +54,21 @@
  * stdout guard events feed — so there is one shape of "what happened to this
  * chunk" whichever machine rendered it.
  *
- * **KNOWN GAP, 2026-09-13, and it is a PIN and not a bug.** Crucible's server
- * forwards narrator's verdict as `guard` on the `chunk` frame (crucible commit
- * b232e3a, `docs/PHASE6-REMOTE-RENDER.md` section 3) and its TypeScript SDK
- * reads it. That commit is **36 commits past v0.4.0 and is in no release
- * tarball**: `@crucible/client` v0.4.0 — the newest published, and what
- * package.json pins — builds `ChunkData` in `readChunk()` from a fixed field
- * list with no `guard` in it, so the field is discarded inside the SDK before
- * this file can see it. The ledger therefore records every remote chunk as
- * unknown for the named reason `sdk-drops-the-field`, which is not silent and is
- * not `clean`. Unblocking it is a release of `@crucible/client` containing
- * b232e3a plus a pin bump — no change to this file.
+ * **THE GAP THAT WAS HERE IS CLOSED, 2026-09-13.** Crucible's server forwards
+ * narrator's verdict as `guard` on the `chunk` frame (crucible `b232e3a`,
+ * `docs/PHASE6-REMOTE-RENDER.md` section 3) and its SDK reads it — but that
+ * commit was in no release tarball, so `@crucible/client` v0.4.0 built
+ * `ChunkData` from a fixed field list with no `guard` and the field was
+ * discarded INSIDE the SDK before this file could see it. Every remote chunk was
+ * recorded unknown for the named reason `sdk-drops-the-field`: not silent, and
+ * not `clean`.
+ *
+ * v0.5.0 carries it, package.json pins v0.5.0, and the installed `readChunk()`
+ * was re-read to confirm rather than assumed. So a remote render now reports
+ * REAL verdicts, and `sdk-drops-the-field` becomes what it was always meant to
+ * be — the answer for a checkout pinned to an older client, which
+ * `tools/test-chunk-guard-ledger.js` measures on every run rather than trusting
+ * this paragraph.
  */
 
 import * as fsSync from 'fs';
@@ -197,15 +201,18 @@ export async function downloadRenderArtifacts(
       if (event.event === 'chunk') {
         // THE REMOTE FEED INTO THE ONE SINK.
         //
-        // The cast is the whole of the known gap documented in the file header:
-        // the pinned SDK's `ChunkData` has no `guard` member, because
-        // `readChunk()` builds a fresh object from a fixed field list and the
-        // server's `guard` never survives it. Passing the event's data through
-        // as a record is what lets the ledger see whether the key is there at
-        // all — which is the distinction that matters, since an ABSENT key
-        // ("nobody between us and the server speaks this field") and a NULL one
-        // ("the server looked and narrator did not say") are different news and
+        // The cast passes the event's data through AS A RECORD, which is what
+        // lets the ledger see whether the `guard` key is there at all — and that
+        // is the distinction that matters, because an ABSENT key ("nobody
+        // between us and the server speaks this field") and a NULL one ("the
+        // server looked and narrator did not say") are different news, and
         // neither of them is "clean".
+        //
+        // It is written this way ON PURPOSE and not because the pinned SDK lacks
+        // the field. It did until v0.5.0 and no longer does; this still reads the
+        // key rather than the typed member, so a checkout pinned to an older
+        // client reports `sdk-drops-the-field` instead of silently reporting
+        // nothing.
         //
         // This is deliberately not a `guard`-shaped interface declared on this
         // side. The verdict's vocabulary belongs to narrator's retake ladder and
