@@ -1583,16 +1583,21 @@ class HiggsV3MlxEngine:
         per item, in that order.
 
         SERIAL at the default ceiling of 1 (see `BATCH_SIZE`), which is what an
-        unconfigured process does. Above it the call becomes consecutive
-        memory-budgeted slices (`_mlx_batch_groups`), each generated in one
-        left-padded batch and then decoded and written per row.
+        unconfigured process does: chunk by chunk through `convert`, the one
+        path that renders and writes a single row. Above it this method is
+        nothing but a SINK on `render_many` - the driver runs the slices, the
+        ladder and the retake rounds, and every chunk it decides is written to
+        `<sentences_dir>/<i>.<audio_format>` through the one shared writer.
 
-        THE LENGTH GUARD'S RETAKES RIDE THE SAME BATCHES: a row whose take 0 is
-        off-length is recorded rather than re-rendered on the spot, and after
-        the last slice every recorded retake renders together
-        (`_render_retake_rounds`). Every row of `items` is still decided before
-        this returns - the deferral is inside the call, exactly as Orpheus's
-        `_render_deferred_resplits` defers inside its own batch.
+        THAT SPLIT IS NEW ON 2026-09-13 AND IS PLUMBING ONLY. Owen ruled that
+        the model and its inference own the guard AND the retake decision, and
+        that a rendered chunk has to be able to travel to another machine. The
+        driver used to live HERE, below the file-writing layer, so the serve
+        world - which has a pipe and no `sentences_dir` - could not reach the
+        ladder at all and rendered through a bare `render_audio`: one take, no
+        band, no re-roll, no split. Lifting the driver above the writer is what
+        lets both worlds share it (crucible/docs/PHASE6-REMOTE-RENDER.md
+        sections 0 and 2). Not one guard decision moved with it.
 
         A GENERATION FAILURE IS LOUD. It raises, naming the slice's width and
         its row indices on top of the original error, exactly as `convert`
@@ -1611,22 +1616,143 @@ class HiggsV3MlxEngine:
         items = [(int(index), text) for index, text in items]
         if int(self.BATCH_SIZE or 1) <= 1 or not items:
             return [self.convert(index, text) for index, text in items]
+        results = {}
+        # DRAINED, not sampled. `render_many` is a generator, so no row renders
+        # until something pulls on it and the LAST slice's retake rounds only
+        # run because this loop runs to exhaustion - the same "every row of
+        # `items` is decided before this returns" the method has always kept.
+        for index, audio, _verdict in self.render_many(items):
+            results[index] = self._write_sentence(index, audio)
+        return [results.get(index, False) for index, _text in items]
 
-        # The control-token allowlist, per row, BEFORE any prefill - the same
-        # refusal `render_audio` makes, made where it does not take a batch down.
+    # -- the driver, above the files ----------------------------------------
+
+    def render_many(self, rows, in_flight=None):
+        """THE GUARDED DRIVER, AND NOT ONE FILE WRITTEN: `(index, audio,
+        verdict)` for every chunk in `rows`, yielded the moment the ladder
+        decides it.
+
+        Owen's ruling of 2026-09-13 - the model and its inference own the guard
+        and the retake decision, and the chunks have to be able to travel back
+        from another computer. Until then this backend had two rendering worlds
+        and only one of them was guarded: `convert_batch` ran `GuardPlan` and
+        wrote the sentence files in the same method, while `narrator.serve` (and
+        so Crucible, which drives it) came in through a bare `render_audio` and
+        got one unjudged take. The guard was unreachable without also acquiring
+        a `sentences_dir`. This generator IS that driver with the writer taken
+        off it; `convert_batch` is now one of its two sinks and the serve world
+        is the other. crucible/docs/PHASE6-REMOTE-RENDER.md sections 0 and 2.
+
+        SAME `GuardPlan`, same `PaceTracker`, same bands, same `MIN_GUARD_CHARS`
+        rule, same round ordering, same accept rule, same batch-seed rule for a
+        re-roll. A changed decision here would have to be re-measured against the
+        Mistborn pause map before anyone could trust it, and a plumbing change
+        does not (PHASE6 section 8). `verdict` is `GuardPlan.verdict(index)` -
+        the ladder's own conclusion plus its take records verbatim - because a
+        driver shipping a chunk over a socket has no shared stderr for its
+        caller to scrape the `[HIGGS3][HIGGS_GUARD_EVENT]` lines off. The lines
+        are still printed; the records are now also readable as data.
+
+        `rows` is `(index, text)` in BOOK ORDER and is MATERIALISED, unlike the
+        served arm's lazily-pulled `convert_many`: this backend slices by prompt
+        POSITIONS (`_mlx_batch_groups`), so it has never been able to choose a
+        width without the whole list in hand.
+
+        THE MARKER STRIP IS MADE HERE, AT THE LADDER'S DOOR, ONCE PER CHUNK and
+        whatever the width - the position `convert_batch` used to make it from,
+        and the position `HiggsV3Engine.convert_many` makes it from on the
+        served arm. `render_audio` strips again at the model boundary and is
+        idempotent about it, but the GUARD counts CHARACTERS: a chunk still
+        carrying the packer's `[break]` / `[heading]` would be judged, and
+        split, on text the model is never going to be given. The control-token
+        allowlist is checked here for the same reason `convert_batch` checked it
+        here - BEFORE any prefill, where a bad row does not take a batch down.
+
+        `in_flight`, when given, is the caller's list of chunk indices with a
+        render outstanding right now, kept exact the way
+        `HiggsV3Engine.convert_many` keeps it so a cooperative stop knows
+        precisely which rows were running. A chunk joins it when its first
+        render is issued and leaves it when the ladder DECIDES it, so a chunk
+        part-way up the ladder - re-rolling, or waiting on its split halves -
+        stays named. It is the caller's list and is mutated in place.
+
+        THIS ARM NEVER YIELDS `audio is None`. The shared contract with the
+        served arm says a None means that chunk failed; here a slice that fails
+        raises instead, naming its width and its rows (`_batch_failure`),
+        because Owen struck the per-item retry on 2026-09-05 and a batch that
+        failed for a reason batching CAUSED is precisely the fact a retry hides.
+
+        NOT THREAD-SAFE, and deliberately not made so: `GuardPlan` is one
+        batch's on one thread, and every `add` / `round` / `offer` / `finished`
+        below happens on the thread that drives this generator. The only shared,
+        locked thing is the engine's one `PaceTracker`.
+        """
+        held = [] if in_flight is None else in_flight
+        # ONE STRIP, ONE ALLOWLIST CHECK, BOTH WIDTHS - see the docstring. This
+        # is `convert_batch`'s own loop, moved up with the driver and now
+        # covering the serial arm too, which used to leave the refusal to
+        # `render_audio` and so refused an empty chunk one rung later.
         cleaned = []
-        for index, text in items:
-            # The marker strip, per row, at the model boundary - the same one
-            # render_audio makes. Raw chunk text carries the packer's `[break]`
-            # / `[heading]`, and a prompt built from it READS them.
+        for index, text in rows:
             clean = self._clean_sentence_for_tts(text)
             if not clean:
                 raise ValueError(
-                    f'HiggsV3MlxEngine.convert_batch(): chunk {index} has no text '
+                    f'HiggsV3MlxEngine.render_many(): chunk {index} has no text '
                     f'once its markers are stripped ({(text or "").strip()!r})')
             v3_served.validate_control_tokens(clean)
-            cleaned.append((index, clean))
+            cleaned.append((int(index), clean))
+        if not cleaned:
+            return
+        # ONE PLAN FOR THE WHOLE CALL, never one per chunk: the band re-centres
+        # on the takes already shipped (Owen, 2026-09-08, "the calculated and
+        # recorded characters per second"), and a plan per chunk would throw the
+        # book's own pace away between every sentence.
+        plan = truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
+                                    base_seed=self.config.seed,
+                                    tracker=self._pace_tracker())
+        if int(self.BATCH_SIZE or 1) <= 1:
+            yield from self._render_many_serial(plan, cleaned, held)
+            return
+        yield from self._render_many_rounds(plan, cleaned, held)
 
+    def _render_many_serial(self, plan, cleaned, held):
+        """`render_many` at the shipped default width of 1: one chunk at a
+        time, the ladder walked depth-first by taking `next_request()` every
+        time. `cleaned` is `(index, text)` already through the marker strip.
+
+        This is the loop `truncation.render_guarded` runs for `convert`, written
+        out rather than called for one reason: that function returns the audio
+        alone and drops the verdict, which is the whole thing this door exists
+        to carry. The renders are the same renders in the same order - a solo
+        `render_audio` per take, never a one-row slab, because a batch of one is
+        not byte for byte the single-row path and nothing on this backend widens
+        on its own (`generate_batch_stream`, rung 2, states the same rule).
+        """
+        for index, text in cleaned:
+            plan.add(index, text)
+            if index not in held:
+                held.append(index)
+            while True:
+                request = plan.next_request()
+                if request is None:
+                    break
+                plan.offer(request, self.render_audio(
+                    request.text, seed=request.seed, index=request.index))
+            yield from self._decided(plan, held)
+
+    def _render_many_rounds(self, plan, cleaned, held):
+        """`render_many` above width 1: consecutive memory-budgeted slices
+        (`_mlx_batch_groups`), each generated in one left-padded batch and
+        decoded per row, then the guard's retakes a ROUND at a time. `cleaned`
+        is `(index, text)` already through the marker strip and the allowlist.
+
+        THE LENGTH GUARD'S RETAKES RIDE THE SAME BATCHES: a row whose take 0 is
+        off-length is recorded rather than re-rendered on the spot, and after
+        the last slice every recorded retake renders together
+        (`_render_retake_rounds`). Every row is still decided by the time this
+        generator is exhausted - the deferral is inside the call, exactly as
+        Orpheus's `_render_deferred_resplits` defers inside its own batch.
+        """
         # Built ONCE for the whole call, because the SLICING needs the prompt
         # POSITIONS: how deep a batch can get is its prompt plus its frame cap,
         # and a prompt carries one position per delayed reference code row.
@@ -1637,21 +1763,20 @@ class HiggsV3MlxEngine:
                    for (index, clean), (_embeds, positions)
                    in zip(cleaned, prompts)]
 
-        results = {}
         # THE GUARD'S RETAKES ARE BATCHED, NOT SERIAL (Owen, 2026-09-08: "take
         # note of which ones we need to re-render and add them to the task list,
         # and batch them at the end. instead of serializing every single one").
         # A batch of 32 rows costs about the wall time of ONE row here, so a
         # solo re-roll costs a whole batch: his Shift slice had 4 re-rolls in
         # ~28 chunks. The ladder is unchanged - `GuardPlan` is the same policy,
-        # driven a round at a time (truncation.py, "ONE POLICY, TWO DRIVERS").
-        plan = truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
-                                    base_seed=self.config.seed,
-                                    tracker=self._pace_tracker())
+        # driven a round at a time (truncation.py, "ONE POLICY, THREE DRIVERS").
         groups = self._mlx_batch_groups(entries)
         for group_no, (bucket, depth) in enumerate(groups, 1):
             texts = [e[1] for e in bucket]
             caps = [e[3] for e in bucket]
+            for entry in bucket:
+                if entry[0] not in held:
+                    held.append(entry[0])
             try:
                 rows_per_row = self._generate_delayed_rows_batch(
                     texts, caps, self._seed_for(bucket[0][0]),
@@ -1659,34 +1784,44 @@ class HiggsV3MlxEngine:
                     group_no=group_no, group_count=len(groups))
             except Exception as bucket_err:
                 raise self._batch_failure(bucket, depth, bucket_err) from bucket_err
-            for entry, rows in zip(bucket, rows_per_row):
+            for entry, codes in zip(bucket, rows_per_row):
                 # The batched take is take 0 of the ladder: a row inside the
-                # band is written as decoded, a row that stopped early or ran on
+                # band is shipped as decoded, a row that stopped early or ran on
                 # is RECORDED and rendered with the rest of this call's retakes.
-                plan.add(entry[0], entry[1], first_take=self.codec().decode(rows))
-            self._ship_guarded(plan, results)
-        self._render_retake_rounds(plan, results)
-        return [results.get(index, False) for index, _text in items]
+                plan.add(entry[0], entry[1], first_take=self.codec().decode(codes))
+            yield from self._decided(plan, held)
+        yield from self._render_retake_rounds(plan, held)
 
-    def _ship_guarded(self, plan, results: dict) -> None:
-        """Every chunk the ladder has decided since the last call, written to
-        its sentence file. One writer for every path (`_write_sentence`)."""
+    def _decided(self, plan, held):
+        """Every chunk the ladder has decided since the last call, with the
+        verdict it reached, and its index struck off `held`.
+
+        `GuardPlan.verdict` POPS - a book is not a small number of chunks and
+        the records are kept only until the driver has them - so this is the one
+        place that reads it, immediately after the `finished()` that produced it.
+        """
         for index, audio, _clean in plan.finished():
-            results[index] = self._write_sentence(index, audio)
+            if index in held:
+                held.remove(index)
+            yield index, audio, plan.verdict(index)
 
     #: A round advances every waiting chunk one rung, and the ladder is at most
     #: two rungs deep at each of `MAX_DEPTH` + 1 levels. A run past this is a
     #: ladder that does not terminate, which is a bug to see, not to survive.
     MAX_RETAKE_ROUNDS = 2 * (truncation.MAX_DEPTH + 1)
 
-    def _render_retake_rounds(self, plan, results: dict) -> None:
+    def _render_retake_rounds(self, plan, held):
         """The guard's retakes for this call, a ROUND at a time, each round in
-        one batch.
+        one batch; every chunk a round decides is yielded as
+        `(index, audio, verdict)`.
 
         Round 1 is every off-length row's re-roll; round 2 is the split halves
         of the rows the re-roll did not fix, FLATTENED ACROSS CHUNKS so three
         chunks' six halves are one batch, not six solo renders; and so on to
         `MAX_DEPTH`. Rows land by index, so the ship order is unchanged.
+
+        Nothing joins `held` here: a chunk on a retake round has been in flight
+        since its take 0 and only leaves when `_decided` strikes it off.
         """
         for round_no in range(1, self.MAX_RETAKE_ROUNDS + 1):
             requests = plan.round()
@@ -1697,7 +1832,7 @@ class HiggsV3MlxEngine:
             audio = self._render_requests(requests)
             for request, take in zip(requests, audio):
                 plan.offer(request, take)
-            self._ship_guarded(plan, results)
+            yield from self._decided(plan, held)
         raise RuntimeError(
             f'Higgs v3 MLX: the length guard asked for a {self.MAX_RETAKE_ROUNDS + 1}th '
             f'retake round ({plan.pending} chunk(s) still on the ladder); the ladder '

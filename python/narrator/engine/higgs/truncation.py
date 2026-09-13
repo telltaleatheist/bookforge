@@ -707,7 +707,21 @@ class GuardPlan:
         self.base_seed = base_seed
         self.tracker = tracker
         self.fixed = (float(max_chars_per_sec), float(min_chars_per_sec))
-        self.on_event = on_event
+        #: THE EVENT SINK IS WRAPPED, NOT REPLACED. `_record` collects every
+        #: event this plan emits, keyed by chunk, and then passes it to the
+        #: caller's sink unchanged - so the `[HIGGS3][HIGGS_GUARD_EVENT]` lines
+        #: a driver has always printed keep being printed, byte for byte, while
+        #: the same records become readable as DATA through `verdict()`.
+        #:
+        #: Owen's ruling of 2026-09-13 is why: the model and its inference own
+        #: the guard AND the decision, so a driver that ships a chunk over a
+        #: wire has to be able to ship the verdict with it. Scraping a log line
+        #: works when the renderer and its caller share a stdout; it does not
+        #: work over a socket. See crucible/docs/PHASE6-REMOTE-RENDER.md.
+        self._sink = on_event
+        self.on_event = self._record
+        self._records: dict = {}
+        self._verdicts: dict = {}
         self._tasks: dict = {}
         self._added = 0
         self._finished: List[tuple] = []
@@ -716,6 +730,67 @@ class GuardPlan:
         #: twice; the round driver takes them all at once, which is the same
         #: rule with a wider hand.
         self._issued: set = set()
+
+    # -- the verdict, as data -----------------------------------------------
+    def _record(self, record: dict) -> None:
+        """Collect one guard event, then emit it unchanged.
+
+        NOTHING HERE DECIDES ANYTHING. This is the same record the log line is
+        built from, kept instead of only printed.
+        """
+        index = record.get('index')
+        if index is not None:
+            self._records.setdefault(int(index), []).append(record)
+        self._sink(record)
+
+    @staticmethod
+    def _leaves(task) -> int:
+        """How many text units this chunk was finally rendered as: 1 unless the
+        ladder split it, and the product of every split below that."""
+        if not task.children:
+            return 1
+        return sum(GuardPlan._leaves(child) for child in task.children)
+
+    def _build_verdict(self, task) -> dict:
+        """What the guard decided about one chunk, for a driver to ship beside
+        the audio. PHASE6-REMOTE-RENDER.md section 3.
+
+        `takes` is the event records VERBATIM - the evidence, unsummarised,
+        because a client that wants to know why can read it and a client that
+        does not can read `verdict` alone. A clean take 0 emits no event at all
+        (`_LadderTask.offer` finishes before it records one), so `takes` is
+        empty and `verdict` is `clean`: the common case costs one empty list.
+        """
+        records = self._records.get(task.index, [])
+        max_edge, min_edge = self.edges()
+        band = {
+            'max_chars_per_sec': max_edge,
+            'min_chars_per_sec': min_edge,
+            'reference': (round(self.tracker.reference, 2)
+                          if self.tracker is not None else None),
+            'observed': self.tracker.observed if self.tracker is not None else None,
+            'warm': self.tracker.warm if self.tracker is not None else None,
+        }
+        return {
+            # The last thing that happened to it, or `clean` when nothing did.
+            # Deliberately the ladder's own vocabulary ('rerolled', 'resplit',
+            # 'accepted-off-length', a side name) rather than a taxonomy
+            # invented here: a word this file does not already emit would be a
+            # word that could drift from what the ladder actually did.
+            'verdict': records[-1].get('action') if records else 'clean',
+            'clean': bool(task.clean),
+            'parts': self._leaves(task),
+            'band': band,
+            'takes': records,
+        }
+
+    def verdict(self, index: int) -> Optional[dict]:
+        """The verdict for a chunk `finished()` has handed back, once.
+
+        POPS. A book is not a small number of chunks and the records are kept
+        only until the driver that asked for them has them.
+        """
+        return self._verdicts.pop(int(index), None)
 
     # -- the band -----------------------------------------------------------
     def edges(self) -> tuple:
@@ -802,6 +877,10 @@ class GuardPlan:
         for path in [p for p in self._tasks if p[:len(root.path)] == root.path]:
             self._issued.discard(path)
             del self._tasks[path]
+        # The chunk failed and will never be finished, so nothing will ever ask
+        # for its verdict. Leaving the records would leak one book's worth.
+        self._records.pop(root.index, None)
+        self._verdicts.pop(root.index, None)
         return root.index
 
     def finish_root(self, task) -> None:
@@ -813,6 +892,8 @@ class GuardPlan:
         if self.tracker is not None and task.clean:
             self.tracker.observe(len((task.text or '').strip()),
                                  float(len(task.audio)) / float(self.sample_rate))
+        self._verdicts[task.index] = self._build_verdict(task)
+        self._records.pop(task.index, None)
         self._finished.append((task.index, task.audio, task.clean))
 
     def finished(self) -> List[tuple]:

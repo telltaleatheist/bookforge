@@ -32,6 +32,9 @@ narrator.engine.registry, so `--fake-engine` with NARRATOR_ENGINE=higgs-v3 gets
 FakeHiggsEngine - 960-sample frames, `pads = False`, whole-row streaming - and a
 protocol test can prove the worker built the engine the environment asked for.
 """
+import json
+import math
+import os
 import time
 
 import numpy as np
@@ -39,6 +42,7 @@ import numpy as np
 from ..engine.log import log
 from ..engine.orpheus.prompt import PromptMixin
 from ..engine.protocol import EdgeFade
+from ..engine.higgs import truncation
 from ..engine.orpheus.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
 
 SAMPLE_RATE = 24000
@@ -101,6 +105,10 @@ class FakeEngine(PromptMixin):
         self.config = config
         self.backend = 'transformers'
         self.voice = (config.voice or 'leah').strip().lower()
+        #: Guard-steering bookkeeping (`_rate_for`). Empty on every path that is
+        #: not a guarded batch, which is what makes the multiplier a no-op there.
+        self._full_text = {}
+        self._attempts = {}
         self.adapter_dir = config.adapter_dir
         self.base_dir = config.base_dir
         self.custom_model_dir = config.model_dir
@@ -354,6 +362,128 @@ class FakeHiggsEngine(FakeEngine):
         text = prompt.split(': ', 1)[-1]
         return list(range(self.frames_for(text) * 8))
 
+    #: How the guard is made to FIRE in a test, deterministically.
+    #:
+    #: `audio_for` is exactly proportional to character count, so every chunk
+    #: this fake renders sits at precisely the same chars/sec and the length
+    #: guard can never fire - which would make a guarded test prove nothing.
+    #: This env var bends one chunk's duration on purpose:
+    #:
+    #:     NARRATOR_FAKE_HIGGS_RATE='{"3": 0.4}'        chunk 3's take 0 is
+    #:                                                  0.4x as long as its text
+    #:                                                  implies; its RE-ROLL
+    #:                                                  lands, so the ladder
+    #:                                                  recovers at rung 2
+    #:     NARRATOR_FAKE_HIGGS_RATE='{"3": [0.4, 0.4]}' take 0 AND the re-roll
+    #:                                                  are bad, so it splits
+    #:
+    #: A list is indexed by attempt, with the last value repeating.
+    #:
+    #: TWO THINGS THIS GETS RIGHT THAT THE OBVIOUS VERSION DOES NOT.
+    #:
+    #: 1. THE ATTEMPT IS COUNTED, NOT READ OFF THE SEED. The first version of
+    #:    this read `seed is None` as "take 0", which is wrong whenever the
+    #:    engine is unseeded: `truncation.reroll_seed` returns None when
+    #:    `base_seed` is None ("None stays None - an unseeded engine samples
+    #:    fresh anyway, which IS the re-roll"), so every retake also looked like
+    #:    take 0 and got bent again. Measured: a scalar 0.4 drove chunk 2 all
+    #:    the way to `accepted-off-length` at MAX_DEPTH instead of recovering on
+    #:    the re-roll it was written to exercise.
+    #:
+    #: 2. IT APPLIES ONLY TO THE TEXT THAT WAS SUBMITTED. A split half carries
+    #:    its parent's `index`, so bending on the index alone would bend every
+    #:    child too and no test could ever say "the split halves came back
+    #:    fine". The table therefore applies only while the text is the one the
+    #:    caller handed in for that index; a half renders at 1.0.
+    RATE_ENV = 'NARRATOR_FAKE_HIGGS_RATE'
+
+    #: THE FAKE'S OWN BAND, and it is not the real one - measured, not assumed.
+    #:
+    #: `audio_for` renders HIGGS_FRAMES_PER_CHAR = 0.34 frames per character at
+    #: 960 samples per frame and 24 kHz, which is 73.53 chars/sec. The real band
+    #: is 14.5-20.0 (`HiggsV3Defaults`). Seeding this fake with the real band
+    #: would put EVERY chunk it renders outside it, so the guard would fire on
+    #: all of them and a test asserting "the guard fired" would prove nothing.
+    #:
+    #: So the band is centred on the fake's own pace and carries the REAL band's
+    #: RATIOS (about 1.17 either side), which makes the multiplier above mean
+    #: the same thing here as it would on a card. Verified: 1.0 -> 73.53 (clean),
+    #: 0.4 -> 183.82 (short), 2.0 -> 36.76 (long). Derived rather than written
+    #: out, so it cannot drift from `frames_for`.
+    _PACE = float(SAMPLE_RATE) / (HIGGS_FRAMES_PER_CHAR * HIGGS_SAMPLES_PER_FRAME)
+    MAX_CHARS_PER_SEC = _PACE * math.sqrt(20.0 / 14.5)
+    MIN_CHARS_PER_SEC = _PACE / math.sqrt(20.0 / 14.5)
+
+    def _rate_table(self) -> dict:
+        raw = (os.environ.get(self.RATE_ENV) or '').strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            # Loud, because a typo here silently turns a guard test into a test
+            # that asserts the guard never fires - which passes.
+            raise ValueError(
+                f'{self.RATE_ENV} is not JSON ({exc}); it maps a chunk index to a '
+                f'duration multiplier or a list of them, e.g. {{"3": [0.4, 1.0]}}'
+            ) from None
+
+    def _rate_for(self, index: int, text: str) -> float:
+        """The duration multiplier for this render, and the bookkeeping that
+        makes the NEXT one different. 1.0 unless a test said otherwise."""
+        entry = self._rate_table().get(str(index))
+        if entry is None:
+            return 1.0
+        if getattr(self, '_full_text', {}).get(index) != text:
+            return 1.0           # a split half: never bent - see the note above
+        attempt = self._attempts.get(index, 0)
+        self._attempts[index] = attempt + 1
+        if not isinstance(entry, list):
+            return float(entry) if attempt == 0 else 1.0
+        return float(entry[min(attempt, len(entry) - 1)])
+
+    def render_many(self, rows, in_flight=None):
+        """THE GUARDED DRIVER, serial - `(index, audio, verdict)` per chunk.
+
+        The same contract the real engines offer (`HiggsV3Engine.render_many`,
+        `HiggsV3MlxEngine.render_many`) and the reason this fake can stand in
+        for them in a test of the SERVE path: Owen ruled on 2026-09-13 that the
+        model and its inference own the guard and the retake decision, so the
+        thing under test is that a guarded chunk reaches the wire WITH its
+        verdict. See crucible/docs/PHASE6-REMOTE-RENDER.md.
+
+        ONE PLAN ACROSS THE WHOLE BATCH, not one per chunk, because the pace
+        tracker re-centres on the chunks already shipped and a plan per chunk
+        would throw that away between every sentence.
+
+        Serial rather than pooled: this fake renders a sine wave, so there is
+        nothing to overlap, and `truncation.py`'s header is explicit that the
+        drivers differ in WHEN renders happen and never in what the ladder
+        decides. `next_request()` one at a time is the depth-first order.
+        """
+        held = [] if in_flight is None else in_flight
+        self._full_text = {}
+        self._attempts = {}
+        plan = truncation.GuardPlan(
+            sample_rate=self.SAMPLE_RATE, base_seed=getattr(self.config, 'seed', None),
+            tracker=truncation.tracker_for(None, self.MAX_CHARS_PER_SEC,
+                                           self.MIN_CHARS_PER_SEC))
+        for index, text in rows:
+            self._full_text[int(index)] = text
+            plan.add(int(index), text)
+            while True:
+                request = plan.next_request()
+                if request is None:
+                    break
+                if request.index not in held:
+                    held.append(request.index)
+                plan.offer(request, self.render_audio(request.text, seed=request.seed,
+                                                      index=request.index))
+            for done_index, audio, _clean in plan.finished():
+                if done_index in held:
+                    held.remove(done_index)
+                yield done_index, audio, plan.verdict(done_index)
+
     def render_audio(self, text: str, seed=None, index: int = 0,
                      should_stop=None) -> np.ndarray:
         """ONE chunk in, one waveform out - the per-chunk entry point EVERY real
@@ -371,7 +501,19 @@ class FakeHiggsEngine(FakeEngine):
         """
         if not (text or '').strip():
             raise ValueError('FakeHiggsEngine.render_audio(): the chunk has no text')
-        return self.audio_for(text)
+        audio = self.audio_for(text)
+        rate = self._rate_for(index, text)
+        if rate == 1.0:
+            return audio
+        # Fewer samples for the same text = a SHORT take (the model stopped
+        # early); more = a LONG one. The waveform is resampled by slicing or
+        # tiling rather than regenerated, so the only thing a test changes is
+        # the duration the guard measures.
+        wanted = max(1, int(round(len(audio) * rate)))
+        if wanted <= len(audio):
+            return audio[:wanted]
+        repeats = int(np.ceil(wanted / len(audio)))
+        return np.tile(audio, repeats)[:wanted]
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:

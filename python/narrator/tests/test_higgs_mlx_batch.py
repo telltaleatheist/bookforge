@@ -628,9 +628,6 @@ class OnRetireTest(unittest.TestCase):
 
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class RetakeBatchTest(unittest.TestCase):
     """The length guard's retakes ride the batches (Owen, 2026-09-08: "batch
@@ -716,3 +713,333 @@ class RetakeBatchTest(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn('Metal out of memory', message)
         self.assertIn('rows [1, 3]', message)
+
+
+# ---------------------------------------------------------------------------
+# THE SERIAL ARM OF THE GUARDED DRIVER: render_many at width 1
+# ---------------------------------------------------------------------------
+# `BATCH_SIZE` defaults to 1 on this backend (see the constant: "Unset means 1 -
+# one row at a time, byte for byte the behaviour that shipped"), so
+# `_render_many_serial` is the arm a Mac actually runs when narrator.serve - and
+# therefore Crucible - asks it to render. Nothing reached it before 2026-09-13:
+# `convert_batch` at a ceiling of 1 short-circuits to `convert` (which drives
+# `truncation.render_guarded`, not this), and no other caller existed - so the
+# driver Owen's ruling lifted above the file-writing layer shipped untested on
+# its own default width.
+#
+# What these prove is the CONTRACT of crucible/docs/PHASE6-REMOTE-RENDER.md
+# sections 2, 3 and 5: one requested index gives exactly one artifact whatever
+# the ladder did to it, the verdict travels with the audio as DATA (a client on
+# the far end of a socket has no shared stderr to scrape the
+# `[HIGGS3][HIGGS_GUARD_EVENT]` lines off), and not one file is written.
+
+
+class _SerialRenders:
+    """`render_audio`, stubbed: one silent waveform per call at a chosen pace.
+
+    THE TRAP THIS EXISTS TO AVOID is the one `serve/fake_engine.py` documents
+    above `_rate_for`: a stub whose audio length is exactly proportional to its
+    character count can NEVER fire the guard, because every take then sits at one
+    identical chars/sec and the band is a ratio test. So the pace is a per-chunk
+    TABLE - chars/sec for take 0, take 1, ... with the last entry repeating - and
+    the guard fires, or does not, because the arithmetic says so.
+
+    TWO RULES, both `_rate_for`'s, both load-bearing:
+      * a SPLIT HALF IS NEVER BENT. Its text differs from the chunk's, so it
+        renders at the clean pace and the split rung terminates - a table that
+        bent the children too would drive every split to MAX_DEPTH and prove
+        something other than what the test says it proves.
+      * the attempt counter advances only on the chunk's OWN text, so a child
+        render cannot eat the re-roll's entry.
+
+    The waveform is zeros: `truncation.interior_hole_seconds` reports 0.0 for an
+    all-silent take (`len(loud) < 2` - the silence touches both ends, so there is
+    no INTERIOR run), which keeps the hole guard out of the way of the length
+    arithmetic these tests are about.
+    """
+
+    RATE = 24000
+    #: Dead centre of the band `_engine()` builds. That helper gives the config
+    #: 20.0 / 14.5 and a voice with no pace fields, so `truncation.tracker_for`
+    #: seeds the tracker at the geometric mean sqrt(20 x 14.5) = 17.03 and the
+    #: band's edges sit at exactly 20.0 and 14.5 until PACE_WARMUP_CHUNKS (10)
+    #: guarded takes have shipped - which no test here reaches, so the band does
+    #: not move underneath any of them.
+    CLEAN_CPS = 17.0
+    #: Comfortably over the short edge: 40 characters per second of audio is a
+    #: take that stopped less than half way through its text - the Fuhrer
+    #: chunk-19 shape (1,127 characters in 3.0 s) the guard was written for.
+    SHORT_CPS = 40.0
+
+    def __init__(self, cps=None, watch=None):
+        #: {chunk index: [chars/sec per take]}. Absent = clean at every rung.
+        self.cps = {int(k): list(v) for k, v in (cps or {}).items()}
+        #: (index, text, seed) per call, in call order.
+        self.calls = []
+        #: (index, text, in-flight snapshot) per call, when `watch` was given.
+        self.in_flight_at = []
+        self._watch = watch
+        self._attempts = {}
+        self._full_text = {}
+
+    def __call__(self, text, seed=None, index=0):
+        if self._watch is not None:
+            self.in_flight_at.append((index, text, list(self._watch)))
+        self.calls.append((index, text, seed))
+        # Take 0 always comes first and always carries the whole chunk, so the
+        # first text seen for an index IS that chunk's text; anything else is a
+        # split half.
+        first = self._full_text.setdefault(index, text)
+        table = self.cps.get(index)
+        if table is None or text != first:
+            rate = self.CLEAN_CPS
+        else:
+            attempt = self._attempts.get(index, 0)
+            self._attempts[index] = attempt + 1
+            rate = float(table[min(attempt, len(table) - 1)])
+        return np.zeros(int(len(text.strip()) / rate * self.RATE),
+                        dtype=np.float32)
+
+
+def _serial_engine(renders) -> HiggsV3MlxEngine:
+    """`_engine(ceiling=1)` wired for `render_many`'s serial arm and nothing else.
+
+    That arm touches exactly four collaborators - the marker strip, the
+    control-token allowlist, the pace tracker and `render_audio` - so the two
+    things it must NOT touch are booby-trapped rather than left to chance: a
+    batch call is an AssertionError (nothing on this backend widens on its own;
+    `_render_many_serial`'s docstring states the rule and `generate_batch_stream`
+    rung 2 states it again), and the writer is a mock every test below asserts
+    was never called.
+    """
+    engine = _engine(ceiling=1, budget=42.0)
+    # A REAL base seed, so the re-roll rung asks for a seed no take 0 in this
+    # book used and a test can name it. `_engine()` leaves it None, which is the
+    # unseeded-engine case where `reroll_seed` stays None.
+    engine.config.seed = 1234
+    engine.render_audio = renders
+    engine._write_sentence = mock.Mock(
+        side_effect=AssertionError('render_many wrote a file'))
+    engine._generate_delayed_rows_batch = mock.Mock(
+        side_effect=AssertionError('the serial arm built a batch'))
+    return engine
+
+
+def _chunk_text(tag: str) -> str:
+    """Seven sentences, 272 characters - over MIN_GUARD_CHARS (so BOTH edges of
+    the band apply, not the short side alone) and splittable into 140 + 131,
+    both over MIN_SPLIT_CHARS. Shaped like RetakeBatchTest.TEXTS, for the same
+    reasons."""
+    return ('Chunk ' + tag + '. '
+            + 'The night was long and the road was longer. ' * 6).strip()
+
+
+class RenderManySerialTest(unittest.TestCase):
+    """`_render_many_serial`: the ladder at the shipped default width of 1."""
+
+    def test_clean_chunks_yield_index_audio_and_a_clean_verdict(self):
+        renders = _SerialRenders()
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
+        out = list(engine.render_many(rows))
+
+        self.assertEqual([index for index, _audio, _v in out], [0, 1])
+        for _index, audio, verdict in out:
+            self.assertEqual(verdict['verdict'], 'clean')
+            self.assertIs(verdict['clean'], True)
+            self.assertEqual(verdict['parts'], 1)
+            # A clean take 0 emits NO guard event at all (`_LadderTask.offer`
+            # finishes before it records one), so the common case costs one
+            # empty list - `GuardPlan._build_verdict` says so, and this is the
+            # assertion that holds it to it.
+            self.assertEqual(verdict['takes'], [])
+            self.assertEqual(audio.shape, (int(272 / 17.0 * 24000),))
+            # The band is still centred on the RECORDED pace: two chunks is far
+            # short of PACE_WARMUP_CHUNKS, so nothing here rides a moving band.
+            self.assertEqual(verdict['band']['reference'], 17.03)
+            self.assertIs(verdict['band']['warm'], False)
+        # ONE render per chunk, at the engine's own seed rule (seed=None), and
+        # the shipped audio is the very array the render returned.
+        self.assertEqual([(i, s) for i, _t, s in renders.calls],
+                         [(0, None), (1, None)])
+        engine._write_sentence.assert_not_called()
+
+    def test_an_off_length_take_zero_that_the_RE_ROLL_fixes(self):
+        # Take 0 at 40 chars/s is a truncation - over the 20.0 short edge - and
+        # the re-roll lands in band. Rung 1 of the ladder, the one Orpheus
+        # measured as the backstop that actually works (memory:
+        # orpheus-short-chunk-repeat).
+        renders = _SerialRenders(cps={0: [_SerialRenders.SHORT_CPS,
+                                          _SerialRenders.CLEAN_CPS]})
+        engine = _serial_engine(renders)
+        out = list(engine.render_many([(0, _chunk_text('A'))]))
+
+        self.assertEqual(len(out), 1)
+        index, audio, verdict = out[0]
+        self.assertEqual(index, 0)
+        self.assertEqual(verdict['verdict'], 'rerolled')
+        self.assertIs(verdict['clean'], True)
+        self.assertEqual(verdict['parts'], 1, 'a re-roll is not a split')
+        # THE EVIDENCE RIDES ALONG, verbatim: the take-0 verdict that fired
+        # (chars, seconds, chars_per_second, both thresholds) and the re-roll
+        # that closed it. That is the whole reason the driver carries a verdict
+        # rather than only printing one.
+        self.assertEqual([r['action'] for r in verdict['takes']],
+                         ['short', 'rerolled'])
+        self.assertEqual(verdict['takes'][0]['index'], 0)
+        self.assertEqual(verdict['takes'][0]['max_chars_per_sec'], 20.0)
+        self.assertAlmostEqual(verdict['takes'][0]['chars_per_second'], 40.0,
+                               places=1)
+        # The shipped audio is the RE-ROLL's, not take 0's.
+        self.assertEqual(audio.shape, (int(272 / 17.0 * 24000),))
+        # Take 0 asks for the engine's own seed rule; the re-roll asks for a
+        # seed no take 0 in this book uses.
+        self.assertEqual([s for _i, _t, s in renders.calls],
+                         [None, truncation.reroll_seed(1234, 0, 1)])
+        engine._write_sentence.assert_not_called()
+
+    def test_a_SPLIT_still_yields_exactly_ONE_tuple_for_the_chunk(self):
+        """THE CONTRACT, and the most important assertion in this file: one
+        requested index, one artifact, always (PHASE6 section 5).
+
+        Take 0 and the re-roll are both off-length, so rung 2 cuts the chunk at
+        the sentence boundary nearest its middle and renders both halves. The
+        halves are joined by `truncation.join_parts` INSIDE the ladder
+        (`_LadderTask._finish` bubbles a completed child up to its parent, and
+        only a ROOT ever reaches `finish_root`), so the driver never sees them: a
+        caller that asked for chunk 0 gets chunk 0 - one tuple, one waveform -
+        however many times the guard had to cut it up to make one.
+        """
+        renders = _SerialRenders(cps={0: [_SerialRenders.SHORT_CPS]})  # every take
+        engine = _serial_engine(renders)
+        out = list(engine.render_many([(0, _chunk_text('A'))]))
+
+        self.assertEqual(len(out), 1, 'a split chunk shipped as two artifacts')
+        index, audio, verdict = out[0]
+        self.assertEqual(index, 0)
+        self.assertEqual(verdict['parts'], 2)
+        self.assertEqual(verdict['verdict'], 'resplit')
+        self.assertEqual([r['action'] for r in verdict['takes']],
+                         ['short', 'resplit'])
+        self.assertEqual(verdict['takes'][-1]['parts'], [140, 131])
+        # Four renders: take 0, the re-roll, then each half's own take 0 - and
+        # the halves are the real halves, not the whole chunk twice.
+        self.assertEqual([t for _i, t, _s in renders.calls][2:],
+                         truncation.split_halves(_chunk_text('A')))
+        # 140 + 131 characters at the clean pace, plus RESPLIT_JOIN_SECONDS of
+        # silence between them: the join is the ladder's, and it happened.
+        expected = (int(140 / 17.0 * 24000) + int(131 / 17.0 * 24000)
+                    + int(round(truncation.RESPLIT_JOIN_SECONDS * 24000)))
+        self.assertEqual(audio.shape, (expected,))
+        engine._write_sentence.assert_not_called()
+
+    def test_not_one_file_is_written_however_hard_the_ladder_works(self):
+        # The driver was lifted ABOVE the file-writing layer precisely so the
+        # serve world - a pipe, and no `sentences_dir` - could reach the ladder at
+        # all; `convert_batch` is now one of its two sinks and does the writing
+        # itself. A write from in here would put the files back under the guard
+        # and break the other sink.
+        renders = _SerialRenders(cps={1: [_SerialRenders.SHORT_CPS],
+                                      2: [_SerialRenders.SHORT_CPS,
+                                          _SerialRenders.CLEAN_CPS]})
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
+        out = list(engine.render_many(rows))
+
+        # One clean, one split, one re-rolled - every rung of the ladder walked.
+        self.assertEqual([v['parts'] for _i, _a, v in out], [1, 2, 1])
+        self.assertEqual([v['verdict'] for _i, _a, v in out],
+                         ['clean', 'resplit', 'rerolled'])
+        engine._write_sentence.assert_not_called()
+        # ...and the fixture has no `sentences_dir` to write to, so a real
+        # `_write_sentence` could not even name a path. If that ever changes,
+        # this test goes blind and says so rather than passing quietly.
+        self.assertFalse(hasattr(engine.config, 'sentences_dir'))
+
+    def test_in_flight_names_a_chunk_from_its_first_render_until_its_verdict(self):
+        """`in_flight` is the CALLER's list, kept exact so a cooperative stop
+        knows precisely which rows were running - the same discipline
+        `HiggsV3Engine.convert_many` keeps. A chunk part-way up the ladder
+        (re-rolling, or waiting on its split halves) stays named."""
+        held = []
+        renders = _SerialRenders(cps={1: [_SerialRenders.SHORT_CPS]}, watch=held)
+        engine = _serial_engine(renders)
+        rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
+        out = list(engine.render_many(rows, in_flight=held))
+
+        self.assertEqual(len(out), 2)
+        # Chunk 0 alone while it renders; chunk 1 alone once 0 is decided - and
+        # chunk 1 STILL NAMED on its re-roll and on both of its split halves,
+        # which is the case a stop has to get right.
+        self.assertEqual([snapshot for _i, _t, snapshot in renders.in_flight_at],
+                         [[0], [1], [1], [1], [1]])
+        self.assertEqual(held, [], 'a decided chunk was left in flight')
+
+    def test_chunks_are_yielded_in_SUBMISSION_order_not_index_order(self):
+        # The serial arm decides one chunk completely before it starts the next,
+        # so the ladder's decision order IS submission order - even when the
+        # first chunk takes four renders to decide and the ones behind it take
+        # one each. Indices deliberately out of ascending order: the driver ships
+        # what it was given, in the order it was given, and sorts nothing.
+        renders = _SerialRenders(cps={7: [_SerialRenders.SHORT_CPS]})
+        engine = _serial_engine(renders)
+        rows = [(7, _chunk_text('A')), (3, _chunk_text('B')), (9, _chunk_text('C'))]
+        out = list(engine.render_many(rows))
+
+        self.assertEqual([index for index, _a, _v in out], [7, 3, 9])
+        self.assertEqual([v['parts'] for _i, _a, v in out], [2, 1, 1])
+        # ...and every render of chunk 7 happened before chunk 3's only one.
+        self.assertEqual([i for i, _t, _s in renders.calls], [7, 7, 7, 7, 3, 9])
+
+    def test_the_markers_are_stripped_AT_THIS_DOOR_before_the_guard_counts(self):
+        """The strip is made in `render_many`, once per chunk, BEFORE the plan is
+        built - not left to `render_audio`'s own strip at the model boundary.
+
+        It matters because the GUARD COUNTS CHARACTERS: `[break]` is 7 characters
+        the model is never given, so a chunk judged before the strip is judged -
+        and split - on text that does not exist. (The strip at the model boundary
+        is still there and still idempotent; this is about who COUNTS.)
+        """
+        renders = _SerialRenders()
+        engine = _serial_engine(renders)
+        marked = '[heading]' + _chunk_text('A') + ' [break]'
+        out = list(engine.render_many([(4, marked)]))
+
+        clean = _chunk_text('A')
+        self.assertEqual([t for _i, t, _s in renders.calls], [clean])
+        self.assertEqual(out[0][2]['takes'], [])
+        # The guard measured 272 characters, not the 289 the packer's markup
+        # would have made it.
+        self.assertEqual(len(marked), 289)
+        self.assertEqual(out[0][1].shape, (int(len(clean) / 17.0 * 24000),))
+
+    def test_a_chunk_that_is_ONLY_markers_is_refused_BY_NAME(self):
+        # `render_many` is a generator, so the refusal arrives when the caller
+        # pulls - and it arrives before ANY render, which is the point: a row with
+        # nothing to say must not take a prefill (or, above width 1, a whole
+        # batch) down with it.
+        renders = _SerialRenders()
+        engine = _serial_engine(renders)
+        with self.assertRaises(ValueError) as caught:
+            list(engine.render_many([(0, _chunk_text('A')), (5, '[break][heading]')]))
+        message = str(caught.exception)
+        self.assertIn('chunk 5', message)
+        self.assertIn('[break][heading]', message)
+        self.assertEqual(renders.calls, [],
+                         'a render was issued before the whole call was validated')
+
+    def test_no_rows_is_no_yields_and_no_renders(self):
+        renders = _SerialRenders()
+        engine = _serial_engine(renders)
+        self.assertEqual(list(engine.render_many([])), [])
+        self.assertEqual(renders.calls, [])
+        engine._write_sentence.assert_not_called()
+
+
+# AT THE BOTTOM, WHERE IT HAS TO BE. This block sat at line 631 of a 1039-line
+# file until 2026-09-13, so `python test_higgs_mlx_batch.py` ran everything above
+# it and silently skipped the 408 lines below - RetakeBatchTest and
+# RenderManySerialTest, both whole classes. pytest collects by inspection and
+# never noticed, which is exactly why nobody did.
+if __name__ == '__main__':
+    unittest.main()

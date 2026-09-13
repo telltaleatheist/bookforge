@@ -76,8 +76,20 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #: reports the served NAME as its root and can never say), and v3_engine's line
 #: stating that the sentinel proof does not APPLY on that stack - so "not
 #: applicable" and "not proved" never look the same in a run log.
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 28}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 139
+#: MEASURED, 2026-09-13: higgs was declared 28 and was 32, and `engine/log.py`
+#: separately said 25. THREE numbers for one fact - which is the exact failure
+#: `LogCallCountTest`'s docstring says it exists to prevent, so the guard did not
+#: fail: it went red, correctly, and was stepped over until now. Nothing in the
+#: 2026-09-13 guard work added a log call; the drift is older than it and was
+#: verified against HEAD before this line was changed.
+#:
+#: The count moving when the engine gains a log line IS the test working. Update
+#: the number here in the same commit that adds the call, and the prose in
+#: `engine/log.py` with it - `test_the_prose_agrees_with_the_count` now checks
+#: that too, because a number this file keeps true and a docstring nobody checks
+#: is how it drifted the first time.
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 32}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 143
 
 
 def _engine_modules():
@@ -166,6 +178,27 @@ class LogCallCountTest(unittest.TestCase):
         measured = {p: self._count(p) for p in LOG_CALLS_BY_PACKAGE}
         self.assertEqual(measured, LOG_CALLS_BY_PACKAGE)
         self.assertEqual(sum(measured.values()), LOG_CALLS_TOTAL)
+
+    def test_the_prose_agrees_with_the_count(self):
+        """`engine/log.py`'s header states the total and the per-package split.
+        It must state the ones this file measures.
+
+        WHY THIS TEST EXISTS. The class above has kept the number honest since it
+        was written - and the number STILL drifted, because `log.py`'s prose was
+        never checked against it and said 25 while this file said 28 and the
+        truth was 32. Measuring one copy of a fact does not stop a second copy
+        disagreeing; it only tells you which one to believe. So the second copy
+        is checked here rather than trusted."""
+        import narrator.engine.log as log_module
+        prose = log_module.__doc__ or ''
+        total = LOG_CALLS_TOTAL
+        higgs = LOG_CALLS_BY_PACKAGE['higgs']
+        orpheus = LOG_CALLS_BY_PACKAGE['orpheus']
+        self.assertIn(
+            f'{total} of them ({orpheus} under `orpheus/`, {higgs} under',
+            ' '.join(prose.split()),
+            f"engine/log.py's header must say the measured numbers: {total} total, "
+            f'{orpheus} orpheus, {higgs} higgs')
 
 
 class LogStreamTest(unittest.TestCase):

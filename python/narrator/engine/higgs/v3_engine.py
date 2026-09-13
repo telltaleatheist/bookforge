@@ -965,11 +965,65 @@ class HiggsV3Engine:
         backend refuses to do. A request that fails for its OWN reason (an HTTP
         400 for its text, a decode failure) fails its chunk by name and the take
         goes on, which is the per-row policy this arm has always had.
+
+        ── THE DRIVER MOVED OUT; THIS IS ITS FILE SINK ─────────────────────────
+
+        Since 2026-09-13 every word above still describes what happens, but it
+        happens in `render_many` - this method is the loop that writes what the
+        driver yields. Owen ruled that day that the model and its inference own
+        the guard AND the retake decision, and that a render must be able to
+        happen on another computer; a guarded driver that writes files is
+        unreachable to a caller that has no directory, which is why
+        `narrator/serve/worker.py` - the path Crucible drives - went round the
+        guard into a bare `render_audio()` and rendered unguarded
+        (crucible/docs/PHASE6-REMOTE-RENDER.md section 0). Lifting the driver
+        ABOVE the file layer is the whole fix: one plan, one ladder, two sinks.
+        """
+        for index, audio, _verdict in self.render_many(rows, in_flight):
+            # The verdict is dropped HERE and nowhere else: this arm's analytics
+            # have always come off the `[HIGGS3][HIGGS_GUARD_EVENT]` lines the
+            # plan still prints, and `GuardPlan.verdict()` POPS - reading it and
+            # discarding it is also what stops a book's records accumulating.
+            if audio is None:
+                on_done(index, False)
+            else:
+                self._write_sentence(index, audio)
+                on_done(index, True)
+
+    def render_many(self, rows, in_flight=None):
+        """THE GUARDED DRIVER: yields `(index, audio, verdict)` as the ladder
+        decides each chunk, and writes NOTHING.
+
+        `BATCH_SIZE` renders in flight for as long as there is work, exactly as
+        `convert_many` describes - that docstring is the rationale for every
+        decision made below, and this is the same code it has described since
+        2026-09-08, moved out from under `_write_sentence` so that a caller with
+        no `sentences_dir` can have the guard too (PHASE6-REMOTE-RENDER.md
+        section 2). The audiobook world consumes it into files; the serve world
+        consumes it into `batch_item` frames with `guard` attached.
+
+        `verdict` is `GuardPlan.verdict(index)` - the conclusion the ladder
+        reached, with the take records verbatim behind it. A chunk that FAILED
+        for its own reason yields `(index, None, None)`: `audio is None` is the
+        failure signal, and there is no verdict because `plan.abandon()` has
+        already dropped the records of a chunk that never reached a decision.
+
+        `in_flight` stays the CALLER'S list when it has one - the render
+        worker's cleanup deletes exactly the rows it names - and is a throwaway
+        when it does not, so the bookkeeping below has one shape rather than a
+        `None` test in the hot loop.
+
+        A generator, so the plan and the pool only exist while someone is
+        iterating; a consumer that walks away closes it, `GeneratorExit` lands
+        at a `yield` inside the `try`, and the pool is torn down by the same
+        `BaseException` arm a cooperative stop uses.
         """
         rows = iter(rows)
+        if in_flight is None:
+            in_flight = []
         width = int(self.BATCH_SIZE)
         if width < 1:
-            raise ValueError(f'convert_many needs BATCH_SIZE >= 1; got {width}.')
+            raise ValueError(f'render_many needs BATCH_SIZE >= 1; got {width}.')
         plan = truncation.GuardPlan(
             sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed,
             tracker=self._pace_tracker())
@@ -1023,18 +1077,26 @@ class HiggsV3Engine:
             start(request)
             return True
 
-        def retire(request, index_failed=None) -> None:
-            """Bookkeeping for one finished request, and the chunks it completed."""
+        def retire(request, index_failed=None):
+            """Bookkeeping for one finished request, and the chunks it completed.
+
+            A GENERATOR - the caller `yield from`s it - so a decided chunk
+            leaves on THIS thread at exactly the point the file used to be
+            written, before the freed slots are refilled. Nothing about the
+            ordering changes; only what happens to the audio does.
+            """
             outstanding[request.index] -= 1
             if outstanding[request.index] <= 0:
                 outstanding.pop(request.index, None)
                 if request.index in in_flight:
                     in_flight.remove(request.index)
             for index, audio, _clean in plan.finished():
-                self._write_sentence(index, audio)
-                on_done(index, True)
+                # `finish_root` files the verdict BEFORE it appends to
+                # `finished()`, so it is there; `verdict()` pops, so it is there
+                # exactly once and only for a chunk the ladder really shipped.
+                yield index, audio, plan.verdict(index)
             if index_failed is not None:
-                on_done(index_failed, False)
+                yield index_failed, None, None
 
         try:
             fill()
@@ -1050,18 +1112,21 @@ class HiggsV3Engine:
                         # This chunk's failure, named, and the take goes on.
                         log(f'[HIGGS3] sentence {request.index} failed: {exc}', flush=True)
                         failed = plan.abandon(request)
-                        retire(request, index_failed=failed)
+                        yield from retire(request, index_failed=failed)
                         fill()
                         continue
                     plan.offer(request, audio)
-                    retire(request)
+                    yield from retire(request)
                     fill()
         except BaseException:
-            # A stop or a dead server: nothing queued is submitted, and the
-            # requests already running are not waited for - they fail fast
-            # against a killed port, and `in_flight` still names their chunks for
-            # the worker's cleanup. `shutdown(wait=True)` here would hold a
-            # cooperative stop open for as long as the slowest HTTP timeout.
+            # A stop, a dead server, or a consumer that closed this generator
+            # (`GeneratorExit` lands at the `yield from` above and is a
+            # BaseException, which is why this arm catches that and not
+            # Exception): nothing queued is submitted, and the requests already
+            # running are not waited for - they fail fast against a killed port,
+            # and `in_flight` still names their chunks for the worker's cleanup.
+            # `shutdown(wait=True)` here would hold a cooperative stop open for
+            # as long as the slowest HTTP timeout.
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown(wait=True)

@@ -1140,28 +1140,80 @@ class EngineTest(V3TestCase):
         self.assertIn('markers', str(caught.exception))
 
     def test_both_higgs_engines_strip_at_the_model_boundary(self):
-        """Static: every Higgs render entry (served render_audio, MLX
-        render_audio, convert_batch and generate_batch_stream - whose batched
-        read-ahead rung builds prompts without going through render_audio)
-        calls the shared strip. A path that only `.strip()`s whitespace is
-        the bug above."""
+        """Static: every Higgs render entry strips the markers, itself or
+        through the one driver that does. A path that only `.strip()`s
+        whitespace is the bug above.
+
+        WHY A METHOD MAY SATISFY THIS BY DELEGATING. Until 2026-09-13 the
+        batched entry points each stripped for themselves, and this test named
+        them. Then the guarded driver was lifted out from under the file-writing
+        layer into `render_many` (Owen's ruling that the model owns the guard;
+        crucible/docs/PHASE6-REMOTE-RENDER.md), so `convert_many` /
+        `convert_batch` became consumers of it and the strip moved WITH the
+        driver, to the ladder's door. That is the correct place and the only
+        place it can be: the guard measures CHARACTERS, so a chunk still
+        carrying `[break]` would be judged - and split - on text the model will
+        never be given.
+
+        So the rule this asserts is the property, not a location: an entry
+        either strips, or reaches a checked one that does. Listing `render_many`
+        among the wanted names is what keeps the delegation honest - a driver
+        that stopped stripping would fail here even though every caller still
+        "delegates"."""
         import ast
         here = os.path.dirname(v3_served.__file__)
-        wanted = {'v3_engine.py': {'render_audio'},
-                  'mlx_backend.py': {'render_audio', 'convert_batch',
+        #: The methods that must end up stripping. `render_many` is the door for
+        #: both engines now; the others are the paths that do not go through it.
+        wanted = {'v3_engine.py': {'render_audio', 'render_many'},
+                  'mlx_backend.py': {'render_audio', 'render_many',
                                      'generate_batch_stream'}}
+        #: A method that reaches the door instead of stripping itself. Kept as a
+        #: NAMED set rather than "any call to anything": delegating to something
+        #: this test does not also check would be how the guarantee goes quiet.
+        delegates_to = {'render_many'}
         for filename, methods in wanted.items():
             with open(os.path.join(here, filename), encoding='utf-8') as handle:
                 tree = ast.parse(handle.read())
+            missing = set(methods)
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef) and node.name in methods:
                     calls = {n.func.attr for n in ast.walk(node)
                              if isinstance(n, ast.Call)
                              and isinstance(n.func, ast.Attribute)}
-                    self.assertIn('_clean_sentence_for_tts', calls,
-                                  f'{filename}:{node.name} must strip the markers')
-                    methods = methods - {node.name}
-            self.assertEqual(methods, set(), f'{filename}: not found: {methods}')
+                    self.assertTrue(
+                        '_clean_sentence_for_tts' in calls
+                        or calls & delegates_to,
+                        f'{filename}:{node.name} must strip the markers, or '
+                        f'reach {sorted(delegates_to)} which does')
+                    missing -= {node.name}
+            self.assertEqual(missing, set(), f'{filename}: not found: {missing}')
+
+    def test_the_batched_entries_reach_the_stripping_driver(self):
+        """The other half of the rule above: the methods that no longer strip
+        for themselves must actually be consumers of the driver that does.
+
+        Without this, deleting `convert_batch`'s call to `render_many` and
+        rendering some other way would leave BOTH tests green - the door would
+        still strip, and nothing would go through it."""
+        import ast
+        here = os.path.dirname(v3_served.__file__)
+        wanted = {'v3_engine.py': {'convert_many'},
+                  'mlx_backend.py': {'convert_batch'}}
+        for filename, methods in wanted.items():
+            with open(os.path.join(here, filename), encoding='utf-8') as handle:
+                tree = ast.parse(handle.read())
+            missing = set(methods)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name in methods:
+                    calls = {n.func.attr for n in ast.walk(node)
+                             if isinstance(n, ast.Call)
+                             and isinstance(n.func, ast.Attribute)}
+                    self.assertIn(
+                        'render_many', calls,
+                        f'{filename}:{node.name} renders without going through '
+                        f'render_many, so nothing strips its markers')
+                    missing -= {node.name}
+            self.assertEqual(missing, set(), f'{filename}: not found: {missing}')
 
     def test_convert_batch_answers_every_item_in_order(self):
         engine = HiggsV3Engine(self.config(sentences_dir=self.dir))

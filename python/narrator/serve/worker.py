@@ -33,7 +33,16 @@ Protocol (one JSON object per line):
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
           {type: 'done', duration, chunks, cancelled}                        # stream end
           {type: 'batch_chunk', i, seq, format:'pcm16', data, duration, sampleRate}
+          {type: 'batch_item', i, format:'pcm16', data, duration, sampleRate,
+                               guard?: {...}}                                # batch
           {type: 'batch_item', i, streamed: true, duration, chunks}          # fast start
+
+`guard` (Owen's ruling of 2026-09-13, crucible/docs/PHASE6-REMOTE-RENDER.md) is
+the verdict the ENGINE'S OWN retake ladder reached for that chunk - `verdict`,
+`clean`, `parts`, `band` and the take records - present only on a row an engine
+that guards its own batch rendered. It is ADDITIVE and OPTIONAL: a row with no
+verdict has no `guard` key, so orpheus-worker-pool.ts and the browser extension
+read the field set they always read.
 
 FAST START (Owen's ruling of 2026-09-04). An item carrying `stream: true` is a row
 whose audio must reach the client WHILE IT IS STILL GENERATING, in sub-sentence
@@ -455,6 +464,33 @@ def _uses_orpheus_token_pipeline(engine) -> bool:
     neither is a named error, never a fallback.
     """
     return getattr(engine, 'ENGINE_ID', None) == 'orpheus'
+
+
+def _guards_its_own_batch(engine) -> bool:
+    """True when this engine offers the GUARDED batched driver, `render_many`.
+
+    THE DISCRIMINATOR IS THE CAPABILITY, NOT THE BACKEND NAME - the same lesson
+    `_uses_orpheus_token_pipeline` above was bitten by and fixed: `backend` is a
+    RUNTIME name shared by engines that have nothing else in common (Higgs v3 on
+    the Mac truthfully reports 'mlx'), so routing on it selects a method the
+    object may not have. `render_many` is the method being called; asking for it
+    by name is the only test that cannot be wrong.
+
+    WHY THIS ARM EXISTS AT ALL (Owen's ruling, 2026-09-13, worked out in
+    crucible/docs/PHASE6-REMOTE-RENDER.md sections 0 and 2). narrator had two
+    rendering worlds and only the audiobook one was guarded: the serve world -
+    which is the door Crucible's render job drives - reached a Higgs engine
+    through a bare `render_audio()` per sentence, with no PaceTracker, no
+    re-roll, no split ladder. The model and its inference own the guard, so the
+    guard must run wherever the model does; `render_many` is `convert_many`'s
+    driver with the file-writing sink removed, so the serve world can have the
+    ladder without acquiring a `sentences_dir`.
+
+    Orpheus answers False and is untouched: its guard is a different and older
+    mechanism (`_guard_truncation`) that already runs in this worker, and it has
+    no `render_many` to offer.
+    """
+    return callable(getattr(engine, 'render_many', None))
 
 
 def _server_log_of(engine):
@@ -1242,18 +1278,44 @@ class OrpheusStreamServer:
                     out.append(finalize_audio(a))
             return out
 
-        # transformers and every SERVED engine: no batched API - sequentially.
+        # transformers, and any engine with no batched API - sequentially.
         # The row index goes with each call so a served engine seeds row i with
         # `seed + i` (see HiggsV3Engine._seed_for); Orpheus ignores it.
+        #
+        # AN ENGINE THAT GUARDS ITS OWN BATCH NO LONGER ARRIVES HERE. This
+        # comprehension was, until 2026-09-13, the whole of what the serve world
+        # did with a Higgs engine: sequential AND unguarded, while the audiobook
+        # world ran the same model through the PaceTracker, the re-roll and the
+        # split ladder (PHASE6-REMOTE-RENDER.md section 0). `generate_batch` now
+        # routes a `render_many`-capable engine to _emit_guarded_batch BEFORE
+        # calling this, so what is left on this line is the engines that have no
+        # driver to route to - plus `_warmup`, which calls this method directly
+        # with texts and no caller indices, and whose discarded renders want the
+        # compile, not the ladder.
         return [self._generate_audio(t, row_voices[i], index=i)
                 for i, t in enumerate(texts)]
 
     @staticmethod
-    def _emit_batch_item(it, audio):
+    def _emit_batch_item(it, audio, guard=None):
         """Emit one 'batch_item', keyed by the caller-supplied index `i`. Empty/None
         audio -> the 'No audio generated' message; otherwise the PCM16 payload. This
         is the exact per-item wire shape the non-MLX single-dispatch loop uses, so
-        MLX group emission and non-MLX emission are byte-identical per item."""
+        MLX group emission and non-MLX emission are byte-identical per item.
+
+        `guard` is `GuardPlan.verdict()`'s object, verbatim, for a row an engine
+        rendered through its own retake ladder - PHASE6-REMOTE-RENDER.md section 3.
+        STRICTLY ADDITIVE AND OPTIONAL: a row with no verdict carries no `guard`
+        key at all, so electron/orpheus-worker-pool.ts and the browser extension
+        read exactly the field set they read today and need no change on the day
+        this lands. It is the CONCLUSION, not the evidence - `verdict` is what the
+        engine decided, `takes` is why - and a client that acts on `takes` instead
+        of `verdict` is re-litigating a decision the model has already made.
+
+        It rides only the success shape. A failure item is `{i, message}` and says
+        nothing about a ladder: `render_many` hands back `verdict is None` for a
+        chunk that never reached a decision (`GuardPlan.abandon` drops its
+        records), so there is nothing true to attach.
+        """
         if audio is None or len(audio) == 0:
             send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
         else:
@@ -1263,7 +1325,126 @@ class OrpheusStreamServer:
                 'data': audio_to_pcm16_base64(audio),
                 'duration': len(audio) / active_samplerate(),
                 'sampleRate': active_samplerate(),
+                **({'guard': guard} if guard is not None else {}),
             })
+
+    def _emit_guarded_batch(self, rows, emitted):
+        """Drive `rows` through the ENGINE'S OWN guarded driver and emit each chunk
+        as the ladder decides it, verdict attached.
+
+        `rows` is generate_batch's `(item, normalized text, voice token)` triples,
+        already past the per-row voice resolution; `emitted` is that method's
+        one-answer-per-item set, added to here so its `finally` sweep can still
+        label anything this never reached.
+
+        WHY THIS EXISTS. Until 2026-09-13 the serve world handed a Higgs engine one
+        `render_audio()` per sentence - no PaceTracker, no re-roll, no split ladder -
+        while the audiobook world ran the same model through all three. Owen ruled
+        that the model and its inference own the guard AND the retake decision, so
+        the guard runs where the render does and the verdict reaches the wire
+        (crucible/docs/PHASE6-REMOTE-RENDER.md sections 0, 2 and 3). Crucible's
+        render job drives exactly this door.
+
+        THE LADDER INDEX IS THE CALLER'S `i`, NOT THE POSITION IN THE BATCH. It
+        seeds the render (`seed + index`) and names the reject files, so a re-render
+        of chunk 412 is reproducible only if 412 is what the ladder was told - and
+        Crucible sends the book's own chunk index. The position in a read-ahead
+        window is an accident of scheduling and would make the same sentence render
+        differently on a resume.
+
+        NOT ONE GUARD DECISION IS MADE HERE. The plan, the bands, the depth-first
+        order, MIN_GUARD_CHARS and the split all live inside `render_many`; this
+        method starts it, keeps the book-keeping, and ships what it yields.
+
+        RETIREMENT ORDER, NOT READING ORDER. `render_many` yields as the ladder
+        decides, so a chunk that re-rolled lands after its neighbours. That is
+        already this wire's contract - clients assemble by index, see
+        _generate_batch_mlx_ordered and docs/TTS_API.md - and the three guarantees
+        the pool depends on are untouched: one batch_item per requested `i`,
+        exactly once, then batch_done last, always.
+
+        ONE ARTIFACT PER REQUESTED INDEX, even when the ladder SPLIT. The halves are
+        joined (`truncation.join_parts`) before the chunk retires, so a split shows
+        up only as `parts: 2` on the verdict. Returning two rows would push the
+        ladder's private business into every consumer - PHASE6 section 5.
+        """
+        orph = self.orph
+        by_index = {}     # ladder index -> the item that asked for it
+        plan_rows = []    # (index, cleaned text) - the driver's input
+
+        def fail(it, message):
+            send_response('batch_item', {'i': it.get('i'), 'message': message})
+            emitted.add(id(it))
+
+        for it, text, voice in rows:
+            try:
+                # A BACKSTOP, not the gate: _resolve_row already refused a
+                # per-request voice on every backend that cannot serve one. It
+                # matters here because `render_many` takes NO voice - it renders in
+                # whatever the engine has loaded - so a row that slipped through
+                # naming another voice would be narrated by the wrong voice and
+                # reported as a success.
+                self._reject_per_request_voice(voice)
+            except Exception as e:
+                fail(it, str(e))
+                continue
+
+            index = it.get('i')
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                # The index is the LADDER KEY here, not just a label on the wire,
+                # so an unusable one cannot be carried along and sorted out by the
+                # client: it would seed the render and key the verdict.
+                fail(it, f'generate_batch row carries i={it.get("i")!r}, which is '
+                         'not an integer index. A guarded render uses `i` as the '
+                         'ladder index - it seeds the take and names the reject '
+                         'files - so there is nothing to render this row as.')
+                continue
+            if index in by_index:
+                # GuardPlan keys its records and its verdict by chunk index, so two
+                # rows claiming one index would share a verdict and one of the two
+                # renders would be thrown away. The pool already drops the second
+                # message for an `i` as stale, so this was always a caller bug; on
+                # this arm it is refused by name instead of silently half-served.
+                fail(it, f'generate_batch sent index {index} twice in one batch. '
+                         'The retake ladder is keyed by chunk index, so the second '
+                         'row cannot be rendered or reported separately.')
+                continue
+
+            clean = orph._clean_sentence_for_tts(text)
+            if not clean:
+                # "Empty -> tiny silence", the contract every batch path here
+                # keeps. It never goes on the ladder: there is no take to judge,
+                # and a Higgs render_audio refuses a blank chunk by name.
+                self._emit_batch_item(
+                    it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
+                emitted.add(id(it))
+                continue
+
+            by_index[index] = it
+            plan_rows.append((index, clean))
+
+        if not plan_rows:
+            return
+
+        for index, audio, verdict in orph.render_many(plan_rows):
+            it = by_index.pop(index, None)
+            if it is None:
+                # The driver yielded an index this batch never asked for (or asked
+                # for twice). Emitting it would answer a row the pool has no
+                # resolver for; swallowing it silently would hide a driver bug.
+                print(f'[narrator.serve] guarded driver yielded index {index}, which '
+                      'this batch did not request - dropping', file=sys.stderr)
+                continue
+            emitted.add(id(it))
+            # `audio is None` is render_many's failure signal, and `verdict` is then
+            # None too - _emit_batch_item turns that into the ordinary
+            # 'No audio generated' item, never silence dressed as a success.
+            self._emit_batch_item(
+                it,
+                None if audio is None or len(audio) == 0 else finalize_audio(audio),
+                guard=verdict)
 
     def _generate_batch_mlx_ordered(self, items, language: str):
         """MLX read-ahead in READING ORDER, in groups of up to ORPHEUS_STREAM_BATCH.
@@ -1656,7 +1837,15 @@ class OrpheusStreamServer:
         read-ahead behind it, and only the former streams, so the streaming path has
         to be able to carry both. With no stream flag anywhere - which is what the
         extension's default "Buffer before playing" produces - nothing below this
-        line is reached and the batch takes the code that was already here."""
+        line is reached and the batch takes the code that was already here.
+
+        AN ENGINE THAT GUARDS ITS OWN BATCH takes _emit_guarded_batch instead of
+        the sequential dispatch, and its items carry `guard` - the verdict its
+        retake ladder reached. This is the NON-STREAMING door only, which is the
+        one Crucible's render job drives; the interactive Listen paths
+        (`generate`, `_generate_batch_streaming`) are deliberately left alone,
+        because a retake doubles the latency a listener is already waiting on and
+        whether they should pay it is Owen's call, not this change's."""
         if self.orph is None:
             for it in items:
                 send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
@@ -1704,7 +1893,16 @@ class OrpheusStreamServer:
                     continue
                 rows.append((it, normalize_for_tts(it.get('text', ''), language), v))
 
-            if rows:
+            if rows and _guards_its_own_batch(self.orph):
+                # THE GUARDED ARM (Owen's ruling, 2026-09-13). An engine that
+                # offers `render_many` runs its own PaceTracker, re-roll and split
+                # ladder over the whole batch and yields each chunk with the
+                # verdict it reached; this worker ships the audio and forwards the
+                # verdict. Detected by the CAPABILITY - see _guards_its_own_batch -
+                # so Orpheus, which has no render_many and whose own older guard
+                # already runs on the arms below, is untouched.
+                self._emit_guarded_batch(rows, emitted)
+            elif rows:
                 audios = self._generate_audio_batch([t for _, t, _ in rows],
                                                     [v for _, _, v in rows])
                 for (it, _text, _v), audio in zip(rows, audios):

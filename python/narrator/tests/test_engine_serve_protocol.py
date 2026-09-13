@@ -140,7 +140,15 @@ class Worker:
         return err
 
 
-class ServeProtocolTest(unittest.TestCase):
+class _WorkerCase(unittest.TestCase):
+    """One worker subprocess per test, plus the assertions every batch test here
+    makes. Split out from ServeProtocolTest so the GUARDED batch tests below can
+    drive the same real worker with a different NARRATOR_ENGINE - the invariants
+    the pool depends on are the same ones whichever engine rendered the rows."""
+
+    #: Extra environment for this class's worker. None = the Orpheus fake, which
+    #: is what every test in ServeProtocolTest was written against.
+    WORKER_ENV = None
 
     def _assert_batch_closed(self, msgs, expected_i):
         """THE THREE INVARIANTS THE POOL DEPENDS ON, asserted the same way for
@@ -173,7 +181,7 @@ class ServeProtocolTest(unittest.TestCase):
         return {m['i']: m for m in items}
 
     def setUp(self):
-        self.w = Worker()
+        self.w = Worker(extra_env=self.WORKER_ENV)
         self.addCleanup(self._shutdown)
 
     def _shutdown(self):
@@ -194,6 +202,9 @@ class ServeProtocolTest(unittest.TestCase):
         self.w.send(action='load', voice=voice, warm=False, **kwargs)
         msgs = self.w.read_until('loaded', 'error')
         return msgs
+
+
+class ServeProtocolTest(_WorkerCase):
 
     # ---- 1, 2 --------------------------------------------------------------
 
@@ -292,6 +303,22 @@ class ServeProtocolTest(unittest.TestCase):
         self.assertIn('data', by_i[12])
         self.assertNotIn('message', by_i[12])
         self.assertLess(by_i[12]['duration'], 0.2)
+
+    def test_an_unguarded_engine_sends_no_guard_key(self):
+        """`guard` is ADDITIVE AND OPTIONAL (PHASE6-REMOTE-RENDER.md section 3).
+
+        Orpheus offers no `render_many` - its guard is the older
+        `_guard_truncation`, which reaches no verdict object - so its rows must
+        carry exactly the field set orpheus-worker-pool.ts and the browser
+        extension read today. A key appearing here would mean the new arm was
+        selected by something other than the capability."""
+        self._ready()
+        self._load()
+        self.w.send(action='generate_batch',
+                    items=[{'i': 0, 'text': 'An ordinary Orpheus sentence.'}])
+        by_i = self._assert_batch_closed(self.w.read_until('batch_done'), [0])
+        self.assertIn('data', by_i[0])
+        self.assertNotIn('guard', by_i[0])
 
     def test_unloaded_voice_fails_only_its_own_item(self):
         self._ready()
@@ -459,6 +486,195 @@ class ServeProtocolTest(unittest.TestCase):
         self.w.send(action='quit')
         self.w.proc.stdin.close()
         self.assertEqual(self.w.proc.wait(timeout=20), 0)
+
+
+class GuardedBatchTest(_WorkerCase):
+    """THE SERVE WORLD'S BATCH NOW RUNS THE RETAKE LADDER, and says what it did.
+
+    Owen ruled on 2026-09-13 that the model and its inference own the guard AND
+    the retake decision (crucible/docs/PHASE6-REMOTE-RENDER.md). Before that,
+    narrator had two rendering worlds: the audiobook one drove `truncation.
+    GuardPlan` - PaceTracker, re-roll, split ladder - and the serve one, which is
+    the door Crucible's render job drives, handed a Higgs engine one bare
+    `render_audio()` per sentence and guarded nothing. `generate_batch` now routes
+    an engine that offers `render_many` through that engine's own guarded driver
+    and puts the verdict on `batch_item.guard`.
+
+    Driven with NARRATOR_ENGINE=higgs-v3 + --fake-engine, so the WORKER is the
+    real one - real reader thread, real stdout lock, real one-answer-per-row
+    bookkeeping - and only the model is fake. FakeHiggsEngine.render_many builds a
+    real `truncation.GuardPlan`, so the ladder under test is the shipping ladder;
+    what the fake replaces is the audio, and NARRATOR_FAKE_HIGGS_RATE bends one
+    chunk's duration so the guard fires deterministically instead of needing a
+    card and a model that happens to misbehave.
+
+    WHAT THESE TESTS CANNOT PROVE, and step 4 of PHASE6 section 7 is the gate for
+    it: that the ladder makes the SAME decisions on a real card as it did before
+    this wiring. A fake engine renders a sine wave against a band derived from its
+    own pace; only a chapter rendered on a 3090 Ti and compared against the
+    Mistborn pause map can say the policy did not move.
+    """
+
+    #: The fake's guard-steering knob is read per render, so the worker must be
+    #: started with it already set - hence one subprocess per rate table.
+    WORKER_ENV = {'NARRATOR_ENGINE': 'higgs-v3'}
+
+    def _worker_with_rate(self, rate_json):
+        """Restart this test's worker with a NARRATOR_FAKE_HIGGS_RATE table."""
+        self.w.close()
+        env = dict(self.WORKER_ENV)
+        env['NARRATOR_FAKE_HIGGS_RATE'] = rate_json
+        self.w = Worker(extra_env=env)
+
+    def _higgs_batch(self, items):
+        self._ready()
+        self._load('deathstalker')
+        self.w.send(action='generate_batch', items=items)
+        msgs = self.w.read_until('batch_done')
+        return self._assert_batch_closed(msgs, [it['i'] for it in items])
+
+    def test_the_worker_really_built_the_higgs_fake(self):
+        """If this fails every other test in the class is testing Orpheus. `pads`
+        is the tell: Higgs emits bare speech, Orpheus bakes its own silence in."""
+        self._ready()
+        loaded = self._load('deathstalker')[-1]
+        self.assertEqual(loaded['type'], 'loaded', loaded)
+        self.assertEqual(loaded['engine'], 'higgs-v3')
+        self.assertFalse(loaded['pads'])
+
+    def test_a_clean_batch_carries_a_clean_verdict(self):
+        """The common case, and the one that costs nothing: a chunk the ladder
+        never touched reports verdict 'clean', one part, and an EMPTY take list -
+        `_LadderTask.offer` finishes before it records an event, so there is no
+        evidence to carry because nothing happened."""
+        items = [{'i': 0, 'text': 'The first chunk of the chapter, rendered clean.'},
+                 {'i': 1, 'text': 'The second one, which is also perfectly ordinary.'},
+                 {'i': 2, 'text': 'And a third.'}]
+        by_i = self._higgs_batch(items)
+        for i in (0, 1, 2):
+            item = by_i[i]
+            self.assertIn('data', item, item)
+            self.assertNotIn('message', item)
+            guard = item.get('guard')
+            self.assertIsNotNone(guard, f'row {i} reached the wire with no verdict')
+            self.assertEqual(guard['verdict'], 'clean', guard)
+            self.assertTrue(guard['clean'])
+            self.assertEqual(guard['parts'], 1)
+            self.assertEqual(guard['takes'], [], 'a clean take 0 emits no event')
+            # The band is the evidence behind the verdict, and it is the
+            # TRACKER's - read fresh per take - not a constant.
+            self.assertIn('max_chars_per_sec', guard['band'])
+            self.assertIn('min_chars_per_sec', guard['band'])
+            self.assertIn('observed', guard['band'])
+
+    def test_a_bent_chunk_reports_its_reroll(self):
+        """One bad take, then a good one: the ladder re-rolls and the verdict says
+        so. `clean` stays True because the take that SHIPPED is inside the band -
+        the verdict names what happened, not whether anything happened.
+
+        The bent index is the CALLER'S `i`, not the position in the batch, which
+        is also what this proves: the rate table is keyed by chunk index, and if
+        the worker had passed the enumerate position the wrong row would bend."""
+        self._worker_with_rate('{"41": 0.4}')
+        items = [{'i': 40, 'text': 'The chunk before the bent one.'},
+                 {'i': 41, 'text': 'The chunk whose first take comes back far too fast.'},
+                 {'i': 42, 'text': 'The chunk after it.'}]
+        by_i = self._higgs_batch(items)
+
+        bent = by_i[41]
+        self.assertIn('data', bent, bent)
+        guard = bent['guard']
+        self.assertEqual(guard['verdict'], 'rerolled', guard)
+        self.assertTrue(guard['clean'], 'the re-roll landed inside the band')
+        self.assertEqual(guard['parts'], 1, 'a re-roll is one chunk, not two')
+        self.assertEqual(len(guard['takes']), 2,
+                         'the bad take and the re-roll that replaced it')
+        # The records are the LADDER'S OWN, forwarded verbatim - not a shape this
+        # worker invents. `rung` names the step the ladder took after judging the
+        # take, so take 0 is the one that sent it to the re-roll.
+        self.assertEqual(guard['takes'][0]['rung'], 'reroll', guard['takes'][0])
+        self.assertEqual(guard['takes'][0]['side'], 'short')
+        for record in guard['takes']:
+            for field in ('index', 'chars', 'seconds', 'chars_per_second',
+                          'action', 'rung'):
+                self.assertIn(field, record, record)
+            self.assertEqual(record['index'], 41,
+                             'the record is keyed by the CALLER\'s chunk index')
+        # ONLY that row. Its neighbours are untouched - a guard that fired on the
+        # batch instead of the chunk would show up here.
+        for i in (40, 42):
+            self.assertEqual(by_i[i]['guard']['verdict'], 'clean', by_i[i])
+
+    def test_a_split_chunk_is_still_exactly_one_item(self):
+        """THE HARD CASE (PHASE6 section 5). Take 0 and the re-roll are both bad,
+        so the ladder splits the chunk and renders it as two halves - and joins
+        them before it retires. One requested index, ONE artifact, always:
+        returning two rows would push the ladder's private business into every
+        consumer, break BookForge's `<i>.flac` resume scan and desynchronise the
+        .sentences.vtt sidecar from the audio.
+
+        `parts: 2` is how the split is reported, and it is the only sign of it.
+
+        The text is two sentences of over `MIN_SPLIT_CHARS` (80) each on purpose:
+        `split_halves` refuses a cut that would leave a half under that, and a
+        chunk it cannot split is ACCEPTED off-length at the end of the ladder
+        instead - a different and equally real verdict, but not this case."""
+        self._worker_with_rate('{"41": [0.4, 0.4]}')
+        items = [{'i': 40, 'text': 'The chunk before the split one.'},
+                 {'i': 41, 'text': 'The first half of a chunk that will not settle '
+                                   'no matter how many times it is rendered. '
+                                   'And the second half of that very same chunk, '
+                                   'which is every bit as stubborn about it.'},
+                 {'i': 42, 'text': 'The chunk after it.'}]
+        by_i = self._higgs_batch(items)
+
+        split = by_i[41]
+        self.assertIn('data', split, split)
+        guard = split['guard']
+        self.assertEqual(guard['verdict'], 'resplit', guard)
+        self.assertEqual(guard['parts'], 2, 'the ladder split it into two halves')
+        self.assertTrue(guard['clean'], 'the two halves both landed inside the band')
+        self.assertEqual(len(guard['takes']), 2,
+                         'take 0 and the re-roll that also came back bent; the '
+                         'halves rendered clean and record nothing')
+        self.assertEqual([r['rung'] for r in guard['takes']], ['reroll', 'split'])
+        for i in (40, 42):
+            self.assertEqual(by_i[i]['guard']['verdict'], 'clean', by_i[i])
+        # _assert_batch_closed already counted one message per index and put
+        # batch_done last; say the split-specific half of that out loud, because
+        # it is the invariant this case is most likely to break.
+        self.assertEqual(sorted(by_i), [40, 41, 42])
+
+    def test_a_guarded_batch_keeps_the_empty_row_contract(self):
+        """An empty chunk never goes on the ladder - there is no take to judge,
+        and a Higgs `render_audio` refuses a blank chunk by name - so it keeps the
+        tiny-silence answer every other batch path here gives it, and carries no
+        verdict because nothing decided anything about it."""
+        items = [{'i': 0, 'text': 'A real sentence.'},
+                 {'i': 1, 'text': ''},
+                 {'i': 2, 'text': 'Another real one.'}]
+        by_i = self._higgs_batch(items)
+        self.assertIn('data', by_i[1])
+        self.assertNotIn('message', by_i[1])
+        self.assertNotIn('guard', by_i[1])
+        self.assertLess(by_i[1]['duration'], 0.2)
+        for i in (0, 2):
+            self.assertEqual(by_i[i]['guard']['verdict'], 'clean')
+
+    def test_an_unloaded_voice_still_fails_only_its_own_row(self):
+        """The guarded arm keeps the per-row refusal the sequential one had:
+        `render_many` takes no voice and renders in whatever is loaded, so a row
+        naming another voice must be refused rather than narrated by the wrong
+        one and reported as a success."""
+        items = [{'i': 0, 'text': 'Ordinary sentence.'},
+                 {'i': 1, 'text': 'Wrong voice.', 'voice': 'someone-else'},
+                 {'i': 2, 'text': 'Another ordinary one.'}]
+        by_i = self._higgs_batch(items)
+        self.assertIn('data', by_i[0])
+        self.assertIn('data', by_i[2])
+        self.assertNotIn('data', by_i[1])
+        self.assertNotIn('guard', by_i[1])
+        self.assertIn('someone-else', by_i[1]['message'])
 
 
 class VoiceCapsResetTest(unittest.TestCase):
