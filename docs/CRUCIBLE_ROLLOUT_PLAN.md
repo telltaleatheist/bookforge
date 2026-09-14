@@ -350,6 +350,15 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **CPU SLOTS STAY LOCAL — Owen, 2026-09-14: *"cpu slots stay local though."*** Confirms the
+  scheduler's ruling 1 as HIS: a Crucible server has 0 CPU slots; assembly, muxing and every
+  `resource: 'cpu'` step run on this machine in the `local-work` set. Not a default any more.
+- **A ROW LEASE IS PER MODEL (Foundry, 2026-09-14, caught before it shipped):** A5 kept the lease
+  across steps whenever the next step declared `leasesModel`; clean (9B) → simplify (27B) would
+  keep the 9B lease and refuse the 27B load `leased` by our own name. Fix: keep only when the next
+  step's resolved model id equals the lease's subject; `leasesModel` is necessary, not sufficient.
+  Hosted, the lease is Foundry's dispatcher's — `foundry-job.ts` carries a comment, not the flag.
+
 - **CLOUD KEYS HAVE ONE OWNER: FOUNDRY'S CLOUD CARD, HOSTED TOO (default ruling 2026-09-14, Owen may
   overrule).** Foundry's registry seam (990bd2e) suppressed cloud providers hosted, which would leave a
   BookForge user on a laptop with NO way to light translate/simplify — against the 01:40 ruling. And
