@@ -42,6 +42,15 @@ does bookforge correctly add gpu slots for each crucible server its connected to
 remove its own local slots if theres a crucible server installed locally?"* Read from the
 code, not from memory. Each item names the file that proves it.
 
+**Owen, 2026-09-14 (after reading this map): *"well lets fix it. i did expect orpheus to be in
+there. sounds like the job isn't done yet."*** Rulings taken from that: **B1 = Orpheus goes INTO
+Crucible** (manifests + its own env, built from the existing `orpheus_tts` conda env's freeze —
+vLLM 0.7.3, torch 2.5.1+cu121); **D-registry = hosted Foundry reads BookForge's server
+registry** (one owner; Foundry's own registry is standalone-only); A1, A3, A5 and the stale
+hosted-env refusal are BUILT, not ruled. Agents: scheduler (BookForge), hosted-Foundry seam
+(BookForge), Orpheus (Crucible, after the phase-13 server agent lands), then the page and the
+apps' doors.
+
 ### A. The scheduler — the two questions, answered NO and NOT YET
 
 - **A1. Per-server GPU slots are NOT built.** `RESOURCE_SLOTS.gpu` is one global number
