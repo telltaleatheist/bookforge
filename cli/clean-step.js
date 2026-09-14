@@ -320,13 +320,12 @@ async function main() {
      * deliberately not spelled here: a copy of their number is a second place
      * it lives, and `646e8a1` moved it from 4 to 12.
      *
-     * `keepModel` is NOT set and cannot be. `--keep-model` went with the Ollama
-     * dialect and the engine never loads or unloads now; the vendored `argsFor`
-     * STILL turns a `keepModel: true` into the retired flag
-     * (foundry-app/electron/job-queue.ts:2683, reported to the Foundry side),
-     * so setting it here would compose a command line the engine refuses at
-     * argument parsing. `--keep-model` typed on this door's own line is refused
-     * by name up top.
+     * `keepModel` is NOT set and CANNOT BE: `CleanRequest` has no such field
+     * since Foundry `81fdc30`, which deleted it along with the `--keep-model`
+     * push `646e8a1` had left behind in their `argsFor`. The engine neither
+     * loads nor unloads a model — residency is the operator's act before the
+     * spawn — and `--keep-model` typed on this door's own line is refused by
+     * name up top, because a dropped flag is worse than a refused one.
      */
     ...(concurrency !== undefined ? { concurrency } : {}),
   };

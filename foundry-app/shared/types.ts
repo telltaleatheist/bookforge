@@ -1012,16 +1012,6 @@ export interface CleanRequest {
    */
   concurrency?: number;
   /**
-   * `--keep-model`: leave the weights resident when the run ends.
-   *
-   * ABSENT IS THE RELEASE, and that is the engine's own default rather than a
-   * choice made here — `foundry clean-text` unloads with `keep_alive: 0` unless
-   * this says the Ollama is somebody else's (src/clean/runner.ts). So a cleanup
-   * that is not asked about hands the machine back, which is what a run finishing
-   * should mean; a caller doing several in a row sets it and pays the load once.
-   */
-  keepModel?: boolean;
-  /**
    * The reading these answers are about, carried into every row and interpreted by
    * nobody. `TranslateRequest.generation`, one command over.
    */

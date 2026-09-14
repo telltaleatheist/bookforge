@@ -111,24 +111,52 @@ test('a concurrency that is not a whole number of blocks is not passed on', () =
 });
 
 /*
- * THE VENDORED `argsFor` STILL SPELLS `--keep-model`, AND THE ENGINE NO LONGER
- * TAKES IT. Foundry `646e8a1` (v1.3.0) retired the flag with the Ollama dialect
- * but left `if (request.keepModel === true) args.push('--keep-model')` standing
- * in `foundry-app/electron/job-queue.ts:2683`; reported to the Foundry side and
- * NOT patched here, because the subtree is sealed.
+ * `--keep-model` IS NOT SPELLED ANYWHERE IN THE VENDORED APP, and this asks the
+ * SOURCE rather than one composed line.
  *
- * So this pins the HAZARD rather than the behaviour: a `keepModel: true` request
- * composes a command line the engine refuses at argument parsing, and the only
- * thing between that and a person is `cli/clean-step.js` never setting the field
- * and refusing `--keep-model` by name. The day Foundry deletes the push, this
- * test says so in its own message instead of going quietly green.
+ * The history, because the shape of this check is the whole of what was learned.
+ * Foundry `646e8a1` (v1.3.0) retired the flag with the Ollama dialect and left
+ * `if (request.keepModel === true) args.push('--keep-model')` standing in
+ * `job-queue.ts`. This side found it by grepping the copy, reported it, and for
+ * one vendor pinned it as a HAZARD — a test asserting the bad line was still
+ * there, so that the day it went the message would say so. `81fdc30` is that
+ * day: the push and `CleanRequest.keepModel` are both gone, the pin can never
+ * fire again, and a pin that can never fire is noise pretending to be a guard.
+ *
+ * What replaces it is the question the pin was standing in for: can any request
+ * this app can build reach the engine with a flag the engine refuses by name?
+ * A `argsFor({keepModel: true})` call would answer only about a field that no
+ * longer exists in the type — trivially true, and blind to the same mistake made
+ * with a different spelling on a different act's line. The grep is not: it holds
+ * the whole vendored `argsFor` and every line around it, and it fails the next
+ * time a refresh brings the string back on ANY command.
  */
-test('keepModel is a trap in the vendored argsFor, and nothing here sets it', () => {
+test('the vendored app spells no flag the engine retired, on any line', () => {
+  const vendored = path.join(REPO, 'foundry-app');
+  const retired = ['--keep-model', '--server', '--ollama'];
+  const offenders = [];
+  for (const rel of ['electron/job-queue.ts', 'shared/types.ts']) {
+    const source = fs.readFileSync(path.join(vendored, rel), 'utf8');
+    for (const flag of retired) {
+      /*
+       * THE FLAG AS A QUOTED STRING LITERAL, which is what reaches an argv —
+       * and the quote characters are `'` and `"` ONLY, deliberately. A backtick
+       * around a flag in those files is MARKDOWN IN A DOCBLOCK, and both files
+       * are full of it precisely because they explain the retirement: an earlier
+       * draft of this check included the backtick and failed on eight comments
+       * saying the flag is gone. Matching prose would make the keeper unrunnable
+       * the moment anybody documented the thing it guards.
+       */
+      if (new RegExp(`['"]${flag}['"]`).test(source)) offenders.push(`${rel} -> ${flag}`);
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    'the vendored app composes a flag foundry 646e8a1 (v1.3.0) refuses by name, so a request '
+    + 'crossing the seam would die at the engine\'s argument parser before a block was read');
+  // And the field itself is gone from the request shape, so nothing can ask.
+  assert.ok(!/keepModel/.test(fs.readFileSync(path.join(vendored, 'shared/types.ts'), 'utf8')),
+    'CleanRequest still declares keepModel, which is a door onto a flag that no longer exists');
   assert.ok(!argsFor({ ...BASE }).includes('--keep-model'));
-  assert.ok(!argsFor({ ...BASE, keepModel: false }).includes('--keep-model'));
-  assert.ok(argsFor({ ...BASE, keepModel: true }).includes('--keep-model'),
-    'the vendored argsFor stopped spelling --keep-model, so Foundry fixed job-queue.ts:2683. '
-    + 'Delete this test and the CleanRequest.keepModel note in cli/clean-step.js with it.');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

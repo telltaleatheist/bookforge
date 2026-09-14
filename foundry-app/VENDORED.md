@@ -10,9 +10,22 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **83d7b66** — *chore(release): 1.3.0 — the engine's CLI lost --server, --ollama and --keep-model with the Ollama dialect* (`app/` identical to `646e8a1`, tag `engine-one-door`) |
+| Source sha | **81fdc30** — *fix(app): the queue no longer spells --keep-model, which the engine refuses by name* |
+| Engine sha | **83d7b66** (v1.3.0) — the binary is UNMOVED by `81fdc30`, which touches `app/` only. See the note at the foot of this table. |
 | Copied on | 2026-09-13 |
-| Copied by | `git -C <foundry> archive 83d7b66 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 81fdc30 app | tar -x --strip-components=1` |
+
+**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER, and here they do.**
+`81fdc30` moves two files, both inside `app/`; `git log 83d7b66..81fdc30 -- src`
+is empty, so `dist/foundry-windows-x64.exe` still answers `foundry 1.3.0
+(83d7b66)` and rebuilding it would produce the same engine. That matters for
+`tools/test-foundry-clean-text-vendor.js`, whose tier-2 anchor is **the commit
+the BINARY reports** rather than the commit this subtree was copied from — by
+design, because BookForge spawns an installed binary that may be older than the
+checkout, newer than it, or the only foundry on a machine with no checkout. So
+that keeper says `Shipped (83d7b66)` while this table says `81fdc30`, and the two
+are consistent rather than drifted: one names the code that RUNS, the other the
+code that is COMPILED INTO THIS APP. They re-converge at Foundry's next release.
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1290,3 +1303,48 @@ pins nothing and installs the newest release, which is the right behaviour and i
 The dev checkout's `dist/foundry-windows-x64.exe` already answers `foundry 1.3.0 (83d7b66)`, so a
 dev run matches; a managed install does not until the release is cut. Tracked as a Tier 3 line in
 `docs/CRUCIBLE_ROLLOUT_PLAN.md`.
+
+**81fdc30 (copied 2026-09-13) — the residue the last entry reported is gone, and it took
+the field with it.** The previous refresh recorded, as a thing found by grepping the copy
+rather than by reading the handoff note, that `electron/job-queue.ts:2683` still carried
+`if (request.keepModel === true) args.push('--keep-model')` after `646e8a1` had retired
+the flag from the engine. Foundry's fix is the whole of this delta: the push is deleted
+and so is `CleanRequest.keepModel` (`shared/types.ts`), which is the better half of it —
+a field left standing is a door onto a flag that no longer exists, and the next caller to
+find it would have written a command line that dies at the engine's argument parser
+before a block is read.
+
+**The engine did NOT move and this copy does not ask it to.** `git diff --stat 83d7b66
+81fdc30` is exactly two files, both under `app/`; `git log 83d7b66..81fdc30 -- src` is
+empty. The 1.3.0 binaries stand, the managed-component gap recorded in the last entry is
+unchanged (still v1.2.0 on GitHub until Owen cuts the release), and nothing about
+`foundry-cli-components.ts` needed to move.
+
+**BookForge's side dropped a keeper rather than gaining one.** `tools/test-clean-step-door.js`
+had pinned the defect as a HAZARD — a test asserting the bad line was still there, whose
+failure message said "Foundry fixed it, delete me". That message has now been earned, so
+the pin is gone: a pin that can never fire again is noise pretending to be a guard. What
+stands in its place is the question the pin was standing in for, asked of the SOURCE
+rather than of one composed line — **no retired flag (`--keep-model`, `--server`,
+`--ollama`) appears as a quoted string literal anywhere in `electron/job-queue.ts` or
+`shared/types.ts`**, so the next refresh that brings one back on ANY command's line fails
+by name. Quote characters are `'` and `"` only and the reason is written at the regex:
+both files are full of backticked prose ABOUT the retirement, and an earlier draft that
+matched markdown failed on eight comments explaining the fix.
+
+Left standing and deliberately not failed on: `server?: LlmServerKind` survives on three
+request types (`shared/types.ts` 787/1001/1160). It is inert on every argv — `modelArgs`
+stopped reading it at `646e8a1` — and Foundry's note says it is still read by their
+settings screen to pick WHICH URL to hand over, retiring with the picker rework. That is
+a different case from `keepModel`, which `argsFor` was actually WRITING; the keeper
+above tests what reaches a command line, which is the thing that can break a run.
+
+Verification: **145/145 blobs** hash-verified against `81fdc30:app/` with `git hash-object`
+vs `git rev-parse`, and the only files in the subtree that are not in `app/` are this note
+and `IPC-CHANNELS.md`. `IPC-CHANNELS.md` byte-identical to `81fdc30:docs/` and to the copy
+already here — no channel moved, collision keeper 6/6. `package.json`, `package-lock.json`,
+`angular.json` and all three `tsconfig*.json` unmoved from `83d7b66`, so the existing
+`node_modules` stands and no install was run; `node_modules` confirmed a real directory
+(`LinkType` empty) before anything was removed, per the worktree-hygiene rule. `npm run
+build` clean, ng 957.01 kB with the standing budget WARNING only; `npx tsc -p
+tsconfig.electron.json` clean; all foundry keepers green.

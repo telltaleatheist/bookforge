@@ -2675,12 +2675,11 @@ export function argsFor(
       args.push('--concurrency', String(request.concurrency));
     }
     /*
-     * `--keep-model`, and only ever to say KEEP. The engine releases the weights at
-     * the end of a run on its own; there is no flag for "release" and this must not
-     * invent one, so `false` and absent are the same line — which is right, because
-     * they are the same request.
+     * NO `--keep-model` ANY MORE. The engine neither loads nor unloads a model
+     * since Owen's ruling of 2026-09-13 — the operator owns what is resident —
+     * so the flag is gone from the engine and a line carrying it would die at
+     * its argument parser before a block was read.
      */
-    if (request.keepModel === true) args.push('--keep-model');
     /*
      * The reading these answers are about, written into every row and read by
      * nobody in the engine — `Overlay.generation`'s contract, exactly as the
