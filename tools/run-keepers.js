@@ -300,6 +300,16 @@ const SUITES = [
   // `llama-windows` engine answers for the five WSL-only classes with ONE
   // sentence so a screen says it once.
   'test-crucible-settings-seam',
+  // THE CONNECT CODE ON THIS MACHINE, and the two places BookForge's reader and
+  // the SDK's do not agree. Split out of the seam suite when the Phase 15 SDK
+  // shipped and that seam was deleted: `electron/crucible/pairing-file.ts` did
+  // NOT go with it, because the SDK's reader is async (a packaging rule of
+  // theirs) while `readLocalServer` is synchronous (an architectural constraint
+  // of ours), and because the SDK's path rule omits the Windows case PHASE15
+  // §3.6's table pins. Section 3 of this suite asserts both disagreements
+  // EXPLICITLY rather than leaving them in a comment — the day either ends,
+  // the check goes red and says what to delete.
+  'test-crucible-pairing-file',
   // PHASE 15 §5.2, the half of it that reaches a person: "settings are the
   // engine's; the app draws a window". The suite above proves the wire; this
   // one proves the WINDOW. Four IPC doors — and the two new read/write ones

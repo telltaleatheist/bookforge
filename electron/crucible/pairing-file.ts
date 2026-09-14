@@ -1,20 +1,58 @@
 /**
  * THE CONNECT CODE THE ENGINE ON THIS MACHINE LEFT FOR AN APP TO FIND.
  *
- * crucible `docs/PHASE15-HOST.md` §3.6 and §5.1. `crucible init`, `service
- * install` and the Windows host write the pairing line to a user-only file on
- * the machine the server runs on, so an app on that machine connects **without
- * anyone typing a token**. That is the first of connect's three ways, and the
- * only one that needs no person.
+ * crucible `docs/PHASE15-HOST.md` §3.6 and §5.1. `crucible init`, `crucible
+ * service install` and the Windows host write the pairing line to a user-only
+ * file on the machine the server runs on, so an app on that machine connects
+ * **without anyone typing a token**. That is the first of connect's three
+ * ways, and the only one that needs no person.
  *
- * ── Why it is its own module ───────────────────────────────────────────────
+ * ── WHY THIS IS NOT `@crucible/client`'s `readPairingFile` ─────────────────
  *
- * It is part of the same dated seam as `settings-wire.ts` — the SDK is growing
- * `readPairingFile()` (§3.8) and both go the day it lands — and that file
- * re-exports this one so there is a single name to delete. It is SPLIT out
- * because `local.ts` reads the pairing file, `servers.ts` reads `local.ts`, and
- * `settings-wire.ts` reads `servers.ts`: one file would be a require cycle
- * through three modules that each own a different fact.
+ * The SDK grew one on 2026-09-14 and this file did NOT go with the rest of the
+ * seam it belonged to (`settings-wire.ts`, deleted the same day). Two reasons,
+ * both dated, and each names the condition that ends it.
+ *
+ * **1. The SDK's is ASYNC and this read is on a SYNCHRONOUS path.** The SDK's
+ * own header says why it is async, and the reason is a packaging rule rather
+ * than anything about the operation: a static `import … from 'node:fs'` would
+ * put fs into the module graph of `import {CrucibleClient}` and break a
+ * bundler targeting a browser-ish runtime, so its imports are assembled at run
+ * time and a dynamic import is a promise. `cruciblePairingPath` is async for
+ * the same reason, so even the PATH cannot be had synchronously.
+ *
+ * BookForge's side of the meeting is the opposite constraint, and it is
+ * architectural rather than stylistic: {@link readLocalServer} is synchronous
+ * because `servers.ts`'s registry, `routing.ts`'s `readRouting()` and the
+ * hosted-Foundry snapshot all are, and `readRouting()` is called inside the
+ * queue's synchronous pump (`crucibleAdmission`). `host-registry.ts`'s header
+ * sets out what that costs and why it is paid. Making the local-server
+ * resolution async is a real refactor of the scheduler's read path; it is not
+ * something to do on the way past.
+ *
+ * **ENDS WHEN:** the local-server resolution becomes async, or the SDK grows a
+ * synchronous variant. Then this file is deleted and the callers await.
+ *
+ * **2. The SDK's path rule does not carry the Windows case the contract pins.**
+ * §3.6's table is explicit — on Windows the file is
+ * `%LOCALAPPDATA%\Crucible\pairing`, beside `wsl\`, `downloads\` and
+ * `host\`, because the thing that writes a Windows-side copy is `crucible
+ * host` and that is its per-machine root. `cruciblePairingPath` implements
+ * `$CRUCIBLE_HOME`, else `~/.crucible/pairing`, on **every** platform.
+ *
+ * That is a fact with two owners, which is the defect the contract exists to
+ * prevent, and it is not BookForge's to settle: the doc is the owner
+ * (PHASE15's preamble — *"every name on the wire has one owner, and that owner
+ * is this file"*), so this file implements the DOC. It is reported rather than
+ * absorbed, and `tools/test-crucible-pairing-file.js` asserts the disagreement
+ * EXPLICITLY so nobody inherits it silently: the day the SDK adds the Windows
+ * case, that check goes red and says what to do.
+ *
+ * It is not load-bearing today — on Windows the writer is `crucible host`,
+ * which does not exist yet, so there is no file at either path and the
+ * `config.toml`-through-`wsl.exe` door is the live one (§3.6 dates that door
+ * too). It becomes load-bearing the moment the host ships, and then whichever
+ * of the two is wrong finds nothing and offers to install a second engine.
  *
  * ── `null` IS THE ANSWER, NOT A GAP ────────────────────────────────────────
  *
@@ -23,7 +61,8 @@
  * 'paste one'."* A laptop that renders on the Mac has no engine of its own and
  * is not broken. A file that EXISTS and is not a connect code is a different
  * thing and throws: something wrote where the engine keeps its credential, and
- * reading that as "no engine" would hide it for ever.
+ * reading that as "no engine" would send somebody to install a second one over
+ * the top of one that is already running.
  */
 import * as fs from 'fs';
 import * as os from 'os';

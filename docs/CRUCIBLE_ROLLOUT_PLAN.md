@@ -142,6 +142,41 @@ round as the first: it passes while `foundry-app/electron/cloud-providers.ts` an
 dispatcher's `slot.kind === 'cloud'` are still there, and goes red the day they are not —
 which is the day the target is reachable, not the day something broke.
 
+### OWED TO THE CRUCIBLE SIDE: the pairing file has two implementations that disagree
+
+Found 2026-09-14 when the Phase 15 SDK was vendored and BookForge's stand-in was deleted.
+`@crucible/client` now exports `readPairingFile()` and `cruciblePairingPath()`, and BookForge
+kept its own reader for two reasons. The first is ours and is fine; the second is a conflict
+somebody else has to settle.
+
+1. **The SDK's is ASYNC and BookForge's read is on a SYNCHRONOUS path.** The SDK says why in
+   its own header, and the reason is a packaging rule rather than anything about the
+   operation: a static `node:fs` import would break a bundler targeting a browser-ish
+   runtime, so its imports are assembled at run time and a dynamic import is a promise —
+   `cruciblePairingPath` is async too, so even the PATH cannot be had synchronously.
+   BookForge's `readLocalServer` is synchronous because the registry, `readRouting()` and the
+   hosted-Foundry snapshot all are, and `readRouting()` runs inside the queue's synchronous
+   pump. Ours, ours to fix, and not on the way past.
+2. **THE SDK'S PATH RULE DOES NOT CARRY THE WINDOWS CASE §3.6 PINS.** The table in §3.6 says
+   `%LOCALAPPDATA%\Crucible\pairing` on Windows, beside `wsl\`, `downloads\` and `host\`,
+   because the thing that writes a Windows-side copy is `crucible host` and that is its
+   per-machine root. `cruciblePairingPath` implements `$CRUCIBLE_HOME`, else
+   `~/.crucible/pairing`, on **every** platform. That is one name with two owners.
+
+   BookForge implements the DOC, because the doc is the owner (PHASE15's preamble). **It is
+   not load-bearing today** — on Windows the writer is `crucible host`, which does not exist,
+   so there is no file at either path and the `config.toml`-through-`wsl.exe` door is the live
+   one. It becomes load-bearing the moment the host ships, and then whichever of the two is
+   wrong finds nothing and offers to install a second engine over a running one.
+
+   **Needs a ruling from the Crucible side: change the SDK, or change §3.6.** Either way
+   `tools/test-crucible-pairing-file.js` goes red the day they agree, and says what to delete.
+3. A third, small: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
+   applying the SDK's own argument — its header says a malformed file must throw "because a
+   line somebody's installer wrote badly is a broken install, and answering 'there is no
+   server here' would send the user to install a second one", and a zero-length file is the
+   same broken install.
+
 ### What needs Owen
 
 1. **The in-app pass, on a free card.** Everything in this section has met a fake server and
