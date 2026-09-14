@@ -85,6 +85,19 @@ import {
   type PrepSubProgress,
 } from '../shared/queue/engine-types';
 /*
+ * THE PER-ROW ROUTING VOCABULARY AND ITS ONE DECISION, kept pure and shared so
+ * the renderer's picker and this scheduler cannot drift on what `any` means or
+ * on what a hold says. See that file's header for the whole model.
+ */
+import {
+  decideWaitFor,
+  holdBusy,
+  LEGACY_LOCAL_NARRATOR,
+  WAIT_FOR_ANY,
+  type ServerState,
+  type WaitForServer,
+} from '../shared/queue/wait-for';
+/*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
  * modules rather than restated here. It is a pure function over a config and an
  * artifact (no Electron, no window), which is why the engine can import it from
@@ -172,6 +185,21 @@ export interface StepModule {
    * latency and belongs in the cpu pool; the same pass against Ollama is the GPU.
    */
   resource(config: Record<string, unknown>): StepResource;
+  /**
+   * WHICH MACHINES THIS STEP CAN RUN ON (crucible `docs/PHASE7-LANES.md` §4).
+   *
+   * Absent means `local`, and defaulting to `local` is the whole safety
+   * property: **a step that has not been taught to travel does not travel.** A
+   * module that spawns a python env here keeps behaving exactly as it does now,
+   * and registering a Crucible server can never silently break a render. The
+   * alternative default would hand a locally-spawning step a remote machine,
+   * and it would either fail on a path that does not exist or — far worse — run
+   * locally while occupying a remote slot.
+   *
+   * A function of the config for `resource`'s reason: the same step can be a
+   * different thing depending on what it was asked to do.
+   */
+  machines?(config: Record<string, unknown>): 'local' | 'any';
   /**
    * Whether stopping this step leaves work that can be picked up. TTS does — the
    * rendered sentences are on disk and a resume skips them — so a stop leaves the
@@ -306,6 +334,12 @@ interface RunningStep {
   resource: StepResource;
   /** Set when the user asked for this to stop, so the outcome is read as a stop. */
   stopRequested: boolean;
+  /**
+   * Set when the server refused this submit `409 server_busy`. The step's own
+   * failure is then read as a WAIT: it settles back to `queued` carrying this
+   * line, not `failed`. See {@link noteStepBusy}.
+   */
+  busyLine?: string;
 }
 const runningSteps = new Map<string, RunningStep>();
 
@@ -527,6 +561,7 @@ function buildStep(
     parentStepId,
     sourceRef: spec.sourceRef,
     resource: spec.resource ?? mod.resource(spec.config),
+    travels: mod.machines !== undefined && mod.machines(spec.config) === 'any',
     status: held ? 'held' : (parentStepId === SOURCE_PARENT ? 'queued' : 'waiting'),
     progress: {},
     metrics: {},
@@ -727,6 +762,24 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
     job.steps.push(step);
   });
 
+  /*
+   * WHICH SERVER THIS BOOK WAITS FOR, written HERE and written VISIBLY.
+   *
+   * §4.2.1a: the default is a setting, and the row displays what it will do.
+   * Only a run that carries a step which can travel gets the field at all — a
+   * pass, an assembly and a VLM read have no Crucible question to answer, and
+   * a field on those would be a value nothing reads (the representable state
+   * §4.2.3 spent two drafts removing).
+   *
+   * `null` from the host means there was nothing to name. The field stays
+   * ABSENT and admission says so by name; it is not defaulted to `any`, which
+   * would be a silent routing decision nobody made.
+   */
+  if (crucibleHost !== null && jobTravels(job)) {
+    const wanted = crucibleHost.defaultWaitFor();
+    if (wanted !== null) job.waitFor = wanted;
+  }
+
   jobs.push(job);
   changed();
   if (opts?.deferPump === true) setImmediate(() => pump());
@@ -773,6 +826,13 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
   checkLineage(step, parent);
   if (parent && parent.status === 'done') step.status = jobIsHeld ? 'held' : 'queued';
   job.steps.push(step);
+  // A run that acquires its first travelling step acquires the question with
+  // it. Same rule as `enqueue`, and never overwritten: a run that already has
+  // an answer keeps it, because appending is not a re-routing.
+  if (crucibleHost !== null && job.waitFor === undefined && step.travels === true) {
+    const wanted = crucibleHost.defaultWaitFor();
+    if (wanted !== null) job.waitFor = wanted;
+  }
   if (job.finishedAt) job.finishedAt = undefined;
   changed();
   // Deferred on the same reasoning as `enqueue`'s: the Foundry host queue
@@ -1109,6 +1169,124 @@ export function updateStepConfig(stepId: string, patch: Record<string, unknown>)
   );
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// The per-row routing doors
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Point one book at a server, or at `any`.
+ *
+ * Editable while the row is QUEUED and refused once the book has been assigned
+ * — §4.3, a job is atomic, so the machine a book started on is not a setting
+ * any more. Refused by name for a server this machine does not have, because
+ * silently accepting it would produce a row that can only ever hold.
+ */
+export function setWaitFor(jobId: string, value: string): void {
+  const job = requireJob(jobId);
+  if (!jobTravels(job)) {
+    throw new Error(
+      `${job.title} has no step that can run on a Crucible server, so there is nothing for it to `
+      + 'wait for. Only the narration step travels today.',
+    );
+  }
+  if (job.waitForResolved !== undefined) {
+    throw new Error(
+      `${job.title} is already running on ${job.waitForResolved}, and a book finishes on the `
+      + 'machine it started on. Cancel it and queue it again to send it somewhere else.',
+    );
+  }
+  if (value !== WAIT_FOR_ANY) {
+    const host = crucibleHost;
+    if (host === null) {
+      throw new Error(
+        'This build did not wire the queue\'s Crucible routing, so it cannot check that server '
+        + 'name. That is a bug in BookForge.',
+      );
+    }
+    const known = host.routing().ranked.map((row) => row.name);
+    if (!known.includes(value)) {
+      throw new Error(
+        `"${value}" is not one of this machine's Crucible servers `
+        + `(${known.length === 0 ? 'there are none' : known.join(', ')}).`,
+      );
+    }
+  }
+  job.waitFor = value;
+  // The hold on its steps was about the OLD answer. Retiring it here rather
+  // than leaving it for the next pump keeps the row from showing "waiting for
+  // mac: disabled" one tick after the operator moved it off mac.
+  for (const step of job.steps) {
+    if (step.status === 'queued') clearAdmissionHold(step);
+  }
+  changed();
+  pump();
+}
+
+/**
+ * HOW MANY QUEUED BOOKS NAME EACH SERVER — the count §4.2.1a asks for.
+ *
+ * *"12 rows are waiting for this PC, which is now disabled."* Disabling a
+ * server that queued rows name must SURFACE them: they are told, never moved,
+ * because a named server is an instruction and re-routing twenty books onto
+ * slower hardware without being asked is the failure the whole section exists
+ * to prevent. Leaving the operator to discover it one row at a time is the
+ * other failure, and this is half the answer to both — {@link bulkWaitFor} is
+ * the other half.
+ *
+ * Counts LIVE runs only, and only those not yet assigned: a book already
+ * running on a machine is not waiting for anything.
+ */
+export function waitForCounts(): { counts: Record<string, number>; unset: number } {
+  const counts: Record<string, number> = {};
+  let unset = 0;
+  for (const job of jobs) {
+    if (!jobTravels(job)) continue;
+    if (job.waitForResolved !== undefined) continue;
+    const status = jobStatus(job);
+    if (TERMINAL_STEP_STATUSES.has(status)) continue;
+    if (job.waitFor === undefined) { unset += 1; continue; }
+    counts[job.waitFor] = (counts[job.waitFor] ?? 0) + 1;
+  }
+  return { counts, unset };
+}
+
+/**
+ * Move every queued book that names one server onto another answer — the
+ * one-click bulk change beside the count.
+ *
+ * `from` is a server name, or `null` for the books that say nothing at all
+ * (the migration). Returns how many moved, so the caller can say it.
+ */
+export function bulkWaitFor(from: string | null, to: string): number {
+  let moved = 0;
+  for (const job of jobs) {
+    if (!jobTravels(job) || job.waitForResolved !== undefined) continue;
+    if (TERMINAL_STEP_STATUSES.has(jobStatus(job))) continue;
+    if (from === null ? job.waitFor !== undefined : job.waitFor !== from) continue;
+    setWaitFor(job.id, to);
+    moved += 1;
+  }
+  return moved;
+}
+
+/**
+ * THE MIGRATION, REPORTED ONCE, BY NAME — or null when there was nothing to
+ * report.
+ *
+ * A queue file written before `waitFor` existed holds runs that CAN travel and
+ * say nothing about where. That is not a crash and it is not a silent default:
+ * the honest reading is that those rows carry no instruction, because nobody
+ * was ever asked, so the field stays absent, admission holds them with
+ * {@link holdNoAnswer}'s sentence, and this line names them once at load so the
+ * operator does not have to find them one at a time.
+ *
+ * Set by `reviveInterrupted` on every load and read by main, which logs it.
+ */
+let migrationReport: string | null = null;
+export function waitForMigrationReport(): string | null {
+  return migrationReport;
+}
+
 /** Drop the runs that are over. */
 export function clearFinished(): void {
   const before = jobs.length;
@@ -1282,6 +1460,227 @@ export function setGpuLockProbe(probe: () => string | null): void {
   gpuLockProbe = probe;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Crucible admission: which server this book waits for
+// ────────────────────────────────────────────────────────────────────────────
+//
+// The second half of GPU admission, and it applies ONLY to a step whose module
+// says it can travel (`machines()`). Everything else is unchanged: the lock
+// file and the arbiter, because those describe this machine's card.
+//
+// Injected rather than imported, for the property this whole file keeps: no
+// Electron, no registry, no HTTP. `queue-ipc.ts` wires it to the real routing
+// record and a real `ping`; the keeper drives every branch with a scripted
+// record and a scripted prober.
+
+/** What the scheduler needs to know about this machine's Crucible servers. */
+export interface CrucibleRoutingHost {
+  /**
+   * Every server in rank order (disabled ones included), the legacy switch, and
+   * which of those names is THIS machine's own server.
+   *
+   * `localName` is asked for rather than assumed because the reserved name is
+   * `electron/crucible/local.ts`'s to spell, and an engine that hard-coded the
+   * word `local` would be a second owner of it (crucible `docs/ARCHITECTURE.md`
+   * R1). It is what decides whether this machine's GPU lock and arbiter have
+   * anything to say about a step: work bound for the Mac must not wait on them.
+   */
+  routing(): { ranked: WaitForServer[]; legacyLocalRender: boolean; localName: string | null };
+  /**
+   * What a NEW row's `waitFor` is written as — the top-ranked server's NAME, or
+   * `any` (crucible `docs/PHASE7-LANES.md` §4.2.1a).
+   *
+   * `null` means THERE IS NOTHING TO NAME: no server is registered, or every
+   * one is disabled, and the setting says `top-ranked`. The row is then queued
+   * with no answer and admission says so by name — see `holdNoAnswer`. Writing
+   * a name there would be the manufactured instruction §4.2.1a exists to
+   * prevent, and writing `any` would be a silent default.
+   */
+  defaultWaitFor(): string | null;
+  /** One unauthenticated reachability check. Never admission — the door decides. */
+  reach(server: string): Promise<{ reachable: true } | { reachable: false; detail: string }>;
+}
+
+let crucibleHost: CrucibleRoutingHost | null = null;
+
+/** main wires this once, in `startQueueEngine`. The keeper passes a fake. */
+export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
+  crucibleHost = host;
+  reachCache.clear();
+  busyHolds.clear();
+}
+
+interface ReachEntry {
+  at: number;
+  /** `null` while the probe is in flight — asked, not yet answered. */
+  answer: { reachable: true } | { reachable: false; detail: string } | null;
+}
+
+/**
+ * What each server last said, and when.
+ *
+ * A CACHE OF THIS CLIENT'S OWN OBSERVATIONS, never of the server's capacity: it
+ * answers "did the address answer when we asked", which is the only thing a
+ * poll can honestly answer (crucible `docs/PHASE7-LANES.md` §2.5). Whether
+ * there is room is settled at the door by `POST /v1/jobs`, and a 409 arrives
+ * through {@link noteStepBusy} rather than through anything here.
+ *
+ * It expires on the admission recheck cadence, so a server that came back up is
+ * re-asked on the next tick rather than staying unreachable until a restart.
+ */
+const reachCache = new Map<string, ReachEntry>();
+
+/** One server's 409, held for a cool-off so the queue does not hammer the door. */
+interface BusyHold {
+  line: string;
+  until: number;
+}
+const busyHolds = new Map<string, BusyHold>();
+
+function reachTtlMs(): number {
+  return admissionRecheckMs;
+}
+
+function serverState(name: string): ServerState {
+  const busy = busyHolds.get(name);
+  if (busy !== undefined) {
+    if (busy.until > Date.now()) return { kind: 'busy', line: busy.line };
+    busyHolds.delete(name);
+  }
+  const entry = reachCache.get(name);
+  if (entry === undefined) return { kind: 'unknown' };
+  // In flight, or stale. Both are "nobody has a current answer", and the
+  // difference matters only to `askReach`, which will not ask twice.
+  if (entry.answer === null) return { kind: 'unknown' };
+  if (Date.now() - entry.at > reachTtlMs()) return { kind: 'unknown' };
+  return entry.answer.reachable
+    ? { kind: 'ready' }
+    : { kind: 'unreachable', detail: entry.answer.detail };
+}
+
+/** Ask one server whether it answers, once, and pump again when it says. */
+function askReach(name: string): void {
+  const host = crucibleHost;
+  if (host === null) return;
+  const entry = reachCache.get(name);
+  if (entry !== undefined && entry.answer === null) return; // already in flight
+  reachCache.set(name, { at: Date.now(), answer: null });
+  void host.reach(name)
+    .then((answer) => { reachCache.set(name, { at: Date.now(), answer }); })
+    .catch((err) => {
+      // A prober that THREW is not a reachable server, and it is not silence
+      // either: the throw is the detail.
+      reachCache.set(name, {
+        at: Date.now(),
+        answer: { reachable: false, detail: `${(err as Error)?.message || String(err)}.` },
+      });
+    })
+    .finally(() => { pump(); });
+}
+
+/**
+ * A 409 `server_busy` came back from a submit. THIS IS A WAIT, NOT A FAILURE.
+ *
+ * crucible `docs/ARCHITECTURE.md` §3 and PHASE7-LANES §6: it is the one answer
+ * that is never the step's fault, it names the holder, and the client's own
+ * queue holds the row and retries. So the step settles back to `queued` with
+ * the holder's line on it (see `settleStep`), and the server is held off for
+ * one admission tick so the queue does not hammer a door it has just been told
+ * is shut.
+ *
+ * Keyed by SERVER, not by row: every book waiting on that machine is waiting on
+ * the same job, and telling one of them while the others retry in a loop would
+ * be the tight polling `busyLine` exists to avoid.
+ *
+ * A no-op for a step id the queue does not know — a CLI or headless render
+ * passes its own id, and a message about a row that does not exist is a message
+ * in flight, not a state to invent.
+ */
+export function noteStepBusy(stepId: string, busyLine: string): void {
+  const found = findStep(stepId);
+  if (!found) return;
+  const server = found.job.waitForResolved ?? found.job.waitFor;
+  if (server === undefined || server === WAIT_FOR_ANY) return;
+  busyHolds.set(server, { line: busyLine, until: Date.now() + admissionRecheckMs });
+  const live = runningSteps.get(stepId);
+  if (live) live.busyLine = busyLine;
+}
+
+/** Does this run carry a step that can be sent to a Crucible server? */
+function jobTravels(job: QueueJob): boolean {
+  return job.steps.some((step) => step.travels === true);
+}
+
+function stepTravels(type: JobType, config: Record<string, unknown>): boolean {
+  const mod = modules.get(type);
+  if (!mod || mod.machines === undefined) return false;
+  return mod.machines(config ?? {}) === 'any';
+}
+
+/**
+ * WHERE THIS STEP RUNS, or why it is not running yet.
+ *
+ * Synchronous on purpose — the pump is — so every network answer it needs has
+ * either been cached already or is asked for here and decided on the next pass.
+ */
+type CrucibleAdmission =
+  | {
+      ok: true;
+      venue: string;
+      /**
+       * The work lands on THIS machine's card — the local Crucible, or the
+       * legacy narrator spawn. It is what decides whether the external GPU lock
+       * and the arbiter are asked about this step at all.
+       */
+      onThisMachine: boolean;
+    }
+  | { ok: false; reason: string };
+
+function crucibleAdmission(job: QueueJob): CrucibleAdmission {
+  const host = crucibleHost;
+  if (host === null) {
+    // NOT a fallback to the local card: a build whose queue cannot ask where a
+    // render goes must say so, not quietly take this machine's GPU.
+    return {
+      ok: false,
+      reason: 'Waiting: this build did not wire the queue\'s Crucible routing, so nothing can say '
+        + 'where this book renders. That is a bug in BookForge, not a setting.',
+    };
+  }
+
+  let record: { ranked: WaitForServer[]; legacyLocalRender: boolean; localName: string | null };
+  try {
+    record = host.routing();
+  } catch (err) {
+    // A corrupt routing record is refused by `routing.ts`, in its own words,
+    // and those words carry the repair. They are shown rather than replaced.
+    return { ok: false, reason: `Waiting: ${(err as Error)?.message || String(err)}` };
+  }
+
+  const verdict = decideWaitFor({
+    waitFor: job.waitFor,
+    resolved: job.waitForResolved,
+    ranked: record.ranked,
+    legacyLocalRender: record.legacyLocalRender,
+    state: serverState,
+  });
+
+  switch (verdict.kind) {
+    case 'legacy-local':
+      return { ok: true, venue: LEGACY_LOCAL_NARRATOR, onThisMachine: true };
+    case 'run':
+      return {
+        ok: true,
+        venue: verdict.server,
+        onThisMachine: record.localName !== null && verdict.server === record.localName,
+      };
+    case 'ask':
+      askReach(verdict.server);
+      return { ok: false, reason: verdict.sentence };
+    case 'hold': return { ok: false, reason: verdict.sentence };
+  }
+}
+
 function gpuAdmission(): { ok: true } | { ok: false; reason: string } {
   const lock = gpuLockProbe();
   if (lock) {
@@ -1397,6 +1796,56 @@ export function pump(): void {
         continue;
       }
       if (step.resource === 'gpu') {
+        /*
+         * TWO ADMISSIONS, AND THEY ARE ABOUT DIFFERENT MACHINES.
+         *
+         * The Crucible one is asked FIRST because its answer says whose card
+         * this step wants. The lock file and the arbiter describe THIS
+         * machine's card, so they are asked only when the work is coming here:
+         * a book bound for the Mac must not wait on a training chain that is
+         * holding the 3090 Ti (crucible `docs/PHASE7-LANES.md` §2.5 — "a step
+         * running on a remote machine does not hold the LOCAL card's slot").
+         *
+         * RULING OWED: it still holds the local GPU *slot*, because
+         * `RESOURCE_SLOTS.gpu` is one global number. §2.4's per-server slot
+         * sets are not built, so two books cannot render on two machines at
+         * once yet. That is the next piece, and it is a scheduler change rather
+         * than a routing one.
+         *
+         * RULING OWED: §4.4 says every step of one book runs on the machine the
+         * book was assigned, and today only the RENDER can travel — so a book
+         * sent to the Mac still does its RVC pass and its align here, on this
+         * machine's card, under the local admission below. That is §4's safety
+         * default working as written (a step that has not been taught to travel
+         * does not travel) rather than a violation of §4.4, but it is not what
+         * §4.4 describes and the difference should be ruled on rather than
+         * discovered.
+         */
+        const routed = step.travels === true
+          ? crucibleAdmission(job)
+          : { ok: true as const, venue: LEGACY_LOCAL_NARRATOR, onThisMachine: true };
+        if (!routed.ok) {
+          admissionBlocked = true;
+          if (step.progress.admissionHold !== routed.reason) {
+            step.progress = {
+              ...step.progress,
+              message: routed.reason,
+              admissionHold: routed.reason,
+            };
+            touchProgress();
+          }
+          continue;
+        }
+        // THE BOOK IS ASSIGNED, and it stays assigned (§4.3). Recorded before
+        // the local checks below, so a row that then waits for the card is
+        // already pinned to the machine it will run on. Only for a step that
+        // travels: nothing else has a venue to record.
+        if (step.travels === true) job.waitForResolved = routed.venue;
+        if (!routed.onThisMachine) {
+          clearAdmissionHold(step);
+          void launch(job, step);
+          continue;
+        }
         const admission = gpuAdmission();
         if (!admission.ok) {
           // Said on the row, not swallowed. A queue that appears to be doing
@@ -1546,8 +1995,35 @@ type StepOutcome =
 function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void {
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
+  const busyLine = live?.busyLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
+
+  /*
+   * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
+   *
+   * The submit was refused because that machine is running somebody else's
+   * job, so nothing about this row is wrong and nothing of its work is lost —
+   * it never started. It goes back to `queued` carrying the holder's own line,
+   * and the ordinary admission tick tries again. Failing it instead would put
+   * an error on a row nobody did anything wrong on, and `retry()` — which
+   * resets failures — would be the only way back.
+   *
+   * Handled FIRST, before the thermal accumulator and every other branch,
+   * because this is the one outcome that is not an ending.
+   */
+  if (!outcome.ok && busyLine !== undefined && !stopped) {
+    takeThermalSummary(step.id);
+    step.status = 'queued';
+    step.finishedAt = undefined;
+    step.startedAt = undefined;
+    step.error = undefined;
+    const reason = holdBusy(job.waitForResolved ?? job.waitFor ?? 'that server', busyLine);
+    step.progress = { ...step.progress, percent: undefined, message: reason, admissionHold: reason };
+    changed();
+    pump();
+    return;
+  }
 
   // What the card went through, onto the run's analytics — however it ended.
   // A run that was stopped BECAUSE the machine was cooking is exactly the one
@@ -1744,6 +2220,11 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   jobs = [];
   running = false;
   runningSteps.clear();
+  // Observations about servers belong to a session, not to a queue file: a
+  // machine that was unreachable when the app last shut down is not thereby
+  // unreachable now.
+  reachCache.clear();
+  busyHolds.clear();
 
   const loaded = await loadState();
   if (!loaded) {
@@ -1792,6 +2273,7 @@ async function loadState(): Promise<boolean> {
  * marked interrupted: present, not auto-picked, and resumable by Start.
  */
 function reviveInterrupted(): void {
+  migrationReport = null;
   for (const job of jobs) {
     for (const step of job.steps) {
       /*
@@ -1810,7 +2292,13 @@ function reviveInterrupted(): void {
        */
       if (!TERMINAL_STEP_STATUSES.has(step.status)) {
         const mod = modules.get(step.type);
-        if (mod) step.resource = mod.resource(step.config ?? {});
+        if (mod) {
+          step.resource = mod.resource(step.config ?? {});
+          // Same rule, same reason: the module is the authority on whether this
+          // step can travel, and a build that teaches one to must be able to
+          // say so about work already in the queue.
+          step.travels = stepTravels(step.type, step.config ?? {});
+        }
       }
       const retired = RETIRED_JOB_TYPES.get(step.type);
       if (retired && step.status !== 'done') {
@@ -1833,6 +2321,29 @@ function reviveInterrupted(): void {
       }
     }
   }
+  migrationReport = describeWaitForMigration(jobs);
+}
+
+/**
+ * The one line a queue written before `waitFor` existed earns — see
+ * {@link waitForMigrationReport}. Pure, so the keeper reads it directly.
+ *
+ * A run counts only when it can travel, is not finished, and has not already
+ * been assigned: a book that is running on a machine answered the question by
+ * doing it, and a finished one is history.
+ */
+export function describeWaitForMigration(list: readonly QueueJob[]): string | null {
+  const named: string[] = [];
+  for (const job of list) {
+    if (!job.steps.some((step) => step.travels === true)) continue;
+    if (job.waitFor !== undefined || job.waitForResolved !== undefined) continue;
+    if (job.steps.length > 0 && TERMINAL_STEP_STATUSES.has(jobStatus(job))) continue;
+    named.push(job.title);
+  }
+  if (named.length === 0) return null;
+  return `${named.length} queued run(s) were composed before BookForge could name a Crucible `
+    + `server, so they do not say where to render: ${named.join(', ')}. Each one holds until a `
+    + 'server is chosen for it — pick one on the queue page, or set them all to Any.';
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -453,6 +453,31 @@ export interface BookPlan {
   steps: PlannedStep[];
   /** True when nothing in the group is released — one Start covers all of it. */
   allHeld: boolean;
+  /**
+   * This book has a step that can run on a Crucible server, so the question
+   * *"which server should it wait for"* applies to it and the page draws a
+   * picker. False for a book of passes and assemblies, which travel nowhere
+   * (crucible `docs/PHASE7-LANES.md` §4: a step that has not been taught to
+   * travel does not travel).
+   */
+  travels: boolean;
+  /**
+   * What its runs SAY: a server's name, `any`, or `null` for a run that says
+   * nothing (§4.2.1a's two honest absences — see `shared/queue/wait-for.ts`).
+   *
+   * A LIST, distinct, in the order the runs were found, because a book can be
+   * spread across more than one run and they could disagree. One entry is the
+   * ordinary case and the picker shows it; more than one is a state the page
+   * says out loud rather than picking a winner from.
+   */
+  waitFor: Array<string | null>;
+  /**
+   * Where its work was actually sent, once it has been — a server's name, or
+   * `legacy-local-narrator`. Empty until the first GPU step is admitted; after
+   * that the picker is read-only, because a job finishes on the machine it
+   * started on (§4.3).
+   */
+  waitForResolved: string[];
 }
 
 /** A step inside a book plan: running ones are marked, not re-drawn. */
@@ -573,10 +598,24 @@ export function bookPlans(snapshot: QueueSnapshot): BookPlan[] {
     const key = job.projectId ?? job.id;
     let plan = byKey.get(key);
     if (plan === undefined) {
-      plan = { key, title: job.title, jobIds: [], steps: [], allHeld: true };
+      plan = {
+        key, title: job.title, jobIds: [], steps: [], allHeld: true,
+        travels: false, waitFor: [], waitForResolved: [],
+      };
       byKey.set(key, plan);
     }
     plan.jobIds.push(job.id);
+
+    if (job.steps.some((step) => step.travels === true)) {
+      plan.travels = true;
+      // Distinct, order-preserving: one entry is the ordinary case and two is a
+      // disagreement the page reports rather than resolves.
+      const says = job.waitFor ?? null;
+      if (!plan.waitFor.includes(says)) plan.waitFor.push(says);
+      if (job.waitForResolved !== undefined && !plan.waitForResolved.includes(job.waitForResolved)) {
+        plan.waitForResolved.push(job.waitForResolved);
+      }
+    }
 
     for (const step of job.steps) {
       if (TERMINAL_STEP_STATUSES.has(step.status)) continue;

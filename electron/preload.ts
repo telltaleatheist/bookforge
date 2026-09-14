@@ -1613,6 +1613,30 @@ export interface ElectronAPI {
     reorder: (jobId: string, beforeJobId: string | null) => Promise<{ success: boolean; error?: string }>;
     clearFinished: () => Promise<{ success: boolean; error?: string }>;
     updateStepConfig: (stepId: string, patch: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
+    /**
+     * WHICH CRUCIBLE SERVER THIS BOOK WAITS FOR — a server's name, or `any`
+     * (crucible `docs/PHASE7-LANES.md` §4.2.1).
+     *
+     * Editable while the row is queued; refused once the book has been
+     * assigned, because a job is atomic and finishes on the machine it started
+     * on. A name this machine does not have is refused by name.
+     */
+    setWaitFor: (jobId: string, value: string) => Promise<{ success: boolean; error?: string }>;
+    /**
+     * How many queued books name each server, and how many say nothing.
+     *
+     * What the Servers row shows beside a switch somebody just turned off:
+     * *"12 rows are waiting for this PC, which is now disabled."* They are
+     * TOLD, never moved — see {@link bulkWaitFor} for the one-click answer.
+     */
+    waitForCounts: () => Promise<{
+      success: boolean;
+      data?: { counts: Record<string, number>; unset: number };
+      error?: string;
+    }>;
+    /** Move every queued book that says `from` (null = says nothing) onto `to`. */
+    bulkWaitFor: (from: string | null, to: string) =>
+      Promise<{ success: boolean; data?: { moved: number }; error?: string }>;
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => () => void;
     onStepFinished: (callback: (event: QueueStepFinished) => void) => () => void;
     /**
@@ -2922,6 +2946,11 @@ const electronAPI: ElectronAPI = {
     clearFinished: () => ipcRenderer.invoke('jobs:clear-finished'),
     updateStepConfig: (stepId: string, patch: Record<string, unknown>) =>
       ipcRenderer.invoke('jobs:update-step-config', stepId, patch),
+    setWaitFor: (jobId: string, value: string) =>
+      ipcRenderer.invoke('jobs:set-wait-for', jobId, value),
+    waitForCounts: () => ipcRenderer.invoke('jobs:wait-for-counts'),
+    bulkWaitFor: (from: string | null, to: string) =>
+      ipcRenderer.invoke('jobs:bulk-wait-for', from, to),
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: QueueSnapshot) => callback(snapshot);
       ipcRenderer.on('jobs:changed', listener);

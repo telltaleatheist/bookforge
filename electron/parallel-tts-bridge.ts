@@ -5326,6 +5326,25 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
         writeWorkerLog(`[CRUCIBLE] render ended after cancel: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
+      /*
+       * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
+       *
+       * The server is running somebody else's job, so nothing about this book
+       * is wrong and nothing of its work is lost — it never started. Told
+       * here, the queue settles the row back to `queued` carrying the holder's
+       * own line and tries the door again on its admission tick
+       * (`queue-engine.noteStepBusy`, which is a no-op for a render the queue
+       * did not start — the CLI and the headless path pass their own ids).
+       *
+       * The render itself still ends: this door does not retry, and a retry
+       * loop here would be an invisible second queue with a policy nobody
+       * chose.
+       */
+      const { CrucibleRenderRefused } = await import('./crucible/render.js');
+      if (err instanceof CrucibleRenderRefused && err.busyLine !== undefined) {
+        const { noteStepBusy } = await import('./queue-engine.js');
+        noteStepBusy(jobId, err.busyLine);
+      }
       const detail = err instanceof Error ? err.message : String(err);
       await logger.log('ERROR', jobId, `Crucible render failed: ${detail}`).catch(() => {});
       writeWorkerLog(`[CRUCIBLE] FAILED: ${detail}`);

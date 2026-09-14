@@ -131,11 +131,24 @@ export const CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE: Readonly<Record<string, string>>
 export class CrucibleRenderRefused extends Error {
   /** The refusal's own name, for a caller that acts on it. */
   readonly code: string;
+  /**
+   * The SDK's own "GPU busy: foundry, tts 62% done" — present exactly on
+   * `server_busy` and absent on every other refusal.
+   *
+   * Carried beside the prose rather than dug back out of it, because a caller
+   * that can WAIT needs a different sentence from the one below: the queue
+   * holds the row and retries, and telling its operator to "queue it again
+   * when that one is done" would be advice about a thing the queue is already
+   * doing (`queue-engine.noteStepBusy`, crucible `docs/ARCHITECTURE.md` §3 —
+   * a 409 is a wait, not a failure). Added for that consumer, 2026-09-13.
+   */
+  readonly busyLine?: string;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, busyLine?: string) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleRenderRefused';
     this.code = code;
+    if (busyLine !== undefined) this.busyLine = busyLine;
   }
 }
 
@@ -288,6 +301,7 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
       + `${err.jobMessage === null ? '' : `; latest: ${err.jobMessage}`}). `
       + 'Nothing here waits for it or renders this book somewhere else — queue it again when that '
       + 'one is done, or pick another server.',
+      err.busyLine,
     );
   }
   if (err instanceof CrucibleRefused) {

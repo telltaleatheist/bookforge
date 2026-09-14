@@ -321,6 +321,39 @@ import type { BookPlanView } from './services/queue-tray.service';
                      every run in the plan, so it is said once and applied to
                      all of them (cancelPlan). -->
                 <div class="acts">
+                  <!--
+                    WHICH SERVER THIS BOOK WAITS FOR (crucible
+                    docs/PHASE7-LANES.md §4.2.1). One field, on the book, because
+                    one book is one GPU: every step of it follows this answer.
+
+                    Read-only once the book has been ASSIGNED — a job finishes on
+                    the machine it started on (§4.3) — and shown as plain text
+                    then, rather than as a control that refuses when pressed.
+                  -->
+                  @if (plan.travels) {
+                    @if (plan.waitForResolved.length > 0) {
+                      <span class="venue" title="A book finishes on the machine it started on.">
+                        Runs on {{ plan.waitForResolved.join(' + ') }}
+                      </span>
+                    } @else {
+                      <label class="venue-pick">
+                        <span class="venue-word">Wait for</span>
+                        <select
+                          [value]="waitForValue(plan)"
+                          (change)="chooseWaitFor(plan, $any($event.target).value)"
+                          title="Which Crucible server should this book render on? A named server is an instruction — it waits for that machine rather than being sent somewhere else."
+                        >
+                          @if (waitForValue(plan) === '') {
+                            <option value="">No server chosen</option>
+                          }
+                          @for (name of waitForChoices(); track name) {
+                            <option [value]="name">{{ name }}</option>
+                          }
+                          <option value="any">Any — the first that will take it</option>
+                        </select>
+                      </label>
+                    }
+                  }
                   @if (plan.allHeld) {
                     <button type="button" class="btn go" (click)="startPlan(plan)">▶ Start this book</button>
                   }
@@ -576,7 +609,17 @@ import type { BookPlanView } from './services/queue-tray.service';
        .card-head is what keeps the GPU/CPU slots exactly as they were. */
     .card-head .sub { font-size: 0.8125rem; }
 
-    .acts { margin-left: auto; display: flex; gap: 6px; flex: none; }
+    .acts { margin-left: auto; display: flex; gap: 6px; flex: none; align-items: center; }
+
+    /* Which server the book waits for. Quiet: it is a standing answer, not an
+       action, and it must not compete with Start and Cancel beside it. */
+    .venue-pick { display: inline-flex; align-items: center; gap: 6px; }
+    .venue-word { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+    .venue-pick select {
+      font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px;
+      border: 1px solid var(--border-subtle); background: var(--bg-input); color: var(--text-primary);
+    }
+    .venue { font-size: 12px; color: var(--text-muted); }
 
     /* ── Reordering "Up next" ──────────────────────────────────────────────
        Styled after studio-list's list rows (the house precedent for CdkDrag):
@@ -1139,6 +1182,13 @@ export class QueueComponent {
   private readonly eta = inject(JobEtaService);
   private readonly toasts = inject(ToastService);
 
+  constructor() {
+    // The server list is settings state, not queue state, so it is read once
+    // here and again on Refresh rather than watched: it changes when somebody
+    // is in Settings, not while a book renders.
+    void this.loadWaitForChoices();
+  }
+
   /** Steps whose full readout the user has opened. Closed is the default. */
   readonly expanded = signal<ReadonlySet<string>>(new Set());
 
@@ -1223,6 +1273,45 @@ export class QueueComponent {
       { id: 'spacer', type: 'spacer' },
     ];
   });
+
+  // ── Which server a book waits for ────────────────────────────────────────
+  //
+  // crucible docs/PHASE7-LANES.md §4.2.1. The picker is per BOOK, not per step
+  // (§4.4: one book = one GPU), and it offers the ENABLED servers in rank order
+  // plus Any. Disabled servers are deliberately absent: the enable switch is
+  // standing state about hardware, and offering a machine the queue may not use
+  // would be offering a row that can only hold.
+
+  /** The enabled servers, best first. Read once when the page opens. */
+  readonly waitForChoices = signal<string[]>([]);
+
+  private async loadWaitForChoices(): Promise<void> {
+    const res = await this.electronService.crucible.servers();
+    if (!res.success || res.data === undefined) {
+      // Not a refusal worth a toast: a machine with no Crucible has no picker
+      // to draw, and the rows say so themselves when the queue tries them.
+      this.waitForChoices.set([]);
+      return;
+    }
+    this.waitForChoices.set(
+      res.data.routing.ranked.filter((row) => row.enabled).map((row) => row.name),
+    );
+  }
+
+  /** What the select shows: the book's one answer, or '' for none/disagreeing. */
+  waitForValue(plan: BookPlan): string {
+    if (plan.waitFor.length !== 1) return '';
+    return plan.waitFor[0] ?? '';
+  }
+
+  async chooseWaitFor(plan: BookPlan, value: string): Promise<void> {
+    try {
+      // Every run of the book, because the book is the unit the answer is about.
+      for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
+    } catch (err) {
+      this.toasts.problem((err as Error)?.message || 'That server could not be chosen.');
+    }
+  }
 
   busyLanes(): number {
     return this.tray.lanes().filter(lane => lane.occupant !== null).length;
@@ -1397,7 +1486,10 @@ export class QueueComponent {
       case 'pause-after': this.report(this.queueService.pauseQueue()); break;
       // The hard stop: latch off AND every running step cancelled.
       case 'halt': this.report(this.queueService.stopQueue()); break;
-      case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
+      case 'refresh':
+        this.report(this.queueService.refreshFromBackend());
+        this.report(this.loadWaitForChoices());
+        break;
     }
   }
 

@@ -466,6 +466,24 @@ export interface QueueStep {
   /** What this step reads when its parent is SOURCE_PARENT. Required there. */
   sourceRef?: ArtifactRef;
   resource: StepResource;
+  /**
+   * WHETHER THIS STEP HAS BEEN TAUGHT TO TRAVEL (crucible
+   * `docs/PHASE7-LANES.md` §4: `machines()`, defaulting to `local`).
+   *
+   * True exactly when the step's module says it can run on a Crucible server —
+   * today only `tts-conversion`. Everything else keeps behaving as it does now:
+   * a VLM page read, an RVC pass and an Ollama-backed pass all spawn something
+   * on THIS machine, and handing one of them a remote server would either fail
+   * on a path that does not exist or, far worse, run locally while occupying a
+   * remote slot.
+   *
+   * DERIVED, like `resource`, and re-asked from the module on every load: the
+   * module is the authority, this is the copy the renderer can read (it is what
+   * decides whether the queue page draws a server picker on the row). A build
+   * that teaches a step to travel must be able to say so about work already in
+   * the queue.
+   */
+  travels?: boolean;
   status: StepStatus;
   progress: StepProgress;
   metrics: StepMetrics;
@@ -548,6 +566,38 @@ export interface QueueJob {
   /** The document the run is about, as the user knows it. */
   documentPath?: string;
   documentLabel?: string;
+  /**
+   * WHICH CRUCIBLE SERVER THIS BOOK SHOULD WAIT FOR — a registered server's
+   * name, or `any` (crucible `docs/PHASE7-LANES.md` §4.2.1).
+   *
+   * ONE field, on the JOB, because §4.4 rules that one book is one GPU: a
+   * dependency chain gets one machine choice and every step of it follows.
+   * There is no per-step override and no modifier — see `shared/queue/wait-for.ts`
+   * for why each of those was removed rather than merely discouraged.
+   *
+   * Written at enqueue from the routing record's `newJobsWaitFor` setting
+   * (§4.2.1a), VISIBLY: `top-ranked` writes the top-ranked server's NAME and
+   * `any` writes `any`. It is absent in exactly two honest cases — a queue file
+   * written before this field existed, and a run queued while this machine had
+   * no server to name — and admission then HOLDS and says so (`holdNoAnswer`).
+   * It is never defaulted at read time: a fabricated name is an instruction
+   * nobody gave.
+   *
+   * Present only on runs that carry a step which can travel ({@link QueueStep.travels}).
+   */
+  waitFor?: string;
+  /**
+   * WHERE THIS BOOK'S GPU WORK WAS ACTUALLY SENT — a server's name, or
+   * `legacy-local-narrator`.
+   *
+   * Written once, at the first GPU admission, and never changed: §4.3, a job is
+   * atomic, so a book that started on a machine finishes on that machine, and a
+   * resume after an app restart goes back to the same one. It is a RECORD, not
+   * a second routing level — `waitFor` is what the operator asked for and this
+   * is what happened, which is why a re-rank, a disable, or the legacy switch
+   * flipping mid-book cannot move work already assigned.
+   */
+  waitForResolved?: string;
   steps: QueueStep[];
   createdAt: string;
   startedAt?: string;

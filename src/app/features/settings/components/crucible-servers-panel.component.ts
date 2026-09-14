@@ -166,6 +166,30 @@ const LOCAL = 'local';
             <p class="cru-meta">{{ url }} · token {{ maskOf(row.name) }}</p>
           }
 
+          <!--
+            QUEUED ROWS THAT NAME THIS SERVER (crucible docs/PHASE7-LANES.md
+            §4.2.1a). Shown always, loudly when the switch is off: a named
+            server is an instruction, so those books HOLD rather than moving,
+            and the one click that moves them is here beside the switch that
+            stopped them.
+          -->
+          @if (queuedFor(row.name) > 0) {
+            <p class="cru-queued" [class.warn]="!row.enabled">
+              {{ queuedFor(row.name) }}
+              queued {{ queuedFor(row.name) === 1 ? 'book is' : 'books are' }} waiting for
+              {{ row.name }}@if (!row.enabled) {, which is now disabled}.
+              @if (!row.enabled) {
+                They hold until it is enabled again — nothing is re-routed on its own.
+              }
+              <desktop-button
+                variant="ghost"
+                size="sm"
+                [disabled]="bulkBusy()"
+                (click)="releaseQueuedFrom(row.name)"
+              >Change them to Any</desktop-button>
+            </p>
+          }
+
           <!-- What it says about itself -->
           @if (probe()[row.name]; as p) {
             @if (p.outcome === 'ok') {
@@ -363,6 +387,13 @@ const LOCAL = 'local';
     .cru-group-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .cru-meta { margin: 2px 0 0; font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); line-height: 1.45; }
     .cru-note { font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
+    /* The queued-rows count. Quiet while the server is on, loud when it is not:
+       the count is information until the switch makes it a blockage. */
+    .cru-queued {
+      margin: 6px 0 0; font-size: 12px; line-height: 1.45;
+      color: var(--text-secondary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .cru-queued.warn { color: var(--warning-text, var(--text-primary)); font-weight: 500; }
     .cru-error, .cru-refusal { margin: 4px 0 0; font-size: 12px; color: var(--error, #d05a5a); line-height: 1.45; }
     .cru-facts { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
     .cru-card, .cru-row {
@@ -446,6 +477,7 @@ export class CrucibleServersPanelComponent {
 
   constructor() {
     void this.reload();
+    void this.reloadWaitForCounts();
   }
 
   // ── The list ───────────────────────────────────────────────────────────
@@ -565,6 +597,47 @@ export class CrucibleServersPanelComponent {
       return;
     }
     this.applyRouting(res.data);
+    // The whole point of the count: it appears the moment a switch goes off.
+    await this.reloadWaitForCounts();
+  }
+
+  // ── Queued books that name a server (crucible §4.2.1a) ─────────────────
+  //
+  // "12 rows are waiting for this PC, which is now disabled." They are TOLD,
+  // never moved — a named server is an instruction, and re-routing twenty
+  // books onto slower hardware without being asked is the failure the whole
+  // section exists to prevent. The bulk button is the one click that moves
+  // them, and it is a person pressing it.
+
+  readonly waitForCounts = signal<Record<string, number>>({});
+  readonly bulkBusy = signal(false);
+
+  private async reloadWaitForCounts(): Promise<void> {
+    const res = await this.electron.queueRouting.counts();
+    // No counts is a real answer (an empty queue) and so is a failure; neither
+    // is worth an error banner on a settings row about servers, and the rows
+    // themselves say why they are holding.
+    this.waitForCounts.set(res.success && res.data ? res.data.counts : {});
+  }
+
+  /** How many queued books name this server. Zero draws nothing. */
+  queuedFor(name: string): number {
+    return this.waitForCounts()[name] ?? 0;
+  }
+
+  /** Move every queued book that names this server onto `any`. */
+  async releaseQueuedFrom(name: string): Promise<void> {
+    this.bulkBusy.set(true);
+    try {
+      const res = await this.electron.queueRouting.bulk(name, 'any');
+      if (!res.success) {
+        this.setRowError(name, res.error ?? 'Those rows could not be changed, and nothing said why.');
+        return;
+      }
+      await this.reloadWaitForCounts();
+    } finally {
+      this.bulkBusy.set(false);
+    }
   }
 
   async setWaitFor(value: WaitForDefault): Promise<void> {

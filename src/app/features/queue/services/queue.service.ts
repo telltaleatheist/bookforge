@@ -106,6 +106,8 @@ interface QueueBridge {
   reorder(jobId: string, beforeJobId: string | null): Promise<{ success: boolean; error?: string }>;
   clearFinished(): Promise<{ success: boolean; error?: string }>;
   updateStepConfig(stepId: string, patch: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
+  /** Which Crucible server one book waits for — a name, or `any`. */
+  setWaitFor(jobId: string, value: string): Promise<{ success: boolean; error?: string }>;
   onChanged(cb: (snapshot: QueueSnapshot) => void): () => void;
   onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
   /** News about a run that never became one — see `QueueNotice`. */
@@ -751,6 +753,21 @@ export class QueueService {
   async runJobStandalone(jobId: string): Promise<boolean> {
     QueueService.settle(await this.requireBridge().start(this.targetFor(jobId)), 'Running this job');
     return true;
+  }
+
+  /**
+   * Point one run at a Crucible server, or at `any`.
+   *
+   * Main refuses by name — an unknown server, a book already assigned, a run
+   * with nothing that travels — and the refusal is thrown rather than
+   * swallowed, because the picker must not appear to have changed something it
+   * did not.
+   */
+  async setWaitFor(jobId: string, value: string): Promise<void> {
+    QueueService.settle(
+      await this.requireBridge().setWaitFor(jobId, value),
+      'Choosing a server for this book',
+    );
   }
 
   async clearCompleted(): Promise<void> {

@@ -44,6 +44,7 @@ import {
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
+import { LEGACY_LOCAL_NARRATOR } from '../../shared/queue/wait-for';
 import { projectDirForStep, queueMainWindow } from './runtime';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
@@ -195,6 +196,21 @@ export const ttsConversionStep: StepModule = {
   consumes: 'epub',
   produces: 'audio-session',
   resource: () => 'gpu',
+  /**
+   * THE ONE STEP THAT TRAVELS (crucible `docs/PHASE7-LANES.md` §4).
+   *
+   * The generation step can run on a Crucible server — one `tts` job per book,
+   * `electron/crucible/render.ts` — so the queue asks this row's `waitFor`
+   * before it starts it, and hands the answer to the bridge below. Everything
+   * else in `queue-steps/` keeps the default `local`, because nothing else has
+   * been taught to send its work anywhere.
+   *
+   * Unconditional on the config: whether a given render actually goes to a
+   * server is the ROUTING RECORD's answer (the legacy switch, the enable
+   * flags), and re-deciding it here from the config would be a second owner of
+   * that question.
+   */
+  machines: () => 'any',
   // The rendered sentences survive a stop, and a resume skips them. That is the
   // whole reason a stopped narration must land HELD rather than cancelled.
   stopIsResumable: true,
@@ -214,6 +230,27 @@ export const ttsConversionStep: StepModule = {
     }
 
     const projectDir = projectDirForStep(ctx, config) ?? '';
+
+    /*
+     * WHERE THIS BOOK'S GENERATION RUNS — the row's decision, handed on.
+     *
+     * The engine resolved it at admission and wrote it on the run
+     * (`waitForResolved`, crucible `docs/PHASE7-LANES.md` §4.3/§4.4: one book,
+     * one GPU, recorded so a resume goes back to the same machine). Passing it
+     * as `settings.crucible` takes the CALLER-NAMED path in
+     * `generation-venue.ts`, which is the one answer nothing second-guesses —
+     * so the venue the queue page shows and the venue the render uses are the
+     * same fact rather than two lookups that can disagree.
+     *
+     * The legacy local narrator is NOT a server: when that is the venue,
+     * nothing is passed and the bridge reads the switch itself, exactly as an
+     * in-app render does.
+     */
+    const venue = ctx.job.waitForResolved;
+    const crucibleServer = venue === undefined || venue === LEGACY_LOCAL_NARRATOR
+      ? undefined
+      : venue;
+
     const conversionConfig: Record<string, unknown> = {
       workerCount,
       epubPath,
@@ -230,6 +267,11 @@ export const ttsConversionStep: StepModule = {
         skipHeadings: config.skipHeadings,
         testMode: config.testMode,
         testSentences: config.testSentences,
+        // Spread, never sent as undefined: `generation-venue.ts` refuses a
+        // `crucible` block that names no server rather than reading it as
+        // "render here", so an explicit absence is the only honest way to say
+        // "the record decides".
+        ...(crucibleServer === undefined ? {} : { crucible: { server: crucibleServer } }),
       },
       metadata: {
         title: config.metadata?.bookTitle || config.metadata?.title,

@@ -166,6 +166,12 @@ const SUITES = [
   // Foundry-ordered run has no `projectId`, and the assembly chained under one
   // refused a project it was carrying in its own config.
   'test-chained-assembly-project',
+  // WHICH MACHINE A BOOK RENDERS ON. A named server is an instruction, so the
+  // defects this defends are silent by construction: a row re-routed onto
+  // slower hardware overnight, a default that manufactures a choice nobody
+  // made, and a 409 read as a failure — each of which looks like a working
+  // queue right up until the audio is in the wrong voice or the night is gone.
+  'test-queue-wait-for',
   'test-queue-bench',
   // The only thing that knows what is happening inside an MLX decode. Its
   // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a

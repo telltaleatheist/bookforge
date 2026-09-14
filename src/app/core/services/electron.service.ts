@@ -4072,6 +4072,36 @@ export class ElectronService {
   // rank/enable record; this is the door onto all three. Nothing here carries a
   // token OUT — a listing's `tokenMasked` is `****<last 4>` and the plaintext
   // never crosses this seam.
+  /**
+   * WHICH QUEUED BOOKS NAME WHICH SERVER — the queue's half of the Servers row.
+   *
+   * crucible `docs/PHASE7-LANES.md` §4.2.1a: disabling a server that queued
+   * rows name must SURFACE them — *"12 rows are waiting for this PC, which is
+   * now disabled"* — with a one-click bulk change. They are never silently
+   * re-routed, because a named server is an instruction; and leaving the
+   * operator to find them one row at a time is the other failure. These two
+   * doors are the count and the click.
+   *
+   * On `electron.queue` rather than `electron.crucible` because the fact is the
+   * QUEUE's: the routing record knows nothing about rows.
+   */
+  readonly queueRouting = {
+    counts: (): Promise<{
+      success: boolean;
+      data?: { counts: Record<string, number>; unset: number };
+      error?: string;
+    }> =>
+      this.isElectron
+        ? (window as any).electron.queue.waitForCounts()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Move every queued book that says `from` (null = says nothing) onto `to`. */
+    bulk: (from: string | null, to: string): Promise<{ success: boolean; data?: { moved: number }; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.queue.bulkWaitFor(from, to)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+  };
+
   readonly crucible = {
     /** The local server (or the named reason there is none), the remotes, and the rank record. */
     servers: (): Promise<{ success: boolean; data?: CrucibleServersView; error?: string }> =>

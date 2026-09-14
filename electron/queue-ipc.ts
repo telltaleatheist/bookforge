@@ -30,8 +30,83 @@ import { startGpuThermalSampler } from './gpu-thermal-sampler';
 import * as engine from './queue-engine';
 import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
+import { LOCAL_SERVER_NAME } from './crucible/local';
+import { readRouting } from './crucible/routing';
+import { pingServer } from './crucible/probe';
+import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
+
+// ────────────────────────────────────────────────────────────────────────────
+// The engine's Crucible routing host
+// ────────────────────────────────────────────────────────────────────────────
+//
+// `queue-engine.ts` imports no Electron and no registry, so the record and the
+// prober are handed to it from here (see `CrucibleRoutingHost`).
+
+/**
+ * The routing view, MEMOISED FOR A FEW SECONDS.
+ *
+ * Not an optimisation: `readRouting()` calls `describeLocal()`, which on
+ * Windows reads the local server's `config.toml` through a SYNCHRONOUS
+ * `wsl.exe` spawn. The scheduler asks the routing question on every pump pass
+ * over a queued narration, and a wsl spawn on the main thread per pass would
+ * stutter the UI for as long as the queue holds.
+ *
+ * The staleness is bounded and harmless: admission re-asks on its own tick
+ * (15 s), so a server enabled in Settings is used within one tick at worst, and
+ * the doors in THIS file that change a row invalidate it immediately.
+ */
+const ROUTING_CACHE_MS = 10_000;
+let routingCache: { at: number; view: ReturnType<typeof readRouting> } | null = null;
+
+function cachedRouting(): ReturnType<typeof readRouting> {
+  const now = Date.now();
+  if (routingCache !== null && now - routingCache.at < ROUTING_CACHE_MS) return routingCache.view;
+  const view = readRouting();
+  routingCache = { at: now, view };
+  return view;
+}
+
+function forgetRoutingCache(): void {
+  routingCache = null;
+}
+
+function crucibleRoutingHost(): engine.CrucibleRoutingHost {
+  return {
+    routing() {
+      const view = cachedRouting();
+      const ranked: WaitForServer[] = view.ranked.map((row) => ({
+        name: row.name,
+        enabled: row.enabled,
+      }));
+      return {
+        ranked,
+        legacyLocalRender: view.legacyLocalRender,
+        // Named only when this machine actually has one: `local` is in the
+        // ranked list exactly when `describeLocal().present`.
+        localName: ranked.some((row) => row.name === LOCAL_SERVER_NAME)
+          ? LOCAL_SERVER_NAME
+          : null,
+      };
+    },
+    defaultWaitFor() {
+      const view = cachedRouting();
+      if (view.newJobsWaitFor === WAIT_FOR_ANY) return WAIT_FOR_ANY;
+      const top = view.ranked.find((row) => row.enabled);
+      // Null, not a name and not `any`: there is nothing to name, and both of
+      // the alternatives would be a routing decision nobody made. See
+      // `CrucibleRoutingHost.defaultWaitFor`.
+      return top === undefined ? null : top.name;
+    },
+    async reach(server: string) {
+      const pong = await pingServer(server);
+      return pong.outcome === 'ok'
+        ? { reachable: true as const }
+        : { reachable: false as const, detail: pong.message };
+    },
+  };
+}
 
 /**
  * Bring the engine up and open its doors.
@@ -51,10 +126,19 @@ export async function startQueueEngine(): Promise<void> {
   engine.onStepFinished((event) => {
     broadcastToAllWindows('jobs:step-finished', event);
   });
+  // Wired BEFORE `configure`, because the load path asks each step's module
+  // whether it travels and then reports the runs that carry one and say
+  // nothing about where — see `waitForMigrationReport`.
+  engine.setCrucibleRoutingHost(crucibleRoutingHost());
   await engine.configure({
     stateDir: app.getPath('userData'),
     gpuHolder,
   });
+  // THE MIGRATION, SAID ONCE AND BY NAME. Not a crash and not a silent
+  // default: the rows hold, each with its own sentence, and this is the line
+  // that says so where somebody reading the log will see it.
+  const migration = engine.waitForMigrationReport();
+  if (migration !== null) console.warn(`[QUEUE-ENGINE] ${migration}`);
   // Thermal telemetry: samples only while a GPU step runs, disables itself on
   // machines with no nvidia-smi. See electron/gpu-thermal-sampler.ts.
   startGpuThermalSampler();
@@ -147,5 +231,34 @@ export function registerQueueIpc(): void {
   ipcMain.handle('jobs:clear-finished', () => {
     engine.clearFinished();
     return { success: true };
+  });
+
+  // ── Per-row Crucible routing (crucible docs/PHASE7-LANES.md §4.2.1) ───────
+
+  /** Point one book at a server, or at `any`. Refused by name — see setWaitFor. */
+  ipcMain.handle('jobs:set-wait-for', (_event, jobId: string, value: string) => {
+    try {
+      forgetRoutingCache();
+      engine.setWaitFor(jobId, value);
+      return { success: true };
+    } catch (err) { return refused(err); }
+  });
+
+  /**
+   * How many queued books name each server — the count §4.2.1a asks the
+   * Servers row to show beside a switch somebody just turned off.
+   */
+  ipcMain.handle('jobs:wait-for-counts', () => {
+    try {
+      return { success: true, data: engine.waitForCounts() };
+    } catch (err) { return refused(err); }
+  });
+
+  /** The one-click bulk change beside that count. `from: null` = the unanswered. */
+  ipcMain.handle('jobs:bulk-wait-for', (_event, from: string | null, to: string) => {
+    try {
+      forgetRoutingCache();
+      return { success: true, data: { moved: engine.bulkWaitFor(from, to) } };
+    } catch (err) { return refused(err); }
   });
 }
