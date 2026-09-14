@@ -9,6 +9,14 @@
  * sampling is unseeded, each take is a genuinely different reading of the same sentence —
  * which is the whole point.
  *
+ * Since the Crucible rollout (tier 3) that worker is one of two venues: a book whose render
+ * went to a Crucible re-rolls on the same machine, through a `tts` job for exactly the named
+ * indices (`electron/crucible/reroll.ts`). One difference between the two is real and is
+ * stated where it is decided, in `generateCandidates`: the remote takes vary by the engine's
+ * own unseeded sampling and NOT by the local worker's temperature spread, because the render
+ * wire has no sampling channel. Everything after the takes land — the sample_fmt match, the
+ * audition, the commit, the text write-back — is venue-blind.
+ *
  * Gate: only books that went through e2a have a per-sentence FLAC cache AND an narrator VTT
  * (exact 1:1 cue↔sentence-index mapping). Both are required; no cache/VTT → no feature.
  *
@@ -83,6 +91,13 @@ export interface GenerateCandidatesResult {
   success: boolean;
   candidates: CandidateSet[];
   error?: string;
+  /**
+   * Something true about HOW these takes were made that the audition list cannot
+   * show. Set exactly once today, by the Crucible arm, to say that its takes
+   * vary by unseeded sampling alone and not by the widened temperature spread
+   * the local narrator gets — see {@link generateCandidates}.
+   */
+  note?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,22 +588,94 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   let done = 0;
   const onProg = () => { done += 1; onProgress?.(done, totalUnits); };
 
-  let anyError: string | undefined;
-  if (normalIdx.length) {
-    const r = await regenerateSentenceIndices({
-      sessionId: session.sessionId, sessionDir: session.sessionDir!, settings,
-      indices: normalIdx, targetSentencesDir: base, takeTemperatures: temps,
-      sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
-    });
-    if (!r.success) anyError = r.error;
+  /*
+   * ── WHERE THE RE-ROLL RUNS ─────────────────────────────────────────────────
+   *
+   * The run's venue first — the session's own `settings.crucible.server`, which
+   * the render bridge persisted — then the one decision every GPU door makes
+   * (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3). A book rendered on the Mac re-rolls
+   * on the Mac: PHASE7-LANES.md §4.4, one book, one GPU. The legacy switch is
+   * what keeps the local narrator spawn below, and it says so by name.
+   *
+   * ── ONE DIFFERENCE BETWEEN THE TWO VENUES, STATED OUT LOUD ────────────────
+   *
+   * The local worker spreads the takes across sampling temperatures
+   * (`computeTakeTemperatures`) because "temp 0.6 alone barely moves the
+   * reading". **A Crucible `tts` render has no sampling channel at all** —
+   * `RenderOptions` is voice, language, take and chunks, and PHASE6 §1 took the
+   * rung out of the client's business — so `runCrucibleReroll` REFUSES a caller
+   * that hands it temperatures rather than sending the job without them and
+   * calling it the same pass.
+   *
+   * This is the one place that knows the spread is an internal widening and not
+   * a setting anybody chose, so this is where the choice is made: on a Crucible
+   * the pass asks for N takes and NO spread — still genuinely different readings,
+   * because narrator's sampling is unseeded, just less varied — and says so in
+   * `note` and on the log. Deciding it here, once, in the open, is the whole
+   * difference between a documented partial and a silently different feature.
+   *
+   * RULING OWED (recorded in the rollout plan's 01:20 entry as "take>0 needs a
+   * per-request sampling channel"): does `tts` grow one, or does the spread
+   * become engine config keyed off the take rung so `take: 1..3` IS the spread?
+   */
+  const { rerollAtVenue } = await import('./crucible/reroll.js');
+  const { processVenueHost } = await import('./crucible/generation-venue.js');
+  const { readSessionRunVenue } = await import('./coverage-align-job.js');
+  const { higgsModelForJob } = await import('./higgs-spawn.js');
+
+  let runVenue;
+  try {
+    runVenue = readSessionRunVenue(session.processDir!);
+  } catch (err) {
+    return { success: false, candidates: [], error: (err as Error).message || String(err) };
   }
-  if (longIdx.length && !signal?.aborted) {
-    const r = await regenerateSentenceIndices({
-      sessionId: session.sessionId, sessionDir: session.sessionDir!, settings,
-      indices: longIdx, targetSentencesDir: base, takeTemperatures: [baseTemp],
-      sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
+  // For Higgs the voice is a CATALOG id resolved through the same function the
+  // render's argv uses (override included); every other engine is refused by
+  // name inside `crucibleVoiceFor`, and `fineTuned` is what it names.
+  const voiceId = settings.ttsEngine === 'higgs' ? higgsModelForJob(settings).id : settings.fineTuned;
+
+  let anyError: string | undefined;
+  let note: string | undefined;
+  const rollAt = async (indices: number[], takeTemperatures: number[]): Promise<void> => {
+    const at = await rerollAtVenue({
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      host: processVenueHost(),
+      renderId: session.sessionId!,
+      ttsEngine: settings.ttsEngine,
+      voiceId,
+      language: settings.language,
+      chunks: indices.map((i) => ({ index: i, text: overrideMap[i] ?? storedChunks[i] })),
+      targetDir: base,
+      takes: takeTemperatures.length,
+      onLog: (line) => console.log(`[CORRECT-SENTENCES] ${line}`),
+      ...(signal === undefined ? {} : { signal }),
+      legacyLocal: async () => {
+        const r = await regenerateSentenceIndices({
+          sessionId: session.sessionId!, sessionDir: session.sessionDir!, settings,
+          indices, targetSentencesDir: base, takeTemperatures,
+          sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
+        });
+        if (!r.success) anyError = r.error;
+      },
     });
-    if (!r.success) anyError = r.error;
+    if (at.venue.where === 'crucible') {
+      // The takes arrive in one job each rather than one file at a time, so the
+      // caller's per-unit tally is caught up here from what actually landed.
+      for (let n = 0; n < (at.crucible?.written ?? 0); n += 1) onProg();
+      note = `These takes were rendered on crucible "${at.venue.server}" and vary by the engine's own `
+        + 'unseeded sampling only: a Crucible tts render has no per-request temperature, so the '
+        + 'wider spread the local narrator uses was not asked for. Turn on the legacy local-render '
+        + 'switch (Settings → Crucible Servers) to re-roll with it.';
+    }
+  };
+
+  try {
+    if (normalIdx.length) await rollAt(normalIdx, temps);
+    if (longIdx.length && !signal?.aborted) await rollAt(longIdx, [baseTemp]);
+  } catch (err) {
+    // A venue that could not be decided, a voice with no Crucible manifest, a
+    // server that refused — by name, never a quiet local re-roll instead.
+    return { success: false, candidates: [], error: (err as Error).message || String(err) };
   }
 
   // Collect + sample_fmt-match every produced candidate. take{k}/ subdirs always exist
@@ -620,7 +707,7 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
     failed: (takePathsByIndex.get(i) || []).length === 0,
   }));
 
-  return { success: true, candidates };
+  return { success: true, candidates, ...(note === undefined ? {} : { note }) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

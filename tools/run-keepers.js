@@ -161,6 +161,14 @@ const SUITES = [
   // `(dry)`. A `done` with no primary and a primary the job never wrote are both
   // refused by name; `params` is empty ON PURPOSE and the check says so.
   'test-crucible-denoise',
+  // The sentence re-roll, and the one knob that CANNOT travel: the local worker
+  // spreads its takes across sampling temperatures and a `tts` render has no
+  // sampling channel at all, so handing them over is a named refusal instead of
+  // a job quietly sent without them. Plus one job per take at take 0 carrying
+  // every named index, `take<k>/<index>.flac` under the local naming, and the
+  // guard verdicts in the ledger keyed PER TAKE — three takes of one sentence
+  // are three renders, not three chunks.
+  'test-crucible-reroll',
   // The Listen path on somebody else's card (rollout tier 3): the three
   // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
   // session now stands beside the local narrator, chosen by the SAME venue
