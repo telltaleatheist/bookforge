@@ -27,6 +27,32 @@ export function machinesForAiStep(config: Record<string, unknown>): 'local' | 'a
   return config['aiProvider'] === 'crucible' ? 'any' : 'local';
 }
 
+/**
+ * WHICH CRUCIBLE MODEL THIS AI STEP WILL LEASE — or null, meaning it leases
+ * nothing this side can name.
+ *
+ * Read by the scheduler at the seam between two steps of one row: a lease is
+ * per MODEL ID (`POST /v1/models/{id}/lease`) and a server holds ONE, so a
+ * lease kept open for a next act that wants a DIFFERENT model is a claim this
+ * app makes against itself — the next act's own load is refused `leased`,
+ * naming us, and the row parks until the ttl lapses (Foundry, 2026-09-14).
+ * `StepModule.leasesModel` says a step MAY hold one; this says WHICH, and
+ * keeping the lease needs both to agree.
+ *
+ * The id comes from the same field the act itself runs on — `aiModel`, which
+ * for this provider is a Crucible model id — rather than from a table beside
+ * it. A second lookup of "which model does a simplify use" is the R1 defect
+ * that produced the mismatch in the first place.
+ *
+ * Null for every other provider: Ollama and the bundled llama keep their own
+ * VRAM through `keep_alive`, and a cloud API has no card to hold.
+ */
+export function crucibleModelForAiStep(config: Record<string, unknown>): string | null {
+  if (config['aiProvider'] !== 'crucible') return null;
+  const model = config['aiModel'];
+  return typeof model === 'string' && model.trim() !== '' ? model.trim() : null;
+}
+
 export interface AiJobConfig {
   aiProvider: 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
   aiModel: string;

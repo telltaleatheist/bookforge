@@ -425,6 +425,22 @@ test('a chained narration reads the copy the PASS named, through the real queue'
   });
   queueEngine.setGpuLockProbe(() => null);
   queueEngine.setGpuHolderProbe(() => null);
+  /*
+   * THE ROUTING RECORD, WITH THE LEGACY SWITCH ON.
+   *
+   * The narration text cleanup is the `clean` act and it TRAVELS as of
+   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue now resolves
+   * a venue for this row before it will start — and a build that cannot say
+   * where a book runs parks the row by name rather than quietly taking this
+   * machine's card. Wired as the app wires it, with the one legacy switch on,
+   * which is what sends the act to the local engines: the same answer this
+   * suite always assumed, now stated rather than implied.
+   */
+  queueEngine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
+    defaultWaitFor: () => null,
+    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+  });
   await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state') });
 
   // Composed exactly as `processing:submit-chain` composes it: the pass first
@@ -510,6 +526,22 @@ test('a follow-on carrying a STALE sourceRef still reads the pass\'s artifact', 
   });
   queueEngine.setGpuLockProbe(() => null);
   queueEngine.setGpuHolderProbe(() => null);
+  /*
+   * THE ROUTING RECORD, WITH THE LEGACY SWITCH ON.
+   *
+   * The narration text cleanup is the `clean` act and it TRAVELS as of
+   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue now resolves
+   * a venue for this row before it will start — and a build that cannot say
+   * where a book runs parks the row by name rather than quietly taking this
+   * machine's card. Wired as the app wires it, with the one legacy switch on,
+   * which is what sends the act to the local engines: the same answer this
+   * suite always assumed, now stated rather than implied.
+   */
+  queueEngine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
+    defaultWaitFor: () => null,
+    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+  });
   await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state-sourceref') });
 
   const stale = 'C:/a/stale/export.tts.epub';

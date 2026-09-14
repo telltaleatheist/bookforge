@@ -22,25 +22,8 @@
  * here, that is the sign these two should be separate modules.
  */
 
-import { estimateNumCtx } from './ai-bridge';
+import { crucibleChatOnce, estimateNumCtx, type AIProviderConfig } from './ai-bridge';
 import { getOllamaThinkFields } from './ollama-capabilities';
-
-
-/**
- * Everything `callAI` needs to reach a provider.
- *
- * It was `BilingualProcessingConfig` until 2026-09-05, when it carried a dozen
- * more fields describing a bilingual RUN (source text, batch sizes, cleanup
- * prompts, a test mode). Those went with the feature; what is left is the four
- * providers' credentials, which is all the call ever read.
- */
-export interface AiCallConfig {
-  aiProvider: 'ollama' | 'claude' | 'openai' | 'local';
-  aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
-}
 
 
 // Language name mapping for prompts
@@ -248,25 +231,130 @@ async function callLocal(prompt: string, systemPrompt?: string): Promise<string>
 }
 
 /**
- * Call the configured AI provider
+ * One completion against a Crucible server.
+ *
+ * The transport is `ai-bridge`'s `crucibleChatOnce` and NOT a second client:
+ * the timeout, the abort chain and — the load-bearing part — the translation of
+ * the SDK's exceptions into the named codes every surface reads
+ * (`crucible_model_not_resident`, `crucible_model_leased`, …) live there, and a
+ * third copy of them is a third place for a refusal to stop naming itself
+ * (crucible `docs/ARCHITECTURE.md` R1).
+ *
+ * The two numbers are THIS call's, matched to the Ollama arm above so a
+ * translation does not change character with its venue: temperature 0.3, and an
+ * input-proportional budget with the same ×3 and the same 4096 floor (a
+ * translation can legitimately expand the text).
+ *
+ * No `[SKIP]` trapdoor and no truncation split: those belong to the cleanup
+ * run's chunk machinery, not here. A `length` finish is a translated batch that
+ * stopped mid-sentence, and it is REFUSED by name rather than returned — the
+ * caller's numbered-paragraph parse would otherwise take a truncated answer for
+ * a short one and write it into the book.
+ */
+async function callCrucible(
+  prompt: string,
+  where: { server: string; model: string },
+  systemPrompt?: string,
+): Promise<string> {
+  const answer = await crucibleChatOnce({
+    server: where.server,
+    model: where.model,
+    system: systemPrompt ?? '',
+    user: prompt,
+    temperature: 0.3,
+    maxTokens: Math.max(4096, prompt.length * 3),
+    sizeChars: prompt.length,
+  });
+  if (answer.finishReason === 'length') {
+    throw new Error(
+      `crucible_answer_truncated: crucible "${where.server}" stopped "${where.model}" at the token `
+      + `budget for a ${prompt.length}-char batch, so the answer ends mid-text. It is refused `
+      + 'rather than written into the book.',
+    );
+  }
+  return answer.content.trim();
+}
+
+/**
+ * Call the configured AI provider.
+ *
+ * It takes the SAME `AIProviderConfig` `providerConfigOf` composes and every
+ * other bridge is handed (`electron/queue-steps/ai-provider.ts`). It used to
+ * take five flat fields of its own (`AiCallConfig`), which made the mapping
+ * from a job's config to a provider a thing each caller did by hand — and the
+ * hand-built copy in `processing-passes.ts` is exactly how the pass steps ended
+ * up with no `crucible` arm at all while every other AI door had one.
  */
 export async function callAI(
   prompt: string,
-  config: AiCallConfig,
+  config: AIProviderConfig,
   systemPrompt?: string
 ): Promise<string> {
-  console.log(`[TEXT-AI] Calling AI: provider=${config.aiProvider}, model=${config.aiModel}`);
-  switch (config.aiProvider) {
-    case 'ollama':
-      return await callOllama(prompt, config.aiModel, config.ollamaBaseUrl, systemPrompt);
-    case 'claude':
-      return await callClaude(prompt, config.aiModel, config.claudeApiKey!, systemPrompt);
-    case 'openai':
-      return await callOpenAI(prompt, config.aiModel, config.openaiApiKey!, systemPrompt);
+  console.log(`[TEXT-AI] Calling AI: provider=${config.provider}, model=${aiCallModel(config)}`);
+  /*
+   * A PROVIDER WITH NO BLOCK IS REFUSED BY NAME. `providerConfigOf` fills the
+   * arm for the provider it names, so an absent one means the block was built
+   * somewhere else and built wrong — and the alternative to saying so is a
+   * `Cannot read properties of undefined` from inside a translation at chapter
+   * nine.
+   */
+  const arm = <T>(named: T | undefined): T => {
+    if (named === undefined) {
+      throw new Error(
+        `ai_provider_block_incomplete: this job names the "${config.provider}" provider and `
+        + `carries no ${config.provider} block, so there is nothing to call.`,
+      );
+    }
+    return named;
+  };
+  switch (config.provider) {
+    case 'ollama': {
+      // NOT defaulted here. `providerConfigOf` is the one place a missing base
+      // URL becomes localhost, and a second default would be a second answer.
+      const o = arm(config.ollama);
+      return await callOllama(prompt, o.model, o.baseUrl, systemPrompt);
+    }
+    case 'claude': {
+      const c = arm(config.claude);
+      return await callClaude(prompt, c.model, c.apiKey, systemPrompt);
+    }
+    case 'openai': {
+      const o = arm(config.openai);
+      return await callOpenAI(prompt, o.model, o.apiKey, systemPrompt);
+    }
     case 'local':
       return await callLocal(prompt, systemPrompt);
+    case 'crucible':
+      return await callCrucible(prompt, arm(config.crucible), systemPrompt);
     default:
-      throw new Error(`Unsupported AI provider: ${config.aiProvider}`);
+      throw new Error(`Unsupported AI provider: ${config.provider}`);
+  }
+}
+
+/**
+ * The model name this provider block names, for a log line and for the record a
+ * run files about itself.
+ *
+ * `null` is a real answer and not a gap: a block that names no model for its
+ * own provider has none to report, and inventing one would put a name nobody
+ * chose into a book's provenance record.
+ */
+export function aiCallModel(config: AIProviderConfig): string | null {
+  switch (config.provider) {
+    case 'ollama': return config.ollama?.model ?? null;
+    case 'claude': return config.claude?.model ?? null;
+    case 'openai': return config.openai?.model ?? null;
+    case 'crucible': return config.crucible?.model ?? null;
+    /*
+     * TWO FIELDS, ONE CHOICE. `providerConfigOf` puts a `local` job's chosen
+     * model in the OLLAMA arm — the two providers share a branch there, because
+     * the bundled llama speaks that shape — while `local.model` is the
+     * informational field `AIProviderConfig` declares. Whichever is present
+     * names the same model; `callLocal` reads neither, because llama-bridge
+     * resolves the active model itself.
+     */
+    case 'local': return config.local?.model ?? config.ollama?.model ?? null;
+    default: return null;
   }
 }
 

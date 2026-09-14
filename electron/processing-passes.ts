@@ -44,6 +44,15 @@ import { removeEpubContainer, stagedContainerKindFor } from './epub-container';
 import { bookDigest } from './sidecar-binding';
 import { bookDigestHex } from '../shared/book-digest';
 import { narrationCarryRefusal, type NarrationDeletionsCarry } from '../shared/vlm/narration-deletions';
+/*
+ * The ONE provider mapping, imported rather than re-implemented here — the
+ * copy that used to stand in `runSimplifyPass` was a fourth expansion of it
+ * and had no `crucible` arm at all. It is a pure function over two arguments
+ * and reaches nothing, so it may live at the top of the file; the ONE reader
+ * of a row's resolved venue (`runVenueOfRow`) may not, and is required lazily
+ * where it is used — see there.
+ */
+import { providerConfigOf } from './queue-steps/ai-provider';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '../shared/processing/narration-text-notice';
 import type { AppliedPass } from './manifest-types';
 import type {
@@ -546,10 +555,35 @@ function diffPaths(config: PassJobConfig): { rel: string; abs: string } {
 async function runSimplifyPass(
   jobId: string,
   config: PassJobConfig,
-  mainWindow: BrowserWindow | null | undefined
+  mainWindow: BrowserWindow | null | undefined,
+  assignedVenue: string | undefined,
 ): Promise<PassJobResult> {
   const params = config.simplify;
   if (!params) throw new Error('A simplify pass was queued without its settings (mode, provider, model).');
+
+  /*
+   * ── THE PROVIDER BLOCK, BUILT BY ITS ONE OWNER, AND BUILT FIRST ───────────
+   *
+   * This was a FOURTH hand-built copy of the mapping, sitting at the call to
+   * `cleanupEpub`, and the copy is what kept the pass steps off every machine:
+   * it had no `crucible` arm at all, so a simplify against a Crucible server
+   * could not be expressed here even after every other AI door had one
+   * (rollout §3, "the PASS steps do not travel yet"). It also defaulted the
+   * two credentials to an empty string, which sends an empty Authorization
+   * header and reports whatever the API says about it instead of refusing at
+   * the door.
+   *
+   * `providerConfigOf` is that mapping, and the second argument is the MACHINE
+   * THE QUEUE ASSIGNED THIS ROW — carried down from the step, never decided
+   * here. It refuses `crucible_server_not_named` when the row names none,
+   * which is the one honest answer: a default server would be the manufactured
+   * instruction crucible `docs/PHASE7-LANES.md` §4.2.1a exists to prevent.
+   *
+   * BEFORE the book is resolved and before a stage directory is made, because
+   * a refusal must cost no work — the same rule the clean act's venue decision
+   * follows (`narration-clean-text.ts`).
+   */
+  const provider = providerConfigOf(params, assignedVenue);
 
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
@@ -565,18 +599,7 @@ async function runSimplifyPass(
     jobId,
     mainWindow,
     undefined,
-    {
-      provider: params.aiProvider,
-      ollama: params.aiProvider === 'ollama'
-        ? { baseUrl: params.ollamaBaseUrl || 'http://localhost:11434', model: params.aiModel }
-        : undefined,
-      claude: params.aiProvider === 'claude'
-        ? { apiKey: params.claudeApiKey || '', model: params.aiModel }
-        : undefined,
-      openai: params.aiProvider === 'openai'
-        ? { apiKey: params.openaiApiKey || '', model: params.aiModel }
-        : undefined,
-    },
+    provider,
     {
       simplifyForChildren: true,
       // Simplify ONLY. cleanupEpub defaults enableAiCleanup to true, so omitting
@@ -636,10 +659,17 @@ async function runSimplifyPass(
 async function runTranslatePass(
   jobId: string,
   config: PassJobConfig,
-  mainWindow: BrowserWindow | null | undefined
+  mainWindow: BrowserWindow | null | undefined,
+  assignedVenue: string | undefined,
 ): Promise<PassJobResult> {
   const params = config.translate;
   if (!params) throw new Error('A translate pass was queued without its languages and model.');
+
+  // The same one owner the simplify pass goes through, asked FIRST for the same
+  // reason — see the note there. The five flat fields this replaced were the
+  // mono translator's own private expansion of the same mapping, and they had
+  // no room for a machine.
+  const provider = providerConfigOf(params, assignedVenue);
 
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
@@ -652,11 +682,7 @@ async function runTranslatePass(
       cleanedEpubPath: bookPath,
       sourceLang: params.sourceLang,
       targetLang: params.targetLang,
-      aiProvider: params.aiProvider,
-      aiModel: params.aiModel,
-      ollamaBaseUrl: params.ollamaBaseUrl,
-      claudeApiKey: params.claudeApiKey,
-      openaiApiKey: params.openaiApiKey,
+      provider,
       translationPrompt: params.translationPrompt,
       customInstructions: params.customInstructions,
       outputEpubPath: path.join(stageDir, 'translated.epub'),
@@ -954,7 +980,8 @@ function countReadings(receipt: import('./narration-clean-text.js').CleanTextRec
 
 async function runNarrationTextPass(
   jobId: string,
-  config: PassJobConfig
+  config: PassJobConfig,
+  assignedVenue: string | undefined,
 ): Promise<PassJobResult> {
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const { cleanTextEpub } = await import('./narration-clean-text.js');
@@ -1030,12 +1057,40 @@ async function runNarrationTextPass(
       'the working copy this cleanup reads');
   }
 
+  /*
+   * ── THE ROW'S MACHINE, FOLLOWED RATHER THAN RE-DECIDED ────────────────────
+   *
+   * The `clean` act is one of Crucible's four text acts and it travels
+   * (`electron/crucible/text-venue.ts`). Until 2026-09-14 this call named no
+   * server, so a row the queue had admitted to the Mac cleaned its book on
+   * whatever the routing record happened to rank first — the same defect §4.4
+   * exists to prevent, one door along.
+   *
+   * `runVenueOfRow` is the ONE reader of `waitForResolved`'s three shapes. A
+   * crucible venue is named; the legacy marker and "never assigned" both hand
+   * `undefined` down, which is the caller saying *I did not name one* — and
+   * `decideWhereTextActRuns` then reads the record, where the legacy switch is
+   * the thing that sends it local. That is deliberately not a second place the
+   * legacy switch is interpreted.
+   */
+  /*
+   * REQUIRED LAZILY, and this module's own rule about that is worth keeping:
+   * `crucible/step-venue.ts` reaches the routing record and the server
+   * registry at load, and those reach `tool-paths` — which resolves a userData
+   * directory at MODULE SCOPE and throws without Electron. This file is loaded
+   * by the CLI harness and by three keepers that never mount one.
+   */
+  const { runVenueOfRow } = await import('./crucible/step-venue.js');
+  const runVenue = runVenueOfRow(assignedVenue);
+  const crucibleServer = runVenue?.where === 'crucible' ? runVenue.server : undefined;
+
   const produced = path.join(stageDir, 'narration-text.epub');
   let outcome;
   try {
     outcome = await cleanTextEpub({
       epubPath: readable,
       outPath: produced,
+      ...(crucibleServer === undefined ? {} : { crucibleServer }),
       onProgress: (done, total, label) => {
         // The same `queue:progress` bridge event the row's step module is already
         // listening on (electron/queue-steps/pass.ts), so the bar this draws is
@@ -1230,7 +1285,22 @@ const RETIRED_PASS_KINDS: Record<string, string> = {
 export async function runProcessingPass(
   jobId: string,
   config: PassJobConfig,
-  mainWindow: BrowserWindow | null | undefined
+  mainWindow: BrowserWindow | null | undefined,
+  /**
+   * THE MACHINE THE QUEUE ASSIGNED THIS ROW — the run's `waitForResolved`,
+   * verbatim, and the only fact about placement that crosses this door.
+   *
+   * Passed rather than read for the reason `providerConfigOf` gives: the
+   * mapping is pure and `ctx.job` belongs to the step. Its three shapes — a
+   * server's name, the legacy marker, `any`/absent — are read by the ONE owner
+   * of that (`runVenueOfRow`) where a pass needs the typed answer, and handed
+   * to `providerConfigOf` verbatim where it needs the raw one.
+   *
+   * `undefined` is the ordinary case for every caller outside the queue (the
+   * CLI, a press in the picker) and for any row whose provider does not
+   * travel. It is REFUSED BY NAME for `crucible`, never defaulted.
+   */
+  assignedVenue?: string,
 ): Promise<PassJobResult> {
   console.log(`[processing-pass] ${config.kind} on ${config.projectDir} (${config.stageRelDir})`);
   try {
@@ -1246,9 +1316,9 @@ export async function runProcessingPass(
 
     switch (config.kind) {
       case 'simplify':
-        return await runSimplifyPass(jobId, config, mainWindow);
+        return await runSimplifyPass(jobId, config, mainWindow, assignedVenue);
       case 'translate':
-        return await runTranslatePass(jobId, config, mainWindow);
+        return await runTranslatePass(jobId, config, mainWindow, assignedVenue);
       // No jobId and no window: it reports no progress because it has none to
       // report — the whole pass is a string replace over a zip and is done
       // before a progress row could be drawn.
@@ -1257,7 +1327,7 @@ export async function runProcessingPass(
       // The jobId IS the progress channel: the deterministic stages finish in
       // seconds and the model pass is minutes, so the row reports.
       case 'narration-text':
-        return await runNarrationTextPass(jobId, config);
+        return await runNarrationTextPass(jobId, config, assignedVenue);
       default: {
         const unknown: never = config.kind;
         throw new Error(`There is no ${unknown} pass.`);

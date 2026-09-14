@@ -56,8 +56,20 @@ export type PassJobType =
  * Who runs a text pass. 'local' is the bundled llama.cpp server — the app's own
  * default AI, and the only one that works with nothing configured — so a pass
  * that could not name it could not express what most runs actually use.
+ *
+ * `crucible` joined them 2026-09-14 (rollout §3, "the PASS steps do not travel
+ * yet"). It is the one provider that TRAVELS: the others are this machine's
+ * processes or somebody's API, and a Crucible is another machine's card. A pass
+ * against it names no URL and no key — `crucible.server` is a registry NAME and
+ * the model must already be resident there — so the five fields below stay
+ * exactly what they were and the row's assigned venue supplies the rest
+ * (`electron/queue-steps/ai-provider.ts`, `providerConfigOf`).
+ *
+ * THIS LIST IS A SUBSET OF `AIProvider` AND NOT A SECOND ONE. Every value here
+ * is spelled the same and means the same; `providerConfigOf` is the single
+ * mapping from one of these to the block a bridge takes.
  */
-export type PassAiProvider = 'ollama' | 'claude' | 'openai' | 'local';
+export type PassAiProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
 
 export interface SimplifyPassParams {
   /** de-jargon | de-stiffen | language-learner. Validated by ai-bridge. */

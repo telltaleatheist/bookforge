@@ -11,7 +11,9 @@ import { translationBridge } from '../translation-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider } from './runtime';
-import { machinesForAiStep, providerConfigOf, type AiJobConfig } from './ai-provider';
+import {
+  crucibleModelForAiStep, machinesForAiStep, providerConfigOf, type AiJobConfig,
+} from './ai-provider';
 
 interface TranslationStepConfig extends AiJobConfig {
   chunkSize?: number;
@@ -49,6 +51,17 @@ export const translationStep: StepModule = {
    */
   leasesModel: (config: Record<string, unknown>): boolean =>
     config['aiProvider'] === 'crucible',
+
+  /**
+   * WHICH model it leases — the row's own `aiModel`, through the one owner.
+   *
+   * `leasesModel` above says a lease MAY be held; this says on what, and the
+   * scheduler keeps the run's lease across the seam only when the two acts
+   * name the same id. A lease is per model and a server holds one, so keeping
+   * the 9B's lease into a step that must load the 27B is a `leased` refusal
+   * this app hands itself (Foundry, 2026-09-14).
+   */
+  leasedModel: crucibleModelForAiStep,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as TranslationStepConfig;

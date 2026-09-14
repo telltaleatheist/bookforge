@@ -349,6 +349,14 @@ const SUITES = [
   // Mac does its RVC, its hiss pass and its alignment on this card. One of
   // those took a fine-tune's card at 00:50 on 2026-09-14.
   'test-queue-step-travel',
+  // AND THE PASS STEPS, which travelled last and by a different road: a pass
+  // config nests its provider under `simplify`/`translate`, so every reader of
+  // "whose model is this" was looking at a top-level field that is never
+  // there — and `processing-passes.ts` expanded the provider block BY HAND,
+  // with no `crucible` arm at all. Also pins which MODEL each act leases,
+  // which is what stops a row holding the 9B's lease into a step that must
+  // load the 27B.
+  'test-queue-pass-travel',
   'test-queue-bench',
   // The only thing that knows what is happening inside an MLX decode. Its
   // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a

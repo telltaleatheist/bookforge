@@ -23,7 +23,8 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { loadPrompt, PROMPTS } from './prompts.js';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
-import { callAI, LANGUAGE_NAMES, type AiCallConfig } from './text-ai.js';
+import { aiCallModel, callAI, LANGUAGE_NAMES } from './text-ai.js';
+import type { AIProviderConfig } from './ai-bridge';
 import { createEpubSink, openEpubSource } from './epub-container.js';
 import {
   EpubProcessor,
@@ -148,7 +149,12 @@ export interface TranslationJobAnalytics {
   totalCharacters?: number;
   sentencesPerMinute: number;
   provider: string;
-  model: string;
+  /**
+   * The model that ran, as the provider block names it — `null` where the block
+   * names none. `aiCallModel` is the one reader of that, so the ledger and the
+   * checkpoint below cannot disagree about which field a provider keeps it in.
+   */
+  model: string | null;
   sourceLang?: string;
   targetLang: string;
   /** 'bilingual' is a value only legacy rows on disk carry — that pipeline is gone. */
@@ -224,7 +230,8 @@ interface MonoTranslationCheckpoint {
   sourceLang: string;
   targetLang: string;
   aiProvider: string;
-  aiModel: string;
+  /** As `TranslationJobAnalytics.model`: the block's own name for it, or null. */
+  aiModel: string | null;
   totalChapters: number;
   totalParagraphs: number;
   completedChapters: string[];       // zipPath identifiers
@@ -315,13 +322,18 @@ export interface MonoTranslationConfig {
   sourceLang: string;        // Source language of the book
   targetLang: string;        // Target language (usually 'en')
   title?: string;
-  // 'local' included: callAI serves the bundled llama.cpp model, which is the
-  // app's default AI and what a translate pass uses with nothing configured.
-  aiProvider: 'ollama' | 'claude' | 'openai' | 'local';
-  aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
+  /**
+   * WHO TRANSLATES, as the one block every AI door in this app takes.
+   *
+   * It was five flat fields (`aiProvider`, `aiModel`, and one credential per
+   * provider) and the caller expanded them into an `AiCallConfig` twice in this
+   * file. `providerConfigOf` (electron/queue-steps/ai-provider.ts) is the ONE
+   * mapping from a job's config to a provider block now, so a provider added
+   * there — `crucible` was — reaches this pass without being taught to it
+   * separately. It is also what carries the row's assigned MACHINE, which flat
+   * fields had no room for.
+   */
+  provider: AIProviderConfig;
   translationPrompt?: string;
   customInstructions?: string;    // Additional instructions appended to the translation prompt
   /**
@@ -382,14 +394,6 @@ async function translateParagraphBatch(
   const sourceLanguage = LANGUAGE_NAMES[sourceLang] || sourceLang;
   const targetLanguage = LANGUAGE_NAMES[targetLang] || targetLang;
 
-  const aiConfig: AiCallConfig = {
-    aiProvider: config.aiProvider,
-    aiModel: config.aiModel,
-    ollamaBaseUrl: config.ollamaBaseUrl,
-    claudeApiKey: config.claudeApiKey,
-    openaiApiKey: config.openaiApiKey,
-  };
-
   // Format paragraphs with <<<N>>> markers
   const formatted = formatNumberedParagraphs(paragraphs, startIndex);
 
@@ -409,7 +413,7 @@ Return ONLY the translated paragraphs with the same <<<N>>> markers. Do not add 
 
   prompt += `\n\n${formatted}`;
 
-  const response = await callAI(prompt, aiConfig, systemPrompt);
+  const response = await callAI(prompt, config.provider, systemPrompt);
 
   // Parse the numbered response
   const { paragraphs: parsed } = parseNumberedParagraphs(response);
@@ -430,7 +434,7 @@ Return ONLY the translation, nothing else.`;
 
     retryPrompt += `\n\n${originalText}`;
 
-    const retryResponse = await callAI(retryPrompt, aiConfig, systemPrompt);
+    const retryResponse = await callAI(retryPrompt, config.provider, systemPrompt);
     parsed.set(missingIdx, retryResponse.trim());
   }
 
@@ -464,14 +468,6 @@ async function translateChapterTitles(
   const sourceLanguage = LANGUAGE_NAMES[config.sourceLang] || config.sourceLang;
   const targetLanguage = LANGUAGE_NAMES[config.targetLang] || config.targetLang;
 
-  const aiConfig: AiCallConfig = {
-    aiProvider: config.aiProvider,
-    aiModel: config.aiModel,
-    ollamaBaseUrl: config.ollamaBaseUrl,
-    claudeApiKey: config.claudeApiKey,
-    openaiApiKey: config.openaiApiKey,
-  };
-
   const formatted = formatNumberedParagraphs(titles, 1);
 
   const prompt = `Translate the following chapter titles from ${sourceLanguage} to ${targetLanguage}.
@@ -481,7 +477,7 @@ Keep translations concise — these are chapter headings, not full sentences.
 
 ${formatted}`;
 
-  const response = await callAI(prompt, aiConfig);
+  const response = await callAI(prompt, config.provider);
 
   const { paragraphs: parsed } = parseNumberedParagraphs(response);
 
@@ -565,13 +561,23 @@ export async function runMonoTranslation(
   config: MonoTranslationConfig,
   mainWindow: BrowserWindow | null
 ): Promise<TranslationJobResult> {
+  /*
+   * WHO RAN IT, read ONCE off the provider block.
+   *
+   * The checkpoint compares them to decide whether a resume is the same run,
+   * the analytics record files them, and the log prints them — three readers
+   * of one fact, which is three places for a second spelling of "which model"
+   * to appear (crucible `docs/ARCHITECTURE.md` R1).
+   */
+  const providerName = config.provider.provider;
+  const modelName = aiCallModel(config.provider);
   console.log(`[MONO-TRANSLATION] Starting job ${jobId}`);
   console.log(`[MONO-TRANSLATION] Config:`, {
     cleanedEpubPath: config.cleanedEpubPath,
     sourceLang: config.sourceLang,
     targetLang: config.targetLang,
-    aiProvider: config.aiProvider,
-    aiModel: config.aiModel
+    aiProvider: providerName,
+    aiModel: modelName
   });
 
   const inputEpubPath = config.cleanedEpubPath;
@@ -657,13 +663,13 @@ export async function runMonoTranslation(
         existingCheckpoint.sourceEpubPath === inputEpubPath &&
         existingCheckpoint.sourceLang === config.sourceLang &&
         existingCheckpoint.targetLang === config.targetLang &&
-        existingCheckpoint.aiProvider === config.aiProvider &&
-        existingCheckpoint.aiModel === config.aiModel;
+        existingCheckpoint.aiProvider === providerName &&
+        existingCheckpoint.aiModel === modelName;
 
       if (!configMatch) {
         console.log(`[MONO-TRANSLATION] Checkpoint config mismatch — starting fresh`);
         console.log(`[MONO-TRANSLATION]   checkpoint: ${existingCheckpoint.sourceLang}→${existingCheckpoint.targetLang} ${existingCheckpoint.aiProvider}/${existingCheckpoint.aiModel}`);
-        console.log(`[MONO-TRANSLATION]   current:    ${config.sourceLang}→${config.targetLang} ${config.aiProvider}/${config.aiModel}`);
+        console.log(`[MONO-TRANSLATION]   current:    ${config.sourceLang}→${config.targetLang} ${providerName}/${modelName}`);
         await deleteTranslationCheckpoint(translateDir);
         await deleteChapterCacheDir(translateDir);
       } else {
@@ -761,8 +767,8 @@ export async function runMonoTranslation(
         sourceEpubPath: inputEpubPath,
         sourceLang: config.sourceLang,
         targetLang: config.targetLang,
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
+        aiProvider: providerName,
+        aiModel: modelName,
         totalChapters: chapterDataList.length,
         totalParagraphs,
         completedChapters: Array.from(completedZipPaths),
@@ -917,8 +923,8 @@ export async function runMonoTranslation(
         durationSeconds: tDuration,
         totalSentences: totalParagraphs,
         sentencesPerMinute: tMinutes > 0 ? Math.round((totalParagraphs / tMinutes) * 10) / 10 : 0,
-        provider: config.aiProvider,
-        model: config.aiModel,
+        provider: providerName,
+        model: modelName,
         sourceLang: config.sourceLang,
         targetLang: config.targetLang,
         mode: 'mono',
