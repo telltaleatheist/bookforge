@@ -476,8 +476,17 @@ export async function migrateAudiobookFolder(
           status: 'complete',
           sessionId: abProject.state.ttsSessionId,
           completedAt: abProject.modifiedAt,
+          /*
+           * NO `engine` (2026-09-14, audit section 5). This used to stamp
+           * `engine: 'xtts'` into a FRESH manifest for every migrated book,
+           * regardless of what had actually rendered it — and the legacy
+           * `abProject.state.ttsSettings` above has no engine field at all, so
+           * there was nothing to read it from. The result was a book that had
+           * never been near XTTS being shown as "XTTS (retired)" for ever.
+           * `TTSSettings.engine` is optional now, and absent is the truthful
+           * value for a record whose source never said.
+           */
           settings: abProject.state.ttsSettings ? {
-            engine: 'xtts',
             device: abProject.state.ttsSettings.device as any,
             voice: abProject.state.ttsSettings.voice,
             temperature: abProject.state.ttsSettings.temperature,
@@ -707,8 +716,9 @@ async function updateMigratedManifest(
             status: 'complete',
             sessionId: abProject.state.ttsSessionId,
             completedAt: abProject.modifiedAt,
+            // No `engine`: see the identical migration above. The legacy
+            // record never said which engine spoke, so this one does not claim.
             settings: abProject.state.ttsSettings ? {
-              engine: 'xtts',
               device: abProject.state.ttsSettings.device as any,
               voice: abProject.state.ttsSettings.voice,
               temperature: abProject.state.ttsSettings.temperature,

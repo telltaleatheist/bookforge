@@ -5,7 +5,7 @@
  * WebVTT so the bookshelf reader can highlight text against independently-recorded
  * (non-TTS) audio. The transcriber is faster-whisper (CTranslate2 backend).
  *
- * Why an overlay (like deepspeed-xtts / cuda-tts) and NOT a new conda env:
+ * Why an overlay (like cuda-tts) and NOT a new conda env:
  * the heavy native piece — ctranslate2 4.6.3 — is ALREADY bundled in the e2a env
  * (it rides in for other reasons), along with onnxruntime, tokenizers,
  * huggingface_hub, soundfile, numpy and tqdm. The only genuinely missing pieces
@@ -16,7 +16,7 @@
  * Model WEIGHTS are NOT installed here — they download from HuggingFace on demand
  * via whisper-models.ts (Systran/faster-whisper-*), same split as Voxtral/Orpheus.
  *
- * Install mechanism mirrors deepspeed-xtts: pip-install into the env with
+ * Install mechanism is a pip overlay: install into the env with
  * `--no-deps` (every dep except the two above is already satisfied, so nothing
  * else in the env is disturbed), then verify the import. A marker file inside the
  * env records the install; because it lives in the env dir it is automatically
@@ -69,7 +69,7 @@ export function whisperEnvComponent(): OptionalComponent {
       gpu: 'any',
     },
     // No archive artifact — this is a pip overlay (installed by the manager's
-    // fetchWhisperEnv branch, like deepspeed-xtts). The array stays empty.
+    // fetchWhisperEnv branch, like cuda-tts). The array stays empty.
     artifacts: [],
     // Cheap catalog-side check is path-exists on the marker; the real proof is the
     // faster_whisper import run at install time (see installWhisperEnv).

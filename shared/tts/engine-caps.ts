@@ -71,11 +71,15 @@ export type TtsEngineId = 'orpheus' | 'higgs';
  *   picked), then REMOVED FROM THE ROOT on 2026-09-05: the streaming pool, the
  *   Python worker, the voice catalog, the "add your own voice" feature and the
  *   DeepSpeed pack are all gone (docs/XTTS_REMOVAL.md). Nothing in this build
- *   can render it. The one place the string survives in a live code path is
- *   engine-agnostic scaffolding — assembly passes the literal `--tts_engine
- *   xtts` to e2a because the assembler combines audio and never consults the
- *   name (`parallel-tts-bridge.ts` `asmEngineArg`, `reassembly-bridge.ts`, and
- *   narrator's `compat/FLAGS.md`).
+ *   can render it. **AND SINCE 2026-09-05 IT SURVIVES IN NO LIVE CODE PATH AT
+ *   ALL.** This paragraph used to say the literal `--tts_engine xtts` was
+ *   passed to the assembler (through a variable `asmEngineArg`) because
+ *   assembly is engine-agnostic. Both halves are now false: `asmEngineArg` does
+ *   not exist, `parallel-tts-bridge.ts` sends
+ *   `narratorEngineId(narratorEngineFor(settings))` and `reassembly-bridge.ts`
+ *   sends the engine read from the session's own provenance, and
+ *   `tools/test-no-e2a-doors.js` is what keeps that true. What is left of XTTS
+ *   is this table, so a record written last year still PARSES and DISPLAYS.
  * - `f5`, `voxtral` — never retired by a decision; they fell out of the
  *   narration picker as a CONSEQUENCE of narrowing it to the two engines above,
  *   and their components (`f5-env` / `voxtral-env`) and `getEnvPathForEngine`

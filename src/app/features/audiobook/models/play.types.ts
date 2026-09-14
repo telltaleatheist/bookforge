@@ -63,17 +63,17 @@ export interface VoiceModel {
   description?: string;
 }
 
-/**
- * Pre-defined voice models
+/*
+ * `AVAILABLE_VOICES` IS DELETED (2026-09-14, audit section 5).
+ *
+ * It was the XTTS roster — six celebrity-named preset ids that shipped with
+ * `xtts-v2/eng/<Name>/` and left the build with the engine on 2026-09-05. It
+ * had ONE occurrence in the whole of src/: its own declaration. Nothing
+ * imported it, because the voice list a player draws comes from
+ * `playGetVoices()`, which asks the engine that is actually running.
+ *
+ * {@link VoiceModel} above stays: it is the shape that answer arrives in.
  */
-export const AVAILABLE_VOICES: VoiceModel[] = [
-  { id: 'ScarlettJohansson', name: 'Scarlett Johansson', description: 'Female, warm and natural' },
-  { id: 'DavidAttenborough', name: 'David Attenborough', description: 'Male, documentary narrator' },
-  { id: 'MorganFreeman', name: 'Morgan Freeman', description: 'Male, deep and resonant' },
-  { id: 'NeilGaiman', name: 'Neil Gaiman', description: 'Male, storyteller' },
-  { id: 'RayPorter', name: 'Ray Porter', description: 'Male, audiobook narrator' },
-  { id: 'RosamundPike', name: 'Rosamund Pike', description: 'Female, British accent' },
-];
 
 /**
  * Speed presets

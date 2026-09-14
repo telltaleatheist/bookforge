@@ -5,6 +5,8 @@
  * Keep both in sync when making changes.
  */
 
+import type { TTSEngine } from '../shared/tts/engine-caps';
+
 import type { TextBlock, Category } from '../shared/ocr/text-block';
 import type { NarrationDeletions, NarrationEpubOutput } from '../shared/vlm/narration-deletions';
 import type { EditorLayoutIdentity } from '../shared/document/editor-layout';
@@ -541,8 +543,26 @@ export interface TTSStage {
   settings?: TTSSettings;
 }
 
+/**
+ * WHAT A FINISHED NARRATION WAS RENDERED WITH, as the manifest records it.
+ *
+ * `engine` WAS `'xtts' | 'orpheus'`, and that union was worse than the XTTS
+ * remnant it looked like (audit docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md
+ * section 5): it named a RETIRED engine and, in the same breath, made `higgs`
+ * -- a currently selectable one -- untypeable in a manifest. So it is
+ * {@link TTSEngine}, the one table in `shared/tts/engine-caps.ts`, which is
+ * deliberately WIDER than the selectable set: a record written last year must
+ * still PARSE and DISPLAY ("XTTS (retired)"), and refusing to read it would be
+ * the worse failure.
+ *
+ * `engine` IS OPTIONAL, and that is the second half of the same fix. The
+ * legacy `abProject` record carried no engine at all, and the migration used
+ * to stamp `'xtts'` into every manifest it wrote regardless of what had
+ * actually rendered the book. Absent is the truthful value for a record whose
+ * source never said which engine spoke.
+ */
 export interface TTSSettings {
-  engine: 'xtts' | 'orpheus';
+  engine?: TTSEngine;
   device: 'gpu' | 'mps' | 'cpu';
   voice: string;
   temperature?: number;

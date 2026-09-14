@@ -168,9 +168,10 @@ export class CrucibleRenderRefused extends Error {
  * Three refusals, each for a different reason and each fixable by a different
  * action:
  *
- *  - `crucible_engine_unsupported` — the job is an Orpheus or XTTS render.
- *    Every voice in `crucible/voices/` declares `narrator_engine = "higgs-v3"`;
- *    the Orpheus arm exists in narrator and has no manifest on a Crucible.
+ *  - `crucible_engine_unsupported` — the job is an Orpheus render. Every
+ *    voice in `crucible/voices/` declares `narrator_engine = "higgs-v3"`;
+ *    the Orpheus arm exists in narrator and has no manifest on a Crucible,
+ *    and Orpheus is deprecated (Owen, 2026-09-14) rather than coming.
  *  - `crucible_voice_is_an_override` — the job renders an UNCERTIFIED local
  *    checkpoint (`higgsModelForRender` derives the id `<base>+<slug>` from
  *    `settings.higgsOverride`). Those weights are a directory on this machine;
@@ -196,7 +197,7 @@ export function crucibleVoiceFor(ttsEngine: string | undefined, voiceId: string 
       'crucible_engine_unsupported',
       `a Crucible render was asked for with ttsEngine ${JSON.stringify(ttsEngine ?? null)}. `
       + 'Every voice a Crucible serves declares narrator_engine "higgs-v3" (crucible/voices/*.toml); '
-      + 'the Orpheus and XTTS arms exist only in a locally spawned narrator. Render this book '
+      + 'the Orpheus arm exists only in a locally spawned narrator. Render this book '
       + 'locally, or select a Higgs voice.',
     );
   }

@@ -71,8 +71,11 @@ export async function planSentenceGap(
   processDir: string,
   explicit?: number,
 ): Promise<SentenceGapPlan> {
-  // Assembly always runs `--tts_engine xtts`, so the Orpheus voice — and every
-  // per-voice value keyed off it — can only come from the session's provenance.
+  // Assembly is ENGINE-AGNOSTIC — it combines audio and never consults the
+  // engine name — so the Orpheus voice, and every per-voice value keyed off it,
+  // can only come from the session's own provenance. (Until 2026-09-05 this
+  // said "assembly always runs --tts_engine xtts"; that literal is gone from
+  // both assembly doors, and `tools/test-no-e2a-doors.js` keeps it gone.)
   const provenance = await resolveSessionSentenceGap(processDir);
   const gapSeconds = typeof explicit === 'number'
     ? explicit

@@ -12,7 +12,7 @@
       "id": "rvc-voice-owen-morgan",
       "label": "Owen Morgan",
       "modelName": "Owen Morgan",
-      "matches": "the Owen Morgan fine-tuned XTTS voice",
+      "matches": "Owen Morgan's own fine-tuned narration voice",
       "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/owen-morgan.tar.gz",
       "sha256": "1a446de02c9f322f36a0979a3c135f69ac0436713dc6ce5b7ede9c26da3ed6ec",
       "bytes": 80526382,

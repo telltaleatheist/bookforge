@@ -1154,7 +1154,17 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.playbackState() === 'playing' || this.playbackState() === 'buffering'
   );
   readonly isGenerating = signal(false);
-  readonly selectedVoice = signal<string>('ScarlettJohansson');
+  /*
+   * EMPTY UNTIL THE ENGINE ANSWERS (2026-09-14, audit section 5).
+   *
+   * This used to hold `'ScarlettJohansson'` — an XTTS preset id from an engine
+   * that left the build on 2026-09-05 — until `loadVoices()` returned. So for
+   * the first frames of every Play view the selected voice was a name nothing
+   * could speak, and any code that read it before the catalog landed read a
+   * lie. An empty string is the honest state of "nobody has said yet", and
+   * `loadVoices()` fills it from what the engine actually offers.
+   */
+  readonly selectedVoice = signal<string>('');
   readonly selectedSpeed = signal<number>(1.25);
 
   /** Audio playback is stalled waiting for buffer (initial fill or an underrun). */
@@ -1764,8 +1774,11 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
     const ids = new Set(result.voices.map(v => v.id));
     if (!ids.has(this.selectedVoice())) {
+      // The engine's OWN default first, then whatever it listed first. The
+      // hard-coded `ScarlettJohansson` preference that stood here named a
+      // retired XTTS voice and could only ever have matched on a machine that
+      // no longer exists.
       const preferred =
-        result.voices.find(v => v.id === 'ScarlettJohansson') ||
         result.voices.find(v => v.group === 'Default') ||
         result.voices[0];
       this.selectedVoice.set(preferred.id);

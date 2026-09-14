@@ -1274,9 +1274,10 @@ export async function startReassembly(
   // rvc-enhancement job already supplied the final set (`config.sentencesDir`).
   // Resolved FIRST — before anything reports progress — because whether this run
   // normalizes gaps decides whether the stage plan below declares a gap bar.
-  // Assembly always runs --tts_engine xtts, so the Orpheus voice — and every per-voice
-  // value keyed off it (the gap default, the min-chunk-gap floor) — can only come from
-  // provenance. Read ONCE at function scope: an explicit config.sentenceGap skips the gap
+  // Assembly is ENGINE-AGNOSTIC — it combines audio and never consults the engine name —
+  // so the Orpheus voice, and every per-voice value keyed off it (the gap default, the
+  // min-chunk-gap floor), can only come from provenance. (This used to say "assembly always
+  // runs --tts_engine xtts"; that literal left both assembly doors on 2026-09-05.) Read ONCE at function scope: an explicit config.sentenceGap skips the gap
   // resolution below but the normalization step still needs the voice, so making this read
   // conditional on that branch would leave the voice unknown exactly when it's asked for.
   const provenance = config.sentencesDir ? null : await parseSessionProvenance(config.processDir);
@@ -1585,8 +1586,10 @@ export async function startReassembly(
   // De-ring (OPT-IN): the per-voice post-render ffmpeg filter chain (notch/comb that
   // strips SNAC tonal ringing), resolved from the session's PROVENANCE (the engine +
   // voice that produced these cached sentences, recorded in session_state.json).
-  // Assembly always runs --tts_engine xtts (engine-agnostic), so the original Orpheus
-  // voice — and thus its filter — can only come from provenance, not the assembly args.
+  // Assembly is engine-agnostic — it never consults the engine name — so the original
+  // Orpheus voice, and thus its filter, can only come from provenance and not from the
+  // assembly args. (This door sends the session's OWN engine now; the `--tts_engine xtts`
+  // literal it used to name left on 2026-09-05.)
   // Resolved ONLY when the caller ticked de-ring (config.applyDeRing); absent/false →
   // arg omitted → assembly encodes the raw sentences unchanged. (Previously auto-applied
   // for every Orpheus session; that silent-apply is now the explicit opt-in below.)

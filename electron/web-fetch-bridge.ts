@@ -6,6 +6,8 @@
  * block selection needed.
  */
 
+import type { TtsEngineId } from '../shared/tts/engine-caps';
+
 import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -76,7 +78,15 @@ export interface LanguageLearningJobConfig {
   // TTS settings (can use same voice for both, or different)
   sourceVoice: string;          // Voice for source language
   targetVoice: string;          // Voice for target language (can be same)
-  ttsEngine: 'xtts' | 'orpheus';
+  /*
+   * `TtsEngineId`, not `'xtts' | 'orpheus'` (2026-09-14, audit section 5). This
+   * is a REQUEST — an engine somebody is about to render with — so the narrow
+   * union is right: `TtsEngineId` is "an engine this build can actually run",
+   * which is what `SELECTABLE_ORDER` and narrator's own assertion already
+   * enforce. The old union named a retired engine and left `higgs`, the one
+   * this app narrates with, unsayable.
+   */
+  ttsEngine: TtsEngineId;
   speed: number;
 }
 
