@@ -297,6 +297,26 @@ test('a row waiting for a card is told WHICH card', () => {
   assert.match(reason.sentence, /Narrating Mistborn/);
 });
 
+test("a row waiting for a full CLOUD lane is not told to look at its own processor", () => {
+  /*
+   * The lane's width lives in the `cpu` counter because the work occupies no
+   * card — but it is not this machine's CPU, and "Waiting for a CPU slot"
+   * would be true of the counter and false of the world.
+   */
+  const r1 = stepOf({ id: 'r1', venue: 'mac:cloud', resource: 'cpu', travels: true });
+  const r2 = stepOf({ id: 'r2', venue: 'mac:cloud', resource: 'cpu', travels: true });
+  const queued = stepOf({ id: 'q', venue: 'mac:cloud', resource: 'cpu', travels: true, status: 'queued' });
+  const ja = jobOfSteps([r1], { id: 'j1', waitForResolved: 'mac' });
+  const jb = jobOfSteps([r2], { id: 'j2', title: 'Wool', waitForResolved: 'mac' });
+  const jc = jobOfSteps([queued], { id: 'j3', title: 'Dune', waitForResolved: 'mac' });
+  const reason = bench.stillReason(snapOf([ja, jb, jc], ['local', 'mac']), jc, queued);
+  assert.strictEqual(reason.kind, 'no-slot');
+  assert.match(reason.sentence, /mac to finish what it is sending elsewhere/);
+  assert.ok(!/CPU slot/.test(reason.sentence), reason.sentence);
+  assert.ok(!/graphics card/.test(reason.sentence), reason.sentence);
+});
+
+
 test('the thermal reading never lands on a remote machine\'s lane', () => {
   const snap = snapOf([], ['mac']);
   snap.gpuThermal = { celsius: 84, throttleActive: true };

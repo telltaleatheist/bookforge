@@ -47,7 +47,7 @@ import {
   type StepStatus,
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
-import { slotSetForStep, slotSetOccupancy, slotsOf } from './slot-sets';
+import { serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf } from './slot-sets';
 import { LEGACY_LOCAL_NARRATOR } from './wait-for';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -87,8 +87,19 @@ export interface StillReason {
  * row told "waiting for the graphics card" while a second machine's card sat
  * idle would be a true sentence that reads as a false one.
  */
-function poolWord(resource: StepResource, setLabel: string): string {
-  return resource === 'gpu' ? `the graphics card on ${setLabel}` : 'a CPU slot';
+function poolWord(resource: StepResource, setId: string, setLabel: string): string {
+  if (resource === 'gpu') return `the graphics card on ${setLabel}`;
+  /*
+   * A CLOUD LANE IS A `cpu` SET AND IT IS NOT THIS MACHINE'S CPU.
+   *
+   * An upstream-routed act (crucible `docs/PHASE15-HOST.md` §5.3) is charged
+   * to `<server>:cloud`, whose width is in the `cpu` counter because the work
+   * occupies no card. "Waiting for a CPU slot" would be true of the counter
+   * and false of the world: nothing of this row is on this machine at all, and
+   * a person reading it would go looking at their own processor.
+   */
+  const server = serverOfCloudLane(setId);
+  return server === null ? 'a CPU slot' : `${server} to finish what it is sending elsewhere`;
 }
 
 /**
@@ -203,8 +214,8 @@ export function stillReason(
       return {
         kind: 'no-slot',
         sentence: busy.length > 0
-          ? `Waiting for ${poolWord(step.resource, label)} — ${busy.join(' and ')}.`
-          : `Waiting for ${poolWord(step.resource, label)}.`,
+          ? `Waiting for ${poolWord(step.resource, setId, label)} — ${busy.join(' and ')}.`
+          : `Waiting for ${poolWord(step.resource, setId, label)}.`,
       };
     }
   }
