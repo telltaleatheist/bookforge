@@ -66,11 +66,10 @@
  * `tools/test-foundry-hosted-crucible-seam.js` rather than remembered.
  */
 import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
-import type { ModelInfo } from '@crucible/client';
+import type { CapabilityRecord, ModelInfo } from '@crucible/client';
 import { rankedServers, readRouting } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
-import { textModelFor } from './text-models';
 import {
   crucibleChatBase,
   endpointHeadersEnv,
@@ -93,6 +92,12 @@ export type TextActVenue =
     };
 
 export type CrucibleTextActErrorCode =
+  /** The server has no capability row for this class: it has never been measured. */
+  | 'crucible_capability_undecided'
+  /** The class is off on that server, with its own reason and its shortfall. */
+  | 'crucible_capability_disabled'
+  /** The row says enabled and names no model — a record contradicting itself. */
+  | 'crucible_capability_no_model'
   /** A caller named `crucible` and no server. */
   | 'crucible_server_not_named'
   /** `any`, and not one enabled server answered. Names each one tried. */
@@ -158,8 +163,15 @@ export interface TextVenueHost {
   models(name: string): Promise<ModelInfo[]>;
   /** Submit a `load-model` job and wait for it. Only ever called with `loadFirst`. */
   loadModel(name: string, model: string): Promise<void>;
-  /** The Crucible model id chosen for this act, or a named refusal. */
-  modelFor(act: CrucibleTextAct): string;
+  /**
+   * `GET /v1/capability` ON THE SERVER THAT WILL RUN THIS ACT.
+   *
+   * A door of its own, beside `models`, and not a "give me the id" call: the
+   * DECISION is pure (`modelFromCapability`) and only the READ touches the
+   * network, which is what lets a keeper drive all three refusals with no
+   * registry and no server.
+   */
+  capability(server: string): Promise<CapabilityRecord>;
 }
 
 /** The real one: the app's records, the real registry and real HTTP. */
@@ -182,8 +194,72 @@ export function processTextVenueHost(): TextVenueHost {
         }
       }
     },
-    modelFor: textModelFor,
+    async capability(name: string): Promise<CapabilityRecord> {
+      return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).capability();
+    },
   };
+}
+
+/**
+ * THE MODEL A CLASS RUNS ON, out of the record that server already answered.
+ *
+ * PURE — it takes the record, not a server name — because the decision is the
+ * interesting half and a keeper has to be able to drive all three refusals
+ * without a network. The read is `TextVenueHost.capability`.
+ *
+ *
+ * THREE NAMED REFUSALS, because three different things can be true and each
+ * has a different fix:
+ *
+ *  - `crucible_capability_undecided` — the record has no row for this class at
+ *    all, which is what a server says before `crucible capability --write` has
+ *    ever run on it. "Undecided" is deliberately different news from
+ *    "nothing": nobody has measured the card yet.
+ *  - `crucible_capability_disabled` — the class is off, with the SERVER's own
+ *    reason and its shortfall in bytes. That is the honest answer for a 12 GB
+ *    box asked to translate, and it is not this app's to argue with.
+ *  - `crucible_capability_no_model` — enabled and `selected` is empty. The
+ *    record's own rule is to branch on `enabled`, never on the emptiness of
+ *    `selected`, so this is a record that contradicts itself and it is
+ *    reported rather than repaired.
+ */
+export function modelFromCapability(
+  record: CapabilityRecord,
+  act: CrucibleTextAct,
+  server: string,
+): string {
+  const row = record.classes.find((c) => c.capability === act);
+  if (row === undefined) {
+    const known = record.classes.map((c) => c.capability).join(', ');
+    throw new CrucibleTextActError(
+      'crucible_capability_undecided',
+      `crucible "${server}" has no capability row for the "${act}" class `
+        + `(${known === '' ? 'its record is empty' : `it reports: ${known}`}), so it has not said `
+        + 'which model would serve it. That is what `crucible capability --write` writes, and it '
+        + 'installing a job type from that server’s own page is what runs it — "Set up for '
+        + 'BookForge" beside its row does the whole of it.',
+    );
+  }
+  if (!row.enabled) {
+    const short = row.shortfallBytes > 0
+      ? ` It is short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB.`
+      : '';
+    throw new CrucibleTextActError(
+      'crucible_capability_disabled',
+      `crucible "${server}" cannot serve the "${act}" class: ${row.reason}.${short} That is the `
+        + 'server measuring its own card, not a setting — run this act on another server, or give '
+        + 'that one a model it can hold.',
+    );
+  }
+  if (row.selected.trim() === '') {
+    throw new CrucibleTextActError(
+      'crucible_capability_no_model',
+      `crucible "${server}" reports the "${act}" class as ENABLED and names no model for it `
+        + `(${row.reason}). Those two cannot both be true; re-run the capability probe on that `
+        + 'server rather than having this app guess an id.',
+    );
+  }
+  return row.selected;
 }
 
 /**
@@ -323,10 +399,13 @@ export async function resolveCrucibleTextEngine(
     );
   }
 
-  // The id, from the ONE record that holds it. Refuses
-  // `crucible_text_model_not_set` by name when this act has never been pointed
-  // at a model — an Ollama tag is not a Crucible id and is never read as one.
-  const model = host.modelFor(act);
+  /*
+   * THE ID, FROM THE SERVER THAT WILL RUN IT. `GET /v1/capability` is the one
+   * owner of "which model serves this class here" (2026-09-14) — see
+   * `TextVenueHost.modelFor`. Refuses by name in three different ways, each
+   * naming what a person would do about it, and never invents an id.
+   */
+  const model = modelFromCapability(await host.capability(server), act, server);
 
   if (opts.loadFirst === true) {
     // The explicit door. Wired, and deliberately not on any default path: see
@@ -345,10 +424,10 @@ export async function resolveCrucibleTextEngine(
     const known = rows.map((m) => m.id).join(', ');
     throw new CrucibleTextActError(
       'crucible_unknown_model',
-      `crucible "${server}" has no model "${model}", which is what Settings → AI → Crucible names `
-        + `for the ${act} act (${rows.length === 0 ? 'it advertises none' : `known: ${known}`}). `
-        + 'Pick one of its own ids; a Crucible id is stable across machines, so the choice is good '
-        + 'on every server that serves that manifest.',
+      `crucible "${server}" has no model "${model}", which is what its OWN capability record `
+        + `names for the ${act} class (${rows.length === 0 ? 'it advertises none' : `known: ${known}`}). `
+        + 'The record and the model list disagree with each other on that server; re-run its '
+        + 'capability probe, or pull the model the record names.',
     );
   }
   if (!row.resident) {

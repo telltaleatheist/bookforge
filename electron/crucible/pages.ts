@@ -141,15 +141,18 @@ export const CRUCIBLE_PAGES_ACT = 'pages';
  * send (`rednote-hilab/dots.ocr`, now `dots-studio/dots.ocr`) is not what
  * crosses; Crucible's id is.
  *
- * RULING OWED: this is a constant here and a per-act row in Settings for the
- * four text acts (`electron/crucible/text-models.ts`,
- * `<userData>/crucible-models.json`). `pages` is not a text act, so it has no
- * row and `TextModels.set` refuses the name. One id per act is the shape that
- * exists; whether `pages` joins that record (and therefore Settings → AI →
- * Crucible) or stays a build constant is Owen's call. It is a constant tonight
- * because inventing a settings row nobody can see would be worse than a named
- * default — and because the id is checked against the server's catalog either
- * way, so a wrong one is a refusal and never a silently different book.
+ * RULING OWED, RESTATED 2026-09-14 because half of it was answered. It used to
+ * read "this is a constant here and a per-act ROW IN SETTINGS for the four text
+ * acts". There is no such row any more: `<userData>/crucible-models.json` and
+ * `electron/crucible/text-models.ts` are deleted, and `GET /v1/capability` owns
+ * the per-class model — `crucible install` probes the card and selects, so the
+ * mapping is a fact about the server. `pages` IS one of those capability
+ * classes, so the question is now sharper and smaller: does this constant give
+ * way to the server's `capability` row for `pages`, exactly as the four text
+ * acts just did? It stays a constant here because `crucible/jobs/pages` has no
+ * job type of its own (`pages` rides the `llm` env), and because the id is
+ * checked against the server's catalog either way — so a wrong one is a refusal
+ * and never a silently different book.
  */
 export const CRUCIBLE_PAGES_MODEL = 'dots-ocr';
 

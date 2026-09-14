@@ -59,11 +59,10 @@ import type {
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
+  CrucibleCapabilityView,
   CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
-  CrucibleTextActModels,
-  CrucibleTextActName,
   PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
@@ -1373,14 +1372,14 @@ export interface ElectronAPI {
     /** OPERATOR VERB: submits an `unload-model` job. Nothing here does it unasked. */
     unloadModel: (name: string, model: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
     /**
-     * Which Crucible model each of the four text acts runs on — the record
-     * `<userData>/crucible-models.json`, whose owner is the main process
-     * (`electron/crucible/text-models.ts`). An act with no choice has NO KEY:
-     * there is no default, and an Ollama tag is never read as a Crucible id.
+     * `GET /v1/capability` on a named server: what it can hold per class, the
+     * model it SELECTED for each, and the server's own reason either way.
+     *
+     * A READ. The per-act model record this app used to keep is deleted — the
+     * capability record owns that mapping, because `crucible install` measured
+     * the card to make it.
      */
-    textModels: () => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
-    /** Point one act at a Crucible model id, or clear it with an empty string. */
-    setTextModel: (act: CrucibleTextActName, model: string) => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
+    capability: (name: string) => Promise<{ success: boolean; data?: CrucibleCapabilityView; error?: string }>;
 
     /*
      * ── THE INSTALL STORY'S THIRD DOOR ──────────────────────────────────────
@@ -2913,9 +2912,7 @@ const electronAPI: ElectronAPI = {
     hostFacts: () => ipcRenderer.invoke('crucible:host-facts'),
     installPlan: () => ipcRenderer.invoke('crucible:host-install-plan'),
     install: () => ipcRenderer.invoke('crucible:host-install'),
-    textModels: () => ipcRenderer.invoke('crucible:text-models'),
-    setTextModel: (act: string, model: string) =>
-      ipcRenderer.invoke('crucible:set-text-model', act, model),
+    capability: (name: string) => ipcRenderer.invoke('crucible:capability', name),
     // The operator door. `open-ui`, `setup-module`, `cancel-setup`, `module`
     // and `parse-pairing` are names the hosted Foundry's `crucible:` family
     // does not have (foundry-app/IPC-CHANNELS.md), which

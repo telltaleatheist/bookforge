@@ -25,12 +25,11 @@ import type {
 } from '@shared/crucible/install-wire';
 import type {
   CrucibleActivityView,
+  CrucibleCapabilityView,
   CrucibleModelRow,
   CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
-  CrucibleTextActModels,
-  CrucibleTextActName,
   PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
@@ -4226,21 +4225,18 @@ export class ElectronService {
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /**
-     * WHICH CRUCIBLE MODEL EACH TEXT ACT RUNS ON — `<userData>/crucible-models.json`.
+     * WHICH MODEL EACH CLASS RUNS ON — the SERVER's answer, read not chosen.
      *
-     * Not part of the AI config in this app's own settings, deliberately: the
-     * four acts are run by the FOUNDRY ENGINE, spawned from the main process and
-     * from the CLI, and neither can read a renderer's localStorage. One owner,
-     * `electron/crucible/text-models.ts`, reached over IPC from both.
+     * `textModels` / `setTextModel` and `<userData>/crucible-models.json`
+     * stood here and are deleted (2026-09-14). `crucible install` probes the
+     * card and picks the largest candidate that fits, so the act-to-model
+     * mapping is a per-HOST fact with an owner; an id chosen here would be a
+     * second opinion about a decision that server already made and may have
+     * refused.
      */
-    textModels: (): Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }> =>
+    capability: (name: string): Promise<{ success: boolean; data?: CrucibleCapabilityView; error?: string }> =>
       this.isElectron
-        ? (window as any).electron.crucible.textModels()
-        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
-
-    setTextModel: (act: CrucibleTextActName, model: string): Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }> =>
-      this.isElectron
-        ? (window as any).electron.crucible.setTextModel(act, model)
+        ? (window as any).electron.crucible.capability(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /*

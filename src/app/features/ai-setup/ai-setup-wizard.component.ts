@@ -10,7 +10,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import {
   CRUCIBLE_TEXT_ACT_NAMES,
   type CrucibleModelRow,
-  type CrucibleTextActModels,
+  type CrucibleCapabilityView,
   type CrucibleTextActName,
 } from '@shared/crucible/settings-wire';
 import {
@@ -235,28 +235,27 @@ import {
           }
 
           @if (crucibleServer()) {
-            <h3 class="cru-acts-head">A model per text act</h3>
+            <h3 class="cru-acts-head">A model per text act — the server's own answer</h3>
             <p class="muted">
-              Clean, translate, simplify and analysis are four acts and each names its own
-              Crucible model — a cleanup does not need the 27B a translation does. The name
-              travels on every request, so the server's bench says which act is running rather
-              than filing all four under "translate". A Crucible model id means the same weights
-              on every machine, so a choice made here is good on any server that serves it.
+              Clean, translate, simplify and analysis are four acts, and each runs on a
+              different model: a cleanup does not need the 27B a translation does. <strong>This
+              app does not choose them.</strong> <code>crucible install</code> measured that
+              machine's card and picked the largest candidate each class fits on, so the
+              mapping is a fact about the server — a 24 GB box serves translate with a 4-bit
+              27B and a 12 GB box does not serve it at all. Change it on that server, from its
+              own page.
             </p>
             @for (act of textActs; track act) {
               <div class="ollama-url-row">
                 <label class="ollama-url-label">{{ act }}</label>
-                <select class="key-input" [value]="textModel(act)" (change)="setTextModel(act, $any($event.target).value)">
-                  <option value="">Not chosen — this act will refuse by name</option>
-                  @for (m of crucibleModels(); track m.id) {
-                    <option [value]="m.id">{{ m.id }} — {{ modelState(m) }}</option>
-                  }
-                </select>
+                <span class="act-model">{{ capabilityLineFor(act) }}</span>
               </div>
             }
             <p class="muted">
-              Owen's ruling, 2026-09-13: they can't lie to the user and say a translate job is
-              running when it's actually a simplify job.
+              The act's name travels on every request, so the server's bench says which act is
+              running rather than filing all four under "translate" — Owen's ruling, 2026-09-13:
+              they can't lie to the user and say a translate job is running when it's actually a
+              simplify job.
             </p>
           }
 
@@ -371,6 +370,8 @@ import {
     .wizard { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem 3rem; overflow-y: auto; height: 100%; }
     .wizard.embedded { padding: 0; max-width: none; height: auto; overflow: visible; }
     .ollama-url-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
+    /* The server's own answer for one class: read, never a control. */
+    .act-model { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45; }
     .ollama-url-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; min-width: 6.5rem; }
     .key-input.narrow { max-width: 7rem; }
     .inline-note { font-size: 0.8rem; margin: 0; }
@@ -547,7 +548,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     });
     await this.reload();
     await this.loadCrucibleServers();
-    await this.loadTextModels();
+    await this.loadCapability();
     this.sysInfo.set(await this.ai.systemInfo());
   }
 
@@ -695,7 +696,13 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     this.settings.updateAIConfig({ crucible: { server, model: server === current?.server ? (current?.model ?? '') : '' } });
     this.crucibleStatus.set(null);
     this.crucibleModels.set([]);
-    if (server) void this.loadCrucibleModels(server);
+    // The capability record belongs to the server too — a 24 GB box and a
+    // 12 GB box answer differently — so it is re-asked, never carried over.
+    this.capability.set(null);
+    if (server) {
+      void this.loadCrucibleModels(server);
+      void this.loadCapability();
+    }
   }
 
   setCrucibleModel(model: string): void {
@@ -710,48 +717,64 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   // picker above is the app's AI provider — the cleanup pass's own chat calls
   // through `ai-bridge.ts`, chosen per provider and stored with the rest of the
   // AI config. THESE four are what the FOUNDRY ENGINE is told with `--model`
-  // when BookForge spawns it for clean / translate / simplify / analysis, and
-  // the engine runs in the main process and in the CLI — neither of which can
-  // read a renderer's localStorage. So they live in
-  // `<userData>/crucible-models.json`, edited here over IPC, with one owner
-  // (`electron/crucible/text-models.ts`).
+  // when BookForge spawns it for clean / translate / simplify / analysis.
   //
-  // NOT DEFAULTED, and never derived from an Ollama tag: `cleanTextModel` in
-  // app-settings.json names weights in a different namespace with a different
-  // owner. An act with no entry refuses by name at run time.
+  // THEY ARE NO LONGER CHOSEN HERE (2026-09-14). `<userData>/crucible-models.json`
+  // is deleted and `GET /v1/capability` is the owner: `crucible install` probes
+  // the card and picks the largest candidate each class fits on, so the mapping
+  // is a per-HOST fact, and an id chosen in this app was a second opinion about
+  // a decision that server had already made and might have refused (Owen's
+  // ruling with Foundry, docs/CRUCIBLE_ROLLOUT_PLAN.md section 3). What is left
+  // here is a READ, drawn as the server's answer.
 
   readonly textActs = CRUCIBLE_TEXT_ACT_NAMES;
-  readonly textModels = signal<CrucibleTextActModels>({});
 
-  textModel(act: CrucibleTextActName): string {
-    return this.textModels()[act] ?? '';
+  /** `GET /v1/capability` on the chosen server. Null until it has been asked. */
+  readonly capability = signal<CrucibleCapabilityView | null>(null);
+
+  /**
+   * One line per act: what the server decided, in its own words.
+   *
+   * THREE DIFFERENT ANSWERS AND THREE DIFFERENT SENTENCES. A class this
+   * server has never measured is "undecided", which is deliberately not the
+   * same news as "off"; a class that is off carries the server's reason and
+   * the shortfall that turned it off, which is a fact about the card and not
+   * something this screen argues with; an enabled class names the model. The
+   * rule is the record's own: branch on `enabled`, never on the emptiness of
+   * `selected`.
+   */
+  capabilityLineFor(act: CrucibleTextActName): string {
+    const record = this.capability();
+    if (record === null) return 'asking the server…';
+    const row = record.classes.find((c) => c.capability === act);
+    if (row === undefined) {
+      return 'not measured yet — install a job type from the server\'s page to write its '
+        + 'capability record';
+    }
+    if (!row.enabled) {
+      const short = row.shortfallBytes > 0
+        ? ` (short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB)`
+        : '';
+      return `not served here — ${row.reason}${short}`;
+    }
+    return row.selected === '' ? `enabled, and names no model — ${row.reason}` : row.selected;
   }
 
-  async setTextModel(act: CrucibleTextActName, model: string): Promise<void> {
-    const res = await this.electron.crucible.setTextModel(act, model);
+  private async loadCapability(): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) { this.capability.set(null); return; }
+    const res = await this.electron.crucible.capability(server);
     if (!res.success || !res.data) {
+      // Never an empty record on failure: an empty class list reads as "this
+      // server serves nothing", which is a different and false claim.
+      this.capability.set(null);
       this.crucibleStatus.set({
         ok: false,
-        message: res.error ?? `The ${act} model could not be saved, and nothing said why.`,
+        message: res.error ?? `crucible "${server}" could not be asked what it can serve.`,
       });
       return;
     }
-    this.textModels.set(res.data);
-    this.crucibleStatus.set(null);
-  }
-
-  private async loadTextModels(): Promise<void> {
-    const res = await this.electron.crucible.textModels();
-    if (!res.success || !res.data) {
-      // A corrupt record is refused by its owner, in its own words, and those
-      // words carry the repair. Shown rather than replaced with an empty map.
-      this.crucibleStatus.set({
-        ok: false,
-        message: res.error ?? 'The per-act Crucible model record could not be read.',
-      });
-      return;
-    }
-    this.textModels.set(res.data);
+    this.capability.set(res.data);
   }
 
   /**

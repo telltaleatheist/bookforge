@@ -310,10 +310,47 @@ export const CRUCIBLE_TEXT_ACT_NAMES = ['clean', 'translate', 'simplify', 'analy
 
 export type CrucibleTextActName = (typeof CRUCIBLE_TEXT_ACT_NAMES)[number];
 
-/**
- * The record `<userData>/crucible-models.json` holds: an act to a Crucible
- * model id. An act with no choice has NO KEY — there is no default, because a
- * Crucible id is whatever the host has manifests for and an Ollama tag is not
- * one.
+/*
+ * `CrucibleTextActModels` IS DELETED, and so is the record it described
+ * (2026-09-14, `<userData>/crucible-models.json`).
+ *
+ * Owen ruled it with Foundry (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3):
+ * **the capability record owns the per-class model.** Phase 9 made that
+ * mapping a PER-HOST fact — `crucible install` probes the card and picks the
+ * largest candidate that fits, so a 24 GB box serves `translate` with a 4-bit
+ * 27B and a 12 GB box does not serve it at all — and an id chosen in this
+ * app's Settings was a second opinion about a decision that already has an
+ * owner. The SDK's own `CapabilityRecord` puts it plainly: *"A client handed a
+ * model id by configuration would be carrying one this server may have
+ * refused."*
+ *
+ * What replaced it is {@link CrucibleCapabilityView}: a READ of
+ * `GET /v1/capability`, drawn as what the server has decided rather than as a
+ * choice this app makes.
  */
-export type CrucibleTextActModels = Partial<Record<CrucibleTextActName, string>>;
+
+/** One class's verdict on one server, as Settings → AI draws it. */
+export interface CrucibleCapabilityRow {
+  /** `clean`, `translate`, `simplify`, `analysis`, `tts`, `asr`, … */
+  capability: string;
+  enabled: boolean;
+  /** The model that won, or `''` when none did. Branch on `enabled`, not on this. */
+  selected: string;
+  /** Why, in the server's own words, whichever way it went. Never empty. */
+  reason: string;
+  /** How much more memory the smallest candidate needed, or 0. */
+  shortfallBytes: number;
+}
+
+/**
+ * `GET /v1/capability` — what a server can hold, per class, and why not.
+ *
+ * `totalBytes` is the card the decision was measured on, which is how a stale
+ * record is told from a current one without anybody writing down a date.
+ */
+export interface CrucibleCapabilityView {
+  backendKind: string;
+  totalBytes: number;
+  desktopAllowanceBytes: number;
+  classes: CrucibleCapabilityRow[];
+}

@@ -256,15 +256,16 @@ if (fixture === null) {
     if (fs.existsSync(real)) fs.copyFileSync(real, path.join(doorUserData, name));
   }
   /*
-   * A per-act Crucible model, so the venue test below walks PAST the
-   * "no model chosen" refusal and proves the record is read through this door.
-   * Whether that id is resident on the machine running the suite is not this
-   * suite's business — both answers are the seam refusing by name before a
-   * spawn, which is what the test asserts.
+   * NO PER-ACT MODEL RECORD IS SEEDED ANY MORE (2026-09-14).
+   *
+   * `<userData>/crucible-models.json` used to be written here so the venue
+   * test below walked PAST a "no model chosen" refusal. That record is
+   * deleted: `GET /v1/capability` on the chosen server owns the act-to-model
+   * mapping, because `crucible install` probed the card to make it. There is
+   * nothing for a fixture to seed — the answer is the server's, and whichever
+   * way it goes the seam refuses BY NAME before any spawn, which is the only
+   * thing this suite asserts about it.
    */
-  fs.writeFileSync(
-    path.join(doorUserData, 'crucible-models.json'),
-    JSON.stringify({ clean: 'qwen3.5-9b' }), 'utf8');
   const writeRouting = (legacyLocalRender) => fs.writeFileSync(
     path.join(doorUserData, 'crucible-routing.json'),
     JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender }),

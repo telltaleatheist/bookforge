@@ -18,8 +18,6 @@ import { passResultNotes } from '../../shared/processing/pass-notes';
 import { broadcastToAllWindows } from '../document-stage-run';
 import { onBridgeEvent } from '../bridge-events';
 import { runProcessingPass } from '../processing-passes';
-import { textModelFor } from '../crucible/text-models';
-import { CrucibleTextModelError } from '../crucible/text-models';
 import type { PassJobConfig } from '../../shared/processing/pass-types';
 import type { JobType } from '../../shared/queue/engine-types';
 import type { StepModule, StepRunContext } from '../queue-engine';
@@ -157,9 +155,16 @@ function passModule(type: JobType): StepModule {
      *  · `simplify` / `translate-pass` run through BookForge's own bridges with
      *    the provider block on the row, so the id is `aiModel`
      *    (`crucibleModelForAiStep`, beside `providerConfigOf`).
-     *  · `narration-text` is the `clean` act through the engine, whose model is
-     *    `textModelFor('clean')` — `<userData>/crucible-models.json`, the one
-     *    record of a model per act.
+     *  · `narration-text` is the `clean` act through the engine, and its model
+     *    IS NOT KNOWABLE HERE ANY MORE (2026-09-14). It used to be
+     *    `textModelFor('clean')`, out of `<userData>/crucible-models.json`;
+     *    that record is deleted and `GET /v1/capability` on the chosen server
+     *    owns the act-to-model mapping, because `crucible install` probed that
+     *    machine's card to make it (Owen's ruling with Foundry,
+     *    docs/CRUCIBLE_ROLLOUT_PLAN.md section 3). Asking it needs a server
+     *    name and a round trip, and this function has neither — it is
+     *    synchronous and runs before the step is placed. So it answers `null`,
+     *    which the paragraph below already describes as a real answer.
      *
      * A lookup table in this file saying "clean is the 9B" would be a second
      * owner of that fact and would be wrong the first time somebody re-pointed
@@ -179,12 +184,15 @@ function passModule(type: JobType): StepModule {
     leasedModel: (config: Record<string, unknown>): string | null => {
       const pass = config as unknown as PassJobConfig;
       if (pass?.kind === 'narration-text') {
-        try {
-          return textModelFor('clean');
-        } catch (err) {
-          if (err instanceof CrucibleTextModelError) return null;
-          throw err;
-        }
+        // NULL BY CONSTRUCTION since the capability record took ownership of
+        // the per-act model: the id is the SERVER's answer, asked at run time
+        // by `resolveCrucibleTextEngine`, and nothing synchronous here can
+        // know it. Null never equals an open lease's subject, so the lease is
+        // given back at the seam — which is exactly the behaviour before one
+        // lease per row existed. OWED: a `clean` row could keep its lease
+        // across a chain if `leasedModel` were allowed to be async and given
+        // the run's venue.
+        return null;
       }
       const ai = aiBlockOfPass(pass);
       return ai === null

@@ -7849,27 +7849,38 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ── Which Crucible model each of the four text acts runs on (item 2.6) ────
+  // ── WHICH MODEL EACH CLASS RUNS ON — THE SERVER'S ANSWER, NOT OURS ───────
   //
-  // The record is `<userData>/crucible-models.json` and its owner is
-  // `electron/crucible/text-models.ts`. The renderer edits it here rather than
-  // in its own localStorage settings, because the acts run in the MAIN process
-  // (the hosted queue step, the clean-text failsafe) and in the CLI — none of
-  // which can read a renderer's storage.
+  // `crucible:text-models` and `crucible:set-text-model` STOOD HERE and are
+  // deleted with `<userData>/crucible-models.json` (2026-09-14). Owen ruled it
+  // with Foundry (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): the capability
+  // record owns the per-class model. `crucible install` probes the card and
+  // picks the largest candidate that fits, so the mapping is a per-HOST fact
+  // and an id chosen in this app's Settings was a second opinion about a
+  // decision that already had an owner.
+  //
+  // What is left is a READ. The screen draws what the server decided; nothing
+  // here writes a model choice anywhere.
 
-  ipcMain.handle('crucible:text-models', async () => {
+  ipcMain.handle('crucible:capability', async (_event, name: string) => {
     try {
-      const { readTextModels } = await import('./crucible/text-models.js');
-      return { success: true, data: readTextModels() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('crucible:set-text-model', async (_event, act: string, model: string) => {
-    try {
-      const { setTextModel } = await import('./crucible/text-models.js');
-      return { success: true, data: setTextModel(act, model) };
+      const { crucibleClientFor, CRUCIBLE_CLIENT_NAME } = await import('./crucible/servers.js');
+      const record = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).capability();
+      return {
+        success: true,
+        data: {
+          backendKind: record.backendKind,
+          totalBytes: record.totalBytes,
+          desktopAllowanceBytes: record.desktopAllowanceBytes,
+          classes: record.classes.map((row) => ({
+            capability: row.capability,
+            enabled: row.enabled,
+            selected: row.selected,
+            reason: row.reason,
+            shortfallBytes: row.shortfallBytes,
+          })),
+        },
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

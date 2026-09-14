@@ -87,7 +87,6 @@ Module._load = function (request, parent, isMain) {
 
 const venue = require(VENUE);
 const acts = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-acts.js'));
-const textModels = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-models.js'));
 const cleanText = require(path.join(REPO, 'dist', 'electron', 'narration-clean-text.js'));
 const wire = require(path.join(REPO, 'dist', 'shared', 'crucible', 'settings-wire.js'));
 
@@ -114,6 +113,25 @@ const TOKEN = 'crux_secret_token_abcd';
  * `processTextVenueHost()`; this is the same interface, which is why that
  * interface exists.
  */
+/**
+ * A `CapabilityRecord` in the SDK's camelCase shape, which is what the client
+ * hands a caller — the host seam is typed against the SDK, not the wire.
+ */
+function capabilityRecord(rows) {
+  return {
+    backendKind: 'cuda-linux',
+    totalBytes: 25_769_803_776,
+    desktopAllowanceBytes: 2_147_483_648,
+    classes: rows.map((r) => ({
+      capability: r.capability,
+      enabled: r.enabled,
+      selected: r.selected,
+      reason: r.reason || (r.enabled ? 'selected' : 'the smallest candidate does not fit'),
+      shortfallBytes: r.shortfallBytes || 0,
+    })),
+  };
+}
+
 function scriptedHost(over) {
   return Object.assign({
     view: () => ({
@@ -131,7 +149,16 @@ function scriptedHost(over) {
       { id: 'dots-ocr', resident: false, loadable: true },
     ],
     loadModel: async () => { throw new Error('loadModel must not be called unless loadFirst'); },
-    modelFor: (act) => (act === 'clean' ? 'qwen3.5-9b' : 'qwen3.8-27b-4bit'),
+    // `capability` replaced `modelFor` on 2026-09-14: the per-class model is
+    // `GET /v1/capability`'s answer, not a record this app keeps. The DECISION
+    // is pure (`modelFromCapability`), which is why all three of its refusals
+    // are drivable below with no server at all.
+    capability: async () => capabilityRecord([
+      { capability: 'clean', enabled: true, selected: 'qwen3.5-9b' },
+      { capability: 'translate', enabled: true, selected: 'qwen3.8-27b-4bit' },
+      { capability: 'simplify', enabled: true, selected: 'qwen3.8-27b-4bit' },
+      { capability: 'analysis', enabled: true, selected: 'qwen3.8-27b-4bit' },
+    ]),
   }, over || {});
 }
 
@@ -279,7 +306,14 @@ async function main() {
   });
 
   await check('a model the server has never heard of refuses as UNKNOWN, not as absent', async () => {
-    const host = scriptedHost({ modelFor: () => 'llama9000' });
+    // The record and the model list DISAGREE on that server: capability names
+    // an id `GET /v1/models` does not advertise. That is a fact about the
+    // server, reported rather than worked around.
+    const host = scriptedHost({
+      capability: async () => capabilityRecord([
+        { capability: 'translate', enabled: true, selected: 'llama9000' },
+      ]),
+    });
     await assert.rejects(
       () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'spawn' }),
       (err) => {
@@ -289,16 +323,63 @@ async function main() {
       });
   });
 
-  await check('an act with no model chosen refuses by name and asks for the picker', async () => {
+  /*
+   * THE THREE WAYS A CAPABILITY RECORD CAN FAIL TO NAME A MODEL, and they are
+   * three different pieces of news (2026-09-14). This replaced one check
+   * against `crucible_text_model_not_set`, which was a refusal about a record
+   * THIS APP kept; the record is deleted and the server owns the mapping,
+   * because `crucible install` measured the card to make it.
+   */
+  await check('a class the server has never measured refuses `undecided`, not `off`', async () => {
     const host = scriptedHost({
-      modelFor: (act) => textModels.textModelFor(act),  // the real record: empty here
+      capability: async () => capabilityRecord([
+        { capability: 'clean', enabled: true, selected: 'qwen3.5-9b' },
+      ]),
     });
     await assert.rejects(
       () => venue.resolveCrucibleTextEngine('analysis', 'local', host, { headerReach: 'spawn' }),
       (err) => {
-        assert.strictEqual(err.code, 'crucible_text_model_not_set');
+        assert.strictEqual(err.code, 'crucible_capability_undecided');
         assert.ok(err.message.includes('analysis'), err.message);
-        assert.ok(/Settings . AI . Crucible/.test(err.message), err.message);
+        // "Undecided" is deliberately different news from "nothing": it says
+        // the card has never been measured, and names what measures it.
+        assert.ok(/capability --write/.test(err.message), err.message);
+        return true;
+      });
+  });
+
+  await check('a class the server turned OFF refuses with its own reason and shortfall', async () => {
+    const host = scriptedHost({
+      capability: async () => capabilityRecord([{
+        capability: 'translate',
+        enabled: false,
+        selected: '',
+        reason: 'the smallest candidate does not fit',
+        shortfallBytes: 8_589_934_592,
+      }]),
+    });
+    await assert.rejects(
+      () => venue.resolveCrucibleTextEngine('translate', 'local', host, { headerReach: 'spawn' }),
+      (err) => {
+        assert.strictEqual(err.code, 'crucible_capability_disabled');
+        // The SERVER's own sentence, AND the number that turned the class off:
+        // a reason is never load-bearing on its own (ARCHITECTURE.md R4).
+        assert.ok(err.message.includes('the smallest candidate does not fit'), err.message);
+        assert.ok(err.message.includes('8.0 GB'), err.message);
+        return true;
+      });
+  });
+
+  await check('a row that says enabled and names nothing is REPORTED, not repaired', async () => {
+    const host = scriptedHost({
+      capability: async () => capabilityRecord([
+        { capability: 'simplify', enabled: true, selected: '' },
+      ]),
+    });
+    await assert.rejects(
+      () => venue.resolveCrucibleTextEngine('simplify', 'local', host, { headerReach: 'spawn' }),
+      (err) => {
+        assert.strictEqual(err.code, 'crucible_capability_no_model');
         return true;
       });
   });
@@ -515,40 +596,21 @@ async function main() {
     assert.deepStrictEqual(acts.stripEndpointHeaders(env), { PATH: '/bin', FOUNDRY_BIN: 'x' });
   });
 
-  // ── 11. The record: one act, one id, and no invented default ───────────────
-  await check('the per-act record round-trips, and refuses an act it does not know', () => {
-    const file = path.join(WORK, 'models.json');
-    const store = new textModels.TextModels(file);
-    assert.deepStrictEqual(store.read(), {});
-    store.set('clean', 'qwen3.5-9b');
-    store.set('translate', 'qwen3.8-27b-4bit');
-    assert.deepStrictEqual(store.read(), { clean: 'qwen3.5-9b', translate: 'qwen3.8-27b-4bit' });
-    assert.strictEqual(store.require('clean'), 'qwen3.5-9b');
-    // Cleared, not defaulted.
-    store.set('clean', '');
-    assert.deepStrictEqual(store.read(), { translate: 'qwen3.8-27b-4bit' });
-    assert.throws(() => store.require('clean'), (err) => {
-      assert.strictEqual(err.code, 'crucible_text_model_not_set');
-      return true;
-    });
-    assert.throws(() => store.set('rewrite', 'x'), (err) => {
-      assert.strictEqual(err.code, 'unknown_act');
-      return true;
-    });
-  });
-
-  await check('a corrupt record is REFUSED, never replaced', () => {
-    const file = path.join(WORK, 'broken.json');
-    fs.writeFileSync(file, '{ this is not json', 'utf8');
-    const store = new textModels.TextModels(file);
-    assert.throws(() => store.read(), (err) => {
-      assert.strictEqual(err.code, 'corrupt_text_models');
-      return true;
-    });
-    // And the file is still there, byte for byte: a record of somebody's
-    // choices is not something this app starts over on.
-    assert.strictEqual(fs.readFileSync(file, 'utf8'), '{ this is not json');
-  });
+  /*
+   * ── 11. THE PER-ACT RECORD IS GONE, and so are its two checks ─────────────
+   *
+   * They drove `TextModels` over a temp file: a round-trip, a cleared entry
+   * that did not become a default, an unknown act refused, and a corrupt file
+   * REFUSED rather than replaced. All of it was correct about a record this
+   * app no longer keeps — `<userData>/crucible-models.json` is deleted and
+   * `GET /v1/capability` owns the act-to-model mapping, because `crucible
+   * install` probed the card to make it (Owen's ruling with Foundry,
+   * docs/CRUCIBLE_ROLLOUT_PLAN.md section 3).
+   *
+   * What replaced them is the three capability refusals above, which is the
+   * same property in the place that now holds it: an act whose model nobody
+   * has named fails BY NAME, before any spawn, and nothing invents an id.
+   */
 
   // ── 12. A real request, so the header map is proved on the WIRE ────────────
   //
