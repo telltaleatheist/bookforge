@@ -350,6 +350,24 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **STOPGAP, 2026-09-14 — `@crucible/client` is pinned to a LOCAL TARBALL, and the pin is
+  replaced by the v0.6.0 release URL the day Owen publishes.** `package.json` says
+  `"@crucible/client": "file:vendor/crucible-client-0.6.0.tgz"`, with the whole of this
+  paragraph restated at the top-level `"//crucible-client"` key so nobody has to find this
+  file to learn why. The reason is C4's order read backwards: PHASE13 §5 is built entirely on
+  the operator door — `setup`, `catalog`, `submitTask`, `task`, `tasks`, `taskEvents`,
+  `cancelTask`, `parsePairing` and the `CrucibleCardHeld` error — and the only PUBLISHED asset
+  is v0.5.0, which has none of them. So the doors could not be built against the published
+  release, and waiting for the publish would have parked the whole of this phase behind one
+  line Owen has to type. The tarball is `npm pack` of the crucible checkout's `sdk/ts` at
+  branch `feat/phase6-remote-render`, commit `54fe7a0` — **the same commit the release will be
+  cut from, so the bytes match**; the replacement is a one-line edit to `package.json` and an
+  `npm install`, and `vendor/crucible-client-0.6.0.tgz` is deleted in the same commit. It is a
+  tarball FILE and never a `file:` DIRECTORY, because a directory dependency makes
+  `node_modules/@crucible/client` a junction into the crucible checkout, and a later recursive
+  delete of `node_modules` would follow it and take the SDK's source with it (memory:
+  `git worktree remove` FOLLOWS the node_modules junction).
+
 - **CPU SLOTS STAY LOCAL — Owen, 2026-09-14: *"cpu slots stay local though."*** Confirms the
   scheduler's ruling 1 as HIS: a Crucible server has 0 CPU slots; assembly, muxing and every
   `resource: 'cpu'` step run on this machine in the `local-work` set. Not a default any more.

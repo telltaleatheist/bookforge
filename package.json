@@ -5,6 +5,7 @@
   "description": "BookForge - Audiobook production pipeline",
   "main": "dist/electron/main.js",
   "private": true,
+  "//crucible-client": "STOPGAP 2026-09-14 — `@crucible/client` is pinned to vendor/crucible-client-0.6.0.tgz, a LOCAL TARBALL, and is replaced by the v0.6.0 release URL the day Owen publishes (see docs/CRUCIBLE_ROLLOUT_PLAN.md section 3). The published v0.5.0 asset has no operator door — setup / catalog / submitTask / task / tasks / taskEvents / cancelTask / parsePairing / CrucibleCardHeld — and PHASE13-OPERATOR.md section 5 is built entirely on it. The tarball is `npm pack` of the crucible checkout's sdk/ts at branch feat/phase6-remote-render, commit 54fe7a0, which is the same commit the release will be cut from, so the bytes match. It is a tarball FILE and never a `file:` DIRECTORY: a directory dependency makes node_modules/@crucible/client a junction into the other checkout, and a later recursive delete of node_modules would follow it and delete the crucible SDK source.",
   "scripts": {
     "ng": "ng",
     "package:ios": "bash mobile/package-ios.sh",
@@ -131,7 +132,7 @@
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
     "@cantoo/pdf-lib": "^2.8.1",
-    "@crucible/client": "https://github.com/telltaleatheist/crucible/releases/download/v0.5.0/crucible-client-0.5.0.tgz",
+    "@crucible/client": "file:vendor/crucible-client-0.6.0.tgz",
     "@mozilla/readability": "^0.6.0",
     "@types/cheerio": "^0.22.35",
     "@types/express": "^5.0.6",
