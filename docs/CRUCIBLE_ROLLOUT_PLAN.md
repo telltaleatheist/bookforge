@@ -52,6 +52,15 @@ of `<userData>/app-settings.json`, is deleted with everything that called it.
 | `5b9818e5` | this section, the overruled ruling, the ledger's §11.5a, and the second Foundry tripwire |
 | `73e2e3ad` | the setup step stops asking anybody to type a token |
 | `3b88b1bf` | the SDK pin's note names what else waits on it |
+| `e8ef901b` | Settings -> AI and the wizard's AI step become a WINDOW on the engine's settings document: write-through, key write-only, Test before Save, one PUT that configures an upstream AND routes to it |
+| `571fc8f1` | every chat states its act, so `/v1/activity` stops saying "a chat" |
+| `17b763d0` | the Phase 15 SDK vendored, and the npm cache trap that hides it (twice) |
+| `87770b0e` | the seam DELETED - the settings door goes through the real SDK |
+
+**Nothing in phase 15 has met a card.** Owen's instruction while it was being built was to
+stay off the GPU: no job against the live engine, no run that loads a model. The one thing
+that touches the live server at all is a `GET /v1/capability` from `test-clean-step-door`,
+and that is how the SDK's pre-phase-15 defect below was met for real rather than in theory.
 
 **FIVE DEFECTS THE LANE ONLY HAD BECAUSE IT LANDED, all found by reading the
 paths it touches rather than by running anything** — and each one is a place
@@ -185,7 +194,11 @@ a tripwire nobody can find the reason for gets deleted by the next person.
    the SDK, and the keeper that exercises a no-route document is marked as depending on the
    re-vendor. **Owen's live WSL server answers exactly that way until the phase-15 branch is
    deployed onto it**, so this one bites the moment anybody connects to it.
-4. A fourth, small: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
+4. **`CrucibleClientOptions` has no timeout.** Found by the swap itself: the deleted seam
+   put a 60 s `AbortController` on every settings call, and there is nowhere to put one on
+   the client. A settings screen against a server that goes away mid-answer now waits on
+   `fetch`'s own default. Small, real, and theirs to take back.
+5. A fifth, small, and this one is OURS by choice: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
    applying the SDK's own argument — its header says a malformed file must throw "because a
    line somebody's installer wrote badly is a broken install, and answering 'there is no
    server here' would send the user to install a second one", and a zero-length file is the
