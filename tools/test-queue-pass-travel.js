@@ -63,7 +63,6 @@ const stub = installElectronStub('bf-pass-travel-');
 
 const pass = require(path.join(DIST, 'queue-steps', 'pass.js'));
 const aiProvider = require(path.join(DIST, 'queue-steps', 'ai-provider.js'));
-const textModels = require(path.join(DIST, 'crucible', 'text-models.js'));
 const textAi = require(path.join(DIST, 'text-ai.js'));
 const servers = require(path.join(DIST, 'crucible', 'servers.js'));
 const passes = require(path.join(DIST, 'processing-passes.js'));
@@ -163,22 +162,27 @@ function passConfig(kind, ai) {
     assert.strictEqual(PASSES['footnote-refs'].leasedModel(passConfig('footnote-refs')), null);
   });
 
-  await check('the clean pass reads its model off the per-act record, and null when unset', () => {
+  await check('the clean pass leases, and names no model — the SERVER owns that now', () => {
     const config = passConfig('narration-text');
-    assert.strictEqual(PASSES['narration-text'].leasesModel(config), true);
-    // Nothing chosen yet: the record does not exist in this stub's userData.
+    assert.strictEqual(PASSES['narration-text'].leasesModel(config), true,
+      'it asks the model about every block of the book');
     assert.strictEqual(PASSES['narration-text'].leasedModel(config), null,
-      'an act with no model chosen leases nothing this side can name — and the REFUSAL is the '
-      + 'act\'s to raise when it runs, not this question\'s to fail the row with');
-    textModels.setTextModel('clean', 'qwen3.5-9b');
-    try {
-      assert.strictEqual(PASSES['narration-text'].leasedModel(config), 'qwen3.5-9b',
-        'one owner: <userData>/crucible-models.json, the same record the act reads at run time');
-    } finally {
-      textModels.setTextModel('clean', '');
-    }
-    assert.ok(fs.existsSync(path.join(stub.userData, 'crucible-models.json')),
-      'and it really is that file, not a table in the step module');
+      'the act-to-model mapping moved to the chosen server\'s capability record (2026-09-14), '
+      + 'which needs a server name and a round trip — and this question is synchronous and '
+      + 'asked before the step is placed');
+    /*
+     * AND THE TABLE MUST NOT COME BACK. Null costs a clean row its lease
+     * across a chain, which is a real cost and is recorded as OWED in the
+     * module — but the repair is an async `leasedModel` given the run's venue,
+     * NOT a second copy of the mapping over here. A server measures its own
+     * card; an id chosen in this app is a second opinion about a decision that
+     * already has an owner (crucible `docs/ARCHITECTURE.md` R1).
+     */
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'queue-steps', 'pass.ts'), 'utf-8');
+    assert.ok(!/['"]qwen/i.test(src),
+      'pass.ts names a model id — the act-to-model mapping is the server\'s, not a table here');
+    assert.ok(!fs.existsSync(path.join(stub.userData, 'crucible-models.json')),
+      'and the retired per-act record is not being written again');
   });
 
   await check('a crucible pass whose model is blank names none rather than an empty id', () => {
