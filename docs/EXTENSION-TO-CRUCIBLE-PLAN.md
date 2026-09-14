@@ -141,6 +141,30 @@ has them", `orpheus-finetune-public-repo`, `owen-morgan-voices-hf`) and deleted 
 mirror's file matches byte for byte; adapters on E: stay (they are the source of every merge).
 Anything unverified is listed, not deleted.
 
+## 4a. The multi-engine door — what a second voice engine costs, and where
+
+**Owen, 2026-09-14:** *"voice engine will be removed because it's always higgs. right now. i want a
+multi engine option in case (or when) we add a new voice engine, after higgs is superseded."*
+
+The door already exists in Crucible and nothing in a client has to be built ahead of it:
+
+- A voice engine is a `tts` engine entry in Crucible (`crucible/engines/`), its env recipe
+  (`envs/tts/<engine>-<backend>.txt`), and its voices' manifests carrying `engine = "<name>"`.
+  `GET /v1/voices` rows already name their engine; `crucible install tts --narrator-engine
+  <name>` installs it; a module asks for it with a second `[[job_types]] type = "tts"` entry
+  (`modules/bookforge.toml` says so in its comment: a new engine is another multi-gigabyte
+  install and therefore a person's decision, never a generator's).
+- The extension and BookForge's narration modal show the engine as a COLUMN of the voice
+  list, only when that list carries more than one engine. A voice implies its engine; no
+  client ever selects an engine apart from a voice, so a second engine changes no wire and
+  no option — a user picks a voice, and the engine comes with it.
+- Nothing about the streaming door changes: the session is opened with a voice, and the
+  server loads the engine that voice names.
+
+So the "multi engine option" is: keep `engine` on every voice row (it is), never add an engine
+selector to a client (there is none to remove later), and when the next engine lands it is
+one Crucible entry plus one module line.
+
 ## 5. Order of work
 
 1. Owen's ruling on §2 (takes are the spread). 2. `shared/listen-text/` + `shared/listen-client/`
