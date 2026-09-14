@@ -58,6 +58,24 @@
  * quietly moved between them would be a run whose speed, cost and answers cannot
  * be explained. Which one ran is in the result, in the progress lines, and in
  * the provenance record.
+ *
+ * ── AND THE THIRD, WHICH IS THE SECOND WEARING A CRUCIBLE'S CLOTHES ─────────
+ *
+ * Rollout tier 3, 2026-09-14. Page reading moves onto Crucible — and it moves
+ * as an ENDPOINT, not as a job. `crucible/docs/PHASE3-VLM.md` §1: there is no
+ * `vlm-pages` job type and no `crucible/jobs/pages/`; `pages` is a capability
+ * class whose `job_type` is `llm`, because reading a page IS a chat completion
+ * with a data-URI PNG in its first content part. BookForge never sends a
+ * picture anywhere — foundry's engine does — so what changes here is one URL,
+ * one model id and one environment variable:
+ *
+ *   --vlm-endpoint <server>/openai/v1  --vlm-endpoint-model dots-ocr
+ *   FOUNDRY_ENDPOINT_HEADERS={"Authorization":"Bearer …","X-Crucible-Api":"1",
+ *                             "X-Crucible-Act":"pages"}
+ *
+ * `electron/crucible/pages.ts` composes all three and owns every refusal; this
+ * module decides WHEN to ask it. The order below is the whole of the policy and
+ * it is stated in `planVlmConversion`.
  */
 
 import { spawnSync } from 'child_process';
@@ -68,6 +86,16 @@ import * as path from 'path';
 
 import { ensureFoundryPath, foundryVersion, runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, recentServerLog, wslVlmRefusal } from './vlm-page-server';
+import {
+  CruciblePagesError,
+  FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES,
+  decideWherePagesRun,
+  foundryTooOldForCruciblePages,
+  processPagesVenueHost,
+  resolveCruciblePageReader,
+  type CruciblePageReader,
+  type PagesVenueHost,
+} from './crucible/pages';
 import { getActiveToolsEnvPath, relocatablePythonPath } from './tools-env-bootstrap';
 import { toolsEnvPathIfInstalled } from './narrator-paths';
 import { resolveDocumentProject } from './document-project';
@@ -508,6 +536,17 @@ export interface VlmConversionPlan {
   route: VlmRoute;
   /** The CONFIGURED endpoint, or null when nothing was configured. */
   configured: VlmEndpointConfig | null;
+  /**
+   * The Crucible page reader this run goes through, or null when it does not.
+   *
+   * Non-null ONLY on the Crucible venue, and it is what carries the credential
+   * into the spawn. Present on the plan rather than resolved inside the run so
+   * `--dry-run` meets the same refusals — a model that is not resident, a Mac
+   * that has no cuda-linux block — before anyone waits ninety minutes for them.
+   */
+  crucible: CruciblePageReader | null;
+  /** One sentence for the job log: which machine reads the pages, and why that one. */
+  venueDecision: string;
   /** Where the book lands. Absent on the request means 'replace'. */
   destination: VlmConvertDestination;
   /** `source/<archive basename>.generated.epub`, as manifest-service derives it. */
@@ -527,19 +566,105 @@ export interface VlmConversionPlan {
   skippedPages: number[];
 }
 
-export async function planVlmConversion(request: VlmConvertRequest): Promise<VlmConversionPlan> {
+export async function planVlmConversion(
+  request: VlmConvertRequest,
+  /**
+   * The routing record, the registry and the network — `processPagesVenueHost()`
+   * in the app, a fixture in a keeper. Not a fallback: it is the world, named so
+   * a test can drive every branch of the venue decision with no registry, no
+   * record on disk and no server.
+   */
+  pagesHost: PagesVenueHost = processPagesVenueHost(),
+): Promise<VlmConversionPlan> {
   // FIRST, before a project is resolved or 38 MB of foundry is fetched: whether
   // there is a machine that can read these pages at all. `resolveVlmEndpoint`
   // throws on a half-configured endpoint, and with no endpoint at all a machine
   // that is not an Apple Silicon Mac has no local reader — both are the user's
   // settings being wrong, and both are cheapest to say before anything starts.
   const configured = resolveVlmEndpoint(request.endpoint);
-  const route = resolveVlmRoute({
-    platform: process.platform,
-    arch: process.arch,
-    endpoint: configured,
-    wslReaderRefusal: wslVlmRefusal(),
-  });
+
+  /*
+   * ── WHICH MACHINE READS THE PAGES, IN THREE QUESTIONS ──────────────────────
+   *
+   * 1. A TYPED ENDPOINT WINS, and the Crucible venue is not even asked.
+   *
+   *    `resolveVlmRoute`'s own contract, unchanged and deliberately not
+   *    re-decided here: *"a server someone configured by hand is a deliberate
+   *    choice about which GPU does the work, and the machine quietly preferring
+   *    its own would be the app overruling them."* Settings → AI → Reading pages
+   *    is a page-reading-specific instruction; the routing record is an app-wide
+   *    default; a specific instruction beats a general one.
+   *
+   *    RULING OWED. There is a defensible opposite: `step-venue.ts` refuses when
+   *    a step is given two answers for one run rather than ranking them, and a
+   *    typed endpoint beside a Crucible venue is exactly two answers. Ranking
+   *    them was chosen tonight because the alternative BREAKS a working
+   *    configuration nobody changed — a user with a hand-pointed vLLM would
+   *    start getting a refusal the moment a Crucible server was registered for
+   *    something else entirely. Changing a documented precedence is a ruling,
+   *    not a build decision. The run says which one it took, every time.
+   *
+   * 2. THE ONE LEGACY SWITCH — "Run renders and text passes with the local
+   *    engines instead", Settings → Crucible Servers — keeps today's behaviour
+   *    EXACTLY: MLX on Apple silicon, the WSL vLLM page server on Windows. One
+   *    switch for renders, text passes and pages; it is named in the log rather
+   *    than merely obeyed, because a dated stopgap nobody can see in the record
+   *    is a stopgap that never gets removed.
+   *
+   * 3. OTHERWISE THE ROUTING RECORD, through `venueForRunStep` — the same
+   *    decision the render, the Listen, the asr and the align steps make. With
+   *    no enabled server and the switch off it THROWS, naming the switch. That
+   *    is the established shape of every tier-2/3 door and it is not a fallback:
+   *    nothing quietly reserves 12 GiB of this machine's card for a run that was
+   *    routed somewhere else.
+   */
+  let crucible: CruciblePageReader | null = null;
+  let route: VlmRoute;
+  let venueDecision: string;
+  if (configured !== null) {
+    route = resolveVlmRoute({
+      platform: process.platform,
+      arch: process.arch,
+      endpoint: configured,
+      wslReaderRefusal: wslVlmRefusal(),
+    });
+    venueDecision =
+      `Reading the pages at ${configured.url} — the endpoint set in Settings → AI → Reading pages. `
+      + 'A typed endpoint is a deliberate choice of GPU and wins over Crucible routing.';
+  } else {
+    const venue = await decideWherePagesRun(pagesHost);
+    if (venue.where === 'legacy-local-narrator') {
+      route = resolveVlmRoute({
+        platform: process.platform,
+        arch: process.arch,
+        endpoint: null,
+        wslReaderRefusal: wslVlmRefusal(),
+      });
+      venueDecision =
+        `Reading the pages with the local engines — ${venue.origin}: ${venue.because}. `
+        + '(Legacy: "Run renders and text passes with the local engines instead" in '
+        + 'Settings → Crucible Servers.)';
+    } else {
+      // Every refusal a Crucible page read can make happens HERE, before the
+      // project is resolved and long before a stage is claimed: no such model,
+      // no backend for it on that host (the Mac), not image-capable, not
+      // resident. See electron/crucible/pages.ts.
+      crucible = await resolveCruciblePageReader(venue.server, pagesHost);
+      route = {
+        kind: 'endpoint',
+        // `concurrency: 0` is foundry's own default of twelve pages in flight,
+        // which PHASE3-VLM.md §4 makes a REQUIREMENT of the manifest rather than
+        // a preference: `--max-num-seqs` on `dots-ocr` is 16 so that twelve can
+        // actually be in flight. Setting a number here would freeze this build's
+        // copy of somebody else's GPU property.
+        endpoint: { url: crucible.endpoint, model: crucible.model, concurrency: 0 },
+      };
+      venueDecision =
+        `Reading the pages on crucible "${crucible.server}" (${crucible.model}`
+        + `${crucible.fingerprint === null ? '' : ` @ ${crucible.fingerprint}`}) — `
+        + `${venue.origin}: ${venue.because}. Headers: ${crucible.maskedHeaders}`;
+    }
+  }
   if (route.kind === 'refused') throw new Error(`${route.reason} Nothing was converted.`);
 
   const project = await resolveDocumentProject({
@@ -559,6 +684,34 @@ export async function planVlmConversion(request: VlmConvertRequest): Promise<Vlm
   // and holding a project's stage lock through a transfer would refuse every
   // other stage for the duration of something that has not started yet.
   await ensureFoundryPath();
+
+  /*
+   * CAN THE INSTALLED FOUNDRY CARRY THE CREDENTIAL AT ALL?
+   *
+   * Asked the moment the binary exists, which is as early as it CAN be asked —
+   * the answer comes from `foundry --version`, so `ensureFoundryPath` has to
+   * have run. Still before the stage is claimed and before a page is drawn. The
+   * page route reads `$FOUNDRY_ENDPOINT_HEADERS` at foundry `src/vlm/read.ts`
+   * (`resolveEndpointHeaders`), and the release this app installs predates that
+   * line — so on an old binary every page would cross with no Authorization
+   * header. Refused by name, never stripped-and-retried: a run that reached a
+   * server which did NOT require the token would SUCCEED, having silently
+   * stopped doing the thing it was configured to do.
+   *
+   * Conservative on purpose — both builds report "1.2.0" and nothing on the
+   * binary's surface distinguishes them, so the floor sits at the next release.
+   * `FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES` carries that whole argument and the
+   * ruling owed about the number.
+   */
+  if (crucible !== null) {
+    const installed = await foundryVersion();
+    if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES)) {
+      throw new CruciblePagesError(
+        'foundry_too_old_for_crucible_pages',
+        foundryTooOldForCruciblePages(installed.version, crucible.server),
+      );
+    }
+  }
 
   const generatedTarget = await manifestService.generatedEpubTarget(project.projectDir);
   const manifest = await manifestService.getManifest(project.projectId);
@@ -622,6 +775,8 @@ export async function planVlmConversion(request: VlmConvertRequest): Promise<Vlm
     sha256,
     route,
     configured,
+    crucible,
+    venueDecision,
     // Absent means 'replace' — the historic act, stated here once so nothing
     // downstream has to remember what an absent field meant
     // (shared/vlm/conversion.ts).
@@ -712,8 +867,8 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   // order the comments in `planVlmConversion` argue for. Nothing below re-derives
   // any of it — which is what lets `--dry-run` report a plan that IS this run's.
   const {
-    project, pdfPath, sha256, route, configured, destination, generatedTarget, language,
-    readingsPath, readingsFlags, readingsDecision, skipPages, skippedPages,
+    project, pdfPath, sha256, route, crucible, venueDecision, destination, generatedTarget,
+    language, readingsPath, readingsFlags, readingsDecision, skipPages, skippedPages,
   } = await planVlmConversion(request);
 
   await fs.promises.mkdir(path.dirname(readingsPath), { recursive: true });
@@ -725,13 +880,24 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   // on ~44 s of model load, and holding a project's stage lock through that
   // would refuse every other stage for a run that has not begun.
   //
-  // `configured` WINS when it is set, so a user who pointed at their own server
-  // is not made to start a second one on this machine.
+  // ONLY on the `wsl-server` route, which the plan reaches only when the legacy
+  // switch put it there. A Crucible page read starts NOTHING on this machine and
+  // takes NO local GPU lease: the rasteriser is PyMuPDF on the CPU, and the card
+  // that reads the pages belongs to the server, whose own `accelerator.guard`
+  // admits or refuses the work. RULING OWED, the same one `asr.ts` records and
+  // 2.4 records for renders: does a job on a REMOTE Crucible hold this machine's
+  // arbiter lease at all, and does one on `local` — this very card, through WSL —
+  // need it to coordinate with a local Ollama? Until ruled, the server's refusal
+  // is the answer, and the arbiter is not taken for work happening elsewhere.
   const reader = route.kind === 'wsl-server' ? await ensureVlmPageServer() : null;
   try {
-    return await convertWith(reader === null
-      ? configured
-      : { url: reader.url, model: reader.model, concurrency: 0 });
+    // The ROUTE is the single authority on where the pages go. `route.endpoint`
+    // is a typed endpoint or the Crucible base the plan composed; `wsl-server`
+    // is the only case whose URL is not known until the server is up.
+    return await convertWith(
+      reader !== null ? { url: reader.url, model: reader.model, concurrency: 0 }
+        : route.kind === 'endpoint' ? route.endpoint
+          : null);
   } finally {
     // On success, on failure and on cancellation alike — this is what takes the
     // server down and hands the 20 GB and the GPU arbiter to whatever the queue
@@ -769,16 +935,23 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       total: 0,
     });
 
-    // Said before the first page, on the same channel the progress lines use, so
-    // the modal states which GPU is about to be busy for the next ninety
-    // minutes rather than implying the local one.
+    // WHICH MACHINE, AND WHY THAT ONE — said before the first page, on the same
+    // channel the progress lines use. The plan composed this sentence, so the
+    // log records the decision the run actually made rather than a second
+    // reading of the same facts. It never carries the token: the only rendering
+    // of the header map that exists anywhere is `maskEndpointHeaders`.
+    opts.onProgress({ stage: 'vlm-convert', message: venueDecision, done: 0, total: 0 });
+
+    // And the one-line "about to be busy" the modal shows over the bar.
     opts.onProgress({
       stage: 'vlm-convert',
       message: endpoint === null
         ? 'Loading the vision model on this machine…'
         : reader !== null
           ? `Reading the pages on this machine's GPU, through WSL (${reader.model})…`
-          : `Reading the pages on ${endpoint.url}…`,
+          : crucible !== null
+            ? `Reading the pages on crucible "${crucible.server}" (${crucible.model})…`
+            : `Reading the pages on ${endpoint.url}…`,
       done: 0,
       total: 0,
     });
@@ -808,6 +981,20 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       ],
       {
         signal: opts.signal,
+        /*
+         * THE CREDENTIAL, ON THIS CHILD AND NO OTHER.
+         *
+         * An OVERLAY for one spawn — never a write to `process.env`. BookForge's
+         * main process has ~180 spawn sites and runs queue lanes concurrently,
+         * so a map on its environment would be inherited by a rasteriser, an
+         * ffmpeg, a python env. `runFoundry` strips the variable from every
+         * child that did not ask for one, which makes that rule mechanical
+         * rather than remembered (crucible `docs/PHASE7-LANES.md` §8.0).
+         *
+         * Never a flag: a command line is pasted into bug reports, printed by
+         * the queue that composed it and listed by the process table.
+         */
+        ...(crucible === null ? {} : { env: crucible.env }),
         onProgress: (line) => {
           lastMessage = line;
           const parsed = parseVlmProgressLine(line);
@@ -1011,6 +1198,18 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       // can tell them apart.
       endpoint: endpoint === null ? null : endpoint.url,
       ...(endpoint !== null && endpoint.model.length > 0 ? { endpointModel: endpoint.model } : {}),
+      // WHICH Crucible, by the name the registry knows it by — the URL above is
+      // an address and a machine can change one. Written only when a Crucible
+      // read the pages: an absent key is "no Crucible was involved", which is a
+      // different fact from "a Crucible whose name is null".
+      ...(crucible === null ? {} : {
+        crucibleServer: crucible.server,
+        // `<id>@<revision>`, the server's own joining of the two, which is what
+        // identifies the WEIGHTS. Two builds of dots.ocr produce two different
+        // books from one PDF and months later this is the only thing that can
+        // tell them apart.
+        ...(crucible.fingerprint === null ? {} : { crucibleFingerprint: crucible.fingerprint }),
+      }),
       // Named in the record, not just in a log line: a page the model could not
       // read is a page of the user's book that is not in it, and the versions
       // page is where they would look for that months later.

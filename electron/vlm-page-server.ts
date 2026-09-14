@@ -62,6 +62,27 @@
  * `wsl.exe` from Windows SIGKILLs a process that holds the CUDA device, and that
  * is what wedges WSL until a reboot (memory `wsl-wedge-proofing`). So shutdown
  * is `pkill -TERM` in the distro, followed by waiting for the VRAM to come back.
+ *
+ * ── DATED: THIS FILE IS SCHEDULED FOR DELETION ──────────────────────────────
+ *
+ * 2026-09-14, rollout tier 3. Page reading moved onto Crucible as an ENDPOINT
+ * (`electron/crucible/pages.ts`): the `pages` capability class is served by the
+ * `dots-ocr` manifest through Crucible's own OpenAI proxy, so the server this
+ * module spawns is a second copy of something a Crucible already runs — and
+ * PHASE5-APPS.md called this file "a small Crucible" for that reason.
+ *
+ * `crucible/docs/PHASE3-VLM.md` §7 names exactly what goes: this module, its
+ * `wslVlmRefusal`, the `useWsl2ForVlm` / `wslVlmCondaEnv` / `wslVlmModel` keys
+ * in `tool-paths.json`, and the `wsl-server` arm of `resolveVlmRoute`.
+ *
+ * It is NOT deleted yet, and this is a LABELLED STOPGAP rather than a fallback:
+ * the ONE legacy switch ("Run renders and text passes with the local engines
+ * instead", Settings → Crucible Servers) still routes here, and that switch is
+ * what keeps this machine converting books while the Crucible path waits on a
+ * foundry release (`FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES`) and on Owen's in-app
+ * pass. Nothing chooses this path by accident — `planVlmConversion` reaches it
+ * only when the switch is on or an endpoint was typed by hand, and it says so
+ * in the job log by name. The deletion commit is Owen's to approve.
  */
 
 import { spawn, ChildProcess } from 'child_process';

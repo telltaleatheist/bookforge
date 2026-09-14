@@ -201,6 +201,22 @@ const SUITES = [
   // run BEFORE any spawn and never loads one on somebody's card, and an engine
   // that cannot address a Crucible says so rather than 404ing an hour in.
   'test-crucible-text-acts',
+  // The FIFTH act, and the one that is not a text act (rollout tier 3,
+  // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
+  // a job, because `pages` is a capability class whose `job_type` is `llm` —
+  // there is no `vlm-pages` job type and no `crucible/jobs/pages/`, and this
+  // suite checks both of those against the crucible checkout rather than
+  // trusting them. Its centre is a URL and a routing fact. foundry composes the
+  // page route's URL by a DIFFERENT rule from the text route's — verbatim
+  // `/chat/completions` against `normaliseVllmEndpoint`'s appended `/v1` — so
+  // the page base carries its own version segment and both foundry rules are
+  // re-read out of foundry's source. And `dots-ocr` has no `mlx-darwin` block on
+  // purpose, so a Mac venue must refuse in a way that reads as "page reading is
+  // the PC's", with both ways forward, rather than as a fault — checked against
+  // the manifest's own shape so it cannot pass on a premise that stopped being
+  // true. Plus the credential in the spawn's environment and nowhere printable,
+  // no load door at all, and the ONE legacy switch keeping today's WSL vLLM.
+  'test-crucible-pages',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

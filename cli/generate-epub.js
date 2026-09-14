@@ -221,6 +221,13 @@ async function dryRun(request) {
   console.log(`  source (recorded)  ${plan.project.primaryRelPath}`);
   console.log(`  source sha256      ${plan.sha256}`);
   console.log(`  reads the pages    ${vlmRouteLabel(plan.route)} (${plan.route.kind})`);
+  // The venue decision in the run's own sentence — which machine, and WHY that
+  // one. The line above names a URL; this one names the rule that chose it (a
+  // typed endpoint, the legacy switch, or the Crucible routing record), which
+  // is the half nobody can reconstruct from an address. It never carries a
+  // token: `maskEndpointHeaders` is the only rendering of the header map that
+  // exists anywhere.
+  console.log(`  venue              ${plan.venueDecision}`);
   console.log(`  language           ${plan.language}`);
   console.log(`  destination        ${plan.destination}`);
   console.log(plan.destination === 'replace'
