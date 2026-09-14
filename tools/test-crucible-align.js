@@ -1,0 +1,359 @@
+#!/usr/bin/env node
+/**
+ * FORCED ALIGNMENT ON SOMEBODY ELSE'S CARD, TO THE SEAM NARRATOR OWNS PAST.
+ *
+ *   npx tsc -p tsconfig.electron.json && node tools/test-crucible-align.js
+ *
+ * `electron/crucible/align.ts` sends a rendered session's chunk audio and
+ * spoken text to a Crucible `align` job and lands `alignment.json` (the
+ * model's own items per chunk) in the session directory; `coverage-align-job.ts`
+ * decides where an alignment runs the way a render's venue is decided, and —
+ * because narrator has no door yet that turns those items into `coverage.json`
+ * — fails the Crucible run BY NAME past that seam. Against a FAKE Crucible,
+ * this pins:
+ *
+ *  1. The aligner table: `qwen3` → `qwen3-aligner`; `whisperx` refused by name
+ *     (it lost the bake-off and is not ported).
+ *  2. The text sent is narrator's spoken reading — markers stripped, whitespace
+ *     collapsed — read out of the session's own record; a marker-only chunk and
+ *     a chunk with no audio are skipped and NAMED, never sent.
+ *  3. One job for the whole session: every chunk's FLAC under `<index>.flac`,
+ *     `params.chunks` as `{index, text}`, the model id, the language.
+ *  4. `cue` events reach the caller (a failed chunk's too), `alignment.json`
+ *     and its provenance land in the process directory, and `done.failed` is
+ *     read strictly.
+ *  5. The venue door in `runCoverageAlign`: the legacy switch runs the local
+ *     spawn and says so; a routed server runs the Crucible job, lands the
+ *     artifact, and fails naming the owed narrator door; a CPU row is refused
+ *     by name; `server_busy` carries the holder's line for the queue to hold on.
+ *
+ * No GPU, no aligner, no narrator, no network beyond 127.0.0.1.
+ */
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const {
+  REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
+  crucibleHost, legacyHost,
+} = require('./fake-crucible');
+
+const ALIGN = path.join(REPO, 'dist', 'electron', 'crucible', 'align.js');
+if (!fs.existsSync(ALIGN)) {
+  console.log('SKIP: dist/electron/crucible/align.js is not built — run npx tsc -p tsconfig.electron.json');
+  process.exit(0);
+}
+const { work } = installElectronStub('bf-crucible-align-');
+const align = require(ALIGN);
+const job = require(path.join(REPO, 'dist', 'electron', 'crucible', 'job.js'));
+const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
+const coverage = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job.js'));
+const registerFake = fakeNamer(servers);
+const { check, summary } = makeChecker();
+
+/** A session: four chunks over two chapters; 1 is marker-only, 2 has no FLAC. */
+function freshSession() {
+  const dir = path.join(work, `session-${Math.random().toString(36).slice(2)}`);
+  const sentences = path.join(dir, 'chapters', 'sentences');
+  fs.mkdirSync(sentences, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'session-state.json'), JSON.stringify({
+    chapter_sentences: [
+      ['[break][heading]Chapter   One.', '[break]'],
+      ['He had  been walking for some time.', 'The road [pause:1.5] turned north.'],
+    ],
+  }));
+  for (const index of [0, 1, 3]) fs.writeFileSync(path.join(sentences, `${index}.flac`), `fLaC-${index}`);
+  return dir;
+}
+
+const ITEMS = {
+  0: [{ text: 'Chapter', start: 0.3, end: 0.8 }, { text: 'One.', start: 0.9, end: 1.3 }],
+  3: [{ text: 'The road', start: 0.2, end: 0.9 }, { text: 'turned', start: 1.0, end: 1.4 }, { text: 'north.', start: 1.5, end: 1.9 }],
+};
+
+/** The fake align server. `behaviour`: 'run' | 'busy'. Chunk 3 is reported failed. */
+function startFake(behaviour) {
+  return startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    const route = url.pathname;
+
+    if (route === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      if (behaviour === 'busy') {
+        send(res, 409, { error: { code: 'server_busy', message: 'one at a time', details: {
+          holder: 'foundry', job_id: 'j-held', type: 'llm', model: 'qwen3.5-9b', status: 'running',
+          since: '2026-09-14T01:00:00Z', progress: 0.3, message: null,
+        } } });
+        return true;
+      }
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+
+    const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
+    if (events && req.method === 'GET') {
+      const entry = state.jobs.get(decodeURIComponent(events[1]));
+      const chunks = entry.body.params.chunks;
+      const sse = sseWriter(req, res);
+      sse.frame('queued', { position: null });
+      sse.frame('warming', { message: 'loaded qwen3-aligner on cuda in 8.2s' });
+      chunks.forEach((chunk, n) => {
+        sse.frame('progress', {
+          fraction: (n + 1) / chunks.length, message: `aligned ${n + 1} of ${chunks.length} chunk(s)`,
+          stage: 'aligning', processed: n + 1, total: chunks.length,
+        });
+        if (chunk.index === 3) sse.frame('cue', { index: 3, error: '2.1s of audio for 4 word(s): could not place' });
+        else sse.frame('cue', { index: chunk.index, items: ITEMS[chunk.index] });
+      });
+      sse.frame('artifact', { name: 'alignment.json' });
+      sse.frame('done', { artifacts: ['alignment.json'], chunks: chunks.length, failed: [3], resident: 'qwen3-aligner' });
+      sse.end();
+      return true;
+    }
+
+    const artifact = /^\/v1\/jobs\/([^/]+)\/artifacts\/(.+)$/.exec(route);
+    if (artifact && req.method === 'GET') {
+      const entry = state.jobs.get(decodeURIComponent(artifact[1]));
+      const name = decodeURIComponent(artifact[2]);
+      if (name === 'alignment.json.provenance.json') {
+        send(res, 200, provenanceFor('alignment.json', 'align', 'qwen3-aligner'));
+        return true;
+      }
+      if (name === 'alignment.json') {
+        send(res, 200, {
+          model: 'qwen3-aligner', revision: 'c7cbfc20', language: entry.body.params.language,
+          items_are: "the model's own tokenization, not the caller's words",
+          chunks: entry.body.params.chunks.map((c) => (c.index === 3
+            ? { index: 3, error: 'could not place' }
+            : { index: c.index, items: ITEMS[c.index] })),
+        });
+        return true;
+      }
+      return false;
+    }
+    return false;
+  });
+}
+
+async function tables() {
+  await check('qwen3 maps to qwen3-aligner and is the one backend the app passes', () => {
+    assert.deepStrictEqual(align.CRUCIBLE_ALIGNER_BY_BOOKFORGE_BACKEND, { qwen3: 'qwen3-aligner' });
+    assert.strictEqual(align.BOOKFORGE_ALIGN_BACKEND, 'qwen3');
+    assert.strictEqual(align.crucibleAlignerFor('qwen3'), 'qwen3-aligner');
+  });
+  await check('whisperx is refused by name: it lost the bake-off and stays a local spawn', () => {
+    assert.throws(() => align.crucibleAlignerFor('whisperx'),
+      (err) => err.code === 'crucible_aligner_whisperx_local_only' && /bake-off/.test(err.message));
+    assert.throws(() => align.crucibleAlignerFor('nemo'), (err) => err.code === 'crucible_aligner_unmapped');
+  });
+  await check('the spoken reading is narrator\'s: markers stripped, whitespace collapsed', () => {
+    assert.strictEqual(align.spokenTextForStoredChunk('[break][heading]Chapter   One.'), 'Chapter One.');
+    assert.strictEqual(align.spokenTextForStoredChunk('The road [pause:1.5] turned north.'), 'The road turned north.');
+    assert.strictEqual(align.spokenTextForStoredChunk('[BREAK]'), '');
+    assert.strictEqual(align.spokenTextForStoredChunk('  a [item] list [/item] row [sfx:door] '), 'a list row');
+  });
+}
+
+async function sessionRead() {
+  const dir = freshSession();
+  await check('the session\'s chunks are read from its own record; marker-only and audio-less chunks are skipped and named', () => {
+    const { chunks, skipped } = align.sessionAlignChunks(dir);
+    assert.deepStrictEqual(chunks.map((c) => [c.index, c.text]), [
+      [0, 'Chapter One.'],
+      [3, 'The road turned north.'],
+    ]);
+    assert.strictEqual(chunks[0].audioPath, path.join(dir, 'chapters', 'sentences', '0.flac'));
+    assert.deepStrictEqual(skipped, [
+      { index: 1, reason: 'no spoken text' },
+      { index: 2, reason: 'no audio on disk' },
+    ]);
+  });
+  await check('a subset by index, and an index off the end refused by name', () => {
+    const { chunks } = align.sessionAlignChunks(dir, [3]);
+    assert.deepStrictEqual(chunks.map((c) => c.index), [3]);
+    assert.throws(() => align.sessionAlignChunks(dir, [9]), (err) => err.code === 'crucible_align_index_out_of_range');
+  });
+  await check('a session with no record is refused by name', () => {
+    assert.throws(() => align.sessionAlignChunks(path.join(work, 'nowhere')),
+      (err) => err.code === 'crucible_align_session_state_missing');
+  });
+}
+
+async function happyPath() {
+  const fake = await startFake('run');
+  const server = registerFake(fake.url);
+  const dir = freshSession();
+  const { chunks } = align.sessionAlignChunks(dir);
+  const cues = [];
+  const progress = [];
+  let outcome;
+  try {
+    outcome = await align.runCrucibleAlign({
+      server, processDir: dir, language: 'en', backend: 'qwen3', chunks,
+      onCue: (c) => cues.push(c), onProgress: (p) => progress.push(p),
+    });
+  } finally {
+    await fake.close();
+  }
+  await check('one job for the session: every FLAC under <index>.flac, chunks as {index, text}, the model, the language', () => {
+    assert.deepStrictEqual(fake.state.uploads.map((u) => u.filename).sort(), ['0.flac', '3.flac']);
+    assert.strictEqual(fake.state.uploads.find((u) => u.filename === '3.flac').bytes.toString(), 'fLaC-3');
+    assert.strictEqual(fake.state.submitted.length, 1);
+    const body = fake.state.submitted[0];
+    assert.strictEqual(body.type, 'align');
+    assert.strictEqual(body.model, 'qwen3-aligner');
+    assert.deepStrictEqual(body.params, {
+      language: 'en',
+      chunks: [{ index: 0, text: 'Chapter One.' }, { index: 3, text: 'The road turned north.' }],
+    });
+    assert.deepStrictEqual(Object.keys(body.inputs).sort(), ['0.flac', '3.flac']);
+  });
+  await check('cue events reach the caller as they land, a failed chunk\'s too', () => {
+    assert.deepStrictEqual(cues, [
+      { index: 0, items: ITEMS[0] },
+      { index: 3, error: '2.1s of audio for 4 word(s): could not place' },
+    ]);
+    assert.strictEqual(outcome.cues, 2);
+  });
+  await check('alignment.json and its provenance land in the process directory; done.failed is read strictly', () => {
+    assert.strictEqual(outcome.alignmentPath, path.join(dir, 'alignment.json'));
+    assert.strictEqual(outcome.alignmentPath, align.crucibleAlignmentPath(dir));
+    const doc = JSON.parse(fs.readFileSync(outcome.alignmentPath, 'utf-8'));
+    assert.strictEqual(doc.model, 'qwen3-aligner');
+    assert.deepStrictEqual(doc.chunks.map((c) => c.index), [0, 3]);
+    assert.ok(fs.existsSync(outcome.provenancePath));
+    assert.deepStrictEqual(outcome.failed, [3]);
+    assert.strictEqual(outcome.chunks, 2);
+  });
+  await check('the server\'s warming line and its per-chunk progress reach the caller', () => {
+    assert.strictEqual(progress[0].stage, 'warming');
+    assert.deepStrictEqual(progress.slice(1).map((p) => [p.processed, p.total]), [[1, 2], [2, 2]]);
+    assert.strictEqual(progress[progress.length - 1].fraction, 1);
+  });
+}
+
+async function venueDoor() {
+  const config = (dir, over = {}) => ({ processDir: dir, language: 'en', device: 'gpu', ...over });
+
+  {
+    const dir = freshSession();
+    let localCalls = 0;
+    const result = await coverage.runCoverageAlign('step-legacy', config(dir), null, {
+      venueHost: legacyHost(),
+      legacyLocal: async () => { localCalls += 1; return { success: true, reportPath: path.join(dir, 'coverage.json'), chunksAligned: 2 }; },
+    });
+    await check('the legacy switch runs the local spawn and the result says so', () => {
+      assert.strictEqual(localCalls, 1);
+      assert.strictEqual(result.success, true);
+      assert.deepStrictEqual(result.venue, { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' });
+    });
+  }
+  {
+    const fake = await startFake('run');
+    const server = registerFake(fake.url);
+    const dir = freshSession();
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-crucible', config(dir), null, {
+        venueHost: crucibleHost(server),
+        legacyLocal: async () => { throw new Error('a routed server must not spawn the local narrator'); },
+      });
+    } finally {
+      await fake.close();
+    }
+    await check('a routed server runs the Crucible job, lands alignment.json, and fails NAMING the owed narrator door', () => {
+      assert.strictEqual(fake.state.submitted.length, 1, 'the job ran');
+      assert.ok(fs.existsSync(path.join(dir, 'alignment.json')), 'the GPU half is on disk (R6)');
+      assert.strictEqual(result.success, false, 'no coverage.json was written, and success means exactly that');
+      assert.ok(result.error.includes(align.CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED) || /narrator has no door/.test(result.error),
+        result.error);
+      assert.ok(/narrator align --alignment/.test(result.error), 'the owed build is named');
+      assert.strictEqual(result.alignmentPath, path.join(dir, 'alignment.json'));
+      assert.deepStrictEqual(result.venue, { where: 'crucible', server, because: 'the top-ranked server' });
+      assert.strictEqual(result.busyLine, undefined);
+    });
+  }
+  {
+    const fake = await startFake('run');
+    const server = registerFake(fake.url);
+    const dir = freshSession();
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-cpu', config(dir, { device: 'cpu' }), null, {
+        venueHost: crucibleHost(server),
+      });
+    } finally {
+      await fake.close();
+    }
+    await check('a CPU row has no Crucible answer and is refused by name, nothing uploaded', () => {
+      assert.strictEqual(result.success, false);
+      assert.ok(/crucible_align_cpu_row/.test(result.error), result.error);
+      assert.strictEqual(fake.state.uploads.length, 0);
+      assert.strictEqual(result.venue.where, 'crucible');
+    });
+  }
+  {
+    const fake = await startFake('busy');
+    const server = registerFake(fake.url);
+    const dir = freshSession();
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-busy', config(dir), null, { venueHost: crucibleHost(server) });
+    } finally {
+      await fake.close();
+    }
+    await check('server_busy carries the holder\'s line for the queue to hold the row on — a wait, not a failure', () => {
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.busyLine, 'busy: foundry, llm qwen3.5-9b, 30% done');
+      assert.ok(/server_busy/.test(result.error));
+      assert.ok(!fs.existsSync(path.join(dir, 'alignment.json')));
+    });
+  }
+  {
+    const dir = freshSession();
+    const result = await coverage.runCoverageAlign('step-nowhere', config(dir), null, {
+      venueHost: {
+        view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: false }),
+        enabled: () => { const e = new Error('no_enabled_server: no Crucible server is enabled'); e.code = 'no_enabled_server'; throw e; },
+        ping: async () => { throw new Error('unused'); },
+      },
+    });
+    await check('with the legacy switch off and no server enabled the run fails by name — nothing runs locally', () => {
+      assert.strictEqual(result.success, false);
+      assert.ok(/nowhere to run/.test(result.error) && /no_enabled_server/.test(result.error), result.error);
+      assert.strictEqual(result.venue, undefined);
+    });
+  }
+  {
+    const fake = await startFake('run');
+    const named = registerFake(fake.url);
+    const dir = freshSession();
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-named', config(dir, { crucible: { server: named } }), null, {
+        venueHost: legacyHost(),
+        legacyLocal: async () => { throw new Error('the caller named a server; local must not run'); },
+      });
+    } finally {
+      await fake.close();
+    }
+    await check('the caller\'s own server name wins over the legacy switch', () => {
+      assert.deepStrictEqual(result.venue, { where: 'crucible', server: named, because: 'the caller named it' });
+      assert.strictEqual(fake.state.submitted.length, 1);
+    });
+  }
+}
+
+(async () => {
+  await tables();
+  await sessionRead();
+  await happyPath();
+  await venueDoor();
+  summary('test-crucible-align');
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

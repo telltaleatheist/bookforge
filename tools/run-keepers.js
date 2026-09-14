@@ -120,6 +120,30 @@ const SUITES = [
   // the local naming, and a 409 server_busy that FAILS the render naming the
   // holder instead of quietly taking this machine's GPU.
   'test-crucible-render',
+  // The ONE job helper every Crucible door shares (tier 3, 2026-09-14), and the
+  // two doors built on it. Against a fake speaking the real routes — uploads as
+  // multipart, SSE with ids and Last-Event-ID, artifacts with sidecars, DELETE.
+  // `test-crucible-job` pins the conversation itself: inputs cross as blobs and
+  // the submit names them, the SERVER's fraction and `warming` reach the caller,
+  // artifacts land with provenance or in memory from done's list, every refusal
+  // by name and none retried (server_busy WITH the holder's line, a 4xx by the
+  // server's code, 401, unreachable, protocol), a failed job and a cancelled one
+  // as their own classes, cancel = DELETE with what landed kept (R6), attachTo
+  // uploads nothing. `test-crucible-asr` pins "Generate sentences" travelling:
+  // the whisper-size table with no default, the media-tag sentinels → `auto`,
+  // the cue grouping rule for rule with the local script, the m4b under its own
+  // extension, the VTT at the local path, refusals BEFORE the upload where the
+  // server can be asked, and the venue door (legacy → local and says so; the
+  // caller's name wins). `test-crucible-align` pins forced alignment to the
+  // seam narrator owns past: qwen3 → qwen3-aligner and whisperx refused by
+  // name, the spoken reading from the session's own record with marker-only and
+  // audio-less chunks named, one job with <index>.flac inputs, cues and
+  // alignment.json landing in the session, and `runCoverageAlign`'s venue
+  // routing — including the Crucible run failing BY NAME for the owed narrator
+  // door rather than quietly shipping no coverage report.
+  'test-crucible-job',
+  'test-crucible-asr',
+  'test-crucible-align',
   // The Listen path on somebody else's card (rollout tier 3): the three
   // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
   // session now stands beside the local narrator, chosen by the SAME venue

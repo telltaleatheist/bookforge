@@ -106,6 +106,10 @@ import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { seedSessionAuthorship } from './session-authorship';
 // The machine's own capability answer — see `resolveAlignDevice`.
 import { systemProbe } from './components/system-probe';
+// The venue decision's SHAPES only. The modules themselves are imported lazily
+// inside `runCoverageAlign`, so `coverageAlignArgs` stays loadable by the argv
+// keepers without the routing record, the registry or the network behind it.
+import type { GenerationVenue, VenueHost } from './crucible/generation-venue';
 
 export interface CoverageAlignConfig {
   /**
@@ -152,6 +156,13 @@ export interface CoverageAlignConfig {
    * answer (the butt-joined book) and is honoured.
    */
   chapterGap?: number;
+  /**
+   * THE CALLER'S OWN VENUE: the NAME of a Crucible server (or `local`), when
+   * the caller chose one. Absent, the routing record decides
+   * (`decideWhereGenerationRuns`: the legacy switch, then rank) — the same
+   * decision, in the same order, that places a render.
+   */
+  crucible?: { server: string };
 }
 
 export interface CoverageAlignProgress {
@@ -188,6 +199,38 @@ export interface CoverageAlignResult {
   retakeIndices?: number[];
   error?: string;
   wasStopped?: boolean;
+  /**
+   * WHERE the alignment ran, recorded on the run the way a render's venue is
+   * written onto its saved state: `crucible` with the server's name and the
+   * reason it was chosen, or the legacy local narrator. Absent only when the
+   * run failed before the decision (no session on disk, no authorship).
+   */
+  venue?: GenerationVenue;
+  /**
+   * Present exactly on a Crucible `server_busy`: the SDK's holder line
+   * ("GPU busy: foundry, tts 62% done"), so the queue step can HOLD the row
+   * on it rather than fail the book (crucible ARCHITECTURE.md §3).
+   */
+  busyLine?: string;
+  /**
+   * On a Crucible run: where the model's items landed (`<processDir>/alignment.json`)
+   * — present even when `success` is false for the owed narrator door, because
+   * the GPU half is done and R6 says partial work survives.
+   */
+  alignmentPath?: string;
+}
+
+/**
+ * Test seams for `runCoverageAlign`, and nothing the app passes: the routing
+ * record and the network behind the venue decision, and the local spawn behind
+ * the legacy answer. A keeper drives every branch with neither a server, a
+ * card, nor a narrator on the machine.
+ */
+export interface CoverageAlignDeps {
+  venueHost?: VenueHost;
+  legacyLocal?: (
+    stepId: string, config: CoverageAlignConfig, mainWindow: BrowserWindow | null,
+  ) => Promise<CoverageAlignResult>;
 }
 
 /**
@@ -212,6 +255,8 @@ const ALIGN_CPU_WORKERS = 1;
 
 /** Live align children, keyed by step id, so a queue cancel can reach them. */
 const activeAligns = new Map<string, ChildProcess>();
+/** Live Crucible align jobs, keyed the same way: a cancel DELETEs the job on the server. */
+const activeCrucibleAligns = new Map<string, AbortController>();
 /** Step ids whose child was killed by a user stop, so the exit reads as one. */
 const stoppedSteps = new Set<string>();
 
@@ -458,11 +503,32 @@ export function coverageAlignArgs(
 /**
  * Run the coverage alignment for one session. Progress flows out-of-band via
  * 'coverage-align:progress', as the denoise and reassembly jobs do.
+ *
+ * ── WHERE IT RUNS (2026-09-14) ──────────────────────────────────────────────
+ *
+ * Decided once, here, by the SAME decision that places a render and a Listen
+ * (`electron/crucible/generation-venue.ts`: the caller's server, else the
+ * legacy switch, else the routing record) — so the machine that measures a
+ * book is chosen the way the machine that rendered it was. There is no second
+ * switch and no fallback: with the legacy switch off and no server reachable,
+ * the run fails naming the server it could not reach.
+ *
+ * The legacy answer is {@link runCoverageAlignLocally}, the spawn this file has
+ * always made. The Crucible answer is {@link runCoverageAlignOnCrucible}: the
+ * GPU half travels (`electron/crucible/align.ts`), `alignment.json` lands in the
+ * session, and the run then FAILS BY NAME for the narrator door that turns the
+ * model's items into `coverage.json` — owed, and named in the message. That is
+ * a dated partial, not a fallback; see align.ts's header for the two shapes the
+ * door can take and why neither is built tonight.
+ *
+ * The result carries `venue` either way, so the row and the post-render log
+ * say which machine measured the book.
  */
 export async function runCoverageAlign(
   stepId: string,
   config: CoverageAlignConfig,
   mainWindow: BrowserWindow | null,
+  deps: CoverageAlignDeps = {},
 ): Promise<CoverageAlignResult> {
   if (!fs.existsSync(config.processDir)) {
     const error = `The session this alignment was queued for is not on disk (${config.processDir}).`;
@@ -481,6 +547,162 @@ export async function runCoverageAlign(
       return { success: false, error };
     }
   }
+
+  const { decideWhereGenerationRuns, processVenueHost } = await import('./crucible/generation-venue.js');
+  const host = deps.venueHost ?? processVenueHost();
+  let venue: GenerationVenue;
+  try {
+    venue = await decideWhereGenerationRuns(
+      config.crucible === undefined ? undefined : { crucible: config.crucible },
+      host,
+    );
+  } catch (err) {
+    // `no_enabled_server` / `no_reachable_server` / `crucible_server_not_named`,
+    // in the decision's own words. This job never throws (the post-render
+    // phase's contract), so the refusal is a RESULT.
+    const error = `This alignment has nowhere to run: ${err instanceof Error ? err.message : String(err)}`;
+    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error };
+  }
+  console.log(`[COVERAGE-ALIGN] venue: ${
+    venue.where === 'crucible' ? `crucible "${venue.server}"` : 'the legacy local narrator'} (${venue.because})`);
+
+  if (venue.where === 'legacy-local-narrator') {
+    const local = deps.legacyLocal ?? runCoverageAlignLocally;
+    const result = await local(stepId, config, mainWindow);
+    return { ...result, venue };
+  }
+  const result = await runCoverageAlignOnCrucible(stepId, config, mainWindow, venue.server);
+  return { ...result, venue };
+}
+
+/**
+ * THE CRUCIBLE HALF: upload the session's chunk audio, align it on `server`,
+ * land `alignment.json`, and then say — by name — that the narrator half is
+ * owed. `success` is false because no coverage report was written, which is
+ * the one meaning that field has; `alignmentPath` is set because the GPU work
+ * is done and on disk (R6).
+ *
+ * RULING OWED: a row queued for the CPU (`device: 'cpu'` — the user's choice
+ * to align beside the assembly, off the card) has no Crucible answer: a
+ * Crucible has only the card. Refused by name rather than quietly run on a GPU
+ * the operator chose not to take. The post-render phase asks for the GPU and
+ * is unaffected.
+ */
+async function runCoverageAlignOnCrucible(
+  stepId: string,
+  config: CoverageAlignConfig,
+  mainWindow: BrowserWindow | null,
+  server: string,
+): Promise<CoverageAlignResult> {
+  const fail = (error: string, extra: Partial<CoverageAlignResult> = {}): CoverageAlignResult => {
+    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error, ...extra };
+  };
+  if (config.device !== 'gpu') {
+    return fail(
+      `crucible_align_cpu_row: this alignment was queued to run on the CPU beside the assembly, and `
+      + `its venue is crucible "${server}", which has only the card. Queue it on the GPU, or turn on `
+      + 'the legacy switch (Settings → Crucible Servers) to align with the local narrator. The rendered '
+      + 'audio is intact.',
+    );
+  }
+
+  const {
+    BOOKFORGE_ALIGN_BACKEND, CrucibleAlignRefused, narratorDoorOwedMessage,
+    runCrucibleAlign, sessionAlignChunks,
+  } = await import('./crucible/align.js');
+  const { CrucibleJobRefused, CrucibleJobCancelled } = await import('./crucible/job.js');
+
+  let selection: ReturnType<typeof sessionAlignChunks>;
+  try {
+    selection = sessionAlignChunks(config.processDir);
+  } catch (err) {
+    return fail(`${err instanceof Error ? err.message : String(err)} The rendered audio is intact.`);
+  }
+  if (selection.skipped.length > 0) {
+    console.log(`[COVERAGE-ALIGN] ${selection.skipped.length} chunk(s) not sent: `
+      + selection.skipped.slice(0, 20).map((s) => `${s.index} (${s.reason})`).join(', ')
+      + (selection.skipped.length > 20 ? ', …' : ''));
+  }
+  if (selection.chunks.length === 0) {
+    return fail(
+      'crucible_align_no_chunks: every chunk of this session is marker-only or has no audio, so there '
+      + 'is nothing to align.',
+    );
+  }
+
+  const controller = new AbortController();
+  activeCrucibleAligns.set(stepId, controller);
+  const startedAt = Date.now();
+  const total = selection.chunks.length;
+  sendProgress(mainWindow, stepId, {
+    phase: 'preparing', percentage: 0, processed: 0, total,
+    message: `Uploading ${total} chunk(s) to crucible "${server}"…`,
+  });
+  try {
+    const outcome = await runCrucibleAlign({
+      server,
+      processDir: config.processDir,
+      language: config.language,
+      backend: BOOKFORGE_ALIGN_BACKEND,
+      chunks: selection.chunks,
+      signal: controller.signal,
+      onLog: (line) => console.log(`[COVERAGE-ALIGN] ${line}`),
+      onProgress: (p) => {
+        if (p.stage === 'warming') {
+          sendProgress(mainWindow, stepId, {
+            phase: 'preparing', percentage: 0, processed: 0, total,
+            message: `Loading the aligner on crucible "${server}"… ${p.message}`,
+          });
+          return;
+        }
+        const processed = p.processed ?? Math.round(p.fraction * total);
+        sendProgress(mainWindow, stepId, {
+          phase: 'aligning',
+          percentage: Math.round(p.fraction * 100),
+          processed,
+          total: p.total ?? total,
+          message: `Aligning on crucible "${server}"… (chunk ${processed}/${p.total ?? total})`,
+        });
+      },
+    });
+    const minutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
+    console.log(`[COVERAGE-ALIGN] crucible "${server}" aligned ${outcome.chunks} chunk(s) in ${minutes} min, `
+      + `${outcome.failed.length} failed; items at ${outcome.alignmentPath}`);
+    // THE NAMED GAP — see align.ts's header. The GPU half is on disk; the
+    // coverage report is not, and nothing here pretends otherwise.
+    return fail(narratorDoorOwedMessage(outcome.alignmentPath), { alignmentPath: outcome.alignmentPath });
+  } catch (err) {
+    if (err instanceof CrucibleJobCancelled) {
+      const error = 'Alignment cancelled';
+      sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+      return { success: false, error, wasStopped: true };
+    }
+    if (err instanceof CrucibleJobRefused) {
+      return fail(`${err.message} The rendered audio is intact.`,
+        err.busyLine === undefined ? {} : { busyLine: err.busyLine });
+    }
+    if (err instanceof CrucibleAlignRefused) {
+      return fail(`${err.message} The rendered audio is intact.`);
+    }
+    return fail(`The Crucible alignment did not finish: ${err instanceof Error ? err.message : String(err)}. `
+      + 'The rendered audio is intact.');
+  } finally {
+    activeCrucibleAligns.delete(stepId);
+  }
+}
+
+/**
+ * THE LOCAL SPAWN — `narrator align --backend qwen3` in this machine's qwen
+ * env, exactly as this file has always run it. The legacy answer of
+ * {@link runCoverageAlign}; never a fallback.
+ */
+export async function runCoverageAlignLocally(
+  stepId: string,
+  config: CoverageAlignConfig,
+  mainWindow: BrowserWindow | null,
+): Promise<CoverageAlignResult> {
   // The same refusal the CLI raises at plan time, said again here because a row
   // can outlive the machine state that composed it: a queue restored after the
   // add-on was uninstalled must say WHICH add-on rather than "python not found".
@@ -716,6 +938,15 @@ export async function runCoverageAlign(
  * survived a queue cancel and had to be taskkill'd by hand.
  */
 export function stopCoverageAlign(stepId: string): void {
+  // A Crucible job: the abort sends DELETE /v1/jobs/{id} and the stream runs
+  // on to its `cancelled` frame (job.ts). Abandoning it would leave the aligner
+  // holding that server's lane for the rest of the book.
+  const remote = activeCrucibleAligns.get(stepId);
+  if (remote) {
+    console.log(`[COVERAGE-ALIGN] Cancelling Crucible alignment ${stepId}`);
+    remote.abort();
+    return;
+  }
   const child = activeAligns.get(stepId);
   if (!child) return;
   stoppedSteps.add(stepId);

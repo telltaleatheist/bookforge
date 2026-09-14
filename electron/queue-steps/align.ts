@@ -251,6 +251,13 @@ export const alignStep: StepModule = {
        * is the thing Owen's 2026-09-05 ruling forbids.
        */
       if (!result.success) {
+        if (result.busyLine !== undefined) {
+          // A Crucible `server_busy`: the row goes back to `queued` carrying the
+          // holder's own line and is tried again on the admission tick — the
+          // same hold the render seam asks for. A wait, never a failure.
+          const { noteStepBusy } = await import('../queue-engine.js');
+          noteStepBusy(ctx.stepId, result.busyLine);
+        }
         throw new Error(result.error || 'The alignment failed and gave no reason.');
       }
       /*
@@ -284,6 +291,9 @@ export const alignStep: StepModule = {
         detail: {
           ...(ctx.input.detail ?? {}),
           coverageReport: result.reportPath,
+          // WHICH MACHINE measured the book — recorded on the row the way a
+          // render's saved state records its server.
+          alignVenue: result.venue?.where === 'crucible' ? `crucible:${result.venue.server}` : result.venue?.where,
           chunksAligned: result.chunksAligned,
           chunksFailedCoverage: result.chunksFailed,
           chunksNotPlaced: result.chunksErrored,
