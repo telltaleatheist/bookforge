@@ -35,6 +35,108 @@ denoised or read a page on a GPU.
 **Gates at 06:00:** Crucible 1054, client 184, bootstrap 117, narrator 1449, BookForge 142
 keepers, tsc clean. Both branches pushed, trees clean, nothing merged.
 
+## 0b. THE COMPLETE MAP OF WHAT IS NOT WORKED OUT — 2026-09-14, morning
+
+Owen asked: *"is there anything else that we havent fully and completely worked out already?
+does bookforge correctly add gpu slots for each crucible server its connected to? does it
+remove its own local slots if theres a crucible server installed locally?"* Read from the
+code, not from memory. Each item names the file that proves it.
+
+### A. The scheduler — the two questions, answered NO and NOT YET
+
+- **A1. Per-server GPU slots are NOT built.** `RESOURCE_SLOTS.gpu` is one global number
+  (`shared/queue/bench.ts`; `electron/queue-engine.ts:1809` says "RULING OWED" in its own
+  words). A book rendering on the Mac holds THIS machine's one GPU slot, so two books cannot
+  render on two machines at once — which is the entire point of a second server. PHASE7-LANES
+  §2.4 is the design (one `[gpu][cpu][cpu]` set per server, plus a `local [cpu][cpu]` set for
+  work BookForge does itself: assembly, muxing). Scheduler change, not routing. **BUILD.**
+- **A2. Local slots are not "removed" when a local Crucible exists — they are RENAMED.** Once
+  `local` resolves, this machine's card IS the `local` server's GPU slot; there is no separate
+  "BookForge's own GPU" slot to remove. What still exists beside it is the LEGACY SPAWN LAYER
+  (WSL narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
+  `routing.legacyLocalRender`. That layer is deleted after Owen's in-app pass (~250 GB of envs
+  with it). Until then both paths exist and the switch decides. **DELETE after the pass.**
+- **A3. Only two step kinds travel.** `machines()` is declared by `tts-conversion.ts` (`any`)
+  and `foundry-job.ts` (per config). Every other GPU step — `align.ts`, `rvc-enhancement.ts`,
+  `final-denoise.ts`, `vlm-convert.ts`, `generate-sentences.ts` (asr), `translation.ts`,
+  `ai-provider.ts`, `book-analysis.ts` — has a Crucible DOOR in `electron/crucible/` but the
+  queue step has not been taught to use it, so a book assigned to the Mac renders there and
+  then does its RVC, denoise and align HERE (`queue-engine.ts:1817`). §4.4 says every step of
+  one book runs where the book was assigned. **BUILD: `machines()` on each, using the door
+  that already exists; then A1 makes them run in parallel.**
+- **A4. Double admission on the local card.** For work `onThisMachine`, the queue still asks
+  the lock file (`external-gpu-job.lock`) and the GPU arbiter AFTER Crucible admission
+  (`queue-engine.ts:1844`). With a local Crucible, the server's `409 server_busy` and its
+  accelerator probe are the truth about the card; the lock file is how a TRAINING CHAIN
+  (not a Crucible client) tells BookForge the card is taken. Ruling: does the fine-tune
+  register with Crucible (a lease on the card with no model — a new lease kind), or does the
+  lock file stay as the one non-Crucible holder? **RULING.**
+- **A5. A row that cleans THEN simplifies takes two leases** (the model may unload between
+  them). One lease per row needs a seam in `queue-engine.ts` and cannot carry one truthful act
+  name. **BUILD, small.**
+
+### B. Engines — one is missing entirely
+
+- **B1. Orpheus is not in Crucible.** Every voice manifest is `narrator_engine = "higgs-v3"`;
+  `engines/narrator.py` knows Orpheus only as a comment. CLAUDE.md still calls Orpheus "the
+  narration engine" and the wizard gives it a step of its own. So an Orpheus render or Listen
+  can ONLY take the legacy WSL path, and deleting that layer (A2) deletes Orpheus. Ruling:
+  Orpheus manifests + a `narrator_engine = "orpheus"` env in Crucible (vLLM 0.7.3, its own
+  venv — the CLI already has one venv per narrator engine), or Orpheus retired in favour of
+  Higgs. **RULING, then BUILD or DELETE.**
+- **B2. `higgs-default` on cuda-linux** — the token voice exists as a manifest; whether the WSL
+  server can serve it is the owed ruling from 06:00. **RULING.**
+- **B3. Zero-shot voices** — Crucible's `zeroshot` takes clips in the request; the render door
+  refuses it. Upload the clip, or local-only? **RULING.**
+- **B4. The retake ladder's sampling channel** and the guard belonging to the model (the
+  crucible-guard ruling, NOT STARTED). **RULING + BUILD.**
+- **B5. Narrator's items-in door** — a remote ALIGN cannot finish without it. **BUILD (narrator).**
+- **B6. Narrator into its own repo** — a friend cannot `crucible install tts` against a
+  private BookForge sha. **RULING.**
+
+### C. Install and stocking — phase 13, in flight
+
+- **C1. Crucible's own page + operator API + generated module files** — being built now
+  (`crucible/docs/PHASE13-OPERATOR.md`). Closes: no in-app model downloads, printed pull lists,
+  two install stories, "how do I get the token".
+- **C2. The wizard step probes on entry** (local found → connected + Open Crucible; none and
+  hostable → Install; not hostable → Connect only) and **posts the module after a driven
+  install.** §5.5 of the phase doc; BookForge's build after C1.
+- **C3. The wizard's Orpheus / Higgs / RVC / Tools steps still install LOCAL engines** through
+  the component manager. They become "which server" rows against the catalog once A2's layer
+  is deleted — and B1 decides whether the Orpheus step survives at all.
+- **C4. The driven install is gated on a published release** (`DRIVEN_INSTALL_AVAILABLE=false`).
+  Order: phase 13 lands → Owen publishes 0.6.0 → BookForge pins the tarball → flip.
+- **C5. Prebuilt env packs on the release** — speed only; after C1.
+
+### D. Foundry seam
+
+- **D1. Hosted Foundry's text acts** refuse `hosted_engine_takes_no_per_run_env` until Foundry's
+  vendored `engine.ts` takes a per-run environment — Foundry's build; then **RE-VENDOR.**
+- **D2. Cloud slots** for translate/simplify on an underpowered machine — Foundry owns them
+  (Owen's 01:40 ruling). BookForge's own AI providers already list models by key
+  (`ai-bridge.ts:2148`, `2278`); the TILE rule (local floor OR an enabled cloud slot) is
+  Foundry's. **Foundry, then re-vendor.**
+- **D3. Lineup rulings:** `qwen3.8:27b-24g` is a local Modelfile not a published tag; the
+  dots.ocr pin (Q8_0 vs F16) — one must move. **RULING.**
+- **D4. `"foundry": "file:.."` devDependency** makes `npm ci` junction the subtree to the repo
+  root. **RULING (Foundry drops it for the snapshot?).**
+
+### E. Proven on a card: four things. Everything else: a keeper against a fake server.
+
+Render (Mac), Foundry clean-text, a lease through a book, the render seam across machines.
+Never met a card: cleanup, asr, align, rvc, denoise, pages, streaming, re-roll, every wizard
+door. **Owen's in-app pass** is what turns the rest from "built" into "works".
+
+### F. Small, known, owed
+
+The `service install` over a loaded launchd agent (exit 5); a doctor verb comparing the running
+version to the checkout (the stale-install 500s); the cold-VM `wsl.exe` exit −1 wanting a
+reproduction; the ~34 remaining log-line contracts (R4); `orpheus-memory.ts` tier table; the
+Mac's conda root not being one of the three ruled roots; `enableLinger` — what the app does
+with it; `dots-ocr` `temperature = 0` server-side?; resume of a render across an app restart
+(job id not persisted); re-pointing an assigned book is refused.
+
 ## 0. Where it actually stands tonight
 
 **Crucible** (the server) is finished as a codebase: every job type exists, is tested, and
