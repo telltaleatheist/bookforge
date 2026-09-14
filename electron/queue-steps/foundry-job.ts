@@ -280,13 +280,29 @@ export const foundryJobStep: StepModule = {
       if (venue.where === 'crucible') {
         try {
           /*
-           * `none`: the spawn is NOT ours. Foundry's vendored `runEngine` uses
-           * `env: process.env` and takes no overlay, and this is the app's
-           * main process — ~180 spawn sites, concurrent queue lanes — so a map
-           * put on its environment would be inherited by every child that has
-           * no business with a credential, and two acts inside it would each
-           * send the other's act name. `resolveCrucibleTextEngine` refuses
-           * this by name before anything else is asked.
+           * `none`: THE SPAWN IS NOT OURS AND NEITHER IS ITS ENVIRONMENT.
+           *
+           * Re-read 2026-09-14, because the reason written here had gone
+           * stale and the refusal had not. The vendored `runEngine` DOES take
+           * a per-run overlay now (foundry `f300fc6`,
+           * `foundry-app/electron/engine.ts`) — what BookForge has no way to
+           * reach is that argument: the seam we call is `runJob(request,
+           * {parentStep, signal, onProgress})`, which carries no environment,
+           * and the only thing that fills `extraEnv` over there is the
+           * window's own dispatcher.
+           *
+           * The alternative — putting the map on THIS process's environment —
+           * stays refused for the reason it always was: this is the app's main
+           * process, ~180 spawn sites and concurrent queue lanes, so every
+           * child with no business holding a credential would inherit one, and
+           * two acts inside it would each send the other's act name.
+           *
+           * `resolveCrucibleTextEngine` refuses `none` by name before anything
+           * else is asked, and the sentence it uses
+           * (`hostedCrucibleTextActNotVendored`) names the one thing this waits
+           * on: a re-vendor at or past foundry `e096734`, where the window
+           * reads BookForge's registry (`FoundryHost.servers()`, offered at the
+           * mount already) and places the act itself.
            *
            * BookForge's OWN Clean text door (`narration-clean-text.ts`) and
            * the CLI clean routes answer `spawn`/`process` and run for real.
@@ -308,14 +324,29 @@ export const foundryJobStep: StepModule = {
           throw named2;
         }
         /*
-         * NO LEASE HERE, AND IT IS NOT AN OMISSION. Every Crucible venue on this
-         * path has just been refused `hosted_engine_takes_no_per_run_env` — the
-         * hosted step cannot give the engine an environment, so it never runs a
-         * text act against a Crucible at all, and a lease taken for a run that
-         * cannot happen would hold somebody's card for nothing. The day Foundry's
-         * `runEngine` takes an overlay and that refusal goes, the spawn below is
-         * what must be wrapped in `withCrucibleTextActLease` — one lease for the
-         * whole act, exactly as `narration-clean-text.ts` does it.
+         * NO LEASE HERE, AND IT IS NOT AN OMISSION — TWICE OVER.
+         *
+         * Today: every Crucible venue on this path has just been refused
+         * `hosted_placement_not_vendored`, so no text act runs against a
+         * Crucible from here at all, and a lease taken for a run that cannot
+         * happen would hold somebody's card for nothing.
+         *
+         * AFTER THE RE-VENDOR IT IS STILL NOT OURS, and the note that used to
+         * stand here said the opposite — that this spawn should be wrapped in
+         * `withCrucibleTextActLease` the day the refusal went. That would be a
+         * DEFECT: Crucible allows ONE lease per server and refuses a second by
+         * name (`409 model_leased`, crucible `c5eb431`), and the vendored
+         * dispatcher takes its own lease between making the model resident and
+         * spawning the engine (`crucible-dispatch.ts placeOnCrucible`,
+         * released in its settle). A lease taken here would be refused, or
+         * would refuse theirs — either way the row parks forever on a claim
+         * this app made against itself.
+         *
+         * So the lease for a HOSTED act belongs to the window that spawns the
+         * engine, exactly as residency and the header map do; BookForge leases
+         * where BookForge spawns (`narration-clean-text.ts`, the CLI clean
+         * routes). Owen's unload ruling of 2026-09-14 is satisfied either way —
+         * one lease per run, held by whoever is making the requests.
          */
         const line = `[foundry-job] ${act} runs on crucible "${crucible.server}" `
           + `(${venue.because}) at ${crucible.endpoint}, model ${crucible.model}, `

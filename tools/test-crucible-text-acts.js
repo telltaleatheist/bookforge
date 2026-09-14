@@ -32,9 +32,12 @@
  *     one switch for renders and text passes both.
  *  7. **A caller that cannot give the engine process an environment is
  *     REFUSED.** The credential and the per-run act name travel there, so
- *     the app's hosted queue step — somebody else's spawn inside a shared
- *     process — gets a named no rather than a run that reaches the server
- *     unauthenticated, or one whose act name is another act's.
+ *     the app's hosted queue step — somebody else's spawn, reached through a
+ *     seam that carries no environment — gets a named no rather than a run
+ *     that reaches the server unauthenticated, or one whose act name is
+ *     another act's. WHAT that refusal waits on is pinned against the
+ *     vendored subtree by `tools/test-foundry-hosted-crucible-seam.js`; only
+ *     the behaviour is pinned here.
  *
  * No GPU, no model, no network beyond 127.0.0.1, and no registry but its own.
  */
@@ -347,13 +350,22 @@ async function main() {
     await assert.rejects(
       () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'none' }),
       (err) => {
-        assert.strictEqual(err.code, 'hosted_engine_takes_no_per_run_env');
+        assert.strictEqual(err.code, 'hosted_placement_not_vendored');
         // Named for the CAPABILITY it waits on, never for a version number:
-        // the blocker is a line in the vendored subtree, and a floor that
+        // the blocker is the state of the vendored subtree, and a floor that
         // went green on a release would be a guard passing without its
-        // subject.
-        assert.ok(err.message.includes('env: process.env'), err.message);
+        // subject. REWRITTEN 2026-09-14: the sentence used to blame the
+        // `env: process.env` in their engine spawn, which foundry had already
+        // fixed (`f300fc6`) while this guard went on quoting it. The live gap
+        // is that the job seam BookForge calls carries no environment and the
+        // vendored dispatcher cannot compose one hosted;
+        // `tools/test-foundry-hosted-crucible-seam.js` reads the subtree so
+        // that cannot go stale unnoticed again.
+        assert.ok(err.message.includes('runJob'), err.message);
+        assert.ok(err.message.includes('e096734'), err.message);
         assert.ok(err.message.includes('FOUNDRY_ENDPOINT_HEADERS'), err.message);
+        assert.ok(!err.message.includes('env: process.env'),
+          'the refusal blames the spawn foundry fixed at f300fc6: ' + err.message);
         assert.ok(!/\b1\.3\.0\b/.test(err.message),
           `the refusal blames a version rather than the capability:\n${err.message}`);
         // And it says what DOES work: a refusal with no way forward is what

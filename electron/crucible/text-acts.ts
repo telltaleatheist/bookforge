@@ -43,34 +43,40 @@
  * ── WHO CAN GIVE A SPAWN ITS OWN ENVIRONMENT, AND WHO CANNOT ───────────────
  *
  * Read before changing anything here. Two gaps were found on 2026-09-13 by
- * reading foundry's source rather than by running it. **The first is fixed** —
- * crucible `a97ef70` mounts the OpenAI door where OpenAI clients look, see
- * {@link CRUCIBLE_OPENAI_BASE_PATH} — and a real `clean` act has now run end to
- * end against the local server. The second stands, and it is not about an
- * engine version at all:
+ * reading foundry's source rather than by running it, and **both are fixed on
+ * their side now** — crucible `a97ef70` mounts the OpenAI door where OpenAI
+ * clients look (see {@link CRUCIBLE_OPENAI_BASE_PATH}), and foundry `f300fc6`
+ * gave the vendored `runEngine` an `extraEnv` overlay. A real `clean` act has
+ * run end to end against the local server. What still stands is neither of
+ * them, and it is not about an engine version at all:
  *
- * > **The vendored Foundry window spawns the engine with `env: process.env`**
- * > (`foundry-app/electron/engine.ts:140`, and the same line upstream), and
- * > takes no overlay. BookForge cannot hand THAT child an environment of its
- * > own.
+ * > **The seam BookForge hands the hosted window a job through carries no
+ * > environment** — `runJob(request, {parentStep, signal, onProgress})` — and
+ * > the only thing that fills `extraEnv` is the window's OWN dispatcher, out
+ * > of a registry the vendored copy cannot resolve hosted. So BookForge cannot
+ * > hand THAT child an environment, and that child cannot yet compose one.
  *
- * That matters because the act name changes per run. A map on a shared
- * process's environment is not merely untidy — two acts inside one process
- * would each send the other's `X-Crucible-Act`, which is exactly the lie Owen
- * ruled out.
+ * It matters that the fix is the window's rather than ours, because the act
+ * name changes per run: a map on a shared process's environment is not merely
+ * untidy — two acts inside one process would each send the other's
+ * `X-Crucible-Act`, which is exactly the lie Owen ruled out.
  *
  * So the question every caller must answer is **how far its reach into the
  * spawn's environment goes**, and it is a required argument rather than a
  * default: {@link EndpointHeaderReach} in `text-venue.ts`. `spawn` (an explicit
  * `env` on this child and no other) is BookForge's own engine door and runs for
  * real. `process` is a single-purpose CLI run, where the process IS the act.
- * `none` is the app's hosted queue step — somebody else's spawn inside a shared
- * process — and it is **refused by name**, never quietly run against
- * llama-server.
+ * `none` is the app's hosted queue step — somebody else's spawn, reached
+ * through a seam that carries no environment — and it is **refused by name**,
+ * never quietly run against llama-server.
  *
- * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `electron/foundry-host-queue.ts` marks
- * the release to re-vendor at, and carries the RULING OWED about what it should
- * be keyed to now that 1.3.0 is void.
+ * `hostedCrucibleTextActNotVendored` in `electron/foundry-host-queue.ts` holds
+ * the whole argument and names the one thing it waits on: a re-vendor of
+ * `foundry-app/` at or past foundry `e096734`, where the window reads
+ * BookForge's own server registry and places the act itself. It is keyed to the
+ * VENDORED SUBTREE rather than to a release number, and
+ * `tools/test-foundry-hosted-crucible-seam.js` is what reads that subtree, so
+ * the refusal cannot outlive its reason the way it did once already.
  */
 
 /**
@@ -206,9 +212,9 @@ let hostedHolder: string | null = null;
  *
  * The map belongs on ONE child's environment. Where the caller owns the spawn
  * it goes there and nowhere else (`runFoundry`'s `env` overlay, reach `spawn`).
- * This is the other case: the spawn belongs to somebody else's code — Foundry's
- * vendored `runEngine`, which uses `env: process.env` and takes no overlay — so
- * the only environment BookForge can influence is its own.
+ * This is the other case: the spawn belongs to somebody else's code — the
+ * vendored Foundry window's, reached through a seam that carries no
+ * environment — so the only environment BookForge can influence is its own.
  *
  * **THAT IS ONLY ACCEPTABLE WHERE THE PROCESS *IS* THE ACT**, which means
  * exactly one caller: a single-purpose CLI run (`cli/clean-step.js`), started to
@@ -224,10 +230,12 @@ let hostedHolder: string | null = null;
  * therefore REFUSES a Crucible text act by name (reach `none`) rather than
  * reaching for this.
  *
- * **THE ROOT FIX, a request on Foundry rather than work outstanding here:**
- * `runEngine(args, onLine, env?)` — one optional overlay — and `job-queue.ts`
- * passing the request's headers into it. One parameter, two call sites; this
- * function and the hosted refusal both go the day it lands.
+ * **THE ROOT FIX IS FOUNDRY'S AND IT IS BUILT, WAITING ON A RE-VENDOR.** Their
+ * `runEngine` takes an overlay (`f300fc6`) and, at `e096734`, the hosted window
+ * reads BookForge's own server registry and COMPOSES that overlay itself —
+ * credential, act name and all — so nothing has to be pushed through the job
+ * seam. This function and the hosted refusal both go the day `foundry-app/` is
+ * copied in at or past that commit.
  *
  * Single-entry by construction: two acts inside one window would each send the
  * other's act name, which is the lie Owen's ruling forbids. If the guard ever

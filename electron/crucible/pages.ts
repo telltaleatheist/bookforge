@@ -231,12 +231,16 @@ export function pagesEndpointHeadersEnv(token: string): Record<string, string> {
  * which is the failure foundry's own `endpoint-headers.ts` header calls out as
  * "far worse". Wrong in the safe direction, on purpose.
  *
- * RULING OWED: this is a second constant beside
- * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` (`electron/foundry-host-queue.ts`, also
- * `1.4.0`) and they wait on DIFFERENT things — that one on a per-run env
- * argument in the vendored app's `runEngine`, this one on a CLI binary that
- * already has what it needs and has not been released. They will very likely be
- * satisfied by one release, at which point they should become one constant. The
+ * THIS IS NOW THE ONLY CONSTANT OF ITS KIND, and the other one's fate says why
+ * it is still here. `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` sat beside it waiting
+ * on a per-run env argument in the vendored app's `runEngine`; that argument
+ * landed (foundry `f300fc6`) and the guard went on refusing for ten hours,
+ * because a version number cannot see a line of code. It was DELETED on
+ * 2026-09-14 and replaced by a keeper that reads the vendored subtree
+ * (`tools/test-foundry-hosted-crucible-seam.js`). This constant is not that
+ * shape: it waits on a CLI BINARY that already has what it needs and has not
+ * been RELEASED, which is exactly the thing a version number does answer — a
+ * binary is asked `--version` and cannot be read. The
  * number itself is a guess at the next release: 1.3.0 was prepared and then
  * VOIDED by Owen's 2026-09-13 22:40 reframe, so `1.4.0` is the first spelling
  * that is certainly not the void one. If the next release is numbered

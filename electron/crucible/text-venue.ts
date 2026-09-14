@@ -45,19 +45,25 @@
  *               engine door (`runFoundry`). RUNS.
  *   `process` — the process IS the act: a single-purpose CLI run that spawns
  *               nothing else while it works. RUNS.
- *   `none`    — somebody else's spawn inside a shared process: the app's hosted
- *               queue step, where the vendored `runEngine` uses
- *               `env: process.env` and takes no overlay. **REFUSED BY NAME**
- *               (`hosted_engine_takes_no_per_run_env`), never quietly run
+ *   `none`    — somebody else's spawn, reached through a seam that carries no
+ *               environment: the app's hosted queue step, which hands the
+ *               vendored Foundry window a job through `runJob(request,
+ *               {parentStep, signal, onProgress})`. That window's engine spawn
+ *               DOES take a per-run environment (foundry `f300fc6`), but the
+ *               only thing that fills it is the window's own dispatcher, out of
+ *               a registry the vendored copy cannot resolve hosted. **REFUSED
+ *               BY NAME** (`hosted_placement_not_vendored`), never quietly run
  *               against llama-server.
  *
  * There is no version comparison here. The blocker is a property of the
- * VENDORED SUBTREE — a line of somebody else's code — and a floor that could go
- * green on a version bump while the subtree still spawns the same way would be
- * a guard that passes without the thing it guards.
- * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `foundry-host-queue.ts` is named in the
- * refusal as the release to re-vendor at, and carries the RULING OWED about what
- * it should be keyed to.
+ * VENDORED SUBTREE — lines of somebody else's code copied into this repo — and
+ * a floor that could go green on a version bump while the subtree still spawned
+ * the same way would be a guard that passes without the thing it guards. The
+ * whole argument, and the one thing it waits on (a re-vendor at or past foundry
+ * `e096734`, where the window reads BookForge's registry and places the act
+ * itself), is written on `hostedCrucibleTextActNotVendored` in
+ * `foundry-host-queue.ts`, and it is pinned against the subtree by
+ * `tools/test-foundry-hosted-crucible-seam.js` rather than remembered.
  */
 import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
 import type { ModelInfo } from '@crucible/client';
@@ -92,11 +98,13 @@ export type CrucibleTextActErrorCode =
   /** `any`, and not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
   /**
-   * The caller cannot give the engine process its own environment, so the
-   * credential — and the act name that changes per run — has nowhere to go.
-   * The app's hosted queue step, and only it. See the header.
+   * The caller reaches the engine through a seam that carries no environment,
+   * so the credential — and the act name that changes per run — has nowhere to
+   * go, and the vendored window that owns the spawn cannot compose one for
+   * itself yet. The app's hosted queue step, and only it; it goes with the
+   * re-vendor. See the header.
    */
-  | 'hosted_engine_takes_no_per_run_env'
+  | 'hosted_placement_not_vendored'
   /** The chosen server has no manifest for this act's model id. */
   | 'crucible_unknown_model'
   /** It has one, and nothing is serving it. The operator's job, never ours. */
@@ -249,7 +257,10 @@ export type EndpointHeaderReach =
   | 'spawn'
   /** The process IS the act: a single-purpose CLI run. `withProcessEndpointHeaders`. */
   | 'process'
-  /** Somebody else's spawn inside a shared process. Refused by name. */
+  /**
+   * Somebody else's spawn, reached through a seam that carries no environment
+   * — the hosted Foundry queue step. Refused by name.
+   */
   | 'none';
 
 export interface CrucibleTextActOptions {
@@ -305,10 +316,10 @@ export async function resolveCrucibleTextEngine(
    * spent on a decision already made.
    */
   if (opts.headerReach === 'none') {
-    const { hostedEngineTakesNoPerRunEnv } = await import('../foundry-host-queue.js');
+    const { hostedCrucibleTextActNotVendored } = await import('../foundry-host-queue.js');
     throw new CrucibleTextActError(
-      'hosted_engine_takes_no_per_run_env',
-      hostedEngineTakesNoPerRunEnv(act, server),
+      'hosted_placement_not_vendored',
+      hostedCrucibleTextActNotVendored(act, server),
     );
   }
 

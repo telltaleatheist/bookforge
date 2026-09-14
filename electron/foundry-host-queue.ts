@@ -164,48 +164,69 @@ export function foundryTooOldForCleanTextEpub(installed: string): string {
 }
 
 /**
- * The foundry release whose vendored APP can give an engine spawn its own
- * environment — which is what a HOSTED Crucible text act waits on.
+ * ── THE HOSTED CRUCIBLE TEXT ACT, AND WHY IT IS STILL REFUSED ──────────────
  *
- * A THIRD FLOOR, and the only one that is not really about a version. Two
- * things blocked a Crucible text act when this seam was built on 2026-09-13:
+ * NOT A VERSION FLOOR, and there is no constant to compare against: this is a
+ * property of the VENDORED SUBTREE — lines of somebody else's code copied into
+ * this repo — and a floor that went green on a release while the subtree still
+ * spawned the same way would be a guard passing without the thing it guards.
+ * `tools/test-foundry-hosted-crucible-seam.js` reads the subtree instead, which
+ * is what makes this refusal impossible to leave standing after it stops being
+ * true. **It was left standing once** (found 2026-09-14): the re-vendor at
+ * `e6d5424` carried foundry `f300fc6`, which gave `runEngine` an `extraEnv`
+ * argument, and this sentence went on saying the engine took none.
+ *
+ * ── The three gaps, and where each one stands ─────────────────────────────
  *
  *  1. The engine appended `/v1` to Crucible's `/v1/openai` base and 404ed.
- *     **FIXED** by crucible `a97ef70`, which mounts the same handlers at
- *     `/openai/v1/…` where every OpenAI client looks; BookForge now hands over
- *     `<url>/openai` (`CRUCIBLE_OPENAI_BASE_PATH`) and a real `clean` act has
+ *     **FIXED** (crucible `a97ef70`): the same handlers are mounted at
+ *     `/openai/v1/…` where an OpenAI client composes them, BookForge hands over
+ *     `<url>/openai` (`CRUCIBLE_OPENAI_BASE_PATH`), and a real `clean` act has
  *     run end to end — 734 blocks, 265 changed, 78.5 s.
- *  2. `foundry-app/electron/engine.ts:140` spawns the engine with
- *     `env: process.env` and takes no overlay, so a HOSTED act has nowhere to
- *     put `$FOUNDRY_ENDPOINT_HEADERS`. Still open. It is a property of the
- *     VENDORED SUBTREE rather than of a version string, which is why nothing
- *     compares against this constant: a floor that went green on a release
- *     while the subtree still spawned the same way would be a guard that passes
- *     without the thing it guards. BookForge's OWN engine door is unaffected
- *     and runs for real — it passes an explicit `env` per spawn.
+ *  2. The vendored `runEngine` took no per-run environment. **FIXED** (foundry
+ *     `f300fc6`, in this subtree since `e6d5424`): it takes `extraEnv` and
+ *     spawns with `{...process.env, ...extraEnv}` — see
+ *     `foundry-app/electron/engine.ts`.
+ *  3. **BOOKFORGE STILL CANNOT REACH THAT ARGUMENT, and this is the live gap.**
+ *     The seam we call is `runJob(request, {parentStep, signal, onProgress})`
+ *     and it carries no environment; the only thing that feeds `extraEnv` is
+ *     `placement.env`, which the vendored DISPATCHER composes for itself
+ *     (`foundry-app/electron/crucible-dispatch.ts`) out of a registry that is
+ *     always empty in a hosted window. So a hosted act cannot be handed a
+ *     credential by us, and the subtree cannot compose one for itself.
  *
- * **RULING OWED (Owen, 2026-09-13: the 1.3.0 release is void and the next
- * Foundry release number is unknown).** What should this be keyed to — the next
- * release number once it exists, the vendored `app/` sha in
- * `foundry-app/VENDORED.md`, or a capability probe? The value below is a
- * PLACEHOLDER kept so there is one named place to change; it is not a claim
- * that 1.4.0 carries the fix.
+ * ── WHICH IS WHY THE FIX IS A RE-VENDOR AND NOT A PATCH HERE ──────────────
+ *
+ * Owen ruled on 2026-09-14 that **hosted Foundry reads BookForge's server
+ * registry** — one owner — and Foundry landed it at `e096734`: their
+ * `crucibleServers()` asks `FoundryHost.servers()` hosted, the slots are
+ * DERIVED from that one list, and the dispatcher then does the whole act
+ * itself — residency, the operator load, the model lease, the header map with
+ * `X-Crucible-Act`, and the spawn with `extraEnv`. BookForge's half is built
+ * (`electron/crucible/host-registry.ts`, offered at the mount in `main.ts`) and
+ * is inert until the subtree that reads it is copied in.
+ *
+ * So this refusal waits on exactly one thing: **a re-vendor of `foundry-app/`
+ * at or past foundry `e096734`.** Nothing about it is keyed to a release
+ * number, and the day it lands, this function, the reach value the hosted step
+ * passes and the venue resolution around it all go together — the act's
+ * endpoint, model, credential and lease become the dispatcher's, because two
+ * composers of one credential is the defect this whole seam is about.
  */
-export const FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT = '1.4.0';
-
-/** The refusal for a hosted act that has nowhere to put the header map. */
-export function hostedEngineTakesNoPerRunEnv(act: string, server: string): string {
+export function hostedCrucibleTextActNotVendored(act: string, server: string): string {
   return (
     `This ${act} was routed to the Crucible server "${server}", and the HOSTED Foundry queue `
-    + 'cannot run it: the vendored window spawns the engine with `env: process.env` '
-    + '(foundry-app/electron/engine.ts) and takes no per-run environment, so there is nowhere to '
-    + 'put $FOUNDRY_ENDPOINT_HEADERS — and the act name, which changes per run, must not travel on '
-    + 'a shared process\'s environment where two acts would name each other. Nothing ran, nothing '
-    + 'was sent unauthenticated and no model was loaded. '
-    + 'The fix is one optional argument on foundry\'s `runEngine`, then a re-vendor '
-    + `(FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT, currently ${FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT}, is where `
-    + 'that is recorded). Until then: BookForge\'s own Clean text door and the CLI clean routes '
-    + 'DO run on a Crucible, and "Run renders and text passes with the local engines instead" in '
+    + 'cannot run it there: BookForge hands that window a job through `runJob(request, '
+    + '{parentStep, signal, onProgress})`, which carries no environment, so there is nowhere to '
+    + 'put $FOUNDRY_ENDPOINT_HEADERS. The vendored engine spawn DOES take a per-run environment '
+    + '(foundry f300fc6), but the only thing that fills it is the vendored dispatcher\'s own '
+    + 'placement — and the copy in foundry-app/ resolves credentials from a registry that is '
+    + 'always empty in a hosted window. Nothing ran, nothing was sent unauthenticated and no '
+    + 'model was loaded. '
+    + 'The fix is a RE-VENDOR of foundry-app/ at or past foundry e096734, where the window reads '
+    + 'this app\'s registry (FoundryHost.servers(), which BookForge already offers) and places '
+    + 'the act itself. Until then: BookForge\'s own Clean text door and the CLI clean routes DO '
+    + 'run on a Crucible, and "Run renders and text passes with the local engines instead" in '
     + 'Settings → Crucible Servers keeps the hosted window working.'
   );
 }
