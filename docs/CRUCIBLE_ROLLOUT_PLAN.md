@@ -341,7 +341,10 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   BookForge DELETES its own Claude/OpenAI key rows and model lists and its OCR-cleanup AI provider reads
   Foundry's record (as the clean door already reads `cleanTextModel`); `servers?()` stays Crucible-only.
   Foundry asked to un-suppress cloud hosted and keep the engine-config form + "run first-run setup
-  again" GUARDED hosted. Lands in the single re-vendor.
+  again" GUARDED hosted. **Foundry landed all four at 33bb187** (cloud drawn hosted; card editable; engine
+  settings form hidden + `settings:write` refused hosted — it had been writing the engine's machine-global
+  settings.json; "run setup again" hidden + refused). **The single re-vendor targets foundry ≥ 33bb187.**
+  Note: `cloudProviders` entries hold the KEY in app-settings.json (our userData hosted).
 
 - **OWED AT THE RE-VENDOR (foundry 990bd2e, 2026-09-14):** `foundry-job.ts` passes the row's
   `waitForResolved` (a server name or `any`) as `RunOptions.waitFor` on `runJob` — the field
