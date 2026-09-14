@@ -57,10 +57,13 @@ import type {
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
 import type {
+  CrucibleCoordinationMap,
+  CrucibleCoordinationState,
+} from '../shared/crucible/coordinate-wire';
+import type {
   CrucibleActivityView,
   CrucibleModelRow,
   CrucibleCapabilityView,
-  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   PairingResult,
@@ -1426,16 +1429,25 @@ export interface ElectronAPI {
     /** What `shared/crucible/bookforge.module.json` asks a server for. */
     module: () => Promise<{ success: boolean; data?: { version: string; jobTypes: string[]; subjects: string[] }; error?: string }>;
     /**
-     * "Set up for BookForge": post the vendored module and watch the task.
-     * Resolves with the LAST frame, so a row that missed the stream still ends
-     * up drawing the truth; a `server_busy` held by a LEASE rejects with the
-     * holder named, because that is the system working and not a fault.
+     * WHERE COORDINATION WITH EACH SERVER STANDS — the whole map, as main holds
+     * it (crucible `docs/PHASE14-ENVPACKS.md` §4a).
+     *
+     * There is no `setUpModule` any more and no button that would have called
+     * one: BookForge coordinates with every server it connects to, so a screen
+     * READS this and subscribes to {@link onCoordination}. A server absent from
+     * the map is one nothing has asked yet.
      */
-    setUpModule: (name: string) => Promise<{ success: boolean; data?: CrucibleModuleProgress; error?: string }>;
-    /** Cancel that task. The server answers `cancelling`; watch for `cancelled`. */
+    coordination: () => Promise<{ success: boolean; data?: CrucibleCoordinationMap; error?: string }>;
+    /**
+     * Coordinate with one named server now — the wizard's step landing on
+     * "connected", and a driven install that has just finished. Joins a run
+     * already in flight rather than starting a second.
+     */
+    coordinate: (name: string) => Promise<{ success: boolean; data?: CrucibleCoordinationState; error?: string }>;
+    /** Stop the module task this server is running. Answers `cancelling`. */
     cancelSetUp: (name: string, taskId: string) => Promise<{ success: boolean; error?: string }>;
-    /** Every frame of the running module task, as the server emits them. */
-    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void) => () => void;
+    /** Every coordination state change, for every server, as main learns it. */
+    onCoordination: (callback: (state: CrucibleCoordinationState) => void) => () => void;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -2913,21 +2925,23 @@ const electronAPI: ElectronAPI = {
     installPlan: () => ipcRenderer.invoke('crucible:host-install-plan'),
     install: () => ipcRenderer.invoke('crucible:host-install'),
     capability: (name: string) => ipcRenderer.invoke('crucible:capability', name),
-    // The operator door. `open-ui`, `setup-module`, `cancel-setup`, `module`
-    // and `parse-pairing` are names the hosted Foundry's `crucible:` family
+    // The operator door. `open-ui`, `coordination`, `coordinate`,
+    // `cancel-setup`, `module` and `parse-pairing` are names the hosted
+    // Foundry's `crucible:` family
     // does not have (foundry-app/IPC-CHANNELS.md), which
     // tools/test-ipc-collision.js keeps true.
     parsePairing: (line: string) => ipcRenderer.invoke('crucible:parse-pairing', line),
     openUi: (name: string) => ipcRenderer.invoke('crucible:open-ui', name),
     module: () => ipcRenderer.invoke('crucible:module'),
-    setUpModule: (name: string) => ipcRenderer.invoke('crucible:setup-module', name),
+    coordination: () => ipcRenderer.invoke('crucible:coordination'),
+    coordinate: (name: string) => ipcRenderer.invoke('crucible:coordinate', name),
     cancelSetUp: (name: string, taskId: string) =>
       ipcRenderer.invoke('crucible:cancel-setup', name, taskId),
-    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: CrucibleModuleProgress) =>
-        callback(progress);
-      ipcRenderer.on('crucible:module-progress', listener);
-      return () => { ipcRenderer.removeListener('crucible:module-progress', listener); };
+    onCoordination: (callback: (state: CrucibleCoordinationState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: CrucibleCoordinationState) =>
+        callback(state);
+      ipcRenderer.on('crucible:coordination-state', listener);
+      return () => { ipcRenderer.removeListener('crucible:coordination-state', listener); };
     },
   },
   foundry: {

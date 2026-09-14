@@ -24,10 +24,13 @@ import type {
   CrucibleInstallPlan,
 } from '@shared/crucible/install-wire';
 import type {
+  CrucibleCoordinationMap,
+  CrucibleCoordinationState,
+} from '@shared/crucible/coordinate-wire';
+import type {
   CrucibleActivityView,
   CrucibleCapabilityView,
   CrucibleModelRow,
-  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   PairingResult,
@@ -4307,16 +4310,25 @@ export class ElectronService {
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /**
-     * "Set up for BookForge" — post the vendored module, watch the task.
+     * WHERE COORDINATION WITH EACH SERVER STANDS.
      *
-     * Resolves with the LAST frame. A `server_busy` held by a LEASE rejects
-     * with the holder named verbatim, because a lease means another app on
-     * that machine is mid-run: an operator shown a dead button with no name
-     * concludes the button is broken and presses it until it is.
+     * There is no set-up button any more (crucible
+     * `docs/PHASE14-ENVPACKS.md` §4a): presence of the app is the request, so
+     * main coordinates with every server it connects to and a screen reads the
+     * state. A server absent from the map has not been asked yet.
      */
-    setUpModule: (name: string): Promise<{ success: boolean; data?: CrucibleModuleProgress; error?: string }> =>
+    coordination: (): Promise<{ success: boolean; data?: CrucibleCoordinationMap; error?: string }> =>
       this.isElectron
-        ? (window as any).electron.crucible.setUpModule(name)
+        ? (window as any).electron.crucible.coordination()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * Coordinate with one server now. Joins a run already in flight rather
+     * than starting a second, so calling it on arrival at a screen is safe.
+     */
+    coordinate: (name: string): Promise<{ success: boolean; data?: CrucibleCoordinationState; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.coordinate(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     cancelSetUp: (name: string, taskId: string): Promise<{ success: boolean; error?: string }> =>
@@ -4324,10 +4336,10 @@ export class ElectronService {
         ? (window as any).electron.crucible.cancelSetUp(name, taskId)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    /** Every frame of the running module task. Returns its own unsubscribe. */
-    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void): (() => void) =>
+    /** Every coordination state change, for every server. Returns its unsubscribe. */
+    onCoordination: (callback: (state: CrucibleCoordinationState) => void): (() => void) =>
       (this.isElectron
-        ? (window as any).electron.crucible.onModuleProgress(callback)
-        : () => { /* no main process to stream from */ }),
+        ? (window as any).electron.crucible.onCoordination(callback)
+        : () => { /* no main process to hear from */ }),
   };
 }

@@ -7675,6 +7675,32 @@ function setupIpcHandlers(): void {
     }
   };
 
+  /**
+   * COORDINATE WITH A SERVER BECAUSE SOMETHING CONNECTED US TO IT.
+   *
+   * crucible `docs/PHASE14-ENVPACKS.md` §4a: every time BookForge finds a
+   * Crucible it makes sure that Crucible has what BookForge needs — nobody
+   * presses anything. The moments are app start (for `local`), a server being
+   * added, a server being switched back on, and the wizard's step landing on
+   * connected; all four go through `coordinate.ts`'s one function, which is
+   * also what makes two of them arriving together ONE run.
+   *
+   * A FAILED COORDINATION NEVER FAILS THE ACT THAT TRIGGERED IT. The server was
+   * added, the switch was flipped; what did not happen is a conversation with a
+   * machine, and that is the coordination STATE's to say, in the row.
+   */
+  const coordinateWithServer = async (name: string, because: string): Promise<void> => {
+    try {
+      const { coordinateServer } = await import('./crucible/coordinate.js');
+      const state = await coordinateServer(name);
+      getMainLogger().info(`Crucible "${name}" coordinated ${because}: ${state.phase}`);
+    } catch (err) {
+      getMainLogger().warn(`Could not coordinate with Crucible "${name}" ${because}`, {
+        error: (err as Error).message,
+      });
+    }
+  };
+
   ipcMain.handle('crucible:servers', async () => {
     try {
       const { serversView } = await import('./crucible/probe.js');
@@ -7704,6 +7730,11 @@ function setupIpcHandlers(): void {
       const { addServer } = await import('./crucible/servers.js');
       const added = addServer(server);
       await refreshHostedFoundryRegistry('after a server was added');
+      // A SERVER THAT HAS JUST BEEN ADDED IS A SERVER THIS APP HAS JUST
+      // CONNECTED TO (PHASE14 §4a), so it is coordinated with immediately.
+      // Not awaited: adding a server must not sit on a catalog read, and the
+      // row draws the run's own state as it arrives.
+      void coordinateWithServer(added.name, 'it was added');
       return { success: true, data: added };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7783,6 +7814,11 @@ function setupIpcHandlers(): void {
       const { setServerEnabled } = await import('./crucible/routing.js');
       const switched = setServerEnabled(name, enabled);
       await refreshHostedFoundryRegistry(`after "${name}" was switched ${enabled ? 'on' : 'off'}`);
+      // RE-ENABLING IS RE-CONNECTING. Switching one OFF is the one way to say
+      // "not that one" (Owen, 2026-09-14), so switching it back on is the
+      // moment to find out what it is missing — and nothing is asked of a
+      // server that was just switched off.
+      if (enabled) void coordinateWithServer(name, 'it was switched back on');
       return { success: true, data: switched };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -8013,26 +8049,63 @@ function setupIpcHandlers(): void {
     }
   });
 
-  /**
-   * "Set up for BookForge": post `shared/crucible/bookforge.module.json` and
-   * stream the task's events to the row that pressed it.
+  /*
+   * ── COORDINATION: THE BUTTON THAT IS NOT THERE ───────────────────────────
    *
-   * The frames go back on `crucible:module-progress` rather than as one awaited
-   * answer, because the interesting part of a module task is the twenty minutes
-   * in the middle. The awaited answer is the LAST frame, so a row that missed
-   * the stream still ends up drawing the truth.
+   * crucible `docs/PHASE14-ENVPACKS.md` §4a. "Set up for BookForge" and
+   * `crucible:setup-module` are DELETED: presence of the app is the request, so
+   * BookForge coordinates with every server it connects to and a screen only
+   * ever READS the state. `electron/crucible/coordinate.ts` is the one owner —
+   * these two doors start a run and read the map, and neither composes a
+   * sentence, because the words are the renderer's (§3 of the brief; R1).
    */
-  ipcMain.handle('crucible:setup-module', async (event, name: string) => {
+  ipcMain.handle('crucible:coordination', async () => {
     try {
-      const { setUpServerForBookForge } = await import('./crucible/module-setup.js');
-      const send = (progress: unknown) => {
-        if (!event.sender.isDestroyed()) event.sender.send('crucible:module-progress', progress);
-      };
-      return { success: true, data: await setUpServerForBookForge(name, send) };
+      const { coordinationStates } = await import('./crucible/coordinate.js');
+      return { success: true, data: coordinationStates() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  /**
+   * Coordinate with one named server NOW, and answer the state it reached.
+   *
+   * Idempotent and concurrency-safe in `coordinate.ts`: a second call while one
+   * is in flight joins the first. So the wizard's step landing on "connected"
+   * and app start both calling it for `local` is one run, not two — which is
+   * the `task_busy` this whole design exists to avoid, manufactured by us.
+   */
+  ipcMain.handle('crucible:coordinate', async (_event, name: string) => {
+    try {
+      const { coordinateServer } = await import('./crucible/coordinate.js');
+      return { success: true, data: await coordinateServer(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /*
+   * EVERY STATE CHANGE GOES TO EVERY WINDOW, and that is not laziness about
+   * addressing: coordination starts at APP START, before any window has asked
+   * for anything, and it is the same fact for the Settings row, the wizard's
+   * step and whatever draws it next. A push aimed at "the sender" would have no
+   * sender for the run that matters most.
+   */
+  void (async () => {
+    try {
+      const { onCoordination } = await import('./crucible/coordinate.js');
+      onCoordination((state) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('crucible:coordination-state', state);
+        }
+      });
+    } catch (err) {
+      getMainLogger().warn('Crucible coordination states will not reach the windows', {
+        error: (err as Error).message,
+      });
+    }
+  })();
 
   ipcMain.handle('crucible:cancel-setup', async (_event, name: string, taskId: string) => {
     try {
@@ -12800,6 +12873,35 @@ app.whenReady().then(async () => {
       error: (err as Error).message,
     });
   }
+
+  /*
+   * ── AND THE FIRST COORDINATION, FOR THE SERVER ON THIS MACHINE ───────────
+   *
+   * crucible `docs/PHASE14-ENVPACKS.md` §4a, Owen 2026-09-14: *"if its present,
+   * bookforge should coordinate with the installed crucible to make sure it has
+   * what it needs to run all of its features."* Starting the app IS finding it,
+   * so this is the moment — before a window has drawn anything, which is why
+   * the state is kept in main and pushed rather than returned.
+   *
+   * NOT AWAITED. It is one `/v1/info` and one `/v1/catalog` against a WSL guest
+   * that may be cold, and nothing about starting BookForge should wait for a
+   * machine that might be off. A machine with no local Crucible answers `null`
+   * and says nothing at all: a laptop that renders on the Mac is not a laptop
+   * with a problem.
+   */
+  void (async () => {
+    try {
+      const { coordinateLocalOnStart } = await import('./crucible/coordinate.js');
+      const state = await coordinateLocalOnStart();
+      logger.info(state === null
+        ? 'Crucible coordination: this machine has no local server, so there was nothing to ask.'
+        : `Crucible coordination with "local" at startup: ${state.phase}`);
+    } catch (err) {
+      logger.warn('Could not coordinate with the Crucible on this machine at startup', {
+        error: (err as Error).message,
+      });
+    }
+  })();
 
   foundryMount.mountFoundry({
     // A GETTER, not a captured string. Foundry answers `readAppSettings()` from
