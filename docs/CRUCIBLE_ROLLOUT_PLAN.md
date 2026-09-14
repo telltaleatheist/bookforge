@@ -49,6 +49,29 @@ of `<userData>/app-settings.json`, is deleted with everything that called it.
 | `a1c99c41` | the settings seam (`electron/crucible/settings-wire.ts`) + the pairing file (`pairing-file.ts`), and `tools/test-crucible-settings-seam.js` |
 | `ec24f361` | the deletion: two providers left, and the scheduler's `[cloud]` lane |
 | `7ce4c137` | four keepers follow the deletion |
+| `5b9818e5` | this section, the overruled ruling, the ledger's §11.5a, and the second Foundry tripwire |
+| `73e2e3ad` | the setup step stops asking anybody to type a token |
+| `3b88b1bf` | the SDK pin's note names what else waits on it |
+
+**FIVE DEFECTS THE LANE ONLY HAD BECAUSE IT LANDED, all found by reading the
+paths it touches rather than by running anything** — and each one is a place
+where "this run holds no card" was true and something downstream still assumed
+a card:
+
+| commit | what it would have done |
+|---|---|
+| `4fc071d4` | a RESTART re-derived the resource from the module (`gpu`) while the venue persisted (`mac:cloud`), leaving a step on a lane with no gpu slot: never admitted again, nothing saying why |
+| `9b75d093` | a routed run still took a model LEASE, which §3.4 refuses `lease_not_needed` — asking for a refusal and reporting it as a failure to clean a book |
+| `ccdd0153` | the residency preflight asked `/v1/models` about an upstream id that is never in it, refusing `crucible_unknown_model` and telling somebody to `--crucible-load` a thing that cannot be loaded |
+| `2e502feb` | the ENGINE door did the same, and silently ignored a `loadFirst` that cannot happen (now `crucible_upstream_not_loadable`) |
+| `dc662e4c` | admission still ran the routed row past the engine's GPU slot, this machine's card and the training lock — so a translation on somebody's API waited for a narration, which is the exact thing the lane exists to stop |
+| `f17d555c` | the bench told a row waiting for a full cloud lane it was "Waiting for a CPU slot", sending a person to look at their own processor |
+| `28ad983f` | a removed server's route record outlived it, so a re-added name was answered from for one pump |
+
+Three doors now read ONE discriminator for "is this an upstream model id"
+(`isUpstreamModelId` in `crucible/text-acts.ts`, the contract's slash rule from
+§1), which is why it was put beside the act names rather than written
+`.includes('/')` three times.
 
 **CONNECT (§5.1) — the pairing file is a second door to `local`, not a fallback.**
 `readLocalServer` asks `$CRUCIBLE_HOME/pairing` first (else
