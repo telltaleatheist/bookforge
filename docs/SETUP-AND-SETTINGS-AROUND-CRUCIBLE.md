@@ -744,7 +744,35 @@ owners are Foundry's `cleanTextModel` (the legacy/Ollama venue) and the server's
 record (the Crucible venue), which are two different venues rather than two opinions about
 one.
 
+### 11.5a PHASE 15 REOPENED HALF OF 11.5 — the keys are the ENGINE's (2026-09-14, evening)
+
+Read this before 11.5, which it corrects. Owen, through crucible `docs/PHASE15-HOST.md` §0:
+*"they dont have ollama fallbacks or cloud anything at all … one contract, one SDK, one API,
+one communication method."* And: *"If the user enters an anthropic api key, it should pass
+through to crucible."* The morning's MOVE→FOUNDRY disposition for the two cloud-key rows was
+a default ruling Owen was invited to overturn, and he overturned it the same day. BookForge
+commits `a1c99c41`, `ec24f361`, `7ce4c137`.
+
+| audit row | 11.5 said | PHASE 15 says | what happened |
+|---|---|---|---|
+| **API keys: Claude / OpenAI** | MOVE→FOUNDRY | **MOVE→CRUCIBLE** | `electron/cloud-credentials.ts` — added that morning to read Foundry's `cloudProviders` record — is **DELETED**, with `cloudKindForProvider`, `readCloudSlots(In)`, `requireCloudSlot(In)`, `describeCloudSlots`, `cloudSettingsPath`, `CloudSlot`, `CloudSlotView`, `CloudProviderKind`, `CloudCredentialsError`, and the three `cloudCredentialsFor*` wrappers in `ai-bridge.ts`, `book-analysis.ts` and `translation-bridge.ts`. A key is now `PUT /v1/settings` to the engine and is held in its `config.toml`; BookForge's Settings → AI is a WINDOW on that document and stores nothing. `tools/test-no-cloud-doors.js` pins every name. |
+| **`CLAUDE_MODELS` / `OPENAI_MODELS`** | DELETE | unchanged, and now unreachable | the lists were already gone; the two IPC channels that fetched them live (`ai:get-claude-models`, `ai:get-openai-models`) and `getClaudeModels`/`getOpenAIModels` behind them are deleted too. The ids an operator picks from come from `POST /v1/settings/upstreams/<name>/test` — the ENGINE asking the upstream with the operator's own key. |
+| **Ollama URL + Test** | MOVE→FOUNDRY (NOT DONE) | **MOVE→CRUCIBLE — DONE** | the AI wizard's whole Ollama card is deleted. An Ollama server is an UPSTREAM the engine is configured with (`[upstreams.ollama] url`), reached by ROUTING a class to it. `electron/ollama-capabilities.ts` is deleted; so is the renderer's `ai-cleanup.service.ts`, an unreferenced Ollama client. |
+| §3.4 "Use local AI for cleanup" | DELETE-AFTER-PASS | unchanged | still the legacy bundled llama, still `'local'` on `AIProvider`, still deleted with the legacy spawn layer. |
+| §3.4 Crucible: Server select | KEEP | KEEP, and it now selects whose SETTINGS are drawn | the four route rows and the three upstream cards below it are that server's document. |
+| §3.4 Crucible: **a model per text act ×4** | MOVE→CRUCIBLE (`c52db284`) | unchanged in owner, **extended in what it says** | the capability row gained `route`, so the line now says `local — <model>` or where the class is sent. `capabilityWords` / `routeWords` in `crucible-words.ts` compose both. |
+| §3.4 Reading pages endpoint | MOVE→CRUCIBLE (NOT DONE) | unchanged — still owed | `pages` is a capability class and a `llama-windows` engine serves it (crucible §3.10), so the row has an owner now; the control has not moved yet. |
+| §3.14 provider select ×3 | KEEP-REWORD (`crucible` added) | **the enum is two** | `AIProvider = 'crucible' \| 'local'`. `ollama`, `claude` and `openai` are gone as values from `ai-bridge.ts`, `ai-config.types.ts` and `PassAiProvider`. A PERSISTED default naming one is repaired through `resolveSavedAIProvider`, loudly and by name, the way `resolveSavedTtsEngine` already repaired a retired engine — and a row already queued is refused `ai_provider_removed` rather than silently re-pointed at a survivor, which would move somebody's book onto a different engine without asking. |
+| §3.14 model select ×3 | MOVE→FOUNDRY / KEEP-REWORD | **read-only, from capability** | the cloud lists and "Chosen on Foundry's cloud card" are gone; every role's model is drawn through the one `capabilityWords`. |
+| §3.14 Processing device | DELETE-AFTER-PASS | unchanged | |
+| §3.13 the legacy switch | DELETE-AFTER-PASS | unchanged, and now also deletes the legacy SLOT SET | Owen, 2026-09-14: *"there will never, ever be a local gpu configured."* The end state of `shared/queue/slot-sets.ts` is one `[gpu]` per registered engine, its `[cloud]` lane, and `local-work [cpu][cpu]`. |
+| §3.13 "This machine" card | KEEP | KEEP, and it gained a SECOND door | the pairing file (crucible §3.6) is read before `config.toml`; `LocalServerVia` is `'pairing' \| 'file' \| 'wsl'` and the row can still say which answered. The `wsl` door is dated by the contract and dies when the Windows host lands. |
+| *(new)* **three upstream cards — Anthropic key, OpenAI key, Ollama url** | — | **BUILD** | in §3.4, write-through. A key field is EMPTY on every draw (write-only) with the server's `keyHint` beside it, rendered verbatim; Test before Save, and a Test does not store what it tested. |
+| *(new)* **one route row per llm class** | — | **BUILD** | `local — <model>` or an upstream model id. One `PUT` configures the upstream AND sets the route; capability is re-read after, because the server recomputes it on every write that touches a route. |
+
 ### 11.5 AI, cloud keys and the per-act model (§3.4, §3.14) — `3764e575`, `c52db284`
+
+**Half of this table was overruled the same evening — read 11.5a first.**
 
 | audit row | disposition | what happened |
 |---|---|---|

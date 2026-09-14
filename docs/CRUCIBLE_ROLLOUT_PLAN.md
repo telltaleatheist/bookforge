@@ -4,7 +4,134 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
-## 0c. WHERE IT STANDS AT 17:30, 2026-09-14 — read this first (supersedes 0a)
+## 0d. PHASE 15 — the engine is the one door, and the apps have no provider code (2026-09-14, evening)
+
+Read `C:\Users\tellt\Projects\crucible\docs\PHASE15-HOST.md` — it is the CONTRACT, and it
+carries the rulings this section only summarises. Owen, that evening: *"the user will be
+installing bookforge/foundry (and by extension, crucible) on windows … one centralized
+location that controls the GPU power … bookforge/foundry gain a simple contract: send
+commands to the crucible server. period. they dont have ollama fallbacks or cloud anything at
+all … one contract, one SDK, one API, one communication method."* And: *"Bookforge and
+foundry setup/settings should be able to configure crucible settings. If the user enters an
+anthropic api key, it should pass through to crucible … the user shouldn't have to interact
+with crucible almost at all but should have access to it if they want to."*
+
+### The ruling this OVERRULES
+
+**§3's "CLOUD KEYS HAVE ONE OWNER: FOUNDRY'S CLOUD CARD" is overruled, 2026-09-14 evening,
+by PHASE15 §0.** It was a default ruling taken that morning and Owen said he might overturn
+it; he did. The keys move INTO the engine — `[upstreams.anthropic] key` in its `config.toml`,
+mode 0600 beside the token it already holds — and Foundry's card becomes a WINDOW onto the
+engine's settings, exactly as BookForge's AI section now is. Neither app stores a credential
+anywhere. `electron/cloud-credentials.ts`, which read Foundry's `cloudProviders` record out
+of `<userData>/app-settings.json`, is deleted with everything that called it.
+
+### Two amendments the same evening, both from Owen
+
+- **Windows IS a backend** (crucible `56cfe37`): *"the windows side should still host GPU jobs
+  even if WSL isnt present/workable … we can still run dots, qwen 9b, or whatever else from
+  the windows side. just like it runs from the mac side."* So `backend_kind = "llama-windows"`,
+  structurally what `mlx-darwin` is, serving the llm classes and `pages`; there is no
+  `backend_kind = "none"` and no "this machine has no accelerator" sentence. What WSL adds on
+  top is vLLM/SGLang and the five Python job types (`tts asr align rvc denoise`), and those
+  five answer `enabled: false` with ONE shared sentence so a screen says it once.
+- **There will never be a local GPU slot** (crucible `aadd9ed`): *"there will never, ever be a
+  local gpu configured. there simply wont be an outlet for it."* The end state of
+  `shared/queue/slot-sets.ts` is one `[gpu]` per REGISTERED Crucible server, its `[cloud]`
+  lane, and `local-work [cpu][cpu]` — CPU slots stay local. The legacy set and its GPU slot
+  are deleted with the legacy spawn layer after Owen's in-app pass; that is one subtraction,
+  and nothing phase 15 added depends on the legacy set existing.
+
+### What landed in BookForge
+
+| commit | what |
+|---|---|
+| `a1c99c41` | the settings seam (`electron/crucible/settings-wire.ts`) + the pairing file (`pairing-file.ts`), and `tools/test-crucible-settings-seam.js` |
+| `ec24f361` | the deletion: two providers left, and the scheduler's `[cloud]` lane |
+| `7ce4c137` | four keepers follow the deletion |
+
+**CONNECT (§5.1) — the pairing file is a second door to `local`, not a fallback.**
+`readLocalServer` asks `$CRUCIBLE_HOME/pairing` first (else
+`%LOCALAPPDATA%\Crucible\pairing` on Windows, `~/.crucible/pairing` elsewhere — pinned in
+PHASE15 §3.6, which this build asked for and the Crucible agent wrote), and only then reads
+`config.toml` through `wsl.exe`. Two named artefacts written by different parts of the
+system, and §3.6 dates the second: the WSL read *"is how the WSL server gets registered"*
+until a host exists on the machine, *"and that door is deleted when the host lands"*. On
+Owen's PC today there is no host, so door 2 is the live one. `LocalServer.via` gained
+`'pairing'`. An absent file is `null`, and `null` is the FACT "no engine on this machine".
+
+**THE MODEL IS THE SERVER'S ANSWER (§5.3).** A text door sends `capability.selected` for its
+class and nothing else. `crucibleActModel` in `electron/crucible/text-venue.ts` is the one
+owner of that read and of the stamp that memoises it for the run, so a translation making
+three hundred batch calls asks once. `providerConfigOf` takes the ACT, required and never
+guessed. `crucibleModelForAiStep` is gone: the id needs a server and a round trip and
+`leasedModel` is synchronous, so all three lease hooks answer `null` by construction — the
+argument `pass.ts` had already written for `narration-text`, now true of every act. **OWED:**
+an async `leasedModel` given the run's venue would let a row keep one lease across a chain.
+
+**THE `[cloud]` LANE (§5.3).** A row whose class routes `upstream` on its engine takes that
+engine's `<server>:cloud` lane — one per server, `gpu: 0`, two wide — and no GPU slot and no
+lease. `slotSetForStep` reads the venue BEFORE the resource so the pair lands there;
+admission writes both at the one moment both facts exist. The route comes from
+`electron/crucible/routes.ts`, filled by the capability read coordination now makes on every
+connect (a third read beside `info` and `catalog`) and again out of every settings write's
+own answer. **Nothing polls**, and an engine nobody has read yet is a WAIT with a sentence —
+never a guess in either direction, because assuming `local` parks an upstream-routed class on
+a card nothing runs on and assuming `upstream` does the mirror.
+
+**THE SEAM, AND ITS EXPIRY.** `@crucible/client` is growing `settings()`, `putSettings()`,
+`testUpstream()`, `readPairingFile()` and `CapabilityRow.route`; the pinned tarball has none
+of them. `electron/crucible/settings-wire.ts` speaks the wire the contract specifies and
+`tools/test-crucible-settings-seam.js`'s FIRST check asserts the SDK still lacks every one —
+the day it goes red is the day the seam is deleted, and the failure prints the four steps.
+`crucibleCapabilityWithRoutes` is in that seam for a reason worth stating: the SDK's own
+parser builds a row from five named fields and DROPS `route`, so a route read through it
+today is not missing, it is discarded silently.
+
+**HOW AN ABSENT `route` IS READ** (crucible `eb59f7b`, settled because Foundry reads the same
+document and the two of us were diverging): no row carrying `route` is a pre-phase-15 server
+and every class IS local — a stated fact, not a filled default; SOME rows carrying it and one
+not is refused `capability_route_missing` naming the row; a value that is neither is refused
+`capability_route_unknown`. Owen's live WSL server answers the first way until the phase-15
+branch is deployed onto it.
+
+### The legacy local spawn layer keeps exactly two Ollama doors
+
+Both named in `tools/test-no-cloud-doors.js` so a THIRD is a red test, and both die with that
+layer after the in-app pass: `gpu-arbiter.ts`'s `unloadOllamaModel(s)` (VRAM eviction so the
+legacy narrator spawn can have the card — it asks nothing of a model and gets no text back),
+and `tts-number-normalizer-runner.ts`, whose request MOVED into it from `ai-bridge.ts` rather
+than being kept alive in a bridge that no longer has providers.
+
+### Foundry, and the single re-vendor
+
+Foundry main is **`ecd03e3`** (pushed): their packages H (coordinate), I (settings window),
+J (pairing file + connect code) and K (dispatch on the route) are merged, they read `route`
+per `eb59f7b`, and every Crucible slot has a `<slot>:cloud` lane of width 2 on their side too
+— the same shape, arrived at from the same contract. Their L (the deletions) is gated on a
+`llama-windows` server on a clean box.
+
+**The single re-vendor target is their sha AFTER L**, not `ecd03e3`. It carries what the plan
+already lists — `RunOptions.waitFor`, the deletion of `hosted_placement_not_vendored`, the
+`slots?()` removal — plus the cloud card's replacement (PHASE15 §5.4).
+`tools/test-foundry-hosted-crucible-seam.js` grew a SECOND tripwire, written the same way
+round as the first: it passes while `foundry-app/electron/cloud-providers.ts` and the
+dispatcher's `slot.kind === 'cloud'` are still there, and goes red the day they are not —
+which is the day the target is reachable, not the day something broke.
+
+### What needs Owen
+
+1. **The in-app pass, on a free card.** Everything in this section has met a fake server and
+   nothing else. Owen's instruction while it was being built: *stay off the GPU* — no job
+   against the live Crucible at `127.0.0.1:7100`, no run that loads a model. So the whole of
+   phase 15 on this side is "built, keepers green, never run".
+2. **Publish v0.6.0** (§0c item 1), still, and then the SDK's phase-15 methods — at which
+   point `test-crucible-settings-seam.js`'s first check goes red on purpose and the seam is
+   deleted.
+3. The legacy spawn layer's deletion, which is what takes the last two Ollama doors, the
+   legacy slot set and its GPU slot, `'local'` from `AIProvider`, and ~250 GB of envs.
+
+## 0c. WHERE IT STANDS AT 17:30, 2026-09-14 (0d, above, is later — read it first)
 
 **Rulings Owen made today, in order:** Orpheus is DEPRECATED and removed from Crucible; XTTS
 fully removed; Higgs is the frontier · Crucible has its OWN UI (not microservices) and hands out
@@ -476,8 +603,19 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   step's resolved model id equals the lease's subject; `leasesModel` is necessary, not sufficient.
   Hosted, the lease is Foundry's dispatcher's — `foundry-job.ts` carries a comment, not the flag.
 
+- **~~CLOUD KEYS HAVE ONE OWNER: FOUNDRY'S CLOUD CARD~~ — OVERRULED 2026-09-14 (evening), by
+  Owen, through crucible `docs/PHASE15-HOST.md` §0.** It was taken that morning as a default
+  *"Owen may overrule"*, and he did: *"they dont have ollama fallbacks or cloud anything at
+  all."* **The keys live in the ENGINE** — `[upstreams.anthropic] key` in its `config.toml`,
+  mode 0600 beside the token it already holds — and BOTH apps' settings sections became
+  windows onto that one document (§0d). Neither stores a credential anywhere.
+  `electron/cloud-credentials.ts` and everything that called it are deleted (`ec24f361`), and
+  `tools/test-no-cloud-doors.js` pins it. The paragraph below is kept because the reasoning
+  it records is still the reasoning — a BookForge user on a laptop must have SOME way to
+  light translate and simplify — and the answer changed, not the question.
+
 - **CLOUD KEYS HAVE ONE OWNER: FOUNDRY'S CLOUD CARD, HOSTED TOO (default ruling 2026-09-14, Owen may
-  overrule).** Foundry's registry seam (990bd2e) suppressed cloud providers hosted, which would leave a
+  overrule — SEE ABOVE, THIS IS THE OVERRULED TEXT, KEPT FOR ITS REASONING).** Foundry's registry seam (990bd2e) suppressed cloud providers hosted, which would leave a
   BookForge user on a laptop with NO way to light translate/simplify — against the 01:40 ruling. And
   BookForge's own AI page ships hardcoded three-item Claude/OpenAI lists (audit finding 3). So: hosted,
   Foundry's cloud-card is editable and its record in app-settings.json owns keys + models both ways;

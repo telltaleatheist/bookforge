@@ -355,6 +355,51 @@ async function main() {
       + '`registry_snapshot_not_taken` refusal on its first paint.');
   });
 
+  // ── THE RE-VENDOR TARGET MOVED (crucible PHASE15 5.4) ───────────────────
+  //
+  // The single re-vendor used to target the foundry sha where the hosted window
+  // reads BookForge's registry (e096734). Phase 15 moved it: it now targets
+  // their sha AFTER their own section 5.3 deletions land, and carries the cloud
+  // card's replacement along with `RunOptions.waitFor`, the deletion of
+  // `hosted_placement_not_vendored` and the `slots?()` removal.
+  //
+  // What their 5.3 deletes is the same list this app just deleted, on their
+  // side of the line: `cloud-providers.ts`, the cloud card, the
+  // `ComputeSlotKind = 'cloud'` placement, and `FOUNDRY_ENDPOINT_HEADERS`
+  // composed from an app-held key. An Anthropic key is the ENGINE's now
+  // (PHASE15 section 0, which overruled the morning ruling that put it on
+  // Foundry's card), and Foundry's card becomes a window onto the engine's
+  // settings exactly as BookForge's has.
+  //
+  // So these two checks are a SECOND tripwire beside the one above, and they
+  // are written the same way round: they pass while the vendored copy still
+  // has its cloud layer, and they go RED the day it does not — which is the
+  // day the re-vendor target is reachable, not the day something broke.
+  check('the vendored copy still has its own cloud layer (the phase-15 re-vendor tripwire)', () => {
+    const present = fs.existsSync(path.join(REPO, 'foundry-app', 'electron', 'cloud-providers.ts'));
+    assert.ok(present,
+      'THIS IS NOT A REGRESSION — IT IS THE SECOND THING WE HAVE BEEN WAITING FOR.\n'
+      + '        foundry-app/electron/cloud-providers.ts is gone, so this subtree has been '
+      + 're-vendored at or past foundry\'s PHASE15 section 5.3. The re-vendor target named in '
+      + 'docs/CRUCIBLE_ROLLOUT_PLAN.md is reached.\n'
+      + '        Carry the rest of it in the same commit: RunOptions.waitFor on runJob (so a '
+      + 'hosted act lands on the machine the ROW named and not on whatever their own '
+      + 'waitForOfNewJob picked), delete `hostedCrucibleTextActNotVendored` and the '
+      + '`hosted_placement_not_vendored` code, drop the `slots?()` shim, and point their '
+      + 'settings card at the engine\'s document the way Settings -> AI already does here.\n'
+      + '        Then delete this check.');
+  });
+
+  check('the vendored dispatcher still places on a cloud slot kind', () => {
+    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    assert.ok(/slot\.kind === 'cloud'/.test(dispatch),
+      'the vendored dispatcher no longer knows a `cloud` slot kind. That is PHASE15 section 5.3 '
+      + 'landing on their side: a class routed upstream is the ENGINE\'s business now, and the '
+      + 'lane it takes is one per SERVER — BookForge draws `<server>:cloud` '
+      + '(shared/queue/slot-sets.ts) and so do they. Re-read their placement before trusting '
+      + 'anything this suite says about where a hosted act runs, and re-vendor.');
+  });
+
   check('every door that changes the list re-reads it for the window', () => {
     const main = read('electron', 'main.ts');
     const calls = main.match(/refreshHostedFoundryRegistry\(/g) || [];
