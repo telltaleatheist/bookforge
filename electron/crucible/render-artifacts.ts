@@ -74,7 +74,7 @@
 import * as fsSync from 'fs';
 import type { JobEvent, RenderResult, WrittenArtifact } from '@crucible/client';
 import { readRenderResult } from '@crucible/client';
-import { crucibleClientFor } from './servers';
+import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
   recordCrucibleChunkGuard,
   takeChunkGuards,
@@ -84,10 +84,10 @@ import {
 
 /**
  * The name that lands in the `User-Agent` the SDK sends, so a shared server's
- * log says which app queued the job. The same string `ai-bridge.ts` uses for the
- * `llm` provider: one app, one name. `bookforge-cli` is the CLI's.
+ * log says which app queued the job. One app, one name, declared once in
+ * servers.ts. `bookforge-cli` is the CLI's.
  */
-const CLIENT_NAME = 'bookforge';
+const CLIENT_NAME = CRUCIBLE_CLIENT_NAME;
 
 export interface DownloadRenderArtifactsOptions {
   /** Names an entry in `<userData>/crucible-servers.json`. */

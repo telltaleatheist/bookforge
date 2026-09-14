@@ -62,17 +62,16 @@ import {
   CrucibleVersionError,
 } from '@crucible/client';
 import type { RenderChunk, RenderResult } from '@crucible/client';
-import { crucibleClientFor } from './servers';
+import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { downloadRenderArtifacts } from './render-artifacts';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
 
 /**
  * The name that lands in the `User-Agent`, so a shared server's log says which
  * app queued the job — and, when a second client is refused `server_busy`, who
- * `CrucibleBusy.holder` names. The same string `ai-bridge.ts` and
- * `render-artifacts.ts` use: one app, one name.
+ * `CrucibleBusy.holder` names. One app, one name, declared once in servers.ts.
  */
-const CLIENT_NAME = 'bookforge';
+const CLIENT_NAME = CRUCIBLE_CLIENT_NAME;
 
 /**
  * The rung of the voice's take ladder a BookForge render asks for.
