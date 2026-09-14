@@ -333,6 +333,15 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **OWED AT THE RE-VENDOR (foundry 990bd2e, 2026-09-14):** `foundry-job.ts` passes the row's
+  `waitForResolved` (a server name or `any`) as `RunOptions.waitFor` on `runJob` — the field
+  did not exist in the vendored e6d5424, so it lands in the same commit as the subtree move;
+  the hosted refusal `hosted_placement_not_vendored` is deleted there too (the keeper's
+  tripwire says how). Foundry's registry seam now answers `host_provides_no_registry` (seam
+  missing) vs `host_registry_unavailable` (our `registry_snapshot_not_taken`, quoted) — two
+  facts, two codes. Ruled by both sides: hosted, Foundry's capability record owns the per-class
+  model and `<userData>/crucible-models.json` GOES.
+
 - Extract `narrator` into its own repo? (PLAN.md owed 1 — the pin is currently a git sha
   into the private BookForge repo; WSL and the Mac both authenticate to it today.)
 - The take ladder's steps, and whether a resident model ever unloads itself.
