@@ -5,8 +5,15 @@ from memory. Owen's instruction: *"we have to completely rework and fully review
 single setup page and every option, and every single settings page option. all of them."*
 and *"we dont need xtts - we removed it. so those setup pages can be removed completely."*
 
-This document is the AUDIT and the PLAN. It changes nothing. Every row names the file that
-proves it. Where a fact could not be verified it says so in the row rather than guessing.
+This document is the AUDIT and the PLAN. It changed nothing when it was written. Every row
+names the file that proves it. Where a fact could not be verified it says so in the row
+rather than guessing.
+
+> **IMPLEMENTED 2026-09-14 — see §11 for the row-by-row ledger.** Thirteen commits, from
+> `3dd3920e` to `1aa54721`. §11 says what each disposition became, with the commit that did
+> it, and §11.8 names the eleven things that were NOT done with the reason for each. Read
+> §11 before acting on any row above it: a row's disposition is what was DECIDED, and §11 is
+> what HAPPENED.
 
 ## 0. The five rulings this audit is measured against
 
@@ -627,3 +634,224 @@ The 24 DELETE-AFTER-PASS rows all hang off ONE switch — `legacyLocalRender` in
 - **Whether `packaging/.seed-cache/…/xtts-v2/…` is shipped** — `packaging/package-win.js`
   has no reference to it and records that the seeding step left with XTTS, so it appears to
   be dead bytes; the built installer was not inspected.
+
+## 11. The ledger — what each disposition became, 2026-09-14
+
+Thirteen commits: `3dd3920e` (the SDK pin) … `1aa54721` (the keepers). Owen's rulings since
+the audit are folded in: **Orpheus is DEPRECATED** (its wizard step and Settings section go
+NOW; its code path lives behind `legacyLocalRender` until the in-app pass), **XTTS is fully
+removed**, **Higgs is the one narration engine**, **Crucible's `/v1/voices` and
+`/v1/capability` are the catalogues of record**, the **six dead controls** go, **cloud keys
+have one owner (Foundry's card)**, and **`<userData>/crucible-models.json` goes**.
+
+### 11.1 The wizard (§2) — `3499bfaa`, and the Crucible step in `f1139476`
+
+| audit row | disposition | what happened |
+|---|---|---|
+| §2.1 step 1 `library` | KEEP | kept. **And the `back()` bug is fixed**: the guard was `currentStep() <= 1`, which made the one step nobody may skip the one step nobody could revisit. It is `<= 0`. |
+| §2.1 step 2 `ai` | KEEP-REWORD | now "AI and cloud keys". Carries ONE sentence about cloud keys living on Foundry's card, and nothing else. |
+| §2.1 step 3 `crucible` | KEEP-REWORD | now "Where the GPU work happens", no longer "(optional)" in the title, and it mounts `<app-crucible-doors mode="probing">` — it PROBES ON ENTRY and shows one of three faces (§5.5 of the phase doc, which this work wrote). Its subtitle no longer says "BookForge keeps using this machine's own engines"; it says skipping means no rendering yet. |
+| §2.1 steps 4/5/6 `orpheus` / `higgs` / `rvc` | DELETE | deleted, with their three panel components (nothing else in `src/` mounted them). |
+| §2.1 step 7 `tools` | KEEP-REWORD | deleted AS A STEP; its three surviving components (Calibre, Tesseract, foundry-cli) moved onto Review, which is where the audit's §6 puts them. |
+| §2.1 step 8 `download` | KEEP-REWORD | now `review`: the library path, whether AI is set up, the three local tools, and the download list only if something was ticked. |
+| §2.2 the green "AI is already set up" note | KEEP-REWORD | kept as is. **NOT reworded** — see §11.8. |
+| §2.3 doors 1/2/3 | KEEP-REWORD / DELETE | all three reworked; see §11.2. |
+| §2.3 *(absent)* probe on entry | RULING → BUILD | **BUILT** (`f1139476`). The verdict is MAIN's (`hostabilityOf`) with THREE values, not two — see §11.2. |
+| §2.3 *(absent)* post-install module POST | RULING → BUILD | **BUILT**: a completed driven install posts the module by itself. |
+| §2.4 Select all / per-card add | KEEP-REWORD | kept; it now governs three components. |
+| §2.4 the auto-preselect of CUDA packs | DELETE | deleted from `add-ons-panel.component.ts`. |
+| §2.4 system info line | KEEP-REWORD | kept unchanged. **NOT reworded** — see §11.8. |
+| §2.4 the component lifecycle buttons | KEEP / DELETE-AFTER-PASS | kept; the envs and packs are unreachable from the wizard now and reachable from Settings → General Add-ons until the layer goes. |
+| §2.4 "Test environment" (orpheus) | DELETE-AFTER-PASS | left, with the layer. |
+| §2.5 multi-worker toggle, both rows | DELETE | deleted, component file and all. |
+
+### 11.2 The Crucible doors and the operator door (§2.3, §3.13) — `212e2ec2`, `f1139476`
+
+| audit row | disposition | what happened |
+|---|---|---|
+| door 1, Connect | KEEP-REWORD | gains **"Paste from Crucible"**: one field, parsed in MAIN by the SDK's `parsePairing`. `invalid_pairing` is shown VERBATIM and nothing is filled. A paste reads itself. |
+| door 2, this machine | KEEP-REWORD | once `local` resolves it is **Open Crucible** plus **Set up for BookForge**, with Test beside them. |
+| door 3, install here | DELETE (most) | the printed pull list, the env installs and `capability --write` are DELETED from the sequence. What is left is the pre-server minute — a guest, a Python, the wheel, `crucible init` (with NO `--enable-*` flags), the service — ending in a step called **Open Crucible**. The host probe and the driven button stay; `DRIVEN_INSTALL_AVAILABLE` is UNCHANGED (`false`) because the release is not published. |
+| *(absent)* **Open Crucible** | RULING → BUILD | **BUILT**: `crucible:open-ui`, `electron/crucible/operator-window.ts`. PHASE13 §5.3 exactly — no preload at all, `contextIsolation`, `sandbox`, `nodeIntegration: false`, its own `session.fromPartition('crucible-ui:<name>')`, `will-navigate` AND `will-redirect` denied off-origin, every `window.open` denied (http links handed to `shell.openExternal`), and both permission handlers refusing. The token is read in main from the registry or `local`'s config.toml. **Every server row in Settings → Crucible Servers has Open**, and the "This machine" card has "Open Crucible". |
+| *(absent)* **"Set up for BookForge"** | RULING → BUILD | **BUILT**: `shared/crucible/bookforge.module.json` is a byte-for-byte copy of the crucible repo's generated file, pinned `-text` in `.gitattributes` and compared by `tools/test-crucible-module-file.js` (which SKIPS that one check by name when the crucible checkout is absent). `electron/crucible/module-setup.ts` posts it and streams the task; the row draws `step` / `progress` / `skipped` / `jobTypes` / `failed`. A `server_busy` held by a LEASE is drawn with the holder verbatim, never as a generic failure. |
+| `BOOKFORGE_JOB_TYPES` + the pull list | — | **DELETED**, with `BOOKFORGE_NARRATOR_ENGINE` and the plan's `jobTypes` field. The driven install now derives its job types from the module file, and `test-crucible-install-seam` asserts the two agree. |
+| every other §3.13 row | KEEP | unchanged: the local card, drag-to-rank, Enabled, Test, Refresh, Remove, per-model Load/Unload, the queued-rows count, "Forget it", "New jobs wait for", and the legacy switch (DELETE-AFTER-PASS, untouched). |
+
+**The three-valued hostability, which the audit did not anticipate.** §6 says the third face
+is for a machine that "cannot host". On Windows that question **cannot be asked** until
+there is a WSL2 guest to ask it in, and `crucibleHostFacts` refuses to answer it from the
+Windows-side `nvidia-smi` (a Windows driver that answers says nothing about whether the
+passthrough works). So `plan.hostable` is `yes` / `no` / **`unknown`**, `unknown` draws the
+INSTALL face — whose first step is the thing that settles it — and `hostableWhy` always says
+which and why. Telling somebody with a 4090 "this machine cannot host one" because they have
+not installed Ubuntu yet is a confident wrong answer, which R3 does not license just because
+it is not a maybe. This is written into the phase doc as §5.5 (crucible `7d12072`).
+
+### 11.3 Settings, the eleven sections (§3, §7) — `38e85249`
+
+The eleven are in the audit's order, in `settings.service.ts`, with **Crucible Servers
+second**. Deleted sections: **Orpheus, Higgs, RVC Enhancement, Speech to Text**, and the five
+panel components they mounted (`orpheus-voices-panel`, `higgs-voices-panel`,
+`rvc-enhancement-panel`, `whisper-models-panel`, `multi-worker-toggle`) — nothing else in
+`src/` mounted any of them, so the files are deleted.
+
+| audit row | disposition | what happened |
+|---|---|---|
+| §3.1 Library Location | KEEP | unchanged. |
+| §3.1 `<app-remove-all-data />` | KEEP-REWORD | the Library page's copy is DELETED (one is enough, and Storage is where somebody reclaiming disk goes). The surviving one now says that a Crucible's `~/.crucible` store is shared with every app on the machine and is not BookForge's to delete. |
+| §3.2 `maxRecentFiles` | DELETE | deleted. No reader repo-wide. |
+| §3.2 `diffIgnoreWhitespace` | KEEP | unchanged. |
+| §3.2 Guided setup | KEEP | unchanged; it opens the four-step wizard. |
+| §3.3 Storage: cache, Move to archive | KEEP | unchanged. |
+| §3.3 second `<app-remove-all-data />` | KEEP-REWORD | this is the copy that stayed. |
+| §3.3 *(absent)* model inventory | RULING | **NOT BUILT** — Owen has not ruled; see §11.8. |
+| §3.4 the whole AI section | see §11.5 | |
+| §3.5 `externalAudiobooksDir` | KEEP | unchanged. |
+| §3.5 `condaPath` (the duplicate) | DELETE-AFTER-PASS, and a duplicate | the AUDIOBOOK row is DELETED now (one fact, two doors). The Advanced one stays — see §11.8. |
+| §3.5 `narratorScratchPath` | KEEP | unchanged. |
+| §3.6 Port, Start/Stop, URLs | KEEP | unchanged. |
+| §3.6 `bookshelfConfig.enabled` | DELETE | deleted, with both writes. Start and Stop are as live as they were; they just no longer write down a value nobody reads. |
+| §3.7 Token / Port / LAN / Save | KEEP | unchanged. |
+| §3.7 Voice Engine | KEEP-REWORD | reworded: it names an engine, not an install, and says that on a Crucible venue the streaming session is the server's. Orpheus is described as deprecated. |
+| §3.7 Batch size (Orpheus) | DELETE-AFTER-PASS | the CONTROL is deleted now, with its reader in the component and `loadOrpheusBatch`. `<userData>/orpheus-batch.json` and `electron/orpheus-batch.ts` are untouched and die with the layer — on a Crucible the width is `HIGGS_MAX_NUM_SEQS`, the server's own config (DIVISION OF KNOWLEDGE). |
+| §3.7 Voice | KEEP-REWORD | kept; the picker still reads `WorkerConfigService`. **Not yet venue-driven** — see §11.8. |
+| §3.7 **Generation Device** | DELETE | deleted, with `setStreamDevice` and `gpuPackInstalled`. |
+| §3.7 `<app-add-ons-panel [onlyGpu]>` | DELETE-AFTER-PASS | deleted from this page (it was offered under the device buttons); still reachable from General Add-ons until the layer goes. |
+| §3.7 **Streaming Engine** multi-worker | DELETE | deleted. |
+| §3.8 the whole Orpheus section | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted. `orpheusHfUser` is deleted outright (no reader). `wslDistro` needed no move: its non-legacy reader is `crucible/local.ts`, which finds it in `tool-paths.json` exactly as before. Every other key is untouched and dies with the layer. |
+| §3.9 the whole Higgs section | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted; the keys stay for the layer. The `_samplingNote` row is honoured: no sampling control was added anywhere. |
+| §3.10 RVC Enhancement | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted. The user's-own-archive row is a RULING and is untouched — see §11.8. |
+| §3.11 Speech to Text | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted. |
+| §3.12 `foundry-cli` / `calibre` / `tesseract` | KEEP | kept; they are the whole of General Add-ons now. |
+| §3.12 `llama-cuda` | DELETE-AFTER-PASS | removed from `generalAddOnIds`, so the door is gone; the component stays for the layer. |
+| §3.12 the `blocks-model` filter | DELETE | deleted. It was a filter over an empty set — no component declares that kind — so the list is a literal again. |
+| §3.14 Pipeline Defaults | see §11.5 | |
+| §3.15 Conda (Advanced) | DELETE-AFTER-PASS | **left, with a dated comment** — see §11.8. |
+| §3.15 FFmpeg / Tools Python env / Save | KEEP | unchanged. |
+| §3.16 `orpheusStreamingArtifact`, `wslOrpheusCondaEnv` | DELETE-AFTER-PASS | untouched; they die with the layer. |
+| §3.16 `useWsl2ForAllTts` | DELETE | **deleted**, with `shouldUseWsl2ForAllTts()` (a hard-wired `return false` that two call sites branched on) and both call sites. |
+| §3.16 `wslE2aPath` | DELETE | **deleted**, with `legacyGuestSessionsRoot()` and its caller `refuseLegacyGuestSessions()` — a UNC listing on the main thread, once per process, refusing an e2a upgrade path abandoned a year ago. |
+| §3.16 `clipforgeRoot` | KEEP | unchanged. |
+| §3.16 `enhance.*` | RULING | untouched, with the ruling named — see §11.8. |
+
+### 11.4 Hosted Foundry (§4)
+
+**Nothing in `foundry-app/` was touched; it is a vendored subtree and READ ONLY.** The rows
+in §4 are Foundry's to change, and the one thing BookForge owed them — stop duplicating the
+cloud card — is done in §11.5. The `cleanTextModel` two-owners ruling (§4, ruling 8) is
+partly answered by §11.5: the per-ACT record is gone, so the only remaining clean-model
+owners are Foundry's `cleanTextModel` (the legacy/Ollama venue) and the server's capability
+record (the Crucible venue), which are two different venues rather than two opinions about
+one.
+
+### 11.5 AI, cloud keys and the per-act model (§3.4, §3.14) — `3764e575`, `c52db284`
+
+| audit row | disposition | what happened |
+|---|---|---|
+| Bundled local AI downloads | MOVE→CRUCIBLE | **NOT DONE** — see §11.8. |
+| "Use local AI for cleanup" | DELETE-AFTER-PASS | untouched. |
+| Ollama URL + Test | MOVE→FOUNDRY | **NOT DONE** — see §11.8. |
+| Crucible: Server select | KEEP | unchanged. |
+| Crucible: Model select | KEEP-REWORD | unchanged. |
+| Crucible: **a model per text act ×4** | KEEP (audit) → **MOVE→CRUCIBLE** (Owen's ruling) | `<userData>/crucible-models.json` and `electron/crucible/text-models.ts` are **DELETED**. `GET /v1/capability` owns the mapping: `crucible install` probes the card and picks the largest candidate that fits, so it is a per-HOST fact and an id chosen here was a second opinion about a decision that server had already made. `TextVenueHost.modelFor` became `capability(server)` plus a PURE `modelFromCapability`, with three named refusals — `crucible_capability_undecided`, `crucible_capability_disabled` (carrying the server's reason AND the shortfall in bytes) and `crucible_capability_no_model`. The Settings card draws the four acts as the server's ANSWER. |
+| Crucible: Test / "Use this Crucible" | KEEP | unchanged. |
+| Reading pages endpoint | MOVE→CRUCIBLE | **NOT DONE** — see §11.8. |
+| Reading pages: "Pages would be read on X" | KEEP | unchanged. |
+| **API keys: Claude / OpenAI** | MOVE→FOUNDRY | **DONE.** The card, `hasKey` / `saveKey` / `deleteKey` / `clearAllKeys` / `anyKeySaved` and the key store are deleted. In their place, one sentence naming Foundry's Backend → Cloud providers. `electron/cloud-credentials.ts` reads that record — the same shape `narration-clean-text.ts` uses for `cleanTextModel` — and refuses by name (`cloud_provider_not_configured`, `cloud_provider_incomplete`). The cleanup, analysis and translation cloud doors use it. |
+| **`CLAUDE_MODELS` / `OPENAI_MODELS`** | DELETE | deleted. The comment above them already contained the argument, applied only to Ollama. |
+| §3.14 provider select ×3 | KEEP-REWORD | **`crucible` added** to the enum — the one-fact-two-spellings defect the audit names. |
+| §3.14 model select ×3 | MOVE→FOUNDRY / KEEP-REWORD | the cloud lists are gone; each non-Ollama provider's control now says where the choice lives ("Chosen on Foundry's cloud card", "Chosen by the server's capability record"). Drawn and disabled rather than hidden: a hidden control teaches nobody where to go. |
+| §3.14 Engine / Voice | KEEP-REWORD | **NOT DONE** — see §11.8. |
+| §3.14 Processing device | DELETE-AFTER-PASS | untouched. |
+| §3.14 everything else | KEEP | unchanged, including both builtin presets. |
+
+### 11.6 XTTS (§5) — `b326cab7`
+
+| audit row | disposition | what happened |
+|---|---|---|
+| the deliberate retired-id layer, and its six keepers | KEEP | kept, all of it. |
+| `manifest-migration.ts:480,711` `engine: 'xtts'` | DELETE | deleted. The legacy `abProject` record has NO engine field, so this stamped a retired engine into a fresh manifest regardless of what rendered the book. `TTSSettings.engine` is OPTIONAL now, and absent is the truthful value. |
+| `play-view` `'ScarlettJohansson'` seed and preference | DELETE | both deleted; the seed is `''` and the preference is the engine's own default. |
+| `play.types.ts` `AVAILABLE_VOICES` | DELETE | deleted (one occurrence in all of `src/`: its own declaration). |
+| the three `engine: 'xtts' \| 'orpheus'` unions | DELETE | the two RECORD types take `TTSEngine` (wider on purpose — a record from last year must still parse and display); the web-fetch REQUEST takes `TtsEngineId`. `higgs` is typeable everywhere an engine is typed. |
+| `settings.component.ts:2485` `?section=xtts` comment | KEEP-REWORD | reworded. |
+| `catalog-types.ts` `CatalogVoice` | RULING | left, with the ruling written onto it — see §11.8. |
+| `whisper-env.ts` deepspeed-xtts comments ×3 | KEEP-REWORD | reworded. |
+| `crucible/render.ts:199` | KEEP-REWORD | reworded; the XTTS arm is not named, and Orpheus is described as deprecated. |
+| `rvc-voice-assets.json:15` | KEEP-REWORD | reworded. |
+| CLAUDE.md + four in-tree comments | KEEP-REWORD | all five reworded. **CLAUDE.md is gitignored in this repo**, so that edit is in the working tree and is not in any commit. |
+| `packaging/.seed-cache/…/xtts-v2/…` | DELETE | **NOT DELETED** — see §11.8. |
+
+### 11.7 The SDK pin, and the phase doc
+
+- `3dd3920e` pins `@crucible/client` to `vendor/crucible-client-0.6.0.tgz`, a tarball packed
+  from the crucible checkout at `feat/phase6-remote-render` `54fe7a0` — the same commit the
+  release will be cut from. Labelled and dated in two places: `package.json`'s
+  `"//crucible-client"` key and `docs/CRUCIBLE_ROLLOUT_PLAN.md` §3. A tarball FILE and never
+  a `file:` DIRECTORY.
+- crucible `7d12072` adds **§5.5** to `docs/PHASE13-OPERATOR.md`, in the crucible repo, in
+  its own commit: the setup step probes and shows one face, the verdict is the app's main
+  process's, and it has three values.
+- The bump paid for itself immediately: SDK 0.6.0's `StreamSession` attaches its event
+  stream and reads the server's `ready` frame BEFORE handing the session over, which
+  DELETED a labelled stopgap in `electron/crucible/stream.ts` — a five-second poll around
+  `stream_not_attached` on the first row of every session (`1aa54721`).
+
+### 11.8 What was NOT done, and why
+
+1. **§3.3 Storage — the model inventory (RULING 1).** Owen has not ruled whether BookForge
+   grows a one-copy-per-machine card or links to Crucible's page. Untouched.
+2. **§3.9 — the voice catalogue of record (RULING 2).** Owen ruled it: Crucible's
+   `/v1/voices` is the catalogue. The Higgs SECTION is deleted, so nothing in Settings reads
+   `electron/data/higgs-models.json` any more — but the FILE is not deleted, because it is
+   still the local narrator's catalogue on the legacy path (`electron/higgs-models.ts`), and
+   that path is what renders until the in-app pass. **What a non-legacy reader still needs
+   from it: nothing.** It dies with `legacyLocalRender`.
+3. **§3.10 — a user's own RVC archive (RULING 3).** Untouched, with the ruling named in the
+   audit row. `tool-paths.json → rvcVoiceSources` and its reader are unchanged.
+4. **§3.16 — Resemble Enhance (RULING 7).** Untouched, with the ruling named.
+5. **§5 — `CatalogVoice` (RULING 10).** Left in place with the ruling written into its
+   docblock: it is still imported by `electron/update/manifest-types.ts`, so deleting it is a
+   decision about the remote update CATALOG, not about XTTS.
+6. **§3.15 — Conda in Advanced.** §7's summary says "Advanced loses conda" and the row itself
+   says DELETE-AFTER-PASS. The row wins, deliberately, and the reason is written at the
+   control: now that the Audiobook duplicate is gone this is the LAST door to a key the
+   legacy spawn still reads, and that spawn is what a bring-your-own setup renders with
+   during the very pass that decides when the layer dies. Removing the door before the reader
+   would strand exactly the machine the pass runs on.
+7. **Three MOVE rows in §3.4 that are the LEGACY TEXT LAYER, not the cloud one**: the bundled
+   local-AI downloads, the Ollama URL, and the page-reading endpoint. Each is a MOVE→CRUCIBLE
+   or MOVE→FOUNDRY whose reader is the local text stack behind `legacyLocalRender`
+   (`llama-bridge.ts`, `text-server.ts`, `vlm-page-server.ts`). Deleting the CONTROLS while
+   the readers still run would leave a machine on the legacy path with no way to point them
+   anywhere. They go in the commit that deletes the layer, which is the same commit the 24
+   DELETE-AFTER-PASS rows go in.
+8. **§3.7 / §3.14 — the voice and engine pickers reading the VENUE's `/v1/voices`.** Both are
+   KEEP-REWORD rows asking the pickers to offer the server's voices rather than the disk's.
+   Not done: `NarrationVoicesService` and `WorkerConfigService` read the local catalogue, and
+   re-pointing them at a venue is the same one commit as item 7 — until the legacy path is
+   gone, both answers are live and the picker must offer whichever the run will actually use.
+9. **§2.2 / §2.4 — two KEEP-REWORD notes** ("AI is already set up", and the system-info line
+   deferring to `GET /v1/accelerator`). Both are wording changes against facts that are still
+   in flux (residency is momentary; the accelerator probe is not wired into that panel).
+   Left as they were rather than reworded into a claim nothing supports yet.
+10. **`packaging/.seed-cache/…/xtts-v2/…`** is DELETE in §5 and was not deleted: it is
+    **untracked** (`.gitignore:79`), so there is nothing in the repo to remove. It is 1.8 GB
+    of local disk on this machine only, referenced by no build step, and deleting somebody's
+    local files is not a commit — Owen removes it when he wants the space.
+11. **`shouldUseWsl2ForOrpheus()` and the remaining WSL keys** stay: every one is a
+    DELETE-AFTER-PASS reader in the legacy spawn, and the audit's own §8 says the 24 of them
+    are ONE commit rather than 24.
+
+### 11.9 Two notes about the shared checkout
+
+- `electron/crucible/text-models.ts` was deleted by a staged `git rm` of this work that a
+  CONCURRENT commit (`bec1e66c`, another build's) swept up. The deletion was intended; the
+  commit it landed in was not.
+- `electron/queue-steps/pass.ts` is a file that build owns. Its two imports of the deleted
+  module are repointed in `c52db284` rather than left red, and `leasedModel` for
+  `narration-text` now answers `null` — which its own docblock already describes as a real
+  answer — because the model is the server's, asked at run time, and that function is
+  synchronous and runs before the step is placed. **OWED**, named in the comment: a `clean`
+  row could keep its lease across a chain if `leasedModel` were allowed to be async and
+  given the run's venue.
