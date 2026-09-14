@@ -404,6 +404,26 @@ function logClaudeResponseDiagnostic(
  */
 const ANALYSIS_CRUCIBLE_MAX_TOKENS = 4096;
 
+/**
+ * The key and the model for a cloud run, out of FOUNDRY'S cloud card.
+ *
+ * Owen's ruling, 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
+ * keys have ONE owner, and BookForge keeps no second key store.
+ * `electron/cloud-credentials.ts` is the reader; it refuses BY cloudCredentialsForAnalysis —
+ * `cloud_provider_not_configured`, naming the file and the card — rather than
+ * defaulting this act onto some other provider's weights.
+ */
+async function cloudCredentialsForAnalysis(
+  provider: 'claude' | 'openai',
+): Promise<{ apiKey: string; model: string }> {
+  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
+  const kind = cloudKindForProvider(provider);
+  if (kind === null) throw new Error(`"${provider}" is not a cloud provider`);
+  const slot = await requireCloudSlot(kind);
+  return { apiKey: slot.apiKey, model: slot.model };
+}
+
+
 async function analyzeChunkWithProvider(
   prompt: string,
   systemPrompt: string,
@@ -416,14 +436,17 @@ async function analyzeChunkWithProvider(
     case 'ollama':
       if (!config.ollama?.model) throw new Error('Ollama model not configured');
       return analyzeChunkOllama(prompt, systemPrompt, config.ollama.model, config.ollama.baseUrl, abortSignal, strictResponse);
-    case 'claude':
-      if (!config.claude?.apiKey) throw new Error('Claude API key not configured');
-      if (!config.claude?.model) throw new Error('Claude model not configured');
-      return analyzeChunkClaude(prompt, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal, strictResponse, context);
-    case 'openai':
-      if (!config.openai?.apiKey) throw new Error('OpenAI API key not configured');
-      if (!config.openai?.model) throw new Error('OpenAI model not configured');
-      return analyzeChunkOpenAI(prompt, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, strictResponse);
+    // THE KEY AND THE MODEL COME FROM FOUNDRY'S CLOUD CARD (Owen's ruling,
+    // 2026-09-14 — cloud keys have one owner). Refused by name when no enabled
+    // slot of that kind exists; never defaulted to another provider.
+    case 'claude': {
+      const cloud = await cloudCredentialsForAnalysis('claude');
+      return analyzeChunkClaude(prompt, systemPrompt, cloud.apiKey, cloud.model, abortSignal, strictResponse, context);
+    }
+    case 'openai': {
+      const cloud = await cloudCredentialsForAnalysis('openai');
+      return analyzeChunkOpenAI(prompt, systemPrompt, cloud.apiKey, cloud.model, abortSignal, strictResponse);
+    }
     case 'crucible': {
       /*
        * THE ANALYSIS ACT ON A CRUCIBLE SERVER (crucible

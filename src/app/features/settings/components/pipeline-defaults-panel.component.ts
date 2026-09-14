@@ -9,8 +9,6 @@ import { selectableEngines, type TtsEngineCaps } from '../../../core/models/tts-
 import {
   AIProvider,
   DEFAULT_AI_CONFIG,
-  CLAUDE_MODELS,
-  OPENAI_MODELS,
 } from '../../../core/models/ai-config.types';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../creamsicle-desktop';
 
@@ -45,7 +43,7 @@ interface Opt { value: string; label: string; }
                 [ngModel]="providerOf(role.key)" (ngModelChange)="setProvider(role.key, $event)"></desktop-select>
               <desktop-select class="pd-select" [options]="modelOptionsFor(role.key)"
                 [ngModel]="modelOf(role.key)" (ngModelChange)="setModel(role.key, $event)"
-                [disabled]="providerOf(role.key) === 'local' || modelOptionsFor(role.key).length === 0"></desktop-select>
+                [disabled]="!providerPicksItsOwnModel(role.key) || modelOptionsFor(role.key).length === 0"></desktop-select>
             </div>
           </div>
         }
@@ -270,7 +268,17 @@ export class PipelineDefaultsPanelComponent {
     }
   }
 
+  /**
+   * WHO RUNS A TEXT ACT — and `crucible` is on this list since 2026-09-14.
+   *
+   * It was the omission the audit calls the one-fact-two-spellings defect
+   * (§3.14): `AIProvider` has carried `crucible` since phase 2 and this list
+   * did not, so a per-book DEFAULT could never name a Crucible while the
+   * Settings → AI picker beside it could. Same defect, same fix as §2.3 made
+   * for that picker.
+   */
   readonly providers: { value: AIProvider; label: string }[] = [
+    { value: 'crucible', label: 'Crucible' },
     { value: 'ollama', label: 'Ollama' },
     { value: 'claude', label: 'Claude' },
     { value: 'openai', label: 'OpenAI' },
@@ -284,6 +292,15 @@ export class PipelineDefaultsPanelComponent {
   modelOptionsFor(role: 'cleanup' | 'simplify' | 'translate'): DesktopSelectItems {
     const provider = this.providerOf(role);
     if (provider === 'local') return [{ value: '', label: 'Bundled local model' }];
+    // The three providers that OWN their own model choice elsewhere. Each says
+    // where, on the control, rather than showing an empty picker somebody
+    // would read as "not loaded yet".
+    if (provider === 'claude' || provider === 'openai') {
+      return [{ value: '', label: 'Chosen on Foundry’s cloud card' }];
+    }
+    if (provider === 'crucible') {
+      return [{ value: '', label: 'Chosen by the server’s capability record' }];
+    }
 
     const models = this.modelsFor(provider);
     const current = this.modelOf(role);
@@ -324,13 +341,41 @@ export class PipelineDefaultsPanelComponent {
     this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
 
+  /**
+   * The models a provider can be asked for, and the two that answer NONE.
+   *
+   * Ollama is live from the daemon, which is the pattern the whole of this
+   * panel is measured against. `claude` and `openai` used to return compiled
+   * three-item lists; both are DELETED (2026-09-14, audit §3.4). Owen's ruling
+   * is that the KEY picks the models — the app calls the provider's own
+   * listing — and the place that does it is FOUNDRY'S cloud card, which holds
+   * the kind, the key, the model and a Test that lists what the key reaches.
+   * A cloud row here therefore carries no model of its own: the slot's model
+   * is the model, and `modelOptionsFor` says so on the control.
+   *
+   * `crucible` answers none for a different reason and it is not a gap: the
+   * SERVER decides which model serves a capability class (`GET /v1/capability`
+   * probes the card and selects), so a model chosen here would be a second
+   * opinion about a decision that has an owner.
+   */
   modelsFor(provider: AIProvider): Opt[] {
     switch (provider) {
       case 'ollama': return this.ollamaModels();  // live from the daemon
-      case 'claude': return CLAUDE_MODELS;
-      case 'openai': return OPENAI_MODELS;
-      default: return [];  // 'local' uses the bundled model — no model picker
+      default: return [];
     }
+  }
+
+  /**
+   * Whether this provider's model is BookForge's to pick.
+   *
+   * Only Ollama's is. The bundled local model has no picker, a cloud slot's
+   * model is typed on Foundry's cloud card beside its key, and a Crucible's is
+   * the server's own capability record. The control is drawn for all four and
+   * disabled for three, each wearing the sentence that says where the choice
+   * actually lives — a hidden control teaches nobody where to go.
+   */
+  providerPicksItsOwnModel(role: 'cleanup' | 'simplify' | 'translate'): boolean {
+    return this.providerOf(role) === 'ollama';
   }
 
   providerOf(role: 'cleanup' | 'simplify' | 'translate'): AIProvider {

@@ -345,45 +345,19 @@ import {
         }
       </section>
 
-      <!-- ── API keys ── -->
+      <!-- ── Cloud keys live in Foundry, and this is the whole of what we say ── -->
       <section class="card">
         <div class="card-head">
-          <h2>&#128273; API keys</h2>
-          <span class="tag">Claude or OpenAI · highest quality</span>
+          <h2>&#128273; Cloud keys</h2>
+          <span class="tag">Foundry owns them</span>
         </div>
-        @for (p of apiProviders; track p.id) {
-          <div class="key-item">
-            <span class="key-provider">{{ p.label }}</span>
-            @if (hasKey(p.id)) {
-              <span class="key-mask" title="A key is saved (hidden)">••••••••••••</span>
-              <span class="key-saved-tag">Saved</span>
-              <desktop-button variant="ghost" size="sm" (click)="deleteKey(p.id)">Delete</desktop-button>
-            } @else {
-              <input
-                class="key-input"
-                type="password"
-                [(ngModel)]="keyDrafts[p.id]"
-                [placeholder]="p.placeholder"
-                autocomplete="off"
-              />
-              <desktop-button variant="primary" size="sm" [disabled]="!keyDrafts[p.id].trim()" (click)="saveKey(p.id)">Save</desktop-button>
-            }
-          </div>
-        }
-
-        @if (anyKeySaved()) {
-          <div class="danger-row">
-            @if (confirmClearKeys()) {
-              <span class="danger-confirm">
-                Clear all saved API keys?
-                <desktop-button variant="ghost" size="sm" (click)="clearAllKeys()">Clear</desktop-button>
-                <desktop-button variant="ghost" size="sm" (click)="confirmClearKeys.set(false)">Cancel</desktop-button>
-              </span>
-            } @else {
-              <button class="link-danger" (click)="confirmClearKeys.set(true)">Clear all keys</button>
-            }
-          </div>
-        }
+        <p class="card-note">
+          Claude and OpenAI keys are entered once, in Foundry’s <strong>Backend</strong> settings
+          — the gear beside a book — under <strong>Cloud providers</strong>. The key is what
+          lists the models, so that card is also where the model is chosen, and its Test button
+          asks the provider what this key can actually reach. BookForge reads that record and
+          keeps no second copy of a credential.
+        </p>
       </section>
 
       @if (!embedded()) {
@@ -491,11 +465,21 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   /** Embedded mode (rendered inside Settings → AI): hide the page header/footer. */
   readonly embedded = input(false);
 
-  readonly apiProviders = [
-    { id: 'claude' as const, label: 'Claude (Anthropic)', placeholder: 'sk-ant-…' },
-    { id: 'openai' as const, label: 'OpenAI', placeholder: 'sk-…' },
-  ];
-  keyDrafts: Record<'claude' | 'openai', string> = { claude: '', openai: '' };
+  /*
+   * `apiProviders`, `keyDrafts`, `hasKey`, `saveKey`, `deleteKey`,
+   * `clearAllKeys`, `anyKeySaved` and `confirmClearKeys` ARE ALL DELETED
+   * (2026-09-14). They were BookForge's own Claude/OpenAI key store, in the
+   * renderer's localStorage under `aiConfig`.
+   *
+   * Cloud keys have ONE owner (Owen's ruling, docs/CRUCIBLE_ROLLOUT_PLAN.md
+   * section 3): Foundry's cloud card, hosted too, whose record in
+   * `app-settings.json` holds the kind, the key, the model and the address —
+   * and whose Test button asks the PROVIDER'S OWN listing, which is what
+   * section 2a.2 requires and what a compiled three-item list could never be.
+   * BookForge's main process reads that record
+   * (`electron/cloud-credentials.ts`), exactly as the clean door already reads
+   * `cleanTextModel` out of the same file.
+   */
 
   private unsub?: () => void;
 
@@ -509,8 +493,8 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     if (this.ai.localUsable()) parts.push('local model');
     if (this.ai.ollamaHasModels()) parts.push('Ollama');
     const cfg = this.settings.getAIConfig();
-    if (cfg.claude?.apiKey?.trim()) parts.push('Claude key');
-    if (cfg.openai?.apiKey?.trim()) parts.push('OpenAI key');
+    // No cloud line: this page no longer holds a key and must not claim to
+    // know whether Foundry does. Its own card says where they live.
     if (this.ai.crucibleConfigured()) parts.push(`Crucible ${cfg.crucible?.server}/${cfg.crucible?.model}`);
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
@@ -520,24 +504,13 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly downloadedModels = computed(() => this.models().filter((m) => m.downloaded));
   readonly confirmDeleteModels = signal(false);
 
-  /** Whether any API key is saved (drives the "Clear all keys" affordance). */
-  readonly anyKeySaved = computed(() => this.hasKey('claude') || this.hasKey('openai'));
-  readonly confirmClearKeys = signal(false);
-
-  /** Remove every downloaded local LLM. Leaves Ollama config + API keys alone. */
+  /** Remove every downloaded local LLM. Leaves Ollama config alone. */
   async deleteAllModels(): Promise<void> {
     for (const m of this.downloadedModels()) {
       await this.ai.deleteModel(m.id);
     }
     this.confirmDeleteModels.set(false);
     await this.reload();
-  }
-
-  /** Clear every saved API key (both providers). */
-  clearAllKeys(): void {
-    if (this.hasKey('claude')) this.deleteKey('claude');
-    if (this.hasKey('openai')) this.deleteKey('openai');
-    this.confirmClearKeys.set(false);
   }
 
   async ngOnInit(): Promise<void> {
@@ -815,26 +788,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     void this.ai.refresh();
   }
 
-  /** True when a non-empty key is saved for the provider. Reads the settings
-   *  signal so it re-evaluates after save/delete. */
-  hasKey(provider: 'claude' | 'openai'): boolean {
-    const cfg = this.settings.getAIConfig();
-    return !!cfg[provider]?.apiKey?.trim();
-  }
-
-  saveKey(provider: 'claude' | 'openai'): void {
-    const key = (this.keyDrafts[provider] || '').trim();
-    if (!key) return;
-    const cfg = this.settings.getAIConfig();
-    if (provider === 'claude') {
-      this.settings.updateAIConfig({ provider: 'claude', claude: { ...cfg.claude, apiKey: key } });
-    } else {
-      this.settings.updateAIConfig({ provider: 'openai', openai: { ...cfg.openai, apiKey: key } });
-    }
-    this.keyDrafts[provider] = '';
-    void this.ai.refresh();
-  }
-
   // ── Ollama server URL (config used by cleanup/translate jobs at runtime) ──
   ollamaUrl(): string {
     return this.settings.getAIConfig().ollama?.baseUrl || 'http://localhost:11434';
@@ -985,16 +938,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Remove a saved API key. Leaves the provider selection to the unified picker. */
-  deleteKey(provider: 'claude' | 'openai'): void {
-    const cfg = this.settings.getAIConfig();
-    if (provider === 'claude') {
-      this.settings.updateAIConfig({ claude: { ...cfg.claude, apiKey: '' } });
-    } else {
-      this.settings.updateAIConfig({ openai: { ...cfg.openai, apiKey: '' } });
-    }
-    void this.ai.refresh();
-  }
 
   openExternal(url: string): void {
     (window as unknown as { electron?: { shell?: { openExternal: (u: string) => void } } })

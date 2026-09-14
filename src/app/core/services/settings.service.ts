@@ -3,9 +3,7 @@ import { ElectronService } from './electron.service';
 import {
   AIConfig,
   AIProvider,
-  DEFAULT_AI_CONFIG,
-  CLAUDE_MODELS,
-  OPENAI_MODELS
+  DEFAULT_AI_CONFIG
 } from '../models/ai-config.types';
 import {
   DEFAULT_VLM_ENDPOINT_CONFIG,

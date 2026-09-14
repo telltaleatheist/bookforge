@@ -426,6 +426,26 @@ async function translateWithLocal(
 }
 
 /**
+ * The key and the model for a cloud run, out of FOUNDRY'S cloud card.
+ *
+ * Owen's ruling, 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
+ * keys have ONE owner, and BookForge keeps no second key store.
+ * `electron/cloud-credentials.ts` is the reader; it refuses BY cloudCredentialsForTranslation —
+ * `cloud_provider_not_configured`, naming the file and the card — rather than
+ * defaulting this act onto some other provider's weights.
+ */
+async function cloudCredentialsForTranslation(
+  provider: 'claude' | 'openai',
+): Promise<{ apiKey: string; model: string }> {
+  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
+  const kind = cloudKindForProvider(provider);
+  if (kind === null) throw new Error(`"${provider}" is not a cloud provider`);
+  const slot = await requireCloudSlot(kind);
+  return { apiKey: slot.apiKey, model: slot.model };
+}
+
+
+/**
  * Translate a chunk using the configured provider with retry logic
  */
 async function translateChunkWithProvider(
@@ -449,16 +469,16 @@ async function translateChunkWithProvider(
             throw new Error('Ollama model not configured');
           }
           return await translateWithOllama(text, systemPrompt, config.ollama.model, abortSignal);
-        case 'claude':
-          if (!config.claude?.apiKey || !config.claude?.model) {
-            throw new Error('Claude not configured');
-          }
-          return await translateWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal);
-        case 'openai':
-          if (!config.openai?.apiKey || !config.openai?.model) {
-            throw new Error('OpenAI not configured');
-          }
-          return await translateWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+        // Foundry's cloud card owns the key and the model (Owen's ruling,
+        // 2026-09-14). Refused by name when there is no enabled slot.
+        case 'claude': {
+          const cloud = await cloudCredentialsForTranslation('claude');
+          return await translateWithClaude(text, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
+        }
+        case 'openai': {
+          const cloud = await cloudCredentialsForTranslation('openai');
+          return await translateWithOpenAI(text, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
+        }
         case 'local':
           return await translateWithLocal(text, systemPrompt, abortSignal);
         case 'crucible': {

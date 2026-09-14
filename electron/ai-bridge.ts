@@ -184,8 +184,37 @@ export interface AIProviderConfig {
     baseUrl: string;
     model: string;
   };
+  /*
+   * THE TWO CLOUD DOORS CARRY NO CREDENTIAL, since 2026-09-14.
+   *
+   * Cloud keys have ONE owner — Foundry's cloud card, whose record is
+   * `<userData>/app-settings.json` -> `cloudProviders` — and `cloudCredentialsFor`
+   * below is where this process reads it. A caller that sent an `apiKey` here
+   * would be offering a second copy of a credential that already has a home,
+   * which is how the two drift.
+   *
+   * `model` is OUTPUT, not input: the preflight stamps the slot's model onto
+   * the config once, so every downstream reporting site (the resume
+   * checkpoint's model string, the analytics `modelName`, the job log) names
+   * the model the run ACTUALLY used. Nothing reads it to decide anything.
+   *
+   * ── `apiKey` IS STILL ON THIS SHAPE, AND THAT IS A LABELLED STOPGAP ──────
+   *
+   * Dated 2026-09-14. Every cloud door in THIS file, in `book-analysis.ts` and
+   * in `translation-bridge.ts` ignores it and asks Foundry's record. TWO call
+   * sites still write and read it, and both are in files a concurrent build
+   * owns: `queue-steps/ai-provider.ts` (`providerConfigOf`, which composes this
+   * block from a QUEUE ROW's `claudeApiKey`/`openaiApiKey` — a third key store)
+   * and `text-ai.ts`, which passes it to `callClaude` / `callOpenAI`. Moving
+   * those two onto `cloud-credentials.ts` deletes this field and the row
+   * columns behind it; until then a queue row with no key is refused BY NAME
+   * by `providerConfigOf` rather than reaching a provider with an empty
+   * credential, which is why leaving it is a stopgap and not a fallback.
+   */
   claude?: {
+    /** IGNORED by every door in this file — see above. OWED, named above. */
     apiKey: string;
+    /** OUTPUT: the preflight stamps the slot's model here, for reporting. */
     model: string;
   };
   openai?: {
@@ -3003,6 +3032,39 @@ async function cleanChunkWithLocal(
   return extractAnswer(raw, 'local');
 }
 
+/**
+ * THE KEY AND THE MODEL FOR A CLOUD RUN, READ OUT OF FOUNDRY'S RECORD.
+ *
+ * Owen's ruling of 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
+ * keys have ONE owner, Foundry's cloud card, and BookForge's OCR-cleanup AI
+ * provider reads that record — exactly as `narration-clean-text.ts` already
+ * reads `cleanTextModel` out of the same file.
+ *
+ * So `config.claude` and `config.openai` no longer carry a credential. They
+ * were the renderer's `localStorage`, which meant this app kept a SECOND copy
+ * of a key Foundry already stores properly, beside a compiled three-item model
+ * list that contradicted the ruling the key is supposed to satisfy ("the key
+ * picks the models: the app calls the provider's own listing").
+ *
+ * It refuses BY NAME and never falls back. A run asked for Claude on a machine
+ * with no enabled Anthropic slot cannot happen, and quietly running it on some
+ * other provider would put somebody's book through weights they did not
+ * choose. The refusal names the file, the kind and the card.
+ */
+async function cloudCredentialsFor(
+  provider: 'claude' | 'openai',
+): Promise<{ apiKey: string; model: string }> {
+  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
+  const kind = cloudKindForProvider(provider);
+  if (kind === null) {
+    // Unreachable through the two call sites; a throw rather than a cast so a
+    // third provider added to the union cannot arrive here as `undefined`.
+    throw new Error(`cloudCredentialsFor was given "${provider}", which is not a cloud provider`);
+  }
+  const slot = await requireCloudSlot(kind);
+  return { apiKey: slot.apiKey, model: slot.model };
+}
+
 export async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
@@ -3040,22 +3102,16 @@ export async function cleanChunkWithProvider(
               throw new Error('Ollama model not configured');
             }
             return cleanChunk(inputText, systemPrompt, config.ollama.model, jobNumCtx, jobTemperature, abortSignal, chunkMeta);
-          case 'claude':
-            if (!config.claude?.apiKey) {
-              throw new Error('Claude API key not configured');
-            }
-            if (!config.claude?.model) {
-              throw new Error('Claude model not configured');
-            }
-            return cleanChunkWithClaude(inputText, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal, chunkMeta);
-          case 'openai':
-            if (!config.openai?.apiKey) {
-              throw new Error('OpenAI API key not configured');
-            }
-            if (!config.openai?.model) {
-              throw new Error('OpenAI model not configured');
-            }
-            return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, chunkMeta);
+          case 'claude': {
+            // The key and the model come from Foundry's cloud card, not from
+            // this config — see cloudCredentialsFor. Refuses by name.
+            const cloud = await cloudCredentialsFor('claude');
+            return cleanChunkWithClaude(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal, chunkMeta);
+          }
+          case 'openai': {
+            const cloud = await cloudCredentialsFor('openai');
+            return cleanChunkWithOpenAI(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal, chunkMeta);
+          }
           case 'crucible': {
             // Residency was proven once, at job start (cleanupEpub's preflight).
             // This only resolves the two required fields, which crucibleConfigOf
@@ -3482,12 +3538,14 @@ async function callProviderExtracted(
     case 'ollama':
       if (!config.ollama?.model) throw new Error('Ollama model not configured');
       return cleanChunk(inputText, systemPrompt, config.ollama.model, numCtx, temperature, abortSignal, undefined, false, numPredict);
-    case 'claude':
-      if (!config.claude?.apiKey || !config.claude?.model) throw new Error('Claude not configured');
-      return cleanChunkWithClaude(inputText, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal);
-    case 'openai':
-      if (!config.openai?.apiKey || !config.openai?.model) throw new Error('OpenAI not configured');
-      return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+    case 'claude': {
+      const cloud = await cloudCredentialsFor('claude');
+      return cleanChunkWithClaude(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
+    }
+    case 'openai': {
+      const cloud = await cloudCredentialsFor('openai');
+      return cleanChunkWithOpenAI(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
+    }
     case 'crucible': {
       // `numCtx` IS ignored — the Crucible engine's context is the manifest's
       // `context_default`, fixed when the model was loaded, and nothing here can
@@ -4615,23 +4673,34 @@ async function cleanupEpubRun(
       return { success: false, error: `Ollama is reachable but not serving generate requests: ${generateCheck.error}` };
     }
     console.log('[AI-BRIDGE] Ollama generate preflight passed');
-  } else if (config.provider === 'claude') {
-    if (!config.claude?.apiKey) {
+  } else if (config.provider === 'claude' || config.provider === 'openai') {
+    /*
+     * ONE PREFLIGHT FOR BOTH CLOUD DOORS, and it asks FOUNDRY'S RECORD.
+     *
+     * It fails here — before chunk 1 — for the reason every other provider's
+     * preflight does: a missing key found at chunk 47 costs an hour and names
+     * nothing. The refusal is `cloud_provider_not_configured` or
+     * `cloud_provider_incomplete`, each naming the file, the kind and the card
+     * where the fix is, and it is RETURNED rather than thrown because that is
+     * how this function reports.
+     */
+    try {
+      const cloud = await cloudCredentialsFor(config.provider);
+      // STAMPED ONCE, so every downstream report names the model this run used.
+      // A read, not a decision: the chunk doors ask Foundry's record again
+      // rather than trusting what is written here.
+      // The `apiKey` slot is carried through UNCHANGED rather than blanked:
+      // two call sites in files a concurrent build owns still populate it
+      // (see AIProviderConfig above), and emptying it here would break their
+      // path to fix a field this file already ignores.
+      if (config.provider === 'claude') {
+        config.claude = { apiKey: config.claude?.apiKey ?? '', model: cloud.model };
+      } else {
+        config.openai = { apiKey: config.openai?.apiKey ?? '', model: cloud.model };
+      }
+    } catch (err) {
       stopAIPowerBlock();
-      return { success: false, error: 'Claude API key not configured. Go to Settings > AI to configure.' };
-    }
-    if (!config.claude?.model) {
-      stopAIPowerBlock();
-      return { success: false, error: 'Claude model not specified in config' };
-    }
-  } else if (config.provider === 'openai') {
-    if (!config.openai?.apiKey) {
-      stopAIPowerBlock();
-      return { success: false, error: 'OpenAI API key not configured. Go to Settings > AI to configure.' };
-    }
-    if (!config.openai?.model) {
-      stopAIPowerBlock();
-      return { success: false, error: 'OpenAI model not specified in config' };
+      return { success: false, error: (err as Error).message };
     }
   } else if (config.provider === 'crucible') {
     // Both halves by name, then the ONE residency round trip this job makes.
