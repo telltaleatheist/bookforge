@@ -33,22 +33,27 @@
  * **ENDS WHEN:** the local-server resolution becomes async, or the SDK grows a
  * synchronous variant. Then this file is deleted and the callers await.
  *
- * **2. The SDK's path rule does not carry the Windows case the contract pins.**
- * §3.6's table is explicit — on Windows the file is
- * `%LOCALAPPDATA%\Crucible\pairing`, beside `wsl\`, `downloads\` and
- * `host\`, because the thing that writes a Windows-side copy is `crucible
- * host` and that is its per-machine root. `cruciblePairingPath` implements
- * `$CRUCIBLE_HOME`, else `~/.crucible/pairing`, on **every** platform.
+ * **2. The SDK's path rule does not carry the Windows case the contract pins
+ * — A KNOWN SDK DEFECT, being fixed.** §3.6's table is explicit: on Windows
+ * the file is `%LOCALAPPDATA%\Crucible\pairing`, beside `wsl\`,
+ * `downloads\` and `host\`, because the thing that writes a Windows-side
+ * copy is `crucible host` and that is its per-machine root.
+ * `cruciblePairingPath` implements `$CRUCIBLE_HOME`, else `~/.crucible/pairing`,
+ * on **every** platform.
  *
- * That is a fact with two owners, which is the defect the contract exists to
- * prevent, and it is not BookForge's to settle: the doc is the owner
- * (PHASE15's preamble — *"every name on the wire has one owner, and that owner
- * is this file"*), so this file implements the DOC. It is reported rather than
- * absorbed, and `tools/test-crucible-pairing-file.js` asserts the disagreement
- * EXPLICITLY so nobody inherits it silently: the day the SDK adds the Windows
- * case, that check goes red and says what to do.
+ * Confirmed by the Crucible side on 2026-09-14 (Foundry measured the same
+ * thing against Owen's live server) as a defect in the SDK rather than a
+ * question about the contract, and a re-packed tarball is coming. **So this
+ * is not BookForge's to settle and BookForge does not work around it**: the
+ * doc is the owner of the name (PHASE15's preamble), this file implements the
+ * DOC, and the instruction from the Crucible side is to read the path from
+ * the SDK once it is fixed.
  *
- * It is not load-bearing today — on Windows the writer is `crucible host`,
+ * `tools/test-crucible-pairing-file.js` asserts the disagreement EXPLICITLY
+ * rather than leaving it in a comment, so that the re-vendor turns it red and
+ * says what to delete instead of quietly making our extra branch dead code.
+ *
+ * It is not load-bearing meanwhile — on Windows the writer is `crucible host`,
  * which does not exist yet, so there is no file at either path and the
  * `config.toml`-through-`wsl.exe` door is the live one (§3.6 dates that door
  * too). It becomes load-bearing the moment the host ships, and then whichever

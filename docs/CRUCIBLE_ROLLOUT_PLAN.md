@@ -142,12 +142,16 @@ round as the first: it passes while `foundry-app/electron/cloud-providers.ts` an
 dispatcher's `slot.kind === 'cloud'` are still there, and goes red the day they are not —
 which is the day the target is reachable, not the day something broke.
 
-### OWED TO THE CRUCIBLE SIDE: the pairing file has two implementations that disagree
+### TWO KNOWN SDK DEFECTS, and the one thing that is ours
 
-Found 2026-09-14 when the Phase 15 SDK was vendored and BookForge's stand-in was deleted.
-`@crucible/client` now exports `readPairingFile()` and `cruciblePairingPath()`, and BookForge
-kept its own reader for two reasons. The first is ours and is fine; the second is a conflict
-somebody else has to settle.
+Found 2026-09-14, when the Phase 15 SDK was vendored and BookForge's stand-in was deleted.
+Numbers 2 and 3 are DEFECTS IN THE SDK, confirmed as such by the Crucible side the same
+evening after Foundry measured both against Owen's live server; a re-packed tarball is
+coming and **BookForge works around neither**. Number 1 is ours. Number 4 is a deliberate
+divergence of ours, and small.
+
+Everything here is written down rather than remembered because each one has a tripwire, and
+a tripwire nobody can find the reason for gets deleted by the next person.
 
 1. **The SDK's is ASYNC and BookForge's read is on a SYNCHRONOUS path.** The SDK says why in
    its own header, and the reason is a packaging rule rather than anything about the
@@ -169,9 +173,19 @@ somebody else has to settle.
    one. It becomes load-bearing the moment the host ships, and then whichever of the two is
    wrong finds nothing and offers to install a second engine over a running one.
 
-   **Needs a ruling from the Crucible side: change the SDK, or change §3.6.** Either way
-   `tools/test-crucible-pairing-file.js` goes red the day they agree, and says what to delete.
-3. A third, small: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
+   **Confirmed by the Crucible side the same evening as an SDK DEFECT, not a question about
+   the contract** — Foundry measured the same thing against Owen's live server — and a
+   re-packed tarball is coming. BookForge does NOT work around it: it follows the doc, and
+   the instruction is to read the path from the SDK once it is fixed.
+   `tools/test-crucible-pairing-file.js` goes red the day they agree and says what to delete.
+3. **`client.capability()` THROWS on a pre-Phase-15 document** — one with no `route` on any
+   row — which contradicts §3.3's rule that such a document means "this server predates the
+   field and every class IS local". Also measured by Foundry against Owen's live server, also
+   being fixed in the SDK, and also NOT worked around here: BookForge reads capability through
+   the SDK, and the keeper that exercises a no-route document is marked as depending on the
+   re-vendor. **Owen's live WSL server answers exactly that way until the phase-15 branch is
+   deployed onto it**, so this one bites the moment anybody connects to it.
+4. A fourth, small: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
    applying the SDK's own argument — its header says a malformed file must throw "because a
    line somebody's installer wrote badly is a broken install, and answering 'there is no
    server here' would send the user to install a second one", and a zero-length file is the

@@ -172,7 +172,7 @@ console.log('the connect code on this machine');
     assert.strictEqual(sdk.PAIRING_FILE, pairingFile.PAIRING_FILE_NAME);
   });
 
-  await check('WE DISAGREE ON WINDOWS, and the contract is why — this is the tripwire', async () => {
+  await check('WE DISAGREE ON WINDOWS — a known SDK defect, and this is its tripwire', async () => {
     /*
      * §3.6's table: on Windows the file is `%LOCALAPPDATA%\\Crucible\\pairing`,
      * because the thing that writes a Windows-side copy is `crucible host` and
@@ -180,10 +180,16 @@ console.log('the connect code on this machine');
      * `cruciblePairingPath` implements `$CRUCIBLE_HOME`, else
      * `~/.crucible/pairing`, on every platform.
      *
-     * This app follows the DOC, because the doc is the owner of every name on
-     * the wire (PHASE15's preamble). The disagreement is asserted here so that
-     * it cannot be inherited silently, and so that the day it ends, it ends
-     * loudly.
+     * The Crucible side confirmed this on 2026-09-14 as a DEFECT IN THE SDK
+     * rather than a question about the contract — Foundry measured the same
+     * thing against Owen's live server — and a re-packed tarball is coming.
+     * BookForge does not work around it: it follows the DOC, because the doc
+     * is the owner of every name on the wire (PHASE15's preamble), and the
+     * instruction is to read the path from the SDK once it is fixed.
+     *
+     * The disagreement is asserted here so that the re-vendor turns this red
+     * and says what to delete, instead of quietly leaving our extra branch as
+     * dead code nobody dares remove.
      *
      * It is not load-bearing yet: on Windows the writer is `crucible host`,
      * which does not exist, so there is no file at either path and the
@@ -206,10 +212,12 @@ console.log('the connect code on this machine');
     assert.strictEqual(ours, path.join(localAppData, 'Crucible', 'pairing'));
 
     assert.notStrictEqual(ours, sdkDefault,
-      'THE SDK AND THE DOC NOW AGREE ON WINDOWS — which is the thing this check was waiting '
-      + 'for.\n        Delete reason TWO from electron/crucible/pairing-file.ts\'s header and '
-      + 'this check with it. If reason ONE (the SDK\'s reader is async and readLocalServer is '
-      + 'not) has also gone, delete the whole file and await the SDK instead.');
+      'THE SDK HAS BEEN FIXED — which is the thing this check was waiting for.\n'
+      + '        Do this: take the Windows path FROM the SDK rather than composing it here '
+      + '(cruciblePairingPath), delete reason TWO from '
+      + 'electron/crucible/pairing-file.ts\'s header, and delete this check.\n'
+      + '        If reason ONE has also gone (the SDK grew a synchronous reader, or '
+      + 'readLocalServer became async), delete the whole file and await the SDK instead.');
   });
 
   await check('an EMPTY file: we throw, the SDK answers null — the third divergence', async () => {
