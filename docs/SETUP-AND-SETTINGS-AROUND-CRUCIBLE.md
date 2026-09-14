@@ -855,3 +855,39 @@ one.
   synchronous and runs before the step is placed. **OWED**, named in the comment: a `clean`
   row could keep its lease across a chain if `leasedModel` were allowed to be async and
   given the run's venue.
+
+### 11.10 THE BUTTON IS GONE — coordination on connect, 2026-09-14 (later the same day)
+
+Two rows of §11.2 were superseded within hours of being built, by crucible
+`docs/PHASE14-ENVPACKS.md` §4a. Owen: *"if its present, bookforge should coordinate with the
+installed crucible to make sure it has what it needs to run all of its features"*, and on the
+whole install story, *"this whole process needs to be idiot proof."*
+
+| what §11.2 built | what it is now |
+|---|---|
+| **"Set up for BookForge"**, a button on every server row and on both local faces | **DELETED.** `electron/crucible/coordinate.ts` is the one owner of "make sure this server has what BookForge needs", called on every CONNECT: app start for `local`, a server added, a server switched back on, the wizard's step landing on connected, and after a driven install (routed through the same function, not its own post). The row draws the STATE where the button was. |
+| the row streams `crucible:module-progress` from `crucible:setup-module` | `crucible:setup-module` is deleted with the button. Main owns one state per server (`shared/crucible/coordinate-wire.ts`), reads it through `crucible:coordination`, starts one through `crucible:coordinate`, and pushes every change on `crucible:coordination-state` to EVERY window — coordination starts before a window exists, so a push aimed at "the sender" would have no sender for the run that matters most. |
+| a module posted whenever somebody pressed | **ASK, THEN ACT** (crucible `cecfdd0`). `GET /v1/info` + `GET /v1/catalog`, compared against the vendored module; nothing missing is a read and NO POST. A Crucible runs one task at a time, so a task whose every entry would come back `skipped` is one two apps collide on and one a rendering book refuses with its own lease. |
+| *(absent)* a question before spending somebody else's disk | **NO CONSENT STEP — Owen's RULING, not a default** (*"lets make it as simple as possible"*, crucible `1a10cc8`). Automatic on every connected server, local or remote, however long ago it was registered. Disabling a server in Settings is the one way to say "not that one", and a disabled server is asked nothing at all. |
+
+**And the words changed, in the renderer only.** The section keeps its title, *Crucible
+Servers*; every sentence a person reads says **GPU engine (Crucible)** on first mention and
+**engine** after, the pairing line is a **connect code**, and *Open Crucible* is **Open engine
+console**. Job types, subjects, tasks and modules do not appear in app copy at all — what is
+being prepared is said in a person's words, out of the catalog rows the server itself returns.
+The one file that does that translation is
+`src/app/features/settings/components/crucible-words.ts`, and a keeper fails if the module
+grows a job type nothing has words for. The code keeps every one of its names, which is the
+point: the wire carries facts, the screen owns the sentences (R1).
+
+**The wizard's Crucible step, in full.** Its connected face now has **no button at all** — a
+local engine is not a decision, so the only thing to press is the wizard's own Next. Its
+install face is **one sentence** about the installer arriving with the next Crucible release,
+plus the connect-code field; the printed command sequence is **deleted from the wizard** and
+kept in Settings → Crucible Servers behind **"Show the manual steps"**, folded, for a terminal
+person.
+
+**Not done, and named:** `DRIVEN_INSTALL_AVAILABLE` is still `false` (§0b C4 — the release is
+not published), so the "Set one up for me" button is still drawn and disabled with its own
+sentence. Nothing here has met a real Crucible; the keeper drives all twenty checks against
+`tools/fake-crucible.js`.

@@ -129,9 +129,36 @@ apps' doors.
 - **C1. Crucible's own page + operator API + generated module files** — being built now
   (`crucible/docs/PHASE13-OPERATOR.md`). Closes: no in-app model downloads, printed pull lists,
   two install stories, "how do I get the token".
-- **C2. The wizard step probes on entry** (local found → connected + Open Crucible; none and
-  hostable → Install; not hostable → Connect only) and **posts the module after a driven
-  install.** §5.5 of the phase doc; BookForge's build after C1.
+- **C2. The wizard step probes on entry** (local found → connected; none and hostable →
+  Install; not hostable → Connect only). §5.5 of the phase doc. **BUILT 2026-09-14
+  (`f1139476`), then SUPERSEDED THE SAME DAY by coordination-on-connect** — crucible
+  `docs/PHASE14-ENVPACKS.md` §4a, Owen: *"if its present, bookforge should coordinate with the
+  installed crucible to make sure it has what it needs to run all of its features."* What that
+  changed, and the three rulings inside it:
+  - **The "Set up for BookForge" button is DELETED.** Presence of the app is the request.
+    `electron/crucible/coordinate.ts` is the one owner and is called from four moments: app
+    start for `local`, a server added, a server switched back ON, and the wizard's step landing
+    on connected. A driven install is routed through the same function rather than having its
+    own post. Never twice concurrently for one server; a task already running is FOLLOWED, not
+    re-posted.
+  - **ASK, THEN ACT** (crucible `cecfdd0`, from Foundry's review). Coordination READS
+    `GET /v1/info` + `GET /v1/catalog` and compares the vendored module against them. Nothing
+    missing = a read and NO POST. Posting an idempotent module on every connect would have been
+    correct and still wrong: one task at a time means two apps arriving together collide on
+    `task_busy`, and a book already rendering refuses its own app `server_busy` over a task
+    whose every entry would have been `skipped`.
+  - **NO CONSENT STEP — Owen's ruling, 2026-09-14** (*"lets make it as simple as possible"*,
+    crucible `1a10cc8`), **not a default.** Coordination is automatic on EVERY connected
+    server, `local` and every remote, however long ago it was registered. Foundry proposed a
+    one-press consent on a remote registered in an earlier session; it was heard and overruled.
+    Stated once so it is a choice: opening BookForge on a laptop connected to the Mac downloads
+    onto the Mac whatever BookForge needs there and is not. **Disabling a server in Settings is
+    the one way to say "not that one"** — a disabled server is asked nothing at all.
+  - `server_busy` is a WAIT with the holder shown verbatim, retried when the server's own
+    `slots.accelerated.accepts_work` says the card is free (20 s apart, 90 asks, then it stops
+    with the holder still named and the next connect starts it again). A refusal about the
+    REQUEST (`invalid_module`, `unknown_subject`) fails ONCE by name and is remembered for the
+    session. 20-check keeper `tools/test-crucible-coordinate.js`.
 - **C3. The wizard's Orpheus / Higgs / RVC / Tools steps still install LOCAL engines** through
   the component manager. They become "which server" rows against the catalog once A2's layer
   is deleted — and B1 decides whether the Orpheus step survives at all.
