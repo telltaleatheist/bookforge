@@ -459,19 +459,43 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   in-flight path says. **Ruling: is the banked `alignment.json` worth the card once narrator's
   items-in door (B5) exists? If it is, the early refusal comes out in the same commit that
   lands that door.**
-- **From A3: the PASS steps do not travel yet** — `simplify`, `translate-pass`,
-  `narration-text` and `footnote-refs` (`electron/queue-steps/pass.ts`). They are `cleanupEpub`
-  underneath, so they are exactly the clean-then-simplify row A5 is about, but
-  `electron/processing-passes.ts` builds the provider block BY HAND — a fourth copy of the
-  mapping `queue-steps/ai-provider.ts` owns — and has no `crucible` arm at all. Teaching them
-  to travel is: collapse that copy onto `providerConfigOf`, thread the row's venue into
-  `runProcessingPass`, declare `machines` and `leasesModel`. **BUILD, next.**
-- **From A3: `foundry-job.ts` should declare `leasesModel`.** It is the other hosted text act
-  and it holds a model the same way; without the declaration its rows keep today's per-act
-  lease, which is not a regression but is not A5 either. One line, in a file another agent
-  owns tonight: `leasesModel: (config) => { const kind = (config as unknown as
-  FoundryJobStepConfig).request?.kind; return kind === 'clean' || kind === 'translate' ||
-  kind === 'simplify'; }`.
+- **From A3: the PASS steps travel — DONE 2026-09-14 (`2f154f0b`).** `simplify`,
+  `translate-pass` and `narration-text` declare `machines()` through the shared
+  `machinesForAiStep`, follow the run's venue (`runVenueOfRow` → `providerConfigOf`, and
+  `cleanTextEpub`'s existing `crucibleServer` door for the `clean` act), and declare
+  `leasesModel` + `leasedModel`; `footnote-refs` stays `local`, being a string replace over a
+  zip. The hand-built fourth copy of the provider mapping is DELETED — `providerConfigOf` is
+  asked first, before the book is resolved and before a stage directory is made, so a
+  `crucible_server_not_named` refusal costs no work. Two things the audit had not seen: a pass
+  config nests its provider under `simplify`/`translate`, so `resource`, `machines` and
+  `leasesModel` were all reading a top-level `aiProvider` that is never there (every pass filed
+  on the GPU pool, including one against Claude); and `callAI` — the transport a translate
+  pass actually reaches the model through — knew four providers and no Crucible, so the
+  declaration alone would have failed the row an hour in. It takes the same `AIProviderConfig`
+  now, through the shared `crucibleChatOnce`. 16-check keeper
+  `tools/test-queue-pass-travel.js`.
+- **From A3 / Foundry: `foundry-job.ts` does NOT declare `leasesModel`, and the absence is the
+  statement (settled 2026-09-14, `2f154f0b`’s sibling).** The one-line addition was offered and
+  declined: a hosted act's lease belongs to the vendored dispatcher, which takes one between
+  making the model resident and spawning the engine and releases it in its own settle
+  (`crucible-dispatch.ts placeOnCrucible`). Crucible allows ONE lease per server, so
+  `leasesModel: true` here would describe a lease that does not exist AND would refuse theirs —
+  in this app's own name. It does not become right at the re-vendor either; a row-keyed lease on
+  that path would be Foundry's design to make, if Owen asks for one. The reasoning is written
+  beside `machines()` in that file so the next reader does not re-derive it.
+- **From A5 / Foundry: a row's lease is kept only for an act that wants the SAME model —
+  BUILT 2026-09-14 (`ad86d91f`).** `leasesModel` alone was not enough: a lease is per MODEL
+  (`POST /v1/models/{id}/lease`) and a server holds one, while clean runs on `qwen3.5-9b` and
+  simplify/translate on `qwen3.8-27b-4bit`. So the archetypal clean→simplify row carried the
+  9B's lease into the step that must load the 27B, and that load is refused `leased` naming
+  `bookforge`. `StepModule.leasedModel` names the id, `CrucibleLeaseHost.leaseSubject` reports
+  what is held, and the lease survives the seam only when they match. Scoped precisely, because
+  half of it was already covered: `withRowLease` swaps on a model change, so BookForge's own
+  chat acts never deadlocked — what the stale keep held was the GAP between steps, where
+  `resolveCrucibleTextEngine`'s `loadFirst` door and an operator's CLI load both live. Also
+  found: `settleStep` fires the release without awaiting it and pumps in the same tick, so a
+  take could overtake it (`rowReleases` now waits). `tools/fake-crucible.js` enforces one lease
+  per server, which is what makes any of this reproducible rather than assumed.
 - **From A5 (`electron/crucible/lease.ts`): a row-wide lease carries the act that OPENED it,
   and Crucible has no name for "a row of acts".** `require_act_name` refuses anything outside
   its capability classes, and a lease carries one `act` with no route to re-state it. So a row

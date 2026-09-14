@@ -155,6 +155,30 @@ export const foundryJobStep: StepModule = {
     return kind === 'clean' || kind === 'translate' || kind === 'simplify' ? 'any' : 'local';
   },
   /*
+   * NO `leasesModel` HERE, AND ITS ABSENCE IS THE STATEMENT.
+   *
+   * `StepModule.leasesModel` says *this step's work holds a Crucible lease, so
+   * the row's lease may stay open for it*. A hosted text act's lease is not
+   * ours: the vendored dispatcher takes one between making the model resident
+   * and spawning the engine, and releases it in its own settle
+   * (`crucible-dispatch.ts placeOnCrucible`). Crucible allows ONE lease per
+   * server, so declaring `true` here would describe a lease that does not
+   * exist, and keeping the row's open across this step would refuse THEIRS —
+   * by name, to ourselves.
+   *
+   * It was offered as a one-line addition on 2026-09-14 (the scheduler agent's
+   * note, `C:\tmp\bookforge-scheduler-to-foundry-seam.md`) and declined for
+   * this reason by Foundry the same day. It does NOT become right at the
+   * re-vendor: a row-keyed lease on the hosted path would be Foundry's design
+   * to make, in their dispatcher, if Owen asks for one. See the full argument
+   * on the Crucible venue in `run` below ("NO LEASE HERE, AND IT IS NOT AN
+   * OMISSION — TWICE OVER").
+   *
+   * The scheduler's default for an undeclared step is false, which is the
+   * truth here: a hosted act ends the run of acts the row's own lease was for,
+   * and the card is given back before somebody else's client takes it.
+   */
+  /*
    * A stopped read is resumable and this is not a guess: Foundry banks each page
    * as it lands, and a re-run reads only what is missing (foundry README
    * §vlm-convert; BookForge's own vlm-convert module says the same). So a stop
