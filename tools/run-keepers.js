@@ -248,6 +248,19 @@ const SUITES = [
   // RECORDED, and a call before the first reading refused by name rather than
   // answered with an empty list a window cannot tell from "you have none".
   'test-foundry-hosted-crucible-seam',
+  // The module file BookForge posts to a Crucible, and the one property that
+  // matters about it: it is a COPY. `shared/crucible/bookforge.module.json` is
+  // GENERATED in the crucible repo from its own manifests
+  // (`scripts/gen-modules.py`, PHASE13-OPERATOR.md section 5.4) and vendored
+  // here byte for byte — which replaced `BOOKFORGE_JOB_TYPES` and the printed
+  // pull list in `electron/crucible/install.ts`, two hand-kept restatements of
+  // ids the manifests already own. A copy with nothing comparing it to its
+  // source is R1's shape, so this compares them, and it checks the shape the
+  // server validates a module by (only `tts` names a narrator engine; the five
+  // subject kinds) so a bad entry is found here and not halfway through an
+  // operator's progress bar. Skips the byte comparison BY NAME on a machine
+  // with no crucible checkout.
+  'test-crucible-module-file',
   // The FIFTH act, and the one that is not a text act (rollout tier 3,
   // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
   // a job, because `pages` is a capability class whose `job_type` is `llm` —

@@ -39,3 +39,15 @@ electron/scripts/higgs/*.txt text eol=lf
 electron/scripts/higgs/*.yaml text eol=lf
 python/narrator/tests/golden/** text eol=lf
 electron/scripts/vllm/*.sh text eol=lf
+
+# shared/crucible/bookforge.module.json is a VENDORED COPY of the crucible
+# repo's modules/bookforge.module.json, which that repo GENERATES from its
+# manifests (scripts/gen-modules.py; PHASE13-OPERATOR.md section 5.4). The whole
+# claim this file makes is "byte for byte", and tools/test-crucible-module-file.js
+# checks exactly that against the crucible checkout when one is present. Under
+# core.autocrlf=true a checkout would rewrite our copy to CRLF while the
+# generator keeps emitting LF, so the two would differ on every Windows machine
+# for a reason that has nothing to do with what either file says. `-text` is
+# stronger than `eol=lf` on purpose: it tells git this file's bytes are never
+# translated in either direction, which is the property being asserted.
+shared/crucible/bookforge.module.json -text
