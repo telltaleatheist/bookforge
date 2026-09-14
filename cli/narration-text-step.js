@@ -152,6 +152,15 @@ async function runNarrationTextStep(inputPath, opts) {
       epubPath: resolved,
       outPath: staging,
       ...(opts && opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      /*
+       * THE VENUE, carried through unchanged. `--crucible-server` names a
+       * Crucible for the `clean` act and fills exactly the field the app fills
+       * from a queue row; unsaid, the door's own routing decision applies,
+       * which is the app's too.
+       */
+      ...(opts && typeof opts.crucibleServer === 'string' && opts.crucibleServer.length > 0
+        ? { crucibleServer: opts.crucibleServer }
+        : {}),
     });
   } catch (err) {
     // Nothing of a refused run may be left standing where somebody could adopt

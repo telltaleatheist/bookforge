@@ -960,6 +960,60 @@ Not `--clean-lines`, which is this same engine command behind a *file of lines* 
 no project, no plan and no ledger. Not `--narration-text`, which cleans a loose EPUB
 through BookForge's own chain. This one is the press.
 
+### Running a text act on a Crucible — `--crucible-server`
+
+Accepted by all three clean-text doors (`--clean`, `--clean-lines`,
+`--narration-text`) and by them only. It names a **registered Crucible** — an entry
+in `<userData>/crucible-servers.json` (`--crucible-list`), or the reserved `local` for
+the server on this machine — and sets **the same venue field the app sets** from a
+queue row's resolved server, so a headless run and the hosted press decide identically.
+
+```bash
+# The clean act on this machine's own Crucible:
+python cli/bookforge-tts.py --clean --project "<dir>" --crucible-server local
+
+# A training corpus through the Mac's:
+python cli/bookforge-tts.py --clean-lines --input lines.txt --language en --crucible-server mac
+
+# The bare-EPUB failsafe, same flag:
+python cli/bookforge-tts.py --narration-text --input book.epub --crucible-server local
+```
+
+What changes on the line and what does not:
+
+- `--endpoint` becomes `<server url>/v1/openai`, Crucible's OpenAI-compatible door
+  (`crucible/api.py`; `docs/PHASE2-LLM.md` §5).
+- `--model` becomes the **Crucible model id chosen for that act** in
+  Settings → AI → Crucible (`<userData>/crucible-models.json`), never the Ollama tag in
+  `cleanTextModel` — the two are different namespaces with different owners, and no
+  rule maps one onto the other. An act with no id chosen is refused by name
+  (`crucible_text_model_not_set`), and so is an id that is not **resident** on that
+  server (`crucible_model_not_resident`): a text act never loads a model on somebody
+  else's card.
+- The bearer token goes in the spawn's **environment** as
+  `FOUNDRY_ENDPOINT_HEADERS={"Authorization":…,"X-Crucible-Api":"1","X-Crucible-Act":…}`
+  and never on the command line or in a log — the run prints the map with the
+  credential masked. The act is named **truthfully** per run: a simplify says
+  `simplify`, and Crucible refuses a name it does not know rather than recording a
+  wrong one.
+- Nothing is started or stopped. BookForge brings its own text server up for a local
+  run; a Crucible is a service that is already there.
+
+**Omitting the flag is not "run locally".** The routing record decides, exactly as it
+does in the app: the legacy switch (Settings → Crucible Servers, *"Run renders and text
+passes with the local engines instead"*), then the ranked server list. With the switch
+off and a server enabled, the act goes to Crucible **or is refused by name** — there is
+no quiet drop to llama-server.
+
+> **Today every Crucible text act is refused, and the refusal says why.** The installed
+> foundry engine (1.3.0) cannot address one: it appends `/v1` to whatever endpoint it is
+> given, so `…/v1/openai` is dialled as `…/v1/openai/v1`
+> (`src/translate/vllm.ts`, `normaliseVllmEndpoint`), and a HOSTED act gets no per-run
+> environment to carry the header map in (`app/electron/engine.ts` spawns with
+> `env: process.env`). Both land in foundry `1.4.0`; the floor is
+> `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `electron/foundry-host-queue.ts` and bumping it
+> is the whole change on this side. Until then, the switch above is how work gets done.
+
 ## Sentence generation (`--generate-sentences`)
 
 Audio → sentence-level **VTT** through the app's real machinery. Two modes:

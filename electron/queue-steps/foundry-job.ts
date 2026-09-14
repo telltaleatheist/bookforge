@@ -34,14 +34,15 @@
  * a narration can both hold the card, because each queue believes it is the only
  * one. Declaring the resource here is what ends that: one card, one arbiter.
  */
-import { noteStepStopped } from '../queue-engine';
+import { noteStepBusy, noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
+import { LEGACY_LOCAL_NARRATOR } from '../../shared/queue/wait-for';
 import {
   FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRunner, foundryTooOldForCleanText,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
-import type { FoundryJobStepConfig } from '../foundry-host-queue';
+import type { FoundryJobRow, FoundryJobStepConfig } from '../foundry-host-queue';
 import { foundryVersion } from '../foundry-bridge';
 /*
  * `foundryVersionAtLeast` lives beside the readings-bank flags because that is
@@ -125,6 +126,34 @@ export const foundryJobStep: StepModule = {
    */
   produces: 'none',
   resource: resourceFor,
+  /**
+   * THE TEXT ACTS TRAVEL; A READ AND A RENDERING DO NOT.
+   *
+   * A text act is a chat conversation with a model, and a Crucible serves that
+   * door (`/v1/openai`, crucible `docs/PHASE2-LLM.md` §5) — so the queue asks
+   * this row's `waitFor` before it starts one and writes the answer onto the
+   * run, exactly as it does for a narration. `run` reads it back as the
+   * caller-named venue, which is the one answer nothing second-guesses.
+   *
+   * A READ IS THE VLM DOOR and still spawns a WSL python env here
+   * (`electron/vlm-page-server.ts`); crucible `docs/PHASE7-LANES.md` §8.1 says
+   * making it travel is a Foundry-side change and should not be started until
+   * `/v1/activity` and the machine model exist. A RENDERING asks no model at
+   * all — arithmetic over a bank already on disk. Both keep the default
+   * `local`, because a step that has not been taught to travel does not travel.
+   *
+   * RULING OWED (crucible `docs/PHASE7-LANES.md` §4.4, one book = one GPU): a
+   * book whose narration and whose text pass are separate queue RUNS can name
+   * two different machines, because `waitFor` is per run and not per book. §4.4
+   * is about one dependency chain, and these are two — so nothing here is
+   * violated, and nothing here enforces it either. Whether a book's text pass
+   * must land on the machine its render did is Owen's to rule; this build does
+   * not invent the rule, and the venue each run used is on its own row.
+   */
+  machines: (config: Record<string, unknown>): 'local' | 'any' => {
+    const kind = (config as unknown as FoundryJobStepConfig).request?.kind;
+    return kind === 'clean' || kind === 'translate' || kind === 'simplify' ? 'any' : 'local';
+  },
   /*
    * A stopped read is resumable and this is not a guess: Foundry banks each page
    * as it lands, and a re-run reads only what is missing (foundry README
@@ -207,6 +236,14 @@ export const foundryJobStep: StepModule = {
      * this way so `profileForKind` is handed a kind the type system has already
      * agreed is a language act — the day a fourth arrives, this line is the
      * compile error.
+     *
+     * THREE AND NOT FOUR: `analysis` is a text act everywhere else in this seam
+     * (it is one of crucible's four capability classes, it has a profile in
+     * `text-server.ts`, and it has its own Crucible model setting), but no press
+     * in the hosted window routes one across the host queue today — `analysis`
+     * is deliberately absent from `FoundryJobKind`. RULING OWED: when Foundry
+     * starts sending `kind: 'analysis'` here, this line, `FoundryJobKind`,
+     * `isTextPass`, `resourceFor` and `labelFor` move together.
      */
     const act: 'clean' | 'translate' | 'simplify' | null =
       kind === 'clean' || kind === 'translate' || kind === 'simplify' ? kind : null;
@@ -216,7 +253,56 @@ export const foundryJobStep: StepModule = {
     let request = config.request;
     let bracketed = false;
     let keepWarmMinutes = 0;
+    /*
+     * ── WHERE THIS TEXT ACT RUNS ──────────────────────────────────────────────
+     *
+     * The SAME question the render asks, out of the SAME record — the row's
+     * resolved venue first (one book, one GPU: crucible `docs/PHASE7-LANES.md`
+     * §4.3/§4.4, and `machines()` below is what makes the engine resolve one at
+     * all), then the ONE legacy switch, then the ranked list.
+     *
+     * With the switch on, everything below is exactly what it was. With it off
+     * and a server named, the act goes to that Crucible or is refused by name:
+     * there is no quiet drop to llama-server, which would clean a book with a
+     * model nobody chose and report success.
+     */
+    let crucible: import('../crucible/text-venue').CrucibleTextEngine | null = null;
     if (act !== null && settings !== null) {
+      const {
+        decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost, describeTextActRefusal,
+      } = await import('../crucible/text-venue.js');
+      const venueHost = processTextVenueHost();
+      const named = ctx.job.waitForResolved;
+      const venue = await decideWhereTextActRuns(
+        named === undefined || named === LEGACY_LOCAL_NARRATOR ? undefined : named,
+        venueHost,
+      );
+      if (venue.where === 'crucible') {
+        try {
+          crucible = await resolveCrucibleTextEngine(act, venue.server, venueHost);
+        } catch (err) {
+          /*
+           * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
+           * `noteStepBusy` records the holder against the server this row waits
+           * for, so every other book queued for that machine is told the same
+           * thing once rather than polling it.
+           */
+          const named2 = describeTextActRefusal(err, venue.server, act);
+          if (named2 instanceof Error && 'busyLine' in named2
+            && typeof (named2 as { busyLine?: string }).busyLine === 'string') {
+            noteStepBusy(ctx.stepId, (named2 as { busyLine: string }).busyLine);
+          }
+          throw named2;
+        }
+        const line = `[foundry-job] ${act} runs on crucible "${crucible.server}" `
+          + `(${venue.because}) at ${crucible.endpoint}, model ${crucible.model}, `
+          + `headers ${crucible.maskedHeaders}`;
+        console.log(line);
+        ctx.report({ message: line, detail: line });
+        request = { ...config.request, model: crucible.model, ollama: crucible.endpoint };
+      }
+    }
+    if (act !== null && settings !== null && crucible === null) {
       const route = textServerRoute(settings.endpoint);
       if (route.manage) {
         noteTextQueueBusy();
@@ -245,59 +331,76 @@ export const foundryJobStep: StepModule = {
      * fall back to Foundry's own queue, which is the exact thing the ruling
      * removed. `foundryRunner()` throws that sentence.
      */
-    let row;
+    let row: FoundryJobRow;
+    /*
+     * ── THE CREDENTIAL, AND THE ONE PLACE IT CANNOT BE PASSED PER SPAWN ──────
+     *
+     * `withHostedEndpointHeaders` is a DATED STOPGAP, labelled as one where it
+     * is defined (electron/crucible/text-acts.ts): the vendored window spawns
+     * the engine with `env: process.env` and takes no overlay, so the map goes
+     * on this process's environment for the duration of the act and is deleted
+     * in a `finally`. The root fix is one parameter on foundry's `runEngine`,
+     * and is a request on them rather than work outstanding here.
+     *
+     * Nothing is on the environment for a LOCAL run: `run` is called directly.
+     */
+    const run = async (): Promise<FoundryJobRow> => foundryRunner()(request, {
+      parentStep: config.parentStep,
+      signal: ctx.signal,
+      /*
+       * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
+       *
+       * This callback used to be declared as taking a parsed `{done, total}`
+       * object, which Foundry has never sent — so `progress.done ?? 0` read a
+       * property off a string, every count was 0, `total > 0` never became
+       * true, and no hosted read reported anything at all between the seam
+       * landing and 2026-08-21. Their `Job` has always been built by parsing
+       * these same strings; there is no parsed-progress door for a host.
+       */
+      onProgress: (line) => {
+        const counted = parseFoundryProgressLine(line);
+        if (counted === null) {
+          /*
+           * NOT A COUNT, so it BECOMES the note — the line the shelf shows when
+           * the fraction cannot move: a block the model is arguing with, a page
+           * refused for a cap, a retry. It is what a person watching decides
+           * whether to kill a run on, and a frozen bar with nothing beside it is
+           * indistinguishable from a wedge.
+           *
+           * `message` takes it too, because their `Job.message` is the job log
+           * one line deep — every line, counted or not.
+           */
+          ctx.report({ message: line, detail: line });
+          return;
+        }
+        ctx.report({
+          percent: counted.total > 0
+            ? Math.min(100, Math.round((counted.page / counted.total) * 100))
+            : 0,
+          message: line,
+          /*
+           * A COUNT CLEARS THE NOTE, and that is what makes the note mean
+           * "since". Their rule, kept exactly: a note that lingered would still
+           * be on screen ten pages later, which is the same lie in the other
+           * direction. Null erases; omitting the field would leave it standing.
+           */
+          detail: null,
+          foundryPhase: counted.phase,
+          /*
+           * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
+           * renders them back as "Reading 41 / 317 pages", and a percentage
+           * cannot be un-divided, so the round trip has to carry the originals.
+           */
+          metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
+        });
+      },
+    });
     try {
-      row = await foundryRunner()(request, {
-        parentStep: config.parentStep,
-        signal: ctx.signal,
-        /*
-         * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
-         *
-         * This callback used to be declared as taking a parsed `{done, total}`
-         * object, which Foundry has never sent — so `progress.done ?? 0` read a
-         * property off a string, every count was 0, `total > 0` never became
-         * true, and no hosted read reported anything at all between the seam
-         * landing and 2026-08-21. Their `Job` has always been built by parsing
-         * these same strings; there is no parsed-progress door for a host.
-         */
-        onProgress: (line) => {
-          const counted = parseFoundryProgressLine(line);
-          if (counted === null) {
-            /*
-             * NOT A COUNT, so it BECOMES the note — the line the shelf shows when
-             * the fraction cannot move: a block the model is arguing with, a page
-             * refused for a cap, a retry. It is what a person watching decides
-             * whether to kill a run on, and a frozen bar with nothing beside it is
-             * indistinguishable from a wedge.
-             *
-             * `message` takes it too, because their `Job.message` is the job log
-             * one line deep — every line, counted or not.
-             */
-            ctx.report({ message: line, detail: line });
-            return;
-          }
-          ctx.report({
-            percent: counted.total > 0
-              ? Math.min(100, Math.round((counted.page / counted.total) * 100))
-              : 0,
-            message: line,
-            /*
-             * A COUNT CLEARS THE NOTE, and that is what makes the note mean
-             * "since". Their rule, kept exactly: a note that lingered would still
-             * be on screen ten pages later, which is the same lie in the other
-             * direction. Null erases; omitting the field would leave it standing.
-             */
-            detail: null,
-            foundryPhase: counted.phase,
-            /*
-             * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
-             * renders them back as "Reading 41 / 317 pages", and a percentage
-             * cannot be un-divided, so the round trip has to carry the originals.
-             */
-            metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
-          });
-        },
-      });
+      row = crucible === null
+        ? await run()
+        : await (await import('../crucible/text-acts.js')).withHostedEndpointHeaders(
+          crucible.env, `${act ?? 'foundry'} ${config.label}`, run,
+        );
     } finally {
       /*
        * SUCCESS OR FAILURE ALIKE. A row that threw must hand the card back

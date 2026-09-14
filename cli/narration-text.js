@@ -105,6 +105,9 @@ async function main() {
 
   const step = await runNarrationTextStep(path.resolve(args.input), {
     ...(typeof args.model === 'string' ? { model: args.model } : {}),
+    ...(typeof args['crucible-server'] === 'string' && args['crucible-server'].trim().length > 0
+      ? { crucibleServer: args['crucible-server'].trim() }
+      : {}),
   });
   if (!step.ran) {
     console.log('[narration-text] nothing written — the book is already what the narrator reads');

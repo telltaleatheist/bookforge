@@ -63,6 +63,21 @@ if (process.platform === 'win32') process.env.APPDATA = SETTINGS_ROOT;
 else if (process.platform === 'darwin') process.env.HOME = SETTINGS_ROOT;
 else process.env.XDG_CONFIG_HOME = SETTINGS_ROOT;
 process.env.BOOKFORGE_USERDATA_DIR = path.join(SETTINGS_ROOT, 'BookForge');
+/*
+ * AND A VENUE, for the same reason and in the same folder.
+ *
+ * Since rollout item 2.6 a text row also asks WHERE it runs before it runs
+ * (`decideWhereTextActRuns`, electron/crucible/text-venue.ts). With no record
+ * the answer on a machine that has a local Crucible is that server, and the act
+ * is then refused by name because the installed foundry engine cannot address
+ * one — correct behaviour, and nothing to do with the thing these tests are
+ * about, which is the shape a progress line takes on its way to a row. So the
+ * legacy switch is written ON here: this suite drives the LOCAL engines.
+ */
+fs.writeFileSync(
+  path.join(SETTINGS_ROOT, 'BookForge', 'crucible-routing.json'),
+  JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: true }),
+  'utf8');
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 const engine = require(path.join(DIST, 'queue-engine.js'));
@@ -148,6 +163,25 @@ async function fresh(name) {
   engine.registerStepModule(mod);
   engine.setGpuLockProbe(() => null);
   engine.setGpuHolderProbe(() => null);
+  /*
+   * THE ROUTING HOST, because a TEXT ROW NOW TRAVELS (rollout item 2.6).
+   *
+   * `queue-steps/foundry-job.ts` answers `machines() === 'any'` for clean,
+   * translate and simplify, so admission asks where the book goes before it
+   * starts — and a build that did not wire the host refuses out loud rather
+   * than quietly taking this machine's card ("this build did not wire the
+   * queue's Crucible routing"), which is a correct refusal and would sit on
+   * every text row in this file.
+   *
+   * So this suite is a machine with the legacy switch ON and no server: the
+   * local engines, which is the arrangement every test here is about. The
+   * Crucible half is `tools/test-crucible-text-acts.js` and 2.5's own keeper.
+   */
+  engine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
+    defaultWaitFor: () => null,
+    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+  });
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
   await engine.configure({ stateDir: dir });

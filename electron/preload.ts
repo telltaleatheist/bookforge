@@ -61,6 +61,8 @@ import type {
   CrucibleModelRow,
   CrucibleProbeResult,
   CrucibleServersView,
+  CrucibleTextActModels,
+  CrucibleTextActName,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
@@ -1363,6 +1365,15 @@ export interface ElectronAPI {
     loadModel: (name: string, model: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
     /** OPERATOR VERB: submits an `unload-model` job. Nothing here does it unasked. */
     unloadModel: (name: string, model: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
+    /**
+     * Which Crucible model each of the four text acts runs on — the record
+     * `<userData>/crucible-models.json`, whose owner is the main process
+     * (`electron/crucible/text-models.ts`). An act with no choice has NO KEY:
+     * there is no default, and an Ollama tag is never read as a Crucible id.
+     */
+    textModels: () => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
+    /** Point one act at a Crucible model id, or clear it with an empty string. */
+    setTextModel: (act: CrucibleTextActName, model: string) => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -2815,6 +2826,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('crucible:load-model', name, model),
     unloadModel: (name: string, model: string) =>
       ipcRenderer.invoke('crucible:unload-model', name, model),
+    textModels: () => ipcRenderer.invoke('crucible:text-models'),
+    setTextModel: (act: string, model: string) =>
+      ipcRenderer.invoke('crucible:set-text-model', act, model),
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),

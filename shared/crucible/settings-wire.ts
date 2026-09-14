@@ -72,14 +72,20 @@ export interface RoutingView {
   ranked: RankedServerRow[];
   newJobsWaitFor: WaitForDefault;
   /**
-   * Render audiobooks by spawning narrator on this machine instead of sending
-   * the generation step to a Crucible server.
+   * Run GPU work with the LOCAL engines instead of sending it to a Crucible
+   * server: audiobook renders by spawning narrator here, and the four text acts
+   * — clean, translate, simplify, analysis — against the local text server.
+   *
+   * **ONE switch for both**, and the field keeps the name it was minted with
+   * (renaming it would orphan every record on disk to buy a spelling). Its
+   * label is "Run renders and text passes with the local engines instead
+   * (legacy — removed after the in-app pass)".
    *
    * **A dated stopgap with one owner** (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling
-   * 4): the local spawn layer stays until Owen's in-app pass and is then
+   * 4): the local spawn layers stay until Owen's in-app pass and are then
    * deleted in a commit he approves. It is a switch rather than a fallback —
-   * nothing flips it, a render says on the log when it is on, and when it is
-   * off a render that cannot reach a server FAILS BY NAME rather than quietly
+   * nothing flips it, the work says on the log when it is on, and when it is
+   * off, work that cannot reach a server FAILS BY NAME rather than quietly
    * taking the local card.
    */
   legacyLocalRender: boolean;
@@ -217,3 +223,29 @@ export interface CrucibleActivityView {
   running: ActivityJobRow[];
   queued: ActivityJobRow[];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Which Crucible model each text act runs on (docs/CRUCIBLE_ROLLOUT_PLAN 2.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The four acts, exactly as crucible's `capability.py` names its capability
+ * classes — Owen's ruling of 2026-09-13: *"they can't lie to the user and say a
+ * translate job is running when it's actually a simplify job."*
+ *
+ * Spelled here for the renderer and in `electron/crucible/text-acts.ts` for the
+ * main process, which is two copies of one fact — so the keeper
+ * `tools/test-crucible-text-acts.js` asserts they agree, and that both agree
+ * with crucible's own file.
+ */
+export const CRUCIBLE_TEXT_ACT_NAMES = ['clean', 'translate', 'simplify', 'analysis'] as const;
+
+export type CrucibleTextActName = (typeof CRUCIBLE_TEXT_ACT_NAMES)[number];
+
+/**
+ * The record `<userData>/crucible-models.json` holds: an act to a Crucible
+ * model id. An act with no choice has NO KEY — there is no default, because a
+ * Crucible id is whatever the host has manifests for and an Ollama tag is not
+ * one.
+ */
+export type CrucibleTextActModels = Partial<Record<CrucibleTextActName, string>>;

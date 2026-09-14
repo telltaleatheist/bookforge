@@ -22,6 +22,8 @@ import type {
   CrucibleModelRow,
   CrucibleProbeResult,
   CrucibleServersView,
+  CrucibleTextActModels,
+  CrucibleTextActName,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
@@ -4188,6 +4190,24 @@ export class ElectronService {
     unloadModel: (name: string, model: string): Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.unloadModel(name, model)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * WHICH CRUCIBLE MODEL EACH TEXT ACT RUNS ON — `<userData>/crucible-models.json`.
+     *
+     * Not part of the AI config in this app's own settings, deliberately: the
+     * four acts are run by the FOUNDRY ENGINE, spawned from the main process and
+     * from the CLI, and neither can read a renderer's localStorage. One owner,
+     * `electron/crucible/text-models.ts`, reached over IPC from both.
+     */
+    textModels: (): Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.textModels()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    setTextModel: (act: CrucibleTextActName, model: string): Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setTextModel(act, model)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
   };
 }

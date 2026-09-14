@@ -1044,6 +1044,8 @@ def cmd_narration_text(args):
     else:
         # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
         cmd += ["--input", str(_user_path(args.input))]
+    if args.crucible_server:
+        cmd += ["--crucible-server", args.crucible_server]
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — narration text cleanup, no model loaded")
@@ -1079,6 +1081,8 @@ def cmd_clean_lines(args):
            "--input", str(_user_path(args.input)), "--language", args.language]
     if args.output:
         cmd += ["--output", str(_user_path(args.output))]
+    if args.crucible_server:
+        cmd += ["--crucible-server", args.crucible_server]
     if args.dry_run:
         print("[bookforge-tts] DRY RUN - clean lines")
         print("  spawn:", " ".join(cmd))
@@ -1127,6 +1131,10 @@ def cmd_clean(args):
         cmd += ["--concurrency", str(args.concurrency)]
     if args.foundry_dist:
         cmd += ["--foundry-dist", str(_user_path(args.foundry_dist))]
+    # THE VENUE. The same field the app fills from a queue row's resolved
+    # server; unsaid, the routing record decides, exactly as it does in the app.
+    if args.crucible_server:
+        cmd += ["--crucible-server", args.crucible_server]
     if args.dry_run:
         cmd += ["--dry-run"]
         print("[bookforge-tts] DRY RUN - clean text, no model loaded")
@@ -2389,11 +2397,13 @@ consumer downstream reads to tell a cleaned book from an uncleaned one.
 
 THE STANDARD METHOD IS THE HOSTED STEP (--clean), where the cleanup is a position
 on the document chain. This door produces a FILE, and a re-export loses it.""",
-        "reads": ["--config", "--dry-run", "--project", "--input"],
+        "reads": ["--config", "--dry-run", "--project", "--input", "--crucible-server"],
         "refuses": [],
         "examples": [
             'bookforge-tts --narration-text --project "<library>/projects/<slug>"',
             'bookforge-tts --narration-text --input book.epub',
+            '# the clean act on a Crucible, with the per-act model from Settings:\n'
+            'bookforge-tts --narration-text --input book.epub --crucible-server local',
             'bookforge-tts --narration-text --input book.epub --dry-run',
         ],
     },
@@ -2415,7 +2425,8 @@ audio list by position. A killed run keeps its records
 (<stem>.clean-lines/lines.records.jsonl) and the next run asks only about the
 lines with no answer. A line the engine never answered is NEVER copied through as
 if it had been cleaned.""",
-        "reads": ["--config", "--dry-run", "--input", "--output", "--language"],
+        "reads": ["--config", "--dry-run", "--input", "--output", "--language",
+                  "--crucible-server"],
         "refuses": [
             ("--keep-model", "foundry 646e8a1 (v1.3.0) retired it with the Ollama dialect: the "
                              "engine never loads and never unloads a model"),
@@ -2423,6 +2434,8 @@ if it had been cleaned.""",
         "examples": [
             'bookforge-tts --clean-lines --input lines.txt --language en',
             'bookforge-tts --clean-lines --input lines.txt --output cleaned.txt --language en',
+            '# on a Crucible instead of the local text engines:\n'
+            'bookforge-tts --clean-lines --input lines.txt --language en --crucible-server mac',
         ],
     },
     "clean": {
@@ -2443,7 +2456,7 @@ the button from refuses here too. The engine is the locally-BUILT foundry
 (--foundry-dist), because --concurrency arrived in 1.2.0 and the installed
 component can be months older.""",
         "reads": ["--config", "--dry-run", "--project", "--foundry-project", "--model",
-                  "--concurrency", "--foundry-dist"],
+                  "--concurrency", "--foundry-dist", "--crucible-server"],
         "refuses": [
             ("--ollama", "foundry 646e8a1 (v1.3.0) retired it with the Ollama dialect: the "
                          "endpoint is app-settings.json's and goes on the line as --endpoint"),
@@ -2456,6 +2469,8 @@ component can be months older.""",
             '    --model qwen3.5:9b-mlx-bf16 --concurrency 8',
             '# the Foundry project directly, when the mapping is not the question:\n'
             'bookforge-tts --clean --foundry-project "<library>/foundry/projects/<key>"',
+            '# the clean act on a Crucible server, named truthfully on every request:\n'
+            'bookforge-tts --clean --project "<library>/projects/<slug>" --crucible-server local',
             'bookforge-tts --clean --project "<library>/projects/<slug>" --dry-run',
         ],
     },
@@ -3449,7 +3464,14 @@ def _flag_registry():
                         "to the local card: a busy server, a voice that host does not have, or "
                         "tts disabled there fails the run naming which it was. Separate from "
                         "--server, which picks the server for the --crucible-* operator verbs "
-                        "and for --ai-cleanup",
+                        "and for --ai-cleanup. "
+                        "--clean / --clean-lines / --narration-text: run the TEXT ACT on that "
+                        "Crucible instead of the local text engines. It sets the same venue "
+                        "field the app sets from a queue row, so the CLI and the hosted press "
+                        "decide identically; the act is named truthfully on every request "
+                        "(X-Crucible-Act) and the model is the per-act id from Settings -> AI "
+                        "-> Crucible, which must already be RESIDENT. Omitted on those routes, "
+                        "the routing record decides exactly as it does in the app",
                    metavar="N")
     p.add_argument("--file", help="--crucible-echo: the file whose bytes are sent through the "
                    "echo job and compared with what comes back", metavar="FILE")

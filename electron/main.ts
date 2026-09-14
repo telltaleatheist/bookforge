@@ -7762,6 +7762,32 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Which Crucible model each of the four text acts runs on (item 2.6) ────
+  //
+  // The record is `<userData>/crucible-models.json` and its owner is
+  // `electron/crucible/text-models.ts`. The renderer edits it here rather than
+  // in its own localStorage settings, because the acts run in the MAIN process
+  // (the hosted queue step, the clean-text failsafe) and in the CLI — none of
+  // which can read a renderer's storage.
+
+  ipcMain.handle('crucible:text-models', async () => {
+    try {
+      const { readTextModels } = await import('./crucible/text-models.js');
+      return { success: true, data: readTextModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:set-text-model', async (_event, act: string, model: string) => {
+    try {
+      const { setTextModel } = await import('./crucible/text-models.js');
+      return { success: true, data: setTextModel(act, model) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // The five `tts:*` channels that stood here are GONE (2026-09-05).
   //
   // They were the last live door onto ebook2audiobook: `tts:start-conversion`

@@ -385,7 +385,36 @@ export function cleanTextArgs(
   epubPath: string,
   outPath: string,
   settings: CleanTextEngineSettings,
+  crucible?: { endpoint: string; model: string },
 ): string[] {
+  /*
+   * ── THE CRUCIBLE ENDPOINT REPLACES THE SETTINGS ONE, WHOLE ────────────────
+   *
+   * When the venue is a Crucible server the endpoint is `<url>/v1/openai` and
+   * the model is the Crucible id chosen for the `clean` act — NOT the Ollama
+   * tag in `cleanTextModel`, which names weights in a different namespace with
+   * a different owner. Nothing here maps one onto the other by string rules: a
+   * run names a Crucible model or `text-venue.ts` has already refused it.
+   *
+   * `--model` is always sent on this path: the "empty means whatever it is
+   * serving" default is a vLLM idea, and on a Crucible the model must equal the
+   * resident id or the server answers 409 `model_not_resident` (PHASE2-LLM §5).
+   * Naming it is what makes that 409 a statement about the choice rather than
+   * about a blank field.
+   *
+   * The credential is NOT here and must never be: it travels in the spawn's
+   * environment (`FOUNDRY_ENDPOINT_HEADERS`), because a command line is the
+   * most copied thing a program has.
+   */
+  if (crucible !== undefined) {
+    return [
+      'clean-text',
+      '--epub', epubPath,
+      '--out', outPath,
+      '--endpoint', crucible.endpoint,
+      '--model', crucible.model,
+    ];
+  }
   return [
     'clean-text',
     '--epub', epubPath,
@@ -491,6 +520,23 @@ export interface CleanTextEpubOptions {
   /** Blocks done / blocks total, from the engine's own `clean-text: N/M` line. */
   onProgress?: (done: number, total: number, label: string) => void;
   signal?: AbortSignal;
+  /**
+   * A Crucible server BY NAME, when the caller has one — the CLI's
+   * `--crucible-server`, a queue row's resolved venue.
+   *
+   * `undefined` means the caller did not say, and the routing record decides
+   * (`decideWhereTextActRuns`). It does NOT mean "run locally": with the legacy
+   * switch off and a server enabled, the act goes to Crucible or is refused by
+   * name.
+   */
+  crucibleServer?: string;
+  /**
+   * Load the act's model on the chosen server before checking residency.
+   *
+   * The explicit door, never a default — a load evicts whatever is on that
+   * card. Wired for the UI/queue gesture that means "load it first".
+   */
+  loadFirst?: boolean;
 }
 
 export interface CleanTextEpubResult {
@@ -579,6 +625,32 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
 
   const settings = await cleanTextEngineSettings();
 
+  /*
+   * ── WHERE THE CLEANUP'S MODEL LIVES — the venue, decided before anything ──
+   *
+   * The `clean` act is one of the four text acts, and it takes the SAME routing
+   * record the render does: the caller's named server, else the one legacy
+   * switch, else the ranked list (electron/crucible/text-venue.ts). Decided
+   * here, before the receipt is cleared and before anything is spawned, because
+   * a refusal must cost no work.
+   *
+   * With the switch on, `venue` is the local engines and everything below is
+   * exactly what it was: Foundry's settings endpoint, and BookForge's own text
+   * server bracketed around the run when that endpoint is ours.
+   */
+  const { decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost } =
+    await import('./crucible/text-venue.js');
+  const venueHost = processTextVenueHost();
+  const venue = await decideWhereTextActRuns(opts.crucibleServer, venueHost);
+  const crucible = venue.where === 'crucible'
+    ? await resolveCrucibleTextEngine(
+      'clean',
+      venue.server,
+      venueHost,
+      opts.loadFirst === true ? { loadFirst: true } : {},
+    )
+    : null;
+
   // A stale sidecar from a previous run at this name would be read back as this
   // run's receipt if the engine died before writing its own. Removed first, so
   // "the receipt is missing" is reachable and means what it says.
@@ -586,9 +658,18 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
   await fs.rm(cleanTextStampSidecar(outPath), { force: true });
   await fs.mkdir(path.dirname(outPath), { recursive: true });
 
-  const args = cleanTextArgs(epubPath, outPath, settings);
+  const args = cleanTextArgs(
+    epubPath, outPath, settings,
+    crucible === null ? undefined : { endpoint: crucible.endpoint, model: crucible.model },
+  );
   console.log(
-    `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — ${settings.source}`);
+    `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — `
+    + (crucible === null
+      ? settings.source
+      // The header map is rendered by the ONE function that can: the credential
+      // is `Bearer ****<last 4>`. Nothing else in this file may print it.
+      : `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}, `
+        + `headers ${crucible.maskedHeaders}`));
 
   /*
    * ── THE TEXT SERVER'S BRACKET, AND IT LIVES HERE ────────────────────────────
@@ -638,7 +719,18 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
    * machine set to `ollama` whose URL is BookForge's own text server used to be
    * skipped in silence and is now served.
    */
-  const route = textServerRoute(settings.endpoint);
+  /*
+   * NOTHING IS STARTED OR STOPPED FOR A CRUCIBLE RUN. The arbiter exists
+   * because Foundry never starts a server and BookForge's own text server has
+   * to be brought up for it; a Crucible is a service that is already running,
+   * owned by nobody here, and starting llama-server beside it would put two
+   * models on one card. `route` is not even asked: the settings endpoint is not
+   * the endpoint this run uses.
+   */
+  const route = crucible === null
+    ? textServerRoute(settings.endpoint)
+    : { manage: false as const, note: `[crucible] the ${crucible.act} act runs on "${crucible.server}" `
+        + `(${crucible.endpoint}); BookForge starts and stops nothing for this run.` };
   if (route.manage) {
     noteTextQueueBusy();
     bracketed = true;
@@ -656,6 +748,14 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
   try {
     result = await runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      /*
+       * THE CREDENTIAL, ON THIS CHILD AND NO OTHER. `runFoundry` merges this
+       * over the inherited environment for one spawn, which is the contract's
+       * "stripped from the environment of any child that does not need it"
+       * made mechanical (crucible docs/PHASE7-LANES.md §7.1(B)). A local run
+       * passes nothing, so the variable does not exist for it.
+       */
+      ...(crucible === null ? {} : { env: crucible.env }),
       onProgress: (line) => {
         const counted = parseCleanTextProgress(line);
         if (counted !== null) {

@@ -74,10 +74,18 @@ export interface RoutingRecord {
   /** What a new queue row's `waitFor` is written as (§4.2.1a). */
   newJobsWaitFor: WaitForDefault;
   /**
-   * Render the generation step by spawning narrator here instead of on a
-   * Crucible server. See {@link RoutingView.legacyLocalRender} — a dated
-   * stopgap (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), switched on
-   * deliberately and never by a failure.
+   * Run GPU work with the LOCAL engines instead of on a Crucible server: the
+   * generation step by spawning narrator here, and the four text acts against
+   * the local text server (or whatever endpoint Foundry's settings name).
+   *
+   * ONE SWITCH FOR BOTH, and the key keeps its original name deliberately —
+   * renaming it would orphan every record already on disk to buy a spelling.
+   * Its MEANING generalised when the text acts joined the seam
+   * (docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.6); its label says so.
+   *
+   * See {@link RoutingView.legacyLocalRender} — a dated stopgap
+   * (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), switched on deliberately and
+   * never by a failure.
    *
    * Absent means `false`, and that is a MIGRATION rather than a fallback:
    * every record written before this switch existed has no key, and the

@@ -238,18 +238,47 @@ async function runCleanLines(opts, deps) {
    * server holding the wrong model refuses by name, and residency is the
    * operator's act before the spawn.
    */
-  const args = [
-    'clean-text',
-    '--book', bookPath,
-    '--records', recordsPath,
-    '--stamp', stampPath,
-    '--endpoint', settings.endpoint,
-    ...(settings.model.length > 0 ? ['--model', settings.model] : []),
-  ];
+  /*
+   * ── WHERE THIS RUN'S MODEL LIVES — the app's own venue decision ───────────
+   *
+   * `decideWhereTextActRuns` is what `electron/queue-steps/foundry-job.ts` and
+   * the bare-EPUB failsafe both call, over the same routing record.
+   * `opts.crucibleServer` is `--crucible-server`, and it fills exactly the
+   * field the app fills from a queue row. A Crucible run replaces the endpoint
+   * and NAMES the model (there is no "whatever it is serving" on a Crucible:
+   * the id must equal the resident one or the server answers 409
+   * model_not_resident), and the credential goes in the spawn's environment.
+   */
+  const venueHost = d.processTextVenueHost();
+  const venue = await d.decideWhereTextActRuns(opts.crucibleServer, venueHost);
+  const crucible = venue.where === 'crucible'
+    ? await d.resolveCrucibleTextEngine('clean', venue.server, venueHost)
+    : null;
+
+  const args = crucible === null
+    ? [
+      'clean-text',
+      '--book', bookPath,
+      '--records', recordsPath,
+      '--stamp', stampPath,
+      '--endpoint', settings.endpoint,
+      ...(settings.model.length > 0 ? ['--model', settings.model] : []),
+    ]
+    : [
+      'clean-text',
+      '--book', bookPath,
+      '--records', recordsPath,
+      '--stamp', stampPath,
+      '--endpoint', crucible.endpoint,
+      '--model', crucible.model,
+    ];
   log(
     `[clean-lines] ${parsed.items.length} line(s) of ${parsed.total} in ${path.basename(inputPath)} → `
     + `${installed.path} ${args.join(' ')}`);
-  log(`[clean-lines] model and endpoint from ${settings.source}`);
+  log(crucible === null
+    ? `[clean-lines] model and endpoint from ${settings.source}`
+    : `[clean-lines] crucible "${crucible.server}" (${venue.because}), act ${crucible.act}, `
+      + `headers ${crucible.maskedHeaders} (in the spawn's environment, never on the line)`);
   const resumed = fs.existsSync(recordsPath);
   if (resumed) log(`[clean-lines] ${recordsPath} exists; the engine asks only about lines it has no answer for.`);
 
@@ -271,7 +300,11 @@ async function runCleanLines(opts, deps) {
    * for, which is the flag for somebody about to make several runs back to back.
    */
   let started = null;
-  if (d.textServerRoute(settings.endpoint).manage) {
+  if (crucible !== null) {
+    // A Crucible is a service somebody else already started. Nothing here
+    // brings a server up beside it — that would put two models on one card.
+    log(`[clean-lines] ${crucible.endpoint} is a Crucible; BookForge starts and stops nothing.`);
+  } else if (d.textServerRoute(settings.endpoint).manage) {
     d.noteTextQueueBusy();
     const profile = d.profileForKind('clean');
     const startedAt = Date.now();
@@ -289,6 +322,9 @@ async function runCleanLines(opts, deps) {
   try {
     result = await d.runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      // The credential, on THIS child and no other: `runFoundry` merges an
+      // overlay for one spawn (crucible docs/PHASE7-LANES.md section 7.1(B)).
+      ...(crucible === null ? {} : { env: crucible.env }),
       onProgress: (line) => {
         const counted = d.parseCleanTextProgress(line);
         if (counted !== null) {
@@ -358,6 +394,7 @@ function defaultDeps() {
   // being handed over, so a keeper replacing one of them replaces a function and
   // not a namespace.
   const textServer = require('../dist/electron/text-server.js');
+  const textVenue = require('../dist/electron/crucible/text-venue.js');
   return {
     foundryVersion: bridge.foundryVersion,
     runFoundry: bridge.runFoundry,
@@ -366,6 +403,10 @@ function defaultDeps() {
     foundryVersionAtLeast: bank.foundryVersionAtLeast,
     FOUNDRY_VERSION_FOR_CLEAN_TEXT: hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT,
     textServerRoute: textServer.textServerRoute,
+    // The venue, from the ONE module that decides it for every text act.
+    processTextVenueHost: textVenue.processTextVenueHost,
+    decideWhereTextActRuns: textVenue.decideWhereTextActRuns,
+    resolveCrucibleTextEngine: textVenue.resolveCrucibleTextEngine,
     profileForKind: textServer.profileForKind,
     ensureTextServer: textServer.ensureTextServer,
     noteTextQueueBusy: textServer.noteTextQueueBusy,

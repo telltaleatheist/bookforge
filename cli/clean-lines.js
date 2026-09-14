@@ -46,6 +46,7 @@ async function main() {
   if (!args.input || args.input === true) {
     throw new Error(
       'usage: clean-lines.js --input <lines.txt> [--output <cleaned.txt>] --language <en> '
+      + '[--crucible-server <name>] '
       + '[--keep-server]');
   }
   if (!args.language || args.language === true) {
@@ -75,6 +76,16 @@ async function main() {
      * goes back to whatever is queued for it.
      */
     keepServer: args['keep-server'] === true,
+    /*
+     * THE VENUE, and it is the same field the app fills from a queue row.
+     * A name (or the reserved `local`) sends this act to that Crucible;
+     * unsaid, the routing record decides exactly as it does in the app —
+     * which is not "run locally": with the legacy switch off and a server
+     * enabled, the act goes to Crucible or is refused by name.
+     */
+    ...(typeof args['crucible-server'] === 'string' && args['crucible-server'].trim().length > 0
+      ? { crucibleServer: args['crucible-server'].trim() }
+      : {}),
   });
   console.log(JSON.stringify({
     output: result.outputPath,

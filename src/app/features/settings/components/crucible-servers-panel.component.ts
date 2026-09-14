@@ -338,13 +338,14 @@ const LOCAL = 'local';
       <div class="cru-legacy">
         <label class="cru-toggle">
           <input type="checkbox" [checked]="legacyLocalRender()" (change)="setLegacyLocalRender($any($event.target).checked)" />
-          <span>Render audiobooks with the local narrator instead (legacy — removed after the in-app pass)</span>
+          <span>Run renders and text passes with the local engines instead (legacy — removed after the in-app pass)</span>
         </label>
         <p class="cru-sub">
-          Off, an audiobook's generation step runs on the server above and a render that cannot
-          reach one fails saying which — it never quietly takes this machine's card. On, every
-          render spawns narrator here, and says so on its log. This is the only switch for it;
-          there is no per-render version.
+          Off, an audiobook's generation step and the four text acts — clean, translate, simplify,
+          analysis — run on the server above, and work that cannot reach one fails saying which. It
+          never quietly takes this machine's card. On, a render spawns narrator here and a text act
+          runs against the local text server, and each says so on its log. This is the only switch
+          for both; there is no per-render or per-act version.
         </p>
       </div>
 

@@ -75,12 +75,19 @@ const BF_DIST = path.join(REPO, 'dist', 'electron');
 const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
-                     [--model <tag>] [--concurrency <n>] [--keep-server]
-                     [--library <root>] [--foundry-dist <dir>] [--dry-run]
+                     [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
+                     [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
+
+  --crucible-server names a Crucible (an entry in crucible-servers.json, or the
+  reserved "local"). It sets the SAME venue field the app sets from a queue row,
+  so this door and the hosted press decide identically. Omitted, the routing
+  record decides (Settings -> Crucible Servers) exactly as it does in the app —
+  which is NOT the same as "run locally": with the legacy switch off and a
+  server enabled, the act goes to Crucible or is refused by name.
 
   --server, --ollama and --keep-model were retired from the foundry engine by
-  646e8a1 (v1.3.0) and are refused by name. The endpoint comes from the app's
-  own app-settings.json, as it does for the hosted press.`;
+  646e8a1 (v1.3.0) and are refused by name. The local endpoint comes from the
+  app's own app-settings.json, as it does for the hosted press.`;
 
 function parseArgs(argv) {
   const a = {};
@@ -280,12 +287,34 @@ async function main() {
    * answered. A machine set to `ollama` whose URL happens to be BookForge's own
    * server is now served rather than skipped.
    */
-  const profile = textServer.textServerRoute(ollama).manage
+  /*
+   * ── WHERE THIS CLEANUP RUNS — the app's own decision, not a second one ────
+   *
+   * `decideWhereTextActRuns` is the function `electron/queue-steps/foundry-job.ts`
+   * calls, reading the same routing record. `--crucible-server` is the CLI's way
+   * of naming the venue, and it lands in exactly the field the app fills from a
+   * queue row's `waitForResolved`, so the two doors cannot disagree.
+   *
+   * When the answer is a Crucible, `resolveCrucibleTextEngine` proves the act's
+   * model is RESIDENT there, composes `<url>/v1/openai` and builds the header
+   * map — or refuses by name, before anything is spawned and with no model
+   * loaded.
+   */
+  const textVenue = require(path.join(BF_DIST, 'crucible', 'text-venue.js'));
+  const venueHost = textVenue.processTextVenueHost();
+  const venue = await textVenue.decideWhereTextActRuns(said(args['crucible-server']) ?? undefined, venueHost);
+  const crucible = venue.where === 'crucible'
+    ? await textVenue.resolveCrucibleTextEngine('clean', venue.server, venueHost)
+    : null;
+
+  const profile = crucible === null && textServer.textServerRoute(ollama).manage
     ? textServer.profileForKind('clean')
     : null;
-  const model = profile === null
-    ? (said(args.model) ?? settings[modelKey])
-    : textServer.servedModelForRequest(said(args.model) ?? settings[modelKey], profile, 'clean');
+  const model = crucible !== null
+    ? crucible.model
+    : profile === null
+      ? (said(args.model) ?? settings[modelKey])
+      : textServer.servedModelForRequest(said(args.model) ?? settings[modelKey], profile, 'clean');
   let concurrency;
   if (args.concurrency !== undefined && args.concurrency !== true) {
     concurrency = Number(args.concurrency);
@@ -311,7 +340,10 @@ async function main() {
     stampPath: plan.stampPath,
     ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
     model,
-    ollama,
+    // The endpoint the engine dials. A Crucible run replaces the app-settings
+    // URL entirely; the credential is NOT here and never is — it travels in the
+    // spawn's environment (crucible docs/PHASE7-LANES.md section 7.1(B)).
+    ollama: crucible === null ? ollama : crucible.endpoint,
     ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
     ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
     stepId: plan.stepId,
@@ -360,7 +392,17 @@ async function main() {
   console.log(`[clean] mints step       ${plan.stepId ?? '(none)'}`);
   console.log(`[clean] model            ${model.length > 0 ? model : '(none — the served model, resolved and recorded by the engine)'}`
     + `${said(args.model) ? ' (--model)' : profile !== null ? ` (text-server profile ${profile.id})` : ` (app-settings ${modelKey})`}`);
-  console.log(`[clean] endpoint         ${ollama} (app-settings ${urlKey}, chosen by llmServer)`);
+  console.log(`[clean] venue            ${crucible === null
+    ? `the local text engines (${venue.because})`
+    : `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}`}`);
+  console.log(`[clean] endpoint         ${crucible === null
+    ? `${ollama} (app-settings ${urlKey}, chosen by llmServer)`
+    : crucible.endpoint}`);
+  if (crucible !== null) {
+    // The ONLY rendering of the header map that exists: the credential is
+    // `Bearer ****<last 4>`, and nothing anywhere prints the whole of it.
+    console.log(`[clean] headers          ${crucible.maskedHeaders}  (in the spawn's environment, never on the line)`);
+  }
   if (profile !== null) {
     const route = textServer.textServerRoute(ollama);
     console.log(`[clean] text server      ${route.manage
@@ -427,7 +469,7 @@ async function main() {
   let last = null;
   let row;
   try {
-    row = await jobQueue.runJob(request, {
+    const run = () => jobQueue.runJob(request, {
       parentStep,
       signal: controller.signal,
       onProgress: (line) => {
@@ -437,6 +479,17 @@ async function main() {
         console.log(`clean-text: ${counted.page}/${counted.total}`);
       },
     });
+    /*
+     * The credential window, and it is the app's own dated stopgap rather than
+     * a CLI invention: Foundry's `runJob` spawns the engine with
+     * `env: process.env` and takes no overlay, so the map goes on this
+     * process's environment for the duration and is deleted in a `finally`
+     * (`electron/crucible/text-acts.js`, withHostedEndpointHeaders).
+     */
+    row = crucible === null
+      ? await run()
+      : await require(path.join(BF_DIST, 'crucible', 'text-acts.js'))
+        .withHostedEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run);
   } finally {
     // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
     // stay.

@@ -130,6 +130,16 @@ const SUITES = [
   // voice nobody chose. Neither suite needs a server, a card or the network.
   'test-crucible-servers',
   'test-crucible-routing',
+  // The four TEXT acts on somebody else's card (rollout item 2.6). Its centre
+  // is a credential and a name: the bearer token must be in the spawn's
+  // environment and in NOTHING a log or a command line can carry, and a
+  // simplify must never tell the server it is a translate (Owen's ruling,
+  // 2026-09-13 — a bench showing the wrong act name is worse than one showing
+  // none, and crucible refuses an act it does not know). It also pins the two
+  // refusals that keep a book honest: a model that is not resident stops the
+  // run BEFORE any spawn and never loads one on somebody's card, and an engine
+  // that cannot address a Crucible says so rather than 404ing an hour in.
+  'test-crucible-text-acts',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

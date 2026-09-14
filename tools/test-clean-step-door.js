@@ -194,26 +194,55 @@ if (fixture === null) {
   fs.mkdirSync(path.dirname(copied), { recursive: true });
   fs.cpSync(fixture.dir, copied, { recursive: true });
 
+  /*
+   * ── THE VENUE THIS HALF OF THE SUITE IS ABOUT ─────────────────────────────
+   *
+   * Since rollout item 2.6 the clean act asks WHERE it runs before it composes
+   * anything: the routing record's Crucible server, or the local engines. The
+   * six tests below are about the LOCAL line — the app-settings endpoint, the
+   * served-model assertion, the retired flags — so they pin that venue rather
+   * than inheriting whatever this machine's record happens to say, which would
+   * make them pass or fail on a setting that has nothing to do with them.
+   *
+   * Pinned with a userData OF ITS OWN (`$BOOKFORGE_USER_DATA`, honoured by the
+   * shim), carrying a routing record with the legacy switch on. Owen's real
+   * record, registry and tokens are neither read nor written. `app-settings.json`
+   * IS copied across, because "whichever the machine is on" is exactly what the
+   * model tests below assert and `storedSettings()` reads the real file.
+   *
+   * The Crucible venue gets its own test at the end, and the composition itself
+   * is covered without a project by `tools/test-crucible-text-acts.js`.
+   */
+  const doorUserData = path.join(ROOT, 'userData');
+  fs.mkdirSync(doorUserData, { recursive: true });
+  const realSettings = path.join(require(STUB).USER_DATA, 'app-settings.json');
+  if (fs.existsSync(realSettings)) {
+    fs.copyFileSync(realSettings, path.join(doorUserData, 'app-settings.json'));
+  }
+  const writeRouting = (legacyLocalRender) => fs.writeFileSync(
+    path.join(doorUserData, 'crucible-routing.json'),
+    JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender }),
+    'utf8');
+  writeRouting(true);
+
+  const doorEnv = () => {
+    /*
+     * NOTHING IS NAMED FOR IT. `FOUNDRY_BIN` and `FOUNDRY_CLI_PATH` are both
+     * cleared so the door does its own resolution — the prime, then
+     * `resolveFoundryPath` — which is the thing the engine assertion below is
+     * about. It spawns `--version` and nothing else.
+     */
+    const env = { ...process.env, BOOKFORGE_USER_DATA: doorUserData };
+    delete env.FOUNDRY_BIN;
+    delete env.FOUNDRY_CLI_PATH;
+    return env;
+  };
+
   const dryRun = (extra) => execFileSync(
     process.execPath,
     ['--require', STUB, DOOR, '--foundry-project', copied, '--library', lib,
       '--foundry-dist', FOUNDRY_DIST, '--dry-run', ...extra],
-    {
-      cwd: REPO,
-      encoding: 'utf8',
-      /*
-       * NOTHING IS NAMED FOR IT. `FOUNDRY_BIN` and `FOUNDRY_CLI_PATH` are both
-       * cleared so the door does its own resolution — the prime, then
-       * `resolveFoundryPath` — which is the thing the engine assertion below is
-       * about. It spawns `--version` and nothing else.
-       */
-      env: (() => {
-        const env = { ...process.env };
-        delete env.FOUNDRY_BIN;
-        delete env.FOUNDRY_CLI_PATH;
-        return env;
-      })(),
-    },
+    { cwd: REPO, encoding: 'utf8', env: doorEnv() },
   );
 
   /**
@@ -427,6 +456,35 @@ ${spawnLine(out)}`);
     try { dryRun(['--concurrency', '0']); }
     catch (err) { said = `${err.stdout || ''}${err.stderr || ''}`; }
     assert.ok(said.includes('not a whole number'), `expected a refusal; got: ${said}`);
+  });
+
+  /*
+   * ── THE OTHER VENUE ───────────────────────────────────────────────────────
+   *
+   * `--crucible-server` sets the same field the app sets from a queue row, and
+   * on an engine that cannot address a Crucible the act is refused BY NAME
+   * before anything is composed — not 404ed an hour in, and never dropped
+   * quietly onto llama-server. This is the CLI's half of the gate; the
+   * composition itself is `tools/test-crucible-text-acts.js`.
+   *
+   * The switch is turned off for this one and back on after, because the two
+   * venues are two states of one record and a test that left it changed would
+   * be the next test's fixture.
+   */
+  test('--crucible-server names the venue, and an engine that cannot reach one says so', () => {
+    writeRouting(false);
+    let said = '';
+    try { said = dryRun(['--crucible-server', 'local']); }
+    catch (err) { said = `${err.stdout || ''}${err.stderr || ''}`; }
+    finally { writeRouting(true); }
+    assert.ok(said.includes('cannot address one'),
+      `expected the named engine refusal; got: ${said}`);
+    assert.ok(said.includes('normaliseVllmEndpoint'), said);
+    assert.ok(said.includes('FOUNDRY_ENDPOINT_HEADERS'), said);
+    // NO SILENT LOCAL RUN: a refused act must not have composed a line.
+    assert.ok(!said.includes('[clean] spawn'),
+      `the act composed a command line after the gate refused it:
+${said}`);
   });
 }
 

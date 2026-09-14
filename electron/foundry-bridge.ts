@@ -65,6 +65,9 @@ import {
   effectiveFoundryVersion,
 } from './components/foundry-cli-components';
 import { planUpgrade } from './components/component-upgrades';
+// The one owner of the endpoint header map, and of removing it. See the
+// comment at the spawn in `runFoundry`.
+import { stripEndpointHeaders } from './crucible/text-acts';
 import { ensureFoundryReleaseDiscovered } from './components/foundry-release-check';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,9 +423,27 @@ export interface FoundryResult {
 export function runFoundry(args: string[], opts: FoundryRunOptions = {}): Promise<FoundryResult> {
   const binary = requireFoundryPath();
   return new Promise((resolve, reject) => {
+    /*
+     * ── THE CREDENTIAL IS OPT-IN PER SPAWN, NEVER INHERITED ──────────────────
+     *
+     * `FOUNDRY_ENDPOINT_HEADERS` carries a bearer token (crucible
+     * `docs/PHASE7-LANES.md` §7.1(B)), and the contract's rule is that it is
+     * *"stripped from the environment of any child that does not need it"*.
+     * The hosted Foundry window can put one on THIS process's environment for
+     * the duration of an act — it spawns the engine with `env: process.env` and
+     * takes no overlay, so there is nowhere else to put it
+     * (`electron/crucible/text-acts.ts`, `withHostedEndpointHeaders`) — and
+     * every child spawned through this door during that window would otherwise
+     * inherit it.
+     *
+     * So it is removed first and added back only by a caller that passed one.
+     * A mechanical fix at the one door rather than a rule somebody has to
+     * remember at each call site.
+     */
+    const inherited = stripEndpointHeaders(process.env);
     const child = spawn(binary, args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env || {}) },
+      env: { ...inherited, ...(opts.env || {}) },
       windowsHide: true,
     });
 

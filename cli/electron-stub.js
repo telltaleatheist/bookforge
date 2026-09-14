@@ -17,15 +17,29 @@ const path = require('path');
 const os = require('os');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-// Same per-platform userData root Electron's app.getPath('userData') resolves to.
-const USER_DATA = path.join(
-  process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support')
-    : process.platform === 'win32'
-      ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'))
-      : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')),
-  'BookForge'
-);
+/*
+ * WHERE userData IS, AND THERE IS ONE ANSWER TO IT.
+ *
+ * `$BOOKFORGE_USER_DATA` overrides the platform location, which is how a keeper
+ * drives a door against records of its own without touching the ones holding
+ * Owen's library root, his settings and his Crucible tokens.
+ *
+ * IT IS HONOURED HERE, at the shim, because this is what `app.getPath` answers
+ * and therefore what every compiled module reads. `cli/clean-step.js` already
+ * consulted the variable for its OWN two lookups while the modules it calls
+ * went on reading the platform path — one fact with two answers, and a run
+ * pointed elsewhere that half-obeyed (crucible `docs/ARCHITECTURE.md` R1).
+ */
+const USER_DATA = (process.env.BOOKFORGE_USER_DATA || '').trim().length > 0
+  ? path.resolve(process.env.BOOKFORGE_USER_DATA.trim())
+  : path.join(
+    process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support')
+      : process.platform === 'win32'
+        ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'))
+        : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')),
+    'BookForge'
+  );
 
 const electronStub = {
   app: {

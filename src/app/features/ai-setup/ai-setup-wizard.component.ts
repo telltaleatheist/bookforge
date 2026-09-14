@@ -7,7 +7,12 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AiService, LocalModel, LocalSystemInfo, LocalModelProgress } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
-import type { CrucibleModelRow } from '@shared/crucible/settings-wire';
+import {
+  CRUCIBLE_TEXT_ACT_NAMES,
+  type CrucibleModelRow,
+  type CrucibleTextActModels,
+  type CrucibleTextActName,
+} from '@shared/crucible/settings-wire';
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
@@ -224,6 +229,32 @@ import {
                 </p>
               }
             }
+          }
+
+          @if (crucibleServer()) {
+            <h3 class="cru-acts-head">A model per text act</h3>
+            <p class="muted">
+              Clean, translate, simplify and analysis are four acts and each names its own
+              Crucible model — a cleanup does not need the 27B a translation does. The name
+              travels on every request, so the server's bench says which act is running rather
+              than filing all four under "translate". A Crucible model id means the same weights
+              on every machine, so a choice made here is good on any server that serves it.
+            </p>
+            @for (act of textActs; track act) {
+              <div class="ollama-url-row">
+                <label class="ollama-url-label">{{ act }}</label>
+                <select class="key-input" [value]="textModel(act)" (change)="setTextModel(act, $any($event.target).value)">
+                  <option value="">Not chosen — this act will refuse by name</option>
+                  @for (m of crucibleModels(); track m.id) {
+                    <option [value]="m.id">{{ m.id }} — {{ modelState(m) }}</option>
+                  }
+                </select>
+              </div>
+            }
+            <p class="muted">
+              Owen's ruling, 2026-09-13: they can't lie to the user and say a translate job is
+              running when it's actually a simplify job.
+            </p>
           }
 
           @if (crucibleStatus(); as status) {
@@ -524,6 +555,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     });
     await this.reload();
     await this.loadCrucibleServers();
+    await this.loadTextModels();
     this.sysInfo.set(await this.ai.systemInfo());
   }
 
@@ -678,6 +710,56 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const server = this.settings.getAIConfig().crucible?.server ?? '';
     this.settings.updateAIConfig({ crucible: { server, model } });
     this.crucibleStatus.set(null);
+  }
+
+  // ── A model per TEXT ACT (docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.6) ─────────
+  //
+  // A SEPARATE RECORD FROM THE ONE ABOVE, and the separation is the point. The
+  // picker above is the app's AI provider — the cleanup pass's own chat calls
+  // through `ai-bridge.ts`, chosen per provider and stored with the rest of the
+  // AI config. THESE four are what the FOUNDRY ENGINE is told with `--model`
+  // when BookForge spawns it for clean / translate / simplify / analysis, and
+  // the engine runs in the main process and in the CLI — neither of which can
+  // read a renderer's localStorage. So they live in
+  // `<userData>/crucible-models.json`, edited here over IPC, with one owner
+  // (`electron/crucible/text-models.ts`).
+  //
+  // NOT DEFAULTED, and never derived from an Ollama tag: `cleanTextModel` in
+  // app-settings.json names weights in a different namespace with a different
+  // owner. An act with no entry refuses by name at run time.
+
+  readonly textActs = CRUCIBLE_TEXT_ACT_NAMES;
+  readonly textModels = signal<CrucibleTextActModels>({});
+
+  textModel(act: CrucibleTextActName): string {
+    return this.textModels()[act] ?? '';
+  }
+
+  async setTextModel(act: CrucibleTextActName, model: string): Promise<void> {
+    const res = await this.electron.crucible.setTextModel(act, model);
+    if (!res.success || !res.data) {
+      this.crucibleStatus.set({
+        ok: false,
+        message: res.error ?? `The ${act} model could not be saved, and nothing said why.`,
+      });
+      return;
+    }
+    this.textModels.set(res.data);
+    this.crucibleStatus.set(null);
+  }
+
+  private async loadTextModels(): Promise<void> {
+    const res = await this.electron.crucible.textModels();
+    if (!res.success || !res.data) {
+      // A corrupt record is refused by its owner, in its own words, and those
+      // words carry the repair. Shown rather than replaced with an empty map.
+      this.crucibleStatus.set({
+        ok: false,
+        message: res.error ?? 'The per-act Crucible model record could not be read.',
+      });
+      return;
+    }
+    this.textModels.set(res.data);
   }
 
   /**
