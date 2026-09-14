@@ -4,6 +4,61 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0c. WHERE IT STANDS AT 17:30, 2026-09-14 — read this first (supersedes 0a)
+
+**Rulings Owen made today, in order:** Orpheus is DEPRECATED and removed from Crucible; XTTS
+fully removed; Higgs is the frontier · Crucible has its OWN UI (not microservices) and hands out
+the token · CPU slots stay local · environments come from the GitHub release · Crucible installs
+independently and every app coordinates with whatever is there · a Crucible-owned WSL distro,
+"make it idiot proof" · NO consent step — coordination is automatic on every connected server ·
+Foundry does the same simplification now.
+
+**Landed today (all on the two feature branches, NOTHING pushed, nothing merged):**
+- Crucible `feat/phase6-remote-render`: phase 13 (operator API, tasks, `/v1/setup` + pairing
+  lines, the PAGE at `/ui/`, generated `modules/*.module.json`, SDK operator door + `parsePairing`
+  + `ChatOptions.act`), Orpheus removed with a drift guard, bootstrap linger-as-root, phase 14
+  host side (conda gone, server pack, own distro, WSL state table, `install.sh`/`install.ps1`
+  generated, UTF-16 chunk bug fixed) — 1171 pytest / 235 sdk / 191 bootstrap. Phase 14 SERVER
+  side (envpack model, `crucible install` downloads, CI matrix, rootfs job, release.sh assets) is
+  the ONE agent still running at this writing; the real `asr` pack build in WSL is its proof.
+- BookForge `feat/narrator-guarded-serve`: per-server slot sets; every GPU step travels; one
+  lease per row (per MODEL — Foundry's catch); PASS steps travel through one mapping (a 4th and
+  5th private provider copy deleted); hosted-Foundry seam (`FoundryHost.servers()`, refusal
+  renamed truthfully, tripwire keeper); the 164-row settings audit implemented — 4-step wizard,
+  11 settings sections, Orpheus/Higgs/RVC/STT sections deleted, dead controls deleted, XTTS
+  remnants gone, cloud keys → Foundry's card, `crucible-models.json` gone; the operator door
+  (connect code paste, Open engine console with the hardened window, vendored module + keeper);
+  coordinate-on-connect (`electron/crucible/coordinate.ts`, catalog first, no button, no
+  consent); SDK pinned to `vendor/crucible-client-0.6.0.tgz` (dated STOPGAP). 149 keepers.
+- Foundry (theirs): e096734/990bd2e/33bb187/599d0c8/6a11661 — one registry seam hosted, waitFor
+  crosses runJob, cloud editable hosted, two hosted guards, Open Crucible, tarball pinned;
+  their settings audit is running. **The single re-vendor targets their sha AFTER their
+  coordinate + wizard land** and carries: `RunOptions.waitFor`, deletion of
+  `hosted_placement_not_vendored`, `slots?()` removal.
+
+**Live servers:** the PC's WSL Crucible runs the PAGE build (2328562, restarted 16:10 via
+`systemctl restart user@1000` as root after a clean SIGTERM left it down — `Restart=on-failure`
+defect owed). The WSL clone `/home/telltale/crucible` is BEHIND HEAD; pull + restart once the
+env-pack agent lands. The Mac still runs 22eccf0 (pre-page). Both hold nothing.
+
+**Disk:** C: 5 GB → ~505 GB free. Root cause was the Higgs checkpoint screen's fused merges
+(Training pc fixed the loop at 12:11). Deleted today: dead conda envs (Windows xtts/xtts_training/
+clipforge-bench, WSL orpheus_ft/whisperx-cuda/headline27b), package caches, temp caches, WSL
+pip cache, `tts-orpheus` Crucible env; OneDrive Documents+Projects marked online-only;
+`$WINDOWS.~BT` = Owen's admin cleanup (takeown was hopeless; cleanmgr). LEGACY envs (63 GB) go
+with the local spawn layer after the in-app pass.
+
+**Needs Owen, in order:**
+1. **Publish v0.6.0** once the env-pack agent reports: `cd /c/Users/tellt/Projects/crucible &&
+   ./scripts/release.sh --branch feat/phase6-remote-render` — its CI run is the first real
+   build of the packs and the rootfs; the agent's report says which packs fit a hosted runner.
+   Then BookForge and Foundry swap the vendored tarball for the release URL and
+   `DRIVEN_INSTALL_AVAILABLE` flips.
+2. **The in-app pass on a free card** (Training's ladder is done; the card was idle at 16:00).
+3. **Rulings:** which deathstalker merge is canonical (Crucible's HF pull ≠ local
+   `ds_v7_930_prod`; §3); Resemble Enhance (job type or delete); a user's own RVC archive;
+   `mlx-audio` 0.4.8 pin re-measurement; `Restart=always` for the unit.
+
 ## 0a. WHERE IT STANDS AT 06:00, 2026-09-14 — read this first
 
 **Crucible 0.6.0 is prepared, pushed and RUNNING on both machines** (`22eccf0`). Both were
