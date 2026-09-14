@@ -82,6 +82,18 @@ check('not-TOML is config_unreadable, never an empty server', () => {
   refuses(() => local.parseLocalConfig('[server\nname = ', 'x', 'file'), local.CrucibleLocalError, 'config_unreadable');
 });
 
+/*
+ * THE PAIRING-FILE DOOR IS CLOSED IN EVERY config.toml FIXTURE.
+ *
+ * `readLocalServer` asks the pairing file FIRST (crucible PHASE15 §3.6/§5.1),
+ * so a fixture that left `pairing` off would read the REAL machine's file and
+ * the config.toml checks below would pass or fail depending on whether the
+ * person running them has a Crucible host installed. Supplied explicitly, with
+ * `readFile` answering `null` — which is the "no engine on this machine" fact,
+ * not a stub for one.
+ */
+const NO_PAIRING = { platform: 'darwin', env: {}, homedir: '/home/t', readFile: () => null };
+
 check('localConfigPath honours $CRUCIBLE_HOME exactly as crucible_home() does', () => {
   assert.strictEqual(local.localConfigPath({}, '/home/t'), path.join('/home/t', '.crucible', 'config.toml'));
   assert.strictEqual(local.localConfigPath({ CRUCIBLE_HOME: '/srv/cru' }, '/home/t'), path.join('/srv/cru', 'config.toml'));
@@ -90,7 +102,7 @@ check('localConfigPath honours $CRUCIBLE_HOME exactly as crucible_home() does', 
 
 check('on macOS/Linux the file is read directly; absent is no_local_config', () => {
   const home = fs.mkdtempSync(path.join(tmp, 'home-'));
-  const host = { platform: 'darwin', env: {}, homedir: home, wslDistro: undefined, runWsl: () => { throw new Error('must not run wsl on darwin'); } };
+  const host = { platform: 'darwin', env: {}, homedir: home, wslDistro: undefined, pairing: NO_PAIRING, runWsl: () => { throw new Error('must not run wsl on darwin'); } };
   refuses(() => local.readLocalServer(host), local.CrucibleLocalError, 'no_local_config');
   fs.mkdirSync(path.join(home, '.crucible'));
   fs.writeFileSync(path.join(home, '.crucible', 'config.toml'), CONFIG);
@@ -103,7 +115,7 @@ check('on macOS/Linux the file is read directly; absent is no_local_config', () 
 check('on Windows the file is read through wsl.exe -d <distro> --exec, and the script is the contract', () => {
   const calls = [];
   const host = {
-    platform: 'win32', env: {}, homedir: 'C:\\Users\\t', wslDistro: 'Ubuntu',
+    platform: 'win32', env: {}, homedir: 'C:\\Users\\t', wslDistro: 'Ubuntu', pairing: NO_PAIRING,
     runWsl: (distro, script) => { calls.push({ distro, script }); return { status: 0, stdout: `/home/telltale/.crucible/config.toml\n${CONFIG}`, stderr: '' }; },
   };
   const got = local.readLocalServer(host);
@@ -116,13 +128,13 @@ check('on Windows the file is read through wsl.exe -d <distro> --exec, and the s
 });
 
 check('on Windows with no distro setting: no_wsl_distro, not a guessed distro', () => {
-  const host = { platform: 'win32', env: {}, homedir: 'C:\\', wslDistro: undefined, runWsl: () => { throw new Error('must not run'); } };
+  const host = { platform: 'win32', env: {}, homedir: 'C:\\', wslDistro: undefined, pairing: NO_PAIRING, runWsl: () => { throw new Error('must not run'); } };
   refuses(() => local.readLocalServer(host), local.CrucibleLocalError, 'no_wsl_distro');
   refuses(() => local.readLocalServer({ ...host, wslDistro: '  ' }), local.CrucibleLocalError, 'no_wsl_distro');
 });
 
 check('guest exit 3 is no_local_config; any other non-zero is wsl_read_failed; a spawn error is wsl_read_failed', () => {
-  const base = { platform: 'win32', env: {}, homedir: 'C:\\', wslDistro: 'Ubuntu' };
+  const base = { platform: 'win32', env: {}, homedir: 'C:\\', wslDistro: 'Ubuntu', pairing: NO_PAIRING };
   const gone = refuses(() => local.readLocalServer({ ...base, runWsl: () => ({ status: 3, stdout: '', stderr: '/home/telltale/.crucible/config.toml\n' }) }), local.CrucibleLocalError, 'no_local_config');
   assert.ok(gone.message.includes('/home/telltale/.crucible/config.toml') && gone.message.includes('Ubuntu'), gone.message);
   refuses(() => local.readLocalServer({ ...base, runWsl: () => ({ status: 1, stdout: '', stderr: 'bash: boom' }) }), local.CrucibleLocalError, 'wsl_read_failed');

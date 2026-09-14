@@ -496,6 +496,273 @@ function modelLeasedRefusal(held) {
   };
 }
 
+/**
+ * -- THE SETTINGS DOOR (crucible docs/PHASE15-HOST.md 3.1, 3.2, 3.3) --------
+ *
+ * `GET /v1/settings`, `PUT /v1/settings`,
+ * `POST /v1/settings/upstreams/{name}/test` and a `GET /v1/capability` whose
+ * rows carry `route`. Added as a DELEGATED handler beside {@link leaseRoutes},
+ * for the same reason that one is: this file is shared by fifteen suites and
+ * none of them should grow a route it never asked for.
+ *
+ * It speaks the wire in the SERVER's spelling -- snake_case, `key_hint`,
+ * `desktop_allowance_bytes`, `backend_kind` -- because the whole point of the
+ * seam under test is that it reads THAT and hands up camelCase. A fake that
+ * answered in the client's spelling would test nothing.
+ *
+ * -- A KEY IS WRITE-ONLY HERE TOO ------------------------------------------
+ *
+ * 3.1: "A key is write-only... There is no route that returns a key." So this
+ * fake stores what it is sent, reports `configured` and the last four
+ * characters, and has no branch that could put a key in a response. A keeper
+ * asserts the served JSON never contains one, which is only a real assertion
+ * because the fake is capable of holding one.
+ *
+ * -- THE THREE BACKENDS, INCLUDING WINDOWS ---------------------------------
+ *
+ * AMENDED 2026-09-14 (crucible 56cfe37): Windows IS a backend,
+ * `llama-windows`, structurally what `mlx-darwin` is. It serves the llm
+ * classes and `pages`; the five Python-job classes answer `enabled: false`
+ * with ONE shared sentence (3.3). `backendKind: 'llama-windows'` makes this
+ * fake answer that way, so a wizard's faces can be driven without a machine.
+ *
+ * `behaviour`:
+ *   routes            initial routes, e.g. {translate: 'anthropic/claude-x'}
+ *   upstreams         initial config, e.g. {anthropic: {key: 'sk-ant-1234'}}
+ *   backendKind       'cuda-linux' (default), 'mlx-darwin', 'llama-windows'
+ *   localModelFor(c)  the local model a class would use, or null
+ *   refusePut(n)      null, or {status, code, message, details}
+ *   refuseTest(name, n)  the same
+ *   testModels(name)  what the upstream lists; default three ids
+ *   omitRoute         true -> capability rows carry NO `route` (an old server)
+ *   noSettingsDoor    true -> 404 on every settings route (a pre-phase-15 one)
+ */
+const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis'];
+const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
+/** The five classes only the WSL2 engine serves, and the one sentence for all of them (3.3). */
+const WSL_ONLY_CLASSES = ['tts', 'asr', 'align', 'rvc', 'denoise'];
+const WSL_ONLY_REASON = 'this job type needs the WSL2 engine (vLLM/SGLang); install it from the console';
+
+function settingsRoutes(behaviour) {
+  behaviour = behaviour || {};
+  const state = {
+    /** Every PUT body that crossed, in order. */
+    puts: [],
+    /** Every test that crossed: `{name, body}`. */
+    tests: [],
+    /** How many times the document was read. */
+    reads: 0,
+    /** How many times capability was read. */
+    capabilityReads: 0,
+    /** The refusals this fake answered. */
+    refusals: [],
+    /** Everything served, as text, so a keeper can grep it for a key. */
+    served: [],
+  };
+  const routes = Object.assign({}, behaviour.routes || {});
+  const upstreams = JSON.parse(JSON.stringify(behaviour.upstreams || {}));
+  const backendKind = behaviour.backendKind || 'cuda-linux';
+  const localModelFor = behaviour.localModelFor || function (c) {
+    return c === 'clean' ? 'qwen3.5-9b' : null;
+  };
+  let putAttempts = 0;
+  const testAttempts = {};
+
+  const upstreamOf = (name) => (Object.prototype.hasOwnProperty.call(upstreams, name) ? upstreams[name] : null);
+  const configured = (name) => {
+    const u = upstreamOf(name);
+    if (u === null) return false;
+    return name === 'ollama'
+      ? typeof u.url === 'string' && u.url !== ''
+      : typeof u.key === 'string' && u.key !== '';
+  };
+
+  const document = () => {
+    const routeDoc = {};
+    for (const c of LLM_CLASSES) {
+      const value = routes[c];
+      routeDoc[c] = value === undefined || value === 'local'
+        ? { route: 'local', model: localModelFor(c) }
+        : { route: 'upstream', model: value };
+    }
+    const upstreamDoc = {};
+    for (const name of UPSTREAM_NAMES) {
+      const u = upstreamOf(name);
+      if (name === 'ollama') {
+        upstreamDoc[name] = { configured: configured(name), url: u === null ? null : (u.url || null) };
+      } else {
+        upstreamDoc[name] = {
+          configured: configured(name),
+          key_hint: configured(name) ? String(u.key).slice(-4) : null,
+        };
+      }
+    }
+    return {
+      routes: routeDoc,
+      upstreams: upstreamDoc,
+      desktop_allowance_bytes: 3221225472,
+      backend_kind: backendKind,
+    };
+  };
+
+  const capabilityRow = (c) => {
+    const upstream = routes[c] !== undefined && routes[c] !== 'local';
+    if (WSL_ONLY_CLASSES.indexOf(c) !== -1) {
+      const here = backendKind === 'llama-windows';
+      return {
+        capability: c,
+        enabled: !here,
+        selected: here ? '' : 'higgs-v3',
+        reason: here ? WSL_ONLY_REASON : 'installed',
+        shortfallBytes: 0,
+      };
+    }
+    const local = localModelFor(c);
+    return {
+      capability: c,
+      enabled: upstream ? true : local !== null,
+      selected: upstream ? routes[c] : (local === null ? '' : local),
+      reason: upstream
+        ? 'routed to ' + String(routes[c]).split('/')[0] + '; the local answer would be: '
+          + (local === null ? 'nothing fits' : local)
+        : (local === null ? 'nothing on this card fits' : local + ' fits'),
+      shortfallBytes: 0,
+    };
+  };
+
+  const capability = () => ({
+    backend_kind: backendKind,
+    total_bytes: 25769803776,
+    desktop_allowance_bytes: 3221225472,
+    classes: LLM_CLASSES.concat(['pages'], WSL_ONLY_CLASSES).map((c) => {
+      const row = capabilityRow(c === 'pages' ? 'pages' : c);
+      if (c === 'pages') {
+        row.enabled = true;
+        row.selected = 'dots-ocr';
+        row.reason = 'dots-ocr fits';
+      }
+      if (behaviour.omitRoute !== true) {
+        row.route = routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
+      }
+      return row;
+    }),
+  });
+
+  // Every branch answers `true`; see the note in `leaseRoutes`.
+  const serve = (res, status, body) => {
+    state.served.push(JSON.stringify(body));
+    send(res, status, body);
+    return true;
+  };
+  const refuse = (res, refusal) => {
+    state.refusals.push(refusal);
+    return serve(res, refusal.status, {
+      error: {
+        code: refusal.code,
+        message: refusal.message,
+        details: refusal.details === undefined ? null : refusal.details,
+      },
+    });
+  };
+
+  return {
+    settings: state,
+    /** The document as the fake currently holds it -- what a keeper asserts against. */
+    snapshot: document,
+    async handle(req, res, ctx) {
+      const route = ctx.url.pathname;
+      if (route.indexOf('/v1/settings') !== 0 && route !== '/v1/capability') return false;
+
+      if (behaviour.noSettingsDoor === true && route.indexOf('/v1/settings') === 0) {
+        return serve(res, 404, { error: { code: 'not_found', message: 'no such route', details: null } });
+      }
+
+      if (route === '/v1/capability' && req.method === 'GET') {
+        state.capabilityReads += 1;
+        return serve(res, 200, capability());
+      }
+
+      if (route === '/v1/settings' && req.method === 'GET') {
+        state.reads += 1;
+        return serve(res, 200, document());
+      }
+
+      if (route === '/v1/settings' && req.method === 'PUT') {
+        putAttempts += 1;
+        const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+        state.puts.push(body);
+        const refusal = behaviour.refusePut ? behaviour.refusePut(putAttempts) : null;
+        if (refusal) return refuse(res, refusal);
+        // Upstreams first, then routes, then validate -- the server's own order
+        // (3.2), which is what makes "one PUT configures AND routes" true.
+        for (const name of Object.keys(body.upstreams || {})) {
+          const value = body.upstreams[name];
+          if (value === null) delete upstreams[name];
+          else upstreams[name] = Object.assign({}, upstreams[name] || {}, value);
+        }
+        for (const cls of Object.keys(body.routes || {})) {
+          const value = body.routes[cls];
+          if (LLM_CLASSES.indexOf(cls) === -1) {
+            return refuse(res, {
+              status: 400,
+              code: 'route_not_routable',
+              message: 'the "' + cls + '" class is not routable',
+              details: { field: 'routes.' + cls },
+            });
+          }
+          if (value === 'local') { delete routes[cls]; continue; }
+          const upstreamName = String(value).split('/')[0];
+          if (String(value).indexOf('/') === -1 || UPSTREAM_NAMES.indexOf(upstreamName) === -1) {
+            return refuse(res, {
+              status: 400,
+              code: 'route_bad_model',
+              message: '"' + value + '" is not an upstream model id',
+              details: { field: 'routes.' + cls },
+            });
+          }
+          if (!configured(upstreamName)) {
+            return refuse(res, {
+              status: 400,
+              code: 'route_upstream_unconfigured',
+              message: upstreamName + ' has no key',
+              details: { field: 'routes.' + cls },
+            });
+          }
+          routes[cls] = value;
+        }
+        return serve(res, 200, document());
+      }
+
+      const test = /^\/v1\/settings\/upstreams\/([^/]+)\/test$/.exec(route);
+      if (test !== null && req.method === 'POST') {
+        const name = decodeURIComponent(test[1]);
+        const body = JSON.parse((await ctx.readBody(req)).toString('utf-8') || '{}');
+        state.tests.push({ name, body });
+        testAttempts[name] = (testAttempts[name] || 0) + 1;
+        const refusal = behaviour.refuseTest ? behaviour.refuseTest(name, testAttempts[name]) : null;
+        if (refusal) return refuse(res, refusal);
+        const probed = (body.key !== undefined && body.key !== '') || (body.url !== undefined && body.url !== '');
+        if (!probed && !configured(name)) {
+          return refuse(res, {
+            status: 400,
+            code: 'upstream_unconfigured',
+            message: name + ' has nothing configured and the test carried nothing',
+            details: null,
+          });
+        }
+        const models = behaviour.testModels
+          ? behaviour.testModels(name)
+          : ['model-a', 'model-b', 'model-c'];
+        return serve(res, 200, { models });
+      }
+
+      return serve(res, 405, {
+        error: { code: 'method_not_allowed', message: req.method + ' ' + route, details: null },
+      });
+    },
+  };
+}
+
 /** `404 unknown_lease` — the shape a heartbeat after a restart, or a late release, gets. */
 function unknownLeaseRefusal(leaseId, why) {
   return {
@@ -510,4 +777,5 @@ module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, legacyHost, send,
   leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
+  settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
 };

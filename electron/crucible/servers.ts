@@ -73,6 +73,7 @@ import {
   type LocalServer,
 } from './local';
 import { getWslDistro } from '../tool-paths';
+import type { LocalServerVia } from '../../shared/crucible/settings-wire';
 
 export { LOCAL_SERVER_NAME, CrucibleLocalError } from './local';
 export type { LocalServer } from './local';
@@ -122,7 +123,7 @@ export interface ResolvedServer {
   /** Which owner answered. */
   source: 'local' | 'registry';
   /** The local server's own name (`[server] name`) and config path; absent for a registry entry. */
-  local?: { serverName: string; configPath: string; via: 'file' | 'wsl' };
+  local?: { serverName: string; configPath: string; via: LocalServerVia };
 }
 
 /**
@@ -153,7 +154,7 @@ export type LocalListing =
       url: string;
       tokenMasked: string;
       configPath: string;
-      via: 'file' | 'wsl';
+      via: LocalServerVia;
     }
   | {
       present: false;

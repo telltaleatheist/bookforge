@@ -19,17 +19,30 @@
 // The list
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * WHICH DOOR "the server on this machine" CAME THROUGH.
+ *
+ *  - `pairing` — the connect code the engine (or the Windows host) wrote beside
+ *    its own config, crucible `docs/PHASE15-HOST.md` §3.6. **The contract's
+ *    door**, and the one that needs no WSL and no typing.
+ *  - `file` — its `config.toml`, read directly. macOS and Linux.
+ *  - `wsl` — its `config.toml`, read through `wsl.exe`. **The LEGACY door**,
+ *    dated: §3.6 says it "is how the WSL server gets registered" until a host
+ *    exists on the machine, "and that door is deleted when the host lands".
+ */
+export type LocalServerVia = 'pairing' | 'file' | 'wsl';
+
 /** The server on this machine, as the row draws it. */
 export type LocalServerRow =
   | {
       present: true;
-      /** `[server] name` from its own config.toml, e.g. `crucible@owens-pc-wsl`. */
+      /** `[server] name`, or the connect code's name, e.g. `crucible@owens-pc-wsl`. */
       serverName: string;
       url: string;
       tokenMasked: string;
       /** The file this was read from; prefixed `<distro>:` when read through WSL. */
       configPath: string;
-      via: 'file' | 'wsl';
+      via: LocalServerVia;
     }
   | {
       present: false;
@@ -346,6 +359,16 @@ export interface CrucibleCapabilityRow {
   reason: string;
   /** How much more memory the smallest candidate needed, or 0. */
   shortfallBytes: number;
+  /**
+   * WHERE this class's work runs on that server (PHASE15 §3.3).
+   *
+   * `upstream` means `selected` is an upstream model id and the work leaves the
+   * card entirely — which is what the queue reads to give the row a `[cloud]`
+   * lane instead of a GPU slot (`shared/queue/slot-sets.ts`). Every non-llm
+   * class answers `local`; only `clean translate simplify analysis` can be
+   * anything else.
+   */
+  route: CrucibleRouteKind;
 }
 
 /**
@@ -360,3 +383,136 @@ export interface CrucibleCapabilityView {
   desktopAllowanceBytes: number;
   classes: CrucibleCapabilityRow[];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ENGINE'S OWN SETTINGS (crucible docs/PHASE15-HOST.md sections 3.1, 3.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/*
+ * ── WHY THESE SHAPES ARE HERE AND NOT IN app-settings.json ─────────────────
+ *
+ * Owen, 2026-09-14 (evening): *"bookforge/foundry gain a simple contract: send
+ * commands to the crucible server. period. they dont have ollama fallbacks or
+ * cloud anything at all."* And: *"If the user enters an anthropic api key, it
+ * should pass through to crucible."*
+ *
+ * PHASE15 §0: **settings live in the engine and nowhere else.** An app is a
+ * WINDOW onto them, never a copy. So these types describe a document BookForge
+ * reads and writes over HTTP and never stores: there is no app-settings key, no
+ * tool-paths key, no localStorage entry, and `tools/test-no-cloud-doors.js`
+ * pins that by name.
+ *
+ * This **overrules the morning ruling** that cloud keys live in Foundry's cloud
+ * card (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §3): the keys moved INTO the engine and
+ * Foundry's card becomes a window onto the same document.
+ *
+ * A key is WRITE-ONLY. Nothing on this wire can carry one back — the read shape
+ * has a {@link CrucibleUpstreamRow.keyHint}, four characters, and no field a
+ * key could travel in. That is the same property `LocalServerRow.tokenMasked`
+ * has at the top of this file, kept rather than re-earned.
+ */
+
+/** The three upstreams an engine can forward an llm class to. Exactly these. */
+export const CRUCIBLE_UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'] as const;
+
+/** One of the three. Never a free string: the server refuses a fourth by name. */
+export type CrucibleUpstreamName = (typeof CRUCIBLE_UPSTREAM_NAMES)[number];
+
+/**
+ * Where a class's work runs ON THAT SERVER.
+ *
+ * `local` is the selected local model; `upstream` is a service the operator
+ * configured. **It is a route, not a fallback** (PHASE15 §0): it is chosen
+ * before any request and nothing switches to it because something failed.
+ */
+export type CrucibleRouteKind = 'local' | 'upstream';
+
+/** One class's route, as `GET /v1/settings` states it. */
+export interface CrucibleRouteRow {
+  route: CrucibleRouteKind;
+  /**
+   * For `local`, the class's selected local model, or `null` when nothing fits.
+   * For `upstream`, the upstream model id (`anthropic/claude-sonnet-5`).
+   *
+   * `null` is "nothing fits", a measured answer — branch on {@link route} and
+   * on this being null, never on an empty string, which the server does not
+   * send here.
+   */
+  model: string | null;
+}
+
+/**
+ * One upstream's state. **`configured` is the only thing to branch on** — the
+ * hint and the url are for showing, and a key is never here at all.
+ */
+export interface CrucibleUpstreamRow {
+  configured: boolean;
+  /** The last four characters of the key, or `null`. `anthropic`/`openai` only. */
+  keyHint: string | null;
+  /** Where the Ollama server is. `null` for the two that are reached by key. */
+  url: string | null;
+}
+
+/** `GET /v1/settings` — the whole document, and the only copy of it. */
+export interface CrucibleEngineSettings {
+  /** One entry per llm class, always all four. */
+  routes: Record<CrucibleTextActName, CrucibleRouteRow>;
+  /** One entry per upstream, always all three, configured or not. */
+  upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
+  desktopAllowanceBytes: number;
+  /** `cuda-linux`, `mlx-darwin`, or `none` in host mode. */
+  backendKind: string;
+}
+
+/**
+ * `PUT /v1/settings` — a PARTIAL patch, validated as a whole, applied or not.
+ *
+ * One request configures an upstream AND sets the route to it (§5.2): the
+ * server applies upstreams first, then routes, then validates, and a refusal
+ * applies nothing — so there is no window in which a route names a key that is
+ * not there yet.
+ */
+export interface CrucibleEngineSettingsPatch {
+  /** `'local'`, or an upstream model id `<upstream>/<model>`. */
+  routes?: Partial<Record<CrucibleTextActName, string>>;
+  /** A key or a url to set; `null` REMOVES that upstream. */
+  upstreams?: Partial<Record<CrucibleUpstreamName, { key: string } | { url: string } | null>>;
+  desktopAllowanceBytes?: number;
+}
+
+/**
+ * What to try before saving: `POST /v1/settings/upstreams/{name}/test`.
+ *
+ * Empty means "test what is already configured" — the button beside a card
+ * that already has a key. A key or url here is tested WITHOUT being stored,
+ * which is what makes Test-before-Save true rather than a wording.
+ */
+export type CrucibleUpstreamProbe = { key: string } | { url: string } | Record<string, never>;
+
+/**
+ * What the upstream itself lists.
+ *
+ * **BookForge ships no cloud model list** (PHASE15 §2): the ids a person picks
+ * from are the ones the account can actually reach, asked for at the moment
+ * they are shown. A hardcoded three-item list was audit finding 3 and it is
+ * gone.
+ */
+export interface CrucibleUpstreamModels {
+  models: string[];
+}
+
+/** A named refusal from the settings door, for a screen that shows the fix. */
+export interface CrucibleEngineSettingsRefusal {
+  code: string;
+  message: string;
+}
+
+/** A read or a write, or the reason there is neither. Never a half-document. */
+export type CrucibleEngineSettingsResult =
+  | { ok: true; settings: CrucibleEngineSettings }
+  | { ok: false; refusal: CrucibleEngineSettingsRefusal };
+
+/** A test's answer, or the reason there is none. */
+export type CrucibleUpstreamTestResult =
+  | { ok: true; models: string[] }
+  | { ok: false; refusal: CrucibleEngineSettingsRefusal };

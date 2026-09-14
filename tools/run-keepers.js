@@ -278,6 +278,17 @@ const SUITES = [
   // from every renderer source, the wizard's connected face offers nothing to
   // press, and every job type the module asks for has words a person can read.
   'test-crucible-coordinate',
+  // PHASE 15: the engine's own settings document, and the day this app's stand-in
+  // for it is deleted. `electron/crucible/settings-wire.ts` and `pairing-file.ts`
+  // speak four SDK methods and one SDK field that `vendor/crucible-client-0.6.0.tgz`
+  // does not have — the first check in this suite goes RED the day it does, and
+  // says which files to delete. The rest is the door itself: a key is write-only
+  // both ways, one PUT configures an upstream AND routes to it, a Test does not
+  // store what it tested, a capability row without a `route` is refused rather
+  // than read as local (the queue's cloud lane turns on that field), and a
+  // `llama-windows` engine answers for the five WSL-only classes with ONE
+  // sentence so a screen says it once.
+  'test-crucible-settings-seam',
   // The FIFTH act, and the one that is not a text act (rollout tier 3,
   // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
   // a job, because `pages` is a capability class whose `job_type` is `llm` —

@@ -23,7 +23,29 @@
  * is reached there. That is a bind→connect mapping, not a fallback — the two
  * are different facts and the file only records the first.
  *
- * ── Where the file is ───────────────────────────────────────────────────────
+ * ── TWO DOORS SINCE PHASE 15, AND THE SECOND ONE IS DATED ──────────────────
+ *
+ * crucible `docs/PHASE15-HOST.md` §3.6 gives the local server a SECOND way to
+ * be found, and it is the contract's own: a **pairing file** the engine (or,
+ * on Windows, `crucible host`) writes beside its config, holding the one
+ * connect code. §5.1 makes reading it the first of connect's three ways —
+ * *"No typing."* — and it works with no WSL, no distro setting and no
+ * `wsl.exe` spawn at all.
+ *
+ * So {@link readLocalServer} asks in this order:
+ *
+ *   1. the pairing file (`pairing-file.ts`)      `via: 'pairing'`
+ *   2. `config.toml`, read here                  `via: 'file'` / `'wsl'`
+ *
+ * That is two named doors with an order, not a fallback chain: each is a
+ * DIFFERENT artefact written by a different part of the system, the first is
+ * what the contract says an app reads, and §3.6 dates the second — *"an app's
+ * 'read config.toml through wsl.exe' door is how the WSL server gets
+ * registered, and that door is deleted when the host lands."* On Owen's PC
+ * today there is no host, so door 2 is the live one and door 1 finds nothing;
+ * the day the host runs, door 1 answers first and door 2 stops being reached.
+ *
+ * ── Where the config file is ────────────────────────────────────────────────
  *
  * On macOS and Linux: `$CRUCIBLE_HOME/config.toml`, default `~/.crucible`,
  * exactly as `crucible_home()` resolves it. On Windows the local server lives in
@@ -46,12 +68,18 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { parse as parseToml } from 'smol-toml';
+import {
+  CRUCIBLE_HOME_ENV,
+  processPairingFileHost,
+  readCruciblePairingFile,
+  type PairingFileHost,
+} from './pairing-file';
+import type { LocalServerVia } from '../../shared/crucible/settings-wire';
 
 /** The reserved server name that means "the server on this machine". */
 export const LOCAL_SERVER_NAME = 'local';
 
-/** How `crucible_home()` names its override, verbatim. */
-export const CRUCIBLE_HOME_ENV = 'CRUCIBLE_HOME';
+export { CRUCIBLE_HOME_ENV };
 
 /** The local server, as its own config describes it. */
 export interface LocalServer {
@@ -63,12 +91,12 @@ export interface LocalServer {
   token: string;
   /** The file this was read from, as the reading side names it. */
   configPath: string;
-  /** `file` — read directly; `wsl` — read through `wsl.exe -d <distro>`. */
-  via: 'file' | 'wsl';
+  /** Which of the two doors answered. See the header. */
+  via: LocalServerVia;
 }
 
 export type CrucibleLocalErrorCode =
-  /** No config.toml where the local server would keep one. A state, not a bug. */
+  /** Neither door found a server on this machine. A state, not a bug. */
   | 'no_local_config'
   /** Windows, and the app has no WSL distro setting to read through. */
   | 'no_wsl_distro'
@@ -107,6 +135,8 @@ export interface LocalHost {
    * said. Injectable so the keeper can exercise every code path without a guest.
    */
   runWsl: (distro: string, script: string) => { status: number | null; stdout: string; stderr: string; error?: Error };
+  /** The pairing-file door, injectable for the same reason. */
+  pairing: PairingFileHost;
 }
 
 /** The real host. */
@@ -116,6 +146,7 @@ export function processHost(wslDistro: string | undefined): LocalHost {
     env: process.env,
     homedir: os.homedir(),
     wslDistro,
+    pairing: processPairingFileHost(),
     runWsl: (distro, script) => {
       const result = spawnSync('wsl.exe', ['-d', distro, '--exec', 'bash', '-c', script], {
         encoding: 'utf-8',
@@ -215,14 +246,31 @@ function requireKey(
  * tolerates a second copy of the token.
  */
 export function readLocalServer(host: LocalHost): LocalServer {
+  /*
+   * DOOR 1, the contract's: the connect code the engine left on this machine.
+   * It answers on every platform, needs no WSL and names its own file, so when
+   * it is there nothing else is asked.
+   */
+  const paired = readCruciblePairingFile(host.pairing);
+  if (paired !== null) {
+    return {
+      name: paired.pairing.name,
+      url: paired.pairing.url,
+      token: paired.pairing.token,
+      configPath: paired.file,
+      via: 'pairing',
+    };
+  }
+
+  // DOOR 2, dated (see the header): the server's own config.toml.
   if (host.platform === 'win32') return readThroughWsl(host);
 
   const configPath = localConfigPath(host.env, host.homedir);
   if (!fs.existsSync(configPath)) {
     throw new CrucibleLocalError(
       'no_local_config',
-      `no local Crucible: ${configPath} does not exist. Install one with \`crucible init\` on this `
-        + 'machine, or add a remote server.',
+      `no local Crucible: neither a connect code nor ${configPath} is on this machine. Install `
+        + 'one with `crucible init` here, or add a remote server.',
     );
   }
   let text: string;
@@ -258,8 +306,8 @@ function readThroughWsl(host: LocalHost): LocalServer {
     const missing = result.stderr.trim();
     throw new CrucibleLocalError(
       'no_local_config',
-      `no local Crucible: ${missing} does not exist inside WSL distro "${distro}". Install one with `
-        + '`crucible init` there, or add a remote server.',
+      `no local Crucible: no connect code on this machine, and ${missing} does not exist inside `
+        + `WSL distro "${distro}". Install one with \`crucible init\` there, or add a remote server.`,
     );
   }
   if (result.status !== 0) {

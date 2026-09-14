@@ -25,6 +25,8 @@
  * than inventing a vocabulary that would then have to be translated.
  */
 
+import type { LocalServerVia } from './settings-wire';
+
 /**
  * THE THREE PLATFORMS THE SEQUENCE DIFFERS BY, AND A WORD FOR THE REST.
  *
@@ -110,7 +112,7 @@ export interface CrucibleGpuFacts {
 
 /** Is there already a Crucible config on this machine, and what does it say? */
 export type CrucibleLocalConfigFacts =
-  | { present: true; serverName: string; url: string; configPath: string; via: 'file' | 'wsl' }
+  | { present: true; serverName: string; url: string; configPath: string; via: LocalServerVia }
   | { present: false; code: CrucibleHostRefusalCode; reason: string };
 
 /**
