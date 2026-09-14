@@ -9,11 +9,42 @@ import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
 import {
   CRUCIBLE_TEXT_ACT_NAMES,
+  CRUCIBLE_UPSTREAM_NAMES,
+  type CrucibleEngineSettings,
+  type CrucibleEngineSettingsPatch,
+  type CrucibleEngineSettingsRefusal,
   type CrucibleModelRow,
   type CrucibleCapabilityView,
   type CrucibleTextActName,
+  type CrucibleUpstreamName,
+  type CrucibleUpstreamProbe,
 } from '@shared/crucible/settings-wire';
-import { capabilityWords } from '../settings/components/crucible-words';
+import {
+  ENGINE_KEYS_INTRO,
+  ENGINE_ROUTES_INTRO,
+  ENGINE_SETTINGS_INTRO,
+  ENGINE_SETTINGS_NO_SERVER,
+  ENGINE_SETTINGS_REFUSED_LEAD,
+  ROUTE_CHOICE_OTHER,
+  ROUTE_CHOICE_OTHER_HELP,
+  ROUTE_CHOICE_OTHER_PLACEHOLDER,
+  TEST_BEFORE_SAVE_WORDS,
+  capabilityClassWords,
+  capabilityWords,
+  localRouteWords,
+  nameAModelWords,
+  offerButtonWords,
+  routeWords,
+  unavailableGroups,
+  unavailableNoticeWords,
+  unavailableOfferWords,
+  upstreamCredentialField,
+  upstreamFieldWords,
+  upstreamRouteWords,
+  upstreamStateWords,
+  upstreamTestedWords,
+  upstreamWordsLeading,
+} from '../settings/components/crucible-words';
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
@@ -208,30 +239,15 @@ import {
             }
           }
 
-          @if (crucibleServer()) {
-            <h3 class="cru-acts-head">A model per text act — the server's own answer</h3>
-            <p class="muted">
-              Clean, translate, simplify and analysis are four acts, and each runs on a
-              different model: a cleanup does not need the 27B a translation does. <strong>This
-              app does not choose them.</strong> <code>crucible install</code> measured that
-              machine's card and picked the largest candidate each class fits on, so the
-              mapping is a fact about the server — a 24 GB box serves translate with a 4-bit
-              27B and a 12 GB box does not serve it at all. Change it on that server, from its
-              own page.
-            </p>
-            @for (act of textActs; track act) {
-              <div class="setting-row">
-                <label class="setting-label">{{ act }}</label>
-                <span class="act-model">{{ capabilityLineFor(act) }}</span>
-              </div>
-            }
-            <p class="muted">
-              The act's name travels on every request, so the server's bench says which act is
-              running rather than filing all four under "translate" — Owen's ruling, 2026-09-13:
-              they can't lie to the user and say a translate job is running when it's actually a
-              simplify job.
-            </p>
-          }
+          <!--
+            THE FOUR ACT ROWS MOVED to the Engine settings card below, and they
+            gained a control on the way. They were a READ here — "the server's
+            own answer", with a paragraph saying this app does not choose it —
+            and that paragraph stopped being true on 2026-09-14 (crucible
+            PHASE15 §5.2): the engine's settings document is writable, this app
+            draws a window onto it, and a row that shows where a job runs
+            without offering to change it would be half of the contract.
+          -->
 
           @if (crucibleStatus(); as status) {
             <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
@@ -318,19 +334,218 @@ import {
         }
       </section>
 
-      <!-- ── Cloud keys live in the ENGINE, and this is the whole of what we say ── -->
+      <!--
+        ── THE ENGINE'S OWN SETTINGS, DRAWN AS A WINDOW ────────────────────
+        crucible docs/PHASE15-HOST.md §5.2. Every control here is a request to
+        the selected engine and every answer is re-read from it; there is no
+        Save button for the panel, because there is no app-side copy to save.
+        The card that stood here said all of that in a paragraph and offered
+        nothing to press — which was the right sentence and the wrong screen.
+      -->
       <section class="card">
         <div class="card-head">
-          <h2>&#128273; Cloud keys</h2>
-          <span class="tag">The engine holds them</span>
+          <h2>&#9881; Engine settings</h2>
+          <span class="tag">Held by the engine · written straight through</span>
         </div>
-        <p class="card-note">
-          Anthropic, OpenAI and Ollama keys and addresses live on the engine, and are set in
-          this section. The engine forwards a text act to whichever one its operator routed
-          that act to, on the operator's account, and the routing is chosen before anything
-          runs rather than reached for when something fails. BookForge stores no credential
-          anywhere — not in its settings, not on a job.
-        </p>
+
+        @if (!crucibleServer()) {
+          <p class="muted">{{ noServerWords }}</p>
+        } @else {
+          <p class="muted">{{ settingsIntroWords }}</p>
+
+          @if (panelRefusal(); as refusal) {
+            <p class="vlm-status bad">{{ refusedLeadWords }} {{ refusal.message }}</p>
+          }
+
+          @if (engineSettings(); as doc) {
+
+            <!-- ── Where each job runs ── -->
+            <h3 class="cru-acts-head">Where each job runs</h3>
+            <p class="muted">{{ routesIntroWords }}</p>
+
+            @for (act of textActs; track act) {
+              <div class="setting-row">
+                <label class="setting-label">{{ classWords(act) }}</label>
+                <select
+                  class="key-input"
+                  [value]="routeSelectValue(act)"
+                  [disabled]="engineBusy()"
+                  (change)="chooseRoute(act, $any($event.target).value)"
+                >
+                  <option [value]="LOCAL_ROUTE">{{ localOptionFor(act) }}</option>
+                  @for (id of upstreamModelChoices(); track id) {
+                    <option [value]="id">{{ upstreamOptionFor(id) }}</option>
+                  }
+                  <option [value]="OTHER_ROUTE">{{ otherRouteWords }}</option>
+                </select>
+              </div>
+              <p class="act-model">{{ runsOnNow(act) }}</p>
+
+              @if (routeSelectValue(act) === OTHER_ROUTE) {
+                <div class="setting-row">
+                  <label class="setting-label"></label>
+                  <input
+                    class="key-input"
+                    type="text"
+                    [value]="routeDraft(act)"
+                    (input)="setRouteDraft(act, $any($event.target).value)"
+                    [attr.list]="'bf-upstream-models'"
+                    [placeholder]="otherRoutePlaceholder"
+                  />
+                  <desktop-button
+                    variant="primary"
+                    size="sm"
+                    [disabled]="engineBusy() || routeDraft(act).trim().length === 0"
+                    (click)="setRouteFromDraft(act)"
+                  >Set</desktop-button>
+                </div>
+                <p class="act-model">{{ otherRouteHelpWords }}</p>
+              }
+
+              <!-- THE REFUSAL SITS BESIDE THE CONTROL ITS OWN FIELD NAMES. That
+                   is what the dotted path is for (§3.2): routes.translate
+                   belongs under the translate row, not at the top of a page
+                   with four rows on it. -->
+              @if (refusalFor('routes.' + act); as message) {
+                <p class="vlm-status bad">{{ message }}</p>
+              }
+            }
+
+            <!-- ── The three accounts ── -->
+            <h3 class="cru-acts-head">Accounts this engine can send work to</h3>
+            <p class="muted">{{ keysIntroWords }}</p>
+            <p class="muted">{{ testBeforeSaveWords }}</p>
+
+            @for (name of upstreamNames; track name) {
+              <div class="upstream">
+                <div class="upstream-head">
+                  <strong>{{ upstreamTitle(name) }}</strong>
+                  <span class="act-model">{{ upstreamState(name, doc) }}</span>
+                </div>
+                <div class="setting-row">
+                  <label class="setting-label">{{ fieldLabel(name) }}</label>
+                  <!-- EMPTY ON EVERY DRAW. A key is write-only: the engine
+                       never sends one back, so there is nothing to put in
+                       this box, and upstreamDrafts is cleared by the same
+                       function that redraws the document. -->
+                  <input
+                    class="key-input"
+                    [type]="fieldType(name)"
+                    autocomplete="off"
+                    spellcheck="false"
+                    [value]="draftFor(name)"
+                    (input)="setDraft(name, $any($event.target).value)"
+                    [placeholder]="fieldPlaceholder(name)"
+                  />
+                  <!-- TEST COMES BEFORE SAVE, in the template and in the act:
+                       Test sends what was typed WITHOUT storing it. -->
+                  <desktop-button
+                    variant="ghost"
+                    size="sm"
+                    [disabled]="engineBusy()"
+                    (click)="testUpstreamAccount(name)"
+                  >Test</desktop-button>
+                  <desktop-button
+                    variant="primary"
+                    size="sm"
+                    [disabled]="engineBusy() || draftFor(name).trim().length === 0"
+                    (click)="saveUpstream(name)"
+                  >Save</desktop-button>
+                  @if (doc.upstreams[name].configured) {
+                    <desktop-button
+                      variant="ghost"
+                      size="sm"
+                      [disabled]="engineBusy()"
+                      (click)="removeUpstream(name)"
+                    >Remove</desktop-button>
+                  }
+                </div>
+                @if (testedWordsFor(name); as line) {
+                  <p class="act-model">{{ line }}</p>
+                }
+                @if (refusalForUpstream(name); as message) {
+                  <p class="vlm-status bad">{{ message }}</p>
+                }
+              </div>
+            }
+
+            <!-- The ids a person picks from are the ones their own account
+                 answered with, seconds ago. BookForge ships no cloud model
+                 list, so this is empty until a Test fills it. -->
+            <datalist id="bf-upstream-models">
+              @for (id of upstreamModelChoices(); track id) {
+                <option [value]="id"></option>
+              }
+            </datalist>
+
+            <!-- ── The wizard's own step: what this engine cannot do, once ── -->
+            @if (wizard()) {
+              @for (group of unavailableOffers(); track group.reason) {
+                <div class="offer">
+                  @if (group.routable.length > 0) {
+                    <p class="muted">{{ offerWords(group.routable) }}</p>
+                  } @else {
+                    <p class="muted">{{ noticeWords(group.capabilities) }}</p>
+                  }
+                  <!-- THE ENGINE'S OWN REASON, ONCE FOR THE WHOLE GROUP. Five
+                       classes answering with one sentence is the contract's
+                       doing (§3.3, "so an app shows it once") and
+                       unavailableGroups is what collapses them. -->
+                  <p class="act-model">{{ group.reason }}</p>
+
+                  @for (act of group.routable; track act) {
+                    <div class="setting-row">
+                      <label class="setting-label">{{ classWords(act) }}</label>
+                      <select
+                        class="key-input"
+                        [value]="offerUpstream(act)"
+                        [disabled]="engineBusy()"
+                        (change)="setOfferUpstream(act, $any($event.target).value)"
+                      >
+                        @for (name of upstreamNames; track name) {
+                          <option [value]="name">{{ upstreamTitle(name) }}</option>
+                        }
+                      </select>
+                      <!-- THE SAME DRAFT THE CARD ABOVE HOLDS, on purpose: it
+                           is one fact (the key for this account), and typing
+                           it in either place is typing it once. Absent when
+                           the account is already set up, because then the one
+                           press is a route and nothing else. -->
+                      @if (!doc.upstreams[offerUpstream(act)].configured) {
+                        <input
+                          class="key-input"
+                          [type]="fieldType(offerUpstream(act))"
+                          autocomplete="off"
+                          spellcheck="false"
+                          [value]="draftFor(offerUpstream(act))"
+                          (input)="setDraft(offerUpstream(act), $any($event.target).value)"
+                          [placeholder]="fieldPlaceholder(offerUpstream(act))"
+                        />
+                      }
+                      <input
+                        class="key-input"
+                        type="text"
+                        [value]="offerModel(act)"
+                        (input)="setOfferModel(act, $any($event.target).value)"
+                        [attr.list]="'bf-upstream-models'"
+                        [placeholder]="offerModelPlaceholder"
+                      />
+                      <desktop-button
+                        variant="primary"
+                        size="sm"
+                        [disabled]="engineBusy()"
+                        (click)="connectAndRoute(act)"
+                      >{{ offerButton(act) }}</desktop-button>
+                    </div>
+                    @if (refusalFor('routes.' + act); as message) {
+                      <p class="vlm-status bad">{{ message }}</p>
+                    }
+                  }
+                </div>
+              }
+            }
+          }
+        }
       </section>
 
       @if (!embedded()) {
@@ -345,7 +560,15 @@ import {
     .wizard.embedded { padding: 0; max-width: none; height: auto; overflow: visible; }
     .setting-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
     /* The server's own answer for one class: read, never a control. */
-    .act-model { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45; }
+    .act-model { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45; margin: 0 0 0.5rem 7rem; }
+    /* One account the engine can send work to. */
+    .upstream { border: 1px solid var(--border-default); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0 0 0.75rem; }
+    .upstream-head { display: flex; align-items: baseline; gap: 0.75rem; }
+    .upstream-head strong { color: var(--text-primary); font-size: 0.9rem; }
+    .upstream-head .act-model { margin: 0; }
+    /* The wizard's "this engine cannot, so send it there instead" block. */
+    .offer { border: 1px solid var(--border-default); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
+    .cru-acts-head { font-size: 0.95rem; font-weight: 600; color: var(--text-primary); margin: 1.25rem 0 0.4rem; }
     .setting-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; min-width: 6.5rem; }
     .key-input.narrow { max-width: 7rem; }
     .inline-note { font-size: 0.8rem; margin: 0; }
@@ -435,6 +658,23 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   /** Embedded mode (rendered inside Settings → AI): hide the page header/footer. */
   readonly embedded = input(false);
 
+  /**
+   * MOUNTED AS THE FIRST-RUN WIZARD'S AI STEP, rather than as Settings → AI.
+   *
+   * Both hosts pass `embedded`, so that input cannot tell them apart, and
+   * crucible `docs/PHASE15-HOST.md` §5.2 asks for one extra thing from the
+   * wizard only: *"the wizard's AI step reads capability; for each llm class
+   * that is `enabled: false` locally it says the class's reason and offers
+   * 'run it through Anthropic / OpenAI / an Ollama server instead'."* That is
+   * setting-up advice — the right thing to put in front of somebody who has
+   * never configured this machine, and noise on a settings page somebody
+   * opened to change one route. So it is one input, false by default, and the
+   * rest of the panel is identical in both places on purpose: two screens
+   * teaching two different things about one document is the shape §5.2 exists
+   * to prevent.
+   */
+  readonly wizard = input(false);
+
   /*
    * `apiProviders`, `keyDrafts`, `hasKey`, `saveKey`, `deleteKey`,
    * `clearAllKeys`, `anyKeySaved` and `confirmClearKeys` ARE ALL DELETED
@@ -518,6 +758,8 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     await this.reload();
     await this.loadCrucibleServers();
     await this.loadCapability();
+    // The engine's settings document, read on arrival and cached nowhere.
+    await this.loadEngineSettings();
     this.sysInfo.set(await this.ai.systemInfo());
   }
 
@@ -668,9 +910,17 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     // The capability record belongs to the server too — a 24 GB box and a
     // 12 GB box answer differently — so it is re-asked, never carried over.
     this.capability.set(null);
+    // AND SO DOES THE SETTINGS DOCUMENT, which is even less transferable: it
+    // holds another machine's routes and another operator's accounts. Dropped
+    // here through the one draw function, which also empties the key boxes —
+    // a key typed for one engine must not be sitting in a field pointed at a
+    // different one.
+    this.redrawEngineSettings(null);
+    this.testedModels.set({});
     if (server) {
       void this.loadCrucibleModels(server);
       void this.loadCapability();
+      void this.loadEngineSettings();
     }
   }
 
@@ -688,30 +938,25 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   // AI config. THESE four are what the FOUNDRY ENGINE is told with `--model`
   // when BookForge spawns it for clean / translate / simplify / analysis.
   //
-  // THEY ARE NO LONGER CHOSEN HERE (2026-09-14). `<userData>/crucible-models.json`
-  // is deleted and `GET /v1/capability` is the owner: `crucible install` probes
-  // the card and picks the largest candidate each class fits on, so the mapping
-  // is a per-HOST fact, and an id chosen in this app was a second opinion about
-  // a decision that server had already made and might have refused (Owen's
-  // ruling with Foundry, docs/CRUCIBLE_ROLLOUT_PLAN.md section 3). What is left
-  // here is a READ, drawn as the server's answer.
+  // WHICH MODEL IS STILL NOT CHOSEN HERE, and that has not changed
+  // (2026-09-14). `<userData>/crucible-models.json` is deleted and
+  // `GET /v1/capability` is the owner: `crucible install` probes the card and
+  // picks the largest candidate each class fits on, so the mapping is a
+  // per-HOST fact, and an id chosen in this app was a second opinion about a
+  // decision that server had already made and might have refused (Owen's
+  // ruling with Foundry, docs/CRUCIBLE_ROLLOUT_PLAN.md section 3).
+  //
+  // WHAT *IS* CHOSEN HERE, SINCE PHASE 15, IS **WHERE** — the route (§3.2):
+  // this engine's own card, or an account it forwards to. Those are two
+  // different questions with two different owners, and the Engine settings
+  // panel below is careful to draw the first (`runsOnNow`, read-only, in the
+  // engine's words) beside a control for the second. A screen that let
+  // somebody pick a local model id would be the deleted record coming back.
 
   readonly textActs = CRUCIBLE_TEXT_ACT_NAMES;
 
   /** `GET /v1/capability` on the chosen server. Null until it has been asked. */
   readonly capability = signal<CrucibleCapabilityView | null>(null);
-
-  /**
-   * One line per act: what the server decided, in its own words.
-   *
-   * The sentence itself is {@link capabilityWords}, in the renderer's one
-   * wording file — Settings → Pipeline Defaults asks the same question about
-   * the same record, and two screens composing that answer separately is the
-   * one-fact-two-owners shape the audit exists to prevent.
-   */
-  capabilityLineFor(act: CrucibleTextActName): string {
-    return capabilityWords(this.capability(), act);
-  }
 
   private async loadCapability(): Promise<void> {
     const server = this.crucibleServer();
@@ -728,6 +973,539 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.capability.set(res.data);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // THE ENGINE'S OWN SETTINGS — a window, not a copy (PHASE15 §3.1/§3.2/§5.2)
+  // ─────────────────────────────────────────────────────────────────────────
+  //
+  // ── WHAT IS AND IS NOT STORED HERE ───────────────────────────────────────
+  //
+  // Nothing. There is no `SettingsService` field behind any of this, no
+  // localStorage entry, no app-settings key and no cache: `engineSettings` is
+  // what the selected engine answered on the last read, replaced by whatever
+  // the next PUT answers with, and dropped the moment the server changes.
+  // §0 is the reason — *"settings live in the engine and nowhere else"* — and
+  // `tools/test-no-cloud-doors.js` is what keeps it true rather than this
+  // paragraph.
+  //
+  // ── WHY EVERY WRITE RE-DRAWS FROM THE ANSWER ─────────────────────────────
+  //
+  // §3.2: the response to a `PUT` is the WHOLE document after the write. So a
+  // control never draws what it sent; it draws what the engine ended up
+  // holding. The two differ more often than it sounds — a route to `local` is
+  // stored as an absent key and comes back with the model that class actually
+  // selected, which nothing on this side could have known.
+  //
+  // ── AND WHY CAPABILITY IS RE-READ WITH IT ────────────────────────────────
+  //
+  // §2: the engine RECOMPUTES capability in-process on every settings write
+  // that touches a route, because the route is part of the capability answer
+  // (§3.3). The line under each row is drawn from capability, so a write that
+  // did not re-read it would leave a row saying where the job used to run.
+
+  /** The three names the contract gives the accounts. Never a free string. */
+  readonly upstreamNames = CRUCIBLE_UPSTREAM_NAMES;
+
+  /** The select's two sentinel values. A model id always has a slash, so neither can collide. */
+  readonly LOCAL_ROUTE = 'local';
+  readonly OTHER_ROUTE = '__other__';
+
+  /** The wording file's sentences, exposed for the template and composed nowhere else. */
+  readonly settingsIntroWords = ENGINE_SETTINGS_INTRO;
+  readonly routesIntroWords = ENGINE_ROUTES_INTRO;
+  readonly keysIntroWords = ENGINE_KEYS_INTRO;
+  readonly testBeforeSaveWords = TEST_BEFORE_SAVE_WORDS;
+  readonly noServerWords = ENGINE_SETTINGS_NO_SERVER;
+  readonly refusedLeadWords = ENGINE_SETTINGS_REFUSED_LEAD;
+  readonly otherRouteWords = ROUTE_CHOICE_OTHER;
+  readonly otherRouteHelpWords = ROUTE_CHOICE_OTHER_HELP;
+  readonly otherRoutePlaceholder = ROUTE_CHOICE_OTHER_PLACEHOLDER;
+  readonly offerModelPlaceholder = ROUTE_CHOICE_OTHER_PLACEHOLDER;
+
+  /** `GET /v1/settings` for the selected server. Null until it has been read. */
+  readonly engineSettings = signal<CrucibleEngineSettings | null>(null);
+
+  /**
+   * A refusal the engine gave that names NO control.
+   *
+   * `settings_door_absent`, `settings_unreachable`, a document this build
+   * cannot read: none of those is about a field, so none of them goes beside
+   * one. A refusal that DOES carry a `details.field` goes to
+   * {@link fieldRefusals} instead and is drawn under the control it names —
+   * which is the whole reason the server sends a dotted path.
+   */
+  readonly panelRefusal = signal<CrucibleEngineSettingsRefusal | null>(null);
+
+  /** Dotted path → the engine's sentence about that control. */
+  readonly fieldRefusals = signal<Record<string, string>>({});
+
+  /**
+   * WHAT IS TYPED IN A CREDENTIAL BOX, PER ACCOUNT, AND ONLY UNTIL THE NEXT
+   * DRAW.
+   *
+   * §5.2: *"A key field is empty on every draw (write-only) with the hint
+   * beside it."* {@link redrawEngineSettings} clears this, and it is the only
+   * function that puts a document on the screen, so a key cannot survive a
+   * successful Save, a refusal, a re-read or a change of server. It reaches
+   * `settings.service.ts` nowhere: this signal and the one request that
+   * carries it are the whole of its life in this process.
+   */
+  private readonly upstreamDrafts = signal<Record<string, string>>({});
+
+  /** A typed upstream model id, per act, for the free-text route choice. */
+  private readonly routeDrafts = signal<Record<string, string>>({});
+
+  /** Which select option each act is showing — only ever `OTHER_ROUTE` or unset. */
+  private readonly routeChoices = signal<Record<string, string>>({});
+
+  /** Per act: which account the wizard's one-press offer would use. */
+  private readonly offerUpstreams = signal<Record<string, CrucibleUpstreamName>>({});
+  /** Per act: the model id that offer would route to. */
+  private readonly offerModels = signal<Record<string, string>>({});
+
+  /**
+   * WHAT EACH ACCOUNT ANSWERED THE LAST TEST WITH.
+   *
+   * This is the only model list in the app. §2: *"the server does not ship a
+   * cloud model list"*, and neither does BookForge — a hardcoded three-item
+   * array was the audit's third finding. These ids came back from the
+   * operator's own account through the engine, seconds before they were
+   * shown, and they are gone when the panel is.
+   */
+  private readonly testedModels = signal<Record<string, string[]>>({});
+
+  /** A request is in flight. Every control is disabled, so two cannot race. */
+  readonly engineBusy = signal(false);
+
+  // ── Reading, and the one function that puts a document on the screen ─────
+
+  private async loadEngineSettings(): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) { this.redrawEngineSettings(null); return; }
+    const res = await this.electron.crucible.engineSettings(server);
+    if (!res.success || !res.data) {
+      this.redrawEngineSettings(null);
+      this.placeRefusal(res.refusal, res.error);
+      return;
+    }
+    this.redrawEngineSettings(res.data);
+  }
+
+  /**
+   * THE ONE DRAW. Every path onto the screen goes through here, which is what
+   * makes "the key box is empty on every draw" a property of the code rather
+   * than a discipline: there is nowhere else to put a document.
+   */
+  private redrawEngineSettings(doc: CrucibleEngineSettings | null): void {
+    this.engineSettings.set(doc);
+    this.panelRefusal.set(null);
+    this.fieldRefusals.set({});
+    this.upstreamDrafts.set({});
+    this.routeChoices.set({});
+    this.routeDrafts.set({});
+  }
+
+  /**
+   * A NO, PUT WHERE IT BELONGS.
+   *
+   * §3.2 pins `details.field` as a dotted path — `routes.translate`,
+   * `upstreams.anthropic.key` — precisely so a panel can say the sentence
+   * beside the control instead of at the top of a page with eight controls on
+   * it. A refusal with no field has nowhere particular to go and goes to the
+   * top, which is the truth about it and not a gap being filled.
+   */
+  private placeRefusal(refusal: CrucibleEngineSettingsRefusal | undefined, error?: string): void {
+    if (refusal === undefined) {
+      // A failed call with no named refusal: the door itself did not answer.
+      // Shown at the top with whatever main said, never swallowed.
+      this.panelRefusal.set({
+        code: 'unnamed',
+        message: error ?? 'The engine could not be reached, and nothing said why.',
+        field: null,
+        classes: null,
+      });
+      return;
+    }
+    // `upstream_in_use` carries the classes still routed to the account
+    // somebody tried to remove. They are named, because "re-route those first"
+    // is the fix and a message without them does not say which.
+    const classes = refusal.classes === null || refusal.classes === undefined || refusal.classes.length === 0
+      ? ''
+      : ` Still routed there: ${refusal.classes.map(capabilityClassWords).join(', ')}.`;
+    const message = `${refusal.message}${classes}`;
+    if (refusal.field === null || refusal.field === undefined || refusal.field === '') {
+      this.panelRefusal.set({ ...refusal, message });
+      return;
+    }
+    this.fieldRefusals.update((map) => ({ ...map, [refusal.field as string]: message }));
+  }
+
+  /** The sentence for one dotted path, or undefined. Drawn under that control. */
+  refusalFor(field: string): string | undefined {
+    return this.fieldRefusals()[field];
+  }
+
+  /**
+   * The sentence for one account's card, whichever of its two field paths the
+   * engine named. `upstreams.anthropic.key` and `upstreams.anthropic` are the
+   * same card, and a refusal about one that appeared nowhere because it was
+   * spelled as the other would be a silent no.
+   */
+  refusalForUpstream(name: CrucibleUpstreamName): string | undefined {
+    const map = this.fieldRefusals();
+    for (const [field, message] of Object.entries(map)) {
+      if (field === `upstreams.${name}` || field.startsWith(`upstreams.${name}.`)) return message;
+    }
+    return undefined;
+  }
+
+  // ── Writing: one PUT, then re-draw from the answer ───────────────────────
+
+  /**
+   * Send one patch and re-draw from what came back.
+   *
+   * Answers whether it took, so a caller that wanted to do something after a
+   * successful write can — and so a refusal is never mistaken for a save.
+   */
+  private async writeEngineSettings(patch: CrucibleEngineSettingsPatch): Promise<boolean> {
+    const server = this.crucibleServer();
+    if (!server) return false;
+    this.engineBusy.set(true);
+    try {
+      const res = await this.electron.crucible.writeEngineSettings(server, patch);
+      if (!res.success || !res.data) {
+        // NOTHING WAS APPLIED (§3.2: "a refusal applies nothing"), so the
+        // document on the screen is still true and is left alone. Only the
+        // refusal is placed.
+        this.placeRefusal(res.refusal, res.error);
+        return false;
+      }
+      this.redrawEngineSettings(res.data);
+      // The engine recomputed capability as part of the write; re-read it so
+      // the line under each row is about where the job runs NOW.
+      await this.loadCapability();
+      return true;
+    } finally {
+      this.engineBusy.set(false);
+    }
+  }
+
+  // ── The four route rows ──────────────────────────────────────────────────
+
+  /** A class's name for a person: `translating`, not `translate`. */
+  classWords(act: string): string { return capabilityClassWords(act); }
+
+  /**
+   * WHERE THIS CLASS RUNS RIGHT NOW, in the engine's own words.
+   *
+   * The `??` is a COMPOSITION OF TWO ANSWERS and not a fallback for a missing
+   * one. {@link routeWords} answers `null` on purpose for a class that runs on
+   * the engine's own card — "there is nothing extra to say about the ordinary
+   * case", its own comment — and the ordinary case is exactly what
+   * {@link capabilityWords} states: the model, or the server's reason it has
+   * none. Neither function can fail to answer, so nothing is being papered
+   * over; what is being done is asking the more specific question first.
+   *
+   * Both live in the one wording file, where Settings → Pipeline Defaults and
+   * the translation panel read them too — two screens composing this sentence
+   * separately is the one-fact-two-owners shape the audit exists to prevent.
+   */
+  runsOnNow(act: CrucibleTextActName): string {
+    return routeWords(this.capability(), act) ?? capabilityWords(this.capability(), act);
+  }
+
+  /** `this engine — qwen3.5-9b`, or `this engine — nothing on it fits`. */
+  localOptionFor(act: CrucibleTextActName): string {
+    const doc = this.engineSettings();
+    if (doc === null) return localRouteWords(null);
+    const row = doc.routes[act];
+    // The local model for a class that is CURRENTLY routed upstream is not in
+    // the document — §3.1 puts the selected local model on a `local` row only
+    // — so the honest answer there is the capability record's, which keeps the
+    // local sentence after "the local answer would be:".
+    return row.route === 'local' ? localRouteWords(row) : localRouteWords(null);
+  }
+
+  /** `Anthropic — claude-sonnet-5`, from an id the operator or an account gave. */
+  upstreamOptionFor(id: string): string { return upstreamRouteWords(id); }
+
+  /**
+   * EVERY UPSTREAM MODEL ID THIS PANEL CAN OFFER, and where each came from.
+   *
+   * Two sources, both of them facts rather than a catalog: the ids the
+   * document's own routes already name (so routing a second class to the model
+   * a first one uses needs no typing), and the ids a Test got back from the
+   * account itself. There is no third source, because a third source would be
+   * BookForge shipping a cloud model list.
+   */
+  upstreamModelChoices(): string[] {
+    const ids = new Set<string>();
+    const doc = this.engineSettings();
+    if (doc !== null) {
+      for (const act of this.textActs) {
+        const row = doc.routes[act];
+        if (row.route === 'upstream' && row.model !== null) ids.add(row.model);
+      }
+    }
+    for (const [name, models] of Object.entries(this.testedModels())) {
+      for (const model of models) ids.add(`${name}/${model}`);
+    }
+    return [...ids].sort();
+  }
+
+  /** Which option the select is showing: the routed id, `local`, or the free-text one. */
+  routeSelectValue(act: CrucibleTextActName): string {
+    if (this.routeChoices()[act] === this.OTHER_ROUTE) return this.OTHER_ROUTE;
+    const doc = this.engineSettings();
+    if (doc === null) return this.LOCAL_ROUTE;
+    const row = doc.routes[act];
+    return row.route === 'upstream' && row.model !== null ? row.model : this.LOCAL_ROUTE;
+  }
+
+  routeDraft(act: CrucibleTextActName): string { return this.routeDrafts()[act] ?? ''; }
+
+  setRouteDraft(act: CrucibleTextActName, value: string): void {
+    this.routeDrafts.update((map) => ({ ...map, [act]: value }));
+  }
+
+  /** Picking an option IS the write, except for the one that opens a box. */
+  async chooseRoute(act: CrucibleTextActName, value: string): Promise<void> {
+    if (value === this.OTHER_ROUTE) {
+      this.routeChoices.update((map) => ({ ...map, [act]: this.OTHER_ROUTE }));
+      return;
+    }
+    this.routeChoices.update((map) => ({ ...map, [act]: '' }));
+    await this.writeEngineSettings({ routes: { [act]: value } });
+  }
+
+  /**
+   * The free-text id, sent AS TYPED.
+   *
+   * Nothing here checks the shape first. `route_bad_model` is the engine's
+   * refusal for an id with no slash or an account it does not know, it arrives
+   * with `field: routes.<act>` and lands under this box — and a second
+   * validator on this side would be a second opinion about which ids are
+   * legal, disagreeing with the engine the first time either of them changes.
+   */
+  async setRouteFromDraft(act: CrucibleTextActName): Promise<void> {
+    const id = this.routeDraft(act).trim();
+    if (id.length === 0) return;
+    await this.writeEngineSettings({ routes: { [act]: id } });
+  }
+
+  // ── The three account cards ──────────────────────────────────────────────
+
+  upstreamTitle(name: CrucibleUpstreamName): string { return upstreamWordsLeading(name); }
+
+  /** `Set up — …k3A9`, with the hint rendered exactly as the engine sent it. */
+  upstreamState(name: CrucibleUpstreamName, doc: CrucibleEngineSettings): string {
+    return upstreamStateWords(name, doc.upstreams[name]);
+  }
+
+  fieldLabel(name: CrucibleUpstreamName): string { return upstreamFieldWords(name).label; }
+  fieldPlaceholder(name: CrucibleUpstreamName): string { return upstreamFieldWords(name).placeholder; }
+  /**
+   * A key is masked while it is typed; an address is not a secret.
+   *
+   * WHICH of the two an account takes is {@link upstreamCredentialField}'s to
+   * say, not this file's: §3.2 gives each upstream exactly one field and
+   * refuses the other by name, and a `name === 'ollama'` here would be this
+   * panel knowing a vendor — the first shape `tools/test-no-cloud-doors.js`
+   * calls provider code coming back.
+   */
+  fieldType(name: CrucibleUpstreamName): string {
+    return upstreamCredentialField(name) === 'url' ? 'text' : 'password';
+  }
+
+  draftFor(name: CrucibleUpstreamName): string { return this.upstreamDrafts()[name] ?? ''; }
+
+  setDraft(name: CrucibleUpstreamName, value: string): void {
+    this.upstreamDrafts.update((map) => ({ ...map, [name]: value }));
+  }
+
+  /** What the last Test found for this account, as a sentence, or null. */
+  testedWordsFor(name: CrucibleUpstreamName): string | null {
+    const models = this.testedModels()[name];
+    return models === undefined ? null : upstreamTestedWords(name, models);
+  }
+
+  /**
+   * ONE UPSTREAM PROBE, BUILT FROM WHAT IS TYPED.
+   *
+   * An empty draft is an EMPTY PROBE, which the contract gives its own meaning
+   * (§3.2): test what is already configured. So "press Test with nothing
+   * typed" checks the stored key rather than sending a blank one, which is
+   * what somebody pressing it on a configured card means.
+   */
+  private probeFor(name: CrucibleUpstreamName): CrucibleUpstreamProbe {
+    const typed = this.draftFor(name).trim();
+    if (typed.length === 0) return {};
+    return upstreamCredentialField(name) === 'url' ? { url: typed } : { key: typed };
+  }
+
+  /**
+   * TEST, WHICH STORES NOTHING.
+   *
+   * The probe crosses to the engine, the engine calls the account with it, and
+   * the account's own model listing comes back. Nothing is written on the way
+   * — which is what makes Test-before-Save a fact rather than a label, and is
+   * pinned by `tools/test-crucible-settings-seam.js` against a fake that is
+   * capable of storing one.
+   */
+  async testUpstreamAccount(name: CrucibleUpstreamName): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) return;
+    this.engineBusy.set(true);
+    try {
+      const res = await this.electron.crucible.testUpstream(server, name, this.probeFor(name));
+      if (!res.success || !res.data) { this.placeRefusal(res.refusal, res.error); return; }
+      if (!res.data.ok) {
+        // The ACCOUNT's own no — a rejected key, an address nothing answers
+        // at. It belongs beside the field, and the engine says which field.
+        this.placeRefusal(res.data.refusal, undefined);
+        return;
+      }
+      this.fieldRefusals.update((map) => {
+        const next = { ...map };
+        delete next[`upstreams.${name}.key`];
+        delete next[`upstreams.${name}.url`];
+        delete next[`upstreams.${name}`];
+        return next;
+      });
+      this.testedModels.update((map) => ({ ...map, [name]: (res.data as { ok: true; models: string[] }).models }));
+    } finally {
+      this.engineBusy.set(false);
+    }
+  }
+
+  /** Save: one PUT that configures this account and changes no route. */
+  async saveUpstream(name: CrucibleUpstreamName): Promise<void> {
+    const typed = this.draftFor(name).trim();
+    if (typed.length === 0) return;
+    const probe = this.probeFor(name);
+    await this.writeEngineSettings({
+      upstreams: { [name]: probe as { key: string } | { url: string } },
+    });
+  }
+
+  /**
+   * Remove: `null` for that account, which the engine refuses with
+   * `upstream_in_use` while a route still names it — and names the classes, so
+   * the fix is on the screen rather than in a manual.
+   */
+  async removeUpstream(name: CrucibleUpstreamName): Promise<void> {
+    await this.writeEngineSettings({ upstreams: { [name]: null } });
+  }
+
+  // ── The wizard's step: what this engine cannot do, and the one press ─────
+
+  /**
+   * THE CLASSES THIS ENGINE CANNOT SERVE, GROUPED BY THE REASON IT GAVE.
+   *
+   * {@link unavailableGroups} is what collapses them, and the collapse is the
+   * contract's (§3.3): on a `llama-windows` engine the five Python-job classes
+   * answer with one identical sentence *"so an app shows it once"*. Each group
+   * also carries the subset of its classes that CAN be routed to an account —
+   * only `clean translate simplify analysis` can (§1), everything else is
+   * refused `route_not_routable` — so the offer is only made where it is real.
+   */
+  unavailableOffers(): { reason: string; capabilities: string[]; routable: CrucibleTextActName[] }[] {
+    const acts = new Set<string>(this.textActs);
+    return unavailableGroups(this.capability()).map((group) => ({
+      ...group,
+      routable: group.capabilities.filter((c) => acts.has(c)) as CrucibleTextActName[],
+    }));
+  }
+
+  offerWords(capabilities: readonly string[]): string { return unavailableOfferWords(capabilities); }
+  noticeWords(capabilities: readonly string[]): string { return unavailableNoticeWords(capabilities); }
+
+  /**
+   * Which account the offer would use. The first of the three until somebody
+   * says otherwise — a starting position for a select, not a route: nothing is
+   * written until the button is pressed.
+   */
+  offerUpstream(act: CrucibleTextActName): CrucibleUpstreamName {
+    return this.offerUpstreams()[act] ?? this.upstreamNames[0];
+  }
+
+  setOfferUpstream(act: CrucibleTextActName, name: string): void {
+    this.offerUpstreams.update((map) => ({ ...map, [act]: name as CrucibleUpstreamName }));
+  }
+
+  offerModel(act: CrucibleTextActName): string { return this.offerModels()[act] ?? ''; }
+
+  setOfferModel(act: CrucibleTextActName, value: string): void {
+    this.offerModels.update((map) => ({ ...map, [act]: value }));
+  }
+
+  offerButton(act: CrucibleTextActName): string {
+    return offerButtonWords(this.offerUpstream(act), act);
+  }
+
+  /**
+   * ENTER A KEY AND ROUTE A CLASS TO IT, IN ONE PRESS.
+   *
+   * §5.2, verbatim: *"entering a key calls `test`, then one `PUT` that
+   * configures the upstream AND sets the route, then capability is re-read and
+   * the step shows the new answer."* So:
+   *
+   *   1. **Test first, with what was typed.** A key that the account rejects
+   *      must never be stored, and testing after saving would store it and
+   *      then complain. A refusal here writes nothing and lands beside the
+   *      field the engine named.
+   *   2. **The account's own model list is remembered**, which is what fills
+   *      the suggestion box. It is also why step 3 can be honest about not
+   *      knowing which model to use.
+   *   3. **No model named: stop, and say so.** The engine will not guess which
+   *      of an account's models a job should run on, and neither will this —
+   *      picking the first id in a list is this app choosing a model again,
+   *      which is the exact second opinion the capability record exists to
+   *      end. Nothing was saved; the press is repeated with a model in the box
+   *      and then it is one press.
+   *   4. **ONE PUT carrying BOTH.** `{upstreams, routes}` together: the engine
+   *      applies upstreams, then routes, then validates, and a refusal applies
+   *      nothing (§3.2) — so there is no window in which the key is stored and
+   *      the route is not, and no half-configured engine to clean up after.
+   *   5. **Capability is re-read** by {@link writeEngineSettings}, because the
+   *      engine recomputed it and the step's answer is drawn from it.
+   */
+  async connectAndRoute(act: CrucibleTextActName): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) return;
+    const name = this.offerUpstream(act);
+    const probe = this.probeFor(name);
+
+    this.engineBusy.set(true);
+    let models: string[];
+    try {
+      const test = await this.electron.crucible.testUpstream(server, name, probe);
+      if (!test.success || !test.data) { this.placeRefusal(test.refusal, test.error); return; }
+      if (!test.data.ok) { this.placeRefusal(test.data.refusal, undefined); return; }
+      models = test.data.models;
+      this.testedModels.update((map) => ({ ...map, [name]: models }));
+    } finally {
+      this.engineBusy.set(false);
+    }
+
+    const model = this.offerModel(act).trim();
+    if (model.length === 0) {
+      this.fieldRefusals.update((map) => ({
+        ...map,
+        [`routes.${act}`]: `${upstreamTestedWords(name, models)} ${nameAModelWords(name)}`,
+      }));
+      return;
+    }
+
+    // ONE PATCH. The probe is included only when something was typed: an
+    // account that is already set up is routed to without its key being
+    // re-sent, because there is nothing to re-send.
+    const patch: CrucibleEngineSettingsPatch = { routes: { [act]: `${name}/${model}` } };
+    if (Object.keys(probe).length > 0) {
+      patch.upstreams = { [name]: probe as { key: string } | { url: string } };
+    }
+    await this.writeEngineSettings(patch);
   }
 
   /**

@@ -49,6 +49,7 @@ import type {
   CrucibleCapabilityView,
   CrucibleEngineSettings,
   CrucibleEngineSettingsPatch,
+  CrucibleEngineSettingsRefusal,
   CrucibleRouteKind,
   CrucibleRouteRow,
   CrucibleTextActName,
@@ -147,6 +148,41 @@ export class CrucibleEngineSettingsError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+/**
+ * THE REFUSAL AS A SCREEN NEEDS IT — code, sentence, and the control it is about.
+ *
+ * ── Why the projection lives here and not at the IPC handler ───────────────
+ *
+ * {@link CrucibleEngineSettingsError.details} is the SERVER's `details` object,
+ * verbatim and typed `unknown`, because this file's job is to pass a refusal
+ * through without renaming it. Somebody still has to say what shape that object
+ * has — `details.field` is a dotted path and `details.classes` is a list of
+ * class names (crucible `docs/PHASE15-HOST.md` §3.2, "The `details` keys,
+ * pinned") — and the module that owns the error is the only honest place for
+ * that sentence. Written in `main.ts` instead it would be a second reader of a
+ * shape this file already claims to carry, in a file that has no other reason
+ * to know the contract (ARCHITECTURE.md R1).
+ *
+ * **Nothing here is invented.** A refusal that carried no `field` comes back
+ * with `field: null`, and the panel then has nowhere particular to put the
+ * sentence and says it at the top — which is the truth about that refusal, not
+ * a gap to be filled with a guessed control name. Same for `classes`.
+ */
+export function crucibleSettingsRefusalOf(
+  err: CrucibleEngineSettingsError,
+): CrucibleEngineSettingsRefusal {
+  const details = err.details;
+  let field: string | null = null;
+  let classes: string[] | null = null;
+  if (details !== null && typeof details === 'object' && !Array.isArray(details)) {
+    const bag = details as Record<string, unknown>;
+    if (typeof bag['field'] === 'string' && bag['field'] !== '') field = bag['field'];
+    const raw = bag['classes'];
+    if (Array.isArray(raw) && raw.every((c) => typeof c === 'string')) classes = raw as string[];
+  }
+  return { code: err.code, message: err.message, field, classes };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -30,9 +30,15 @@ import type {
 import type {
   CrucibleActivityView,
   CrucibleCapabilityView,
+  CrucibleEngineSettings,
+  CrucibleEngineSettingsPatch,
+  CrucibleEngineSettingsRefusal,
   CrucibleModelRow,
   CrucibleProbeResult,
   CrucibleServersView,
+  CrucibleUpstreamName,
+  CrucibleUpstreamProbe,
+  CrucibleUpstreamTestResult,
   PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
@@ -4229,6 +4235,52 @@ export class ElectronService {
     capability: (name: string): Promise<{ success: boolean; data?: CrucibleCapabilityView; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.capability(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /*
+     * ── THE ENGINE'S OWN SETTINGS (crucible PHASE15 §3.1, §3.2, §5.2) ──────
+     *
+     * *"Each app's AI/engine settings section and its wizard's AI step draw
+     * the engine's settings document for the selected server and write through
+     * with PUT /v1/settings. The app holds nothing: no key, no route, no model
+     * list."*
+     *
+     * So these three are a WINDOW, not a store. There is no companion in
+     * `SettingsService`, no localStorage entry and no app-settings key — a
+     * control's press is a request to the engine and its result is the
+     * engine's answer, re-drawn. There is no Save button that writes an app
+     * file and syncs later, which is §5.2's own sentence.
+     *
+     * The method names differ from the channel names (`crucible:engine-*`)
+     * because the vendored Foundry claims `crucible:settings`; see
+     * `electron/preload.ts`.
+     */
+
+    /** `GET /v1/settings` for one server. Read on every draw, cached nowhere. */
+    engineSettings: (name: string): Promise<{ success: boolean; data?: CrucibleEngineSettings; error?: string; refusal?: CrucibleEngineSettingsRefusal }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.engineSettings(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * `PUT /v1/settings` — ONE request may configure an upstream AND route a
+     * class to it, which is what makes "enter a key and use it" a single press
+     * rather than two writes with a half-configured engine between them.
+     * Answers with the whole document after the write.
+     */
+    writeEngineSettings: (name: string, patch: CrucibleEngineSettingsPatch): Promise<{ success: boolean; data?: CrucibleEngineSettings; error?: string; refusal?: CrucibleEngineSettingsRefusal }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.writeEngineSettings(name, patch)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * Ask an upstream what the operator's account reaches, WITHOUT storing the
+     * probe. BookForge ships no cloud model list; this is where the ids on a
+     * screen come from, asked at the moment they are shown.
+     */
+    testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe): Promise<{ success: boolean; data?: CrucibleUpstreamTestResult; error?: string; refusal?: CrucibleEngineSettingsRefusal }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.testUpstream(name, upstream, probe)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /*

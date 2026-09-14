@@ -52,6 +52,16 @@ import type {
   ExportProvenance, FoundryMintMetadata, ProjectVariant, ResolvedProjectVariant,
 } from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
+// The engine's own settings document, as the two write doors below take it
+// (crucible docs/PHASE15-HOST.md §3.1, §3.2). Types only: the shapes are
+// `shared/`'s because the renderer composes a patch and main forwards it
+// unchanged, and a relative path because `@shared/*` is a renderer alias that
+// does not resolve at runtime in this process.
+import type {
+  CrucibleEngineSettingsPatch,
+  CrucibleUpstreamName,
+  CrucibleUpstreamProbe,
+} from '../shared/crucible/settings-wire';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
@@ -7865,10 +7875,21 @@ function setupIpcHandlers(): void {
   // What is left is a READ. The screen draws what the server decided; nothing
   // here writes a model choice anywhere.
 
+  // READ THROUGH THE SEAM, NOT THROUGH THE SDK — and the sixth field is why.
+  //
+  // This handler used to call `CrucibleClient.capability()`, whose parser
+  // builds each row out of exactly five named fields and DROPS `route`
+  // (`readCapabilityRow`, dist/esm/client.js). PHASE15 §3.3 added `route` to
+  // every row, the queue's `[cloud]` lane is decided on it, and a screen that
+  // has to say "translating on Anthropic" cannot say it from a document the
+  // parser silently emptied. So the read is `crucibleCapabilityWithRoutes`,
+  // which speaks the wire the contract describes and keeps the field — and the
+  // projection below carries it, because a projection that listed five of six
+  // fields would put the drop back one layer up.
   ipcMain.handle('crucible:capability', async (_event, name: string) => {
     try {
-      const { crucibleClientFor, CRUCIBLE_CLIENT_NAME } = await import('./crucible/servers.js');
-      const record = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).capability();
+      const { crucibleCapabilityWithRoutes } = await import('./crucible/settings-wire.js');
+      const record = await crucibleCapabilityWithRoutes(name);
       return {
         success: true,
         data: {
@@ -7881,10 +7902,114 @@ function setupIpcHandlers(): void {
             selected: row.selected,
             reason: row.reason,
             shortfallBytes: row.shortfallBytes,
+            route: row.route,
           })),
         },
       };
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── THE ENGINE'S OWN SETTINGS (crucible PHASE15 §3.1, §3.2, §5.2) ─────────
+  //
+  // "Settings are the engine's; the app draws a window." These three doors are
+  // that window's whole supply: read the document, write through it, and ask an
+  // upstream what the operator's account can actually reach. There is no
+  // fourth door that saves anything here, because there is nothing here to
+  // save — §0: *"settings live in the engine and nowhere else"*, and
+  // `tools/test-no-cloud-doors.js` is what keeps that true rather than this
+  // comment.
+  //
+  // THE CHANNEL NAMES ARE NOT `crucible:settings`, AND THAT IS NOT A STYLE
+  // CHOICE. The vendored Foundry (e6d5424) registers `crucible:settings` for
+  // its own Servers card (foundry-app/IPC-CHANNELS.md), and two
+  // `ipcMain.handle` calls of one name in one Electron main process throw at
+  // registration — BookForge would not start with the Foundry window mounted.
+  // So ours are `crucible:engine-settings` and `crucible:engine-settings-write`,
+  // which also read better: what they carry is the ENGINE's document, not this
+  // app's settings. `tools/test-ipc-collision.js` is what guards the pair.
+  //
+  // A REFUSAL CROSSES AS A REFUSAL. `CrucibleEngineSettingsError` carries the
+  // server's own code and, for the write door, a `details.field` naming the
+  // control the no is about. Both come back in a `refusal` beside `error`, so
+  // the panel can put the sentence next to the field the server named instead
+  // of parsing an English string it was handed.
+
+  ipcMain.handle('crucible:engine-settings', async (_event, name: string) => {
+    try {
+      const { crucibleEngineSettings } = await import('./crucible/settings-wire.js');
+      return { success: true, data: await crucibleEngineSettings(name) };
+    } catch (err) {
+      const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
+        await import('./crucible/settings-wire.js');
+      if (err instanceof CrucibleEngineSettingsError) {
+        return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
+      }
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * `PUT /v1/settings` — ONE request configures an upstream AND sets a route.
+   *
+   * The whole patch is the caller's (§3.2 applies upstreams, then routes, then
+   * validates, and a refusal applies nothing), so the wizard's "use Anthropic
+   * for translating" is one press and one write rather than a key saved, a
+   * route attempted and a half-configured engine when the second call fails.
+   *
+   * The answer is the WHOLE document after the write, which is what the panel
+   * re-draws from — never the patch it sent, which would show a save that the
+   * server may have shaped differently.
+   */
+  ipcMain.handle('crucible:engine-settings-write', async (
+    _event,
+    name: string,
+    patch: CrucibleEngineSettingsPatch,
+  ) => {
+    try {
+      const { putCrucibleEngineSettings } = await import('./crucible/settings-wire.js');
+      return { success: true, data: await putCrucibleEngineSettings(name, patch) };
+    } catch (err) {
+      const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
+        await import('./crucible/settings-wire.js');
+      if (err instanceof CrucibleEngineSettingsError) {
+        return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
+      }
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * `POST /v1/settings/upstreams/{name}/test` — Test BEFORE Save, literally.
+   *
+   * The probe carries the typed key or url and the server does NOT store it
+   * (§3.2), so a typo is a sentence beside the field rather than a saved
+   * credential that fails at chapter nine. An empty probe tests what is
+   * already configured.
+   *
+   * It ANSWERS the three upstream refusals rather than throwing them (§3.8):
+   * "that key was rejected" is the ordinary outcome of pressing Test and
+   * belongs beside the field, so it arrives in `data` as
+   * `{ok: false, refusal}`. Everything else — no server, no door, a body that
+   * is not the contract's — is about the ENGINE and still comes back as a
+   * failed call.
+   */
+  ipcMain.handle('crucible:upstream-test', async (
+    _event,
+    name: string,
+    upstream: CrucibleUpstreamName,
+    probe: CrucibleUpstreamProbe,
+  ) => {
+    try {
+      const { testCrucibleUpstream } = await import('./crucible/settings-wire.js');
+      return { success: true, data: await testCrucibleUpstream(name, upstream, probe) };
+    } catch (err) {
+      const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
+        await import('./crucible/settings-wire.js');
+      if (err instanceof CrucibleEngineSettingsError) {
+        return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
+      }
       return { success: false, error: (err as Error).message };
     }
   });

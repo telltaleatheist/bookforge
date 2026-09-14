@@ -62,10 +62,16 @@ import type {
 } from '../shared/crucible/coordinate-wire';
 import type {
   CrucibleActivityView,
+  CrucibleEngineSettings,
+  CrucibleEngineSettingsPatch,
+  CrucibleEngineSettingsRefusal,
   CrucibleModelRow,
   CrucibleCapabilityView,
   CrucibleProbeResult,
   CrucibleServersView,
+  CrucibleUpstreamName,
+  CrucibleUpstreamProbe,
+  CrucibleUpstreamTestResult,
   PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
@@ -1364,6 +1370,64 @@ export interface ElectronAPI {
      * the card to make it.
      */
     capability: (name: string) => Promise<{ success: boolean; data?: CrucibleCapabilityView; error?: string }>;
+
+    /*
+     * ── THE ENGINE'S OWN SETTINGS (crucible PHASE15 §3.1, §3.2, §5.2) ───────
+     *
+     * "Settings are the engine's; the app draws a window." These three are the
+     * window's whole supply, and there is deliberately no fourth that saves
+     * anything: nothing on this side is stored, so there is nothing to save.
+     * A key travels UP through {@link writeEngineSettings} or
+     * {@link testUpstream} and never comes back — the read shape has a hint of
+     * four characters and no field a key could sit in.
+     *
+     * THE METHOD NAMES AND THE CHANNEL NAMES DIFFER, as they already do for
+     * `add`/`crucible:add-server`. The vendored Foundry claims
+     * `crucible:settings` for its own Servers card, so ours are
+     * `crucible:engine-settings` and `crucible:engine-settings-write`; the
+     * renderer only ever spells the method, so the skew stops at this file and
+     * `tools/test-ipc-collision.js` is what guards it.
+     */
+
+    /** `GET /v1/settings` on a named server — routes, upstreams, allowance, backend. */
+    engineSettings: (name: string) => Promise<{
+      success: boolean;
+      data?: CrucibleEngineSettings;
+      error?: string;
+      refusal?: CrucibleEngineSettingsRefusal;
+    }>;
+    /**
+     * `PUT /v1/settings` — a partial patch, applied as a whole or not at all.
+     *
+     * One patch may configure an upstream AND route a class to it; the server
+     * applies upstreams first, then routes, then validates (§3.2), so there is
+     * no window in which a route names a key that is not there yet. The answer
+     * is the WHOLE document after the write, which is what a panel re-draws
+     * from.
+     */
+    writeEngineSettings: (name: string, patch: CrucibleEngineSettingsPatch) => Promise<{
+      success: boolean;
+      data?: CrucibleEngineSettings;
+      error?: string;
+      refusal?: CrucibleEngineSettingsRefusal;
+    }>;
+    /**
+     * `POST /v1/settings/upstreams/{name}/test` — what that account reaches.
+     *
+     * The probe is tested WITHOUT being stored, which is what makes Test
+     * before Save a fact rather than a wording. The three upstream refusals
+     * ANSWER inside `data` (§3.8); only an engine-level failure fails the call.
+     */
+    testUpstream: (
+      name: string,
+      upstream: CrucibleUpstreamName,
+      probe: CrucibleUpstreamProbe,
+    ) => Promise<{
+      success: boolean;
+      data?: CrucibleUpstreamTestResult;
+      error?: string;
+      refusal?: CrucibleEngineSettingsRefusal;
+    }>;
 
     /*
      * ── THE INSTALL STORY'S THIRD DOOR ──────────────────────────────────────
@@ -2881,6 +2945,15 @@ const electronAPI: ElectronAPI = {
     installPlan: () => ipcRenderer.invoke('crucible:host-install-plan'),
     install: () => ipcRenderer.invoke('crucible:host-install'),
     capability: (name: string) => ipcRenderer.invoke('crucible:capability', name),
+    // The engine's own settings. The channel names are `crucible:engine-*` and
+    // NOT `crucible:settings`, which the vendored Foundry (e6d5424) registers
+    // for its Servers card — a duplicate `ipcMain.handle` name throws at
+    // registration and the app would not boot with that window mounted.
+    engineSettings: (name: string) => ipcRenderer.invoke('crucible:engine-settings', name),
+    writeEngineSettings: (name: string, patch: CrucibleEngineSettingsPatch) =>
+      ipcRenderer.invoke('crucible:engine-settings-write', name, patch),
+    testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe) =>
+      ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
     // The operator door. `open-ui`, `coordination`, `coordinate`,
     // `cancel-setup`, `module` and `parse-pairing` are names the hosted
     // Foundry's `crucible:` family

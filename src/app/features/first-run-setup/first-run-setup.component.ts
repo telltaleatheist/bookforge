@@ -196,7 +196,16 @@ interface SetupStep {
                 stores none of them, and a route to one is chosen before anything runs rather
                 than reached for when something fails.
               </p>
-              <app-ai-setup-wizard [embedded]="true" />
+              <!-- The wizard input turns on the one thing this step has that
+                   Settings → AI does not (crucible PHASE15 §5.2): for each
+                   text job the engine cannot do on its own card, the engine's
+                   reason and an offer to run it through Anthropic, OpenAI or
+                   an Ollama server instead — one press, which tests the key
+                   and then writes the account AND the route together. Both
+                   hosts pass embedded, so that input cannot tell them apart;
+                   everything else on the panel is identical here and in
+                   Settings on purpose. -->
+              <app-ai-setup-wizard [embedded]="true" [wizard]="true" />
             }
             @case ('crucible') {
               <!-- The SAME component Settings → Crucible Servers mounts, in its

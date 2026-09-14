@@ -32,8 +32,12 @@ import type {
 } from '@shared/crucible/coordinate-wire';
 import type {
   CrucibleCapabilityView,
+  CrucibleRouteRow,
   CrucibleTextActName,
+  CrucibleUpstreamName,
+  CrucibleUpstreamRow,
 } from '@shared/crucible/settings-wire';
+import { CRUCIBLE_UPSTREAM_NAMES } from '@shared/crucible/settings-wire';
 
 /** The product name, for the one place per panel that earns a first mention. */
 export const ENGINE_FIRST = 'GPU engine (Crucible)';
@@ -185,6 +189,249 @@ const UPSTREAM_WORDS: Readonly<Record<string, string>> = {
   openai: 'OpenAI',
   ollama: 'an Ollama server',
 };
+
+/**
+ * One upstream's name, for a sentence. `an Ollama server` reads as a phrase on
+ * purpose: Anthropic and OpenAI are one company each and an Ollama is whichever
+ * machine the operator pointed the engine at, so naming it like a brand would
+ * suggest there is only one of them.
+ */
+export function upstreamWords(name: CrucibleUpstreamName): string {
+  return UPSTREAM_WORDS[name];
+}
+
+/**
+ * The same name where a sentence needs it CAPITALISED at the front, because
+ * "an Ollama server" mid-sentence becomes "An Ollama server" at the start and
+ * an app that shipped one string for both positions gets one of them wrong.
+ */
+export function upstreamWordsLeading(name: CrucibleUpstreamName): string {
+  const words = upstreamWords(name);
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ENGINE'S SETTINGS, IN A PERSON'S WORDS (crucible PHASE15 §3.1, §5.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/*
+ * ── Why these paragraphs are here and not in the component ────────────────
+ *
+ * The same rule as everything above it: the screen owns the wording, and it
+ * owns it in ONE file so that the settings section and the wizard's AI step —
+ * which are literally the same component mounted twice (§5.2 asks for exactly
+ * that) — cannot drift into two explanations of one door.
+ *
+ * They all say the same thing in different lengths, and it is the thing §5.2
+ * is about: the engine holds these settings, this screen is a window onto
+ * them, and a press here is a request to the engine rather than a note in a
+ * file that gets synced later.
+ */
+
+/** The settings panel's opening paragraph. The panel's ONE first mention. */
+export const ENGINE_SETTINGS_INTRO =
+  `These settings belong to the ${ENGINE_FIRST}, not to BookForge. This panel reads them from `
+  + 'the server picked above and writes straight back to it, so there is no Save button for the '
+  + 'panel as a whole and nothing to keep in step: what you see is what that engine is holding, '
+  + 'and every other app pointed at the same engine sees the same thing.';
+
+/** Above the four route rows. */
+export const ENGINE_ROUTES_INTRO =
+  'Cleaning up text, translating, simplifying and analysing a book are four separate jobs, and '
+  + 'each can run somewhere different. Left alone they run on the engine\'s own card, on whichever '
+  + 'model that machine measured itself and picked. Point one at Anthropic, OpenAI or an Ollama '
+  + 'server instead and it goes there from then on — chosen now, not reached for later when '
+  + 'something fails.';
+
+/** Above the three upstream cards. */
+export const ENGINE_KEYS_INTRO =
+  'Keys and addresses live on the engine. BookForge never stores one, never reads one back and '
+  + 'has no list of what any of these accounts sell — a key you type here goes to the engine and '
+  + 'the engine is what calls the account.';
+
+/** Beside the Test and Save pair, once per panel. */
+export const TEST_BEFORE_SAVE_WORDS =
+  'Test first: it sends what you typed without storing it and answers with the models that '
+  + 'account can actually reach. Save writes it to the engine.';
+
+/** The state of the panel before a server has been picked. */
+export const ENGINE_SETTINGS_NO_SERVER =
+  'Pick a server above and its settings appear here.';
+
+/** In front of the engine\'s own refusal, which is then shown verbatim. */
+export const ENGINE_SETTINGS_REFUSED_LEAD =
+  'The engine would not answer for its settings:';
+
+/** The option that reveals the free-text box, in the route select. */
+export const ROUTE_CHOICE_OTHER = 'an upstream model…';
+
+/** Beside the free-text box. */
+export const ROUTE_CHOICE_OTHER_HELP =
+  'Type the model id exactly as the account spells it — Test an account below and its own list '
+  + 'fills this box\'s suggestions.';
+
+/**
+ * The free-text box's placeholder.
+ *
+ * DELIBERATELY NOT A REAL MODEL ID. §2: the engine ships no cloud model list
+ * and neither does this app, and a placeholder naming a particular model is
+ * the smallest possible version of shipping one — it would go stale on
+ * somebody else's release schedule and read as a recommendation nobody made.
+ */
+export const ROUTE_CHOICE_OTHER_PLACEHOLDER = '<account>/<model id>';
+
+/**
+ * THE `local` OPTION, WHICH NAMES THE MODEL IT WOULD USE.
+ *
+ * "nothing fits" is the document's own answer (a `null` model on a `local`
+ * route, §3.1) and it is shown rather than hidden, because a person choosing
+ * between "the engine" and "Anthropic" needs to know that the first of those
+ * has nothing to offer for this job. A bare "local" would let somebody pick
+ * the option that cannot run.
+ */
+export function localRouteWords(row: CrucibleRouteRow | null): string {
+  if (row === null || row.model === null) return 'this engine — nothing on it fits';
+  return `this engine — ${row.model}`;
+}
+
+/**
+ * An upstream model id as a choice: `Anthropic — claude-sonnet-5`.
+ *
+ * A raw `anthropic/claude-sonnet-5` in a list beside `qwen3.5-9b` shows
+ * somebody a slash and a vendor prefix where every other row shows a model.
+ * The id itself is kept, because it is what the operator typed and what the
+ * engine will send.
+ */
+export function upstreamRouteWords(modelId: string): string {
+  const slash = modelId.indexOf('/');
+  if (slash <= 0) return modelId;
+  const name = modelId.slice(0, slash);
+  const known = (CRUCIBLE_UPSTREAM_NAMES as readonly string[]).includes(name);
+  return `${known ? upstreamWordsLeading(name as CrucibleUpstreamName) : name} — ${modelId.slice(slash + 1)}`;
+}
+
+/**
+ * WHICH OF THE TWO FIELDS AN ACCOUNT TAKES — `key` or `url`.
+ *
+ * Not wording, and it lives here anyway, because it is the one place in the
+ * renderer that is allowed to know a vendor by name. §3.2: each upstream takes
+ * exactly one of the two and the engine refuses the other by name
+ * (`upstream_bad_field`), *"because a request carrying the other one is a
+ * request about a different upstream than the one it named"*. A screen with
+ * its own `name === 'ollama'` would be a second author of that rule and the
+ * first thing `tools/test-no-cloud-doors.js` would call provider code coming
+ * back; one function here keeps the whole panel free of vendor names.
+ */
+export function upstreamCredentialField(name: CrucibleUpstreamName): 'key' | 'url' {
+  return name === 'ollama' ? 'url' : 'key';
+}
+
+/** What one upstream card's field is called, and what goes in it. */
+export function upstreamFieldWords(
+  name: CrucibleUpstreamName,
+): { label: string; placeholder: string } {
+  if (upstreamCredentialField(name) === 'url') {
+    // The port is deliberately not spelled: `tools/test-no-cloud-doors.js`
+    // treats naming it as this app dialling one, and it is right to — the
+    // engine is what reaches that server, and a placeholder is not worth an
+    // exception in the keeper that proves BookForge no longer talks to it.
+    return { label: 'Address', placeholder: 'http://<host>:<port>' };
+  }
+  return { label: 'API key', placeholder: 'paste a key — it is sent to the engine, not kept here' };
+}
+
+/**
+ * WHETHER THIS UPSTREAM IS SET UP, AND THE HINT **VERBATIM**.
+ *
+ * `keyHint` arrives with its leading ellipsis already on it (`…k3A9`, crucible
+ * `c5482ff`) and is interpolated here without a character being added or
+ * removed. A screen that stripped the ellipsis and re-added its own would be
+ * the second author of one string, and the day the engine lengthens the hint
+ * the two would disagree about what a person is looking at.
+ *
+ * The field is EMPTY on every draw whatever this says — a key is write-only,
+ * so there is nothing to put back in the box, and this line is the whole of
+ * what a person gets to recognise the stored one by.
+ */
+export function upstreamStateWords(name: CrucibleUpstreamName, row: CrucibleUpstreamRow): string {
+  if (!row.configured) {
+    return `Not set up — this engine cannot send anything to ${upstreamWords(name)} yet.`;
+  }
+  if (name === 'ollama') {
+    return row.url === null
+      ? 'Set up, and the engine did not say at which address.'
+      : `Set up — ${row.url}`;
+  }
+  return row.keyHint === null
+    ? 'Set up, and the engine gave no hint at which key.'
+    : `Set up — ${row.keyHint}`;
+}
+
+/**
+ * WHAT A TEST FOUND, as the line that replaces a hardcoded model list.
+ *
+ * §2: *"the server does not ship a cloud model list"* — and neither does this
+ * app. These ids came back from the account itself, seconds ago, which is the
+ * only list that can be true for a particular person's key.
+ */
+export function upstreamTestedWords(name: CrucibleUpstreamName, models: readonly string[]): string {
+  if (models.length === 0) {
+    return `That ${upstreamWords(name) === 'an Ollama server' ? 'server' : 'account'} answered, `
+      + 'and listed no models at all.';
+  }
+  return `That account reaches ${models.length} model${models.length === 1 ? '' : 's'}: `
+    + `${joinWords(models)}.`;
+}
+
+/**
+ * THE ONE-PRESS OFFER'S ANSWER WHEN IT HAS NOWHERE TO ROUTE TO YET.
+ *
+ * Pressing "use Anthropic for translating" with no model named tests the key
+ * and stops there, deliberately: the engine will not guess which of an
+ * account's models a job should run on, and a press that picked the first id
+ * in a list would be this app choosing a model again — the exact second
+ * opinion the capability record exists to end.
+ */
+export function nameAModelWords(name: CrucibleUpstreamName): string {
+  return `Nothing was saved. Put one of those model ids in the box beside the key and press `
+    + `again, and that one press sets up ${upstreamWords(name)} and sends this job there.`;
+}
+
+/**
+ * CLASSES THIS ENGINE CANNOT SERVE, AND THE WAY OUT — the wizard's own line.
+ *
+ * §5.2: *"for each llm class that is `enabled: false` locally it says the
+ * class's reason and offers 'run it through Anthropic / OpenAI / an Ollama
+ * server instead'."* The offer names all three every time, because which of
+ * them is set up is a thing the cards below say and not a thing to filter this
+ * sentence by — a person with no account anywhere still needs to know these
+ * are the three.
+ */
+export function unavailableOfferWords(capabilities: readonly string[]): string {
+  const what = joinWords(capabilities.map(capabilityClassWords));
+  const upstreams = joinWords(CRUCIBLE_UPSTREAM_NAMES.map((n) => upstreamWords(n)));
+  return `This engine cannot do ${what} on its own card. Run ${capabilities.length === 1 ? 'it' : 'them'} `
+    + `through ${upstreams} instead.`;
+}
+
+/** The button that does it, one press: `Use Anthropic for translating`. */
+export function offerButtonWords(name: CrucibleUpstreamName, capability: string): string {
+  return `Use ${upstreamWords(name)} for ${capabilityClassWords(capability)}`;
+}
+
+/**
+ * A GROUP WITH NOTHING TO OFFER, still said once.
+ *
+ * Narration, transcription, alignment, voice matching and noise removal cannot
+ * be sent to an account — §1: only the four text classes route upstream, and
+ * everything else is refused `route_not_routable`. So a group of those gets
+ * the news and the engine's own reason and no button, which is honest; the fix
+ * for that group is on the engine's console, not on this page.
+ */
+export function unavailableNoticeWords(capabilities: readonly string[]): string {
+  const what = joinWords(capabilities.map(capabilityClassWords));
+  return `This engine does not do ${what}.`;
+}
 
 /**
  * CLASSES THIS ENGINE CANNOT SERVE FOR ONE AND THE SAME REASON, grouped.

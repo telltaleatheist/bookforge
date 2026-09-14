@@ -300,6 +300,23 @@ const SUITES = [
   // `llama-windows` engine answers for the five WSL-only classes with ONE
   // sentence so a screen says it once.
   'test-crucible-settings-seam',
+  // PHASE 15 §5.2, the half of it that reaches a person: "settings are the
+  // engine's; the app draws a window". The suite above proves the wire; this
+  // one proves the WINDOW. Four IPC doors — and the two new read/write ones
+  // are `crucible:engine-settings*` rather than `crucible:settings`, because
+  // the vendored Foundry owns that name and a duplicate `ipcMain.handle`
+  // stops the app booting. It drives the main-process doors against the fake
+  // (one PUT that configures an account AND routes a class to it, a Test that
+  // stores nothing, a refusal that keeps its code AND the dotted path naming
+  // the control it is about), and it EXECUTES the wording file — transpiled,
+  // fed a real `llama-windows` capability document — to prove the five
+  // WSL-only classes collapse into one line, which is what §3.3's shared
+  // sentence is for. The renderer's half is a SOURCE pin and says so in its
+  // header: an Angular component cannot be required from node, so what is
+  // pinned is that the key box is bound to a draft the one draw function
+  // clears, that no key reaches `settings.service.ts`, and that Test is drawn
+  // before Save.
+  'test-crucible-settings-window',
   // The FIFTH act, and the one that is not a text act (rollout tier 3,
   // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
   // a job, because `pages` is a capability class whose `job_type` is `llm` —
