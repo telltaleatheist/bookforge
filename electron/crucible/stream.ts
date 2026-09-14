@@ -107,7 +107,12 @@ import {
   CrucibleUnreachable,
   CrucibleVersionError,
 } from '@crucible/client';
-import type { CrucibleClient, StreamEvent, TtsStreamSession, VoiceInfo } from '@crucible/client';
+import type { CrucibleClient, StreamRowDone, TtsStreamSession, VoiceInfo } from '@crucible/client';
+import {
+  CRUCIBLE_STREAM_TAKE as SHARED_STREAM_TAKE,
+  CrucibleRowSession,
+  type CrucibleRowChunk,
+} from '../../shared/listen-client/crucible-rows.js';
 import { CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE, CrucibleRenderRefused, crucibleVoiceFor } from './render';
 import { decideWhereGenerationRuns, type VenueHost } from './generation-venue';
 import { recordCrucibleStreamRow, takeChunkGuards } from '../chunk-guard-ledger';
@@ -141,7 +146,7 @@ export const LISTEN_LANGUAGE = 'en';
  * `CRUCIBLE_RENDER_TAKE` reasons, and because the SDK's `say` has no default on
  * the wire (PHASE3-TTS.md section 7, difference 5).
  */
-export const CRUCIBLE_STREAM_TAKE = 0;
+export const CRUCIBLE_STREAM_TAKE = SHARED_STREAM_TAKE;
 
 /**
  * How many rows the scheduler may hold in flight against a session.
@@ -311,39 +316,35 @@ function pcm16ToBase64(pcm: Int16Array): string {
 
 type GenResult = { success: boolean; audio?: AudioChunk; streamed?: boolean; duration?: number; error?: string };
 
-/** One row said and not yet done. */
-interface Row {
-  /** This row's ordinal within the session — the ledger's index. */
-  readonly ordinal: number;
-  /** The scheduler's sentence index, for the log. */
-  readonly sentenceIndex: number;
-  readonly onChunk: ((chunk: StreamChunk) => void) | undefined;
-  readonly isCancelled: (() => boolean) | undefined;
-  /** Audio held back until `done`, when the caller did not ask for fast start. */
-  buffered: { seq: number; pcm: Int16Array; seconds: number }[];
-  /** A `cancel` for this row has gone to the server. */
-  cancelSent: boolean;
-  /**
-   * Fast-start audio for this row already reached the listener and the server
-   * then RESTARTED the row (PHASE3-TTS.md section 7, difference 1). The chunks
-   * cannot be taken back, so the row was failed by name and every later frame
-   * for it is ignored — see `onRestart`.
-   */
-  abandoned: boolean;
-  settled: boolean;
-  resolve: (result: GenResult) => void;
-}
+/*
+ * THE ROW MACHINERY LEFT THIS FILE (Phase 16 step 2).
+ *
+ * `Row`, `onEvent`, `settle` and the `pump` that drove them are
+ * `shared/listen-client/crucible-rows.ts` now, because the browser extension
+ * and the Angular renderer open their own streaming sessions since Phase 16
+ * (docs/EXTENSION-TO-CRUCIBLE-PLAN.md §0) and every one of the four frames has
+ * a rule that is easy to get subtly wrong: a `restart` that must void audio
+ * already handed over, a `done` whose `capped` is `null` and never `false`, a
+ * frame for a row nobody said, a `cancel` whose cost depends on where the row
+ * was. Three copies of that is three chances.
+ *
+ * What stayed here is what is BookForge's: the venue decision, the voice
+ * mapping, the `StreamingEngine` interface, the PCM-to-base64 the scheduler's
+ * wire wants, the refusal vocabulary, and the guard ledger.
+ */
 
 /** The open session and everything that belongs to it. */
 interface LiveSession {
   readonly session: TtsStreamSession;
+  /** The rows on it — the shared layer (see the note above). */
+  readonly rows: CrucibleRowSession;
   /** BookForge's voice id — what the pickers show. */
   readonly voice: string;
   /** Crucible's voice id — what the session was opened on. */
   readonly crucibleVoice: string;
   /** Keys the guard ledger for the life of the session. */
   readonly ledgerId: string;
-  readonly rows: Map<string, Row>;
+  /** Next row id, so an id is unique within the session. */
   ordinal: number;
   /** `closeSession` has started; the pump's end is expected. */
   closing: boolean;
@@ -351,8 +352,6 @@ interface LiveSession {
   closeReason: string | null;
   /** The ledger has been taken and the end logged. Exactly once. */
   finalized: boolean;
-  /** A `say` has been accepted, so the server has seen our event stream attach. */
-  attached: boolean;
 }
 
 /*
@@ -530,17 +529,35 @@ export class CrucibleStreamingEngine {
       }
       throw refusal;
     }
+    const ledgerId = `crucible-stream:${session.sessionId}`;
     const live: LiveSession = {
       session,
+      rows: new CrucibleRowSession(session, {
+        // RECORDED, NEVER ACTED ON. The frame is the server's own measurement of
+        // the row; the door is unguarded by ruling, and Listen never re-rolls.
+        onRowDone: (id: string, ordinal: number, done: StreamRowDone) => {
+          recordCrucibleStreamRow(ledgerId, {
+            index: ordinal,
+            seconds: done.seconds,
+            chars: done.chars,
+            charsPerSec: done.charsPerSec,
+            capped: done.capped,
+            cancelled: done.cancelled,
+          });
+          if (done.capped === true) {
+            console.warn(`[CrucibleStream] row ${id} hit the frame cap after `
+              + `${done.seconds.toFixed(1)}s — delivered as is; Listen never re-rolls`);
+          }
+        },
+        warn: (line: string) => console.error(`[CrucibleStream] ${line}`),
+      }),
       voice,
       crucibleVoice,
-      ledgerId: `crucible-stream:${session.sessionId}`,
-      rows: new Map(),
+      ledgerId,
       ordinal: 0,
       closing: false,
       closeReason: null,
       finalized: false,
-      attached: false,
     };
     this.live = live;
     this.lastVoice = voice;
@@ -554,132 +571,20 @@ export class CrucibleStreamingEngine {
   };
 
   /**
-   * Read the session's frames for as long as it lives. One reader per session;
-   * rows are keyed by the id `say` handed the server, so a frame for an id this
-   * session never said is reported loudly rather than dropped — the two sides
-   * would disagree about which rows exist, and silence would be a sentence of
-   * missing audio nobody can trace (the local pool's rule for the same case).
+   * Read the session's frames for as long as it lives, and settle every row
+   * against them. One reader per session; the rules for each of the four
+   * frames — and for a frame naming a row nobody said — are the shared row
+   * layer's (shared/listen-client/crucible-rows.ts).
    */
   private async pump(live: LiveSession): Promise<void> {
-    let ended = 'the server closed the session';
-    try {
-      for await (const event of live.session) this.onEvent(live, event);
-    } catch (err) {
-      const refusal = describeCrucibleStreamRefusal(err, this.server ?? '?');
-      ended = `the session failed: ${errorText(refusal)}`;
-    }
+    const ended = await live.rows.run();
     this.sessionGone(live, ended);
-  }
-
-  private onEvent(live: LiveSession, event: StreamEvent): void {
-    const row = live.rows.get(event.id);
-    if (row === undefined) {
-      console.error(`[CrucibleStream] ${event.kind} frame for row ${event.id}, which this session never `
-        + 'said — dropping it');
-      return;
-    }
-    if (row.abandoned) {
-      if (event.kind === 'done') live.rows.delete(event.id);
-      return;
-    }
-    switch (event.kind) {
-      case 'audio': {
-        if (row.isCancelled?.() === true) return;
-        if (row.onChunk !== undefined) {
-          row.onChunk({
-            seq: event.seq,
-            data: pcm16ToBase64(event.pcm),
-            duration: event.seconds,
-            sampleRate: live.session.sampleRate,
-          });
-        } else {
-          row.buffered.push({ seq: event.seq, pcm: event.pcm, seconds: event.seconds });
-        }
-        return;
-      }
-      case 'restart': {
-        if (row.onChunk !== undefined) {
-          // The audio below `fromSeq` is void and it has already been played.
-          // The scheduler's chunk protocol has no frame that takes audio back,
-          // so the honest answer is a failed sentence, by name, rather than the
-          // row's first seconds twice. Unreachable on every voice that ships
-          // (higgs-v3, width 1); an Orpheus manifest would reach it.
-          row.abandoned = true;
-          this.settle(row, {
-            success: false,
-            error: `crucible restarted row ${event.id} from seq ${event.fromSeq} (${event.reason}) after its `
-              + 'first chunks were already handed to the listener; a fast-start row cannot be restarted',
-          });
-          return;
-        }
-        row.buffered = row.buffered.filter((chunk) => chunk.seq >= event.fromSeq);
-        return;
-      }
-      case 'done': {
-        live.rows.delete(event.id);
-        // RECORDED, NEVER ACTED ON. The frame is the server's own measurement of
-        // the row; the door is unguarded by ruling, and Listen never re-rolls.
-        recordCrucibleStreamRow(live.ledgerId, {
-          index: row.ordinal,
-          seconds: event.seconds,
-          chars: event.chars,
-          charsPerSec: event.charsPerSec,
-          capped: event.capped,
-          cancelled: event.cancelled,
-        });
-        if (event.capped === true) {
-          console.warn(`[CrucibleStream] row ${event.id} (sentence ${row.sentenceIndex}) hit the frame cap `
-            + `after ${event.seconds.toFixed(1)}s — delivered as is; Listen never re-rolls`);
-        }
-        if (event.cancelled) {
-          this.settle(row, { success: false, error: `row ${event.id} was cancelled on the server` });
-          return;
-        }
-        if (row.onChunk !== undefined) {
-          this.settle(row, { success: true, streamed: true, duration: event.seconds });
-          return;
-        }
-        row.buffered.sort((a, b) => a.seq - b.seq);
-        const samples = row.buffered.reduce((n, chunk) => n + chunk.pcm.length, 0);
-        const pcm = new Int16Array(samples);
-        let at = 0;
-        for (const chunk of row.buffered) {
-          pcm.set(chunk.pcm, at);
-          at += chunk.pcm.length;
-        }
-        this.settle(row, {
-          success: true,
-          audio: { data: pcm16ToBase64(pcm), duration: event.seconds, sampleRate: live.session.sampleRate },
-        });
-        return;
-      }
-      case 'error': {
-        live.rows.delete(event.id);
-        this.settle(row, { success: false, error: `${event.code}: ${event.message}` });
-        return;
-      }
-      default: {
-        // The SDK narrows the union; a kind it does not know is thrown inside it,
-        // never yielded. Stated so a widened union is a compile error here.
-        const never: never = event;
-        throw new Error(`crucible stream event of unknown kind: ${JSON.stringify(never)}`);
-      }
-    }
-  }
-
-  private settle(row: Row, result: GenResult): void {
-    if (row.settled) return;
-    row.settled = true;
-    row.resolve(result);
   }
 
   /** The pump ended, by our close or the server's. Exactly once per session. */
   private sessionGone(live: LiveSession, reason: string): void {
     if (this.live === live) this.live = null;
-    for (const [id, row] of live.rows) {
-      this.settle(row, { success: false, error: `Listen session on crucible closed before row ${id} finished: ${reason}` });
-    }
-    live.rows.clear();
+    // `run()` has already failed every live row by name.
     // Our own close races the `closed` frame it causes — the frame can land
     // before the DELETE answers — so whichever side finalizes first logs it
     // under OUR reason when the close was ours.
@@ -702,11 +607,9 @@ export class CrucibleStreamingEngine {
     live.closing = true;
     live.closeReason = reason;
     if (this.live === live) this.live = null;
-    for (const [id, row] of live.rows) {
-      this.settle(row, { success: false, error: `Listen session on crucible closed before row ${id} finished: ${reason}` });
-    }
     try {
-      await live.session.close();
+      // Fails every live row by name, then closes the session on the server.
+      await live.rows.close(reason);
     } catch (err) {
       // A session the server has already dropped is not a failure to close it;
       // anything else is reported and the server's own grace window ends the
@@ -723,7 +626,7 @@ export class CrucibleStreamingEngine {
 
   generateSentence = async (
     text: string,
-    sentenceIndex: number,
+    _sentenceIndex: number,
     settings: PlaySettings,
     _priority = false,
     isCancelled?: () => boolean,
@@ -745,24 +648,9 @@ export class CrucibleStreamingEngine {
           + `'${settings.voice}' — load it first`,
       };
     }
-    if (isCancelled?.() === true) return { success: false, error: 'cancelled before dispatch' };
 
     live.ordinal += 1;
     const id = `r${live.ordinal}`;
-    let resolve!: (result: GenResult) => void;
-    const promise = new Promise<GenResult>((r) => { resolve = r; });
-    const row: Row = {
-      ordinal: live.ordinal,
-      sentenceIndex,
-      onChunk,
-      isCancelled,
-      buffered: [],
-      cancelSent: false,
-      abandoned: false,
-      settled: false,
-      resolve,
-    };
-    live.rows.set(id, row);
     /*
      * ONE ATTEMPT. No poll, no wait: the SDK attaches the session's event
      * stream and reads the server's `ready` frame BEFORE handing the session
@@ -770,16 +658,40 @@ export class CrucibleStreamingEngine {
      * A `stream_not_attached` refusal would mean that guarantee is false, and
      * it surfaces by name rather than being retried around.
      */
+    let outcome;
     try {
-      await live.session.say(id, text, CRUCIBLE_STREAM_TAKE);
-      live.attached = true;
+      outcome = await live.rows.say(text, {
+        id,
+        isCancelled,
+        // The scheduler's `chunk` carries base64 PCM16; the shared row layer
+        // hands over the samples and leaves the encoding to whoever is
+        // listening (a browser builds a WAV blob out of the same frames).
+        onChunk: onChunk === undefined
+          ? undefined
+          : (chunk: CrucibleRowChunk) => onChunk({
+              seq: chunk.seq,
+              data: pcm16ToBase64(chunk.pcm),
+              duration: chunk.seconds,
+              sampleRate: chunk.sampleRate,
+            }),
+      });
     } catch (err) {
-      live.rows.delete(id);
       const refusal = describeCrucibleStreamRefusal(err, this.server ?? '?');
       if (refusal instanceof CrucibleStreamRefused) return { success: false, error: refusal.message };
       throw refusal;
     }
-    return promise;
+    if (!outcome.success) return { success: false, error: outcome.error };
+    if (outcome.streamed === true) {
+      return { success: true, streamed: true, duration: outcome.seconds ?? 0 };
+    }
+    return {
+      success: true,
+      audio: {
+        data: pcm16ToBase64(outcome.pcm as Int16Array),
+        duration: outcome.seconds ?? 0,
+        sampleRate: live.rows.sampleRate,
+      },
+    };
   };
 
   generateSentenceStream = async (
@@ -805,22 +717,13 @@ export class CrucibleStreamingEngine {
    * and the live ones are untouched.
    */
   cancelPendingBatchIfStale = (): void => {
-    const live = this.live;
-    if (live === null) return;
-    for (const [id, row] of live.rows) {
-      if (row.cancelSent || row.settled || row.isCancelled?.() !== true) continue;
-      row.cancelSent = true;
-      void live.session.cancel(id).then(
-        (outcome) => console.log(`[CrucibleStream] cancelled stale row ${id}: ${outcome}`),
-        (err) => console.error(`[CrucibleStream] cancelling row ${id}: ${errorText(describeCrucibleStreamRefusal(err, this.server ?? '?'))}`),
-      );
-    }
+    this.live?.rows.cancelStale();
   };
 
   stop = (): void => {
     const live = this.live;
     if (live === null) return;
-    void live.session.cancelAll().then(
+    void live.rows.cancelAll().then(
       (count) => console.log(`[CrucibleStream] stop: ${count} row(s) cancelled on the server`),
       (err) => console.error(`[CrucibleStream] stop: ${errorText(describeCrucibleStreamRefusal(err, this.server ?? '?'))}`),
     );
