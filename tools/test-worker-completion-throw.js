@@ -259,13 +259,15 @@ async function main() {
     assert.ok(caught, 'the scan cannot recognize a bare call site');
   });
 
-  await check('there are still four of them', () => {
-    // Three worker close/error handlers and the VRAM-wait retry. A new one added
+  await check('there are still five of them', () => {
+    // Three worker close/error handlers, the VRAM-wait retry, and — since
+    // 2026-09-13 — the Crucible generation's completion (`startCrucibleGeneration`,
+    // where the one remote job stands in for the workers). A new one added
     // without a `.catch()` fails the row above; a count here says the row above
     // is looking at all of them.
     const calls = source.match(/checkAllWorkersComplete\(session\)\n?\s*\.catch\(/g) ?? [];
-    assert.strictEqual(calls.length, 4,
-      `expected 4 guarded call sites, found ${calls.length} — if a site was added or removed, `
+    assert.strictEqual(calls.length, 5,
+      `expected 5 guarded call sites, found ${calls.length} — if a site was added or removed, `
       + 'say so here rather than loosening the count');
   });
 
