@@ -2460,6 +2460,26 @@ async function assertCrucibleModelResident(server: string, model: string): Promi
 export async function crucibleChatOnce(options: {
   server: string;
   model: string;
+  /**
+   * WHICH CAPABILITY CLASS THIS CHAT IS — required, and never guessed.
+   *
+   * It travels as `X-Crucible-Act` and lands on the engine's in-flight row, so
+   * `/v1/activity` says "translating" rather than "a chat". Crucible cannot
+   * work it out: a simplify and a translate are the same model and the same
+   * route, and the only difference is a prompt the server does not own.
+   *
+   * Owen, 2026-09-13: *"they can't lie to the user and say a translate job is
+   * running when it's actually a simplify job. It must accurately represent
+   * the job that's running."* The engine SPAWN door has carried the act since
+   * then (`text-acts.ts`'s header map); this door could not, because the SDK
+   * had nowhere to put it. It does now (`ChatOptions.act`, 2026-09-14), and
+   * `tools/test-queue-pass-travel.js` is what noticed the day it did.
+   *
+   * There is no default, here or in the SDK. Its own docblock says why: *"a
+   * name nobody chose on a bench is the thing this header exists to
+   * prevent."* Every caller has one — the act is on the provider block.
+   */
+  act: CrucibleTextAct;
   system: string;
   user: string;
   temperature: number;
@@ -2488,6 +2508,7 @@ export async function crucibleChatOnce(options: {
     try {
       const answer = await client.chat({
         model,
+        act: options.act,
         messages: [
           { role: 'system', content: options.system },
           { role: 'user', content: options.user },
@@ -2516,12 +2537,14 @@ async function cleanChunkWithCrucible(
   systemPrompt: string,
   server: string,
   model: string,
+  act: CrucibleTextAct,
   abortSignal?: AbortSignal,
   maxTokensOverride?: number
 ): Promise<string> {
   const answer = await crucibleChatOnce({
     server,
     model,
+    act,
     system: systemPrompt,
     user: text,
     temperature: 0.1,
@@ -2616,8 +2639,8 @@ export async function cleanChunkWithProvider(
             // residency proven once, at job start (cleanupEpub's preflight).
             // This only reads back what that stamped, refusing by name rather
             // than defaulting.
-            const { server, model } = crucibleRunTargetOf(config);
-            return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal);
+            const { server, model, act } = crucibleRunTargetOf(config);
+            return cleanChunkWithCrucible(inputText, systemPrompt, server, model, act, abortSignal);
           }
           case 'local':
             return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
@@ -2886,8 +2909,8 @@ async function callProviderExtracted(
       // observation passes, whose small JSON answer has nothing to do with the
       // input's size and whose budget they have already computed. Dropping it is
       // what made 2 of 9 chunks truncate at 4096 and cost 142 s apiece.
-      const { server, model } = crucibleRunTargetOf(config);
-      return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal, numPredict);
+      const { server, model, act } = crucibleRunTargetOf(config);
+      return cleanChunkWithCrucible(inputText, systemPrompt, server, model, act, abortSignal, numPredict);
     }
     case 'local':
       return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);

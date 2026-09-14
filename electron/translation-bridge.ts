@@ -355,6 +355,8 @@ async function translateChunkWithProvider(
           const answer = await crucibleChatOnce({
             server: config.crucible.server,
             model: config.crucible.model,
+            // The class this run IS, off the provider block the queue composed.
+            act: config.crucible.act,
             system: systemPrompt,
             user: text,
             temperature: 0.1,

@@ -419,6 +419,10 @@ async function analyzeChunkWithProvider(
       const answer = await crucibleChatOnce({
         server: config.crucible.server,
         model: config.crucible.model,
+        // The class this run IS, off the provider block the queue composed —
+        // not a literal, so a door that is ever reached by another act cannot
+        // label itself wrongly.
+        act: config.crucible.act,
         system: systemPrompt,
         user: prompt,
         temperature: 0.1,

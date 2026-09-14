@@ -113,6 +113,7 @@ async function callCrucible(
   const answer = await crucibleChatOnce({
     server: where.server,
     model,
+    act: where.act,
     system: systemPrompt ?? '',
     user: prompt,
     temperature: 0.3,

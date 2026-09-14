@@ -371,57 +371,55 @@ function passConfig(kind, ai) {
     }
   });
 
-  await check('the chat door sends NO X-Crucible-Act — the act is stated on the lease',
-    async () => {
-      /*
-       * A TRIPWIRE ON A GAP, not a check that a gap is fine.
-       *
-       * Owen, 2026-09-13: *"they can't lie to the user and say a translate job
-       * is running when it's actually a simplify job."* Every act BookForge
-       * spawns states itself in `FOUNDRY_ENDPOINT_HEADERS`
-       * (`crucible/text-acts.ts`), and every lease states itself in its own
-       * `act`. But the app's own chat completions do not: `@crucible/client`'s
-       * `ChatOptions` has no `act` field and the client sends no such header,
-       * so `/v1/activity`'s in-flight entry for a simplify run through
-       * `crucibleChatOnce` carries no act at all.
-       *
-       * That is a RULING OWED on the server's side (the vocabulary is
-       * Crucible's) and it is recorded here rather than remembered: the day
-       * the SDK's typings gain the field, this goes red with the reason on it,
-       * and `crucibleChatOnce` is where it belongs.
-       */
-      const seen = [];
-      const fake = await startFakeCrucible(async (req, res, ctx) => {
-        if (ctx.url.pathname !== '/v1/openai/chat/completions') return false;
-        await ctx.readBody(req);
-        seen.push(req.headers);
-        send(res, 200, {
-          id: 'c1',
-          model: 'm',
-          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        });
-        return true;
+  await check('the chat door STATES ITS ACT, so a bench can say what is running', async () => {
+    /*
+     * ── THIS CHECK USED TO BE THE OPPOSITE, AND THAT IS THE STORY ─────────
+     *
+     * Owen, 2026-09-13: *"they can't lie to the user and say a translate job
+     * is running when it's actually a simplify job. It must accurately
+     * represent the job that's running."* The engine SPAWN door has carried
+     * `X-Crucible-Act` since that day (`text-acts.ts`'s header map). The CHAT
+     * door could not: the SDK's `ChatOptions` had nowhere to put it, so this
+     * suite pinned the absence and named what would end it.
+     *
+     * The SDK gained `ChatOptions.act` on 2026-09-14 and this check went red
+     * with the instruction on it. So now it pins the thing itself: the header
+     * travels, and it carries the act the CALLER named rather than a literal
+     * this file chose. Crucible cannot work it out — a simplify and a
+     * translate are the same model on the same route, and the only difference
+     * is a prompt the server does not own.
+     *
+     * There is no default, here or in the SDK, whose own docblock says why:
+     * "a name nobody chose on a bench is the thing this header exists to
+     * prevent."
+     */
+    const seen = [];
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (ctx.url.pathname !== '/v1/openai/chat/completions') return false;
+      await ctx.readBody(req);
+      seen.push(req.headers);
+      send(res, 200, {
+        id: 'c1',
+        model: 'm',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       });
-      const server = nameFake(fake.url);
-      try {
-        await textAi.callAI('hi', { provider: 'crucible', crucible: { server, model: 'm' } });
-        assert.strictEqual(seen[0]['x-crucible-api'], '1', 'the API version does travel');
-        assert.strictEqual(seen[0]['x-crucible-act'], undefined,
-          'if this is now sent, the pin below is stale and the comment above is the fix');
-        const sdk = fs.readFileSync(
-          path.join(REPO, 'node_modules', '@crucible', 'client', 'dist', 'esm', 'types.d.ts'),
-          'utf-8');
-        const chatOptions = /export interface ChatOptions \{([\s\S]*?)\n\}/.exec(sdk);
-        assert.ok(chatOptions, 'the SDK no longer declares ChatOptions where this reads it');
-        assert.ok(!/\bact\??:/.test(chatOptions[1]),
-          'THE SDK NOW CARRIES AN ACT ON A CHAT. Set it in `crucibleChatOnce` '
-          + '(electron/ai-bridge.ts) from the caller\'s own act, delete this check, and give '
-          + 'each AI door a truthful act the way the engine spawns already have one.');
-      } finally {
-        await fake.close();
-      }
+      return true;
     });
+    const server = nameFake(fake.url);
+    try {
+      for (const act of ['translate', 'simplify', 'clean', 'analysis']) {
+        await textAi.callAI('hi', { provider: 'crucible', crucible: { server, act, model: 'm' } });
+        const headers = seen[seen.length - 1];
+        assert.strictEqual(headers['x-crucible-api'], '1', 'the API version travels');
+        assert.strictEqual(headers['x-crucible-act'], act,
+          `a ${act} run must say ${act}, not whatever act was spelled first`);
+      }
+      assert.strictEqual(seen.length, 4);
+    } finally {
+      await fake.close();
+    }
+  });
 
   await check('a truncated Crucible answer is refused, never written into the book', async () => {
     const fake = await startFakeCrucible(async (req, res, ctx) => {
