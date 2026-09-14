@@ -211,3 +211,15 @@ include = ["narrator*"]
 
 [tool.setuptools.package-data]
 narrator = ["**/*.md"]
+# NARRATOR'S OWN HIGGS v3 LAUNCHER, shipped as package data so a `pip install`
+# from git carries it. `engine/higgs/v3_served.py` resolves the pair through
+# `importlib.resources` when the caller names neither NARRATOR_HIGGS3_URL nor
+# NARRATOR_HIGGS3_SERVE_SCRIPT, and runs `bash <script>`.
+#
+# THE TWO FILES TRAVEL TOGETHER AND MUST LAND IN ONE DIRECTORY: the script's
+# HIGGS_DEPLOY_CONFIG defaults to `$(dirname "$0")/higgs_default_frames7500.yaml`,
+# the certified frames-7500 profile, and without it vllm-omni auto-discovers its
+# own profile whose stage-0 max_tokens is 2048 frames (81.92 s) and truncates
+# every long chunk. `launch/` is deliberately NOT a package - there is no python
+# in it - so the data belongs to `narrator.engine.higgs`.
+"narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml"]

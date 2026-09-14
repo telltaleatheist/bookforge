@@ -172,20 +172,74 @@ class ProtocolConformanceTest(unittest.TestCase):
         from narrator.engine.higgs import HiggsV3Engine
         self.assertIsInstance(_bare(HiggsV3Engine, backend='vllm-omni'), Engine)
 
-    def test_a_served_backend_needs_a_url_or_a_launch_script(self):
-        """Neither given is a refusal, not a default: guessing localhost:8095
-        would either talk to somebody else's server or hang."""
+    def test_a_served_backend_with_neither_variable_runs_narrators_own_launcher(self):
+        """Neither given is NOT a refusal any more: narrator runs ITS OWN
+        packaged launcher.
+
+        That script IS narrator's definition of how it starts a Higgs v3 server
+        - the CUDA_HOME and FlashInfer workarounds, the per-stage memory
+        fractions, the certified frames-7500 deploy profile - and until
+        2026-09-13 the only copy of it lived in BookForge's
+        electron/scripts/higgs/, so any other caller was refused at
+        construction. Crucible's first real `tts` render is what found that.
+        """
+        from narrator.engine.higgs import v3_served
         from narrator.engine.higgs.v3_served import (BASE_URL_ENV,
                                                      HiggsV3ServedBackend,
+                                                     LAUNCHER_PACKAGED,
                                                      SERVE_SCRIPT_ENV)
         for name in (BASE_URL_ENV, SERVE_SCRIPT_ENV):
             previous = os.environ.pop(name, None)
             if previous is not None:
                 self.addCleanup(os.environ.__setitem__, name, previous)
+        # A LAUNCHING backend states the server's admission width, and
+        # `serve_concurrency()` refuses by name when it is unset - which is a
+        # separate contract from the launcher and is asserted elsewhere.
+        self._state('HIGGS_MAX_NUM_SEQS', '16')
+        backend = HiggsV3ServedBackend()
+        self.addCleanup(backend._close_log)
+        self.assertEqual(backend.launcher_source, LAUNCHER_PACKAGED)
+        self.assertEqual(backend.serve_script,
+                         v3_served.packaged_serve_script())
+        self.assertTrue(os.path.isfile(backend.serve_script),
+                        backend.serve_script)
+        # THE PROFILE TRAVELS WITH IT: the script reads it as its own sibling.
+        self.assertTrue(
+            os.path.isfile(os.path.join(
+                os.path.dirname(backend.serve_script),
+                v3_served.PACKAGED_DEPLOY_CONFIG)))
+
+    def test_an_override_launcher_that_is_not_there_is_refused_by_name(self):
+        """The override is not a suggestion. Substituting the packaged script
+        for a path an operator named would start a server with different flags
+        and report success."""
+        from narrator.engine.higgs.v3_served import (BASE_URL_ENV,
+                                                     HiggsV3ServedBackend,
+                                                     SERVE_SCRIPT_ENV)
+        previous = os.environ.pop(BASE_URL_ENV, None)
+        if previous is not None:
+            self.addCleanup(os.environ.__setitem__, BASE_URL_ENV, previous)
+        missing = os.path.join(self.tempdir(), 'no-such-serve.sh')
         with self.assertRaises(ValueError) as caught:
-            HiggsV3ServedBackend()
-        self.assertIn(BASE_URL_ENV, str(caught.exception))
+            HiggsV3ServedBackend(serve_script=missing)
         self.assertIn(SERVE_SCRIPT_ENV, str(caught.exception))
+        # The message carries the path as `{path!r}`.
+        self.assertIn(repr(missing), str(caught.exception))
+
+    def _state(self, name: str, value: str) -> None:
+        previous = os.environ.get(name)
+        os.environ[name] = value
+        if previous is None:
+            self.addCleanup(os.environ.pop, name, None)
+        else:
+            self.addCleanup(os.environ.__setitem__, name, previous)
+
+    def tempdir(self) -> str:
+        import shutil as _shutil
+        import tempfile
+        path = tempfile.mkdtemp(prefix='narrator-H-missing-')
+        self.addCleanup(_shutil.rmtree, path, True)
+        return path
 
 
 class RegistryTest(unittest.TestCase):

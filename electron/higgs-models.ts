@@ -53,7 +53,9 @@
  * invented a `HIGGS_*` set as a guess at narrator's names, and these are a real
  * set belonging to a real reader:
  *
- *   HIGGS_ENV                 the conda prefix the server runs out of
+ *   HIGGS_ENV                 the conda prefix the server runs out of. REQUIRED
+ *                             BY THE SCRIPT since 2026-09-13 — its old default
+ *                             was one machine's conda layout
  *   HIGGS_HOST / HIGGS_PORT   where it binds — and where narrator polls
  *   HIGGS_GPU_MEM_UTIL        stage 0 (talker) share of the card
  *   HIGGS_CODEC_GPU_MEM_UTIL  stage 1 (codec) share of the card; they ADD
@@ -61,7 +63,19 @@
  *   HIGGS_MAX_NUM_SEQS        stage 0 batch width — AND narrator's own
  *   HIGGS_DEPLOY_CONFIG       a vllm-omni deploy profile, as an ABSOLUTE guest
  *                             path — a bare file name in the catalog is
- *                             resolved to `<HIGGS_ENV>/bin/<file>`
+ *                             resolved to `<HIGGS_ENV>/bin/<file>`. UNSET now
+ *                             means the script's certified frames-7500 sibling
+ *                             and the EMPTY STRING means vllm-omni's own
+ *                             auto-discovered profile, which is what a catalog
+ *                             `deployConfig: null` emits
+ *
+ * AND THE SCRIPT ITSELF IS NARRATOR'S NOW. `serve_higgs_v3.sh` ships inside the
+ * narrator package (`narrator/engine/higgs/launch/`) as of 2026-09-13, which is
+ * how a client that never heard of BookForge — Crucible — can start a server at
+ * all. The copy under `electron/scripts/higgs/` is byte-identical (asserted by
+ * `tools/test-higgs-engine.js`) and belongs to the LEGACY local render path;
+ * it dies with that path. BookForge still states every variable above, so which
+ * copy runs changes nothing here.
  *
  * ── AND SINCE 2026-09-06, A SECOND STACK WITH ITS OWN SET ───────────────────
  *
@@ -2726,8 +2740,17 @@ export function higgsSpawnEnv(
     env.HIGGS_CODEC_GPU_MEM_UTIL = String(servingFraction(serving, 'codecGpuMemoryUtilization'));
     env.HIGGS_MAX_MODEL_LEN = String(servingCount(serving, 'maxModelLen'));
 
-    // A DECLARED null MEANS "vllm-omni's auto-discovered profile" and emits
-    // nothing; an ABSENT key means the catalog never decided, and is refused.
+    // A DECLARED null MEANS "vllm-omni's auto-discovered profile" and emits the
+    // EMPTY STRING; an ABSENT key means the catalog never decided, and is refused.
+    //
+    // EMPTY RATHER THAN ABSENT SINCE 2026-09-13, when the launcher's own default
+    // stopped being "no profile". `serve_higgs_v3.sh` now reads
+    // `${HIGGS_DEPLOY_CONFIG-<the certified sibling>}` — the `-` form, not
+    // `:-` — so UNSET means "nobody said, take the certified frames-7500
+    // profile" and SET-BUT-EMPTY means "vllm-omni's own, chosen on purpose".
+    // Emitting nothing for a declared `null` would therefore have turned a
+    // catalog decision into its opposite in silence. (The shipped catalog names
+    // a profile, so this path is unreached today and behaviour is unchanged.)
     if (serving.deployConfig === undefined) {
       throw new Error(
         "The Higgs serving block declares no deployConfig. It selects vllm-omni's deploy " +
@@ -2738,7 +2761,9 @@ export function higgsSpawnEnv(
           'decision.',
       );
     }
-    if (serving.deployConfig !== null) {
+    if (serving.deployConfig === null) {
+      env.HIGGS_DEPLOY_CONFIG = '';
+    } else {
       const profile = serving.deployConfig.trim();
       if (!profile) {
         throw new Error(

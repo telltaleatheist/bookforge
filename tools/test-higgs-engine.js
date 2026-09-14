@@ -1361,6 +1361,65 @@ check('the SGLang launcher reads every HIGGS_* variable its spawn sets', () => {
     'serve_higgs_v3.sh does not assert which stack it is');
 });
 
+check('the packaged launcher is canonical and electron/scripts/ is its copy', () => {
+  // THE LAUNCHER MOVED INTO NARRATOR on 2026-09-13, as package data:
+  // `python/narrator/engine/higgs/launch/serve_higgs_v3.sh`, with the certified
+  // frames-7500 deploy profile beside it. That is what makes narrator startable
+  // by a client that has never heard of BookForge — Crucible's first real `tts`
+  // render died because the only copy of this script lived in this repo's
+  // electron/ tree and narrator refused to launch without being handed a path
+  // into it.
+  //
+  // THE PACKAGED PAIR IS CANONICAL. The copies under electron/scripts/higgs/
+  // belong to the LEGACY local render path (docs/CRUCIBLE_ROLLOUT_PLAN.md item
+  // 2.4) and die with it; until then they are kept BYTE-IDENTICAL, because the two
+  // halves of one launch — this repo's installer, which copies its copy into
+  // <env>/bin/ and hashes it, and narrator, which runs its own — must not be
+  // able to run different scripts under one set of measurements.
+  //
+  // BYTES, not text: .gitattributes pins both pairs to LF for a reason the
+  // profile makes sharp (certificates bind to its sha256), and a comparison that
+  // normalised line endings would be blind to exactly the drift that matters.
+  const packaged = path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch');
+  const legacy = path.join(REPO, 'electron', 'scripts', 'higgs');
+  for (const name of ['serve_higgs_v3.sh', 'higgs_default_frames7500.yaml']) {
+    const mine = fs.readFileSync(path.join(packaged, name));
+    const theirs = fs.readFileSync(path.join(legacy, name));
+    assert.ok(mine.equals(theirs),
+      `electron/scripts/higgs/${name} is not byte-identical to narrator's own `
+      + `python/narrator/engine/higgs/launch/${name}. THE PACKAGED COPY IS `
+      + 'CANONICAL — edit that one and copy it here; this copy dies with the '
+      + 'legacy local render path.');
+  }
+});
+
+check('the launcher requires HIGGS_ENV and defaults its own deploy profile', () => {
+  // Both halves of the 2026-09-13 change, read off the CANONICAL copy.
+  //
+  // HIGGS_ENV had a default of `$HOME/anaconda3/envs/higgs3` — one machine's
+  // conda layout — and CUDA_HOME, PATH, LD_LIBRARY_PATH and the vllm-omni binary
+  // all hang off it, so a caller that forgot it got a server out of a directory
+  // nobody named.
+  //
+  // HIGGS_DEPLOY_CONFIG defaulted to EMPTY, i.e. to vllm-omni's auto-discovered
+  // profile, whose stage-0 max_tokens is 2048 frames = 81.92 s and which no
+  // request parameter can raise. Silence meant 'truncate every long chunk'.
+  const script = fs.readFileSync(
+    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch',
+      'serve_higgs_v3.sh'), 'utf-8');
+  // `${HIGGS_ENV:-}` in the guard is the SET-CHECK under `set -u`, not a
+  // default; what must be gone is `${HIGGS_ENV:-<anything>}`.
+  assert.ok(!/HIGGS_ENV:-[^}]/.test(script),
+    'serve_higgs_v3.sh still defaults HIGGS_ENV');
+  assert.match(script, /HIGGS_ENV is not set/,
+    'serve_higgs_v3.sh does not refuse an unset HIGGS_ENV by name');
+  // `${VAR-...}` and NOT `${VAR:-...}`: unset is 'nobody said', empty is a
+  // decision, and higgsSpawnEnv emits the empty string for a catalog null.
+  assert.match(script,
+    /HIGGS_DEPLOY_CONFIG="\$\{HIGGS_DEPLOY_CONFIG-\$\(dirname "\$0"\)\/higgs_default_frames7500\.yaml\}"/,
+    'serve_higgs_v3.sh does not default HIGGS_DEPLOY_CONFIG to its own sibling');
+});
+
 check('HIGGS_MODEL_DIR is narrator\'s to export, never BookForge\'s', () => {
   // The server is keyed on it — it is which merged checkpoint comes up — and
   // narrator exports it per voice from the voice document (v3_served.py
@@ -1455,10 +1514,20 @@ check('a serving block with a bad number is REFUSED by field name', () => {
     withServing({ deployConfig: '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml' }), opts);
   assert.strictEqual(explicit.HIGGS_DEPLOY_CONFIG,
     '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml');
-  // And `null` still means the auto-discovered profile and emits nothing.
+  // And `null` still means vllm-omni's auto-discovered profile — now stated as
+  // the EMPTY STRING rather than by saying nothing.
+  //
+  // THE LAUNCHER'S DEFAULT CHANGED on 2026-09-13. It reads
+  // `${HIGGS_DEPLOY_CONFIG-<its own certified sibling>}` — the `-` form, not
+  // `:-` — so an UNSET variable now means the frames-7500 profile that ships
+  // beside the script, and only an explicitly EMPTY one means vllm-omni's. A
+  // catalog `null` that emitted nothing would therefore have become its own
+  // opposite in silence.
   const none = higgs.higgsSpawnEnv(withServing({ deployConfig: null }), opts);
-  assert.ok(!('HIGGS_DEPLOY_CONFIG' in none),
-    'a null deployConfig exported something — vllm-omni would take the -n branch');
+  assert.ok('HIGGS_DEPLOY_CONFIG' in none,
+    'a null deployConfig said nothing at all — the launcher reads silence as its '
+    + "OWN certified profile, not as vllm-omni's");
+  assert.strictEqual(none.HIGGS_DEPLOY_CONFIG, '');
 });
 
 check('the catalog names the profile that raises the frame ceiling (vllm-omni)', () => {

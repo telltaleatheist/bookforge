@@ -88,8 +88,15 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #: `engine/log.py` with it - `test_the_prose_agrees_with_the_count` now checks
 #: that too, because a number this file keeps true and a docstring nobody checks
 #: is how it drifted the first time.
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 32}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 143
+#: 32 -> 33 on 2026-09-13, NARRATOR'S OWN PACKAGED LAUNCHER. `v3_served`'s
+#: constructor now says WHICH OF THE THREE launchers a backend is on - attach,
+#: the operator's override, or narrator's own shipped script - because the
+#: `launching: <command>` line `start()` already writes cannot answer "whose
+#: script is this": a path under site-packages and a path under a campaign
+#: directory look alike in a log, and the difference is which flags a 19 GB
+#: server came up with.
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 33}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 144
 
 
 def _engine_modules():

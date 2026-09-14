@@ -25,6 +25,14 @@
 # 24d288f193eaa8c5…, and a CRLF checkout would deploy a file that is not the one
 # any certificate was measured against. YAML parses either way, so nothing would
 # fail — it would just no longer be the certified profile.
+# narrator's OWN copy of the launcher and the deploy profile
+# (python/narrator/engine/higgs/launch/), shipped as package data and run by
+# bash inside a Linux guest exactly as the electron/scripts/higgs/ pair is. Both
+# reasons above apply to it verbatim - and one more: tools/test-higgs-engine.js
+# asserts the two pairs are BYTE-IDENTICAL, which cannot be true if only one of
+# them is pinned to LF.
+python/narrator/engine/higgs/launch/*.sh text eol=lf
+python/narrator/engine/higgs/launch/*.yaml text eol=lf
 electron/scripts/higgs/*.sh text eol=lf
 electron/scripts/higgs/*.py text eol=lf
 electron/scripts/higgs/*.txt text eol=lf

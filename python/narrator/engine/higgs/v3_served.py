@@ -116,6 +116,8 @@ LICENCE: Boson Higgs TTS 3 Research and Non-Commercial. Fine for personal use
 and, under the Creator Use Grant, for credited creator content; production
 deployment or embedding in a product needs separate licensing.
 """
+import contextlib
+import importlib.resources
 import io
 import json
 import os
@@ -142,9 +144,37 @@ SPEECH_PATH = '/v1/audio/speech'
 HEALTH_PATH = '/health'
 MODELS_PATH = '/v1/models'
 
-#: Where the operator's launch script lives. Named by env because the campaign
-#: directory is not narrator's and must not be hard-coded into a shipped file.
+#: AN OPERATOR'S OVERRIDE of the launcher below. Set it to run a script that is
+#: not narrator's own - a campaign's `serve_v3.sh`, an env's installed copy, a
+#: one-off with different flags. A path that does not exist is REFUSED by name;
+#: it is never quietly replaced by the packaged one.
 SERVE_SCRIPT_ENV = 'NARRATOR_HIGGS3_SERVE_SCRIPT'
+#: NARRATOR'S OWN LAUNCHER, shipped inside the package as data
+#: (`narrator/engine/higgs/launch/`, declared in python/pyproject.toml's
+#: [tool.setuptools.package-data]) and resolved through `importlib.resources`.
+#:
+#: THIS IS NOT A FALLBACK. How narrator launches its Higgs v3 server is
+#: narrator's own definition - the CUDA_HOME and FlashInfer workarounds, the
+#: per-stage memory fractions and the certified frames-7500 deploy profile are
+#: all in that file, and a client that has never heard of BookForge cannot be
+#: expected to supply them. Until 2026-09-13 the only copy lived in BookForge's
+#: `electron/scripts/higgs/`, so narrator refused to start at all for any other
+#: caller: Crucible's first real `tts` render died with
+#: `NARRATOR_HIGGS3_SERVE_SCRIPT ... Neither is set`.
+LAUNCH_PACKAGE = 'narrator.engine.higgs'
+LAUNCH_DIR = 'launch'
+PACKAGED_SERVE_SCRIPT = 'serve_higgs_v3.sh'
+#: The certified deploy profile that ships BESIDE the script; the script reads
+#: it as `$(dirname "$0")/<this>`, so the two must land in one directory. Named
+#: here so the resolution below can prove it is there rather than letting
+#: vllm-omni silently auto-discover its own 2048-frame profile.
+PACKAGED_DEPLOY_CONFIG = 'higgs_default_frames7500.yaml'
+#: Which of the three launcher modes a backend is in, reported on its own log
+#: line at construction (see `HiggsV3ServedBackend.__init__`).
+LAUNCHER_ATTACH = 'attach'
+LAUNCHER_OPERATOR = 'operator'
+LAUNCHER_PACKAGED = 'packaged'
+
 #: Attach to an ALREADY-RUNNING server instead of launching one.
 BASE_URL_ENV = 'NARRATOR_HIGGS3_URL'
 #: The WSL distro to run the launch script in, on Windows.
@@ -380,6 +410,96 @@ _CONTROL_TOKEN_RE = re.compile(r'<\|[^|>]{1,64}\|>')
 #: behaviour `convert_many` exists to refuse.
 HiggsV3ServerError = served_common.HiggsServerError
 HiggsV3ServerDown = served_common.HiggsServerDown
+
+
+#: Resolved once per process and KEPT. `importlib.resources.as_file` is a
+#: context manager because a package may be a zip, in which case the path it
+#: yields is a temporary extraction that disappears on exit - and this path is
+#: handed to `bash` minutes later, from another method. So the ExitStack lives
+#: as long as the process does, exactly as the resources documentation's
+#: "keep the file around" example does.
+_packaged_launch_dir = None
+_packaged_launch_stack = None
+
+
+def packaged_serve_script() -> str:
+    """The absolute path of narrator's OWN `serve_higgs_v3.sh`.
+
+    Resolved through `importlib.resources` on the DIRECTORY rather than on the
+    script, because the script reads its deploy profile as a sibling: extracting
+    one file alone would give bash a script whose `$(dirname "$0")` holds
+    nothing. Both are asserted present, so a package built without the
+    package-data entry fails here - naming the entry - rather than three minutes
+    into a launch.
+    """
+    global _packaged_launch_dir, _packaged_launch_stack
+    if _packaged_launch_dir is not None:
+        return _packaged_launch_dir
+    resource = importlib.resources.files(LAUNCH_PACKAGE).joinpath(LAUNCH_DIR)
+    stack = contextlib.ExitStack()
+    try:
+        directory = stack.enter_context(importlib.resources.as_file(resource))
+    except Exception as exc:
+        stack.close()
+        raise ValueError(
+            f'Higgs v3: narrator\'s packaged launcher ({LAUNCH_PACKAGE}.'
+            f'{LAUNCH_DIR}) could not be made into a real directory on this '
+            f'filesystem ({type(exc).__name__}: {exc}). It is handed to bash, so '
+            'it has to be a path. Install narrator from a directory rather than '
+            f'a zip, or name your own script in {SERVE_SCRIPT_ENV}.') from exc
+    script = os.path.join(str(directory), PACKAGED_SERVE_SCRIPT)
+    profile = os.path.join(str(directory), PACKAGED_DEPLOY_CONFIG)
+    missing = [os.path.basename(p) for p in (script, profile)
+               if not os.path.isfile(p)]
+    if missing:
+        stack.close()
+        raise ValueError(
+            f'Higgs v3: narrator\'s packaged launcher directory {directory} is '
+            f'missing {missing}. Both files ship as package data - '
+            '[tool.setuptools.package-data] "narrator.engine.higgs" = '
+            '["launch/*.sh", "launch/*.yaml"] in python/pyproject.toml - and the '
+            'script reads the profile as its own sibling, so one without the '
+            'other is a server that truncates every long chunk at 81.92 s.')
+    _packaged_launch_stack = stack
+    _packaged_launch_dir = script
+    return script
+
+
+def _check_override_script(path: str) -> None:
+    r"""An operator's launcher that is not there is a REFUSAL, not a reason to
+    run narrator's own.
+
+    Somebody who named a script meant that script; substituting the packaged one
+    would start a server with different flags, a different env prefix and
+    possibly a different deploy profile, and report success.
+
+    WHAT CANNOT BE CHECKED is a GUEST path on the Windows arm - exactly the
+    three forms `served_common.to_wsl` rewrites into the distro:
+
+      /home/telltale/.../serve_higgs_v3.sh    BookForge's own
+                                              (higgs-spawn.ts
+                                              `serveScriptGuestPath`)
+      \\wsl$\Ubuntu\...                       the same file named as a share
+      \\wsl.localhost\Ubuntu\...              ditto, the newer spelling
+
+    The first is not on the Windows filesystem at all, so `os.path.isfile`
+    would answer False about a file that exists. The two UNC forms are only
+    reachable while the distro is RUNNING, so the same answer would depend on
+    whether WSL happened to be up. Saying nothing about a path this process
+    cannot see is not a fallback - bash inside the guest reports it by name two
+    seconds later, which is the same refusal one layer down.
+    """
+    if sys.platform == 'win32':
+        guest = path.replace('\\', '/').lower()
+        if guest.startswith(('/', '//wsl$/', '//wsl.localhost/')):
+            return
+    if not os.path.isfile(path):
+        raise ValueError(
+            f'Higgs v3: {SERVE_SCRIPT_ENV}={path!r} is not a file. That variable '
+            "OVERRIDES narrator's own packaged launcher, so an unreadable path "
+            'is refused rather than silently replaced by it - a server started '
+            'from the wrong script is a render nobody can account for. Unset the '
+            "variable to use narrator's own launcher.")
 
 
 def serve_concurrency() -> int:
@@ -935,15 +1055,26 @@ class HiggsV3ServedBackend(GuestOwnedServer):
                  wsl_distro: str = None, extra_args=None,
                  checkpoint_dir: str = None, server_log: str = None,
                  concurrency: int = None):
+        # THE LAUNCHER, IN THREE MODES, decided here and nowhere else:
+        #
+        #   attach    a base_url (argument or BASE_URL_ENV) names a server
+        #             somebody else started. No launcher at all.
+        #   operator  a serve_script (argument or SERVE_SCRIPT_ENV) overrides
+        #             narrator's own. Refused when the path is not there.
+        #   packaged  neither: narrator runs ITS OWN script, the one that ships
+        #             in the package. See PACKAGED_SERVE_SCRIPT for why this is
+        #             a definition and not a fallback.
         base_url = (base_url or os.environ.get(BASE_URL_ENV) or '').strip()
         serve_script = (serve_script
                         or os.environ.get(SERVE_SCRIPT_ENV) or '').strip()
-        if not base_url and not serve_script:
-            raise ValueError(
-                f'Higgs v3 needs either {BASE_URL_ENV} (attach to a running '
-                f'vllm-omni server) or {SERVE_SCRIPT_ENV} (the path to the '
-                "campaign's serve_v3.sh, which narrator runs rather than "
-                'reimplementing). Neither is set.')
+        if base_url:
+            self.launcher_source = LAUNCHER_ATTACH
+        elif serve_script:
+            self.launcher_source = LAUNCHER_OPERATOR
+            _check_override_script(serve_script)
+        else:
+            self.launcher_source = LAUNCHER_PACKAGED
+            serve_script = packaged_serve_script()
         if extra_args:
             raise ValueError(
                 'serve_v3.sh takes no arguments - it `exec`s a fixed vllm-omni '
@@ -1017,6 +1148,19 @@ class HiggsV3ServedBackend(GuestOwnedServer):
         self.checkpoint_dir = (checkpoint_dir or '').strip() or None
         self._proc = None
         self._guest_pid = None
+        # WHICH OF THE THREE, said once, at construction. `start()` already logs
+        # the command it runs, and that line cannot answer "whose script is
+        # this" - a path under site-packages and a path under a campaign
+        # directory look alike in a log, and the difference is which flags a
+        # 19 GB server came up with.
+        log(f'{self.LOG_TAG} launcher: ' + {
+            LAUNCHER_ATTACH: f'none - attaching to {self.base_url} '
+                             f'({BASE_URL_ENV})',
+            LAUNCHER_OPERATOR: f"{self.serve_script} (the operator's "
+                               f'{SERVE_SCRIPT_ENV})',
+            LAUNCHER_PACKAGED: f"{self.serve_script} (narrator's own, shipped "
+                               'in the package)',
+        }[self.launcher_source], flush=True)
 
     # -- lifecycle -----------------------------------------------------------
     #

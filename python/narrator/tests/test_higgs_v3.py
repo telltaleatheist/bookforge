@@ -103,6 +103,32 @@ def wav_bytes(seconds=1.0, rate=24000, channels=1, tail_burst_dbfs=None):
     return header + pcm
 
 
+def a_launcher(test) -> str:
+    """A REAL launch script on this filesystem, created once per test.
+
+    `serve_script=` (and the `NARRATOR_HIGGS3_SERVE_SCRIPT` behind it) is an
+    OPERATOR'S OVERRIDE of narrator's own packaged launcher, and a path that is
+    not there is refused BY NAME rather than quietly replaced by the packaged
+    one - substituting it would start a server with different flags and report
+    success. So a test that wants LAUNCH mode has to name a file that exists,
+    and this is it. The literal `/campaign/serve_v3.sh` these tests used to
+    pass stopped being nameable on 2026-09-13 for exactly that reason.
+    """
+    existing = getattr(test, '_launcher', None)
+    if existing is not None:
+        return existing
+    import shutil as _shutil
+    import tempfile
+    directory = tempfile.mkdtemp(prefix='narrator-H-launcher-')
+    test.addCleanup(_shutil.rmtree, directory, True)
+    path = os.path.join(directory, 'serve_v3.sh')
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write('#!/bin/bash\nexit 0\n')
+    os.chmod(path, 0o755)
+    test._launcher = path
+    return path
+
+
 class FakeV3Handler(BaseHTTPRequestHandler):
     """Just enough of vllm-omni: /health, /v1/models, /v1/audio/speech.
 
@@ -978,7 +1004,7 @@ class LifecycleTest(V3TestCase):
         dead = FakeV3Server(healthy=False)
         self.addCleanup(dead.close)
         backend = HiggsV3ServedBackend(base_url=dead.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         self.addCleanup(backend._close_log)
         backend._bound_ports = lambda: list(bound)
         backend._answers_health = lambda port: port in healthy_ports
@@ -1049,14 +1075,17 @@ class LifecycleTest(V3TestCase):
         self.assertIn('bound-port scan failed', str(caught.exception))
 
     def test_the_launch_command_invokes_their_script(self):
-        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self))
         command = backend.launch_command()
-        self.assertIn('/campaign/serve_v3.sh', ' '.join(command).replace('\\', '/'))
+        # The path AS THE GUEST SEES IT: on Windows the wrapper carries
+        # /mnt/c/..., which is what `to_wsl` produces and what bash reads.
+        self.assertIn(v3_served.served_common.to_wsl(a_launcher(self)),
+                      ' '.join(command).replace('\\', '/'))
         self.assertIn('bash', ' '.join(command))
 
     def test_extra_launch_args_are_refused_because_the_script_takes_none(self):
         with self.assertRaises(ValueError) as caught:
-            HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh',
+            HiggsV3ServedBackend(serve_script=a_launcher(self),
                                  extra_args=['--enable-lora'])
         self.assertIn('takes no arguments', str(caught.exception))
 
@@ -1488,7 +1517,7 @@ class ServerIdentityTest(V3TestCase):
         adopted silently and render a whole book in the wrong voice."""
         self.server.httpd.models = ['some-other-model']
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         with self.assertRaises(HiggsV3ServerError) as caught:
             backend.start()
         message = str(caught.exception)
@@ -1497,7 +1526,7 @@ class ServerIdentityTest(V3TestCase):
 
     def test_adoption_accepts_our_own_server(self):
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         backend.start()                      # adopts, does not launch
         self.assertIsNone(backend._proc)
 
@@ -1933,7 +1962,7 @@ class SentinelReportChannelTest(V3TestCase):
         dead = FakeV3Server(healthy=False)
         self.addCleanup(dead.close)
         backend = HiggsV3ServedBackend(
-            base_url=dead.base_url, serve_script='/campaign/serve_v3.sh', **kwargs)
+            base_url=dead.base_url, serve_script=a_launcher(self), **kwargs)
         self.addCleanup(backend._close_log)
         return backend
 
@@ -1985,7 +2014,7 @@ class SentinelReportChannelTest(V3TestCase):
         `proof_log` follows, and the same flag."""
         os.environ.pop(v3_served.SENTINEL_REPORT_ENV, None)
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         self.assertEqual(backend.proof_report(), backend.sentinel_report)
         backend.start()                      # the fake server is already healthy
         self.addCleanup(backend._close_log)
@@ -2007,7 +2036,7 @@ class ServerLogIsOwnedTest(V3TestCase):
         dead = FakeV3Server(healthy=False)
         self.addCleanup(dead.close)
         backend = HiggsV3ServedBackend(
-            base_url=dead.base_url, serve_script='/campaign/serve_v3.sh', **kwargs)
+            base_url=dead.base_url, serve_script=a_launcher(self), **kwargs)
         self.addCleanup(backend._close_log)
         return backend
 
@@ -2069,7 +2098,7 @@ class ServerLogIsOwnedTest(V3TestCase):
         written is not the proof stream and the spec must stop naming it."""
         os.environ.pop(v3_served.SERVER_LOG_ENV, None)
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         self.assertEqual(backend.proof_log(), backend.launch_log)
         backend.start()                      # the fake server is already healthy
         self.addCleanup(backend._close_log)
@@ -2312,6 +2341,14 @@ class _LaunchTestBase(unittest.TestCase):
         self._path = os.environ.get('PATH', '')
         os.environ['PATH'] = self.dir + os.pathsep + self._path
         self.addCleanup(os.environ.__setitem__, 'PATH', self._path)
+        # AN OPERATOR'S LAUNCHER THAT EXISTS. `NARRATOR_HIGGS3_SERVE_SCRIPT`
+        # (and the `serve_script=` argument behind it) OVERRIDES narrator's own
+        # packaged launcher, and a path that is not there is refused by name
+        # rather than quietly replaced by the packaged one - so a launch test
+        # has to name a real file on this filesystem. `script_in_guest` is the
+        # same path as the distro sees it, which is what the wrapper carries.
+        self.script = a_launcher(self)
+        self.script_in_guest = v3_served.served_common.to_wsl(self.script)
 
     def assert_wrapper(self, wrapper, backend, script_in_guest):
         self.assertIn(script_in_guest, wrapper,
@@ -2352,11 +2389,11 @@ class WindowsLaunchTest(_LaunchTestBase):
 
     def test_the_launch_command_goes_through_wsl_with_a_pid_wrapper(self):
         backend = HiggsV3ServedBackend(
-            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+            serve_script=self.script, wsl_distro='Ubuntu')
         command = backend.launch_command()
         self.assertTrue(command[0].endswith('wsl.exe'), command)
         self.assertEqual(command[1:6], ['-d', 'Ubuntu', '--exec', 'bash', '-c'])
-        self.assert_wrapper(command[6], backend, '/mnt/c/campaign/serve_v3.sh')
+        self.assert_wrapper(command[6], backend, self.script_in_guest)
 
     def test_the_wrapper_runs_WITHOUT_the_distros_default_shell(self):
         """`--exec`, and it is the difference between a pid file and an empty one.
@@ -2370,7 +2407,7 @@ class WindowsLaunchTest(_LaunchTestBase):
         teardown.
         """
         backend = HiggsV3ServedBackend(
-            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+            serve_script=self.script, wsl_distro='Ubuntu')
         command = backend.launch_command()
         self.assertIn('--exec', command, command)
         # BEFORE the script, or the shell has already run by the time it applies.
@@ -2391,7 +2428,7 @@ class WindowsLaunchTest(_LaunchTestBase):
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url,
-                                       serve_script=r'C:\campaign\serve_v3.sh')
+                                       serve_script=self.script)
         backend._guest_pid = 4242
         calls = []
         real_run = v3_served.subprocess.run
@@ -2421,17 +2458,17 @@ class WindowsLaunchTest(_LaunchTestBase):
         """The owner is a HOST pid the guest cannot watch; the marker says so
         and no watchdog is launched - stop() is the only teardown there."""
         backend = HiggsV3ServedBackend(
-            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+            serve_script=self.script, wsl_distro='Ubuntu')
         wrapper = backend.launch_command()[6]
         self.assertTrue(backend.owner_id().startswith('win32:'))
         self.assertNotIn('python3 -c', wrapper)
 
     def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR_in_guest_form(self):
         backend = HiggsV3ServedBackend(
-            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu',
+            serve_script=self.script, wsl_distro='Ubuntu',
             checkpoint_dir=r'\\wsl$\Ubuntu\home\t\higgs_v3_merged\ds')
         wrapper = backend.launch_command()[6]
-        self.assert_wrapper(wrapper, backend, '/mnt/c/campaign/serve_v3.sh')
+        self.assert_wrapper(wrapper, backend, self.script_in_guest)
         self.assertIn(f'{v3_served.SERVE_MODEL_DIR_ENV}=/home/t/higgs_v3_merged/ds',
                       wrapper)
 
@@ -2446,14 +2483,14 @@ class PosixLaunchTest(_LaunchTestBase):
     """
 
     def test_the_launch_command_is_a_plain_bash_wrapper(self):
-        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self))
         command = backend.launch_command()
         self.assertEqual(command[:2], ['bash', '-c'])
-        self.assert_wrapper(command[2], backend, '/campaign/serve_v3.sh')
+        self.assert_wrapper(command[2], backend, a_launcher(self))
 
     def test_a_posix_path_is_passed_through_untouched(self):
-        backend = HiggsV3ServedBackend(serve_script='/home/t/serve_v3.sh')
-        self.assertIn('/home/t/serve_v3.sh', backend.launch_command()[2])
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self))
+        self.assertIn(a_launcher(self), backend.launch_command()[2])
 
     def _capture_signals(self, backend):
         calls = []
@@ -2475,7 +2512,7 @@ class PosixLaunchTest(_LaunchTestBase):
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url,
-                                       serve_script='/campaign/serve_v3.sh')
+                                       serve_script=a_launcher(self))
         backend._guest_pid = 4242
         calls = self._capture_signals(backend)
         self.assertTrue(calls, 'stop() must escalate to the server group')
@@ -2492,7 +2529,7 @@ class PosixLaunchTest(_LaunchTestBase):
         cleanup, so a guest-side watchdog on the OWNER pid takes the marked
         listener's group down (Owen, 2026-09-05: "it should bring it down if
         i hit stop or if bookforge app dies")."""
-        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self))
         wrapper = backend.launch_command()[2]
         self.assertIn('setsid python3 -c', wrapper)
         self.assertIn(f' {os.getpid()} ', wrapper, 'watches THIS process')
@@ -2511,15 +2548,15 @@ class PosixLaunchTest(_LaunchTestBase):
         ast.parse(HiggsV3ServedBackend._SIGNAL_GROUP)
 
     def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR(self):
-        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh',
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self),
                                        checkpoint_dir='/home/t/higgs_v3_merged/ds')
         wrapper = backend.launch_command()[2]
-        self.assert_wrapper(wrapper, backend, '/campaign/serve_v3.sh')
+        self.assert_wrapper(wrapper, backend, a_launcher(self))
         self.assertIn(f'{v3_served.SERVE_MODEL_DIR_ENV}=/home/t/higgs_v3_merged/ds',
                       wrapper)
 
     def test_KILL_is_refused_by_name(self):
-        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        backend = HiggsV3ServedBackend(serve_script=a_launcher(self))
         with self.assertRaises(ValueError) as caught:
             backend._signal_guest(4242, 'KILL')
         self.assertIn('wedges', str(caught.exception))
