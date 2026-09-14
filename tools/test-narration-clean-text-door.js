@@ -91,6 +91,19 @@ if (process.platform === 'win32') process.env.APPDATA = FAKE_APPDATA;
 else if (process.platform === 'darwin') process.env.HOME = FAKE_APPDATA;
 else process.env.XDG_CONFIG_HOME = FAKE_APPDATA;
 process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
+// THE VENUE IS STATED, once, for this whole keeper. Since 2.6 every text act
+// asks where it runs, and this file is about the LOCAL engine door: what the
+// binary refuses, what it admits, and what this app does with either answer.
+// A temp userData has no registered Crucible, so without this every check
+// would meet "no Crucible server is available to the queue" — a true sentence
+// about a machine nobody configured, and not the question asked here. The
+// legacy switch is the SAME one an operator flips in Settings, so the keeper
+// NAMES its venue rather than stubbing the decision; the Crucible venue is
+// tools/test-crucible-text-acts.js's subject.
+fs.writeFileSync(
+  path.join(FAKE_APPDATA, 'BookForge', 'crucible-routing.json'),
+  JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: true }, null, 2),
+  'utf8');
 // The binary this run uses, stated: `ensureFoundryPath` returns it without
 // touching the component registry, which is not mounted here.
 process.env.FOUNDRY_CLI_PATH = BINARY;

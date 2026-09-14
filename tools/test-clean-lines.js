@@ -108,6 +108,18 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
        * http://x:1, which is what this check is about — one spawn and no server
        * lifecycle. The bracket itself is covered by tools/test-text-server.js.
        */
+      /*
+       * THE VENUE, since 2.6: every text act asks where it runs before it
+       * composes a line (cli/clean-lines-step.js, `processTextVenueHost` then
+       * `decideWhereTextActRuns`). These checks are about the LOCAL spawn's
+       * shape, so the fake answers the legacy local engines — the Crucible
+       * answer, its header map and its refusals are
+       * tools/test-crucible-text-acts.js's subject, and a second copy here
+       * would be a second owner of that contract.
+       */
+      processTextVenueHost: () => ({}),
+      decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
+      resolveCrucibleTextEngine: async () => { throw new Error('the local venue never resolves a Crucible engine'); },
       textServerRoute: () => ({ manage: false, note: 'http://x:1 is somebody else\'s server' }),
       parseCleanTextProgress: (line) => {
         const m = /^clean-text:\s+(\d+)\/(\d+)$/.exec(line.trim());
@@ -162,6 +174,8 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
         foundryVersionAtLeast: (v, min) => v >= min,
         FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
+        processTextVenueHost: () => ({}),
+        decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
         textServerRoute: () => ({ manage: false, note: 'e is somebody else\'s server' }),
         parseCleanTextProgress: () => null,
         runFoundry: async () => { spawned = true; return { code: 0, stdout: '', stderr: '' }; },
@@ -179,6 +193,8 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
         foundryVersionAtLeast: () => true,
         FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
+        processTextVenueHost: () => ({}),
+        decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
         textServerRoute: () => ({ manage: false, note: 'e is somebody else\'s server' }),
         parseCleanTextProgress: () => null,
         runFoundry: async () => ({ code: 3, stdout: '', stderr: 'the model is not pulled' }),
@@ -191,6 +207,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     const deps = {
       foundryVersion: async () => ({ version: '1.4.0', path: 'f' }), foundryVersionAtLeast: () => true,
       FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0', cleanTextEngineSettings: async () => ({}),
+      processTextVenueHost: () => ({}), decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
       parseCleanTextProgress: () => null, runFoundry: async () => ({ code: 0, stdout: '', stderr: '' }),
     };
     await assert.rejects(step.runCleanLines({ inputPath: input, outputPath: path.join(dir, 'o.txt'), language: 'en', log: () => {} }, deps), /no non-blank lines/);
