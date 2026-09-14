@@ -619,6 +619,56 @@ test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', as
   assert.strictEqual(jobById(b.id).steps[0].venue, 'mac');
 });
 
+test("a render HOLDING the engine's card does not block a routed translation", async () => {
+  /*
+   * The direction that actually matters, and the one a naive implementation
+   * gets wrong: every gate after placement is about a CARD — the engine's GPU
+   * slot, this machine's single card held by two venues, the training lock —
+   * and an upstream-routed act touches none of them. Asking would make a
+   * translation on somebody's API wait for a nine-hour narration, which is
+   * exactly what the lane exists to stop.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('cloud-beside-render', [gpu, ai], host);
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
+
+  engine.enqueue(narrate('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+  assert.strictEqual(gpu.runs.length, 1, "the render took the Mac's card");
+
+  const b = engine.enqueue(translatePass('Wool', 'mac'));
+  await settle(40);
+  assert.strictEqual(ai.runs.length, 1,
+    'the routed translation waited for a card it was never going to touch');
+  assert.strictEqual(jobById(b.id).steps[0].venue, 'mac:cloud');
+});
+
+test('the cloud lane is TWO wide, and a third routed row waits for it', async () => {
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('cloud-width', [ai], host);
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
+
+  engine.enqueue(translatePass('One', 'mac'));
+  engine.enqueue(translatePass('Two', 'mac'));
+  const third = engine.enqueue(translatePass('Three', 'mac'));
+  engine.start();
+  await settle(40);
+  assert.strictEqual(ai.runs.length, 2, "CLOUD_LANE_SLOTS is the queue's own appetite, and it is 2");
+
+  ai.runs[0].resolve({ kind: 'epub', path: '/out/one' });
+  await settle(40);
+  assert.strictEqual(ai.runs.length, 3);
+  assert.strictEqual(jobById(third.id).steps[0].venue, 'mac:cloud');
+});
+
 test('a class the engine runs LOCALLY still takes its GPU slot', async () => {
   const ai = fakeModule('translation', { travels: true });
   ai.crucibleClass = () => 'translate';

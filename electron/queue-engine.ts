@@ -2202,6 +2202,36 @@ export function pump(): void {
         step.venue = venue;
 
         /*
+         * ── A CLOUD LANE IS ADMITTED HERE AND NOWHERE BELOW ────────────────
+         *
+         * Every gate after this one is about a CARD: the engine's GPU slot,
+         * this machine's single 3090 Ti held by two venues, the external
+         * training lock and the arbiter. An upstream-routed act touches none
+         * of them — the engine forwards the request and settles nothing
+         * (crucible PHASE15 §3.4: "no lease, no lane, the settlement
+         * untouched (nothing was on the card)") — so asking would make a
+         * translation on somebody's API wait for a narration to finish, which
+         * is precisely the thing the lane exists to stop. Falling through with
+         * a `cpu` resource would ALSO have read `gpuSlotHolder` against the
+         * SERVER rather than the lane, which is a second wrong answer to the
+         * same question.
+         *
+         * What it does wait for is its own lane being full, checked exactly as
+         * the non-travelling branch above checks a set: a full pool IS the
+         * row's reason, and the bench derives the sentence from the venue just
+         * written, so no hold is recorded here.
+         */
+        if (isCloudLane(venue)) {
+          if (slotsInUse(venue, step.resource) >= slotsOf(sets, venue, step.resource)) {
+            clearAdmissionHold(step);
+            continue;
+          }
+          clearAdmissionHold(step);
+          void launch(job, step);
+          continue;
+        }
+
+        /*
          * THE VENUE'S OWN SLOT, enforced in ONE place for every venue — a
          * server, or the legacy narrator spawn. The legacy set's one GPU slot
          * is what keeps the stopgap behaving exactly as it did under the old
