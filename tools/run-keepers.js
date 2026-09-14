@@ -103,6 +103,15 @@ const SUITES = [
   // dial an Ollama for VRAM eviction and the number pass — they go with that
   // layer, and the list going empty is how you know it went.
   'test-no-cloud-doors',
+  // And the Enhance tab's deletion, pinned the same way. Owen dropped Resemble
+  // Enhance whole on 2026-09-14 ("drop and remove the enhance page and the
+  // corresponding crucible route. it's unnecessary"), so it neither became a
+  // job type nor stayed a local env. Half this suite forbids: the bridge, the
+  // env component, the thirteen IPC channels, the route, the rail entry. The
+  // other half INSISTS — "enhance" means three unrelated things here, and a
+  // grep-and-delete pass aimed at the tab would silently take the hiss
+  // separator and the RVC voice pass with it.
+  'test-no-enhance-doors',
   // The coverage policy is declared in two languages — narrator's
   // engine_profiles.py and shared/queue/coverage-policy.ts. It stopped deciding
   // whether a run aligns on 2026-09-07 (that is a stage of the run now), and
