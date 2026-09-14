@@ -129,7 +129,7 @@ import { QueueTrayService } from '../../services/queue-tray.service';
         <span class="rule"></span>
       </div>
 
-      @for (lane of tray.lanes(); track lane.resource + lane.index) {
+      @for (lane of tray.lanes(); track lane.setId + lane.resource + lane.index) {
         <div
           class="lane"
           [class.gpu]="lane.resource === 'gpu'"
@@ -138,7 +138,7 @@ import { QueueTrayService } from '../../services/queue-tray.service';
           [class.free]="!lane.occupant"
         >
           <div class="slot">
-            <b>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }}</b>
+            <b>{{ lane.setLabel }} · {{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }}</b>
             {{ lane.index }} of {{ lane.of }}
             @if (lane.thermal; as thermal) {
               <span class="temp" [class.hot]="thermal.throttleSustained">{{ thermal.tempC }}°</span>

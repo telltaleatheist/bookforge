@@ -40,6 +40,7 @@ if (!fs.existsSync(MOD)) {
 }
 
 const bench = require(MOD);
+const slots = require(path.join(REPO, 'dist', 'shared', 'queue', 'slot-sets.js'));
 
 let passed = 0;
 const failures = [];
@@ -78,9 +79,30 @@ function job(steps, over = {}) {
   };
 }
 
-/** A snapshot. `running` defaults TRUE — a paused queue is its own test. */
-function snap(jobs, running = true) {
-  return { jobs, running };
+/**
+ * A snapshot. `running` defaults TRUE — a paused queue is its own test.
+ *
+ * `slotSets` is composed by the REAL composer rather than written out here, so
+ * a keeper cannot pass against a capacity model the engine does not have. With
+ * no servers named, that is the legacy narrator's one GPU slot plus BookForge's
+ * own two CPU slots — which is exactly the shape the old global
+ * `RESOURCE_SLOTS` had, and why every pre-per-server test below still reads the
+ * same.
+ */
+function snap(jobs, running = true, servers = []) {
+  const occupied = [];
+  for (const j of jobs) {
+    for (const s of j.steps) {
+      if (s.status !== 'running') continue;
+      const id = slots.slotSetForStep(j, s);
+      if (id !== null && !occupied.includes(id)) occupied.push(id);
+    }
+  }
+  return {
+    jobs,
+    running,
+    slotSets: slots.slotSets({ enabledServers: servers, occupied }),
+  };
 }
 
 const reasonOf = (snapshot, j, s) => bench.stillReason(snapshot, j, s);

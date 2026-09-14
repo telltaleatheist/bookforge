@@ -298,6 +298,13 @@ const SUITES = [
   // made, and a 409 read as a failure — each of which looks like a working
   // queue right up until the audio is in the wrong voice or the night is gone.
   'test-queue-wait-for',
+  // HOW MANY BOOKS ARE IN FLIGHT, AND WHERE. One slot set per machine
+  // (crucible `docs/PHASE7-LANES.md` Â§2.4). The defects are silent in both
+  // directions: too few slots and a second registered server is never used at
+  // all â€” a whole night of one card idle â€” and too many and two venues over
+  // one 3090 Ti start together, which looks like a working queue until both
+  // runs OOM.
+  'test-queue-slot-sets',
   'test-queue-bench',
   // The only thing that knows what is happening inside an MLX decode. Its
   // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a

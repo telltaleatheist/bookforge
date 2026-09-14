@@ -89,6 +89,26 @@ export interface WaitForFacts {
   readonly legacyLocalRender: boolean;
   /** What each server last said. */
   readonly state: (server: string) => ServerState;
+  /**
+   * WHAT BOOKFORGE ALREADY HAS ON THIS SERVER'S GPU SLOT — a phrase naming it
+   * ("narrating Mistborn"), or `null` when the slot is free.
+   *
+   * READ ONLY FOR `any`, where it is a CHOICE — §2.4: *"a book set to `any`
+   * takes the first server whose GPU slot is free, in rank order"*. A NAMED
+   * server is an instruction with nothing to choose, so its slot is the
+   * scheduler's to enforce and the bench's to phrase; see `forOneServer`.
+   *
+   * Counted from this client's own outstanding work
+   * (`shared/queue/slot-sets.ts`), NEVER polled and never a model of the
+   * server's capacity: crucible `docs/PHASE7-LANES.md` §2.4. A free slot
+   * licenses an ATTEMPT — the server's `409 server_busy` is still the only
+   * authority on admission, and it arrives through {@link ServerState}'s `busy`.
+   *
+   * It is what makes two books render on two machines at once while two books
+   * bound for ONE machine take turns without ever being refused: the second one
+   * waits on the slot here rather than being submitted and 409'd there.
+   */
+  readonly gpuSlotTaken: (server: string) => string | null;
 }
 
 export type WaitForVerdict =
@@ -204,6 +224,14 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
 
   const tried: string[] = [];
   for (const row of enabled) {
+    // §2.4: "a book set to `any` takes the first server whose GPU slot is free,
+    // in rank order". Ours is the slot we can be certain about, so it is asked
+    // before the network is.
+    const ours = facts.gpuSlotTaken(row.name);
+    if (ours !== null) {
+      tried.push(`${row.name}: BookForge is already ${ours} there`);
+      continue;
+    }
     const state = facts.state(row.name);
     if (state.kind === 'unknown') {
       return { kind: 'ask', server: row.name, sentence: asking(row.name) };
@@ -222,6 +250,20 @@ function forOneServer(server: string, facts: WaitForFacts): WaitForVerdict {
     return { kind: 'hold', sentence: holdUnknownServer(server, facts.ranked) };
   }
   if (!row.enabled) return { kind: 'hold', sentence: holdDisabled(server) };
+  /*
+   * OUR OWN SLOT IS NOT ASKED ABOUT HERE, deliberately.
+   *
+   * A NAMED server is an instruction, so there is nothing to choose: the
+   * verdict is `run` either way, and whether BookForge already has a job there
+   * is a question about the SLOT, which the scheduler enforces and the bench
+   * phrases (`stillReason`'s `no-slot`, `shared/queue/slot-sets.ts`). Saying it
+   * a second time here would be two sentences for one fact — the bench's would
+   * win, because a full pool outranks a recorded hold, and this one would sit
+   * on the row unread (crucible `docs/ARCHITECTURE.md` R1).
+   *
+   * `gpuSlotTaken` is used below for `any`, where it is not a sentence but a
+   * CHOICE: which of the enabled servers to try.
+   */
   const state = facts.state(server);
   switch (state.kind) {
     case 'unknown': return { kind: 'ask', server, sentence: asking(server) };

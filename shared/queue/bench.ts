@@ -4,8 +4,11 @@
  *
  * ── Why this exists ─────────────────────────────────────────────────────────
  *
- * There is one GPU slot and two CPU slots (`RESOURCE_SLOTS`). Allocating those
- * three slots is the entire job of the scheduler, and until this module neither
+ * Every machine brings a slot set — one GPU and its CPU slots per Crucible
+ * server, plus two CPU slots for what BookForge does itself
+ * (`shared/queue/slot-sets.ts`, crucible `docs/PHASE7-LANES.md` §2.4).
+ * Allocating those slots is the entire job of the scheduler, and until this
+ * module neither
  * surface drew them: the tray showed "the running job" as a singular (there can
  * be three), and the page showed a flat list in which a row waiting on its
  * parent, a row waiting for the card, a row nobody has started and a row the
@@ -31,7 +34,6 @@
  */
 
 import {
-  RESOURCE_SLOTS,
   TERMINAL_STEP_STATUSES,
   jobStatus,
   type ActiveBatchProgress,
@@ -45,6 +47,8 @@ import {
   type StepStatus,
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
+import { slotSetForStep, slotSetOccupancy, slotsOf } from './slot-sets';
+import { LEGACY_LOCAL_NARRATOR } from './wait-for';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Why a row is still
@@ -76,35 +80,36 @@ export interface StillReason {
   sentence: string;
 }
 
-/** The pool a resource names, as the user would say it. */
-function poolWord(resource: StepResource): string {
-  return resource === 'gpu' ? 'the graphics card' : 'a CPU slot';
+/**
+ * The pool a resource names ON ONE MACHINE, as the user would say it.
+ *
+ * The machine is in the sentence because there is one card per slot set now: a
+ * row told "waiting for the graphics card" while a second machine's card sat
+ * idle would be a true sentence that reads as a false one.
+ */
+function poolWord(resource: StepResource, setLabel: string): string {
+  return resource === 'gpu' ? `the graphics card on ${setLabel}` : 'a CPU slot';
 }
 
 /**
- * What currently occupies a step's pool, named by what it is doing — "Narrating
- * Flashpoint of Revival". Empty string when nothing does, which the caller has
- * already ruled out before asking.
+ * What currently occupies a step's pool ON ITS OWN MACHINE, named by what it is
+ * doing — "Narrating Flashpoint of Revival". Empty when nothing does, which the
+ * caller has already ruled out before asking.
  */
-function occupantWords(snapshot: QueueSnapshot, resource: StepResource): string[] {
+function occupantWords(
+  snapshot: QueueSnapshot,
+  setId: string,
+  resource: StepResource,
+): string[] {
   const words: string[] = [];
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running' || step.resource !== resource) continue;
+      if (slotSetForStep(job, step) !== setId) continue;
       words.push(`${JOB_GERUND[step.type]} ${job.title}`);
     }
   }
   return words;
-}
-
-function runningCount(snapshot: QueueSnapshot, resource: StepResource): number {
-  let n = 0;
-  for (const job of snapshot.jobs) {
-    for (const step of job.steps) {
-      if (step.status === 'running' && step.resource === resource) n += 1;
-    }
-  }
-  return n;
 }
 
 /** The step a `parentStepId` names, searched across the whole snapshot. */
@@ -180,14 +185,28 @@ export function stillReason(
     return { kind: 'paused', sentence: 'The queue is paused.' };
   }
 
-  if (runningCount(snapshot, step.resource) >= RESOURCE_SLOTS[step.resource]) {
-    const busy = occupantWords(snapshot, step.resource);
-    return {
-      kind: 'no-slot',
-      sentence: busy.length > 0
-        ? `Waiting for ${poolWord(step.resource)} — ${busy.join(' and ')}.`
-        : `Waiting for ${poolWord(step.resource)}.`,
-    };
+  /*
+   * THE POOL IS ONE MACHINE'S, so the set has to be known before the question
+   * can be asked. `null` means the row has not been routed yet (a travelling
+   * GPU step whose run has no venue), and that is NOT a slot problem — nothing
+   * can say which card it is waiting for. Admission says so in its own words on
+   * the row, which the `admission` branch below reads, so skipping the test
+   * here cannot leave a row with no reason.
+   */
+  const setId = slotSetForStep(job, step);
+  if (setId !== null) {
+    const occupancy = slotSetOccupancy(snapshot).get(setId) ?? { gpu: 0, cpu: 0 };
+    const inUse = step.resource === 'gpu' ? occupancy.gpu : occupancy.cpu;
+    if (inUse >= slotsOf(snapshot.slotSets, setId, step.resource)) {
+      const label = snapshot.slotSets.find((set) => set.id === setId)?.label ?? setId;
+      const busy = occupantWords(snapshot, setId, step.resource);
+      return {
+        kind: 'no-slot',
+        sentence: busy.length > 0
+          ? `Waiting for ${poolWord(step.resource, label)} — ${busy.join(' and ')}.`
+          : `Waiting for ${poolWord(step.resource, label)}.`,
+      };
+    }
   }
 
   const hold = step.progress.admissionHold;
@@ -313,8 +332,25 @@ function compactTokens(n: number): string {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
-/** One slot of one pool. */
+/** One slot of one pool ON ONE MACHINE. */
 export interface BenchLane {
+  /**
+   * Which slot set this lane belongs to — a server's name,
+   * `legacy-local-narrator`, or `local-work` (`shared/queue/slot-sets.ts`).
+   *
+   * Part of a lane's IDENTITY, not decoration: two machines each have a "GPU ·
+   * slot 1 of 1", and a surface tracking lanes by resource and index alone
+   * would swap one machine's occupant onto the other's card on every redraw.
+   */
+  setId: string;
+  /** The set's heading, as the user reads it — "mac", "BookForge itself". */
+  setLabel: string;
+  /**
+   * This set takes no new work and disappears when its occupant lands: its
+   * server was disabled or removed mid-run (§4.3 — a job finishes on the
+   * machine it started on).
+   */
+  retiring: boolean;
   resource: StepResource;
   /** 1-based within its pool, with the pool's size: "CPU · slot 2 of 2". */
   index: number;
@@ -335,57 +371,99 @@ export interface BenchLane {
   thermal: GpuThermalReading | null;
 }
 
+/** Everything drawn on one lane's occupant, read off a running step. */
+function occupantOf(job: QueueJob, step: QueueStep): LaneOccupant {
+  return {
+    jobId: job.id,
+    stepId: step.id,
+    verb: JOB_GERUND[step.type],
+    title: job.title,
+    label: step.label,
+    percent: step.progress.percent ?? null,
+    ...(step.progress.message === undefined ? {} : { message: step.progress.message }),
+    ...(step.progress.detail === undefined ? {} : { detail: step.progress.detail }),
+    ...(step.progress.activeBatch === undefined
+      ? {}
+      : { activeBatch: step.progress.activeBatch }),
+    ...(step.progress.prep === undefined ? {} : { prep: step.progress.prep }),
+    stages: step.progress.stages ?? [],
+  };
+}
+
 /**
- * Every slot, occupied or not, in a stable order: the GPU first, then the CPU
- * pool.
+ * Every slot of every machine, occupied or not, in a stable order: the sets in
+ * the order the engine listed them (servers by rank, then the legacy spawn,
+ * then BookForge's own work), and within each set the GPU before the CPU pool.
  *
  * ALL slots are always returned. A free slot is information — it says nothing
  * queued wants that resource, which is the difference between a queue that is
  * stuck and a queue that has nothing to do — and a surface that drew only the
  * busy ones could not tell those apart either.
+ *
+ * Per MACHINE since crucible `docs/PHASE7-LANES.md` §2.4: one global GPU lane
+ * could not show two books rendering on two machines at once, which is the
+ * whole reason a second server exists.
  */
 export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
   const lanes: BenchLane[] = [];
+  /*
+   * A hold on a row that has NO machine yet — "this book does not say which
+   * Crucible server to render on". It belongs to no set, so it is drawn once,
+   * on the first free GPU lane on the bench, rather than repeated on every set
+   * (which would read as every machine being blocked) or dropped (which would
+   * leave the tray chip with nothing to say about a queue that is stuck).
+   */
+  let unrouted = unroutedHold(snapshot);
 
-  for (const resource of ['gpu', 'cpu'] as const) {
-    const occupants: LaneOccupant[] = [];
-    for (const job of snapshot.jobs) {
-      for (const step of job.steps) {
-        if (step.status !== 'running' || step.resource !== resource) continue;
-        occupants.push({
-          jobId: job.id,
-          stepId: step.id,
-          verb: JOB_GERUND[step.type],
-          title: job.title,
-          label: step.label,
-          percent: step.progress.percent ?? null,
-          ...(step.progress.message === undefined ? {} : { message: step.progress.message }),
-          ...(step.progress.detail === undefined ? {} : { detail: step.progress.detail }),
-          ...(step.progress.activeBatch === undefined
-            ? {}
-            : { activeBatch: step.progress.activeBatch }),
-          ...(step.progress.prep === undefined ? {} : { prep: step.progress.prep }),
-          stages: step.progress.stages ?? [],
-        });
+  for (const set of snapshot.slotSets) {
+    for (const resource of ['gpu', 'cpu'] as const) {
+      const of = resource === 'gpu' ? set.gpu : set.cpu;
+      if (of === 0) continue;
+
+      const occupants: LaneOccupant[] = [];
+      for (const job of snapshot.jobs) {
+        for (const step of job.steps) {
+          if (step.status !== 'running' || step.resource !== resource) continue;
+          if (slotSetForStep(job, step) !== set.id) continue;
+          occupants.push(occupantOf(job, step));
+        }
       }
-    }
 
-    const of = RESOURCE_SLOTS[resource];
-    for (let index = 1; index <= of; index += 1) {
-      const occupant = occupants[index - 1] ?? null;
-      lanes.push({
-        resource,
-        index,
-        of,
-        occupant,
+      for (let index = 1; index <= of; index += 1) {
+        const occupant = occupants[index - 1] ?? null;
         // A hold is a fact about the POOL, not about one slot, so it is shown on
         // the first free slot of that pool and nowhere else — repeated on both
         // CPU slots it would read as two separate blockages.
-        hold: occupant === null && index === occupants.length + 1
-          ? admissionHoldFor(snapshot, resource)
-          : null,
-        thermal: resource === 'gpu' ? (snapshot.gpuThermal ?? null) : null,
-      });
+        const firstFree = occupant === null && index === occupants.length + 1;
+        let hold: string | null = null;
+        if (firstFree) {
+          hold = admissionHoldFor(snapshot, set.id, resource);
+          if (hold === null && resource === 'gpu' && unrouted !== null) {
+            hold = unrouted;
+            unrouted = null;
+          }
+        }
+        lanes.push({
+          setId: set.id,
+          setLabel: set.label,
+          retiring: set.retiring,
+          resource,
+          index,
+          of,
+          occupant,
+          hold,
+          /*
+           * THE THERMAL READING IS THIS MACHINE'S CARD, so it goes on no
+           * remote set's lane. `gpuThermal` is sampled by nvidia-smi here; a
+           * remote render's temperature is the other machine's to report and
+           * BookForge has never asked for it. Drawing it on the Mac's lane
+           * would be this PC's fan speed labelled as somebody else's.
+           */
+          thermal: resource === 'gpu' && isThisMachine(set.id, snapshot)
+            ? (snapshot.gpuThermal ?? null)
+            : null,
+        });
+      }
     }
   }
 
@@ -393,18 +471,49 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
 }
 
 /**
- * The hold keeping work out of a pool, or null.
+ * Does this slot set run on the machine BookForge is on?
+ *
+ * The legacy narrator spawn always does. A SERVER might — `local` is this
+ * machine's own Crucible — but the snapshot does not carry which name that is
+ * (the reserved word belongs to `electron/crucible/local.ts`, and a bench that
+ * spelled it would be a second owner of it, crucible `docs/ARCHITECTURE.md`
+ * R1). So a server's lane carries no temperature at all, which is the honest
+ * answer for every remote one and a missing decoration for the local one.
+ */
+function isThisMachine(setId: string, _snapshot: QueueSnapshot): boolean {
+  return setId === LEGACY_LOCAL_NARRATOR;
+}
+
+/**
+ * The hold keeping work out of one machine's pool, or null.
  *
  * Read off the steps rather than re-derived, because the engine is the only
  * thing that knows whether admission refused — it holds the lock file and the
  * arbiter. A reader that re-checked them here would be a second opinion about a
  * decision that has already been made.
  */
-function admissionHoldFor(snapshot: QueueSnapshot, resource: StepResource): string | null {
+function admissionHoldFor(
+  snapshot: QueueSnapshot,
+  setId: string,
+  resource: StepResource,
+): string | null {
   if (resource !== 'gpu') return null;
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'queued' || step.resource !== resource) continue;
+      if (slotSetForStep(job, step) !== setId) continue;
+      if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
+    }
+  }
+  return null;
+}
+
+/** The first hold on a queued GPU row that has not been given a machine yet. */
+function unroutedHold(snapshot: QueueSnapshot): string | null {
+  for (const job of snapshot.jobs) {
+    for (const step of job.steps) {
+      if (step.status !== 'queued' || step.resource !== 'gpu') continue;
+      if (slotSetForStep(job, step) !== null) continue;
       if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
     }
   }

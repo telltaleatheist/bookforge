@@ -305,7 +305,16 @@ export class QueueService {
   private readonly studioService = inject(StudioService);
   private readonly electron = inject(ElectronService);
 
-  private readonly _snapshot = signal<QueueSnapshot>({ jobs: [], running: false });
+  /**
+   * BEFORE MAIN HAS SAID ANYTHING. `slotSets` is empty rather than guessed:
+   * which machines have slots is main's to compose from the routing record
+   * (`shared/queue/slot-sets.ts`), and a renderer that invented a bench would
+   * be drawing a card nobody has registered. The bench is simply empty for the
+   * one tick before the first snapshot arrives.
+   */
+  private readonly _snapshot = signal<QueueSnapshot>({
+    jobs: [], running: false, slotSets: [],
+  });
 
   /**
    * The engine's own shape, read-only.

@@ -698,6 +698,7 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
   assert.deepStrictEqual(
     waitFor.decideWaitFor({
       waitFor: 'any', resolved: undefined, ranked, legacyLocalRender: false, state: unknown,
+      gpuSlotTaken: () => null,
     }),
     { kind: 'ask', server: 'local', sentence: 'Checking whether local is reachable…' },
     'rank order decides WHICH question is asked first, not just which answer wins',

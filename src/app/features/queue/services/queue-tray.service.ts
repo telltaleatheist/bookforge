@@ -233,25 +233,32 @@ export class QueueTrayService {
     const pending = live.filter(job => jobStatus(job) !== 'running').length;
     const failed = this.failures().length;
 
-    // The GPU lane leads the chip. Not because CPU work does not matter, but
+    // The GPU lanes lead the chip. Not because CPU work does not matter, but
     // because the card is the resource the user schedules their day around —
     // and when it is held off, saying so is the whole point of the chip.
-    const gpu = lanes[0];
-    if (gpu.occupant) {
+    //
+    // SEARCHED, not `lanes[0]`: there is a GPU lane per machine now
+    // (`shared/queue/slot-sets.ts`), the sets are ordered by rank, and the
+    // first entry can be a lane on an idle server while another machine is
+    // mid-render. The first BUSY card wins, and only if none is busy does a
+    // hold speak.
+    const busyGpu = lanes.find(lane => lane.resource === 'gpu' && lane.occupant !== null);
+    if (busyGpu?.occupant) {
       return {
         state: 'running',
-        verb: gpu.occupant.verb,
-        title: gpu.occupant.title,
-        percent: gpu.occupant.percent,
-        cover: gpu.cover,
+        verb: busyGpu.occupant.verb,
+        title: busyGpu.occupant.title,
+        percent: busyGpu.occupant.percent,
+        cover: busyGpu.cover,
         pending, failed, hold: '',
       };
     }
-    if (gpu.hold) {
+    const heldGpu = lanes.find(lane => lane.resource === 'gpu' && lane.hold !== null);
+    if (heldGpu?.hold) {
       return {
         state: 'blocked',
         verb: '', title: '', percent: null, cover: null,
-        pending, failed, hold: gpu.hold,
+        pending, failed, hold: heldGpu.hold,
       };
     }
 

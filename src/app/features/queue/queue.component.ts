@@ -106,7 +106,7 @@ import type { BookPlanView } from './services/queue-tray.service';
         </header>
 
         <div class="lanes">
-          @for (lane of tray.lanes(); track lane.resource + lane.index) {
+          @for (lane of tray.lanes(); track lane.setId + lane.resource + lane.index) {
             <article
               class="lcard"
               [class.gpu]="lane.resource === 'gpu'"
@@ -123,7 +123,8 @@ import type { BookPlanView } from './services/queue-tray.service';
                    with the next one" had no button anywhere, and Owen went
                    looking for one. The wording says which is which. -->
               <div class="lcard-slot">
-                <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+                <span>{{ lane.setLabel }} · {{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+                @if (lane.retiring) { <span class="retiring">finishing — no new work goes here</span> }
                 @if (lane.thermal; as thermal) {
                   <span class="temp" [class.hot]="thermal.throttleSustained">
                     {{ thermal.tempC }}°C

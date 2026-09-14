@@ -120,13 +120,16 @@ import { IconComponent } from '../shared/icon.component';
       <section class="band">
         <h3 class="bhead">On the bench<span class="bnote">{{ busyLanes() }} of {{ lanes().length }} slots in use</span></h3>
         <div class="lanes">
-        @for (lane of lanes(); track lane.resource + lane.index) {
+        @for (lane of lanes(); track lane.setId + lane.resource + lane.index) {
           <div class="card lane" [class.idle]="!lane.occupant && !lane.hold"
                [class.gpu]="lane.resource === 'gpu'"
                [class.warn]="!lane.occupant && !!lane.hold"
                [class.hot]="!!lane.thermal?.throttleActive">
             <div class="slot">
-              <span class="slotname">{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+              <span class="slotname">{{ lane.setLabel }} · {{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+              @if (lane.retiring) {
+                <span class="therm">finishing — no new work goes here</span>
+              }
               @if (lane.thermal; as reading) {
                 <span class="therm">{{ thermWords(reading) }}</span>
               }

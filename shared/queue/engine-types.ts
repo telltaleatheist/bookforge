@@ -37,6 +37,11 @@
  * that would have updated it had thrown instead of returning.
  */
 
+// Type-only, and deliberately one-way at runtime: `slot-sets.ts` owns the slot
+// vocabulary and imports the queue's shapes from here, so the back-reference
+// must erase. It does — nothing below imports a VALUE from that module.
+import type { SlotSet } from './slot-sets';
+
 /** Job types this queue can run. Retired vocabulary is listed separately below. */
 export type JobType =
   | 'tts-conversion'
@@ -178,18 +183,16 @@ export const TERMINAL_STEP_STATUSES: ReadonlySet<StepStatus> =
  */
 export type StepResource = 'gpu' | 'cpu' | 'wait';
 
-/** How many steps of each resource may run at once. */
-export const RESOURCE_SLOTS: Readonly<Record<StepResource, number>> = {
-  gpu: 1,
-  cpu: 2,
-  /*
-   * A CAP RATHER THAN NO LIMIT. Waiting costs a promise and a timer, so this is
-   * not a worker count — but an unbounded lane would let a runaway chain admit
-   * thousands of steps at once, and a number nobody can exceed by accident is
-   * cheaper to reason about than Infinity. Raise it if a real chain ever nears it.
-   */
-  wait: 32,
-};
+/*
+ * `RESOURCE_SLOTS` USED TO BE HERE, and it was one global number per resource.
+ *
+ * It is gone rather than adjusted, because a single `gpu: 1` for the whole
+ * application meant a book rendering on the Mac held THIS machine's only GPU
+ * slot — so two books could never render on two machines at once, which is the
+ * entire reason a second server is registered. Capacity is per MACHINE now:
+ * `shared/queue/slot-sets.ts`, crucible `docs/PHASE7-LANES.md` §2.4. The wait
+ * cap moved there too (`WAIT_STEP_CAP`), so nothing has two owners.
+ */
 
 /**
  * What a step reads and what it writes.
@@ -484,6 +487,24 @@ export interface QueueStep {
    * the queue.
    */
   travels?: boolean;
+  /**
+   * WHERE THIS STEP'S WORK ACTUALLY WENT — a registered server's name, or
+   * `legacy-local-narrator`.
+   *
+   * Written ONCE, by the pump, at the moment the step is admitted, and never
+   * changed afterwards. It is the SLOT SET the step occupies while it runs
+   * (`shared/queue/slot-sets.ts`), which is why it has to be on the step rather
+   * than only on the run: a run can hold two GPU steps whose venues differ
+   * while the migration is half done — a render already sent to the Mac and an
+   * RVC pass whose module has not been taught to travel and therefore spawns
+   * here.
+   *
+   * NOT A SECOND ROUTING LEVEL, and §4.4 still rules that one book is one GPU:
+   * {@link QueueJob.waitFor} is what the operator asked for, `waitForResolved`
+   * is what the run was assigned, and this is what one step of it did. A record,
+   * three scopes, no instruction among them.
+   */
+  venue?: string;
   status: StepStatus;
   progress: StepProgress;
   metrics: StepMetrics;
@@ -665,6 +686,17 @@ export interface QueueSnapshot {
    * machine) — never a stale reading and never an invented one.
    */
   gpuThermal?: GpuThermalReading;
+  /**
+   * EVERY SLOT SET THAT EXISTS RIGHT NOW — one per enabled Crucible server, the
+   * legacy narrator spawn while its switch is on, any set still holding work of
+   * ours, and `local-work` last (`shared/queue/slot-sets.ts`).
+   *
+   * On the snapshot because the bench is PURE and the set list is not derivable
+   * from the jobs: it comes from the routing record, which only main can read.
+   * The engine composes it on every snapshot so a server enabled a second ago
+   * has its lane before the next pump.
+   */
+  slotSets: SlotSet[];
 }
 
 /**
