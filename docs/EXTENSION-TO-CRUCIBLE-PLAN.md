@@ -47,6 +47,15 @@ streaming door (PHASE3-TTS.md §7's ruling), and Sunday keeps working.
   itself stays as a CLIENT gate ("Buffer before playing": wait for the whole sentence vs. play
   from the first frame), because Crucible's stream always emits sub-sentence frames — fast
   start is the door's native shape, and buffering is a client choice.
+- **After the extension is direct, BookForge's "TTS server" button and its options go
+  (Owen, 2026-09-14: "we should remove the tts server button and its options from bookforge.
+  we need to make sure those options are added to the extension though").** Every option that
+  button's page and the Add-ons rows carry for the streaming engine moves to the extension's
+  Options page first, and the keeper that pins the deletion lists them by name: the voice,
+  speed, "Buffer before playing", the idle-unload window (`idleMinutes` — becomes the
+  extension asking the engine to unload after N idle minutes, a client timer that posts
+  `unload-model`), the recordings folder and tab-recording rows, the LAN server rows (now the
+  registry + picker). Nothing is removed from BookForge until the extension has it.
 - **After the extension is direct, BookForge's 8766 relay is deleted.** The iPhone Bookshelf
   reader keeps its own bridge on the bookshelf server (the phone needs the ingest endpoint and
   a LAN-addressable server, which is BookForge's), pointed at the same shared client.
@@ -111,7 +120,7 @@ until narrator carries it) — that is BookForge's `python/narrator`, not Crucib
 | page reading (PDF) | `pages` via Foundry | through Crucible |
 | cleanup / narration text pass / number normalization / simplify / translate / analysis | `llm` (routes) | through Crucible |
 | zero-shot Higgs clips | `load-voice` with a reference clip | door exists; MLX arm never exercised |
-| **Enhance tab (Resemble-Enhance CFM on MPS/CUDA)** | `electron/enhance-bridge.ts`, local spawn | **NOT through Crucible — the one GPU path left outside it.** Needs an `enhance` job type or a decision to drop it (Mac audit §4) |
+| **Enhance tab (Resemble-Enhance CFM on MPS/CUDA)** | `electron/enhance-bridge.ts`, local spawn | **DROPPED (Owen, 2026-09-14: "drop and remove the enhance page and the corresponding crucible route. it's unnecessary").** The page, its route, `enhance-bridge.ts`, `components/resemble-env.ts`, the five `enhance:*` IPC handlers, the settings rows and the analytics fields go; NO `enhance` job type is ever built. `denoise` (the hiss separator) is NOT the Enhance tab's alone — `chapter-closer.ts`, `clipforge-chain.ts`, `coverage-align-job.ts` and the queue's `denoise-job.ts` use it — so the `denoise` job type and subject STAY. |
 | RVC *training* (urvc), ClipForge studio | local | training is outside Crucible by design; ClipForge is CPU |
 
 ## 4. The Orpheus cleanup (C: space)
@@ -132,4 +141,4 @@ extracted from the app with keepers (no behaviour change; the 8766 relay still r
 3. The extension: registry + picker + connect code; load/unload jobs; the stream client;
 Orpheus removed; "Buffer before playing" as a client gate. 4. BookForge's Streaming tab on the
 shared client. 5. Owen's Sunday check on both machines. 6. Delete the 8766 relay and
-`tts-api-server.ts`. 7. `enhance` job type or its removal (separate ruling).
+`tts-api-server.ts`. 7. Delete the Enhance page and its bridge (ruled: drop). 8. Delete the TTS server button and its options from BookForge once the extension carries every one of them.
