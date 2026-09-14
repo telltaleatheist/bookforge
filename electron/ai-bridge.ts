@@ -2696,8 +2696,10 @@ async function cleanChunkWithOpenAI(
 //
 // CLI-ONLY. Nothing in the app's UI, IPC or settings can select this provider.
 
-/** This client's name in the Crucible server's log and User-Agent. */
-const CRUCIBLE_CLIENT_NAME = 'bookforge';
+// This client's name in the Crucible server's log and User-Agent used to be a
+// const here. It is `CRUCIBLE_CLIENT_NAME` in ./crucible/servers.ts now, because
+// the Servers settings row calls the same servers and a second spelling would be
+// a second app in their logs (crucible docs/ARCHITECTURE.md, R1).
 
 /**
  * The `crucible` provider's config, or a refusal naming the missing half.
@@ -2729,7 +2731,7 @@ function crucibleConfigOf(config: AIProviderConfig): { server: string; model: st
  * other provider has no business reading a file full of bearer tokens.
  */
 async function crucibleClient(server: string): Promise<CrucibleClient> {
-  const { crucibleClientFor } = await import('./crucible/servers.js');
+  const { crucibleClientFor, CRUCIBLE_CLIENT_NAME } = await import('./crucible/servers.js');
   return crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
 }
 

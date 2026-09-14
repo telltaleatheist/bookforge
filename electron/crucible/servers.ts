@@ -77,6 +77,17 @@ import { getWslDistro } from '../tool-paths';
 export { LOCAL_SERVER_NAME, CrucibleLocalError } from './local';
 export type { LocalServer } from './local';
 
+/**
+ * What this app calls itself to a Crucible.
+ *
+ * Lands in the `User-Agent` the SDK sends, which is what `GET /v1/activity`
+ * reports as a job's `client` — so a server shared by the PC and the Mac can
+ * say whose render is on the card (crucible `docs/PHASE7-LANES.md` section 5,
+ * "`client` is load-bearing"). One name, declared once: two spellings would be
+ * two apps in that log.
+ */
+export const CRUCIBLE_CLIENT_NAME = 'bookforge';
+
 /** The registry file's shape on disk. */
 interface RegistryFile {
   servers: CrucibleServerEntry[];

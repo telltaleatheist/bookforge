@@ -56,6 +56,15 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '../shared/vlm/conversion';
+import type {
+  CrucibleActivityView,
+  CrucibleModelRow,
+  CrucibleProbeResult,
+  CrucibleServersView,
+  RemoteServerRow as CrucibleRemoteServerRow,
+  RoutingView as CrucibleRoutingView,
+  WaitForDefault as CrucibleWaitForDefault,
+} from '../shared/crucible/settings-wire';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type {
@@ -1323,6 +1332,40 @@ export interface ElectronAPI {
       data?: { valid: boolean; condaFound: boolean; sessionsRootFound: boolean; orpheusEnvFound: boolean; errors: string[] };
       error?: string;
     }>;
+  };
+  /**
+   * The Crucible inference servers this machine can reach (Settings → Crucible
+   * Servers). Wire shapes come from shared/crucible/settings-wire.ts — the main
+   * process owns the registry, the local config and the rank record, and the
+   * renderer must not re-spell any of them.
+   */
+  crucible: {
+    /** The local server (or the named reason there is none), the remotes, and the rank record. */
+    servers: () => Promise<{ success: boolean; data?: CrucibleServersView; error?: string }>;
+    /** Record a REMOTE. Refuses exactly as the registry refuses; the row shows its message. */
+    add: (server: { name: string; url: string; token: string }) => Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }>;
+    /** Forget a remote. `local` is refused — it is not a registry entry. */
+    remove: (name: string) => Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }>;
+    /** Test an address+token that is not registered yet: ping, then info. */
+    testAddress: (url: string, token: string) => Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }>;
+    /** The same test for a known server, `local` included. */
+    test: (name: string) => Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }>;
+    /** `GET /v1/activity` — a bench read, never admission. */
+    activity: (name: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; activity: CrucibleActivityView } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
+    /** `GET /v1/models` — the four facts about each, and the reason for a no. */
+    models: (name: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; models: CrucibleModelRow[] } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
+    /** Re-rank. The WHOLE visible list, best first — a drag reorders, it never drops a row. */
+    setOrder: (order: string[]) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /** The capacity switch: may the queue use this server at all. */
+    setEnabled: (name: string, enabled: boolean) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /** What a NEW queue row waits for: the top-ranked server, or any. */
+    setWaitFor: (value: CrucibleWaitForDefault) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /** Drop a name the rank record mentions that no server answers to. */
+    forget: (name: string) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /** OPERATOR VERB: submits a `load-model` job, which takes that machine's card. */
+    loadModel: (name: string, model: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
+    /** OPERATOR VERB: submits an `unload-model` job. Nothing here does it unasked. */
+    unloadModel: (name: string, model: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -2727,6 +2770,28 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('wsl:detect'),
     checkOrpheusSetup: (config: { distro?: string; condaPath?: string; sessionsRoot?: string }) =>
       ipcRenderer.invoke('wsl:check-orpheus-setup', config),
+  },
+  crucible: {
+    servers: () => ipcRenderer.invoke('crucible:servers'),
+    add: (server: { name: string; url: string; token: string }) =>
+      ipcRenderer.invoke('crucible:add', server),
+    remove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
+    testAddress: (url: string, token: string) =>
+      ipcRenderer.invoke('crucible:test-address', url, token),
+    test: (name: string) => ipcRenderer.invoke('crucible:test', name),
+    activity: (name: string) => ipcRenderer.invoke('crucible:activity', name),
+    models: (name: string) => ipcRenderer.invoke('crucible:models', name),
+    setOrder: (order: string[]) => ipcRenderer.invoke('crucible:set-order', order),
+    setEnabled: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke('crucible:set-enabled', name, enabled),
+    setWaitFor: (value: CrucibleWaitForDefault) =>
+      ipcRenderer.invoke('crucible:set-wait-for', value),
+    forget: (name: string) => ipcRenderer.invoke('crucible:forget', name),
+    // The two operator verbs. They reach a card; nothing calls them but a button.
+    loadModel: (name: string, model: string) =>
+      ipcRenderer.invoke('crucible:load-model', name, model),
+    unloadModel: (name: string, model: string) =>
+      ipcRenderer.invoke('crucible:unload-model', name, model),
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),

@@ -17,6 +17,7 @@ import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-p
 import { RvcEnhancementPanelComponent } from './components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from './components/orpheus-voices-panel.component';
 import { HiggsVoicesPanelComponent } from './components/higgs-voices-panel.component';
+import { CrucibleServersPanelComponent } from './components/crucible-servers-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
 /**
@@ -36,7 +37,7 @@ function toolPathText(raw: string | boolean | undefined): string {
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, CrucibleServersPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -1196,6 +1197,10 @@ function toolPathText(raw: string | boolean | undefined): string {
                   <app-add-ons-panel [only]="generalAddOnIds()"></app-add-ons-panel>
                 </div>
               </div>
+            } @else if (section.id === 'crucible') {
+              <!-- The Crucible servers the queue may use: this machine's, the
+                   remotes, their rank and their enable switches. -->
+              <app-crucible-servers-panel></app-crucible-servers-panel>
             } @else if (section.id === 'pipeline-defaults') {
               <!-- Default AI / TTS / output selections the pipeline seeds from. -->
               <app-pipeline-defaults-panel></app-pipeline-defaults-panel>

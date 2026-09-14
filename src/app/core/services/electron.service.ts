@@ -17,6 +17,15 @@ import type {
   VlmEndpointCheck,
   VlmEndpointConfig,
 } from '@shared/vlm/conversion';
+import type {
+  CrucibleActivityView,
+  CrucibleModelRow,
+  CrucibleProbeResult,
+  CrucibleServersView,
+  RemoteServerRow as CrucibleRemoteServerRow,
+  RoutingView as CrucibleRoutingView,
+  WaitForDefault as CrucibleWaitForDefault,
+} from '@shared/crucible/settings-wire';
 import type { VlmReadingsBank } from '@shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
 import type {
@@ -4040,5 +4049,91 @@ export class ElectronService {
       }
       return () => {};
     },
+  };
+
+  // ── Crucible inference servers (Settings → Crucible Servers) ──────────────
+  //
+  // One server, many client apps (crucible docs/DESIGN.md). The main process
+  // owns the registry of remotes, the local server's own config.toml and the
+  // rank/enable record; this is the door onto all three. Nothing here carries a
+  // token OUT — a listing's `tokenMasked` is `****<last 4>` and the plaintext
+  // never crosses this seam.
+  readonly crucible = {
+    /** The local server (or the named reason there is none), the remotes, and the rank record. */
+    servers: (): Promise<{ success: boolean; data?: CrucibleServersView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.servers()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Record a REMOTE server. Refuses exactly as the registry refuses. */
+    add: (server: { name: string; url: string; token: string }): Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.add(server)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    remove: (name: string): Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.remove(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Test a typed address + token: ping (unauthenticated), then info (not). */
+    testAddress: (url: string, token: string): Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.testAddress(url, token)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** The same test for a server this machine knows, `local` included. */
+    test: (name: string): Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.test(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** `GET /v1/activity`. A bench read — never permission to submit. */
+    activity: (name: string): Promise<{ success: boolean; data?: { outcome: 'ok'; activity: CrucibleActivityView } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.activity(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** `GET /v1/models`: backendSupported / installed / resident / loadable, and the reason. */
+    models: (name: string): Promise<{ success: boolean; data?: { outcome: 'ok'; models: CrucibleModelRow[] } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.models(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Re-rank: the whole visible list, best first. */
+    setOrder: (order: string[]): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setOrder(order)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    setEnabled: (name: string, enabled: boolean): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setEnabled(name, enabled)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    setWaitFor: (value: CrucibleWaitForDefault): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setWaitFor(value)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    forget: (name: string): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.forget(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * OPERATOR VERBS. Each submits a job that takes the card on that machine, so
+     * each is wired to a button and to nothing else — residency is the
+     * operator's decision (crucible docs/PHASE5-APPS.md section 2).
+     */
+    loadModel: (name: string, model: string): Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.loadModel(name, model)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    unloadModel: (name: string, model: string): Promise<{ success: boolean; data?: { outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.unloadModel(name, model)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
   };
 }

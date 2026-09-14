@@ -497,6 +497,19 @@ export class SettingsService {
         fields: [], // Custom UI (app-add-ons-panel)
       },
       {
+        // The Crucible inference servers this machine can send GPU work to: the
+        // one on this machine (read from its own config.toml, never copied) and
+        // any remote Owen adds. Rank by drag, enable per server, and the one
+        // setting for what a new queue row waits for. Custom UI
+        // (app-crucible-servers-panel); the contract is crucible
+        // docs/PHASE7-LANES.md sections 4.2.2 and 7.
+        id: 'crucible',
+        name: 'Crucible Servers',
+        description: 'Inference servers the queue may use: this machine’s, and any you add',
+        icon: '🛰️',
+        fields: [], // Custom UI
+      },
+      {
         // Default AI / TTS / output selections the processing pipeline seeds
         // itself from. Custom UI (app-pipeline-defaults-panel).
         id: 'pipeline-defaults',

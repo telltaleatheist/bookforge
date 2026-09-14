@@ -7591,6 +7591,156 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Crucible servers (Settings → Crucible Servers)
+  //
+  // The first BookForge UI Crucible has ever justified, and the reason is written
+  // down in crucible docs/PHASE7-LANES.md section 7: every phase so far held the
+  // line at "no UI, no IPC, no settings row", because the CLI proved each seam
+  // without moving the app — but a server registry Owen edits by hand in a JSON
+  // file under <userData> is not a feature, so this is where the line is crossed.
+  //
+  // Three modules answer here and each owns one fact (ARCHITECTURE.md R1):
+  // `servers.ts` the registry of REMOTES, `local.ts` the server on this machine
+  // (read from its own config.toml, never copied), `routing.ts` the rank/enable
+  // record. `probe.ts` is the only one that talks to a server, and everything it
+  // does is a read — except the two operator verbs at the bottom, which are the
+  // only doors here that touch an accelerator.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('crucible:servers', async () => {
+    try {
+      const { serversView } = await import('./crucible/probe.js');
+      return { success: true, data: serversView() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:add', async (_event, server: { name: string; url: string; token: string }) => {
+    try {
+      // The registry's own refusals, verbatim: `local` is reserved, a loopback URL
+      // is this machine (which is read from its config, never registered), a
+      // duplicate name is not a silent repoint. The row shows the message.
+      const { addServer } = await import('./crucible/servers.js');
+      return { success: true, data: addServer(server) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:remove', async (_event, name: string) => {
+    try {
+      const { removeServer } = await import('./crucible/servers.js');
+      return { success: true, data: removeServer(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Test, before the entry exists: ping (unauthenticated) then info (not), which
+  // is what tells "nothing there" from "not a Crucible" from "wrong token".
+  ipcMain.handle('crucible:test-address', async (_event, url: string, token: string) => {
+    try {
+      const { probeAddress } = await import('./crucible/probe.js');
+      return { success: true, data: await probeAddress(url, token) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The same test for a server this machine already knows — `local` included.
+  ipcMain.handle('crucible:test', async (_event, name: string) => {
+    try {
+      const { probeServer } = await import('./crucible/probe.js');
+      return { success: true, data: await probeServer(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:activity', async (_event, name: string) => {
+    try {
+      const { activityOf } = await import('./crucible/probe.js');
+      return { success: true, data: await activityOf(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:models', async (_event, name: string) => {
+    try {
+      const { modelsOf } = await import('./crucible/probe.js');
+      return { success: true, data: await modelsOf(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Rank, enablement, and what a new job waits for (PHASE7-LANES §4.2.2) ──
+
+  ipcMain.handle('crucible:set-order', async (_event, order: string[]) => {
+    try {
+      const { setRoutingOrder } = await import('./crucible/routing.js');
+      return { success: true, data: setRoutingOrder(order) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:set-enabled', async (_event, name: string, enabled: boolean) => {
+    try {
+      const { setServerEnabled } = await import('./crucible/routing.js');
+      return { success: true, data: setServerEnabled(name, enabled) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:set-wait-for', async (_event, value: 'top-ranked' | 'any') => {
+    try {
+      const { setNewJobsWaitFor } = await import('./crucible/routing.js');
+      return { success: true, data: setNewJobsWaitFor(value) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Drop a name the rank record mentions that no server answers to any more.
+  ipcMain.handle('crucible:forget', async (_event, name: string) => {
+    try {
+      const { forgetRoutingName } = await import('./crucible/routing.js');
+      return { success: true, data: forgetRoutingName(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── The two OPERATOR verbs ────────────────────────────────────────────────
+  //
+  // These submit `load-model` / `unload-model` jobs, which take the lane and the
+  // card on that machine. Nothing in the app calls them on its own: residency is
+  // the operator's decision (PHASE5-APPS.md section 2), and an unload behind
+  // somebody's back evicts the model their next run is about to use.
+
+  ipcMain.handle('crucible:load-model', async (_event, name: string, model: string) => {
+    try {
+      const { loadModelOn } = await import('./crucible/probe.js');
+      return { success: true, data: await loadModelOn(name, model) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:unload-model', async (_event, name: string, model: string) => {
+    try {
+      const { unloadModelOn } = await import('./crucible/probe.js');
+      return { success: true, data: await unloadModelOn(name, model) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // The five `tts:*` channels that stood here are GONE (2026-09-05).
   //
   // They were the last live door onto ebook2audiobook: `tts:start-conversion`
