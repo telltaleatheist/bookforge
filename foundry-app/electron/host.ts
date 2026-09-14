@@ -25,6 +25,7 @@ import type {
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
 import type { HostMintMeta, HostNodeAction } from '../shared/host-ops';
+import type { ComputeSlot } from '../shared/slots';
 import type { HostOperation } from './host-ops';
 
 /**
@@ -284,6 +285,44 @@ export interface FoundryHost {
    * mistake must not keep the modal from opening.
    */
   mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
+  /**
+   * WHERE COMPUTE-HEAVY WORK MAY GO — the host's slot list, and hosted it is the
+   * WHOLE of the list (docs/SLOTS.md §3).
+   *
+   * ── Why a provider and not a registry Foundry keeps hosted ────────────────
+   *
+   * Because the machine has one owner. `hostQueue`'s ruling was *"one machine's
+   * GPU needs one owner"*, and the same sentence decides this: a hosted window
+   * that kept its own list of Crucible servers would be a second registry, with
+   * a second set of tokens, dispatching against the same cards the host's own
+   * scheduler is rationing. Owen's ruling for the vendored app is the one line
+   * that follows from it — *"bookforge requires crucible. it doesnt have an
+   * ollama fallback like foundry will… no local fallbacks necessary in the
+   * vendored version of foundry"* — so hosted there is NO LOCAL SLOT, and this
+   * provider is refused if it offers one.
+   *
+   * ── ABSENT IS TODAY, EXACTLY, and that is the compatibility story ─────────
+   *
+   * A host that registers nothing gets an EMPTY slot list, and an empty list is
+   * not a broken app: no picker is drawn anywhere, no placement is decided, and
+   * every job takes the path it took before Package C existed. So a host may
+   * re-vendor this app and adopt slots later, or never, without a line changing
+   * on either side in the meantime.
+   *
+   * ── Synchronous, and read at every use ────────────────────────────────────
+   *
+   * `hostOperations` is a field read once at mount and revised through a push;
+   * this is a FUNCTION read every time the list is needed, because the list is
+   * cheap to produce (the host already has it), it changes when the host's own
+   * servers change, and a push door for it would be a second thing to keep in
+   * step with the host's registry. Synchronous for the reason `enqueue` is: the
+   * picker is drawn in the same turn as the press.
+   *
+   * A THROW IS AN EMPTY LIST AND IS LOGGED where it is called
+   * (`computeSlots`, electron/crucible-registry.ts). A host's mistake must not
+   * strand a job.
+   */
+  slots?(): readonly ComputeSlot[];
 }
 
 let host: FoundryHost | null = null;

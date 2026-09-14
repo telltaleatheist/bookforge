@@ -25,53 +25,50 @@
  * AND THAT SHARED READ IS LOAD-BEARING BEYOND THIS FILE: hosted, BookForge's
  * Clean text press reads `cleanTextModel` out of the very same
  * `app-settings.json`, so one file decides what both doors run.
+ *
+ * ── THE THIRD FIELD IS GONE, AND SO IS THE THING IT SEEDED ─────────────────
+ *
+ * A `server?: WritableSignal<LlmServerKind>` used to come back on the same
+ * answer, because it was the same decision: under vLLM the model was a served id
+ * and the URL was a different port, and a dialog that took two of the three from
+ * Settings and guessed the third composed a job that could not run. Wave 61
+ * retired that setting (docs/SLOTS.md): the local slot is Ollama, and any other
+ * server is a REGISTERED CRUCIBLE whose model and address are read from the
+ * server itself at the spawn rather than carried from a dialog.
+ *
+ * So what these two fields seed is exactly the LOCAL slot's answers — which is
+ * what they always looked like, and is now what they are. The special case that
+ * set an EMPTY model deliberately went with the setting: empty meant "whatever
+ * that server is serving", and nothing on this side asks that question any more.
  */
 import type { WritableSignal } from '@angular/core';
 
-import type { LlmServerKind } from '@shared/pipeline';
 import { api } from './foundry';
 
-/*
- * AND THE THIRD FACT: WHICH KIND OF SERVER. It arrives on the same answer
- * because it is the same decision — under vLLM the model is a served id and the
- * URL is a different port, and a dialog that took two of the three from Settings
- * and guessed the third would compose a job that cannot run. The signal is
- * OPTIONAL because Analyse has no vLLM route yet and passes none; every dialog
- * that puts `server` on its request passes one.
- *
- * A MODEL THAT COMES BACK EMPTY IS SET ANYWAY WHEN THE SERVER IS vLLM, which is
- * the one place this differs from the two lines above it: empty MEANS something
- * there — "whatever that server is serving" — and leaving the constant in the
- * field would put an Ollama tag on a vLLM job (`AppSettings.vllmModel`).
- */
 function seed(
   chosen: (defaults: { model: string; cleanModel: string }) => string,
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
-  server?: WritableSignal<LlmServerKind>,
 ): void {
   if (!api) return;
   void api.llm.defaults().then((defaults) => {
     const wanted = chosen(defaults);
-    if (wanted.trim().length > 0 || defaults.server === 'vllm') model.set(wanted);
+    if (wanted.trim().length > 0) model.set(wanted);
     if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
-    server?.set(defaults.server);
   });
 }
 
 export function seedLlmDefaults(
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
-  server?: WritableSignal<LlmServerKind>,
 ): void {
-  seed((defaults) => defaults.model, model, ollama, server);
+  seed((defaults) => defaults.model, model, ollama);
 }
 
 /** The same read, taking `cleanTextModel` — for the Clean text dialog alone. */
 export function seedCleanDefaults(
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
-  server?: WritableSignal<LlmServerKind>,
 ): void {
-  seed((defaults) => defaults.cleanModel, model, ollama, server);
+  seed((defaults) => defaults.cleanModel, model, ollama);
 }

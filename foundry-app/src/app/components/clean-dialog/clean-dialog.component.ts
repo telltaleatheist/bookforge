@@ -6,7 +6,6 @@ import { canCleanFrom } from '@shared/stages';
 import {
   cleanTextModelsFor,
   DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
-  type LlmServerKind,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
 } from '@shared/pipeline';
 import type { CleanRequest } from '@shared/types';
@@ -338,15 +337,11 @@ export class CleanDialogComponent {
     return this.models.some((choice) => choice.tag === chosen) ? null : chosen;
   });
   protected readonly ollama = signal(DEFAULT_OLLAMA);
-  /**
-   * WHICH KIND OF SERVER this machine runs, from Settings and never typed here.
-   *
-   * It is not a per-book choice — a machine has one language server up — so it
-   * is seeded and carried rather than shown. It rides on the request with the
-   * model and the URL because the three have to agree (`TranslateRequest.server`).
+  /*
+   * NO `server` SIGNAL ANY MORE — `TranslateRequest.server` (shared/types.ts)
+   * carries the whole argument. The two above are the LOCAL slot's answers, and
+   * WHERE a job goes is picked on its queue row (docs/SLOTS.md §3).
    */
-  protected readonly server = signal<LlmServerKind>('ollama');
-
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */
   protected readonly busy = signal(false);
@@ -360,7 +355,7 @@ export class CleanDialogComponent {
     // until somebody types otherwise in Settings — Owen, 2026-09-08. The same
     // key is what BookForge's own Clean text press reads out of the same
     // app-settings.json. See core/llm-defaults.ts.
-    seedCleanDefaults(this.model, this.ollama, this.server);
+    seedCleanDefaults(this.model, this.ollama);
     // A complaint about the last book is cleared when the book changes.
     effect(() => {
       this.source();
@@ -407,15 +402,10 @@ export class CleanDialogComponent {
         // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
         // carried verbatim — the queue reads it, nothing here interprets it.
         ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
-        /*
-         * AN EMPTY MODEL IS KEPT EMPTY UNDER vLLM, where it means "whatever that
-         * server is serving" and the engine resolves it against the server and
-         * records what answered. Falling back to the Ollama tag here would put a
-         * name on the job that no vLLM has ever heard of.
-         */
-        model: this.model().trim() || (this.server() === 'vllm' ? '' : DEFAULT_MODEL),
+        // The LOCAL slot's model and URL. Never empty — see the translate
+        // dialog's note, where the branch that allowed it is argued away.
+        model: this.model().trim() || DEFAULT_MODEL,
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
-        ...(this.server() === 'vllm' ? { server: 'vllm' as const } : {}),
         ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
         ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // Minted by the plan and carried back to the landing, so the row and the

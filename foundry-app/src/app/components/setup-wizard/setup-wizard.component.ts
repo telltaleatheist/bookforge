@@ -10,6 +10,18 @@
  * them in the order they are needed, says what each one costs before fetching
  * a byte of it, and lets every single one be skipped.
  *
+ * ── AND ONE STEP THAT IS NOT A NEED AT ALL ──────────────────────────────────
+ *
+ * Crucible (Wave 61 package E, docs/SLOTS.md) sits after Ollama and offers three
+ * doors — connect to one elsewhere, use one already on this machine, install one
+ * here. Owen: *"foundry should work if they have no idea what theyre doing and
+ * they just want to convert PDFs to EPUB. but if they do know what theyre doing
+ * and they want access to speed, they can use crucible."* So it is the one step
+ * whose blurb says outright that most people should walk past it, the Ollama
+ * step before it is untouched and remains the beginner's path, and the doors
+ * themselves are a child component (`app-crucible-doors`) shared with the
+ * Settings card so the two screens cannot offer different choices.
+ *
  * ── IT IS A FLOW, NOT A QUESTION, AND THAT DECIDES THREE THINGS ─────────────
  *
  * `UiService.dialogs` is the one-modal list, and this is deliberately not on
@@ -45,6 +57,7 @@
  */
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 
+import type { CrucibleServerView } from '@shared/slots';
 import type {
   EnvCatalogItem,
   EnvInstallProgress,
@@ -53,12 +66,15 @@ import type {
   LlmChoices,
   LlmModelOption,
   OllamaPullProgress,
+  PageReaderProgress,
+  PageReaderState,
 } from '@shared/types';
+import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
 import { QueueService } from '../../core/queue.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
-type StepId = 'welcome' | 'library' | 'ollama' | 'envs' | 'reading' | 'done';
+type StepId = 'welcome' | 'library' | 'ollama' | 'crucible' | 'envs' | 'reading' | 'done';
 
 interface StepDef {
   id: StepId;
@@ -94,14 +110,27 @@ const STEPS: readonly StepDef[] = [
     blurb: 'Translation, simplification and analysis all speak to ollama. This machine gets the largest model that fits it.',
   },
   {
+    /*
+     * AFTER OLLAMA AND BEFORE THE ENVIRONMENTS. After, because the Ollama step
+     * is what most people will use and a Crucible offered first would read as a
+     * requirement. Before the environments, because it is a decision rather than
+     * a download: somebody who connects to a Crucible here has changed what the
+     * rest of setup means, and finding that out after paying for two Pythons
+     * would be finding it out too late.
+     */
+    id: 'crucible',
+    title: 'Crucible (optional)',
+    blurb: 'Most people should skip this. It is how a second machine, or a faster path on this one, gets used.',
+  },
+  {
     id: 'envs',
     title: 'Python environments',
     blurb: 'Prebuilt, hash-checked, and the exact versions foundry was measured with.',
   },
   {
     id: 'reading',
-    title: 'The reading model',
-    blurb: 'What actually reads the pages, and where its weights come from.',
+    title: 'The page reader',
+    blurb: 'What actually reads the pages. On most machines this is the one download that matters.',
   },
   {
     id: 'done',
@@ -112,6 +141,7 @@ const STEPS: readonly StepDef[] = [
 
 @Component({
   selector: 'app-setup-wizard',
+  imports: [CrucibleDoorsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (up()) {
@@ -190,6 +220,22 @@ const STEPS: readonly StepDef[] = [
                 </div>
               } @else {
                 <p class="machine">{{ facts.profile.detail }}</p>
+                <!--
+                  docs/SLOTS.md §5b: the app never pulls into Ollama while a
+                  LOCAL Crucible serves the class. Said in the rows rather than
+                  by hiding them — the list's job is to describe this machine,
+                  and a list that silently shortened itself would describe a
+                  different one. The download buttons are off; choosing a row
+                  still works, because the tag it writes is what a job uses if
+                  that server is later switched off.
+                -->
+                @if (facts.crucible; as taken) {
+                  <p class="ok-note">
+                    The Crucible on this machine ({{ taken.server }}) already serves
+                    {{ taken.classes.join(', ') }} here, so Foundry will not pull a second copy of
+                    these models into Ollama.
+                  </p>
+                }
                 <div class="models">
                   @for (option of facts.options; track option.tag) {
                     <button
@@ -223,7 +269,9 @@ const STEPS: readonly StepDef[] = [
                         Use {{ pick.tag }}
                       </button>
                     } @else {
-                      <button class="primary" type="button" [disabled]="busy()" (click)="pullModel()">
+                      <button class="primary" type="button"
+                              [disabled]="busy() || facts.crucible !== null"
+                              (click)="pullModel()">
                         Download {{ pick.tag }} ({{ pick.downloadGB }} GB) and use it
                       </button>
                     }
@@ -244,6 +292,27 @@ const STEPS: readonly StepDef[] = [
             } @else {
               <p class="line">Asking ollama…</p>
             }
+          }
+
+          <!-- ── Crucible ────────────────────────────────────────────────── -->
+          @if (current() === 'crucible') {
+            <p class="lead">
+              Crucible is a separate program that serves models over the network — on this
+              machine or on another one. Foundry does not need it: everything on the last
+              screen works without it, and this step can be skipped for good.
+            </p>
+            <p class="line">
+              What it buys is speed and reach. A Crucible on a machine with a bigger card runs
+              the translation there; a Crucible on this machine replaces the local GPU slot with
+              one that holds its models properly instead of loading and unloading per job.
+            </p>
+            @if (crucibleServers().length > 0) {
+              <p class="ok-note">
+                Already registered: {{ crucibleNames() }}. Settings › Servers is where these are
+                ranked and switched off.
+              </p>
+            }
+            <app-crucible-doors (changed)="loadCrucible()" />
           }
 
           <!-- ── Python environments ─────────────────────────────────────── -->
@@ -292,32 +361,44 @@ const STEPS: readonly StepDef[] = [
             }
           }
 
-          <!-- ── The reading model ───────────────────────────────────────── -->
+          <!-- ── The page reader ─────────────────────────────────────────── -->
           @if (current() === 'reading') {
-            <p class="lead">
-              The model that reads pages is dots.ocr, and foundry does not host it. It is pulled
-              from Hugging Face by whatever is doing the reading — the vLLM server on Windows, or
-              mlx-vlm on a Mac — the first time you read a book.
-            </p>
-            <p class="line">
-              That first read therefore pays about six gigabytes before it starts, once, and every
-              read after it is offline. There is no separate download to approve here because there
-              is no second way to get those weights: they arrive through the reader itself.
-            </p>
-            <p class="line">
-              The analysis model is different and is already handled: its weights are inside the
-              analysis worker environment on the previous step, so the first analysis is offline.
-            </p>
-            @if (canWarm()) {
-              <p class="line">
-                The reading server is installed on this machine, so that download can be got out of
-                the way now instead of at the start of your first book.
+            @if (reader(); as it) {
+              <p class="lead">
+                The model that reads pages is dots.ocr. Every other thing foundry asks a model to do
+                — translate, simplify, clean, analyse — goes to the ollama on the last step, but no
+                ollama serves this one, so this is the one piece foundry fetches itself.
               </p>
-              <div class="actions">
-                <button class="ghost" type="button" [disabled]="warming()" (click)="warmReader()">
-                  Start the reading server and fetch the weights
-                </button>
-              </div>
+              <p class="line">{{ it.platformNote }}</p>
+              <p class="line">{{ it.detail }}</p>
+              <p class="line">
+                It is fetched once and kept. Every read after it is offline, and the analysis model
+                is already handled — its weights are inside the analysis worker on the previous step.
+              </p>
+              @if (it.supported && !it.installed) {
+                <div class="actions">
+                  <button class="primary" type="button" [disabled]="warming()" (click)="getReader()">
+                    @if (it.downloadBytes !== null) {
+                      Download the page reader ({{ readerSize(it.downloadBytes) }})
+                    } @else {
+                      Download the page reader
+                    }
+                  </button>
+                  @if (warming()) {
+                    <button class="ghost" type="button" (click)="cancelReader()">Cancel</button>
+                  }
+                </div>
+              }
+              @if (readerSaid(); as progress) {
+                @if (progress.phase === 'download') {
+                  <div class="bar"><div class="fill" [style.width.%]="progress.percent"></div></div>
+                }
+                <p class="small" [class.bad]="progress.phase === 'error'">
+                  {{ progress.item }} — {{ progress.detail }}
+                </p>
+              }
+            } @else {
+              <p class="lead">Looking at what this machine has…</p>
             }
             @if (readingSaid()) { <p class="small">{{ readingSaid() }}</p> }
           }
@@ -605,7 +686,11 @@ export class SetupWizardComponent {
   protected readonly envItems = signal<EnvCatalogItem[]>([]);
   protected readonly readingSaid = signal('');
   protected readonly warming = signal(false);
+  protected readonly reader = signal<PageReaderState | null>(null);
+  protected readonly readerSaid = signal<PageReaderProgress | null>(null);
   protected readonly profileSaid = signal('');
+  /** The registry, so the Crucible step can say what is already there. */
+  protected readonly crucibleServers = signal<CrucibleServerView[]>([]);
 
   /** Step ids moved past without doing the thing. A Set would not survive JSON. */
   protected readonly skipped = signal<string[]>([]);
@@ -644,6 +729,13 @@ export class SetupWizardComponent {
       this.ollamaSaid.set(progress);
       if (progress.phase === 'done' || progress.phase === 'error') this.busy.set(false);
     });
+    api.pageReader.onProgress((progress) => {
+      this.readerSaid.set(progress);
+      if (progress.phase === 'done' || progress.phase === 'error') {
+        this.warming.set(false);
+        void this.loadReader();
+      }
+    });
 
     /*
      * ── OPENED ONCE, BY MAIN'S ANSWER, AND NEVER BY THE ABSENCE OF A FILE ────
@@ -675,7 +767,9 @@ export class SetupWizardComponent {
       if (here === 'welcome') void this.loadProfile();
       if (here === 'library') void this.loadLibrary();
       if (here === 'ollama') void this.loadChoices();
+      if (here === 'crucible') void this.loadCrucible();
       if (here === 'envs') void this.loadEnvs();
+      if (here === 'reading') void this.loadReader();
     });
 
     // An env install that lands is a card that should stop saying "not
@@ -713,6 +807,33 @@ export class SetupWizardComponent {
   private async loadEnvs(): Promise<void> {
     if (!api) return;
     this.envItems.set(await api.env.catalog());
+  }
+
+  /**
+   * The registry, for the Crucible step's "already registered" line.
+   *
+   * Re-read after any of the three doors writes one, because the line is the
+   * only feedback the step gives that an Add landed — the door itself closes and
+   * says nothing more, on the standing rule that main's answer is the truth and
+   * a component holding its own copy of a list is the copy that goes stale.
+   */
+  protected async loadCrucible(): Promise<void> {
+    if (!api) return;
+    const view = await api.crucible.settings();
+    this.crucibleServers.set(view.servers);
+    /*
+     * AND THE OLLAMA STEP'S FACTS, because registering a local Crucible changes
+     * them: a class it serves is a class this wizard must not pull a second copy
+     * of into Ollama (docs/SLOTS.md §5b). Read here rather than on the way back
+     * to that step, so somebody who presses Back finds the rows already saying
+     * so instead of watching them change under the cursor.
+     */
+    if (this.choices() !== null) await this.loadChoices();
+  }
+
+  /** The registered servers, named, for the one line the step prints about them. */
+  protected crucibleNames(): string {
+    return this.crucibleServers().map((server) => server.name).join(', ');
   }
 
   // ── Steps ─────────────────────────────────────────────────────────────────
@@ -884,34 +1005,47 @@ export class SetupWizardComponent {
     await api.env.install({ target: item.target });
   }
 
-  // ── The reading model ─────────────────────────────────────────────────────
+  // ── The page reader ───────────────────────────────────────────────────────
 
-  /**
-   * Only where there is a server this app can start.
+  /*
+   * THIS STEP USED TO BE A DISCLOSURE, and now it is a download.
    *
-   * On a Mac the reading happens in-process through mlx-vlm, and there is no
-   * door here that would pull those weights without also reading a book — so
-   * the step is disclosure and nothing else, which is the honest shape rather
-   * than a button that pretends.
+   * It said "your first read pays about six gigabytes, through whatever reads
+   * the pages" — which was true, because the weights arrived inside vLLM's or
+   * mlx-vlm's own Hugging Face cache and this app had no door to them except a
+   * button that started a server. The local page reader has a door: the files
+   * are named, sized and fetched here, so the number is on screen before
+   * anybody agrees to it rather than inside somebody's first conversion.
+   *
+   * A MAC STILL HAS mlx-vlm IN PROCESS and does not strictly need this. It is
+   * offered anyway: a Mac whose MLX environment is not installed has no other
+   * way to read a page, and a step that hid the option on one platform would be
+   * a step that is wrong exactly when it matters.
    */
-  protected canWarm(): boolean {
-    if (!api || api.platform !== 'win32') return false;
-    return this.envItems().some((item) => item.target === 'wsl-x64' && item.installedPath !== null);
+  protected async loadReader(): Promise<void> {
+    if (!api) return;
+    this.reader.set(await api.pageReader.state());
   }
 
-  protected async warmReader(): Promise<void> {
+  protected readerSize(bytes: number): string {
+    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+    if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
+  protected async getReader(): Promise<void> {
     if (!api) return;
     this.warming.set(true);
-    this.readingSaid.set('Starting the reading server. The first start downloads the weights, which takes a while — you can leave this screen.');
-    try {
-      const status = await api.vllmServer.start();
-      this.readingSaid.set(status.state === 'ready'
-        ? 'The reading server is up and the weights are on this machine.'
-        : status.detail);
-    } catch (err) {
-      this.readingSaid.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.warming.set(false);
-    }
+    this.readingSaid.set('');
+    this.readerSaid.set(null);
+    const result = await api.pageReader.install();
+    this.warming.set(false);
+    this.readingSaid.set(result.detail);
+    await this.loadReader();
+  }
+
+  protected cancelReader(): void {
+    void api?.pageReader.cancelInstall();
+    this.warming.set(false);
   }
 }

@@ -40,7 +40,7 @@ import { documentFromArgv, openDocument, promptForDocument } from './documents';
 import { planProvisioning } from './env-provision';
 import * as queue from './job-queue';
 import { mountFoundry, openFoundryWindow, stopFoundry } from './mount';
-import * as vllm from './vllm-server';
+import * as pageReader from './page-reader';
 import { foundryWindow, letTheWindowGo, whenRendererReady, windowLetGo } from './window';
 import type { MenuAction } from '../shared/api';
 
@@ -269,10 +269,9 @@ async function provision(): Promise<void> {
     const { needs, note } = await planProvisioning();
     console.log(`[provision] ${note}`);
     for (const need of needs) {
-      // No `dest`, no `distro`: the defaults, silently, which is the whole point
-      // of provisioning. Anything genuinely ambiguous — several WSL distros —
-      // comes back out of the installer as a failed row saying how to choose,
-      // rather than as a guess.
+      // No `dest`: the default location, silently, which is the whole point of
+      // provisioning. Anything the installer cannot decide for itself comes back
+      // out of it as a failed row saying what to do, rather than as a guess.
       queue.enqueueEnvInstall({ target: need.target }, need.reason);
     }
   } catch (err) {
@@ -408,7 +407,7 @@ app.on('before-quit', (event) => {
     letTheWindowGo(() => app.quit());
     return;
   }
-  const ours = !quitting && vllm.ownsServer();
+  const ours = !quitting && pageReader.ownsServer();
   const stopped = stopFoundry();
   if (!ours) return;
   event.preventDefault();

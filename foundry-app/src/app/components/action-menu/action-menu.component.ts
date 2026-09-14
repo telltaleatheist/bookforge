@@ -14,7 +14,9 @@ import {
   canTranslateFrom, hostActAimFrom,
 } from '@shared/stages';
 import { fold } from '@shared/original';
+import type { ActName } from '@shared/types';
 
+import { ActGatesService } from '../../core/act-gates.service';
 import { BookStacksService } from '../../core/book-stacks.service';
 import { hosted } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
@@ -323,14 +325,21 @@ import { UnappliedService } from '../../core/unapplied.service';
           same accent this menu uses for "this is active", used here for "this is
           the step you are waiting on". It is the one tile in this menu that
           points at what to do next rather than at what is currently on.
+
+          AND IT GREYS FOR THE ONE THING THAT WOULD STOP IT: no page reader. It
+          is the only tile on this rail that had no disabled state at all, on the
+          reasoning that reading is what the app is FOR — which stopped being
+          true the day the reader became something this app downloads rather than
+          something the engine always had (docs/SLOTS.md §6, package B). A
+          machine that has not installed it presses this button and gets a queued
+          job that fails; the gate says so before the press instead.
         -->
         <button
           class="menu-item"
           [class.active]="ui.ocrOpen()"
           [class.waiting]="ocrWaiting()"
-          [title]="ocrWaiting()
-            ? 'These pages have not been read yet — this is the step everything else needs'
-            : 'Read this book\\'s pages with the vision model'"
+          [disabled]="!machineLit('read')"
+          [title]="ocrTitle()"
           (click)="convert()"
         >
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-scan" /></svg>
@@ -375,12 +384,17 @@ import { UnappliedService } from '../../core/unapplied.service';
         <!-- Translate. Disabled rather than hidden away from a book, on this
              menu's usual principle: a translation is a thing you do to a book
              Foundry cast, and somebody standing on the scan should be able to
-             see that the tool exists and is not applicable from there. -->
+             see that the tool exists and is not applicable from there.
+
+             TWO GATES NOW, and the same principle covers the second: a machine
+             with no model, or no GPU at all, greys this tile rather than losing
+             it, and the title says which model would light it (Owen: *"the tiles
+             arent lit up until the models are present"*). See \`machineLit\`. -->
         <button
           class="menu-item"
           [class.active]="ui.translateOpen()"
-          [disabled]="!canTranslate()"
-          title="Translate this book into another language"
+          [disabled]="!canTranslate() || !machineLit('translate')"
+          [title]="translateTitle()"
           (click)="translate()"
         >
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-globe" /></svg>
@@ -395,8 +409,8 @@ import { UnappliedService } from '../../core/unapplied.service';
         <button
           class="menu-item"
           [class.active]="ui.simplifyOpen()"
-          [disabled]="!canSimplify()"
-          title="Say this book again in its own language: plainer, more natural, or for a learner"
+          [disabled]="!canSimplify() || !machineLit('simplify')"
+          [title]="simplifyTitle()"
           (click)="simplify()"
         >
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-spark" /></svg>
@@ -434,10 +448,8 @@ import { UnappliedService } from '../../core/unapplied.service';
           <button
             class="menu-item"
             [class.active]="ui.cleanOpen()"
-            [disabled]="!canClean()"
-            [title]="canClean()
-              ? 'Say this book again with the punctuation and typography a narrator can read aloud'
-              : 'There is no book at this step to clean — read the pages first, or step onto the reading'"
+            [disabled]="!canClean() || !machineLit('clean')"
+            [title]="cleanTitle()"
             (click)="clean()"
           >
             <svg class="menu-icon" aria-hidden="true"><use href="#ft-wave" /></svg>
@@ -464,10 +476,8 @@ import { UnappliedService } from '../../core/unapplied.service';
         <button
           class="menu-item"
           [class.active]="ui.analysisOpen()"
-          [disabled]="!canAnalyse()"
-          [title]="hosted()
-            ? 'Analysis runs in Foundry itself — open this book there to read it against the categories'
-            : 'Read this book against the categories and list what it finds beside the page'"
+          [disabled]="!canAnalyse() || !machineLit('analysis')"
+          [title]="analysisTitle()"
           (click)="analyse()"
         >
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-glass" /></svg>
@@ -939,6 +949,24 @@ export class ActionMenuComponent {
    * three book panels take, and this menu, like them, holds no copy of the book.
    */
   private readonly stacks = inject(BookStacksService);
+  /**
+   * THE OTHER HALF OF EVERY MAKE-TILE'S GATE — what this MACHINE can run.
+   *
+   * The predicates beside it (`canTranslate`, `canClean`, …) ask the LEDGER: is
+   * there a book at this position for the act to be aimed at. They cannot ask
+   * whether a model is installed, whether it fits, or whether anything is
+   * serving, because none of that lives in the renderer — it is measured in main
+   * (electron/act-gates.ts) off the hardware probe, ollama's library, the
+   * settings file and the page reader's directory.
+   *
+   * BOTH HAVE TO SAY YES, and they are kept apart because they say different
+   * things when they say no. Owen's rule is that *"the tiles arent lit up until
+   * the models are present"* and that a translation on a processor *"should just
+   * be disabled"* (docs/SLOTS.md §1) — and a tile that greyed for that reason
+   * while its tooltip said "there is no book at this step" would be sending
+   * somebody to open a book that was never the problem.
+   */
+  private readonly gates = inject(ActGatesService);
   private readonly hostOps = inject(HostOpsService);
   private readonly notices = inject(NoticeService);
   /** The card before any of the four make-acts below runs past unapplied work. */
@@ -1399,6 +1427,83 @@ export class ActionMenuComponent {
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);
     return canExportFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
+  }
+
+  /*
+   * ── THE MACHINE GATE, AND THE FIVE SENTENCES IT WRITES ────────────────────
+   *
+   * `machineLit` is ANDed into the five tiles that need a model, and it is a
+   * separate call from the stage predicate rather than folded into it because
+   * the two answers are two different explanations — see the `gates` field.
+   *
+   * THE TITLES BELOW EXIST AS METHODS AND NOT AS TEMPLATE TERNARIES because
+   * every one of them is now a three-way choice: the machine cannot run this,
+   * the book is not ready for it, or here is what the act does. Three branches
+   * inline, twice per tile, is a template nobody can read — and the ORDER of the
+   * branches is a decision that deserves to be written down rather than implied
+   * by nesting.
+   *
+   * THE MACHINE ANSWERS FIRST WHEREVER IT IS DARK. A person standing on a scan
+   * with no model installed has two problems, and the one to name is the one
+   * that will still be there after they open a book. The exception is Analysis
+   * hosted, where the refusal is neither of these and is stated before both.
+   *
+   * SWEEP, EXPORT AND METADATA ARE NOT HERE, and that is not an omission: a
+   * sweep is a pattern match over blocks already on screen, an export is
+   * arithmetic over recorded steps, and metadata is a form. None of the three
+   * speaks to a model, so none of them can be darkened by the absence of one.
+   */
+  protected machineLit(act: ActName): boolean {
+    return this.gates.gate(act).lit;
+  }
+
+  protected ocrTitle(): string {
+    const gate = this.gates.gate('read');
+    if (!gate.lit) return gate.why;
+    return this.ocrWaiting()
+      ? 'These pages have not been read yet — this is the step everything else needs'
+      : 'Read this book\'s pages with the vision model';
+  }
+
+  protected translateTitle(): string {
+    const gate = this.gates.gate('translate');
+    return gate.lit ? 'Translate this book into another language' : gate.why;
+  }
+
+  protected simplifyTitle(): string {
+    const gate = this.gates.gate('simplify');
+    return gate.lit
+      ? 'Say this book again in its own language: plainer, more natural, or for a learner'
+      : gate.why;
+  }
+
+  protected cleanTitle(): string {
+    const gate = this.gates.gate('clean');
+    if (!gate.lit) return gate.why;
+    return this.canClean()
+      ? 'Say this book again with the punctuation and typography a narrator can read aloud'
+      : 'There is no book at this step to clean — read the pages first, or step onto the reading';
+  }
+
+  /**
+   * ANALYSIS SAYS THE HOSTED THING FIRST, and it is the one tile here that puts
+   * a refusal ahead of the machine's.
+   *
+   * A hosted window's gates are all lit — the work would run on the host's own
+   * compute (electron/act-gates.ts) — so there is no machine sentence to say
+   * there. What there IS is a permanent refusal of a different kind: a hosted
+   * queue takes two request shapes and an analysis is a third, so the act is not
+   * offered in that window at all. Naming the machine there would be answering a
+   * question nobody had reached.
+   */
+  protected analysisTitle(): string {
+    if (hosted()) {
+      return 'Analysis runs in Foundry itself — open this book there to read it against the categories';
+    }
+    const gate = this.gates.gate('analysis');
+    return gate.lit
+      ? 'Read this book against the categories and list what it finds beside the page'
+      : gate.why;
   }
 
   /**

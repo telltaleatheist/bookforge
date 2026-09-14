@@ -130,10 +130,39 @@ test('a concurrency that is not a whole number of blocks is not passed on', () =
  * with a different spelling on a different act's line. The grep is not: it holds
  * the whole vendored `argsFor` and every line around it, and it fails the next
  * time a refresh brings the string back on ANY command.
+ *
+ * ── `--server` LEFT THIS LIST ON 2026-09-14, and it is a RULING, not a fix ──
+ *
+ * The `e6d5424` re-vendor made this test red on `electron/job-queue.ts ->
+ * --server`, and the honest answer was not to make the list longer or the regex
+ * cleverer: THE FLAG IS NOT RETIRED ANY MORE. Foundry's `527b0db` brought the
+ * Ollama door back beside the OpenAI one and `76444fb` added Anthropic as a
+ * third, so `--server` is a live flag on every text act — `src/commands.ts` at
+ * `e6d5424` parses it (`--server takes <openai|ollama|anthropic>, not "..."`),
+ * defaults it to `openai`, and prints it in every usage line. The vendored
+ * `argsFor` composing `['--server', 'ollama']` and `['--server', 'anthropic']`
+ * is therefore CORRECT, and a guard that failed on it was asserting a fact that
+ * had expired.
+ *
+ * WHAT IT MEANS NOW IS NOT WHAT IT MEANT THEN, which is why this needed a read
+ * rather than a delete. The `--server` that `646e8a1` retired was a picker
+ * between "which kind of server does this machine talk to" (`vllm` vs
+ * `ollama`), and it was retired because the answer became "one door, always".
+ * The `--server` that came back names a WIRE DIALECT — three genuinely
+ * different request shapes behind one act — which is the declared-never-sniffed
+ * rule from Foundry's own commit message. Same six characters, a different
+ * question.
+ *
+ * `--keep-model` and `--ollama` STAY, verified rather than assumed: at
+ * `e6d5424` neither appears in the engine's `src/` as anything but prose
+ * explaining its own retirement (`model-server.ts:353`, `ollama.ts:144`,
+ * `run.ts:1430`, `commands.ts:687`). The `--keep-model` half of the assertion
+ * below — the field, and the plain-run line — is untouched.
  */
 test('the vendored app spells no flag the engine retired, on any line', () => {
   const vendored = path.join(REPO, 'foundry-app');
-  const retired = ['--keep-model', '--server', '--ollama'];
+  // `--server` is NOT here any more; see the ruling in the docblock above.
+  const retired = ['--keep-model', '--ollama'];
   const offenders = [];
   for (const rel of ['electron/job-queue.ts', 'shared/types.ts']) {
     const source = fs.readFileSync(path.join(vendored, rel), 'utf8');
@@ -387,6 +416,41 @@ ${refused}`);
     }
   });
 
+  /*
+   * WHAT `--server` ON THE LINE HAS TO SATISFY NOW, replacing "it must not be
+   * there at all" (2026-09-14, the `e6d5424` re-vendor).
+   *
+   * Both assertions this stands in for said `foundry 646e8a1 refuses --server;
+   * nothing may write it`. That stopped being true: `527b0db` brought the
+   * Ollama door back beside OpenAI and `76444fb` added Anthropic, so `--server`
+   * names a WIRE DIALECT and the engine's own usage line spells
+   * `[--server <openai|ollama|anthropic>]`. The vendored `argsFor` writes it,
+   * correctly, and `cli/clean-step.js` composes through that same vendored
+   * function by the standing "the CLI mirrors the app's code path" rule — so
+   * the flag now appears on a line this keeper reads.
+   *
+   * Deleting the assertion would have cost the thing it was really protecting:
+   * that this side never sends a dialect the engine cannot parse. So it asks
+   * that instead — present or absent is the composer's business, but a value,
+   * when there is one, must be one of the three the engine declares, and the
+   * retired kinds (`vllm`, and the bare `--server` with nothing after it) are
+   * refused by name. `vllm` is called out separately because it is the exact
+   * word `646e8a1` deleted, and a settings row still holding it is the way it
+   * would come back.
+   */
+  const DECLARED_DIALECTS = ['openai', 'ollama', 'anthropic'];
+  function assertDeclaredDialect(line) {
+    const said = /--server(?:\s+(\S+))?/.exec(line);
+    if (said === null) return;
+    const value = said[1];
+    assert.ok(value !== undefined,
+      `--server was written with nothing after it, which the engine refuses:\n${line}`);
+    assert.ok(DECLARED_DIALECTS.includes(value),
+      `--server ${value} is not one of the three dialects foundry e6d5424 declares `
+      + `(${DECLARED_DIALECTS.join('|')}). "vllm" in particular is the kind 646e8a1 deleted; `
+      + `the engine refuses it by name before a block is read:\n${line}`);
+  }
+
   test('no --model said means app-settings cleanTextModel, never defaultLlmModel', () => {
     const settingsFile = path.join(require(STUB).USER_DATA, 'app-settings.json');
     const raw = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : {};
@@ -417,9 +481,7 @@ ${refused}`);
       assert.ok(out.includes(`--model ${served}`),
         'the served model the host is about to start must be ON the line');
       assert.ok(!/--model\s+["']?\s*(?:$|["'])/m.test(out), 'never an empty --model');
-      assert.ok(!spawnLine(out).includes('--server'),
-        `foundry 646e8a1 refuses --server; nothing may write it:
-${spawnLine(out)}`);
+      assertDeclaredDialect(spawnLine(out));
       assert.ok(out.includes('(app-settings vllmUrl, chosen by llmServer)'),
         `the endpoint line must name the key it came from:
 ${out}`);
@@ -430,9 +492,7 @@ ${out}`);
         out.includes(`[clean] model            ${stored.cleanTextModel} (app-settings cleanTextModel)`),
         `expected the stored ${stored.cleanTextModel}; got:\n${out.split('\n').filter((l) => l.includes('model')).join('\n')}`,
       );
-      assert.ok(!spawnLine(out).includes('--server'),
-        `foundry 646e8a1 refuses --server; nothing may write it:
-${spawnLine(out)}`);
+      assertDeclaredDialect(spawnLine(out));
     }
     if (typeof raw.defaultLlmModel === 'string' && raw.defaultLlmModel !== stored.cleanTextModel) {
       assert.ok(!out.includes(`--model ${raw.defaultLlmModel} `), 'the door reached for defaultLlmModel');

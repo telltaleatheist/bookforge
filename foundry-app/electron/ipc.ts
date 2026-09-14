@@ -22,8 +22,27 @@ import * as path from 'node:path';
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
+import { actGates } from './act-gates';
 import { readAppSettings, writeAppSettings } from './app-settings';
-import { cancelSetup, setupWslEnv } from './backend-setup';
+import { probeCloud, writeCloudProviders } from './cloud-providers';
+import {
+  addCrucibleServer,
+  addLocalCrucible,
+  cloudSettingsView,
+  crucibleSettingsView,
+  computeSlots,
+  probeCrucible,
+  probeCrucibleAt,
+  writeCrucibleServers,
+} from './crucible-registry';
+import { crucibleInstallPlan, driveCrucibleInstall } from './crucible-install';
+import { forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
+import {
+  CRUCIBLE_WHEEL,
+  type CloudProviderEdit,
+  type CrucibleServerEdit,
+  type NewJobsWaitFor,
+} from '../shared/slots';
 import {
   ensureCapture,
   intakePhotos,
@@ -68,6 +87,7 @@ import {
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
+import { applyPageReaderRemoval, machineModels, removeFoundryDownloads } from './machine-models';
 import { cancelOllamaInstall, cancelPull, installOllama, probeOllama, pullModel } from './ollama';
 import { finishSetup, llmChoices, setupState } from './setup';
 import { probeSystem } from './system-probe';
@@ -106,12 +126,11 @@ import {
   listRecents,
 } from './recents';
 import { readSettings, writeSettings } from './settings';
-import * as vllm from './vllm-server';
+import * as pageReader from './page-reader';
 import { answerLetGo, broadcast, foundryWindow } from './window';
 import {
   planAnalysis, planCleanup, planExport, planReading, planSimplification, planTranslation,
 } from './workspace';
-import { detectEnvTooling, listDistros } from './wsl';
 import { fold, isBook } from '../shared/original';
 import {
   ANALYSIS_CATEGORY_IDS,
@@ -150,7 +169,6 @@ import type {
   StepRow,
   ReReadAnswer,
   RewriteMode,
-  SetupRequest,
   StepDeletion,
   TextPassRequest,
   AnalyzeRequest,
@@ -494,6 +512,63 @@ function sizeOnDisk(bytes: number): string {
     unit += 1;
   }
   return unit === 0 ? `${bytes} bytes` : `${value.toFixed(1)} ${units[unit]}`;
+}
+
+/**
+ * SOMETHING THAT DECIDES A TILE MOVED. Say so; say nothing about what.
+ *
+ * The dock's gates are composed in main off five facts (act-gates.ts), and three
+ * of the five are changed by doors in this file: ollama's library, the page
+ * reader's directory, and the settings file. A fourth is the server registry,
+ * whose capability reads light a tile outright — `afterRegistryChanged` below is
+ * that door. (The fifth is the hardware, which does not change while the app is
+ * open.) Without this push a person would pull the 9B the wizard recommended and
+ * watch Translate stay gray until they restarted the app — which is the exact
+ * failure Owen's rule was written to prevent, arriving from the other direction.
+ *
+ * NO PAYLOAD, on `projects:changed`'s reasoning. The gates are one composed
+ * answer and composing them costs a probe, so this says only that the machine
+ * moved and the renderer asks again through `acts:gates`. Pushing the shape
+ * would give the app two writers of it, and the pushed copy would be the one
+ * that goes stale.
+ */
+function gatesChanged(): void {
+  broadcast('acts:gates-changed', null);
+}
+
+/**
+ * THE REGISTRY CHANGED — everything that follows from that, in one place.
+ *
+ * Adding, enabling, renaming or removing a server moves three things at once and
+ * they have to move in this order:
+ *
+ *   1. FORGET the cached capability answers. They were measured against the old
+ *      list and every one of them may now be wrong; a fifteen-second stale
+ *      window after a deliberate press is the one case a person reads as the app
+ *      ignoring them (`crucible-provider.ts`).
+ *   2. MEASURE again, so the deletion below is decided on what the servers say
+ *      NOW rather than on a silence that has not been broken yet. `unknown` is
+ *      not a permission to delete, so skipping this would simply mean nothing
+ *      happens — which is safe and is also not what somebody who just registered
+ *      their local Crucible is expecting to see.
+ *   3. APPLY docs/SLOTS.md §5b: if a LOCAL Crucible now serves `pages`, Foundry's
+ *      own copy of the page reader is a duplicate and goes, out loud.
+ *
+ * THE REMOVAL IS ANNOUNCED TWICE OVER, on purpose. `acts:gates-changed` moves
+ * the OCR tile's sentence, and `models:changed` moves the two cards that draw
+ * the files themselves — they are different questions with different readers,
+ * and one push doing both would be a card re-reading an inventory because a
+ * tooltip changed.
+ */
+async function afterRegistryChanged(): Promise<void> {
+  forgetCrucibleFacts();
+  await refreshCrucibleFacts();
+  const removed = await applyPageReaderRemoval();
+  gatesChanged();
+  if (removed !== null) {
+    console.log(`[slots] ${removed}`);
+    broadcast('models:changed', null);
+  }
 }
 
 export function registerIpc(): void {
@@ -2925,6 +3000,18 @@ export function registerIpc(): void {
   ipcMain.handle('queue:remove', (_event, id: string) => { queue.remove(id); });
   ipcMain.handle('queue:cancel', (_event, id: string) => { queue.cancel(id); });
   ipcMain.handle('queue:clear-finished', () => { queue.clearFinished(); });
+  /**
+   * THE ROW PICKER'S ONE DOOR — send this row to a different slot.
+   *
+   * `waitFor` is a slot name or `any` (`ANY_SLOT`, shared/slots.ts). Nothing is
+   * answered: the change publishes on `queue:changed` like every other change to
+   * a row, and a handler returning the row would be a second copy of it racing
+   * the push. Refused silently for a row that has started — see `setWaitFor`,
+   * which carries the atomicity argument.
+   */
+  ipcMain.handle('queue:set-wait-for', (_event, id: string, waitFor: string) => {
+    queue.setWaitFor(id, waitFor);
+  });
 
   ipcMain.handle('engine:info', () => engineInfo());
   ipcMain.handle('doctor:run', (_event, endpointUrl?: string) => runDoctor(endpointUrl));
@@ -2936,18 +3023,17 @@ export function registerIpc(): void {
     shell.showItemInFolder(path.resolve(target));
   });
 
-  // ── WSL, the environment, and the server ─────────────────────────────────
-  ipcMain.handle('wsl:facts', () => listDistros());
-  ipcMain.handle('wsl:tooling', (_event, distro: string) => detectEnvTooling(distro));
-
-  // The tooling is re-measured HERE rather than trusted from the renderer: the
-  // route the user picked is a choice, but what the distro actually has is a
-  // fact, and a fact the renderer asserted is a fact main did not check.
-  ipcMain.handle('backend:setup-run', async (_event, request: SetupRequest) => {
-    const tooling = await detectEnvTooling(request.distro);
-    return setupWslEnv(request, tooling, (event) => broadcast('backend:setup-log', event));
-  });
-  ipcMain.handle('backend:setup-cancel', () => { cancelSetup(); });
+  /*
+   * ── WHAT USED TO BE HERE: `wsl:*` AND `backend:setup-*` ───────────────────
+   *
+   * Four doors that listed WSL distros, asked one of them what it could build
+   * with, and ran a conda/venv build of vLLM inside it while streaming the
+   * guest's output over `backend:setup-log`. All four went on 2026-09-13 with
+   * the launcher they fed (docs/SLOTS.md §6, package B). This app does not
+   * build a vLLM, does not start one, and does not ask about WSL. The local
+   * page reader below is what reads pages on this machine now, and a vLLM
+   * somebody else runs is reached the way every other server is: by its URL.
+   */
 
   // ── The prebuilt environments ────────────────────────────────────────────
   ipcMain.handle('env:catalog', () => catalogForThisMachine());
@@ -2975,15 +3061,56 @@ export function registerIpc(): void {
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
 
-  ipcMain.handle('vllm:status', () => vllm.serverStatus());
-  ipcMain.handle('vllm:start', () => vllm.ensureServer());
-  ipcMain.handle('vllm:stop', () => vllm.stopServer('the Stop button'));
+  // ── The local page reader ────────────────────────────────────────────────
+  /*
+   * ONE READ for the settings row and the setup step, and four acts beside it.
+   *
+   * `page-reader:state` answers the whole question — supported here, installed,
+   * which llama.cpp build, which model files, what a download would cost, and
+   * what the server is doing — because every one of those facts is measured off
+   * the same directory at the same moment, and a screen that asked separately
+   * could draw "installed" beside "0 of 2 files". The keep-warm minutes ride on
+   * it for the same reason rather than having a read of their own.
+   */
+  ipcMain.handle('page-reader:state', () =>
+    pageReader.pageReaderState(readAppSettings().keepServerWarmMinutes));
+  /*
+   * The install does NOT go through the job queue, on `ollama:pull`'s reasoning
+   * one door along: the queue exists to keep GPU work from running two at a
+   * time and to give a run a cancellable row, and a download is neither. It is
+   * cancellable through its own door, and what it has already fetched survives
+   * the cancel — see `fetchResumable`.
+   */
+  ipcMain.handle('page-reader:install', async () => {
+    const outcome = await pageReader.installPageReader(
+      (progress) => broadcast('page-reader:progress', progress),
+    );
+    /*
+     * AND THE §5b RECEIPT IS TORN UP. `AppSettings.pageReaderRemoved` is the
+     * sentence the Models card prints about an automatic removal — *"a Crucible
+     * took over page reading, so Foundry removed its own copy"* — and a reader
+     * that is back on this disk makes that sentence false. Cleared on the
+     * failure too: a half-finished install leaves files here either way, and a
+     * receipt claiming they are gone is the worse of the two wrong screens.
+     */
+    writeAppSettings({ pageReaderRemoved: null });
+    // The OCR tile is dark on a machine with no reader and lit on one with it,
+    // so the install is one of the three things that moves a gate. Announced on
+    // the failure too: a partial install that got the binary and not the weights
+    // leaves the gate exactly where it was, and re-reading says so.
+    gatesChanged();
+    return outcome;
+  });
+  ipcMain.handle('page-reader:install-cancel', () => { pageReader.cancelPageReaderInstall(); });
+  // Pre-warming, so the first book of an evening does not pay the load. The
+  // same door a reading job uses, pressed by hand.
+  ipcMain.handle('page-reader:start', async () => (await pageReader.ensurePageReader()).status);
+  ipcMain.handle('page-reader:stop', () => pageReader.stopPageReader('the Stop button'));
   // The keep-warm knob is APP policy, not engine settings: the engine neither
   // starts nor stops servers, so its settings.json never carries this. The
   // queue reads it at every drain (job-queue.ts), so a change applies to the
   // very next one — no restart, no re-plumb.
-  ipcMain.handle('vllm:keep-warm', () => readAppSettings().keepServerWarmMinutes);
-  ipcMain.handle('vllm:set-keep-warm', (_event, minutes: number) =>
+  ipcMain.handle('page-reader:set-keep-warm', (_event, minutes: number) =>
     writeAppSettings({ keepServerWarmMinutes: minutes }).keepServerWarmMinutes);
 
   // ── First run ────────────────────────────────────────────────────────────
@@ -3022,8 +3149,18 @@ export function registerIpc(): void {
   ipcMain.handle('ollama:install', () =>
     installOllama((progress) => broadcast('ollama:progress', progress)));
   ipcMain.handle('ollama:install-cancel', () => { cancelOllamaInstall(); });
-  ipcMain.handle('ollama:pull', (_event, tag: string) =>
-    pullModel(tag, readAppSettings().ollamaUrl, (progress) => broadcast('ollama:progress', progress)));
+  ipcMain.handle('ollama:pull', async (_event, tag: string) => {
+    const outcome = await pullModel(
+      tag,
+      readAppSettings().ollamaUrl,
+      (progress) => broadcast('ollama:progress', progress),
+    );
+    // A pull is the commonest way a dark tile becomes a lit one — it is what the
+    // gate's own refusal tells somebody to go and do — so the dock is told the
+    // moment it lands rather than at the next app start.
+    gatesChanged();
+    return outcome;
+  });
   ipcMain.handle('ollama:pull-cancel', () => { cancelPull(); });
 
   /*
@@ -3043,74 +3180,236 @@ export function registerIpc(): void {
   ipcMain.handle('llm:defaults', () => {
     const settings = readAppSettings();
     /*
-     * ── ANSWERED FOR THE SERVER THIS MACHINE ACTUALLY RUNS ────────────────────
+     * ── ONE ANSWER NOW, BECAUSE THERE IS NO LONGER A CHOICE TO RESOLVE ───────
      *
-     * A vLLM serves one model under an id of its own shape (`Qwen/Qwen3.5-9B`),
-     * and it is not on the same port as an ollama. So when the machine is set to
-     * vLLM the dialogs open with THAT pair rather than with ollama tags a vLLM
-     * has never heard of — one answer, four dialogs, and none of them needs to
-     * know there was a choice.
+     * This used to branch on `llmServer`: under vLLM it answered with
+     * `vllmModel` and `vllmUrl` instead of the ollama pair, because a vLLM
+     * serves one model under an id of its own shape and is not on ollama's port.
+     * Both of those settings are retired (docs/SLOTS.md, Wave 61,
+     * `AppSettings.crucibleServers`) and the branch went with them.
      *
-     * BOTH CLEAN AND TRANSLATE GET THE SAME NAME under vLLM, and that is not the
-     * two models collapsing into one: it is one SERVER serving one model, which
-     * is what a vLLM is. The two ollama tags are untouched underneath and come
-     * back the moment the machine is set back.
-     *
-     * AN EMPTY MODEL IS A REAL ANSWER HERE — see `AppSettings.vllmModel`. It
-     * means "whatever that server is serving", the engine resolves it against
-     * the server and records what answered, and a dialog showing an empty field
-     * is showing the truth: nobody on this machine has named one.
+     * WHAT THESE THREE FIELDS MEAN NOW is narrower and truer: they are the LOCAL
+     * slot's answers. The tag Translate/Simplify/Analyse open with, the tag Clean
+     * text opens with, and the Ollama on this machine. A job placed on a Crucible
+     * uses none of them — the server's own capability record names the model and
+     * the registry names the address — and that is decided at the spawn, where
+     * the server can actually be asked (electron/crucible-dispatch.ts).
      */
-    const vllm = settings.llmServer === 'vllm';
     return {
-      model: vllm ? settings.vllmModel : settings.defaultLlmModel,
-      cleanModel: vllm ? settings.vllmModel : settings.cleanTextModel,
-      ollama: vllm ? settings.vllmUrl : settings.ollamaUrl,
-      server: settings.llmServer,
+      model: settings.defaultLlmModel,
+      cleanModel: settings.cleanTextModel,
+      ollama: settings.ollamaUrl,
     };
   });
   ipcMain.handle('llm:set-model', (_event, model: string) =>
     writeAppSettings({ defaultLlmModel: model }).defaultLlmModel);
   ipcMain.handle('llm:set-clean-model', (_event, model: string) =>
     writeAppSettings({ cleanTextModel: model }).cleanTextModel);
+  /*
+   * NEITHER OF THOSE TWO PUSHES `acts:gates-changed`, and the omission is the
+   * rule rather than an oversight: the gate asks what this machine HOLDS and
+   * what FITS, not which tag a dialog opens with. Naming a model nobody has
+   * pulled does not light a tile and does not dark one. `llm:set-servers`
+   * below DOES push, because repointing the machine at a vLLM moves the act
+   * off this machine's own memory entirely.
+   */
 
   /*
-   * WHAT IS STORED, rather than what a dialog opens with — the settings card's
-   * own read, and the reason it is not `llm:defaults` with more fields on it.
-   * `defaults` answers ONE question ("what does this job start from") and
-   * resolves the choice away; this one answers the other ("what has this machine
-   * been told"), where both servers' URLs exist at once and neither is in
-   * effect. A single handler doing both would have to return the same URL twice
-   * under two names.
+   * WHERE OLLAMA IS — the one server setting this app still keeps, and the
+   * settings card's own read.
+   *
+   * It was `llm:servers`, a pair of doors answering "what has this machine been
+   * told" over four fields, because two servers' URLs existed at once and
+   * neither was in effect. There is one now: the local slot is Ollama. Every
+   * other server is a registry entry with a token behind it and is read through
+   * `crucible:settings`, which has a card of its own.
    */
-  ipcMain.handle('llm:servers', () => {
-    const settings = readAppSettings();
-    return {
-      server: settings.llmServer,
-      ollamaUrl: settings.ollamaUrl,
-      vllmUrl: settings.vllmUrl,
-      vllmModel: settings.vllmModel,
-    };
-  });
+  ipcMain.handle('llm:ollama-url', () => readAppSettings().ollamaUrl);
   /** Answered with what was STORED, never with what was sent — `llm:set-model`'s rule. */
-  ipcMain.handle('llm:set-servers', (_event, patch: {
-    server?: 'ollama' | 'vllm';
-    ollamaUrl?: string;
-    vllmUrl?: string;
-    vllmModel?: string;
-  }) => {
-    const settings = writeAppSettings({
-      ...(patch.server === undefined ? {} : { llmServer: patch.server }),
-      ...(patch.ollamaUrl === undefined ? {} : { ollamaUrl: patch.ollamaUrl }),
-      ...(patch.vllmUrl === undefined ? {} : { vllmUrl: patch.vllmUrl }),
-      ...(patch.vllmModel === undefined ? {} : { vllmModel: patch.vllmModel }),
-    });
-    return {
-      server: settings.llmServer,
-      ollamaUrl: settings.ollamaUrl,
-      vllmUrl: settings.vllmUrl,
-      vllmModel: settings.vllmModel,
-    };
+  ipcMain.handle('llm:set-ollama-url', (_event, url: string) =>
+    writeAppSettings({ ollamaUrl: url }).ollamaUrl);
+
+  /*
+   * ── THE SERVER REGISTRY AND THE SLOTS DERIVED FROM IT ─────────────────────
+   *
+   * docs/SLOTS.md §6 (Package C). Five doors, and the count is deliberately
+   * small: the whole registry is written in one message (see
+   * `writeCrucibleServers` for why add/remove/rename/reorder/enable cannot be
+   * five doors onto an ordered array), and nothing here ever carries a token in
+   * either direction. `crucible:settings` is the card's one read, and
+   * `slots:list` is the same list on its own for the queue's picker, which has
+   * no business knowing what a registry is.
+   */
+  ipcMain.handle('crucible:settings', () => crucibleSettingsView());
+  ipcMain.handle('crucible:save', async (_event, servers: CrucibleServerEdit[]) => {
+    writeCrucibleServers(servers);
+    await afterRegistryChanged();
+    /*
+     * THE WHOLE VIEW, not just the list, because saving a server CHANGES THE
+     * SLOTS — enabling a loopback entry takes the local slot away — and a card
+     * that redrew its list from this answer and its slot preview from a second
+     * read would draw one repaint of the two disagreeing.
+     */
+    return crucibleSettingsView();
+  });
+  ipcMain.handle('crucible:test', (_event, name: string) => probeCrucible(name));
+  /**
+   * TEST AN ADDRESS AND A TOKEN THAT ARE NOT SAVED YET — the setup wizard's
+   * Connect door, which has three boxes and no registry entry behind them.
+   *
+   * The token crosses this wire ONE WAY ONLY, into main, out of a box somebody
+   * is typing in. It is used for one request and dropped; nothing stores it and
+   * no answer carries it back (`CrucibleProbe` has no token field). That is the
+   * same rule the registry keeps — see crucible-registry.ts's header.
+   */
+  ipcMain.handle('crucible:test-at', (_event, url: string, token: string) =>
+    probeCrucibleAt(url, token));
+  /**
+   * ADD ONE SERVER — the wizard's Add, through the registry's one writer.
+   *
+   * Answered with the whole settings view for `crucible:save`'s reason: adding a
+   * loopback server changes the SLOTS, and a caller that redrew a list without
+   * the slots would be showing a picker that is about to be wrong.
+   */
+  ipcMain.handle('crucible:add', async (_event, name: string, url: string, token: string) => {
+    addCrucibleServer(name, url, token);
+    await afterRegistryChanged();
+    return crucibleSettingsView();
+  });
+  ipcMain.handle('crucible:add-local', async (_event, name: string) => {
+    const answer = await addLocalCrucible(name);
+    if (answer.outcome === 'added') await afterRegistryChanged();
+    return answer;
+  });
+  /**
+   * THE HAND SEQUENCE FOR "INSTALL CRUCIBLE HERE", composed for this machine.
+   *
+   * A READ, and it changes nothing: the only process it spawns is `wsl.exe -l -v`
+   * (electron/crucible-install.ts), which lists. Everything else in the answer is
+   * a string for a person to read and run.
+   */
+  ipcMain.handle('crucible:install-plan', () => crucibleInstallPlan());
+  /**
+   * THE DRIVEN INSTALL — and it refuses, today, by name.
+   *
+   * The button is disabled in the renderer with the same sentence this throws,
+   * and the door refuses anyway: something reachable by an IPC message must
+   * refuse at the door as well, or the disabling is a decoration (the Servers
+   * card's hosted refusal makes the same argument). `@crucible/bootstrap` is
+   * released with Crucible's next version; see crucible-install.ts for the
+   * four-step change that turns this on.
+   */
+  ipcMain.handle('crucible:install', () => driveCrucibleInstall({
+    jobTypes: ['llm'],
+    wheel: CRUCIBLE_WHEEL,
+    onLine: () => { /* nothing to relay while the door refuses. */ },
+  }));
+  ipcMain.handle('crucible:set-wsl-distro', (_event, distro: string) =>
+    writeAppSettings({ wslDistro: distro }).wslDistro);
+  ipcMain.handle('crucible:set-new-jobs-wait-for', (_event, choice: NewJobsWaitFor) =>
+    writeAppSettings({ newJobsWaitFor: choice }).newJobsWaitFor);
+  /*
+   * ── THE CLOUD PROVIDERS — Package F's app half (docs/SLOTS.md §3) ─────────
+   *
+   * THREE DOORS, and a family of their own rather than three more members of
+   * `crucible:`. That is this app's own advice taken twice over. Once because a
+   * provider IS NOT A CRUCIBLE: it has no capability record, nothing resident,
+   * no lease and no busy state, and a card reading `crucible:save` to write an
+   * OpenAI key would teach that they are one kind of thing. And once because
+   * `crucible:` is a family BookForge does not have and `cloud:` is one neither
+   * side has — the cheapest possible answer to the collision audit that is still
+   * open (docs/IPC-CHANNELS.md).
+   *
+   * NO KEY CROSSES IN THE ANSWER DIRECTION, ever. The renderer is told
+   * `CloudProviderView.keySet` and may send a new key, which is the whole of
+   * what a write-only field means — `crucible:`'s token rule, one registry
+   * along.
+   */
+  ipcMain.handle('cloud:settings', () => cloudSettingsView());
+  ipcMain.handle('cloud:save', async (_event, providers: CloudProviderEdit[]) => {
+    writeCloudProviders(providers);
+    /*
+     * `gatesChanged` AND NOT `afterRegistryChanged`. Connecting a provider moves
+     * the TILES — an enabled one lights translate, simplify, analysis and clean
+     * on a machine that could not run them (act-gates.ts) — and moves nothing
+     * else. The three steps `afterRegistryChanged` takes are all about a
+     * Crucible: forgetting capability answers nobody asked a provider for,
+     * re-probing servers that have not changed, and §5b's page-reader deletion,
+     * which a cloud provider can never trigger because it does not serve
+     * `pages` at all.
+     */
+    gatesChanged();
+    /*
+     * THE WHOLE VIEW for `crucible:save`'s reason: enabling a provider CHANGES
+     * THE SLOTS, and a card that redrew its list from this answer and its slot
+     * preview from a second read would draw one repaint of the two disagreeing.
+     */
+    return cloudSettingsView();
+  });
+  /**
+   * TEST — the model listing at the provider, and whether the chosen id is in it.
+   *
+   * IT TAKES THE WHOLE EDIT, unsaved, which is `crucible:test-at`'s argument for
+   * a card that has only one Test button: somebody pastes a key and types a
+   * model and wants to know whether the pair is right BEFORE it is written to
+   * disk, and saving first in order to find out would be this app writing a
+   * credential into somebody's settings to answer a question. A key on this wire
+   * goes ONE WAY, into main, out of a box somebody is typing in; `apiKey: null`
+   * means "the one already stored for this name", and no answer carries either.
+   */
+  ipcMain.handle('cloud:test', (_event, provider: CloudProviderEdit) => probeCloud(provider));
+
+  /**
+   * WHERE WORK MAY GO, for the picker.
+   *
+   * Its own door rather than a field on `crucible:settings` because the two have
+   * different readers and different lifetimes: the settings card reads a picture
+   * of a registry it is about to edit, and the queue reads a list of names to
+   * draw beside rows. A queue page that had to ask for the registry in order to
+   * draw a picker would be a page that needs the token flag and the WSL distro
+   * to render a dropdown.
+   */
+  ipcMain.handle('slots:list', () => computeSlots());
+  /**
+   * EVERY ROW OF OURS THAT NAMES THIS SLOT — what the Servers card shows before
+   * it offers to move any of them. Owen's rule: told, never moved silently.
+   */
+  ipcMain.handle('slots:rows-waiting-for', (_event, name: string) =>
+    queue.rowsWaitingFor(name));
+
+  // ── What this machine may be asked to do, and what it holds ──────────────
+  /*
+   * THE TILE GATE, AND IT IS ONE DOOR FOR ALL FIVE ACTS.
+   *
+   * Owen (docs/SLOTS.md §1): *"the tiles arent lit up until the models are
+   * present"*, and translation on a processor *"should just be disabled"*. Every
+   * fact that decides it lives here — the hardware probe, ollama's `/api/tags`,
+   * the settings file, the page reader's directory, and eventually package C's
+   * server registry — so the answer is composed in main and the renderer draws
+   * it. Five acts in one call because they come off ONE probe of one machine,
+   * and a dock asking separately could light Translate beside a Simplify that
+   * had just gone dark. The stage gate (shared/stages.ts) is unchanged and still
+   * the renderer's: that one is about the book, this one is about the machine.
+   */
+  ipcMain.handle('acts:gates', () => actGates());
+
+  /*
+   * WEIGHTS ON THIS DISK — docs/SLOTS.md §5b's "Models on this machine".
+   *
+   * The removal is the only door in this app that deletes model files, and it
+   * deletes exactly one directory: the one this app downloaded into. Ollama's
+   * store is listed beside it and never touched (Owen: *"ollama has its own
+   * thing going on and we should leave it be"*), and a local Crucible's line
+   * waits on package C. A refusal comes back as a RESULT with a sentence rather
+   * than as a rejection, because the row prints what happened either way.
+   */
+  ipcMain.handle('models:inventory', () => machineModels());
+  ipcMain.handle('models:remove-page-reader', async () => {
+    const outcome = await removeFoundryDownloads();
+    // Only when something actually went. A refusal changed nothing, and a push
+    // saying otherwise would send every open window to re-probe for no reason.
+    if (outcome.ok && outcome.freedBytes > 0) gatesChanged();
+    return outcome;
   });
 
   /*
@@ -3135,7 +3434,7 @@ export function registerIpc(): void {
    * for the list itself, the same way the queue's mirror asks for jobs on boot.
    */
   onProjectsChanged(() => broadcast('projects:changed', null));
-  vllm.onServerStatus((status) => broadcast('vllm:status-changed', status));
+  pageReader.onPageReaderStatus((status) => broadcast('page-reader:status-changed', status));
   // Published beside the job row, not instead of it: the shelf reads the queue,
   // the settings card reads this, and neither of them owns the run.
   onEnvInstallProgress((progress) => broadcast('env:install-progress', progress));
@@ -3143,4 +3442,41 @@ export function registerIpc(): void {
   // because an intake of a whole shoot is a minute long and a promise that
   // resolves at the end cannot say anything until there is nothing to say.
   onIntakeProgress((progress) => broadcast('capture:intake-progress', progress));
+
+  /*
+   * ── DOCS/SLOTS.MD §5b, ONCE AT STARTUP ────────────────────────────────────
+   *
+   * For the machine where the Crucible was installed while Foundry was closed.
+   * `afterRegistryChanged` covers somebody registering the local server while
+   * the app is open; neither is the whole of it alone, because a person who runs
+   * `crucible install llm` in a terminal and reopens Foundry has changed nothing
+   * this app was watching, and their disk is still holding four gigabytes of a
+   * page reader the machine no longer needs.
+   *
+   * IT CANNOT FIRE HOSTED, AND NOT BY A GUARD. Inside BookForge the slot list is
+   * the HOST's (SLOTS.md §3) and `AppSettings.crucibleServers` is empty, so
+   * `localCrucibleServes` answers `unknown` — which is not a permission to
+   * delete. That is the three-valued answer doing the work it was shaped for,
+   * rather than a `hosted()` check that would have to be kept in step with a
+   * rule written somewhere else.
+   *
+   * DELIBERATELY NOT AWAITED: it probes every registered server, and blocking
+   * the mount on a sleeping Mac would put a three-second stall in front of the
+   * first window for a tidy-up nobody is waiting on. A failure is logged and
+   * changes nothing — the files stay, and the next registry save asks again.
+   */
+  void refreshCrucibleFacts()
+    .then(() => applyPageReaderRemoval())
+    .then((removed) => {
+      if (removed === null) return;
+      console.log(`[slots] ${removed}`);
+      gatesChanged();
+      broadcast('models:changed', null);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        '[slots] the weights-ownership pass could not finish: '
+        + `${err instanceof Error ? err.message : String(err)}. Nothing was removed.`,
+      );
+    });
 }

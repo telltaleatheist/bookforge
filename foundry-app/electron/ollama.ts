@@ -42,6 +42,7 @@ import { shell } from 'electron';
 import { AbortedError, fetchToFile, isAborted } from './env-downloader';
 import type {
   OllamaFacts,
+  OllamaHolding,
   OllamaInstallResult,
   OllamaPullProgress,
 } from '../shared/types';
@@ -157,11 +158,23 @@ export async function probeOllama(url: string): Promise<OllamaFacts> {
     ? (version as { version: string }).version
     : null;
 
+  /*
+   * `/api/tags` REPORTS A SIZE PER MODEL, and it is read here because this is
+   * the only moment anything asks ollama what it holds. The settings inventory
+   * (SLOTS.md §5b) prints those bytes so that three copies of a 27B in three
+   * stores are SEEN rather than discovered from a full disk; a missing or
+   * unreadable `size` is a null and the row says so, never a zero, because "this
+   * model costs nothing" is the one thing it certainly does not mean.
+   */
   const models: string[] = [];
+  const holdings: OllamaHolding[] = [];
   if (typeof tags === 'object' && tags !== null && Array.isArray((tags as { models?: unknown }).models)) {
     for (const entry of (tags as { models: unknown[] }).models) {
       if (typeof entry === 'object' && entry !== null && typeof (entry as { name?: unknown }).name === 'string') {
-        models.push((entry as { name: string }).name);
+        const name = (entry as { name: string }).name;
+        const size = (entry as { size?: unknown }).size;
+        models.push(name);
+        holdings.push({ name, bytes: typeof size === 'number' && size > 0 ? size : null });
       }
     }
   }
@@ -179,6 +192,7 @@ export async function probeOllama(url: string): Promise<OllamaFacts> {
       // would be spawning a process to learn something already known.
       installed: true,
       models,
+      holdings,
       url: base,
       detail: `${named} is running at ${base} ${holds}.`,
     };
@@ -190,6 +204,7 @@ export async function probeOllama(url: string): Promise<OllamaFacts> {
     version: null,
     installed,
     models: [],
+    holdings: [],
     url: base,
     detail: installed
       ? `Ollama is installed on this machine but nothing is answering at ${base}. Start it — on Windows and macOS it runs from the menu bar or system tray — and check again.`

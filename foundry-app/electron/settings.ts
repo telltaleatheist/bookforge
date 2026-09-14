@@ -6,13 +6,16 @@
  * foundry's own src/backend/settings.ts applies, because the app and the engine
  * disagreeing about where the file is means an app that appears to save nothing.
  *
- * The SCHEMA IS THE ENGINE'S. This module writes only the keys this app has a
- * reason to write — the three the settings screen edits, plus the two the WSL
- * setup runner discovers (`wslDistro`, `vllmPython`) — and PRESERVES every
- * other key in the file, at both levels: a newer engine's `endpointModel` must
- * survive an older app saving a URL over it. Reading is equally forgiving — unknown keys are ignored, and a file
- * that will not parse is reported rather than replaced, because overwriting an
- * operator's broken JSON destroys the thing they need to see to fix it.
+ * The SCHEMA IS THE ENGINE'S. This module writes only the three keys the
+ * settings screen edits and PRESERVES every other key in the file, at both
+ * levels: a newer engine's `endpointModel` must survive an older app saving a
+ * URL over it, and so must the `wslDistro`/`vllmPython` pair an older app wrote
+ * before the WSL launcher was retired (docs/SLOTS.md §6) — this app no longer
+ * reads or writes those two, and deleting somebody's keys because we stopped
+ * caring about them is not preserving their file. Reading is equally forgiving:
+ * unknown keys are ignored, and a file that will not parse is reported rather
+ * than replaced, because overwriting an operator's broken JSON destroys the
+ * thing they need to see to fix it.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -86,10 +89,6 @@ export function readSettings(): SettingsView {
   if (url) view.backend.endpointUrl = url;
   const python = asString(b['python']);
   if (python) view.backend.python = python;
-  const distro = asString(b['wslDistro']);
-  if (distro) view.backend.wslDistro = distro;
-  const vllmPython = asString(b['vllmPython']);
-  if (vllmPython) view.backend.vllmPython = vllmPython;
   return view;
 }
 
@@ -123,11 +122,6 @@ export function writeSettings(patch: BackendSettingsPatch): SettingsView {
   apply('mode');
   apply('endpointUrl');
   apply('python');
-  // Written by the WSL setup runner rather than by a form field. Same merge
-  // rule: a key the caller left undefined is untouched, so the settings screen
-  // saving a URL cannot wipe the environment the setup screen just built.
-  apply('wslDistro');
-  apply('vllmPython');
 
   root['backend'] = backend;
 

@@ -22,6 +22,7 @@
  * not completed" is not.
  */
 import { readAppSettings, writeAppSettings } from './app-settings';
+import { localCrucibleTakeover, refreshCrucibleFacts } from './crucible-provider';
 import { lineupFor, suggestedTag } from './llm-catalog';
 import { probeOllama } from './ollama';
 import { probeSystem } from './system-probe';
@@ -52,12 +53,21 @@ export function finishSetup(skipped: string[]): SetupState {
  * The hardware probe is cached for the process; the ollama probe is NOT (see
  * its header — it is the one fact that changes while the app is open, because
  * changing it is what the user is doing in the other window).
+ *
+ * AND THE CRUCIBLE ON THIS MACHINE, IF THERE IS ONE. A class it serves is a
+ * class the wizard must not pull a second copy of into Ollama (docs/SLOTS.md
+ * §5b), so the fact travels with the lineup rather than being asked for
+ * separately — one read, one picture, no frame in which the rows and the reason
+ * they are disabled disagree. `refreshCrucibleFacts` is awaited beside the other
+ * two probes, which is what makes the answer a measurement rather than whatever
+ * was cached the last time a tooltip was drawn.
  */
 export async function llmChoices(): Promise<LlmChoices> {
   const settings = readAppSettings();
   const [profile, ollama] = await Promise.all([
     probeSystem(),
     probeOllama(settings.ollamaUrl),
+    refreshCrucibleFacts(),
   ]);
   const options = lineupFor(profile, ollama.models);
   return {
@@ -66,5 +76,6 @@ export async function llmChoices(): Promise<LlmChoices> {
     options,
     suggested: suggestedTag(options),
     current: settings.defaultLlmModel,
+    crucible: localCrucibleTakeover(),
   };
 }

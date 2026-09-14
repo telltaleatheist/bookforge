@@ -23,16 +23,35 @@
  * makes the compiler name the missing row at the moment the kind is added,
  * which is the same reason `NEVER_ROUTED` one file over is a table and not a
  * literal. That one WAS a literal once, and it aged exactly this way.
+ *
+ * ── AND THE GPU LANE IS NOT ONE LANE ANY MORE (Wave 61, Package G) ──────────
+ *
+ * It was `SLOTS = {gpu: 1, cpu: 2}` — two numbers, both constants — and the
+ * first of them stopped being true the moment a second machine could be
+ * registered. Owen (docs/SLOTS.md §1): *"if there are more than one servers
+ * connected, there will be more than one GPU slot listed in the queue that can
+ * be filled… an emergent property of having multiple servers configured is the
+ * distributed load."* A constant 1 made that impossible: a translation on the
+ * Mac and a cleanup on this desk are two different cards, and a board that
+ * counted them into one lane held the second behind the first for hours.
+ *
+ * So the GPU side of the board is DERIVED — one lane per compute slot
+ * ({@link computeLanes}), each holding one run, in the one place both programs
+ * read it from. The CPU side is still a count, because it still is one: the CPU
+ * lane is about this machine's disk and this machine's cores, and nothing in the
+ * slot list changes how many of those there are.
  */
+import { isLoopbackUrl, LOCAL_SLOT_NAME, type ComputeSlot, type ComputeSlotKind } from './slots';
 import type { JobKind } from './types';
 
 /**
  * What a job needs from the machine while it runs.
  *
- * ── `gpu` and `cpu` are the two LANES, and they are the whole of the board ──
+ * ── `gpu` and `cpu` are the two SIDES of the board, and they are all of it ──
  *
- * A lane is a count of things that may run at once. `gpu` is one because the
- * card is one (Wave 16: *"one machine's GPU needs one owner"*); `cpu` is two
+ * `gpu` is the work that needs a card, and a card belongs to a MACHINE: one lane
+ * per compute slot, one run in each (Wave 16's *"one machine's GPU needs one
+ * owner"*, now said once per machine rather than once). `cpu` is two runs
  * because Owen said two, and because two engine processes compiling two
  * different books are disjoint by construction — every book file write is
  * already serialised per target path (`oneWriterOf`, electron/engine.ts), every
@@ -135,14 +154,157 @@ export type Lane = 'gpu' | 'cpu';
 export const LANES: readonly Lane[] = ['gpu', 'cpu'];
 
 /**
- * HOW MANY MAY RUN AT ONCE — Owen's numbers, in the one place both sides read.
+ * HOW MANY CPU RUNS AT ONCE — Owen's number, and the one number left in here.
  *
- * One GPU because the card is one. Two CPUs because he said two: a machine that
- * can compile two books while it reads a third is a machine doing three things
- * in the time it used to do one, and the three do not contend for anything the
- * app cannot already serialise (see `JobResource`).
+ * Two, because he said two: a machine that can compile two books while it reads
+ * a third is a machine doing three things in the time it used to do one, and the
+ * three do not contend for anything the app cannot already serialise (see
+ * `JobResource`). It is NOT derived from the slot list and must not be: a
+ * compile is this machine's disk whichever machine's card the reading is on, so
+ * registering a Crucible in another room does not buy a third compile here.
  */
-export const SLOTS: Readonly<Record<Lane, number>> = { gpu: 1, cpu: 2 };
+export const CPU_LANE_SLOTS = 2;
+
+/**
+ * HOW MANY RUNS ONE COMPUTE SLOT WILL TAKE AT ONCE — one, whatever it is.
+ *
+ * A table over the KIND rather than a constant, for `JOB_RESOURCE`'s reason one
+ * union along: the day a fourth kind of slot exists, the compiler asks what it
+ * holds rather than a fallback answering for it.
+ *
+ * ── `cloud` IS ONE TOO, AND IT IS NOW A MEASURED-ENOUGH NUMBER RATHER THAN ──
+ * ── A PLACEHOLDER ───────────────────────────────────────────────────────────
+ *
+ * The row was written before anything constructed a cloud slot, so that the day
+ * one existed it already had a lane and a number instead of falling through a
+ * walk that had never heard of it. Package F constructs them (docs/SLOTS.md §3),
+ * and the one STAYS — for a reason that is a fact about providers rather than
+ * about cards.
+ *
+ * A CRUCIBLE'S LANE IS ONE BECAUSE THE GPU IS ONE. A provider has no card to
+ * contend for; what it has is a RATE LIMIT, per key and per tier, counted in
+ * requests and tokens a minute. That limit is already honoured one layer down
+ * and better than a lane could: a single run keeps `DEFAULT_CLOUD_CONCURRENCY`
+ * requests in flight (four, src/translate/model-server.ts) and the engine WAITS
+ * OUT a 429 rather than failing — `retry-after` honoured, else 2 s doubling to
+ * 30 s, six attempts (docs/VLLM.md §2a). Two runs on one key would not go
+ * faster; they would share one limit, trip it more often, and spend the
+ * difference asleep while still paying for every retry that landed. So one at a
+ * time per provider is the honest starting number, and a person who wants two
+ * cloud jobs at once configures a second provider entry — which is a second key,
+ * a second limit and a second slot, said out loud.
+ *
+ * Raising it is a deliberate edit to THIS LINE with a measurement beside it, not
+ * something a walk wandered into and billed somebody for.
+ */
+export const SLOT_CAPACITY: Readonly<Record<ComputeSlotKind, number>> = {
+  local: 1,
+  crucible: 1,
+  cloud: 1,
+};
+
+/**
+ * ONE LANE OF THE GPU SIDE — a compute slot, and how many runs may be in it.
+ *
+ * It is `ComputeSlot` plus a capacity rather than a reference to one, because
+ * the two programs that read this are drawing and rationing, and both want the
+ * name, the kind and the number in one object. The name is the IDENTITY: it is
+ * what a row's `waitFor` names, what `ranOn` records, what the bench card is
+ * headed with, and what the scheduler keys its occupancy by — four readers of
+ * one string, which is why the registry refuses a duplicate name.
+ */
+export interface ComputeLane {
+  name: string;
+  kind: ComputeSlotKind;
+  /** A Crucible slot's base URL, as `ComputeSlot` carries it. See `localLane`. */
+  url?: string;
+  capacity: number;
+}
+
+/**
+ * THE GPU SIDE OF THE BOARD, DERIVED FROM THE SLOT LIST — one lane per slot.
+ *
+ * This is the whole of Package G: `SLOTS.gpu` was 1, so two Crucible servers
+ * could not run two text jobs at once however correct the dispatch was. One lane
+ * per slot is Owen's sentence as arithmetic — *"an emergent property of having
+ * multiple servers configured is the distributed load"* — and it is a pure
+ * function of the list so that the SCHEDULER (electron/job-queue.ts, which reads
+ * `computeSlots()`) and the BENCH (core/queue-view.service.ts, which reads
+ * `slots:list`) cannot disagree about how many lanes there are.
+ *
+ * ── AN EMPTY LIST IS ONE LANE, AND THAT IS THE HOSTED PROMISE ──────────────
+ *
+ * A host that registers no slot provider gets an empty list (`hostSlots`,
+ * electron/crucible-registry.ts), and every job in that window takes the path it
+ * took before slots existed. So an empty list answers with exactly one lane —
+ * today's single GPU lane, unchanged, byte for byte in behaviour — rather than
+ * with nothing, which would be a board on which no GPU job could ever start.
+ * BookForge's vendored copy therefore changes in no way it can observe until it
+ * chooses to offer a list. The lane is named for the local slot because that is
+ * what it IS (`UNPLACED`, electron/crucible-dispatch.ts, places every such run
+ * on a slot of that name), and hosted the name is never drawn: the bench, the
+ * chip and the queue page are all standalone-only.
+ */
+export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
+  if (slots.length === 0) {
+    return [{ name: LOCAL_SLOT_NAME, kind: 'local', capacity: SLOT_CAPACITY.local }];
+  }
+  return slots.map((slot) => ({
+    name: slot.name,
+    kind: slot.kind,
+    ...(slot.url === undefined ? {} : { url: slot.url }),
+    capacity: SLOT_CAPACITY[slot.kind],
+  }));
+}
+
+/**
+ * WHICH LANE IS THIS MACHINE'S OWN CARD — where a run that was never placed goes.
+ *
+ * ── The case that makes this a function and not a name comparison ───────────
+ *
+ * Most of the time it is the slot called {@link LOCAL_SLOT_NAME}. But an enabled
+ * LOOPBACK Crucible HIDES that slot (`computeSlots`, and Owen: *"if theyre using
+ * crucible on their local machine, the local GPU disappears"*) — and the things
+ * that still run locally regardless do not disappear with it. A page reading
+ * takes the local dots server while `CRUCIBLE_READS` is false, whatever the
+ * registry says, and if that reading held a lane of its own beside the loopback
+ * Crucible's, the board would cheerfully start a translation on the very card
+ * the reading is using. One card, one lane, whichever name the list gives it.
+ *
+ * NULL ONLY WHEN NOTHING IN THE LIST IS THIS MACHINE — every slot a remote
+ * Crucible. `computeLanes` never returns an empty list, so null here means "the
+ * local card is not one of the places work may go", which is exactly the state a
+ * fully remote setup is in.
+ */
+export function localLane(lanes: readonly ComputeLane[]): ComputeLane | null {
+  return lanes.find((lane) => lane.kind === 'local')
+    ?? lanes.find((lane) => lane.url !== undefined && isLoopbackUrl(lane.url))
+    ?? null;
+}
+
+/**
+ * THE LANE A RUNNING ROW IS IN, read from where it actually went.
+ *
+ * `Job.ranOn` is the placement's own answer and is the truth about the run; this
+ * maps it onto the board as it stands NOW, which is the question the bench asks
+ * and the one place the two can differ. Two mappings, both deliberate:
+ *
+ *   * ABSENT, or the local slot's name, resolves through {@link localLane} — so
+ *     a reading that was never placed, and a run recorded before this window
+ *     learned about slots, draw on the card that is actually doing the work.
+ *   * A NAME NOTHING IN THE LIST CARRIES answers NULL, and null is not a shrug:
+ *     it is a run on a server somebody switched off or removed WHILE IT WAS
+ *     RUNNING. docs/SLOTS.md §3 — *"jobs never start on one slot and finish on
+ *     another. its atomic"* — so the run stays where it is, and the caller draws
+ *     it as the lane that is going away rather than pretending it moved home.
+ */
+export function laneOfRun(
+  ranOn: string | undefined,
+  lanes: readonly ComputeLane[],
+): ComputeLane | null {
+  if (ranOn === undefined || ranOn === LOCAL_SLOT_NAME) return localLane(lanes);
+  return lanes.find((lane) => lane.name === ranOn) ?? null;
+}
 
 /** Is this resource one of the counted lanes? A type guard, so callers narrow. */
 export function isLane(resource: JobResource): resource is Lane {

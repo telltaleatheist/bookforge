@@ -19,10 +19,10 @@ import type {
   HostNodes,
   Job,
   OllamaPullProgress,
+  PageReaderProgress,
   QuestionAnswer,
   ReReadAnswer,
   ServerStatus,
-  SetupLogEvent,
   UnappliedAnswer,
 } from '../shared/types';
 
@@ -232,7 +232,32 @@ const api: FoundryApi = {
     remove: (id) => ipcRenderer.invoke('queue:remove', id),
     cancel: (id) => ipcRenderer.invoke('queue:cancel', id),
     clearFinished: () => ipcRenderer.invoke('queue:clear-finished'),
+    setWaitFor: (id, waitFor) => ipcRenderer.invoke('queue:set-wait-for', id, waitFor),
     onChanged: (listener) => subscribe<Job[]>('queue:changed', listener),
+  },
+
+  slots: {
+    list: () => ipcRenderer.invoke('slots:list'),
+    rowsWaitingFor: (name) => ipcRenderer.invoke('slots:rows-waiting-for', name),
+  },
+
+  crucible: {
+    settings: () => ipcRenderer.invoke('crucible:settings'),
+    save: (servers) => ipcRenderer.invoke('crucible:save', servers),
+    test: (name) => ipcRenderer.invoke('crucible:test', name),
+    testAt: (url, token) => ipcRenderer.invoke('crucible:test-at', url, token),
+    add: (name, url, token) => ipcRenderer.invoke('crucible:add', name, url, token),
+    addLocal: (name) => ipcRenderer.invoke('crucible:add-local', name),
+    setWslDistro: (distro) => ipcRenderer.invoke('crucible:set-wsl-distro', distro),
+    setNewJobsWaitFor: (choice) => ipcRenderer.invoke('crucible:set-new-jobs-wait-for', choice),
+    installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
+    install: () => ipcRenderer.invoke('crucible:install'),
+  },
+
+  cloud: {
+    settings: () => ipcRenderer.invoke('cloud:settings'),
+    save: (providers) => ipcRenderer.invoke('cloud:save', providers),
+    test: (provider) => ipcRenderer.invoke('cloud:test', provider),
   },
 
   /*
@@ -275,11 +300,6 @@ const api: FoundryApi = {
     write: (patch) => ipcRenderer.invoke('settings:write', patch),
   },
 
-  wsl: {
-    facts: () => ipcRenderer.invoke('wsl:facts'),
-    tooling: (distro) => ipcRenderer.invoke('wsl:tooling', distro),
-  },
-
   env: {
     catalog: () => ipcRenderer.invoke('env:catalog'),
     install: (request) => ipcRenderer.invoke('env:install', request),
@@ -308,23 +328,34 @@ const api: FoundryApi = {
     defaults: () => ipcRenderer.invoke('llm:defaults'),
     setModel: (model) => ipcRenderer.invoke('llm:set-model', model),
     setCleanModel: (model) => ipcRenderer.invoke('llm:set-clean-model', model),
-    servers: () => ipcRenderer.invoke('llm:servers'),
-    setServers: (patch) => ipcRenderer.invoke('llm:set-servers', patch),
+    ollamaUrl: () => ipcRenderer.invoke('llm:ollama-url'),
+    setOllamaUrl: (url) => ipcRenderer.invoke('llm:set-ollama-url', url),
   },
 
-  backendSetup: {
-    run: (request) => ipcRenderer.invoke('backend:setup-run', request),
-    cancel: () => ipcRenderer.invoke('backend:setup-cancel'),
-    onLog: (listener) => subscribe<SetupLogEvent>('backend:setup-log', listener),
+  pageReader: {
+    state: () => ipcRenderer.invoke('page-reader:state'),
+    install: () => ipcRenderer.invoke('page-reader:install'),
+    cancelInstall: () => ipcRenderer.invoke('page-reader:install-cancel'),
+    start: () => ipcRenderer.invoke('page-reader:start'),
+    stop: () => ipcRenderer.invoke('page-reader:stop'),
+    setKeepWarm: (minutes) => ipcRenderer.invoke('page-reader:set-keep-warm', minutes),
+    onProgress: (listener) => subscribe<PageReaderProgress>('page-reader:progress', listener),
+    onStatus: (listener) => subscribe<ServerStatus>('page-reader:status-changed', listener),
   },
 
-  vllmServer: {
-    status: () => ipcRenderer.invoke('vllm:status'),
-    start: () => ipcRenderer.invoke('vllm:start'),
-    stop: () => ipcRenderer.invoke('vllm:stop'),
-    onStatus: (listener) => subscribe<ServerStatus>('vllm:status-changed', listener),
-    keepWarm: () => ipcRenderer.invoke('vllm:keep-warm'),
-    setKeepWarm: (minutes) => ipcRenderer.invoke('vllm:set-keep-warm', minutes),
+  acts: {
+    gates: () => ipcRenderer.invoke('acts:gates'),
+    // NO PAYLOAD, deliberately: the push says the machine moved, and the gates
+    // are read back through the door above rather than pushed, so one shape is
+    // assembled in one place and a listener cannot fall behind a reader.
+    onChanged: (listener) => subscribe<void>('acts:gates-changed', () => listener()),
+  },
+
+  models: {
+    inventory: () => ipcRenderer.invoke('models:inventory'),
+    // NO PAYLOAD, on `acts:gates-changed`'s reasoning — the card asks again.
+    onChanged: (listener) => subscribe<void>('models:changed', () => listener()),
+    removePageReader: () => ipcRenderer.invoke('models:remove-page-reader'),
   },
 
   capture: {

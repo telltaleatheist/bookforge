@@ -10,20 +10,22 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **81fdc30** — *fix(app): the queue no longer spells --keep-model, which the engine refuses by name* |
-| Engine sha | **83d7b66** (v1.3.0) — the binary is UNMOVED by `81fdc30`, which touches `app/` only. See the note at the foot of this table. |
-| Copied on | 2026-09-13 |
-| Copied by | `git -C <foundry> archive 81fdc30 app | tar -x --strip-components=1` |
+| Source sha | **e6d5424** — *docs(app): the act gate lists five exceptions and names the one that replaced the retired setting* |
+| Engine sha | **e6d5424** (v1.3.0) — the binary was rebuilt at the tip, so for once the two shas AGREE. See the note at the foot of this table. |
+| Copied on | 2026-09-14 |
+| Copied by | `git -C <foundry> archive e6d5424 app | tar -x --strip-components=1` |
 
-**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER, and here they do.**
-`81fdc30` moves two files, both inside `app/`; `git log 83d7b66..81fdc30 -- src`
-is empty, so `dist/foundry-windows-x64.exe` still answers `foundry 1.3.0
-(83d7b66)` and rebuilding it would produce the same engine. That matters for
+**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and this time they do
+not, which is worth saying rather than assuming.** The `81fdc30..e6d5424` range
+carries two engine commits, `527b0db` (the Ollama door back beside the OpenAI
+one) and `76444fb` (a cloud provider is a door); the Foundry session rebuilt at
+the tip, so `dist/foundry-windows-x64.exe` answers `foundry 1.3.0 (e6d5424)` and
+`git log 12b065d..e6d5424 -- src` is empty either way. That matters for
 `tools/test-foundry-clean-text-vendor.js`, whose tier-2 anchor is **the commit
 the BINARY reports** rather than the commit this subtree was copied from — by
 design, because BookForge spawns an installed binary that may be older than the
-checkout, newer than it, or the only foundry on a machine with no checkout. So
-that keeper says `Shipped (83d7b66)` while this table says `81fdc30`, and the two
+checkout, newer than it, or the only foundry on a machine with no checkout. Here
+that keeper says `Shipped (e6d5424)` and this table says `e6d5424`, and the two
 are consistent rather than drifted: one names the code that RUNS, the other the
 code that is COMPILED INTO THIS APP. They re-converge at Foundry's next release.
 
@@ -892,6 +894,25 @@ phone photographs), and the lockfile arrives with the copy already naming them.
 `package.json`; `npm install <pkg>` on this machine has been observed rewriting
 a package.json and dropping its `scripts` block entirely.
 
+**AND DELETE `node_modules/foundry` AFTERWARDS, NON-RECURSIVELY. Every time.**
+Since `4beb88b` (and still at `e6d5424`) the subtree's `package.json` carries `"foundry": "file:.."`,
+Foundry's self-link to its own repo root. Here `..` is BookForge's root, so
+`npm ci` creates `foundry-app/node_modules/foundry` as a **JUNCTION to the whole
+checkout** — and the worktree-hygiene rule at the top of `CLAUDE.md` exists
+because a recursive delete follows a junction. Nothing imports the package, so
+the link is pure hazard:
+
+```
+cd foundry-app
+npm ci --ignore-scripts      # our ROOT has a postinstall; a linked target's
+                             # lifecycle is not a thing to gamble on
+powershell -c "$i=Get-Item node_modules\foundry -Force; if ($i.LinkType) { $i.Delete() }"
+powershell -c "Test-Path node_modules\foundry"   # MUST print False
+npm run build
+```
+
+Reported to the Foundry side; the fix is theirs, per SEALED SUBTREE.
+
 ## What BookForge imports
 
 Exactly one module, and it is imported at the TOP of `electron/main.ts`, before
@@ -1348,3 +1369,153 @@ already here — no channel moved, collision keeper 6/6. `package.json`, `packag
 (`LinkType` empty) before anything was removed, per the worktree-hygiene rule. `npm run
 build` clean, ng 957.01 kB with the standing budget WARNING only; `npx tsc -p
 tsconfig.electron.json` clean; all foundry keepers green.
+
+**e6d5424 (copied 2026-09-14) — SLOTS, and the first refresh that ever forced a
+BookForge channel to change its name.** Twenty-one commits, five of Foundry's
+"packages" (C, D, E and both halves of F), 59 files. Foundry
+now has a Crucible registry of its own, a per-row slot picker, a dispatch that
+reads capability and LEASES a model, an `acts:gates` surface, a model inventory,
+a setup-wizard Crucible step, and a local page reader that is llama-server plus a
+dots.ocr GGUF — `electron/vllm-server.ts` (527 lines) and `electron/wsl.ts` (413)
+are DELETED, `electron/machine-models.ts` (367) and `electron/page-reader.ts`
+(1,602) are new. Their plans of record are `docs/SLOTS.md` §§6–7, `docs/SETUP.md`
+§5/§5b and the regenerated `docs/IPC-CHANNELS.md`.
+
+**WHAT MATTERS TO THIS SIDE IS SMALL, AND THAT IS THE POINT.** `FoundryHost`
+gained ONE optional member, `slots?(): readonly ComputeSlot[]`, and BookForge
+registers nothing — so every job takes exactly the path it took yesterday: no
+picker, no placement, no capability read, no lease. `Job` grew two optional
+fields (`waitFor`, `ranOn`); absent is what a host offering no slots produces, so
+`electron/foundry-host-queue.ts`'s re-declaration needed no edit and got none.
+The mount seam is otherwise unmoved — thirteen exports, all rebuilt and present.
+`llm:servers` / `llm:set-servers` were REMOVED and `server?: LlmServerKind` went
+with them; grepped here rather than taken on their note — BookForge has never
+spelled any of the three, so the removal costs this side nothing. Package F's app
+half (`ebb55a8`) adds cloud providers as SLOTS — one slot per enabled provider,
+appended after every Crucible slot and never taken by `any`, text acts only,
+spawned with that provider's auth header and no `X-Crucible-*` — with a new
+`cloud:` family (`cloud:settings`, `cloud:save`, `cloud:test`; both write doors
+refuse when hosted) and `Job.usage {requests, tokensIn, tokensOut}` riding
+`queue:list` / `queue:changed`. Hosted, a window takes its slots from the host,
+so BookForge offering none means the vendored app draws none — the feature
+arrives inert on this side, exactly like the Crucible registry above it.
+
+**AND `--server` CAME BACK FROM THE DEAD, WHICH MADE ONE OF OUR KEEPERS WRONG.**
+The engine half of package F is two commits: `527b0db` reopened the Ollama door
+beside the OpenAI one and `76444fb` added Anthropic as a third DECLARED dialect.
+So `--server` — retired by `646e8a1` only two vendors ago, and guarded ever since
+by `tools/test-clean-step-door.js`'s "no retired flag appears as a quoted string
+literal" grep — is a live flag again on every text act, and the vendored
+`argsFor` composes `['--server','ollama']` / `['--server','anthropic']`
+correctly. The keeper went red on exactly that, and the honest answer was NOT a
+cleverer regex: the flag is not retired, so it left the list. What it means has
+changed though, and that is why this took a read rather than a delete — the
+retired `--server` picked between "which KIND of server does this machine talk
+to" (`vllm` vs `ollama`) and died when the answer became "one door, always"; the
+returned `--server` names a WIRE DIALECT, three request shapes behind one act,
+declared and never sniffed. `--keep-model` and `--ollama` STAY retired, verified
+in the engine's `src/` at this sha rather than assumed (both appear only in prose
+explaining their own removal). In place of the deleted assertions,
+`assertDeclaredDialect` asks the thing that was actually being protected: a
+`--server` on a line this side composes must carry one of the three declared
+values, never nothing, and never `vllm`.
+
+**THE COLLISION FINALLY HAPPENED, and OUR name is the one that moved.** Foundry's
+package C and E added `crucible:test` and `crucible:add`; BookForge minted its
+own Crucible Servers row the same night, with sixteen `crucible:` channels
+including those two exact names. Two `ipcMain.handle` registrations of one name
+in one Electron main process THROW at registration, so BookForge would not have
+started with the Foundry window mounted — a boot failure, not a matter of style.
+Per the SEALED SUBTREE rule above, ours renamed:
+**`crucible:add` → `crucible:add-server`** and
+**`crucible:test` → `crucible:test-server`**, in `electron/main.ts` and
+`electron/preload.ts` and nowhere else, because the renderer only ever spells the
+preload's METHOD name (`crucible.add`, `crucible.test`) and those did not move —
+grep of `dist/renderer` for any `crucible:` channel string returns nothing, which
+is the proof rather than the hope. Near-misses deliberately left alone: their
+`crucible:test-at` (probe an unsaved address) is the twin of our
+`crucible:test-address` and collides with nothing; their `crucible:add-local`,
+`crucible:install`, `crucible:install-plan`, `crucible:settings`,
+`crucible:save`, `crucible:set-wsl-distro` and `crucible:set-new-jobs-wait-for`
+are theirs alone; their `models:changed`, `models:inventory`,
+`models:remove-page-reader`, `acts:gates`, `slots:list`, `slots:rows-waiting-for`,
+`queue:set-wait-for` and package F's whole `cloud:` family (`cloud:settings`,
+`cloud:save`, `cloud:test`) hit nothing of ours. The collision keeper is the
+record: 6/6 green, reading Foundry's names out of the vendored
+`IPC-CHANNELS.md`'s TABLE ROWS and ours out of BookForge's TypeScript sources.
+
+**Their doc's own header had drifted, and our keeper never read it — now it says
+so.** `IPC-CHANNELS.md` claimed **119** handlers while their tree held **127**,
+eight doors added under a stale figure; `e6d5424` records the real number. Ours
+was never exposed to that (it parses rows, and `MIN_FOUNDRY_CHANNELS = 60` is a
+no-op floor, not a count), but its docblock quoted a stale "62 handles + 11
+pushes" of its own. Replaced with a MEASUREMENT taken here over the vendored
+source and the vendored doc — **130 `ipcMain.handle` call sites, 130 distinct
+names, zero `ipcMain.on`, zero handles absent from the doc, 148 table rows
+(130 handles + 18 pushes)** — plus the reason the floor is deliberately left far
+below it: raising it to the current count would make our file the fourth
+hand-maintained number in this story.
+
+**`app/package.json` GREW A DEPENDENCY THAT CANNOT MEAN HERE WHAT IT MEANS
+THERE, and it is a junction landmine.** The refresh adds two deps: `@crucible/client`
+pinned to the v0.5.0 release tarball (genuinely imported — `electron/crucible-dispatch.ts`
+and `electron/crucible-registry.ts`), and **`"foundry": "file:.."`**, Foundry's
+self-link back to its own repo root. Inside `<foundry>/app` that resolves to
+`foundry@1.3.0`. Inside `<bookforge>/foundry-app` it resolves to
+**`bookforge-app@0.1.7` — this repository's root** — and `npm ci` duly created
+`foundry-app/node_modules/foundry` as a **JUNCTION to `C:\Users\tellt\Projects\bookforge\`**,
+verified by `(Get-Item …).LinkType` before it was removed. That is a loaded gun
+next to the standing worktree-hygiene rule: any later `rm -rf
+foundry-app/node_modules` would follow it and delete the entire checkout. So the
+install was done as `npm ci --ignore-scripts` (our root carries a `postinstall`
+that rebuilds native modules, and a linked target's lifecycle is not a thing to
+gamble on), the junction was then removed **non-recursively** via
+`(Get-Item …).Delete()`, and the repo was confirmed intact afterwards (root
+`package.json` present, root `node_modules` 769 entries). Nothing imports the
+`foundry` package — grepped, zero hits in `electron/`, `shared/`, `src/`,
+`test/`, `tools/` — so removing the link costs the build nothing, and `npm run
+build` is clean without it. **This is a defect in the vendored copy and the
+sealed-subtree rule says it is not fixed here; it is reported to the Foundry side.**
+`// RULING OWED:` whether the self-link should be a `devDependency` they drop for
+the app snapshot, or whether this side should keep deleting the junction on every
+refresh. Until it is answered, THE STEP IS MANDATORY: after `npm ci` in this
+subtree, delete `node_modules/foundry` non-recursively before anything else runs.
+
+**THE KEEPER'S TIER-2 PIN WAS REGENERATED, AND THE DECISION IS THE WEAKEST PORT
+THERE IS.** The shipped anchor moved `83d7b66 → e6d5424`. All thirteen mapped
+files were read over that range, one path at a time; twelve have an EMPTY log.
+The thirteenth is `src/clean/tts-number-normalizer.ts`, moved by exactly one
+commit (`76444fb`), and its entire diff is one word inside a docblock — *"shared
+by both doors unchanged"* became *"shared by every door unchanged"*, because
+Anthropic made the door count three. `both doors` and `every door` are the same
+nine characters, so the file is 122,131 bytes on each side and only the sha256
+moved. **PORT, not a rule move**: not one byte outside a comment, no rule table,
+no validator, no prompt, no constant — `NORMALIZER_VERSION` was right to stay at
+`n6`, no corpus re-vendors and no cached record re-keys. Pin regenerated to
+`f478c8a9…` with that reason written beside it. `ONE_DOOR_BASELINE` moved with it,
+`969dd96 → 76444fb`, on the baseline's own stated rule ("it moves the next time
+Foundry legitimately changes one of these") — not to clear a red keeper: the
+alternative was whitelisting one file inside a freeze, which is how this keeper's
+fixed anchor went wrong in the first place. No tier was loosened; tier 3 reads
+3/3 frozen.
+
+Verification: **158/158 blobs** hash-verified against `e6d5424:app/` with
+`git hash-object` vs `git rev-parse` (index shas both sides, so `autocrlf` cannot
+lie), and the only files in the subtree that are not in `app/` are this note and
+`IPC-CHANNELS.md`. `IPC-CHANNELS.md` refreshed from `e6d5424:docs/` and
+byte-identical to it. IPC census re-counted HERE from the vendored source rather
+than taken from their header: **130 `ipcMain.handle` call sites, 130 distinct
+names, zero duplicate registrations, zero `ipcMain.on`, and zero handles absent
+from `IPC-CHANNELS.md`** — so their doc is an authority again at this sha, not a
+formality. Deps MOVED this time (`@crucible/client` at the v0.5.0 tarball, and
+the `file:..` self-link above), so `npm ci` ran, with the junction deleted after
+it and `npm rebuild electron` run to restore the install scripts
+`--ignore-scripts` had skipped — without that last step the subtree's compiled
+`app-settings.js` throws *"Electron failed to install correctly"* and takes
+`tools/test-clean-step-door.js` down with it, which is how the omission was
+found. `node_modules` confirmed a real directory (`LinkType` empty) beforehand,
+per the worktree-hygiene rule. `npm run build` clean in the subtree, ng **993.49
+kB** (957.01 → 993.49, the standing budget WARNING only); `npx tsc -p
+tsconfig.electron.json` and `npx ng build` clean on BookForge's side; collision
+keeper 6/6, all twelve `test-foundry-*` keepers green, `test-cli-flags` 24/24
+from PowerShell, `test-clean-step-door` green after the `--server` ruling above.

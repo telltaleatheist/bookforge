@@ -27,13 +27,13 @@
  * and WSL is actually present. A machine with no distro is never asked to
  * download a Linux Python it has nowhere to put.
  *
- * ── Ambiguity is asked about, not guessed ────────────────────────────────────
+ * ── What is NOT provisioned from here ────────────────────────────────────────
  *
- * One distro is not a choice; several are. When several exist and nothing has
- * recorded which, the job is enqueued and fails immediately with the sentence
- * that says how to choose. That is deliberately a visible failure rather than a
- * silent skip: the alternative is five gigabytes landing in whichever distro
- * happened to be listed first.
+ * The local page reader. It is three gigabytes of model weights plus a
+ * llama.cpp build, it has a row on the settings screen and a step in the
+ * wizard, and a download that size starts when somebody presses a button that
+ * says how big it is — never at startup on this file's judgement
+ * (`page-reader.ts`, docs/SLOTS.md §6).
  */
 import { runDoctor } from './engine';
 import { targetsForPlatform } from './env-catalog';
@@ -44,21 +44,6 @@ export interface ProvisionNeed {
   target: EnvTarget;
   /** What doctor said that makes this missing. Shown on the shelf row. */
   reason: string;
-}
-
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-/**
- * Is this endpoint on this machine? Any port — the question is whether the user
- * asked for a LOCAL reading server, not whether it is the one we manage.
- */
-export function isLoopbackEndpoint(url: string | undefined): boolean {
-  if (!url || url.trim().length === 0) return false;
-  try {
-    return LOOPBACK.has(new URL(url.trim()).hostname);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -92,16 +77,17 @@ export function decideProvisioning(
       want('windows-x64', `The engine found no PyMuPDF to rasterise with: ${report.rasteriser.detail}`);
     }
 
-    // Only when the user has actually asked for a local endpoint. Under `auto`
-    // the engine picks its own tier and may never want vLLM at all.
-    const wantsLocalEndpoint =
-      settings.backend.mode === 'endpoint' && isLoopbackEndpoint(settings.backend.endpointUrl);
-    if (wantsLocalEndpoint && !tier('wsl-vllm') && report.wsl?.available === true) {
-      want(
-        'wsl-x64',
-        'The mode is `endpoint` pointing at this machine, but nothing in WSL can import vllm yet.',
-      );
-    }
+    /*
+     * THE READING SERVER IS NOT PROVISIONED FROM HERE ANY MORE.
+     *
+     * A `wsl-x64` rule used to stand at this line and queue five gigabytes of
+     * vLLM wheels into a WSL distro whenever the mode was `endpoint` and the URL
+     * was loopback. The local page reader replaced it (docs/SLOTS.md §6, package
+     * B), and it is deliberately NOT provisioned automatically: it is three
+     * gigabytes of weights, it has a row of its own on the settings screen and a
+     * step of its own in the wizard, and a download that size begins when
+     * somebody presses a button that says how big it is.
+     */
   }
 
   if (platform === 'darwin') {

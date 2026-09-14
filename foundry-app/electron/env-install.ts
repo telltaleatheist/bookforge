@@ -55,20 +55,10 @@ import {
   isAborted,
   makeTempDir,
   removeTempDir,
-  unpackTarGz,
+  unpackArchive,
   verifyHash,
 } from './env-downloader';
 import { readSettings, writeSettings } from './settings';
-import {
-  checkVllm,
-  listDistros,
-  networkPathBehind,
-  runInDistro,
-  shellQuote,
-  streamInDistro,
-  toWslPath,
-} from './wsl';
-import { VLLM_URL } from './vllm-server';
 import { readJson } from '../shared/json';
 import type {
   EnvCatalogItem,
@@ -78,42 +68,31 @@ import type {
   EnvTarget,
 } from '../shared/types';
 
-/** How long the distro gets for one bookkeeping command (test, mkdir, cat). */
-const GUEST_PROBE_MS = 30_000;
-/** How long the distro gets to unpack ~5 GB. Generous: it is disk-bound. */
-const GUEST_UNPACK_MS = 45 * 60_000;
+/*
+ * ── WHAT USED TO BE HERE: A WSL INSTALL ─────────────────────────────────────
+ *
+ * One catalog entry, `wsl-x64`, put a vLLM inside a WSL distro for this app to
+ * launch, and it dragged a whole second implementation of this file behind it:
+ * a guest-side destination guard, a `\\wsl$` network-share refusal, an unpack
+ * run through `tar` INSIDE the distro, and a configure step that wrote
+ * `backend.wslDistro` and `backend.vllmPython`. Owen retired it on 2026-09-13
+ * — *"the plan is to leave VLLM to crucible only"* — because the app has to
+ * work for somebody who cannot install WSL, and every environment left in the
+ * catalog is a plain directory on this machine's own filesystem. See
+ * docs/SLOTS.md §3 and `page-reader.ts`, which is what reads pages locally now.
+ */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Where an install would go, and whether one is already there
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The destination this request means. The picker's value when there is one, the
- * platform default otherwise — and ALWAYS the default for a WSL target, whose
- * destination is a path in the guest's home that no Windows directory picker can
- * express.
+ * The destination this request means: the picker's value when there is one, the
+ * platform default otherwise.
  */
 export function destFor(request: EnvInstallRequest): string {
-  if (ENV_SPECS[request.target].inWsl) return defaultDest(request.target);
   const named = request.dest?.trim();
   return named && named.length > 0 ? path.resolve(named) : defaultDest(request.target);
-}
-
-/**
- * Which distro a WSL install goes into: the request's, else the one settings
- * already names, else the only one there is.
- *
- * Null when the machine has several and nobody has said which. That is not a
- * default to guess at — the environment is five gigabytes and the wrong distro
- * is five gigabytes in a place the user will not think to look.
- */
-export async function resolveDistro(request: EnvInstallRequest): Promise<string | null> {
-  const named = request.distro?.trim();
-  if (named) return named;
-  const configured = readSettings().backend.wslDistro?.trim();
-  if (configured) return configured;
-  const facts = await listDistros();
-  return facts.distros.length === 1 ? (facts.distros[0] ?? null) : null;
 }
 
 type DestVerdict =
@@ -146,35 +125,6 @@ export function inspectDest(target: EnvTarget, dest: string): DestVerdict {
   };
 }
 
-/** The same guard, asked of the distro. Exit codes carry the three answers. */
-async function inspectGuestDest(distro: string, target: EnvTarget, dest: string): Promise<DestVerdict> {
-  const quoted = shellQuote(dest);
-  const marker = shellQuote(markerPath(target, dest));
-  const probe = await runInDistro(
-    distro,
-    `if [ ! -e ${quoted} ]; then exit 10; fi; `
-    + `if [ -f ${marker} ]; then exit 11; fi; `
-    + `if [ -z "$(ls -A ${quoted} 2>/dev/null)" ]; then exit 10; fi; `
-    + `ls -A ${quoted} | head -20; exit 12`,
-    GUEST_PROBE_MS,
-  );
-  if (probe.code === 10) return { kind: 'fresh' };
-  if (probe.code === 11) return { kind: 'replace' };
-  if (probe.code === 12) {
-    return {
-      kind: 'refuse',
-      reason:
-        `${dest} inside ${distro} already has content and no ${MARKER_RELPATH}, so it is not an `
-        + `environment this app installed. Refusing to delete it. It holds: ${probe.stdout.trim().split(/\s+/).join(', ')}`,
-    };
-  }
-  const said = probe.failure ?? probe.stderr.trim();
-  return {
-    kind: 'refuse',
-    reason: `${distro} could not be asked about ${dest}: ${said || `exit ${probe.code}`}`,
-  };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // The catalog, as this machine sees it
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,22 +147,7 @@ export async function catalogForThisMachine(): Promise<EnvCatalogItem[]> {
     let installedPath: string | null = null;
     let detail: string;
 
-    if (spec.inWsl) {
-      const distro = settings.backend.wslDistro?.trim() ?? (await resolveDistro({ target }));
-      if (!distro) {
-        detail = 'No distro is configured yet, so there is nowhere to look for it.';
-      } else {
-        const probe = await runInDistro(distro, `test -x ${shellQuote(expected)}`, GUEST_PROBE_MS);
-        if (probe.code === 0) {
-          installedPath = expected;
-          detail = `Installed in ${distro} at ${expected}.`;
-        } else if (probe.code === 1) {
-          detail = `Not installed in ${distro}.`;
-        } else {
-          detail = `${distro} could not be asked: ${probe.failure ?? `exit ${probe.code}`}.`;
-        }
-      }
-    } else if (fs.existsSync(expected)) {
+    if (fs.existsSync(expected)) {
       installedPath = expected;
       detail = `Installed at ${dest}.`;
     } else {
@@ -222,9 +157,7 @@ export async function catalogForThisMachine(): Promise<EnvCatalogItem[]> {
     // An `nli` environment is configured BY BEING THERE — nothing in
     // settings.json names it, because the engine looks for it by name. See the
     // role field in env-catalog.ts and the configure step below.
-    const configuredPath = spec.role === 'nli'
-      ? installedPath
-      : spec.inWsl ? settings.backend.vllmPython : settings.backend.python;
+    const configuredPath = spec.role === 'nli' ? installedPath : settings.backend.python;
     items.push({
       target,
       label: spec.label,
@@ -235,7 +168,6 @@ export async function catalogForThisMachine(): Promise<EnvCatalogItem[]> {
       partCount: Math.max(1, asset.parts.length),
       published: isPublished(target),
       defaultDest: dest,
-      inWsl: spec.inWsl,
       installedPath,
       configured: installedPath !== null && configuredPath?.trim() === installedPath,
       detail,
@@ -327,43 +259,14 @@ async function run(
   const totalBytes = asset.bytes ?? 0;
 
   const dest = destFor(request);
-  const distro = spec.inWsl ? await resolveDistro(request) : null;
-  if (spec.inWsl && !distro) {
-    const facts = await listDistros();
-    return {
-      ok: false,
-      pythonPath: null,
-      detail: facts.distros.length > 1
-        ? `This machine has ${facts.distros.length} WSL distros (${facts.distros.join(', ')}). `
-          + 'Open Settings → Environments and choose which one to install into.'
-        : (facts.reason ?? 'There is no WSL distro to install into.'),
-    };
-  }
 
   // ── The guard, before anything is downloaded ────────────────────────────────
-  const verdict = distro
-    ? await inspectGuestDest(distro, target, dest)
-    : inspectDest(target, dest);
+  const verdict = inspectDest(target, dest);
   if (verdict.kind === 'refuse') {
     return { ok: false, pythonPath: null, detail: verdict.reason };
   }
 
   const tempDir = makeTempDir();
-  // WSL2 auto-mounts FIXED drives only, so a download folder on a mapped network
-  // drive is invisible to the distro that has to unpack it — and FOUNDRY_ENV_TMP
-  // is exactly how a machine with a small system disk ends up pointing at one.
-  // Checked here rather than left to toWslPath, because there it would surface
-  // only after five gigabytes had been fetched to a place that cannot be used.
-  const share = distro === null ? null : networkPathBehind(tempDir);
-  if (share !== null) {
-    await removeTempDir(tempDir);
-    return {
-      ok: false,
-      pythonPath: null,
-      detail: `The download folder ${tempDir} is on the network share ${share}, which ${distro} cannot see: `
-        + 'WSL mounts local drives only. Point FOUNDRY_ENV_TMP at a folder on a local drive and try again.',
-    };
-  }
   const archivePath = path.join(tempDir, asset.archive);
 
   try {
@@ -391,88 +294,30 @@ async function run(
 
     // ── unpack ──────────────────────────────────────────────────────────────
     const pythonPath = interpreterPath(target, dest);
-    if (distro) {
-      await unpackInDistro(distro, dest, archivePath, verdict.kind === 'replace', emit, signal);
-      const there = await runInDistro(distro, `test -x ${shellQuote(pythonPath)}`, GUEST_PROBE_MS);
-      if (there.code !== 0) {
-        return {
-          ok: false,
-          pythonPath: null,
-          detail: `The archive unpacked into ${distro}, but ${pythonPath} is not there. `
-            + 'The asset\'s layout does not match what the catalog expects.',
-        };
-      }
-    } else {
-      if (verdict.kind === 'replace') {
-        emit('unpack', 0, `Removing the previous install at ${dest}…`);
-        fs.rmSync(dest, { recursive: true, force: true });
-      }
-      emit('unpack', 0, 'Unpacking…');
-      await unpackTarGz(
-        archivePath,
-        dest,
-        (count) => emit('unpack', 0, `Unpacked ${count.toLocaleString()} files…`),
-        signal,
-      );
-      if (!fs.existsSync(pythonPath)) {
-        return {
-          ok: false,
-          pythonPath: null,
-          detail: `The archive unpacked into ${dest}, but ${pythonPath} is not there. `
-            + 'The asset\'s layout does not match what the catalog expects.',
-        };
-      }
+    if (verdict.kind === 'replace') {
+      emit('unpack', 0, `Removing the previous install at ${dest}…`);
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+    emit('unpack', 0, 'Unpacking…');
+    await unpackArchive(
+      archivePath,
+      dest,
+      (count) => emit('unpack', 0, `Unpacked ${count.toLocaleString()} files…`),
+      signal,
+    );
+    if (!fs.existsSync(pythonPath)) {
+      return {
+        ok: false,
+        pythonPath: null,
+        detail: `The archive unpacked into ${dest}, but ${pythonPath} is not there. `
+          + 'The asset\'s layout does not match what the catalog expects.',
+      };
     }
     if (signal.aborted) throw new AbortedError();
 
     // ── configure ───────────────────────────────────────────────────────────
     emit('configure', 0, 'Writing the interpreter into the engine\'s settings…');
-    const manifest = await readManifest(target, dest, distro);
-
-    if (distro) {
-      /*
-       * FOUR KEYS, AND THE TWO NEW ONES ARE WHY A FRESH INSTALL COULD NOT OCR.
-       *
-       * Nothing in this app had ever written `backend.mode`. The installers set
-       * the distro and the interpreter — where the environment IS — and left the
-       * mode at whatever the engine's shipped settings said, which on a machine
-       * that had never been configured is not `endpoint`. So the engine, asked
-       * to read a book, looked for a local MLX path that does not exist off
-       * Apple silicon and refused with "no reading backend for this run" — on a
-       * machine where the user had just watched a reading server install
-       * successfully.
-       *
-       * INSTALLING THE SERVER IS THE STATEMENT. Somebody who has just built
-       * vLLM in WSL has said which backend reads their pages as plainly as it
-       * can be said; making them then find the Settings screen and repeat it in
-       * a drop-down is asking a question they have already answered.
-       *
-       * `writeSettings` preserves every other key, so a user who had pointed the
-       * app at a different endpoint keeps their URL — this only writes the two
-       * that describe the server it just made.
-       */
-      writeSettings({
-        wslDistro: distro,
-        vllmPython: pythonPath,
-        mode: 'endpoint',
-        endpointUrl: VLLM_URL,
-      });
-      emit('configure', 50, `Asking ${pythonPath} whether it can import vllm…`);
-      const check = await checkVllm(distro, pythonPath);
-      if (!check.ok) {
-        return {
-          ok: false,
-          pythonPath,
-          detail: `The environment is installed and settings are written, but ${check.detail}`,
-        };
-      }
-      emit('configure', 100, `${check.detail} Reading through ${VLLM_URL}.`);
-      return {
-        ok: true,
-        pythonPath,
-        detail: `${spec.label} is ready in ${distro}: ${pythonPath}${manifest}`,
-      };
-    }
+    const manifest = readManifest(target, dest);
 
     /*
      * ── THE ANALYSIS WORKER WRITES NOTHING, AND THAT IS THE WHOLE POINT ──────
@@ -509,70 +354,14 @@ async function run(
 }
 
 /**
- * Hand the archive across and let the distro's own tar do the work.
- *
- * `mkdir -p` on the FULL destination first: tar's `-C` requires the directory to
- * already exist, and the usual mistake is creating the parent and passing the
- * child. The commands are joined with `&&` inside one `bash -lc` so a failed
- * mkdir cannot be followed by a tar that writes into the current directory.
- */
-async function unpackInDistro(
-  distro: string,
-  dest: string,
-  archivePath: string,
-  replacing: boolean,
-  emit: (phase: EnvInstallProgress['phase'], percent: number, detail: string) => void,
-  signal: AbortSignal,
-): Promise<void> {
-  const guestArchive = shellQuote(toWslPath(archivePath));
-  const guestDest = shellQuote(dest);
-
-  if (replacing) {
-    emit('unpack', 0, `Removing the previous install at ${dest} in ${distro}…`);
-    const removed = await runInDistro(distro, `rm -rf ${guestDest}`, GUEST_PROBE_MS);
-    if (removed.code !== 0) {
-      throw new Error(`Could not remove ${dest} in ${distro}: ${removed.stderr.trim() || `exit ${removed.code}`}`);
-    }
-  }
-  if (signal.aborted) throw new AbortedError();
-
-  emit('unpack', 0, `Unpacking inside ${distro} — this takes a few minutes.`);
-  const command = `mkdir -p ${guestDest} && tar -xzf ${guestArchive} -C ${guestDest}`;
-
-  // Streamed rather than collected, for the reason wsl.ts's streamInDistro
-  // exists: minutes of silence is indistinguishable from a hang. tar is quiet on
-  // success, so what this actually forwards is the first error it hits.
-  const handle = streamInDistro(distro, command, (line) => emit('unpack', 0, line));
-  const timer = setTimeout(() => handle.cancel(), GUEST_UNPACK_MS);
-  const onAbort = (): void => handle.cancel();
-  signal.addEventListener('abort', onAbort, { once: true });
-
-  const result = await handle.done.finally(() => {
-    clearTimeout(timer);
-    signal.removeEventListener('abort', onAbort);
-  });
-
-  if (signal.aborted) throw new AbortedError();
-  if (result.failure) throw new Error(`Unpacking in ${distro} failed: ${result.failure}`);
-  if (result.code !== 0) {
-    throw new Error(
-      `tar exited ${result.code} unpacking into ${dest} inside ${distro}. `
-      + 'The usual cause is no room left on the distro\'s disk — the environment needs about 12 GB unpacked.',
-    );
-  }
-}
-
-/**
  * The manifest the archive carries, as a clause to hang off the success line.
  * Never fatal: an environment whose interpreter is there and runs is installed
  * whether or not we could pretty-print what is in it.
  */
-async function readManifest(target: EnvTarget, dest: string, distro: string | null): Promise<string> {
+function readManifest(target: EnvTarget, dest: string): string {
   const file = markerPath(target, dest);
   try {
-    const text = distro
-      ? (await runInDistro(distro, `cat ${shellQuote(file)}`, GUEST_PROBE_MS)).stdout
-      : fs.readFileSync(file, 'utf8');
+    const text = fs.readFileSync(file, 'utf8');
     const parsed: unknown = readJson(text);
     if (typeof parsed !== 'object' || parsed === null) return '.';
     const record = parsed as Record<string, unknown>;

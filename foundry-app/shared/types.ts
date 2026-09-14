@@ -772,19 +772,28 @@ export interface TranslateRequest {
   /** `--ollama`: the server's URL. Used, never started. */
   ollama: string;
   /**
-   * `--server`: which kind of server answers, when it is not the default Ollama.
+   * WHICH DIALECT — and it is no longer a field, because it is no longer
+   * anybody's preference.
    *
-   * CARRIED ON THE REQUEST RATHER THAN READ AT SPAWN, so that the three things
-   * that must agree — the kind, the URL and the model name — are the ONE set the
-   * dialog was looking at. They are stored together in Settings and answered
-   * together (`llm:defaults`); reading the kind again at spawn would mean a
-   * queue filled before somebody flipped the setting runs an Ollama tag against
-   * a vLLM, which fails at the first block with a message about a model nobody
-   * typed.
+   * ── What used to be here, and why it went ─────────────────────────────────
    *
-   * Absent is `ollama` and is what every job carried before this existed.
+   * A `server?: LlmServerKind`, carried from the dialog so that the three things
+   * that must agree — the kind, the URL and the model name — were the one set the
+   * dialog was looking at. The premise of that was a machine-wide SETTING saying
+   * which kind of server the language acts spoke to, and Wave 61 retired it
+   * (docs/SLOTS.md): the local slot is Ollama, always, and an OpenAI-compatible
+   * server is a registered Crucible rather than a mode this app can be put into.
+   *
+   * So the dialect falls out of WHERE the row was placed, decided in one breath
+   * with the endpoint and the model immediately before the spawn (`placeJob`,
+   * electron/crucible-dispatch.ts; `doorArgs`, electron/job-queue.ts). The three
+   * still agree — more strictly than before, because one function now composes
+   * all three out of one placement, where three branches each spelled two.
+   *
+   * WHAT `model` AND `ollama` NOW MEAN, precisely: the LOCAL slot's answers — the
+   * tag the person could edit in the dialog, and the Ollama on this machine. A
+   * Crucible placement replaces both, and neither field is consulted.
    */
-  server?: LlmServerKind;
   /** `--instructions`: appended to the system prompt verbatim, per book. */
   instructions?: string;
   /**
@@ -986,19 +995,28 @@ export interface CleanRequest {
   model: string;
   ollama: string;
   /**
-   * `--server`: which kind of server answers, when it is not the default Ollama.
+   * WHICH DIALECT — and it is no longer a field, because it is no longer
+   * anybody's preference.
    *
-   * CARRIED ON THE REQUEST RATHER THAN READ AT SPAWN, so that the three things
-   * that must agree — the kind, the URL and the model name — are the ONE set the
-   * dialog was looking at. They are stored together in Settings and answered
-   * together (`llm:defaults`); reading the kind again at spawn would mean a
-   * queue filled before somebody flipped the setting runs an Ollama tag against
-   * a vLLM, which fails at the first block with a message about a model nobody
-   * typed.
+   * ── What used to be here, and why it went ─────────────────────────────────
    *
-   * Absent is `ollama` and is what every job carried before this existed.
+   * A `server?: LlmServerKind`, carried from the dialog so that the three things
+   * that must agree — the kind, the URL and the model name — were the one set the
+   * dialog was looking at. The premise of that was a machine-wide SETTING saying
+   * which kind of server the language acts spoke to, and Wave 61 retired it
+   * (docs/SLOTS.md): the local slot is Ollama, always, and an OpenAI-compatible
+   * server is a registered Crucible rather than a mode this app can be put into.
+   *
+   * So the dialect falls out of WHERE the row was placed, decided in one breath
+   * with the endpoint and the model immediately before the spawn (`placeJob`,
+   * electron/crucible-dispatch.ts; `doorArgs`, electron/job-queue.ts). The three
+   * still agree — more strictly than before, because one function now composes
+   * all three out of one placement, where three branches each spelled two.
+   *
+   * WHAT `model` AND `ollama` NOW MEAN, precisely: the LOCAL slot's answers — the
+   * tag the person could edit in the dialog, and the Ollama on this machine. A
+   * Crucible placement replaces both, and neither field is consulted.
    */
-  server?: LlmServerKind;
   /**
    * `--concurrency`: blocks in flight at once. Absent means the engine's own
    * (`DEFAULT_CLEAN_CONCURRENCY`, 4) — a number is never filled in here, because a
@@ -1152,12 +1170,9 @@ export interface AnalyzeRequest {
   /** `--ollama`: the server's URL. Used, never started. */
   ollama: string;
   /**
-   * `--server`: which kind of server answers, when it is not the default Ollama.
-   *
-   * `TranslateRequest.server`'s arrangement and its reason — the kind, the URL
-   * and the model name have to be the ONE set the dialog was looking at.
+   * NO `--server` FIELD — `TranslateRequest`'s note says where the dialect went
+   * and why. `model` and `ollama` above are the LOCAL slot's answers.
    */
-  server?: LlmServerKind;
   /**
    * THE STEP THIS REPORT BELONGS TO, minted with it and travelling with it.
    *
@@ -1491,9 +1506,95 @@ export interface Job {
    * declaration.
    */
   mode?: RewriteMode;
+  /**
+   * WHICH SLOT THIS ROW IS WAITING FOR — a slot name, or `any` (`ANY_SLOT`,
+   * shared/slots.ts), decided at the PRESS.
+   *
+   * ── A different axis from `after`, and they are easy to confuse ────────────
+   *
+   * `after` is WHEN: the row this one is downstream of, whose loss takes it with
+   * it. This is WHERE: which machine's GPU the work goes to. A cleanup chained
+   * behind a reading can perfectly well name a different slot from the reading,
+   * and an export chained behind a cleanup names none at all.
+   *
+   * ── Why the answer is written down instead of derived ─────────────────────
+   *
+   * `Job.parentStep`'s argument, about a different pointer. A row sits in the
+   * queue for as long as it takes somebody to assemble a batch, and the standing
+   * preference (`AppSettings.newJobsWaitFor`) and the server RANKING both move
+   * while it sits. docs/SLOTS.md §3 rules that *"queued rows do NOT move when
+   * servers are re-ranked"*, so `top` is resolved to a NAME at the press and the
+   * name is what the row carries. The only thing that changes it afterwards is a
+   * person, through the picker.
+   *
+   * ── ABSENT IS EVERY ROW THIS QUEUE HAS EVER HELD ──────────────────────────
+   *
+   * And it means "wherever this app would have sent it anyway" — which is the
+   * local machine. It is absent on a job that never meets a model (an export, a
+   * mint, an install), on a reading for as long as page reading stays on its own
+   * local path, and — the common case — whenever there is nothing to choose from:
+   * one slot, or none. A picker is not drawn for it and nothing needs to be.
+   *
+   * A HOST THAT MIRRORS ROWS MAY CARRY IT AND NEED NOT. Hosted, the slot list is
+   * the host's (`FoundryHost.slots`), so a host that offers no list produces rows
+   * with nothing to put here and loses nothing by it — docs/BOOKFORGE-HANDOFF.md
+   * §8b names it optional at the next re-vendor.
+   */
+  waitFor?: string;
+  /**
+   * WHERE IT ACTUALLY WENT — set at the spawn, on the run that is happening.
+   *
+   * Beside `waitFor` rather than overwriting it, because they answer different
+   * questions and a person needs both: a row pinned to `any` that landed on the
+   * Mac is still a row that will take whatever is free the next time it runs, and
+   * folding the walk's answer back into the choice would quietly pin it.
+   *
+   * It is the shelf's "Running on the Mac" and nothing else reads it. Absent
+   * until the row starts, and absent forever on a row that never met a slot.
+   */
+  ranOn?: string;
+  /**
+   * WHAT THE RUN SPENT, when the server it ran against counted.
+   *
+   * ── Where it comes from, and why it is on the row rather than in a file ────
+   *
+   * Every text act prints ONE line at the end of a run — `translate: 412
+   * requests, 1,203,441 tokens in, 388,120 out` (`usageLine`,
+   * src/translate/transport.ts) — and the app reads it off the same stderr the
+   * progress counts come off (`parseUsageLine`, electron/engine.ts). It is
+   * captured onto the row as the run ends, so the finished row and the bench
+   * card can say what the evening cost without opening anything.
+   *
+   * ABSENT IS THE ORDINARY CASE AND MEANS "NOTHING COUNTED", not zero. Ollama
+   * reports no usage at all, so the engine prints nothing rather than a line of
+   * zeroes — silence being the honest answer from a door that did not count —
+   * and a row that ran there has no `usage` rather than one full of noughts. It
+   * is absent on every job that never meets a model, too.
+   *
+   * FOUNDRY DOES NOT PRICE IT, and that is a ruling rather than a gap
+   * (docs/VLLM.md §2a): prices change weekly and differ per key and per tier, so
+   * a number invented here would be wrong in a way that looks authoritative.
+   * What is drawn is the two counts.
+   */
+  usage?: JobUsage;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+}
+
+/**
+ * The three numbers a cloud run's last line carries — see {@link Job.usage}.
+ *
+ * Named `tokensIn`/`tokensOut` rather than the engine's `inputTokens`/
+ * `outputTokens` because this is the shape a person reads on a row, and the row
+ * says "in" and "out". One rename at one seam (`parseUsageLine`) is cheaper than
+ * a wire shape whose field names only make sense to somebody who has read the
+ * transport module.
+ */
+export interface JobUsage {
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
 }
 
 /**
@@ -1558,11 +1659,15 @@ export interface DoctorReport {
   /** The tier a run would use, or null with the reason in that tier's detail. */
   chosen: TierId | null;
   /**
-   * WSL itself, separate from the `wsl-vllm` TIER: "WSL exists but nothing in
-   * it can import vllm" is the state the setup screen exists for, and the tier
-   * alone cannot tell it apart from "there is no WSL". OPTIONAL — engine builds
-   * that predate it simply do not carry it, and the app falls back to asking
-   * wsl.exe itself.
+   * WSL itself, separate from the `wsl-vllm` TIER, and now READ BY NOBODY.
+   *
+   * The engine still reports it, because `foundry doctor` still knows how to
+   * find a vLLM somebody else built in WSL and this app does not get to edit
+   * the engine's contract. What changed is that the app stopped having a
+   * setup screen to point at it: this app no longer builds a vLLM environment,
+   * no longer starts one, and no longer offers to (docs/SLOTS.md §3 — all WSL
+   * complexity is Crucible's now). The field stays declared so an engine
+   * report carrying it still type-checks, and nothing in app/ reads it.
    */
   wsl?: { available: boolean; distros: string[] };
 }
@@ -1589,19 +1694,18 @@ export type BackendMode = 'auto' | 'endpoint' | 'mlx';
  * (`endpointModel` is also legal): the writer preserves every key it does not
  * recognise, so a newer engine's settings survive an older app saving over them.
  *
- * `wslDistro` and `vllmPython` are written by the SETUP RUNNER rather than
- * typed into a field — they are the two facts that make an environment this app
- * built findable by the engine, and the settings form leaves them undefined so
- * saving a URL never clears them.
+ * `wslDistro` and `vllmPython` USED TO BE HERE, written by a setup runner that
+ * built a vLLM environment inside WSL for this app to launch. Both the runner
+ * and the launcher are gone (docs/SLOTS.md §6, package B): the local page
+ * reader is a llama-server this app downloads and starts directly, and any
+ * other OpenAI-compatible server is somebody else's to run. The two keys are
+ * not deleted from anybody's settings.json — this writer preserves every key
+ * it does not recognise, so an engine that still reads them still finds them.
  */
 export interface BackendSettingsPatch {
   mode?: BackendMode;
   endpointUrl?: string;
   python?: string;
-  /** The WSL distro the vLLM environment lives in. */
-  wslDistro?: string;
-  /** The interpreter INSIDE that distro that can import vllm. Tilde-form is fine. */
-  vllmPython?: string;
 }
 
 export interface SettingsView {
@@ -1613,55 +1717,24 @@ export interface SettingsView {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WSL — the facts, the setup run, and the server
+// The local page reader — electron/page-reader.ts owns all of this
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface WslFacts {
-  /** True only when wsl.exe ran AND named at least one distro. */
-  available: boolean;
-  distros: string[];
-  /** Why not. Printed verbatim: "not on PATH" and "installed but empty" differ. */
-  reason: string | null;
-}
-
-/** What a distro can build an environment with. Both routes always reported. */
-export interface EnvTooling {
-  /** Path to a conda binary inside the distro, tilde-form, or null. */
-  conda: string | null;
-  /** True when that distro's python3 can import venv. */
-  venv: boolean;
-  detail: string;
-}
-
-/** Which way the environment gets built. The user picks; nothing falls back. */
-export type SetupRoute = 'conda' | 'venv';
-
-export interface SetupRequest {
-  distro: string;
-  route: SetupRoute;
-}
-
-/**
- * One line out of a setup run. `step` is this app talking (the command about to
- * run, what was skipped); `stdout`/`stderr` are the guest's, verbatim.
+/*
+ * WHAT USED TO BE HERE: `WslFacts`, `EnvTooling`, `SetupRoute`, `SetupRequest`,
+ * `SetupLogEvent`, `SetupResult` — the shapes of a screen that built a vLLM
+ * inside a WSL distro so this app could launch it. Gone on 2026-09-13 with the
+ * launcher (docs/SLOTS.md §6, package B). `ServerState`/`ServerStatus` below
+ * are the same two shapes they always were and survived the change unaltered,
+ * because "a reading server is up, down, coming up or broken" did not stop
+ * being the question when the server stopped being vLLM.
  */
-export interface SetupLogEvent {
-  stream: 'step' | 'stdout' | 'stderr';
-  line: string;
-}
-
-export interface SetupResult {
-  ok: boolean;
-  /** The interpreter that now exists, when there is one. */
-  pythonPath: string | null;
-  detail: string;
-}
 
 export type ServerState = 'stopped' | 'starting' | 'ready' | 'failed';
 
 export interface ServerStatus {
   state: ServerState;
-  /** On a failure this carries the guest's log tail. Never paraphrased. */
+  /** On a failure this carries the server's own log tail. Never paraphrased. */
   detail: string;
   url: string;
   model: string;
@@ -1669,12 +1742,87 @@ export interface ServerStatus {
   external: boolean;
 }
 
+/**
+ * `download` has a percentage; the rest are a sentence and an indeterminate bar.
+ * The same five-phase shape as `OllamaPhase`, and deliberately: the wizard draws
+ * both, and one shape means one bar.
+ */
+export type PageReaderPhase = 'download' | 'verify' | 'unpack' | 'done' | 'error';
+
+export interface PageReaderProgress {
+  /** Which of the three files this is about — or `llama-server`, or `all`. */
+  item: string;
+  phase: PageReaderPhase;
+  /** 0–100 while downloading. Meaningless otherwise; read `detail`. */
+  percent: number;
+  detail: string;
+}
+
+/** One file the local page reader needs, and whether this machine has it. */
+export interface PageReaderFile {
+  /** What it is called on disk and on the settings row. */
+  name: string;
+  /** The published size, or null when the index could not be read. */
+  bytes: number | null;
+  present: boolean;
+}
+
+/**
+ * EVERYTHING THE SETTINGS ROW AND THE SETUP STEP NEED, IN ONE READ.
+ *
+ * One IPC call rather than five, because every one of these facts is measured
+ * off the same directory at the same moment and a screen that asked separately
+ * could draw "installed" beside "0 of 2 model files".
+ */
+export interface PageReaderState {
+  /** False on a platform this app has no llama-server build for. */
+  supported: boolean;
+  /** Why not, or what this machine will get. One sentence, always set. */
+  platformNote: string;
+  /** The binary AND both model files are on disk. */
+  installed: boolean;
+  binary: {
+    /** The llama.cpp release tag it came from, recorded beside it. */
+    release: string | null;
+    /** The release asset's file name, so the row can say which build this is. */
+    asset: string | null;
+    path: string | null;
+    /** `CUDA`, `Metal`, `CPU` — what the chosen build will run on. */
+    accel: string;
+  };
+  models: PageReaderFile[];
+  /**
+   * What installing would fetch RIGHT NOW — zero when everything is present,
+   * and only the missing pieces when some of it is. Null when the sizes could
+   * not be read, which is a thing to say rather than a zero to draw.
+   */
+  downloadBytes: number | null;
+  /** One sentence about this machine. */
+  detail: string;
+  server: ServerStatus;
+  keepWarmMinutes: number;
+  /**
+   * THE CRUCIBLE ON THIS MACHINE THAT IS ALREADY READING PAGES, or null.
+   *
+   * docs/SLOTS.md §5b. When this is set, Foundry's own reader is a duplicate:
+   * the download has been removed (or will not be offered), and the card's
+   * Install button says WHY it is not needed rather than disappearing. A button
+   * that vanishes teaches somebody that the app is broken; a button that is off
+   * with a sentence beside it teaches them what took the job over.
+   *
+   * LOCAL ONLY, and a remote Crucible deliberately leaves this null — *"the
+   * local reader is what works when the Mac is asleep"*. The remote case is an
+   * offer on the Models card, not a reason to stop installing.
+   */
+  supersededBy: string | null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Prebuilt Python environments — electron/env-catalog.ts owns the numbers
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * One environment on the release. Not a platform: `wsl-x64` is driven from win32.
+ * One environment on the release.
  *
  * The `nli-` pair are the analysis worker's Pythons — torch, transformers and
  * the DeBERTa weights baked in. They are separate entries rather than packages
@@ -1682,10 +1830,13 @@ export interface ServerStatus {
  * times by different people: somebody who only ever converts books should not
  * download a gigabyte of NLI to rasterise a PDF, and the Windows reading
  * environment (62 MB of PyMuPDF) would grow twenty-fold if it carried them.
+ *
+ * `wsl-x64` — vLLM inside a WSL distro — was a sixth and is gone
+ * (docs/SLOTS.md §6, package B). Every target left is a plain directory on this
+ * machine's own filesystem.
  */
 export type EnvTarget =
   | 'windows-x64'
-  | 'wsl-x64'
   | 'mac-arm64'
   | 'nli-windows-x64'
   | 'nli-mac-arm64';
@@ -1722,10 +1873,8 @@ export interface EnvCatalogItem {
    * published" and disables Install — never downloads it unverified.
    */
   published: boolean;
-  /** Where it goes by default. A WSL target names a path inside the distro. */
+  /** Where it goes by default. */
   defaultDest: string;
-  /** True when the environment lives in WSL, so there is no directory picker. */
-  inWsl: boolean;
   /** The interpreter, when one is actually on disk. Null when it is not installed. */
   installedPath: string | null;
   /** True when settings.json already points the engine at that interpreter. */
@@ -1736,10 +1885,8 @@ export interface EnvCatalogItem {
 
 export interface EnvInstallRequest {
   target: EnvTarget;
-  /** Overrides the default location. Meaningless for a WSL target; ignored there. */
+  /** Overrides the default location. */
   dest?: string;
-  /** Which distro to extract into. WSL target only. */
-  distro?: string;
 }
 
 export interface EnvInstallResult {
@@ -1753,22 +1900,20 @@ export interface EnvInstallResult {
 // First run — electron/system-probe.ts, electron/ollama.ts, electron/llm-catalog.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * WHAT THIS MACHINE HAS BEEN TOLD ABOUT ITS LANGUAGE SERVERS — the settings
- * card's read and write, in one shape (electron/app-settings.ts owns the rules).
+/*
+ * `LlmServers` STOOD HERE — `{server, ollamaUrl, vllmUrl, vllmModel}`, the
+ * settings card's read and write for a machine that had been told which of two
+ * kinds of server its language acts spoke to, with both URLs kept at once so
+ * that trying vLLM for an evening did not cost somebody an address they had
+ * already typed.
  *
- * BOTH URLS EXIST AT ONCE and only one is in effect, which is deliberate: a
- * person who tries vLLM for an evening and switches back must not have to retype
- * an address they already gave. `vllmModel` may be empty, and empty MEANS
- * something — "whatever that server is serving", resolved by the engine against
- * the server and then recorded, because a vLLM process serves exactly one model.
+ * It is gone with the setting behind it (docs/SLOTS.md, Wave 61). There is one
+ * local server now and it is Ollama; everything else is a REGISTERED CRUCIBLE,
+ * which has a token, a rank and an enabled flag, and whose shape is
+ * `CrucibleServerView` in shared/slots.ts — declared there rather than here
+ * because that file is the whole vocabulary of where work goes, and this one is
+ * the vocabulary of what work is.
  */
-export interface LlmServers {
-  server: LlmServerKind;
-  ollamaUrl: string;
-  vllmUrl: string;
-  vllmModel: string;
-}
 
 /** The NVIDIA card, if there is one. Every unknown is null, never zero. */
 export interface CudaFacts {
@@ -1807,6 +1952,22 @@ export interface SystemProfile {
   detail: string;
 }
 
+/**
+ * One model ollama holds, with what it costs on disk.
+ *
+ * SEPARATE FROM `models` RATHER THAN REPLACING IT, and the redundancy is the
+ * cheaper of two costs. `models` is the NAME list, which is what the lineup
+ * matches a row against and what every caller but one wants; `bytes` is what
+ * the "Models on this machine" row prints, and it is null whenever `/api/tags`
+ * did not report a size. Deriving the names from this list at each call site
+ * would be the same map written four times to save one field.
+ */
+export interface OllamaHolding {
+  name: string;
+  /** `/api/tags`'s own `size`, in bytes. Null when it reported none. */
+  bytes: number | null;
+}
+
 /** Is ollama here, and is it running? Two different questions, both answered. */
 export interface OllamaFacts {
   /** The server answered `/api/version` on `url`. */
@@ -1817,6 +1978,8 @@ export interface OllamaFacts {
   installed: boolean;
   /** The models it already holds. Empty when nothing is running. */
   models: string[];
+  /** The same models with their sizes, for the disk inventory. */
+  holdings: OllamaHolding[];
   url: string;
   /** One sentence: running, installed-but-stopped, or absent. */
   detail: string;
@@ -1852,6 +2015,164 @@ export interface LlmChoices {
   suggested: string;
   /** The model jobs use today, whether or not setup has ever run. */
   current: string;
+  /**
+   * THE CLASSES A CRUCIBLE ON THIS MACHINE HAS ALREADY TAKEN OVER — null when
+   * none has, which is every machine without one.
+   *
+   * docs/SLOTS.md §5b: *"the app never pulls into [Ollama] while a local Crucible
+   * serves the class."* The wizard honours that by saying so in the rows rather
+   * than by hiding them: the list still describes the machine (that is what the
+   * step is for), each row still says what it costs, and the button that would
+   * spend seventeen gigabytes on a second copy of a model this computer already
+   * has is off, with the server's name beside it.
+   *
+   * A LOCAL SERVER ONLY. A Crucible on the Mac in the other room is a slot, not
+   * an owner of anything on this disk, and it does not stop somebody pulling a
+   * model for the evenings the Mac is asleep — which is the same distinction
+   * §5b draws about deleting.
+   */
+  crucible: { server: string; classes: ModelClass[] } | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The catalog, the tiles it lights, and the weights on this disk
+// (electron/llm-catalog.ts, electron/act-gates.ts, electron/machine-models.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * WHAT A MODEL IS FOR — the classes `app/shared/model-lineup.json` files its
+ * rows under, and the vocabulary Crucible's manifests use.
+ *
+ * `translate`, `simplify` and `analysis` travel together because they are one
+ * act three ways: the model says every block again, or says something about it,
+ * against the same materialised book. `clean` is separate because the cleanup
+ * wants a DIFFERENT model — a bigger one is slower at punctuation rather than
+ * better (`DEFAULT_CLEAN_TEXT_MODEL`, shared/pipeline.ts). `pages` is the vision
+ * model that reads a scan, which shares nothing with any of them.
+ */
+export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'pages';
+
+/**
+ * The acts the dock draws a tile for and this machine can refuse.
+ *
+ * `read` is the page reader rather than a class name, because the tile says OCR
+ * and the act is "read this book's pages" — the one act whose model is served
+ * locally by Foundry itself instead of pulled into ollama.
+ */
+export type ActName = 'translate' | 'simplify' | 'analysis' | 'clean' | 'read';
+
+/**
+ * ONE ANSWER PER ACT: may it run here, and the sentence either way.
+ *
+ * `why` IS ALWAYS SET, LIT OR DARK. A disabled tile whose tooltip says nothing
+ * is a tile that has told somebody "no" and refused to say what would change it
+ * — Owen's tiles are *"not lit up until the models are present"*, which is only
+ * a usable rule if the tile names the missing model. A lit gate's sentence names
+ * what is answering, which is what makes "why is this slow" answerable later.
+ *
+ * IT IS A FACT ABOUT THE MACHINE AND NOT ABOUT THE BOOK. The stage predicates
+ * (shared/stages.ts) still decide whether the act applies where somebody is
+ * standing; both have to say yes, and they say different things when they say
+ * no, so they are two gates and not one.
+ */
+export interface ActGate {
+  lit: boolean;
+  why: string;
+}
+
+/** Every tile's answer, in one read — `acts:gates`. */
+export type ActGates = Record<ActName, ActGate>;
+
+/** One model on this disk, as the inventory row prints it. */
+export interface MachineModelItem {
+  name: string;
+  /** What it is and where it came from. One line. */
+  detail: string;
+  /** On-disk size. Null when the store did not report one. */
+  bytes: number | null;
+}
+
+/** Which store a row belongs to. The removal rules differ per store, by owner. */
+export type MachineStoreId = 'foundry' | 'ollama' | 'crucible';
+
+/**
+ * ONE STORE THE APP KNOWS ABOUT — SLOTS.md §5b's "Models on this machine".
+ *
+ * Owen: *"id really rather not have multiple copies of gigantic models floating
+ * around"*. The stores do not share files and cannot: ollama holds its own
+ * quantised blobs, Crucible on WSL holds safetensors for vLLM, Crucible on the
+ * Mac holds MLX weights. So the row's job is to make the duplication VISIBLE,
+ * with sizes, rather than let it be discovered from a full disk.
+ */
+export interface MachineStore {
+  id: MachineStoreId;
+  label: string;
+  /** One sentence about this store on this machine, including an empty one. */
+  detail: string;
+  /** The store's total, or null when any part of it could not be measured. */
+  bytes: number | null;
+  items: MachineModelItem[];
+  /**
+   * Whether this screen may delete from it. True for Foundry's own downloads
+   * ONLY — Owen: *"ollama has its own thing going on and we should leave it
+   * be"*, and a Crucible's store belongs to Crucible.
+   */
+  removable: boolean;
+}
+
+/** The whole inventory, plus where the catalog behind it came from. */
+export interface MachineModels {
+  stores: MachineStore[];
+  /**
+   * What SLOTS.md §5b's rule says about the page reader right now — whether it
+   * has been (or would be) removed, what that costs, and which server page
+   * reading then depends on. Carried on the inventory rather than fetched
+   * separately because it is a sentence ABOUT one of the stores above, and a
+   * card that read the two through different doors could draw a store and an
+   * offer that disagree about whether the files are still there.
+   */
+  pageReader: RemovalOffer;
+  /** `model-lineup.json`'s own provenance, printed so the table is not anonymous. */
+  generatedBy: string;
+  generatedAt: string;
+}
+
+/**
+ * WHAT §5b's RULE SAYS ABOUT FOUNDRY'S PAGE-READER DOWNLOAD — computed fresh off
+ * the disk and the server registry every time it is asked for.
+ *
+ * Three shapes in one, told apart by `automatic` and `server`:
+ *   * `automatic: true` — a LOCAL Crucible serves `pages`, so the files are
+ *     Foundry's to remove and have been (or are about to be). `detail` says so.
+ *   * `server` set — a REMOTE Crucible serves `pages`. Nothing was removed;
+ *     `detail` carries §5b's sentence, *"page reading will then need <server> to
+ *     be reachable"*, and the card offers the removal rather than doing it.
+ *   * neither — nothing else on this machine reads pages, and the copy on this
+ *     disk is the one that works.
+ */
+export interface RemovalOffer {
+  /** True only when a LOCAL Crucible is serving `pages`. `unknown` is not true. */
+  automatic: boolean;
+  /** The bytes it would free, measured. Null when the directory could not be walked. */
+  bytes: number | null;
+  /**
+   * The REMOTE server page reading would fall to, or null.
+   *
+   * Null in both of the other two shapes, and for opposite reasons: an automatic
+   * removal's server is on this machine and is named in `detail`, and a machine
+   * with no Crucible at all has nothing to name.
+   */
+  server: string | null;
+  /** The sentence the settings row shows. Always set, including "nothing to offer". */
+  detail: string;
+}
+
+/** What a removal actually did, in the words the settings row prints. */
+export interface RemovalOutcome {
+  ok: boolean;
+  /** Bytes actually freed. Zero on a refusal, and the detail says why. */
+  freedBytes: number;
+  detail: string;
 }
 
 /** `download` has a percentage; the other two are a sentence and a spinner. */

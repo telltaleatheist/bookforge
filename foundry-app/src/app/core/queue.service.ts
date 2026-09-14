@@ -145,4 +145,17 @@ export class QueueService {
   async clearFinished(): Promise<void> {
     await api?.queue.clearFinished();
   }
+
+  /**
+   * Send a waiting row to a different slot — a slot name, or `any`
+   * (docs/SLOTS.md §3).
+   *
+   * NOTHING IS UPDATED HERE. The row comes back on `queue:changed` like every
+   * other change, which is this service's whole contract: the renderer never
+   * edits a Job. An optimistic local edit would be a second copy of the row
+   * racing main's, and the one it raced would win half the time.
+   */
+  async setWaitFor(id: string, waitFor: string): Promise<void> {
+    await api?.queue.setWaitFor(id, waitFor);
+  }
 }

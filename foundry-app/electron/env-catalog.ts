@@ -2,11 +2,17 @@
  * env-catalog — the Python environments foundry was MEASURED with, pinned.
  *
  * A conversion's speed, its VRAM ceiling and its failure modes are properties of
- * an exact set of wheels: vllm 0.11.0 against python 3.12.13, mlx-vlm 0.6.10
- * against 3.11.15, pymupdf 1.28.0 for the rasteriser every tier needs. `pip
- * install` on the user's machine resolves whatever the index offers TODAY and
- * produces a machine nobody has measured — so the app ships those environments
- * as release assets and downloads the one this platform can actually use.
+ * an exact set of wheels: mlx-vlm 0.6.10 against python 3.11.15, pymupdf 1.28.0
+ * for the rasteriser every tier needs, torch and transformers for the analysis
+ * worker. `pip install` on the user's machine resolves whatever the index offers
+ * TODAY and produces a machine nobody has measured — so the app ships those
+ * environments as release assets and downloads the one this platform can use.
+ *
+ * THERE IS NO LONGER A vLLM ENVIRONMENT HERE. `wsl-x64` — five gigabytes of CUDA
+ * wheels inside a WSL distro — retired on 2026-09-13 with the launcher that was
+ * its only consumer (docs/SLOTS.md §6, package B). The local page reader is a
+ * llama-server serving a GGUF now, and it is not a Python environment at all:
+ * `page-reader.ts` owns its download, and nothing about it belongs in this file.
  *
  * ── Two tables, deliberately apart ───────────────────────────────────────────
  *
@@ -45,8 +51,8 @@ const RELEASE_TAG = 'env-v1';
 
 /**
  * The file whose presence means "this directory is an environment we installed".
- * POSIX-separated: it is a path INSIDE the archive, and it is also handed to
- * `test -f` inside a WSL distro.
+ * POSIX-separated: it is a path INSIDE the archive, which is where that spelling
+ * comes from; `markerPath` joins it with this platform's separator.
  */
 export const MARKER_RELPATH = 'python/foundry-env.json';
 
@@ -126,29 +132,6 @@ export const ENV_ASSETS: Record<EnvTarget, EnvAsset> = {
     parts: [],
   },
 
-  // ~4.7 GiB of CUDA wheels: three assets, concatenated back in this order.
-  'wsl-x64': {
-    archive: 'foundry-env-wsl-x64-v1.tar.gz',
-    bytes: 5_074_335_683,
-    sha256: 'ee4fb2dc5059947e3a46bada2b4e53c9d39f1934f938799c391740a295d87ff7',
-    parts: [
-      {
-        name: 'foundry-env-wsl-x64-v1.tar.gz.part0',
-        bytes: 1_992_294_400,
-        sha256: '49741c342fbfba215b9caa7020fd5fa1741675f3733b2cfdd5736004ea6ae01f',
-      },
-      {
-        name: 'foundry-env-wsl-x64-v1.tar.gz.part1',
-        bytes: 1_992_294_400,
-        sha256: 'f77500336be807cecc3325922ebf47dc8f046c3b043176d7ff373239daec9111',
-      },
-      {
-        name: 'foundry-env-wsl-x64-v1.tar.gz.part2',
-        bytes: 1_089_746_883,
-        sha256: 'e1a270fa74241a650139b0ce04f44735bb7db19186b3af7715df6f885a9d47ba',
-      },
-    ],
-  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,9 +143,8 @@ export interface EnvSpec {
   /** What the card calls it. */
   label: string;
   /**
-   * The HOST that can use it. `wsl-x64` is a Linux environment, but the host
-   * that installs and drives it is win32 — the platform filter answers "should
-   * this machine be offered this", not "what kernel is the Python for".
+   * The HOST that can use it. The filter answers "should this machine be
+   * offered this", and the arch test beside it answers the rest.
    */
   platform: NodeJS.Platform;
   /** The host arch it requires, or null when any will do. */
@@ -172,13 +154,6 @@ export interface EnvSpec {
   packages: string[];
   /** The interpreter, relative to the unpack destination. POSIX, as in the tar. */
   pythonRelpath: string;
-  /**
-   * True when the environment must live INSIDE a WSL distro. Such a target has
-   * no directory picker: its destination is a path in the guest's filesystem,
-   * and extracting to it across \\wsl$ would flatten the symlinks a Python
-   * install is made of.
-   */
-  inWsl: boolean;
   /** One sentence for the card, saying what the environment buys. */
   purpose: string;
   /**
@@ -209,7 +184,6 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonVersion: '3.12.13',
     packages: ['pymupdf 1.28.0'],
     pythonRelpath: 'python/python.exe',
-    inWsl: false,
     purpose: 'PyMuPDF, which every tier needs — a run draws the book locally before anything reads it.',
     role: 'read',
   },
@@ -238,7 +212,6 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonVersion: '3.12.13',
     packages: ['torch 2.9.1+cpu', 'transformers 4.57.6', 'deberta-v3-base-zeroshot-v2.0'],
     pythonRelpath: 'python/python.exe',
-    inWsl: false,
     purpose: 'Reads a book against the analysis categories — the entailment model, weights included, offline from the first run.',
     role: 'nli',
   },
@@ -251,22 +224,8 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonVersion: '3.12.13',
     packages: ['torch 2.9.1', 'transformers 4.57.6', 'deberta-v3-base-zeroshot-v2.0'],
     pythonRelpath: 'python/bin/python3',
-    inWsl: false,
     purpose: 'The same entailment model on the Mac\'s own GPU — the worker picks `mps` when Metal is there.',
     role: 'nli',
-  },
-
-  'wsl-x64': {
-    target: 'wsl-x64',
-    label: 'vLLM in WSL',
-    platform: 'win32',
-    arch: 'x64',
-    pythonVersion: '3.12.13',
-    packages: ['vllm 0.11.0', 'pymupdf'],
-    pythonRelpath: 'python/bin/python3',
-    inWsl: true,
-    purpose: 'The reading server itself: vLLM on the local GPU, served to the engine over an endpoint.',
-    role: 'read',
   },
 
   'mac-arm64': {
@@ -277,7 +236,6 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonVersion: '3.11.15',
     packages: ['mlx-vlm 0.6.10', 'pymupdf 1.28.0'],
     pythonRelpath: 'python/bin/python3',
-    inWsl: false,
     purpose: 'Reading on the Mac\'s own GPU, plus the PyMuPDF every run rasterises with.',
     role: 'read',
   },
@@ -361,10 +319,8 @@ export function isPublished(target: EnvTarget): boolean {
  * Where an environment goes when the user does not say.
  *
  * Under the platform's own per-user application data, never beside the app: a
- * packaged install lives in Program Files, and five gigabytes of CUDA wheels
- * under a directory that an update replaces wholesale is a download done twice.
- * The WSL target's default is a path in the GUEST's home, tilde-form, because
- * bash is what will expand it.
+ * packaged install lives in Program Files, and half a gigabyte of wheels under a
+ * directory that an update replaces wholesale is a download done twice.
  */
 export function defaultDest(target: EnvTarget): string {
   switch (target) {
@@ -376,30 +332,22 @@ export function defaultDest(target: EnvTarget): string {
     case 'mac-arm64':
     case 'nli-mac-arm64':
       return path.join(os.homedir(), 'Library', 'Application Support', 'foundry', 'envs', target);
-    case 'wsl-x64':
-      return '~/.foundry/envs/wsl-x64';
   }
 }
 
 /**
  * The interpreter that will exist under `dest`.
  *
- * A WSL target is joined with POSIX rules even though this process is Windows —
- * the path is for bash, and `~\.foundry\envs\wsl-x64\python\bin\python3` is not
- * a thing any shell has ever resolved.
+ * The relpath is POSIX because it names a path inside the archive; it is split
+ * and rejoined with this platform's separator rather than pasted.
  */
 export function interpreterPath(target: EnvTarget, dest: string): string {
-  const spec = ENV_SPECS[target];
-  return spec.inWsl
-    ? path.posix.join(dest, spec.pythonRelpath)
-    : path.join(dest, ...spec.pythonRelpath.split('/'));
+  return path.join(dest, ...ENV_SPECS[target].pythonRelpath.split('/'));
 }
 
 /** The marker file under `dest` — the thing the delete guard looks for. */
 export function markerPath(target: EnvTarget, dest: string): string {
-  return ENV_SPECS[target].inWsl
-    ? path.posix.join(dest, MARKER_RELPATH)
-    : path.join(dest, ...MARKER_RELPATH.split('/'));
+  return path.join(dest, ...MARKER_RELPATH.split('/'));
 }
 
 /**

@@ -164,21 +164,38 @@ export const CLEAN_TEXT_MODELS: readonly CleanTextModelChoice[] = cleanTextModel
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
 /**
- * Where a vLLM serving the TEXT model is, when nobody said otherwise — a mirror
- * of the engine's `DEFAULT_VLLM_ENDPOINT` (src/translate/vllm.ts), written twice
- * for `DEFAULT_TRANSLATE_MODEL`'s reason: app/shared cannot import src/.
+ * WHICH DIALECT A TEXT ACT'S `--server` NAMES — the engine's three words,
+ * spelled the engine's way.
  *
- * NOT THE READING SERVER. `backend.endpointUrl` in the engine's settings.json
- * points at whatever vLLM reads PAGES, and this points at whatever vLLM answers
- * about TEXT. They are two different models and often two different machines;
- * one of them can be up while the other is not, and a single field for both
- * would be a setting that is wrong for one act whenever it is right for the
- * other.
+ * ── The rename, and why it is a rename and not a new type ──────────────────
+ *
+ * This read `'ollama' | 'vllm'` and mirrored a setting: the machine-wide choice
+ * of which server the three language acts spoke to. Both halves of that are gone
+ * (docs/SLOTS.md, Wave 61). The engine's door was renamed `openai` when it
+ * stopped being vLLM-only — it serves a Crucible, a local llama-server, a vLLM
+ * and a cloud provider alike — and the app's side of that rename is Package C,
+ * which is this. `job-queue.ts`'s `doorArgs` carried the two vocabularies' seam
+ * in a comment for exactly one wave; the comment is gone because the seam is.
+ *
+ * IT IS NO LONGER A SETTING, and that is the larger half of the change. Nobody
+ * picks a dialect any more: it falls out of WHERE the job was placed. The local
+ * slot is Ollama (a library of tags, `--model` required, unloaded at the end of
+ * every run); a Crucible slot is the OpenAI door at `<url>/openai`. So the value
+ * is decided at dispatch, written onto the request for the one function that
+ * spells the flags, and never stored anywhere.
+ *
+ * ── AND `anthropic` IS THE THIRD, ADDED WITH THE CLOUD SLOTS (Package F) ────
+ *
+ * The engine grew it as a dialect of its own — `POST /v1/messages`, a top-level
+ * `system`, `x-api-key`, a forced tool for a constrained verdict (docs/VLLM.md
+ * §2) — and this union is the app's side of the same word. It arrives here for
+ * the same reason the other two did: a CLOUD slot whose provider `kind` is
+ * `anthropic` places onto it, and a provider whose kind is `openai` places onto
+ * the door that already existed, because OpenAI's own API is an
+ * OpenAI-compatible server and needs no dialect of its own. Still not a setting,
+ * still decided at dispatch, still stored nowhere.
  */
-export const DEFAULT_VLLM_TEXT_ENDPOINT = 'http://localhost:8000/v1';
-
-/** What kind of server the three language acts speak to. Mirrors `ServerKind`. */
-export type LlmServerKind = 'ollama' | 'vllm';
+export type LlmServerKind = 'openai' | 'ollama' | 'anthropic';
 
 /**
  * What a rendering at the position is made of: one run of `vlm-convert`, and the

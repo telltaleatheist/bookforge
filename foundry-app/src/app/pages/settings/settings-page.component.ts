@@ -4,10 +4,13 @@ import { FormsModule } from '@angular/forms';
 import type { BackendMode, DoctorReport, EngineInfo, TierReport } from '@shared/types';
 
 import { api, hosted } from '../../core/foundry';
+import { CloudCardComponent } from './cloud-card.component';
 import { EnvCardComponent } from './env-card.component';
 import { LibraryCardComponent } from './library-card.component';
+import { MachineModelsCardComponent } from './machine-models-card.component';
 import { LlmCardComponent } from './llm-card.component';
-import { WslBackendComponent } from './wsl-backend.component';
+import { PageReaderCardComponent } from './page-reader-card.component';
+import { ServersCardComponent } from './servers-card.component';
 
 /**
  * Settings — what this machine can do, and which of it to use.
@@ -24,7 +27,10 @@ import { WslBackendComponent } from './wsl-backend.component';
  */
 @Component({
   selector: 'app-settings-page',
-  imports: [EnvCardComponent, FormsModule, LibraryCardComponent, LlmCardComponent, WslBackendComponent],
+  imports: [
+    CloudCardComponent, EnvCardComponent, FormsModule, LibraryCardComponent, LlmCardComponent,
+    MachineModelsCardComponent, PageReaderCardComponent, ServersCardComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="page">
@@ -149,20 +155,53 @@ import { WslBackendComponent } from './wsl-backend.component';
           <app-llm-card />
 
           <!--
-            The prebuilt Pythons. Above the WSL card on purpose: downloading the
-            measured environment is now the ordinary way to get one, and building
-            one with pip is the fallback for a machine that wants something else.
+            WHERE ELSE WORK CAN GO — the Crucible servers this machine knows
+            about, in the order it will try them (docs/SLOTS.md). Directly under
+            the language card because the two answer halves of one question: that
+            one is the model on THIS computer, this one is every other computer
+            that could run it. Drawn hosted as well, read-only, because a hosted
+            window still has slots — the host's — and a card that vanished would
+            leave the queue's picker naming machines nothing explains.
           -->
+          <app-servers-card />
+
+          <!--
+            AND THE THIRD ANSWER TO THE SAME QUESTION — somebody else's computer,
+            rented by the token (docs/SLOTS.md §3, Package F). Directly under the
+            Servers card because the three cards read downwards as the three
+            places a text act can go: this machine's Ollama, a Crucible somebody
+            runs, a provider somebody pays. It is LAST of the three because it is
+            the one with a bill on it, and because Owen asked for it as the
+            answer for a machine that cannot do the other two — *"for weaker
+            systems"*. Drawn hosted as well, read-only, for the Servers card's
+            reason: a hosted window still has slots, and a card that vanished
+            would leave the queue's picker naming providers nothing explains.
+          -->
+          <app-cloud-card />
+
+          <!-- The prebuilt Pythons: the rasteriser every tier needs, and the
+               analysis worker. Neither of them reads a page. -->
           <app-env-card (changed)="probe()" />
 
           <!--
-            The one backend this app can BUILD, rather than only measure. Windows
-            only: on Apple silicon the answer is MLX, and a card explaining that
-            WSL is a Windows feature is noise on a machine that will never want it.
+            The one backend this app INSTALLS AND RUNS, rather than only
+            measures. Drawn on every platform, which the WSL card it replaced
+            could not be: llama.cpp has a build for Windows, for both Macs and
+            for Linux, and the card says which one this machine gets. A Mac has
+            MLX in process as well and does not need this — but it is offered
+            anyway, because a Mac with no MLX environment installed still has to
+            be able to read a page.
           -->
-          @if (isWindows) {
-            <app-wsl-backend [report]="report()" (changed)="probe()" />
-          }
+          <app-page-reader-card (changed)="probe()" />
+
+          <!--
+            WHAT IS ON THE DISK, across every store the app knows about — docs/
+            SLOTS.md §5b. Last in the column because it is the only card here
+            that acts on nothing: it describes the consequences of the four cards
+            above it, so it reads after them. Its one button removes what Foundry
+            itself downloaded, and nothing else on the machine.
+          -->
+          <app-machine-models-card />
         </div>
       </section>
     </div>
@@ -324,6 +363,10 @@ export class SettingsPageComponent {
   protected title(tier: TierReport): string {
     switch (tier.id) {
       case 'endpoint': return 'Endpoint (OpenAI-compatible server)';
+      // Still reported by the ENGINE's doctor, which knows how to find a vLLM
+      // in WSL that somebody else built. This app stopped building or starting
+      // one (docs/SLOTS.md §6), so the arm stays as a label for a measurement
+      // and is no longer the name of anything this screen can act on.
       case 'wsl-vllm': return 'vLLM in WSL';
       case 'mlx': return 'MLX (Apple silicon)';
       case 'native': return 'Native (local, non-MLX)';

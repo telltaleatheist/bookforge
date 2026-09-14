@@ -8,7 +8,6 @@ import { canTranslateFrom } from '@shared/stages';
 import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
-  type LlmServerKind,
 } from '@shared/pipeline';
 import type { TranslateRequest } from '@shared/types';
 
@@ -581,15 +580,16 @@ export class TranslateDialogComponent {
   });
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
-  /**
-   * WHICH KIND OF SERVER this machine runs, from Settings and never typed here.
-   *
-   * It is not a per-book choice — a machine has one language server up — so it
-   * is seeded and carried rather than shown. It rides on the request with the
-   * model and the URL because the three have to agree (`TranslateRequest.server`).
+  /*
+   * THERE USED TO BE A `server` SIGNAL HERE, seeded from Settings and never
+   * shown, riding on the request so that the kind, the URL and the model agreed.
+   * The setting behind it is retired (docs/SLOTS.md, Wave 61) and so is the
+   * field: the two above are the LOCAL slot's answers, and a job sent to a
+   * registered Crucible takes its model and its address from that server rather
+   * than from this dialog. WHERE a job goes is picked on its queue row, not
+   * here — a per-book choice that this dialog deliberately does not make, for
+   * the same reason it never made this one.
    */
-  protected readonly server = signal<LlmServerKind>('ollama');
-
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
   /** The workspace plan hashes the whole book to key it. Not instant. */
@@ -599,7 +599,7 @@ export class TranslateDialogComponent {
     // The model and the URL come from the app's own settings, which first-run
     // setup wrote after measuring the machine. The constants above are the
     // floor for a renderer with no bridge under it — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama, this.server);
+    seedLlmDefaults(this.model, this.ollama);
     // Same rule as the OCR dialog: a complaint about the last book is cleared
     // when the book changes, and nothing else resets. The instructions in
     // particular are the user's careful answer and survive switching tabs.
@@ -642,14 +642,15 @@ export class TranslateDialogComponent {
         ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
         /*
-         * AN EMPTY MODEL IS KEPT EMPTY UNDER vLLM, where it means "whatever that
-         * server is serving" and the engine resolves it against the server and
-         * records what answered. Falling back to the Ollama tag here would put a
-         * name on the job that no vLLM has ever heard of.
+         * THE MODEL IS NEVER EMPTY NOW, and the branch that allowed it went with
+         * the vLLM setting. Empty meant "whatever that server is serving", which
+         * is a question only the OpenAI door asks — and the only thing on that
+         * door is a Crucible, whose model is named by its own capability record
+         * at the spawn. This pair is the LOCAL slot's, and Ollama holds a library
+         * the engine refuses to guess at.
          */
-        model: this.model().trim() || (this.server() === 'vllm' ? '' : DEFAULT_MODEL),
+        model: this.model().trim() || DEFAULT_MODEL,
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
-        ...(this.server() === 'vllm' ? { server: 'vllm' as const } : {}),
         /*
          * WHERE THE ANSWERS GO, AND THE WHOLE OF WHAT THIS RUN MAKES. Every
          * accepted block lands there the moment it is accepted, so a run that is

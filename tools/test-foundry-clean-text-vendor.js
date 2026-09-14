@@ -81,6 +81,45 @@
  * as it stands; both copies agreeing is what this keeper can enforce, and it
  * does.
  *
+ * ── THE DECISION OF 2026-09-14, 83d7b66 → 12b065d (the 4beb88b re-vendor) ────
+ *
+ * The re-vendor to `4beb88b` moved the shipped anchor again — and it moved it
+ * to `12b065d`, NOT to `4beb88b`, because the anchor is the commit the BINARY
+ * reports and `dist/foundry-windows-x64.exe` answers `foundry 1.3.0 (12b065d)`.
+ * That is the mechanism working as designed rather than a lag: the release
+ * build was taken mid-range, and `git diff 12b065d 4beb88b -- src/clean
+ * test/clean` is empty, so nothing this keeper asks about differs between the
+ * commit the app was copied from and the commit the engine was built from.
+ *
+ * All thirteen files were read over `83d7b66..12b065d`, one path at a time.
+ * TWELVE HAVE AN EMPTY LOG. The thirteenth is
+ * `src/clean/tts-number-normalizer.ts`, moved by exactly one commit —
+ * `76444fb`, "a cloud provider is a door for the text acts" — and the whole of
+ * its diff against this file is ONE WORD INSIDE A DOCBLOCK:
+ *
+ *     - * above this line is shared by both doors unchanged: the rules, ...
+ *     + * above this line is shared by every door unchanged: the rules, ...
+ *
+ * Anthropic joins OpenAI and Ollama, so "both doors" had stopped being true of
+ * the sentence that counts them. `both doors` and `every door` are the same
+ * nine characters, which is why the file is 122,131 bytes on both sides and
+ * only the sha moved.
+ *
+ * VERDICT: PORT, and the weakest kind there is — not one byte outside a
+ * comment, no rule table, no validator, no prompt, no constant. `n6` was right
+ * to stay where it is, and this is the case the doctrine's "a rule move means
+ * NORMALIZER_VERSION should have moved with it" was written to let through.
+ * Repinned below with that reason.
+ *
+ * `ONE_DOOR_BASELINE` MOVED WITH IT, 969dd96 → 76444fb, and that is the second
+ * half of the same decision rather than a way to make tier 3 green. The
+ * baseline's stated rule is "it moves the next time Foundry legitimately
+ * changes one of these"; `76444fb` IS that change, so the freeze is now
+ * asserted from the last commit that touched any of the three. Nothing is
+ * loosened: the range `969dd96..76444fb` that the old baseline covered
+ * contained exactly this one comment edit and no other movement in the three
+ * files, and tier 2 still pins the same file by content sha256 either way.
+ *
  * ── What is compared, and why by name ───────────────────────────────────────
  *
  * Both sides are read out of GIT, never off a working tree:
@@ -295,7 +334,18 @@ const VENDOR_LEAVES = '770480d';
  * and moving it is a DECISION, on the same terms as a regenerated pin: read the
  * commit, and if a rule moved, `NORMALIZER_VERSION` must move with it.
  */
-const ONE_DOOR_BASELINE = '969dd96';
+/*
+ * MOVED 2026-09-14, 969dd96 → 76444fb, as a DECISION and not to clear a red
+ * keeper. `76444fb` is the next commit after `969dd96` that touched any of the
+ * three, it touched exactly one of them, and what it touched was a comment (see
+ * "THE DECISION OF 2026-09-14" in the header). The baseline is therefore still
+ * "the last commit that legitimately changed one of these", which is what makes
+ * the freeze mean something; the alternative — pinning the baseline at 969dd96
+ * forever and whitelisting the file — would have converted a freeze into a list
+ * of exceptions, which is how this keeper's fixed anchor went wrong in the
+ * first place.
+ */
+const ONE_DOOR_BASELINE = '76444fb';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -340,7 +390,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'aae1de6d6955b555c3c944f43432226eb4c02286be66cb8035851217f8f03205',
+      sha256: 'f478c8a91f42bea5c92f33dbdabe0aa868af327085da14447b7d5001cf563c1e',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -356,7 +406,14 @@ const FILES = [
         + 'STILL GOOD at 83d7b66 (the v1.3.0 release commit) — the pin was NOT regenerated for '
         + 'it, because `git log cd89ee7..83d7b66 -- src/clean/tts-number-normalizer.ts` is empty: '
         + 'the one-door rework (646e8a1) changed how the runner TALKS to a server, never what '
-        + 'this file decides. Asserted rather than read off that log by tier 3 below.',
+        + 'this file decides. Asserted rather than read off that log by tier 3 below. '
+        + 'REPINNED 2026-09-14 for the 4beb88b re-vendor, whose binary reports 12b065d. '
+        + '`git log 83d7b66..12b065d -- <this file>` names ONE commit, 76444fb (the cloud '
+        + 'provider door), and its entire diff here is one word inside a docblock: "shared by '
+        + 'both doors unchanged" became "shared by every door unchanged", because Anthropic '
+        + 'made the door count three. Same nine characters, so the file is 122,131 bytes before '
+        + 'and after and only the sha moved. A PORT with not one byte outside a comment — no '
+        + 'rule, no validator, no prompt, no constant — so n6 was right to stay.',
     },
   },
   {

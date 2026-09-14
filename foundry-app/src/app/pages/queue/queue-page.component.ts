@@ -1,10 +1,27 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 
+import { ANY_SLOT } from '@shared/slots';
 import type { Job } from '@shared/types';
 
 import { QueueService } from '../../core/queue.service';
-import { QueueViewService } from '../../core/queue-view.service';
+import { QueueViewService, type SlotView } from '../../core/queue-view.service';
 import { hosted } from '../../core/foundry';
+
+/**
+ * ONE BLOCK OF THE SLOT PICKER'S OPTION LIST — see `pickerGroups`.
+ *
+ * `label: null` is the ungrouped block and is not the same as an empty label: an
+ * `<optgroup label="">` draws an indented, headed section with nothing written
+ * over it, which is worse than no grouping at all. The `key` exists only so
+ * `@for`'s `track` has something stable to hold; the label is what a person
+ * reads and one of them is deliberately absent.
+ */
+interface PickerGroup {
+  key: string;
+  label: string | null;
+  options: string[];
+}
 
 /**
  * THE QUEUE PAGE — the whole board, with room to breathe.
@@ -21,11 +38,12 @@ import { hosted } from '../../core/foundry';
  *   Needs you    — failures, with the engine's own sentence. Not drawn when
  *                  there are none, which is almost always, and therefore worth
  *                  reading when it is.
- *   On the bench — the three slots, always all three, occupied or free. This is
- *                  the page's centre of gravity, and the reason the page exists
- *                  at all: rationing one GPU slot and two CPU slots is the whole
- *                  job of the scheduler, and the dropdown has room to group rows
- *                  by lane but not to draw the slots themselves.
+ *   On the bench — the slots, always all of them, occupied or free: a card per
+ *                  MACHINE (one per compute slot, Package G) and then the two
+ *                  CPU slots. This is the page's centre of gravity, and the
+ *                  reason the page exists at all: rationing those slots is the
+ *                  whole job of the scheduler, and the dropdown has room to
+ *                  group rows by lane but not to draw the slots themselves.
  *   Up next      — everything waiting, GROUPED BY BOOK, each row saying why it
  *                  is still.
  *   Finished     — today's work as history, in a table, rather than as more rows
@@ -70,6 +88,7 @@ import { hosted } from '../../core/foundry';
  */
 @Component({
   selector: 'app-queue-page',
+  imports: [FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (!hosted()) {
@@ -135,22 +154,45 @@ import { hosted } from '../../core/foundry';
         </header>
 
         <!--
-          ONE CARD PER SLOT, ALWAYS ALL THREE. The GPU card is the widest because
-          the card is the resource a person schedules their day around — and
-          because the GPU lane is the one that costs hours, which is the same
-          fact the chip's progress hairline follows.
+          ONE CARD PER SLOT, ALWAYS ALL OF THEM — a machine per GPU card since
+          Package G, and the two CPU slots after them. The GPU cards are the
+          widest because the card is the resource a person schedules their day
+          around, and because that is the lane that costs hours, which is the
+          same fact the chip's progress hairline follows.
 
           A slot is drawn free when it is free, in words. That is the fact a
           board exists to show at a glance: "the card is idle while these two
-          compile" is exactly as interesting as knowing what is running.
+          compile" is exactly as interesting as knowing what is running — and
+          with two machines it is the fact that makes the second one worth
+          having, because an idle Mac beside a busy desk is a job that could be
+          moving.
         -->
-        <div class="slots">
+        <div class="slots" [class.wide]="view.slots().length > 3">
           @for (slot of view.slots(); track slot.key) {
             <article class="slot-card"
                      [class.gpu]="slot.lane === 'gpu'"
+                     [class.leaving]="slot.leaving"
                      [class.idle]="slot.occupant === null">
               <div class="slot-strip" [title]="slot.hint">
-                <span>{{ slot.lane === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ slot.index }} of {{ slot.of }}</span>
+                <span class="slot-name">{{ slot.title }}</span>
+                <!--
+                  WHOSE MACHINE THIS IS, beside its name. The name is whatever
+                  somebody typed into the Servers card; this says what it is,
+                  which is the difference between "the GPU in this box" and "a
+                  Crucible in another room" (docs/SLOTS.md §3).
+
+                  THE "on <slot>" TAG IS STILL HERE and has moved to the one
+                  card that still needs it. A GPU card IS a machine now, so a tag
+                  under its own name saying the run is on it would be the card
+                  repeating itself; a CPU card is this computer's disk, and where
+                  its run went is the question the tag was always answering. It
+                  is gated on there being more than one machine, exactly as it
+                  was: with one slot there is no other answer it could give.
+                -->
+                @if (whose(slot); as kind) { <span class="on">{{ kind }}</span> }
+                @if (slot.lane === 'cpu' && view.computeSlots().length > 1) {
+                  @if (slot.occupant?.ranOn; as where) { <span class="on">on {{ where }}</span> }
+                }
                 @if (slot.occupant; as busy) {
                   <button class="btn stop" (click)="queue.cancel(busy.id)"
                           [attr.aria-label]="'Cancel ' + view.label(busy)"
@@ -245,11 +287,41 @@ import { hosted } from '../../core/foundry';
                 @if (view.stepDetail(busy, 400); as detail) {
                   <p class="note-line" [title]="busy.note ?? busy.message ?? ''">{{ detail }}</p>
                 }
+                <!--
+                  WHAT THIS RUN HAS SPENT, on a card whose slot is a cloud
+                  provider — and on any other card whose server happened to
+                  count, because the fact is the fact. It appears at the END of
+                  the run rather than climbing, since the engine prints its one
+                  usage line last (usageLine, src/translate/transport.ts); a
+                  card that showed a token counter ticking would be inventing a
+                  measurement the engine does not publish. No price: Foundry
+                  does not price it (docs/VLLM.md §2a).
+                -->
+                @if (view.spent(busy); as spent) {
+                  <p class="spent" [title]="view.spentDetail(busy)">{{ spent }}</p>
+                }
               } @else {
                 <div class="free">
                   <div class="free-head">Free</div>
                   <div class="free-sub">Nothing running in this slot</div>
                 </div>
+              }
+
+              <!--
+                WHAT IS WAITING FOR THIS MACHINE, in dispatch's own sentence —
+                "busy: bookforge, tts qwen3.5-9b 62% done", "someone is
+                narrating on X", "X is unreachable". It is drawn under an
+                occupied card as well as a free one, because the two say
+                different things and both are worth knowing: over a free card it
+                is why nothing has started, and over a busy one it is what is
+                next in line for it.
+
+                It is never this app's paraphrase. The sentence is the one main
+                already put on the row (electron/crucible-dispatch.ts renders
+                every refusal by name), and the row itself is down in Up next.
+              -->
+              @if (slot.waiting) {
+                <p class="waiting" [title]="slot.waiting">{{ slot.waiting }}</p>
               }
             </article>
           }
@@ -281,6 +353,26 @@ import { hosted } from '../../core/foundry';
                     <div class="sub">{{ stateLine(job) }}</div>
                   </div>
                   <div class="qright">
+                    @if (picking(job)) {
+                      <select class="slotpick" [ngModel]="job.waitFor ?? anySlot"
+                              [name]="'slot' + job.id"
+                              [title]="'Which machine this runs on. A job never moves once it has started.'"
+                              (ngModelChange)="sendTo(job, $event)">
+                        @for (group of pickerGroups(job); track group.key) {
+                          @if (group.label === null) {
+                            @for (option of group.options; track option) {
+                              <option [value]="option">{{ optionLabel(option) }}</option>
+                            }
+                          } @else {
+                            <optgroup [label]="group.label">
+                              @for (option of group.options; track option) {
+                                <option [value]="option">{{ optionLabel(option) }}</option>
+                              }
+                            </optgroup>
+                          }
+                        }
+                      </select>
+                    }
                     @if (job.state === 'held' || job.state === 'queued') {
                       <button class="btn stop" (click)="queue.remove(job.id)"
                               [attr.aria-label]="'Remove ' + view.label(job) + ' from the queue'"
@@ -346,6 +438,34 @@ import { hosted } from '../../core/foundry';
                     </span>
                     <span class="cright">
                       <!--
+                        WHERE THIS ONE GOES — drawn only when there is more than
+                        one slot to choose from, which is the friend with a GPU
+                        and no Crucible never seeing it at all (docs/SLOTS.md §1).
+                        Not drawn on a running row either: a job is atomic on one
+                        slot, and a control that cannot do anything is worse than
+                        no control.
+                      -->
+                      @if (picking(job)) {
+                        <select class="slotpick xs" [ngModel]="job.waitFor ?? anySlot"
+                                [name]="'cslot' + job.id"
+                                [title]="'Which machine this runs on. A job never moves once it has started.'"
+                                (ngModelChange)="sendTo(job, $event)">
+                          @for (group of pickerGroups(job); track group.key) {
+                            @if (group.label === null) {
+                              @for (option of group.options; track option) {
+                                <option [value]="option">{{ optionLabel(option) }}</option>
+                              }
+                            } @else {
+                              <optgroup [label]="group.label">
+                                @for (option of group.options; track option) {
+                                  <option [value]="option">{{ optionLabel(option) }}</option>
+                                }
+                              </optgroup>
+                            }
+                          }
+                        </select>
+                      }
+                      <!--
                         REMOVE, and never "Cancel": these rows have not run. Same
                         ✕ as the dropdown's, same call, and the same verb — a
                         "Cancelled" row for a batch item somebody changed their
@@ -404,7 +524,21 @@ import { hosted } from '../../core/foundry';
                 <tr>
                   <td class="b" [title]="view.paths(job)">{{ view.label(job) }}</td>
                   <td>{{ kindLine(job) }}</td>
-                  <td class="outcome">{{ outcome(job) }}</td>
+                  <!--
+                    THE OUTCOME, AND UNDER IT WHAT THE RUN SPENT where a server
+                    counted — which is a cloud provider and nothing else today
+                    (Ollama reports no usage, so the engine prints none and the
+                    row has none). In the same cell rather than a sixth column,
+                    because a column that is empty on every local run would be
+                    four fifths of a table of blanks. No price on it: Foundry
+                    does not price it (docs/VLLM.md §2a).
+                  -->
+                  <td class="outcome">
+                    {{ outcome(job) }}
+                    @if (view.spent(job); as spent) {
+                      <span class="spent" [title]="view.spentDetail(job)">{{ spent }}</span>
+                    }
+                  </td>
                   <td>
                     <span class="pill"
                           [class.ok]="job.state === 'done'"
@@ -553,9 +687,17 @@ import { hosted } from '../../core/foundry';
       rather than about the layout: it is the lane that runs for hours and the
       one everything else waits behind. One column on a narrow window, because
       three cards at 300 pixels each is three cards nobody can read.
+
+      PAST THREE CARDS THE WEIGHTING GOES, and that is the same statement made
+      about a different board. Three columns with the first one wide is a shape
+      for one card and two compiles; a person with two Crucibles has three
+      MACHINES and two CPU slots, and no one of them is the one the day is
+      planned around any more. So the grid becomes even columns that wrap, and
+      the cards keep their own emphasis through the accent on the top edge.
     */
     .slots { display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 12px; }
-    @media (max-width: 1000px) { .slots { grid-template-columns: minmax(0, 1fr); } }
+    .slots.wide { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    @media (max-width: 1000px) { .slots, .slots.wide { grid-template-columns: minmax(0, 1fr); } }
 
     .slot-card {
       background: var(--bg-elevated);
@@ -566,6 +708,29 @@ import { hosted } from '../../core/foundry';
       min-width: 0;
     }
     .slot-card.gpu { border-top-color: var(--accent); }
+    /*
+      A MACHINE ON ITS WAY OUT is drawn in the error colour and is not an error:
+      the run is fine and will finish. The colour is the one this app already
+      spends on "this needs your attention eventually", and the hover says why.
+    */
+    .slot-card.leaving { border-top-color: var(--error); }
+    /* The machine's name is the card's own heading and outranks the strip's
+       small-caps label — it is a proper noun somebody typed, so it keeps its
+       own letters. */
+    .slot-name {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      text-transform: none; color: var(--text-secondary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* Dispatch's own sentence about what this machine is holding up. Quiet, and
+       never truncated to a width — a wait that cannot be read is a wait a person
+       has to guess at. */
+    .waiting {
+      margin: 9px 0 0;
+      font-size: 11.5px; line-height: 1.45;
+      color: var(--text-tertiary);
+      word-break: break-word;
+    }
     /* A free slot is drawn as an outline rather than as a filled card: it is a
        space, and it should look like one without having to be read first. */
     .slot-card.idle { border-style: dashed; border-top-style: solid; background: transparent; }
@@ -664,6 +829,17 @@ import { hosted } from '../../core/foundry';
       word-break: break-word;
     }
 
+    /* What the run spent. Monospaced because it is two large numbers a person
+       compares against another row's, and grey because it is an accounting
+       detail beside a progress bar rather than a thing to act on. */
+    .spent {
+      display: block;
+      margin: 5px 0 0;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
     .free { padding: 12px 0 6px; text-align: center; }
     .free-head { font-size: 12px; color: var(--text-tertiary); }
     .free-sub { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
@@ -677,6 +853,27 @@ import { hosted } from '../../core/foundry';
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .qright { display: flex; align-items: center; gap: 6px; flex: none; }
+
+    /*
+      THE SLOT PICKER. Sized to sit beside a ✕ without becoming the thing the eye
+      lands on: which machine a job runs on matters, and it matters less than
+      what the job is.
+    */
+    .slotpick {
+      height: 22px;
+      max-width: 150px;
+      padding: 0 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+    }
+    .slotpick.xs { height: 20px; font-size: 10px; max-width: 130px; }
+    .on {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-tertiary);
+    }
 
     .chain { padding: 0 14px 10px; }
 
@@ -797,6 +994,108 @@ export class QueuePageComponent {
   protected readonly hosted = hosted;
   protected readonly queue = inject(QueueService);
   protected readonly view = inject(QueueViewService);
+
+  /**
+   * ── THE SLOT PICKER — WHERE, not when ─────────────────────────────────────
+   *
+   * docs/SLOTS.md §3. A slot is a place a job's compute can go: this computer's
+   * own GPU, or a registered Crucible server.
+   *
+   * THE LIST IS THE SERVICE'S NOW, and it is the same move this whole page is:
+   * the bench draws a card per slot, the picker draws a name per slot, and two
+   * reads of `slots:list` would be two answers that can differ for a frame — in
+   * one window, side by side. It is still read ONCE, for the reason it always
+   * was (a settings fact, changed on another screen); the argument now lives on
+   * `QueueViewService.computeSlots` with the rest of the board's vocabulary.
+   *
+   * EMPTY OR ONE ENTRY IS THE COMMON CASE AND DRAWS NO PICKER. Owen: *"a friend
+   * with no Crucible sees ONE slot, their local GPU, and never meets the
+   * picker."* Every `@if (picking(job))` in the template above is that sentence.
+   */
+  protected readonly slots = this.view.computeSlots;
+  protected readonly anySlot = ANY_SLOT;
+
+  /**
+   * WHOSE MACHINE A BENCH CARD IS, in two words under the name — or the empty
+   * string, which is every CPU card and every machine that has left the list.
+   *
+   * The kinds are the board's (`ComputeSlotKind`), said in a person's words: a
+   * `crucible` slot is a server somebody registered and a `cloud` slot is a
+   * provider with a bill attached. THE LOCAL SLOT SAYS NOTHING, because it has
+   * already said it: its name is "This computer" (`LOCAL_SLOT_NAME`,
+   * shared/slots.ts), and a kind line repeating that under it would be furniture.
+   * A card that is `leaving` says nothing either — its hover says the whole
+   * story, and a kind beside a name that is no longer offered would read as a
+   * claim the list no longer makes.
+   */
+  protected whose(slot: SlotView): string {
+    if (slot.leaving || slot.kind === null || slot.kind === 'local') return '';
+    return slot.kind === 'cloud' ? 'cloud' : 'crucible';
+  }
+
+  /**
+   * Is there a picker on this row at all?
+   *
+   * Three noes, each its own fact: there is nothing to choose between, this row
+   * never meets a model (an export, a mint — `waitFor` is absent and always will
+   * be), or it has started, and a started job stays where it is.
+   */
+  protected picking(job: Job): boolean {
+    if (this.slots().length < 2) return false;
+    if (job.waitFor === undefined) return false;
+    return job.state === 'held' || job.state === 'queued';
+  }
+
+  /**
+   * The names this row may be sent to, in rank order, with `any` first — IN TWO
+   * GROUPS, because one of them costs money.
+   *
+   * ── Why the cloud slots are drawn apart and not merely listed ─────────────
+   *
+   * docs/SLOTS.md §3: a cloud provider is *"a deliberate per-job choice, never
+   * something `any` falls through to"*. Every mechanism that enforces that is in
+   * main — the `any` walk steps past them, `New jobs wait for: top` cannot name
+   * one — and all of it is invisible here. What is visible is this dropdown, and
+   * a provider sitting in the same flat list as "This computer" would read as
+   * one more machine. The `<optgroup>` is where the difference is SAID: "Cloud —
+   * costs credits", once, above the names it applies to.
+   *
+   * A STORED NAME THAT IS NO LONGER A SLOT IS KEPT IN THE LIST, at the end of
+   * the machines, and that is deliberate: the row IS waiting for it, a select
+   * whose value is not among its options would silently show the first option
+   * instead, and the person would read the picker as saying something about
+   * their job that is not true. It goes with the machines rather than with the
+   * cloud because a slot that is gone has no kind any more, and guessing one
+   * would be the picker inventing a bill. The Servers card is where such a row
+   * gets rescued in a batch; this keeps the one-row story honest meanwhile.
+   */
+  protected pickerGroups(job: Job): PickerGroup[] {
+    const slots = this.slots();
+    const names = slots.map((slot) => slot.name);
+    const stored = job.waitFor;
+    const stale = stored !== undefined && stored !== ANY_SLOT && !names.includes(stored)
+      ? [stored]
+      : [];
+    const machines = slots.filter((slot) => slot.kind !== 'cloud').map((slot) => slot.name);
+    const cloud = slots.filter((slot) => slot.kind === 'cloud').map((slot) => slot.name);
+    const groups: PickerGroup[] = [
+      { key: 'machines', label: null, options: [ANY_SLOT, ...machines, ...stale] },
+    ];
+    if (cloud.length > 0) {
+      groups.push({ key: 'cloud', label: 'Cloud — costs credits', options: cloud });
+    }
+    return groups;
+  }
+
+  protected optionLabel(option: string): string {
+    if (option === ANY_SLOT) return 'Any — first one free';
+    return this.slots().some((slot) => slot.name === option) ? option : `${option} (not available)`;
+  }
+
+  protected sendTo(job: Job, waitFor: string): void {
+    if (waitFor === (job.waitFor ?? ANY_SLOT)) return;
+    void this.queue.setWaitFor(job.id, waitFor);
+  }
 
   /** How many rows are waiting, across every book — the band's own count. */
   protected waitingCount(): number {

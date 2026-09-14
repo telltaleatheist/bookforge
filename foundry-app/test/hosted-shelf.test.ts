@@ -22,7 +22,7 @@
  *
  * The reading server needs none: a pump that finds nothing to do declares drain,
  * and `noteQueueIdle` answers immediately unless this process OWNS a server
- * (electron/vllm-server.ts) — which a test never does.
+ * (electron/page-reader.ts) — which a test never does.
  */
 import { beforeAll, expect, mock, test } from 'bun:test';
 import * as os from 'node:os';

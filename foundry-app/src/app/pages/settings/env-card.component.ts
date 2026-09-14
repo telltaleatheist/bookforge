@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import type { EnvCatalogItem, EnvInstallProgress, EnvTarget, Job, WslFacts } from '@shared/types';
+import type { EnvCatalogItem, EnvInstallProgress, EnvTarget, Job } from '@shared/types';
 
 import { QueueService } from '../../core/queue.service';
 import { api } from '../../core/foundry';
@@ -19,8 +19,8 @@ import { api } from '../../core/foundry';
  *
  * The app installs what this machine is missing BY ITSELF at startup, as rows in
  * the queue shelf. This card is deliberately the secondary path: it exists for
- * the three things automation is not allowed to decide for you — a different
- * location, which WSL distro, and "install it again anyway".
+ * the two things automation is not allowed to decide for you — a different
+ * location, and "install it again anyway".
  *
  * ── Two feeds, and why ───────────────────────────────────────────────────────
  *
@@ -84,32 +84,15 @@ import { api } from '../../core/foundry';
           }
 
           <!-- ── Where it goes ──────────────────────────────────────────── -->
-          @if (item.inWsl) {
-            <label class="field">
-              <span class="label">Distro</span>
-              @if (wsl()?.available) {
-                <select [ngModel]="distro()" (ngModelChange)="distro.set($event)"
-                        [disabled]="busy()" [name]="'distro-' + item.target">
-                  @for (name of wsl()?.distros ?? []; track name) {
-                    <option [value]="name">{{ name }}</option>
-                  }
-                </select>
-              } @else {
-                <span class="detail">{{ wsl()?.reason ?? 'Looking for WSL…' }}</span>
-              }
-            </label>
-            <p class="small mono">{{ item.defaultDest }} — inside the distro, not on the Windows drive.</p>
-          } @else {
-            <label class="field">
-              <span class="label">Destination</span>
-              <div class="dest">
-                <input type="text" class="mono" [ngModel]="destOf(item)"
-                       (ngModelChange)="setDest(item.target, $event)"
-                       [disabled]="busy()" [name]="'dest-' + item.target">
-                <button class="ghost tiny" [disabled]="busy()" (click)="pickDest(item)">Browse…</button>
-              </div>
-            </label>
-          }
+          <label class="field">
+            <span class="label">Destination</span>
+            <div class="dest">
+              <input type="text" class="mono" [ngModel]="destOf(item)"
+                     (ngModelChange)="setDest(item.target, $event)"
+                     [disabled]="busy()" [name]="'dest-' + item.target">
+              <button class="ghost tiny" [disabled]="busy()" (click)="pickDest(item)">Browse…</button>
+            </div>
+          </label>
 
           <!-- ── Doing it ───────────────────────────────────────────────── -->
           @if (jobFor(item.target); as job) {
@@ -243,9 +226,6 @@ export class EnvCardComponent {
 
   protected readonly items = signal<EnvCatalogItem[]>([]);
   protected readonly loading = signal(false);
-  protected readonly wsl = signal<WslFacts | null>(null);
-  protected readonly distro = signal('');
-
   /** The picker's answer, per target, until the page is left. */
   private readonly dests = signal<Record<string, string>>({});
   /** The last progress event per target — the bar, and nothing else. */
@@ -264,10 +244,6 @@ export class EnvCardComponent {
       this.live.update((all) => ({ ...all, [progress.target]: progress }));
     });
     void this.load();
-    void api.wsl.facts().then((facts) => {
-      this.wsl.set(facts);
-      if (this.distro().length === 0) this.distro.set(facts.distros[0] ?? '');
-    });
 
     // An install that ENDED — ours or the startup provisioner's — changes what
     // the tier cards say. Re-measure rather than assert: this app does not get
@@ -344,13 +320,7 @@ export class EnvCardComponent {
       delete next[item.target];
       return next;
     });
-    await api.env.install({
-      target: item.target,
-      // A WSL target's destination is a path in the guest; the picker cannot
-      // express one, so nothing is sent and the installer uses its default.
-      dest: item.inWsl ? undefined : this.destOf(item),
-      distro: item.inWsl ? (this.distro() || undefined) : undefined,
-    });
+    await api.env.install({ target: item.target, dest: this.destOf(item) });
   }
 
   protected async cancel(): Promise<void> {

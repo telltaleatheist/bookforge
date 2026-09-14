@@ -6,9 +6,9 @@
  * machinery around them:
  *
  *   **Split assets are concatenated one part at a time.** GitHub caps a release
- *   asset at 2 GiB, so the WSL environment arrives as three. Each part is
- *   fetched to its own file, appended to the growing archive, then DELETED — so
- *   peak extra disk is the archive plus one part, not the archive twice.
+ *   asset at 2 GiB, so an environment larger than that arrives in pieces. Each
+ *   part is fetched to its own file, appended to the growing archive, then
+ *   DELETED — so peak extra disk is the archive plus one part, not two archives.
  *
  *   **Redirects are followed by hand.** A release download is a 302 to
  *   objects.githubusercontent.com with a signed query string; `https.get` does
@@ -182,6 +182,180 @@ export function fetchToFile(
   });
 }
 
+/**
+ * The same bytes, but RESUMABLE — and therefore NOT hashed on the way past.
+ *
+ * ── Why a second fetcher rather than a flag on the first ────────────────────
+ *
+ * `fetchToFile` above hashes every chunk as it goes, which is what makes a five
+ * gigabyte archive cost zero extra reads to verify. That trick requires seeing
+ * byte zero: a download that picks up at byte 900,000,000 has no way to feed the
+ * first 900 MB to the hash without reading them again, so a `resume` flag on
+ * that function would be a function whose `sha256` field is sometimes a lie
+ * about the whole file. The two behaviours are named separately instead, and
+ * this one returns no hash at all. `sha256File` is how its caller verifies, and
+ * it pays a full read for it — worth it for the page reader's model files,
+ * which are gigabytes over somebody's home line and the one download in this
+ * app a person is most likely to interrupt.
+ *
+ * `Range: bytes=N-` against an existing `<dest>.part`. A server that answers
+ * 206 continues it; one that answers 200 has ignored the range and is sending
+ * the whole file, so the part is truncated and it starts again — silently
+ * appending a second copy of the file onto the first is the failure this branch
+ * exists to prevent. The `.part` name is load-bearing too: a half file that
+ * wore the real name would be indistinguishable from a finished one to every
+ * "is it already there" check in this app.
+ */
+export function fetchResumable(
+  url: string,
+  destPath: string,
+  onBytes: (received: number, total: number | null) => void,
+  signal: AbortSignal,
+): Promise<{ bytes: number }> {
+  const partPath = `${destPath}.part`;
+
+  return new Promise<{ bytes: number }>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new AbortedError());
+      return;
+    }
+
+    let already = 0;
+    try {
+      already = fs.statSync(partPath).size;
+    } catch { /* nothing to resume */ }
+
+    let file: fs.WriteStream | null = null;
+    let request: http.ClientRequest | null = null;
+    let settled = false;
+    let received = already;
+
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      try { request?.destroy(); } catch { /* already gone */ }
+      // The part file is DELIBERATELY LEFT. That is the whole point of it: a
+      // cancel here is the one case where four gigabytes on disk is a kindness
+      // rather than litter, because the next attempt continues from it.
+      try { file?.close(); } catch { /* already closed */ }
+      reject(new AbortedError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      try { file?.close(); } catch { /* already closed */ }
+      reject(err);
+    };
+    const succeed = (bytes: number): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      try {
+        fs.rmSync(destPath, { force: true });
+        fs.renameSync(partPath, destPath);
+      } catch (err) {
+        reject(err as Error);
+        return;
+      }
+      resolve({ bytes });
+    };
+
+    const get = (current: string, hopsLeft: number, from: number): void => {
+      let parsed: URL;
+      try {
+        parsed = new URL(current);
+      } catch {
+        fail(new Error(`${current} is not a URL this app can fetch.`));
+        return;
+      }
+      const transport = parsed.protocol === 'https:' ? https : http;
+      const headers: Record<string, string> = { 'user-agent': 'foundry-app' };
+      if (from > 0) headers['range'] = `bytes=${from}-`;
+
+      request = transport.get(current, { headers }, (response) => {
+        const status = response.statusCode ?? 0;
+
+        const location = response.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          response.resume();
+          if (hopsLeft <= 0) {
+            fail(new Error(`${url} redirected more than ${MAX_REDIRECTS} times.`));
+            return;
+          }
+          get(new URL(location, current).toString(), hopsLeft - 1, from);
+          return;
+        }
+
+        if (status !== 200 && status !== 206) {
+          response.resume();
+          fail(new Error(
+            status === 416
+              // The part on disk is at least as long as the file on the server:
+              // it is not a resumable half, it is a stale or wrong file.
+              ? `${url} refused the resume (HTTP 416). The partial download is stale — delete it and start again.`
+              : status === 404
+                ? `${url} is not there (HTTP 404).`
+                : `${url} answered HTTP ${status}.`,
+          ));
+          return;
+        }
+
+        // 200 to a ranged request means the server ignored the range. Start over
+        // rather than append onto bytes that are about to be sent again.
+        const restarting = from > 0 && status === 200;
+        const base = restarting ? 0 : from;
+        if (restarting) received = 0;
+
+        const declared = Number(response.headers['content-length'] ?? 0);
+        const total = declared > 0 ? declared + base : null;
+
+        file = fs.createWriteStream(partPath, base > 0 ? { flags: 'a' } : { flags: 'w' });
+        file.on('error', fail);
+
+        response.on('data', (chunk: Buffer) => {
+          received += chunk.length;
+          onBytes(received, total);
+        });
+        response.on('error', fail);
+        response.pipe(file);
+
+        file.on('finish', () => {
+          file?.close((closeErr) => {
+            if (closeErr) { fail(closeErr); return; }
+            succeed(received);
+          });
+        });
+      });
+
+      request.on('error', (err) => fail(err));
+    };
+
+    get(url, MAX_REDIRECTS, already);
+  });
+}
+
+/**
+ * sha256 of a file that is already on disk, streamed.
+ *
+ * The price of `fetchResumable`, and the reason it is a separate function: a
+ * download that may have started in the middle cannot have been hashed on the
+ * way past, so the check is a second pass. Streamed rather than read whole —
+ * these are multi-gigabyte files and `readFileSync` on one is a buffer Node
+ * refuses over 2 GiB.
+ */
+export function sha256File(filePath: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const reader = fs.createReadStream(filePath);
+    reader.on('data', (chunk) => hash.update(chunk));
+    reader.on('error', reject);
+    reader.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Verification
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,18 +514,28 @@ export function tarBinary(): string {
 }
 
 /**
- * Extract a .tar.gz into `destDir`, reporting files as they land.
+ * Extract an archive into `destDir`, reporting files as they land.
  *
- * `-v` is not a debug flag here: unpacking five gigabytes of CUDA wheels takes
- * minutes, and the house rule (see backend-setup.ts) is that a long step talks
- * the whole time. There is no honest percentage — the file COUNT is what we
- * have, so that is what is reported, and the UI draws this phase as an
- * indeterminate bar rather than inventing a number.
+ * `-v` is not a debug flag here: unpacking gigabytes of wheels or CUDA DLLs
+ * takes minutes, and the house rule is that a long step talks the whole time.
+ * There is no honest percentage — the file COUNT is what we have, so that is
+ * what is reported, and the UI draws this phase as an indeterminate bar rather
+ * than inventing a number.
+ *
+ * `-xvf` AND NOT `-xzvf`, which is what lets one function open both formats
+ * this app downloads. The prebuilt Python environments arrive as `.tar.gz`;
+ * llama.cpp's Windows builds arrive as `.zip` (page-reader.ts). Every tar that
+ * matters here detects gzip from the file itself on extract, so naming it
+ * explicitly bought nothing — and the zip is bsdtar's doing: `tarBinary()` pins
+ * the absolute %SystemRoot% bsdtar on Windows (see its own comment for the
+ * separate reason), bsdtar reads zip through libarchive, and a zip is the only
+ * thing this app ever asks it to open that GNU tar could not. Two near-identical
+ * unpackers would have been two places for one to grow a fix the other did not.
  *
  * An argument ARRAY, never a shell string: destinations under
  * `C:\Users\Some One\AppData` are the normal case.
  */
-export function unpackTarGz(
+export function unpackArchive(
   archivePath: string,
   destDir: string,
   onFile: (count: number, last: string) => void,
@@ -359,7 +543,7 @@ export function unpackTarGz(
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     fs.mkdirSync(destDir, { recursive: true });
-    const child = spawn(tarBinary(), ['-xzvf', archivePath, '-C', destDir], { windowsHide: true });
+    const child = spawn(tarBinary(), ['-xvf', archivePath, '-C', destDir], { windowsHide: true });
 
     let files = 0;
     let pending = '';
@@ -415,7 +599,7 @@ export function unpackTarGz(
 /**
  * A temp directory for the download, on a volume with room for it.
  *
- * `FOUNDRY_ENV_TMP` overrides, because the WSL environment is five gigabytes and
+ * `FOUNDRY_ENV_TMP` overrides, because an environment can be half a gigabyte and
  * a machine whose %TEMP% is on a small SSD needs somewhere to say otherwise.
  */
 export function makeTempDir(): string {

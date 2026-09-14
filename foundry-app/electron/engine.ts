@@ -27,6 +27,7 @@ import type {
   DoctorResult,
   EngineInfo,
   JobProgress,
+  JobUsage,
   MetadataOutcome,
   MintMeta,
 } from '../shared/types';
@@ -130,6 +131,27 @@ export interface RunHandle {
 export function runEngine(
   args: string[],
   onLine?: (line: string) => void,
+  /**
+   * WHAT THIS RUN'S ENVIRONMENT GETS ON TOP OF THE PROCESS'S — per spawn, and
+   * the only way a credential ever reaches the engine.
+   *
+   * `FOUNDRY_ENDPOINT_HEADERS` is a JSON object of header name to value, and the
+   * engine sends every pair on both its doors. It is an environment variable and
+   * not a flag deliberately and permanently (docs/BOOKFORGE-HANDOFF.md, the
+   * 2026-09-13 note): a command line is spelled into the terminal by the queue,
+   * pasted into bug reports, and listed by the process table, and there should
+   * never be a flag for this.
+   *
+   * PER SPAWN, WHICH IS WHY IT IS AN ARGUMENT rather than something set once on
+   * `process.env`. Two rows in flight may be placed on two different Crucible
+   * servers with two different tokens (docs/SLOTS.md §3), and a variable set on
+   * this process would be one credential for both — sent to whichever server the
+   * other row is talking to.
+   *
+   * ABSENT IS EXACTLY TODAY: the child inherits this process's environment and
+   * nothing else, which is what every run in this app did before slots existed.
+   */
+  extraEnv?: Readonly<Record<string, string>>,
 ): RunHandle {
   const cmd = engineCommand();
   let child: ChildProcess | null = null;
@@ -137,7 +159,13 @@ export function runEngine(
 
   const done = new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
     child = spawn(cmd.command, [...cmd.args, ...args], {
-      env: process.env,
+      /*
+       * A COPY, and the copy is load-bearing: `{...process.env, ...extraEnv}`
+       * builds a new object, so nothing this run adds is visible to the next
+       * one. Spreading into `process.env` itself would set the variable on this
+       * process, which is the failure the argument exists to prevent.
+       */
+      env: extraEnv === undefined ? process.env : { ...process.env, ...extraEnv },
       windowsHide: true,
     });
 
@@ -348,6 +376,59 @@ export function parseProgressLine(line: string): JobProgress | null {
   }
 
   return null;
+}
+
+/**
+ * One stderr line -> what the run SPENT, or null.
+ *
+ * ── The contract, and it IS a contract ─────────────────────────────────────
+ *
+ * `usageLine` (src/translate/transport.ts) prints exactly one of these at the
+ * end of every text act that talked to a server which counted:
+ *
+ *   translate: 412 requests, 1,203,441 tokens in, 388,120 out
+ *
+ * The act prefix is the act's own (`translate`, `simplify`, `clean-text`,
+ * `analyze`), the numbers are `toLocaleString('en-US')` — so they carry commas —
+ * and the three nouns are the interface. The prose around them is free to
+ * change; those words are not.
+ *
+ * ── Why it is not a fourth pattern inside `parseProgressLine` ──────────────
+ *
+ * Because it is not progress, and that function's whole discipline is that
+ * everything it returns is a count of work done out of work to do. A usage line
+ * would be a fraction-shaped thing (`412 requests`) arriving on a function whose
+ * callers set a progress bar from it. Two readers, two questions, and the one
+ * caller asks both of the same line.
+ *
+ * ── Null for every other line, INCLUDING a run that spent nothing ──────────
+ *
+ * A door that reported no usage prints no line at all (Ollama is that door), so
+ * absence here is "nothing counted" and never "zero tokens". The app does not
+ * invent the second from the first — see {@link JobUsage} on the row.
+ *
+ * THE COMMAS ARE STRIPPED AND NOT PARSED AROUND. `Number('1,203,441')` is `NaN`,
+ * and a locale that grouped with thin spaces would break this — the engine pins
+ * `en-US` for exactly that reason, so the separator is a comma and only a comma.
+ */
+export function parseUsageLine(line: string): JobUsage | null {
+  const spent = /^[a-z-]+:\s+([\d,]+) requests, ([\d,]+) tokens in, ([\d,]+) out$/
+    .exec(line.trim());
+  if (spent === null) return null;
+  const count = (raw: string | undefined): number => Number((raw ?? '').replace(/,/g, ''));
+  const requests = count(spent[1]);
+  const tokensIn = count(spent[2]);
+  const tokensOut = count(spent[3]);
+  /*
+   * A number this reader could not make sense of is NO usage rather than a row
+   * saying NaN. There is no way for the engine to produce one — the groups are
+   * digits and commas — and a guard whose cost is one comparison is cheaper than
+   * the screenshot of "NaN in / NaN out" it prevents.
+   */
+  if (!Number.isFinite(requests) || !Number.isFinite(tokensIn) || !Number.isFinite(tokensOut)) {
+    return null;
+  }
+  return { requests, tokensIn, tokensOut };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

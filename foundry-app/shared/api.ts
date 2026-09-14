@@ -13,13 +13,26 @@ import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './hos
 import type { ReadAsk } from './ledger';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { ReReadPrompt } from './reread';
-import type { LlmServerKind } from './pipeline';
 import type {
+  CloudProbe,
+  CloudProviderEdit,
+  CloudSettingsView,
+  ComputeSlot,
+  CrucibleInstallPlan,
+  CrucibleProbe,
+  CrucibleServerEdit,
+  CrucibleSettingsView,
+  LocalCrucibleAdd,
+  NewJobsWaitFor,
+} from './slots';
+import type {
+  ActGates,
   AnalysisPlan,
   AnalysisReading,
   AnalyzeRequest,
   AppQuestion,
-  LlmServers,
+  MachineModels,
+  RemovalOutcome,
   BackendSettingsPatch,
   CaptureCreated,
   CaptureIntaken,
@@ -37,7 +50,6 @@ import type {
   EnvCatalogItem,
   EnvInstallProgress,
   EnvInstallRequest,
-  EnvTooling,
   EpubMetadataFields,
   HostNode,
   HostNodes,
@@ -53,15 +65,14 @@ import type {
   LedgerStep,
   ProjectLedger,
   ProjectSummary,
+  PageReaderProgress,
+  PageReaderState,
   QuestionAnswer,
   ReadingPlan,
   RecentDocument,
   RewriteMode,
   ServerStatus,
   SettingsView,
-  SetupLogEvent,
-  SetupRequest,
-  SetupResult,
   SetupState,
   SystemProfile,
   MintMeta,
@@ -73,7 +84,6 @@ import type {
   UnappliedAnswer,
   UnappliedWarning,
   WorkspacePlan,
-  WslFacts,
 } from './types';
 
 /**
@@ -1087,6 +1097,16 @@ export interface FoundryApi {
     remove(id: string): Promise<void>;
     cancel(id: string): Promise<void>;
     clearFinished(): Promise<void>;
+    /**
+     * SEND A WAITING ROW TO A DIFFERENT SLOT — a slot name, or `any` (`ANY_SLOT`,
+     * shared/slots.ts).
+     *
+     * Answers nothing: the change arrives on `onChanged` like every other change
+     * to a row, and a second copy coming back from here would race the push.
+     * Refused silently on a row that has started — a job is atomic on one slot
+     * (docs/SLOTS.md §3), and the picker is not drawn on a running row.
+     */
+    setWaitFor(id: string, waitFor: string): Promise<void>;
     /** Every change, whole list. Returns its own unsubscribe. */
     onChanged(listener: (jobs: Job[]) => void): () => void;
   };
@@ -1236,25 +1256,11 @@ export interface FoundryApi {
   };
 
   /**
-   * WSL, and the environment vLLM is served from.
-   *
-   * Facts are re-measured on demand rather than cached in the renderer: a user
-   * who installs a distro while the settings screen is open should be able to
-   * press the button again and see it.
-   */
-  wsl: {
-    /** Which distros exist, or why there are none. */
-    facts(): Promise<WslFacts>;
-    /** What one distro can build an environment with. */
-    tooling(distro: string): Promise<EnvTooling>;
-  };
-
-  /**
    * The prebuilt environments — the ones the conversions were MEASURED with.
    *
    * The app installs what this machine is missing by itself at startup, as rows
    * in the queue shelf; this surface is the manual path for the cases automation
-   * cannot decide: a different location, a particular WSL distro, a reinstall.
+   * cannot decide: a different location, a reinstall.
    */
   env: {
     /** Platform-relevant entries, with installed state measured now. */
@@ -1266,7 +1272,7 @@ export interface FoundryApi {
      */
     install(request: EnvInstallRequest): Promise<string>;
     cancel(): Promise<void>;
-    /** A directory for an install, or null. Meaningless for a WSL target. */
+    /** A directory for an install, or null when the picker was dismissed. */
     chooseDest(defaultPath: string): Promise<string | null>;
     /** Every phase change, as it happens. Returns its own unsubscribe. */
     onInstallProgress(listener: (progress: EnvInstallProgress) => void): () => void;
@@ -1322,52 +1328,261 @@ export interface FoundryApi {
    */
   llm: {
     /**
-     * What a language dialog OPENS with, already resolved for the server this
-     * machine is set to (electron/ipc.ts). Under vLLM `model` and `cleanModel`
-     * are the one served id — which may be empty, meaning "whatever that server
-     * is serving" — and `ollama` is the vLLM's URL.
+     * What a language dialog OPENS with — the LOCAL slot's answers, and only
+     * those.
+     *
+     * There is no `server` field any more and no resolution behind this door:
+     * the local slot is Ollama (docs/SLOTS.md §2), and a job placed on a
+     * registered Crucible takes its model from that server's own capability
+     * record and its address from the registry, decided at the spawn rather than
+     * carried from a dialog (electron/crucible-dispatch.ts).
      */
-    defaults(): Promise<{
-      model: string;
-      cleanModel: string;
-      ollama: string;
-      server: LlmServerKind;
-    }>;
+    defaults(): Promise<{ model: string; cleanModel: string; ollama: string }>;
     /** Answers with the tag AS STORED — a name main refused comes back changed. */
     setModel(model: string): Promise<string>;
     /** The Clean text model, same rule: answered with what was stored. */
     setCleanModel(model: string): Promise<string>;
-    /** What is stored for BOTH servers at once — the settings card's read. */
-    servers(): Promise<LlmServers>;
-    /** Whatever is named is written; answered with the whole stored set. */
-    setServers(patch: Partial<LlmServers>): Promise<LlmServers>;
+    /** Where Ollama is. The one server address this app still keeps by itself. */
+    ollamaUrl(): Promise<string>;
+    /** Answered with what was stored — a URL main refused comes back changed. */
+    setOllamaUrl(url: string): Promise<string>;
   };
 
-  backendSetup: {
+  /**
+   * ── WHERE COMPUTE-HEAVY WORK GOES ─────────────────────────────────────────
+   *
+   * docs/SLOTS.md. A slot is a place a job's compute can go: this machine's own
+   * GPU, or a registered Crucible server. A person with neither a Crucible nor a
+   * host that offers one sees a one-entry list and no picker anywhere.
+   */
+  slots: {
+    /** Every slot, in priority order. Hosted, this is the host's own list. */
+    list(): Promise<ComputeSlot[]>;
     /**
-     * Build the environment. Resolves with the outcome; a failure is a result,
-     * not a rejection, because every one of them is a sentence to read.
+     * The waiting rows that name this slot — what the Servers card shows before
+     * it offers to move any of them. Owen's rule for switching a server off:
+     * told, never moved silently. Running rows are deliberately not included.
      */
-    run(request: SetupRequest): Promise<SetupResult>;
-    cancel(): Promise<void>;
-    /** Every line, as it happens. Returns its own unsubscribe. */
-    onLog(listener: (event: SetupLogEvent) => void): () => void;
+    rowsWaitingFor(name: string): Promise<Job[]>;
   };
 
-  vllmServer: {
-    status(): Promise<ServerStatus>;
-    /** Rejects with the guest's log tail when it will not start. */
+  /**
+   * ── THE CRUCIBLE REGISTRY — the Servers card's own doors ──────────────────
+   *
+   * NOTHING HERE CARRIES A TOKEN IN EITHER DIRECTION. A server's token is stored
+   * in main and handed to the SDK or to a spawn's environment; the renderer is
+   * told only whether one is set (`CrucibleServerView.tokenSet`) and may send a
+   * NEW one, which is the whole of what a write-only field means.
+   */
+  crucible: {
+    /** Everything the card draws in one read — see `CrucibleSettingsView`. */
+    settings(): Promise<CrucibleSettingsView>;
+    /**
+     * REPLACE THE WHOLE REGISTRY, in order — the array position IS the rank, so
+     * a drag is a save. `token: null` on an entry keeps whatever is stored.
+     * Rejects with a sentence naming the entry when one cannot be stored.
+     */
+    save(servers: CrucibleServerEdit[]): Promise<CrucibleSettingsView>;
+    /** Test connection. A failure is a RESULT with the SDK's own sentence on it. */
+    test(name: string): Promise<CrucibleProbe>;
+    /**
+     * Test an address and a token that are NOT SAVED YET — the setup wizard's
+     * Connect door, which has three boxes and no registry entry behind them.
+     *
+     * The token goes ONE WAY, into main, out of a box somebody is typing in; it
+     * is used for one request and dropped, and no answer carries it back. Adding
+     * the server first in order to test it would be this app writing into
+     * somebody's settings to find out whether an address is a Crucible.
+     */
+    testAt(url: string, token: string): Promise<CrucibleProbe>;
+    /**
+     * Add one server — the wizard's Add, through the registry's ONE writer.
+     *
+     * The card sends the whole list because it holds the whole list; a caller
+     * with three text boxes sends one entry and main appends it. An existing
+     * name is replaced in place, keeping its rank and its enabled state, which
+     * is how re-adding a server is the fix for a stale token.
+     */
+    add(name: string, url: string, token: string): Promise<CrucibleSettingsView>;
+    /**
+     * Register the Crucible on this machine by reading its own config.toml —
+     * the file that server reads, so no second copy of its token exists. On
+     * Windows that file is inside WSL and `wslDistro` decides which guest.
+     */
+    addLocal(name: string): Promise<LocalCrucibleAdd>;
+    /** Answered with what was stored. Empty is a real answer and means unset. */
+    setWslDistro(distro: string): Promise<string>;
+    /** What a new row's `waitFor` starts as. Answered with what was stored. */
+    setNewJobsWaitFor(choice: NewJobsWaitFor): Promise<NewJobsWaitFor>;
+    /**
+     * THE HAND SEQUENCE FOR INSTALLING A CRUCIBLE ON THIS MACHINE — every
+     * command, in order, with the elevated ones listed apart.
+     *
+     * A READ. The only process it spawns is `wsl.exe -l -v`, which lists; it
+     * changes nothing and downloads nothing. See `CrucibleInstallPlan`.
+     */
+    installPlan(): Promise<CrucibleInstallPlan>;
+    /**
+     * RUN THAT SEQUENCE — and it REJECTS on every machine today, with
+     * `CrucibleInstallPlan.drivenWhy`'s sentence.
+     *
+     * `@crucible/bootstrap` is released with Crucible's next version and is
+     * deliberately not a dependency until it exists. The button that calls this
+     * is disabled with the same sentence; the door refuses anyway, because
+     * something reachable by an IPC message must refuse at the door as well or
+     * the disabling is a decoration.
+     *
+     * `Promise<void>` and not `Promise<never>`: this door is expected to RESOLVE
+     * the day the bootstrap package lands, and typing today's refusal into the
+     * signature would make turning it on a change every caller has to be edited
+     * for. The caller's shape is the same either way — `await`, and catch.
+     */
+    install(): Promise<void>;
+  };
+
+  /**
+   * ── THE CLOUD PROVIDERS — the Cloud providers card's own doors ────────────
+   *
+   * docs/SLOTS.md §3 (Package F). Owen: *"give them the option of connecting an
+   * api key for openai or claude instead of using the 27b or the 9b… for weaker
+   * systems."* A provider is a SLOT — never busy, nothing resident, TEXT ACTS
+   * ONLY, and a deliberate per-job choice that `any` never falls through to.
+   *
+   * NOTHING HERE CARRIES A KEY IN THE ANSWER DIRECTION. The renderer is told
+   * `CloudProviderView.keySet` and may send a NEW key, which is the whole of
+   * what a write-only field means — `crucible:`'s token rule, one registry
+   * along.
+   *
+   * ITS OWN FAMILY AND NOT THREE MORE `crucible` MEMBERS, because a provider is
+   * not a Crucible: no capability record, no residency, no lease, no busy state.
+   * See electron/ipc.ts, where the collision half of the same argument is made.
+   */
+  cloud: {
+    /** Everything the card draws in one read — see `CloudSettingsView`. */
+    settings(): Promise<CloudSettingsView>;
+    /**
+     * REPLACE THE WHOLE LIST. `apiKey: null` on an entry keeps whatever is
+     * stored, matched by name. Rejects with a sentence naming the entry when one
+     * cannot be stored — a missing model, a name a Crucible already has.
+     *
+     * Answered with the whole view, because enabling a provider changes the
+     * SLOTS and a card that redrew its list here and its slots elsewhere would
+     * draw one repaint of the two disagreeing.
+     */
+    save(providers: CloudProviderEdit[]): Promise<CloudSettingsView>;
+    /**
+     * LIST THE PROVIDER'S MODELS AND SAY WHETHER THE CHOSEN ONE IS THERE.
+     *
+     * Takes the whole EDIT, saved or not, so the button works on a row somebody
+     * is still typing — saving a key in order to find out whether it works would
+     * be this app writing a credential into settings to answer a question. A
+     * failure is a RESULT with the provider's own sentence on it, not a
+     * rejection. It is a `GET` and costs no usage credits.
+     */
+    test(provider: CloudProviderEdit): Promise<CloudProbe>;
+  };
+
+  /**
+   * THE LOCAL PAGE READER — a llama-server holding dots.ocr, on this machine.
+   *
+   * Reading a page is the one act with no Ollama path (Ollama does not serve
+   * dots.ocr), so this is what makes "convert a PDF" work on a machine nobody
+   * has prepared. `backendSetup` and `vllmServer` used to live here and built
+   * and launched a vLLM inside WSL; both went on 2026-09-13 (docs/SLOTS.md §6,
+   * package B), and a vLLM or a Crucible somebody else runs is reached the way
+   * every other server is — by putting its URL in `settings`.
+   */
+  pageReader: {
+    /**
+     * EVERYTHING THE ROW NEEDS, IN ONE CALL. Measured, never cached, and it
+     * asks the two release indexes for sizes only when something is missing.
+     */
+    state(): Promise<PageReaderState>;
+    /**
+     * Fetch what is missing and verify it. A failure is a RESULT, not a
+     * rejection — every one of them is a sentence to put on the row.
+     */
+    install(): Promise<{ ok: boolean; detail: string }>;
+    /** What has already been fetched survives; starting again continues it. */
+    cancelInstall(): Promise<void>;
+    /** Pre-warm. Rejects with the server's own log tail when it will not start. */
     start(): Promise<ServerStatus>;
     stop(): Promise<ServerStatus>;
-    onStatus(listener: (status: ServerStatus) => void): () => void;
     /**
      * Minutes an app-started server outlives a drained queue. 0 — the default
      * — stops it the moment the queue empties; the ceiling is main's
      * (app-settings.ts), so whatever is asked for, an idle server always has a
-     * scheduled end. `setKeepWarm` returns the value as clamped and stored.
+     * scheduled end. Returns the value as clamped and stored. The current value
+     * rides on `state()` rather than having a read of its own.
      */
-    keepWarm(): Promise<number>;
     setKeepWarm(minutes: number): Promise<number>;
+    /** The download, phase by phase. Returns its own unsubscribe. */
+    onProgress(listener: (progress: PageReaderProgress) => void): () => void;
+    onStatus(listener: (status: ServerStatus) => void): () => void;
+  };
+
+  /**
+   * ── MAY THIS ACT RUN ON THIS MACHINE, AND WHY NOT ────────────────────────
+   *
+   * Owen (docs/SLOTS.md §1): *"the tiles arent lit up until the models are
+   * present"*, and *"if a job is going to take an obscenely long time, like
+   * translation on cpu, it should just be disabled."*
+   *
+   * THIS IS NOT THE STAGE GATE. `shared/stages.ts` still answers whether an act
+   * applies where somebody is STANDING, in the renderer, where the position
+   * lives. This answers what is installed, what fits and what is serving — five
+   * facts that live in main — and the two are separate because they say
+   * different things when they say no. A tile needs both.
+   */
+  acts: {
+    /**
+     * Every tile's answer at once, measured now. One call rather than five,
+     * because all of them come off the same probe of the same machine and a
+     * screen asking separately could draw a lit Translate beside a Simplify
+     * that had just gone dark.
+     */
+    gates(): Promise<ActGates>;
+    /**
+     * The gates changed — a model was pulled, the reader was installed or
+     * removed, the language server was repointed. No payload: ask again.
+     * Returns its own unsubscribe.
+     */
+    onChanged(listener: () => void): () => void;
+  };
+
+  /**
+   * ── WEIGHTS ON THIS DISK, AND THE ONE STORE FOUNDRY MAY DELETE FROM ──────
+   *
+   * docs/SLOTS.md §5b. Every store the app knows about, with sizes, so that
+   * three copies of a 27B in three different runtimes are SEEN rather than
+   * discovered from a full disk. Foundry's own downloads can be removed here;
+   * Ollama's store is listed and never touched (Owen: *"ollama has its own
+   * thing going on and we should leave it be"*); a local Crucible is a line
+   * that says there is none until package C lands the registry.
+   */
+  models: {
+    inventory(): Promise<MachineModels>;
+    /**
+     * THE WEIGHTS ON THIS DISK MOVED — said out loud, with no payload.
+     *
+     * The one thing that changes them without somebody pressing a button on the
+     * card is SLOTS.md §5b's automatic removal: registering the Crucible on this
+     * machine takes page reading over, and Foundry's own copy of the reader goes.
+     * Without this push the card would go on listing four gigabytes of files
+     * that are not there until it was reopened.
+     *
+     * NO PAYLOAD, on `acts:gates-changed`'s reasoning: the inventory is main's
+     * to compose and composing it costs a directory walk, so this says only that
+     * something moved and the card asks again through `inventory()`.
+     */
+    onChanged(listener: () => void): () => void;
+    /**
+     * Delete the page reader Foundry downloaded, and answer with the gigabytes
+     * freed. A refusal is a RESULT with a sentence, never a rejection — this is
+     * the one door in this namespace that destroys something, and the row has
+     * to be able to print what happened either way.
+     */
+    removePageReader(): Promise<RemovalOutcome>;
   };
 
   /**

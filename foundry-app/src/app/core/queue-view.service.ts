@@ -1,8 +1,12 @@
-import { Injectable, computed, inject } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { typeLabel } from '@shared/documents';
 import { fold } from '@shared/original';
-import { JOB_RESOURCE, LANES, SLOTS, laneOf, type JobResource, type Lane } from '@shared/queue-board';
+import {
+  CPU_LANE_SLOTS, JOB_RESOURCE, LANES, computeLanes, laneOf, laneOfRun,
+  type ComputeLane, type JobResource, type Lane,
+} from '@shared/queue-board';
+import type { ComputeSlot, ComputeSlotKind } from '@shared/slots';
 import type { Job, JobProgress } from '@shared/types';
 
 import { OpenDocumentsService } from './documents.service';
@@ -68,15 +72,52 @@ export class QueueViewService {
   private readonly eta = inject(QueueEtaService);
 
   /**
-   * WHAT THE CHIP MEASURES — the GPU lane's run, or the first one going.
+   * WHERE COMPUTE-HEAVY WORK MAY GO — the slot list, read once.
    *
-   * The bar has room for one fraction and the machine can be running three
-   * jobs, so the choice has to be made somewhere and this is where. The GPU
-   * lane wins because it is the lane that costs hours: a person glancing at the
-   * corner is asking how the reading is getting on, and a bar that tracked a
-   * thirty-second compile would answer a question nobody asked and then jump
-   * back. Null when nothing is running at all, which is what draws the ✓ or the
-   * ! in the chip.
+   * ── Why the service holds it rather than each surface ─────────────────────
+   *
+   * This file's whole argument, applied to one more fact: the bench draws a card
+   * per machine, the queue page draws a picker out of the same names, and the
+   * chip counts the cards. Three reads of `slots:list` would be three answers
+   * that can differ for a frame, and the one that differed would be the one
+   * somebody was looking at.
+   *
+   * ONCE, AND NOT ON A TIMER. It is a settings fact — it changes when somebody
+   * edits the Servers card, which is a different screen — and a queue that
+   * re-read it on a clock would repaint the board for nothing. The list arriving
+   * late is why the EMPTY list has to mean something honest rather than nothing:
+   * `computeLanes` answers an empty list with the local lane, so the bench before
+   * the read lands is the bench a person with no Crucible sees forever.
+   */
+  readonly computeSlots = signal<ComputeSlot[]>([]);
+
+  /**
+   * THE GPU SIDE OF THE BOARD — one lane per machine, derived from the list.
+   *
+   * The same `computeLanes` the scheduler rations by (electron/job-queue.ts), so
+   * the number of cards drawn here and the number of runs main will actually
+   * start are one fact rather than two that agree until somebody edits one.
+   */
+  private readonly lanes = computed<ComputeLane[]>(() => computeLanes(this.computeSlots()));
+
+  constructor() {
+    if (api === null) return;
+    void api.slots.list().then((slots) => { this.computeSlots.set(slots); });
+  }
+
+  /**
+   * WHAT THE CHIP MEASURES — the GPU side's first run, or the first one going.
+   *
+   * The bar has room for one fraction and the board can be running several jobs
+   * (two CPU, and one per machine), so the choice has to be made somewhere and
+   * this is where. The GPU work wins because it is what costs hours: a person
+   * glancing at the corner is asking how the reading is getting on, and a bar
+   * that tracked a thirty-second compile would answer a question nobody asked
+   * and then jump back. Null when nothing is running at all, which is what draws
+   * the ✓ or the ! in the chip.
+   *
+   * IT DOES NOT SAY WHICH MACHINE and does not need to: the chip is one line
+   * about the whole board, and the bench is where the machines are drawn.
    */
   readonly leading = computed(() => {
     const active = this.queue.runningJobs();
@@ -87,10 +128,11 @@ export class QueueViewService {
    * The chip's one line: what is running, and how many are waiting behind it.
    *
    * "3 QUEUED" IS STILL A WAIT AND NOT A PARALLELISM, but it is no longer a
-   * wait behind ONE job — the board runs up to three at once (one GPU, two
-   * CPU), so the count of other live runs is said out loud rather than left for
-   * somebody to discover by opening the panel. The lead run names itself; the
-   * rest are a number, because three book titles in a chip is three ellipses.
+   * wait behind ONE job — the board runs several at once (two CPU, and one per
+   * machine on the GPU side), so the count of other live runs is said out loud
+   * rather than left for somebody to discover by opening the panel. The lead run
+   * names itself; the rest are a number, because three book titles in a chip is
+   * three ellipses.
    */
   readonly headline = computed(() => {
     const active = this.leading();
@@ -207,48 +249,129 @@ export class QueueViewService {
   });
 
   /**
-   * THE BENCH — one card per SLOT, occupied or free, always all three.
+   * THE BENCH — one card per SLOT, occupied or free, always all of them.
    *
    * ── Why the page counts slots where the panel groups rows ───────────────────
    *
    * They are two readings of one table and the difference is room. The dropdown
    * is a list with lane rules across it, which is what fits in a panel you have
    * clicked open for a glance. The page has the width to draw the thing the
-   * board actually IS: three slots, and what is standing in each. That is
+   * board actually IS: the slots, and what is standing in each. That is
    * BookForge's own centre of gravity on its queue page — *"the THREE SLOTS,
    * always all three, occupied or free… allocating one GPU slot and two CPU
    * slots is the entire job of the scheduler, and until this redesign no surface
-   * drew them"* — and the sentence is true here for exactly the same reason.
+   * drew them"* — and the sentence is true here for exactly the same reason,
+   * with our own number in place of their three: BookForge rations one machine,
+   * and this app rations however many somebody has registered.
    *
-   * ── AND IT INVENTS NOTHING ABOUT WHICH SLOT IS WHICH ────────────────────────
+   * ── ONE CARD PER MACHINE, WHICH IS WHAT A GPU SLOT NOW IS (Package G) ──────
    *
-   * The scheduler does not tell this window which of the two CPU slots a job
-   * landed in, and this does not pretend to know: the running rows of a lane are
-   * dealt into that lane's slots IN QUEUE ORDER, and the fact being drawn is the
-   * one main really does guarantee — that at most `SLOTS[lane]` of them run at
-   * once. So "CPU · slot 2 of 2" means "the second of the two CPU runs", which
-   * is the honest reading, and a slot that is empty is a slot that is genuinely
-   * free. Nothing about the scheduler is asked to change to draw this; the
-   * board's own table is the whole of the arithmetic.
+   * It drew "GPU · slot 1 of 1" and a small "on <slot>" tag beside whatever was
+   * running, which was the board saying *one card* while the scheduler was being
+   * asked to believe in several. A compute slot IS a lane now
+   * (`computeLanes`, shared/queue-board.ts), so each one gets its own card with
+   * its own name at the top, and the count in the band head counts machines and
+   * CPU slots together, because that is genuinely how many things may be going
+   * at once. The friend with no Crucible sees exactly what they saw before: one
+   * card, headed with this computer's name.
+   *
+   * A CARD SAYS WHAT IS WAITING FOR IT, in dispatch's own sentence. A row parked
+   * on a busy Mac already carries the reason it is parked (`Job.message`,
+   * electron/crucible-dispatch.ts renders every one of them), and the card is
+   * where that sentence answers the question a person is actually asking, which
+   * is why the OTHER thing is not moving.
+   *
+   * ── AND IT STILL INVENTS NOTHING ABOUT WHICH SLOT IS WHICH ─────────────────
+   *
+   * The GPU cards are no longer a guess: `Job.ranOn` is where the run actually
+   * went, and `laneOfRun` maps it onto the board as it stands. The CPU lane IS
+   * still a guess and is still drawn as one — the scheduler does not say which of
+   * the two CPU slots a job landed in, so its running rows are dealt in QUEUE
+   * ORDER and "CPU · slot 2 of 2" means "the second of the two CPU runs", which
+   * is the fact main really does guarantee.
+   *
+   * A RUN ON A MACHINE THAT HAS LEFT THE LIST KEEPS ITS CARD, at the end,
+   * marked. Switching a server off never moves a running job (docs/SLOTS.md §3 —
+   * *"its atomic"*), so the run is still going on a machine the list no longer
+   * mentions; dropping the card would be the bench reporting a slot free while
+   * somebody's book is being translated on it.
    */
   readonly slots = computed<SlotView[]>(() => {
+    const lanes = this.lanes();
+    const running = this.queue.runningJobs();
+    const onCards = running.filter((job) => laneOf(job.kind) === 'gpu');
     const out: SlotView[] = [];
-    for (const lane of LANES) {
-      const busy = this.queue.runningJobs().filter((job) => laneOf(job.kind) === lane);
-      const total = SLOTS[lane];
-      for (let index = 0; index < total; index += 1) {
+    for (const lane of lanes) {
+      const here = onCards.filter((job) => laneOfRun(job.ranOn, lanes)?.name === lane.name);
+      for (let index = 0; index < lane.capacity; index += 1) {
         out.push({
-          key: `${lane}-${index}`,
-          lane,
-          index: index + 1,
-          of: total,
-          hint: LANE_HINT[lane],
-          occupant: busy[index] ?? null,
+          key: `slot:${lane.name}:${index}`,
+          lane: 'gpu',
+          title: lane.capacity === 1 ? lane.name : `${lane.name} · ${index + 1} of ${lane.capacity}`,
+          kind: lane.kind,
+          hint: LANE_HINT['gpu'],
+          occupant: here[index] ?? null,
+          waiting: index === 0 ? this.waitingFor(lane.name) : '',
+          leaving: false,
         });
       }
     }
+    /*
+     * THE MACHINES THAT ARE ON THEIR WAY OUT — a run whose `ranOn` matches no
+     * lane. `laneOfRun` answers null for exactly that and for nothing else: an
+     * absent `ranOn` and the local slot's name both resolve to the local lane.
+     */
+    for (const job of onCards) {
+      if (laneOfRun(job.ranOn, lanes) !== null) continue;
+      out.push({
+        key: `leaving:${job.id}`,
+        lane: 'gpu',
+        title: job.ranOn ?? '',
+        kind: null,
+        hint: LEAVING_HINT,
+        occupant: job,
+        waiting: '',
+        leaving: true,
+      });
+    }
+    const cpu = running.filter((job) => laneOf(job.kind) === 'cpu');
+    for (let index = 0; index < CPU_LANE_SLOTS; index += 1) {
+      out.push({
+        key: `cpu:${index}`,
+        lane: 'cpu',
+        title: `CPU · slot ${index + 1} of ${CPU_LANE_SLOTS}`,
+        kind: null,
+        hint: LANE_HINT['cpu'],
+        occupant: cpu[index] ?? null,
+        waiting: '',
+        leaving: false,
+      });
+    }
     return out;
   });
+
+  /**
+   * WHY SOMETHING IS WAITING FOR THIS MACHINE, in the words dispatch put on the
+   * row — or the empty string, which is every machine nothing is queued for.
+   *
+   * THE FIRST SUCH ROW AND NOT ALL OF THEM. Four books queued for the Mac while
+   * it narrates are four copies of one sentence about the Mac; the card is
+   * answering "why is nothing starting over there", and the answer is the same
+   * whichever row is asked. The rows themselves are in *Up next*, where the
+   * question is about the books.
+   *
+   * ONLY A `queued` ROW, because only a queued row has been TURNED AWAY. A held
+   * row naming this machine is waiting for a person to press Start, which is not
+   * a fact about the machine and would read on the card as though it were.
+   */
+  private waitingFor(name: string): string {
+    for (const job of this.queue.jobs()) {
+      if (job.state !== 'queued' || job.waitFor !== name) continue;
+      const said = (job.message ?? '').trim();
+      if (said.length > 0) return said;
+    }
+    return '';
+  }
 
   /** How many of the counted slots have somebody in them — the bench's heading. */
   readonly busySlots = computed(() => this.slots().filter((slot) => slot.occupant !== null).length);
@@ -291,10 +414,17 @@ export class QueueViewService {
     return groups;
   });
 
-  /** "1 of 1 running", or what is free — the right-hand side of a lane head. */
+  /**
+   * "1 of 1 running", or what is free — the right-hand side of a lane head.
+   *
+   * THE GPU TOTAL IS THE NUMBER OF MACHINES, which is the same number the
+   * scheduler rations by (`computeLanes`) and the same number of cards the bench
+   * draws. One, for a person with no Crucible; three, for somebody with two
+   * servers and a card of their own.
+   */
   occupancy(lane: Lane): string {
     const busy = this.queue.runningJobs().filter((job) => laneOf(job.kind) === lane).length;
-    const total = SLOTS[lane];
+    const total = lane === 'gpu' ? this.lanes().length : CPU_LANE_SLOTS;
     if (busy > 0) return `${busy} of ${total} running`;
     return total === 1 ? '1 slot free' : `${total} slots free`;
   }
@@ -566,6 +696,47 @@ export class QueueViewService {
     return 'done';
   }
 
+  /**
+   * WHAT THE RUN SPENT, in tokens — or the empty string, which is nearly always.
+   *
+   * ── The two numbers, and the one that is deliberately missing ─────────────
+   *
+   * `1,203,441 in / 388,120 out`. There is no price on it and there will not be
+   * one: docs/VLLM.md §2a rules that *"foundry does not price it"* — prices
+   * change weekly and differ per key and per tier, so a figure invented in this
+   * app would be wrong in a way that looks authoritative. The counts are what the
+   * provider itself reported, and a person who wants dollars has them on a page
+   * the provider keeps.
+   *
+   * ── Empty is the ordinary case and means "nothing counted" ────────────────
+   *
+   * `Job.usage` is set only when the engine printed its usage line, which it does
+   * only when the server counted. Ollama does not, so a run on this machine's own
+   * GPU has no usage at all — and an empty string is what every surface here
+   * already draws for a fact a row does not have. The request count rides in the
+   * tooltip rather than the line: three numbers in a row on a card is a table,
+   * and the two that answer "what did this cost" are the tokens.
+   *
+   * ONE COMPOSER, TWO SURFACES — the bench card and the finished table, which is
+   * why it is here and not on the page. The dropdown panel does not draw it: it
+   * has room for one line about a running row and that line is progress.
+   */
+  spent(job: Job): string {
+    const usage = job.usage;
+    if (usage === undefined) return '';
+    const n = (value: number): string => value.toLocaleString();
+    return `${n(usage.tokensIn)} in / ${n(usage.tokensOut)} out`;
+  }
+
+  /** The same fact said longer, for a hover — the request count belongs here. */
+  spentDetail(job: Job): string {
+    const usage = job.usage;
+    if (usage === undefined) return '';
+    const n = (value: number): string => value.toLocaleString();
+    return `${n(usage.requests)} requests, ${n(usage.tokensIn)} tokens in, `
+      + `${n(usage.tokensOut)} out. Foundry does not price this — the provider does.`;
+  }
+
   /** Whether what this job wrote was filed as one of its project's exports. */
   filed(job: Job): boolean {
     const project = this.projects.projectFor(job.outputPath);
@@ -659,11 +830,25 @@ export interface BoardSection {
 export interface SlotView {
   key: string;
   lane: Lane;
-  /** 1-based, and only ever "the nth run in this lane" — see `slots`. */
-  index: number;
-  of: number;
+  /**
+   * WHAT THE CARD IS HEADED WITH — a machine's name on a GPU card, and "CPU ·
+   * slot 1 of 2" on a CPU one.
+   *
+   * One string rather than the old `index`/`of` pair, because the two sides of
+   * the bench are no longer counted the same way: a compute card is a PLACE and
+   * says its name, and a CPU card is one of two interchangeable runs and says
+   * which. A surface that had to assemble that from a lane and two numbers would
+   * be deciding the vocabulary in the template.
+   */
+  title: string;
+  /** Whose machine, for the line under the name. Null on a CPU card. */
+  kind: ComputeSlotKind | null;
   hint: string;
   occupant: Job | null;
+  /** Why a row is parked for this machine, in dispatch's own words. */
+  waiting: string;
+  /** A machine that has left the list with a run of ours still on it. */
+  leaving: boolean;
 }
 
 /**
@@ -713,11 +898,21 @@ const OFF_LANE: readonly JobResource[] = ['exclusive', 'unscheduled'];
  * these are the same sentences the contract argues, said shorter.
  */
 const LANE_HINT: Readonly<Record<string, string>> = {
-  gpu: 'One at a time: the graphics card is one, and two models on it is two runs that each take twice as long.',
+  gpu: 'One at a time PER MACHINE: a graphics card is one, and two models on it is two runs that each take twice as long. A second machine is a second slot.',
   cpu: 'Two at a time: compiling and reprinting are disk work, and two books at once contend for nothing.',
   exclusive: 'An installation replaces the environment every other job runs in, so nothing runs beside it and nothing behind it starts first.',
   unscheduled: 'Assembled in this window rather than by the engine, so it takes no slot and holds nothing up.',
 };
+
+/**
+ * THE CARD FOR A MACHINE THAT IS NO LONGER OFFERED, and why it is still drawn.
+ *
+ * A job never moves once it has started (docs/SLOTS.md §3), so switching a server
+ * off while it is translating leaves the run exactly where it was. The card goes
+ * when the run does.
+ */
+const LEAVING_HINT
+  = 'This server was switched off or removed while this run was going. A job never moves once it has started, so it finishes here.';
 
 /**
  * THE TWO STAGES OF AN ANALYSIS, IN THE ORDER THEY HAPPEN — which is also the

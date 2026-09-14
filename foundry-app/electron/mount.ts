@@ -104,7 +104,7 @@ import {
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
-import * as vllm from './vllm-server';
+import * as pageReader from './page-reader';
 import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
@@ -987,12 +987,12 @@ function unfiled(row: Job): Error {
  *
  * ── Why it answers with a promise when the sketch said void ─────────────────
  *
- * Because stopping the reading server is a SIGTERM inside the WSL distro
- * followed by waiting for the CUDA device to come back, and an Electron that
- * exited underneath it leaves the guest process orphaned holding the card. That
- * hazard is the host's now as much as it was ever Foundry's, so the host is
- * given the one thing it needs to avoid it: something to wait on before it lets
- * its own quit finish. A caller with nothing to defer can ignore it.
+ * Because stopping the reading server is a SIGTERM followed by waiting for the
+ * process to let go of the GPU, and an Electron that exited underneath it leaves
+ * a llama-server orphaned holding the card. That hazard is the host's now as
+ * much as it was ever Foundry's, so the host is given the one thing it needs to
+ * avoid it: something to wait on before it lets its own quit finish. A caller
+ * with nothing to defer can ignore it.
  *
  * IDEMPOTENT, because a quit is a sequence of events rather than one: whoever
  * asks second gets the same promise the first ask made, and the SIGTERM is sent
@@ -1029,10 +1029,10 @@ let stopping: Promise<void> | null = null;
 export function stopFoundry(): Promise<void> {
   if (stopping !== null) return stopping;
   queue.shutdown();
-  stopping = vllm.ownsServer()
+  stopping = pageReader.ownsServer()
     // A server this app merely FOUND running is not ours to stop, and the wait
     // would be a wait for somebody else's process to die.
-    ? vllm.stopServer('the app is quitting').then(() => undefined)
+    ? pageReader.stopPageReader('the app is quitting').then(() => undefined)
     : Promise.resolve();
   return stopping;
 }
