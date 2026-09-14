@@ -165,6 +165,29 @@ So the "multi engine option" is: keep `engine` on every voice row (it is), never
 selector to a client (there is none to remove later), and when the next engine lands it is
 one Crucible entry plus one module line.
 
+## 4b. Zero-shot — a voice in every respect but where its identity comes from
+
+**Owen, 2026-09-14:** *"zero shot uses a voice reference and the base model i believe. it should
+effectively be treated as a model, for all intents and purposes, except the route it takes to
+retrieve and return the audio."*
+
+- In Crucible a zero-shot voice IS a `voice` subject: `voices/zeroshot.toml` names the Higgs
+  BASE weights (pulled on the Mac already, 8.7 GB), and it loads through the same
+  `load-voice` job as every fine-tuned voice — with one extra field, the reference clip
+  (`reference: {data: <base64 wav>}`; the SGLang arm takes it that way today; the MLX arm has
+  the door and has never been exercised with a real clip — memory `higgs-zero-shot-path`).
+  Once loaded it is the resident voice; the streaming session and the render job name it
+  as `zeroshot` and nothing downstream knows it was cloned from a clip.
+- The CLIP is the client's. BookForge keeps its clips in `<userData>/runtime/higgs-models/refs/`
+  and shows them as the four `zeroshot-*` entries in the voice modal; the extension keeps its
+  own in `chrome.storage.local` / IndexedDB (a file input in Options, a short name, the WAV
+  bytes) and shows them in the voice picker under the `zeroshot` row. Picking one = load
+  `zeroshot` with that clip. Two clients, two clip stores, one voice subject — the clip is a
+  per-client choice like a voice pick, not an engine fact, so there is no second owner.
+- What is NOT built: the extension's clip store and picker (this plan), and the first real
+  MLX-arm render with a clip (owed since 09-13; the button's T9 does not cover it — a
+  separate measured run on the Mac once the clip picker exists).
+
 ## 5. Order of work
 
 1. Owen's ruling on §2 (takes are the spread). 2. `shared/listen-text/` + `shared/listen-client/`

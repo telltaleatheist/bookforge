@@ -4,6 +4,44 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0e. WHERE IT STANDS AT 19:40, 2026-09-14 (0d below is the BookForge half; read this first)
+
+**Landed today, evening:** Crucible Phase 15 contract (`crucible/docs/PHASE15-HOST.md`, §0–§8 incl.
+the AMENDED block: Windows IS the `llama-windows` backend; control is Windows's, data is the
+card's; §3.5a remove door; §3.10 llama-server child; §4.7 engine switch on the page; §4.6 Mac;
+§5.3a modules carry classes; §8 THE BUTTON). Crucible branch `feat/phase6-remote-render` has: the
+host branch merged (tray, Startup item, install.ps1 → host, host pack built, migrate-weights real),
+the Mac branch merged (align + asr on mlx-darwin, measured; engine per (backend, class-family);
+NO dots mlx block — mlx-vlm's server drops the image, ruling owed), settings/routes/upstreams,
+SDK with six fixes (0191715, b97c05f), the remove door (332116f), one page-request builder
+(d028d56), manifests INSIDE the wheel (4473b53). BookForge: 21 commits to cef93ad4 + this plan
+(`docs/EXTENSION-TO-CRUCIBLE-PLAN.md` = Phase 16, rulings: options carried, Enhance dropped,
+zero-shot). Foundry main ecd03e3 (H–K merged; L gated). The MAC runs main HEAD (editable
+checkout `/Volumes/Callisto/Projects/crucible`, deploy = git pull via bundle; NEVER a wheel until
+4473b53 is proven). Live WSL server still on the env-packs build (493f040) — S1 owed.
+
+**Running:** (1) the server finish agent in the Crucible checkout: engine task (in progress —
+api.py/host/app.py/tasks.py dirty), then §5.3a class-resolving modules, SDK re-pack, S1 (WSL
+clone → HEAD + restart), `scripts/testrun-phase15.sh` (+ `--dry-run`), docs §7.5. S2 staging is
+DONE on disk: `C:	mp\phase15-testrun\{home,host,packs}` = 15 GB (engine zip, dots GGUF pair,
+9B GGUF). (2) the Orpheus cleanup agent: verify-by-sha against HF, delete, fstrim; reports the
+Ollama store (63 GB) without deleting it — Owen's call.
+
+**Owen's standing orders tonight:** NO GPU on the PC; Mac's card allowed; full pytest suites run
+ONLY when he says (single files under `/tmp/crucible-pytest.lock` with the `[t]rain_lora.py`
+guard); a trainer runs in WSL (13 GB VM cap); all subagents Opus or lower.
+
+**Next, in order:** the server agent's report → re-vendor the re-packed SDK into BookForge
+(`npm install file:vendor/…tgz`, check the lock's integrity) and tell Foundry the sha; regenerate
++ re-vendor `bookforge.module.json` (classes, not ids) and tell Foundry; Mac staging (7c's
+M-steps: install align|asr --build, pulls, capability write); run `testrun-phase15.sh --dry-run`;
+tell Owen THE BUTTON is ready; he releases the card and says when; run it; paste the measured
+figures back into §7/§7b/§7c. Then: Owen's in-app pass; Foundry's L + the single re-vendor;
+publish v0.6.0 (`./scripts/release.sh --branch feat/phase6-remote-render`, Owen runs it); Phase
+16 (the extension). **Rulings owed from Owen:** dots on the Mac through Crucible's own
+mlx-vlm wrapper (recommended yes); Correct Sentences' spread = the take ladder (recommended
+yes); the Ollama store.
+
 ## 0d. PHASE 15 — the engine is the one door, and the apps have no provider code (2026-09-14, evening)
 
 Read `C:\Users\tellt\Projects\crucible\docs\PHASE15-HOST.md` — it is the CONTRACT, and it
