@@ -168,7 +168,7 @@ const SUITES = [
   // would make the server refuse the very job that took it.
   'test-crucible-lease',
   // AND ONE LEASE FOR A ROW OF THEM. A row that cleans and then simplifies took
-  // two leases, and Owen's unload ruling means the model is gone in the gap â€”
+  // two leases, and Owen's unload ruling means the model is gone in the gap —
   // so the second act is answered `model_not_resident` and the row dies between
   // two steps that both worked. Every check here is a way the lease could
   // quietly not be held across the seam, or be held across an hour of ffmpeg
@@ -329,9 +329,9 @@ const SUITES = [
   // one 3090 Ti start together, which looks like a working queue until both
   // runs OOM.
   'test-queue-slot-sets',
-  // WHERE EACH STEP OF A BOOK RUNS. Â§4.4 â€” every step of one book runs on the
-  // machine the book was assigned â€” and the failure is SILENT by construction:
-  // Â§4's safety default is that an undeclared step does not travel, so a
+  // WHERE EACH STEP OF A BOOK RUNS. §4.4 — every step of one book runs on the
+  // machine the book was assigned — and the failure is SILENT by construction:
+  // §4's safety default is that an undeclared step does not travel, so a
   // missing `machines()` reads as a working queue while a book rendered on the
   // Mac does its RVC, its hiss pass and its alignment on this card. One of
   // those took a fine-tune's card at 00:50 on 2026-09-14.
