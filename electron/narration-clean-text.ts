@@ -103,17 +103,34 @@ import { foundryVersionAtLeast } from '../shared/vlm/readings-bank.js';
  * else's setting.
  */
 export interface CleanTextEngineSettings {
-  /**
-   * `--server`. WHICH KIND OF SERVER the pass speaks to, declared and never
-   * sniffed from a URL.
+  /*
+   * THERE IS NO `server` FIELD ANY MORE, and its absence is the contract.
    *
-   * Owen, 2026-09-08: *"lets build in vllm batching. ollama batching doesnt
-   * work."* Foundry 19f5e70 takes the choice as a flag (their
-   * src/translate/model-server.ts) and the app remembers it in `llmServer`; it is
-   * a property of the MACHINE, not of a book, which is why it is one setting and
-   * not a field on three dialogs.
+   * It held `'ollama' | 'vllm'` and became `--server vllm` on the command line.
+   * Foundry `646e8a1` (v1.3.0, tag `engine-one-door`) deleted the second
+   * dialect — `src/translate/ollama.ts` is gone, `transport.ts` is in its place
+   * — and `--server` with it. Owen's ruling, in his words: *"everything compute
+   * intensive must go through crucible. if theres no crucible server, theres no
+   * foundry."* An engine at that version answers `foundry: unknown option
+   * --server` and the run dies at argument parsing, so this could not survive as
+   * a flag anyone still wrote.
+   *
+   * It is not renamed, defaulted or kept as a quiet no-op. A field named for a
+   * choice that no longer exists is the next reader's trap: it invites a branch,
+   * and every branch it invites is on a distinction the engine cannot express.
+   * What survives is `endpoint` — ONE URL, the one door — and that is the whole
+   * of what a caller now needs to know.
+   *
+   * THE PERSISTED KEY IS A DIFFERENT QUESTION AND IT IS NOT OURS.
+   * `app-settings.json`'s `llmServer` is FOUNDRY'S key, written by FOUNDRY'S
+   * Settings → Language model row, which lives in the sealed
+   * `foundry-app/` subtree; their own handoff note lists removing it under *"Not
+   * done, and waiting"*. Until it goes it is still the only thing that says
+   * which of the two stored URLs the hosted press will use, so this reader goes
+   * on honouring it AS A URL SELECTOR — see `endpointKeysFor` — and says once, by
+   * name, that the kind no longer reaches the engine. Two doors reading one file
+   * differently is the defect this module exists to prevent.
    */
-  server: 'ollama' | 'vllm';
   /**
    * `--model`. EMPTY IS A REAL VALUE UNDER vLLM and is its default: a vLLM
    * process serves exactly one model, and empty means "whatever it is serving",
@@ -121,7 +138,14 @@ export interface CleanTextEngineSettings {
    * empty model is omitted from the argv rather than sent as `--model ""`.
    */
   model: string;
-  /** `--endpoint`. `ollamaUrl` under ollama, `vllmUrl` under vLLM. */
+  /**
+   * `--endpoint`. THE server, and now the only one there is.
+   *
+   * Which stored key it came from — `vllmUrl` or `ollamaUrl` — is named in
+   * `source`, because that selection is still Foundry's `llmServer` and a reader
+   * of a log needs to know which machine was dialled. It is not a field here:
+   * nothing downstream may branch on it.
+   */
   endpoint: string;
   /**
    * Minutes an app-started text server stays up after the work drains.
@@ -184,9 +208,54 @@ function clampServedModel(value: unknown): string {
   return /\s/.test(trimmed) ? '' : trimmed;
 }
 
-/** `clampServerKind`, mirrored: one of the two kinds. A word this build does not know is not one. */
-function clampServerKind(value: unknown): 'ollama' | 'vllm' {
-  return value === 'vllm' ? 'vllm' : 'ollama';
+/**
+ * `llmServer`, READ AS A URL SELECTOR AND NOTHING ELSE, with the retirement said
+ * out loud the first time a settings file is found still carrying it.
+ *
+ * Foundry's own clamp (`clampServerKind`, their app-settings.ts) answers a
+ * SERVER KIND, and there is no longer such a thing: `646e8a1` deleted the second
+ * dialect and the `--server` flag with it. What the key still does, until
+ * Foundry's picker rework lands, is pick WHICH of the two stored URL/model pairs
+ * their own Settings row was editing — `vllmUrl`/`vllmModel` or
+ * `ollamaUrl`/`cleanTextModel`. That is a fact about a file, so this reads it;
+ * it is not a fact about the engine, so nothing branches on the answer past the
+ * two `record[...]` lookups it governs.
+ *
+ * SAID ONCE PER PROCESS, AND BY NAME. A retired key that is silently honoured is
+ * indistinguishable from a live one to everybody who comes after, and a retired
+ * key that throws would take down a machine whose settings file is simply older
+ * than tonight — neither is the honest answer. The line names the key, the file,
+ * the Foundry commit that retired the flag, and the one thing the value still
+ * decides.
+ *
+ * RULING OWED (Owen's, recorded rather than guessed): when Foundry's picker
+ * rework deletes `llmServer` there will be ONE stored URL, and which of the two
+ * keys survives it is their call, not this file's. Until then a machine still
+ * set to `ollama` dials `ollamaUrl` — which after `646e8a1` is very likely an
+ * Ollama origin the one door cannot speak to. This reader does NOT second-guess
+ * that by silently preferring `vllmUrl`: pointing a run at a machine the user
+ * did not choose is worse than a refusal the endpoint itself will produce, and
+ * `textServerRoute` already says on the row whose server it is.
+ */
+let serverKindRetirementSaid = false;
+export function endpointKeysFor(value: unknown, settingsPath: string): {
+  urlKey: 'vllmUrl' | 'ollamaUrl';
+  modelKey: 'vllmModel' | 'cleanTextModel';
+} {
+  if (value !== undefined && !serverKindRetirementSaid) {
+    serverKindRetirementSaid = true;
+    console.log(
+      `[clean-text] ${settingsPath} still carries llmServer=${JSON.stringify(value)}. That setting `
+      + 'is RETIRED as a server kind: Foundry 646e8a1 (v1.3.0) deleted the Ollama dialect and the '
+      + '--server flag with it, so nothing here composes one and an engine at that version would '
+      + 'refuse it by name. The value is still read for the one thing it decides — which stored '
+      + 'URL and model pair Foundry\'s own Settings row was editing — until their picker rework '
+      + 'removes the key.',
+    );
+  }
+  return value === 'vllm'
+    ? { urlKey: 'vllmUrl', modelKey: 'vllmModel' }
+    : { urlKey: 'ollamaUrl', modelKey: 'cleanTextModel' };
 }
 
 /** `clampKeepWarm`, mirrored: a finite number of minutes in [0, 240]. */
@@ -232,7 +301,6 @@ export async function cleanTextEngineSettingsIn(
     // (`readAppSettings` → the clamps with no value), so this is what the hosted
     // press would run. Said in the answer's `source` rather than swallowed.
     return {
-      server: 'ollama',
       model: FOUNDRY_DEFAULT_MODEL,
       endpoint: FOUNDRY_DEFAULT_ENDPOINT,
       keepWarmMinutes: 0,
@@ -244,25 +312,27 @@ export async function cleanTextEngineSettingsIn(
     ? raw as Record<string, unknown>
     : {};
   /*
-   * WHICH SERVER, AND THEREFORE WHICH PAIR OF KEYS. Foundry 19f5e70 keeps BOTH
-   * servers' settings side by side so flipping back costs no retyping —
-   * `llmServer` picks, `vllmUrl`/`vllmModel` are the vLLM pair,
-   * `ollamaUrl`/`cleanTextModel` the Ollama pair — and this door mirrors
+   * WHICH PAIR OF KEYS — and that is now the ONLY question `llmServer` answers.
+   * Foundry 19f5e70 kept both servers' settings side by side so flipping back
+   * cost no retyping (`vllmUrl`/`vllmModel`, `ollamaUrl`/`cleanTextModel`) and
+   * 646e8a1 took the flag away without taking the two pairs away, so the key
+   * outlives the choice it was named for. `endpointKeysFor` says so once, by
+   * name, and hands back the two lookups. This door still mirrors
    * `clean-dialog.add()` field for field, exactly as `cli/clean-step.js` does.
    */
-  const server = clampServerKind(record['llmServer']);
-  const statedModel = server === 'vllm' ? record['vllmModel'] : record['cleanTextModel'];
-  const statedEndpoint = server === 'vllm' ? record['vllmUrl'] : record['ollamaUrl'];
+  const { urlKey, modelKey } = endpointKeysFor(record['llmServer'], settingsPath);
+  const statedModel = record[modelKey];
+  const statedEndpoint = record[urlKey];
   return {
-    server,
-    model: server === 'vllm' ? clampServedModel(statedModel) : clampModelTag(statedModel),
-    endpoint: server === 'vllm'
+    model: modelKey === 'vllmModel' ? clampServedModel(statedModel) : clampModelTag(statedModel),
+    endpoint: urlKey === 'vllmUrl'
       ? clampOllamaUrl(statedEndpoint, FOUNDRY_DEFAULT_VLLM_ENDPOINT)
       : clampOllamaUrl(statedEndpoint),
     keepWarmMinutes: clampKeepWarm(record['keepServerWarmMinutes']),
     source: [
-      `server ${server} from ${settingsPath} llmServer`,
-      ...(server === 'vllm'
+      `${urlKey}/${modelKey} chosen by ${settingsPath} llmServer (retired as a server kind; still `
+        + 'the key selector until Foundry\'s picker rework)',
+      ...(modelKey === 'vllmModel'
         ? [
           typeof statedModel === 'string' && statedModel.trim().length > 0
             ? `model from ${settingsPath} vllmModel`
@@ -297,14 +367,19 @@ export async function cleanTextEngineSettingsIn(
  *
  * Two rules, both Foundry's:
  *
- *   · `--server vllm` IS WRITTEN AND `--server ollama` IS NOT. Under ollama the
- *     argv is byte-identical to what it was before vLLM existed, so an engine
- *     that predates the flag still runs the ollama door. The flag arrived in
- *     foundry 19f5e70 WITHOUT a version bump, so there is no number to gate on —
- *     a pre-19f5e70 1.2.0 answers `unknown option --server`, which names itself.
+ *   · THERE IS NO `--server`. It said which of two dialects to speak, and since
+ *     `646e8a1` (v1.3.0) there is one: `src/translate/ollama.ts` is deleted,
+ *     `transport.ts` stands in its place, and the engine answers `foundry:
+ *     unknown option --server` — verified against
+ *     `dist/foundry-windows-x64.exe` at `83d7b66`. It is REMOVED rather than
+ *     made conditional on a version, because a flag written only for engines
+ *     old enough to want it is a second code path kept alive for a build nobody
+ *     should be running; the clean-text door already refuses an engine below
+ *     `FOUNDRY_VERSION_FOR_CLEAN_TEXT` by name, and that is the one gate.
  *   · `--model` IS OMITTED WHEN THE MODEL IS EMPTY, never sent as `--model ""`.
- *     Empty is vLLM's meaningful default ("whatever it is serving"), and the
- *     engine resolves and records the served id itself.
+ *     Empty is the meaningful default ("whatever it is serving"), and the
+ *     engine resolves and records the served id itself — which since `646e8a1`
+ *     is true of every run, because there are no act-level model defaults left.
  */
 export function cleanTextArgs(
   epubPath: string,
@@ -316,7 +391,6 @@ export function cleanTextArgs(
     '--epub', epubPath,
     '--out', outPath,
     '--endpoint', settings.endpoint,
-    ...(settings.server === 'vllm' ? ['--server', 'vllm'] : []),
     ...(settings.model.length > 0 ? ['--model', settings.model] : []),
   ];
 }
@@ -549,25 +623,33 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
    * holds which server is up and who holds the card.
    *
    * Lazy rather than at the top of the file because the arbiter reaches WSL and
-   * the GPU, and a cleanup against ollama must not load any of that.
+   * the GPU, and a cleanup against somebody else's endpoint must not load any of
+   * that — which is why `textServerRoute` is asked before anything is started.
    */
   const { ensureTextServer, noteTextQueueBusy, noteTextQueueIdle, profileForKind, textServerRoute } =
     require('./text-server.js') as typeof import('./text-server.js');
   let bracketed = false;
-  if (settings.server === 'vllm') {
-    const route = textServerRoute(settings.endpoint);
-    if (route.manage) {
-      noteTextQueueBusy();
-      bracketed = true;
-      const profile = profileForKind('clean');
-      const up = await ensureTextServer(profile.id, (line) => {
-        console.log(`[NARRATION-TEXT] ${line}`);
-        opts.onProgress?.(0, 0, line);
-      });
-      console.log(`[NARRATION-TEXT] the text server is serving ${up.servedName} at ${up.url}`);
-    } else {
-      console.log(`[NARRATION-TEXT] ${route.note}`);
-    }
+  /*
+   * THE GATE IS THE ENDPOINT, NOT A SERVER KIND. This asked
+   * `settings.server === 'vllm'` first and `textServerRoute` second, which was
+   * two questions where there is one. Foundry `646e8a1` deleted the server kind
+   * and `CleanTextEngineSettings` lost the field with it; what is left is the
+   * question that was always the real one, and it is strictly better at it — a
+   * machine set to `ollama` whose URL is BookForge's own text server used to be
+   * skipped in silence and is now served.
+   */
+  const route = textServerRoute(settings.endpoint);
+  if (route.manage) {
+    noteTextQueueBusy();
+    bracketed = true;
+    const profile = profileForKind('clean');
+    const up = await ensureTextServer(profile.id, (line) => {
+      console.log(`[NARRATION-TEXT] ${line}`);
+      opts.onProgress?.(0, 0, line);
+    });
+    console.log(`[NARRATION-TEXT] the text server is serving ${up.servedName} at ${up.url}`);
+  } else {
+    console.log(`[NARRATION-TEXT] ${route.note}`);
   }
 
   let result;

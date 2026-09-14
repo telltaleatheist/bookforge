@@ -163,15 +163,25 @@ export const foundryJobStep: StepModule = {
      * ── THE TEXT SERVER, STARTED BEFORE THE ACT AND STOPPED AFTER IT ──────────
      *
      * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
-     * Foundry speaks `--server vllm` and starts nothing (their VENDORED.md's last
-     * paragraph); this is the moment BookForge owns.
+     * Foundry starts nothing, ever (their VENDORED.md's last paragraph, and
+     * since `646e8a1` the engine does not even unload); this is the moment
+     * BookForge owns.
      *
-     * Under `llmServer: 'ollama'` NOTHING BELOW HAPPENS and the row is exactly
-     * what it was. Under vLLM, and only when the endpoint is the server this
-     * machine manages, the profile for this act is brought up first — staged if
-     * its weights are absent, swapped if the wrong model is serving — and
-     * released in the `finally`, success or failure alike, so a refused row never
-     * leaves twenty gigabytes reserved against nothing.
+     * THE GATE IS THE ENDPOINT, NOT A SERVER KIND. It used to read
+     * `settings.server === 'vllm'` first and ask `textServerRoute` second, which
+     * was two questions where there is one: does this URL name the text server
+     * this machine manages. Foundry `646e8a1` deleted the server kind outright
+     * (`--server` is refused by name now) and `CleanTextEngineSettings` lost the
+     * field with it, so the surviving question is the one that was always the
+     * real one — and it is strictly better at it: a machine set to `ollama`
+     * whose URL happened to be BookForge's own text server used to be skipped
+     * silently, and is now served.
+     *
+     * When the endpoint is ours the profile for this act is brought up first —
+     * staged if its weights are absent, swapped if the wrong model is serving —
+     * and released in the `finally`, success or failure alike, so a refused row
+     * never leaves twenty gigabytes reserved against nothing. When it is not,
+     * the row says whose server it is and nothing is started or stopped.
      *
      * AND THE MODEL IS ASSERTED ONTO THE REQUEST. Owen, same day: *"verify that
      * when i run translate/simplify in foundry, they will correctly use the 27b
@@ -206,7 +216,7 @@ export const foundryJobStep: StepModule = {
     let request = config.request;
     let bracketed = false;
     let keepWarmMinutes = 0;
-    if (act !== null && settings !== null && settings.server === 'vllm') {
+    if (act !== null && settings !== null) {
       const route = textServerRoute(settings.endpoint);
       if (route.manage) {
         noteTextQueueBusy();

@@ -30,14 +30,20 @@
  *      `ipc.madeFrom` resolves it (`positionStepId(dir)`), so the row this lands
  *      is filed under the same step the press would file it under.
  *
- * ── THE MODEL IS RELEASED WHEN THE RUN ENDS ─────────────────────────────────
+ * ── THE ENGINE NEVER LOADS AND NEVER UNLOADS ────────────────────────────────
  *
- * Owen, 2026-09-08: *"make sure the cli brings down the model when it finishes
- * using it."* Nothing here has to do that: `foundry clean-text` unloads the
- * weights (`keep_alive: 0`) unless it is told the machine is shared, so the
- * release is what an unasked-for run already does. `--keep-model` is the opt-in
- * for somebody doing several runs back to back, and it is the ONLY thing that
- * puts `--keep-model` on the line.
+ * Owen, 2026-09-08, asked the opposite question — *"make sure the cli brings
+ * down the model when it finishes using it"* — and `clean-text` answered it by
+ * sending `keep_alive: 0` unless `--keep-model` said otherwise. Both halves of
+ * that are gone. Foundry `646e8a1` (v1.3.0) retired the Ollama dialect, and
+ * with it the release at the end of a run and the flag that suppressed it:
+ * residency is the OPERATOR'S act before a pass is spawned, a load evicts, and
+ * a server holding the wrong model is a refusal by name. So this door neither
+ * releases nor asks to keep — and `--keep-model` typed on its line is refused
+ * by name rather than dropped (cli/retired-engine-flags.js).
+ *
+ * What this door DOES still start and stop is BookForge's own text SERVER,
+ * which is a different act from loading a model into it — `--keep-server`.
  *
  * ── WHICH ENGINE ANSWERS, AND WHY IT IS NOT THE INSTALLED ONE ───────────────
  *
@@ -62,14 +68,19 @@
 const fs = require('fs');
 const path = require('path');
 
+const { refuseRetiredEngineFlags } = require('./retired-engine-flags.js');
+
 const REPO = path.resolve(__dirname, '..');
 const BF_DIST = path.join(REPO, 'dist', 'electron');
 const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
-                     [--server ollama|vllm] [--model <tag>] [--ollama <url>] [--concurrency <n>]
-                     [--keep-model] [--keep-server] [--library <root>] [--foundry-dist <dir>]
-                     [--dry-run]`;
+                     [--model <tag>] [--concurrency <n>] [--keep-server]
+                     [--library <root>] [--foundry-dist <dir>] [--dry-run]
+
+  --server, --ollama and --keep-model were retired from the foundry engine by
+  646e8a1 (v1.3.0) and are refused by name. The endpoint comes from the app's
+  own app-settings.json, as it does for the hosted press.`;
 
 function parseArgs(argv) {
   const a = {};
@@ -86,6 +97,13 @@ function parseArgs(argv) {
 }
 
 const said = (v) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : null);
+
+/** Foundry's own settings file, the one `readAppSettings` reads. Named for the log. */
+function appSettingsPath() {
+  return path.join(
+    process.env.BOOKFORGE_USER_DATA || require('./electron-stub.js').USER_DATA,
+    'app-settings.json');
+}
 
 /** The library root, the same file `cli/library.js` reads. */
 function resolveLibraryRoot(override) {
@@ -123,6 +141,10 @@ async function foundryProjectFor(projectDir, libraryRoot) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // FIRST, before a project is resolved or a plan is made: a person who typed a
+  // retired flag gets the sentence, not a half-planned run. See
+  // cli/retired-engine-flags.js for why this is a refusal and not a drop.
+  refuseRetiredEngineFlags(args, 'clean-step');
   const projectArg = said(args.project);
   const foundryArg = said(args['foundry-project']);
   if (projectArg === null && foundryArg === null) {
@@ -215,23 +237,28 @@ async function main() {
 
   const settings = readAppSettings();
   /*
-   * WHICH SERVER, and therefore which URL and which model field. Foundry 19f5e70
-   * (Owen, 2026-09-08: "lets build in vllm batching. ollama batching doesnt
-   * work"): the three text acts take `--server ollama|vllm`, declared and never
-   * sniffed from a URL, and the app keeps BOTH servers' settings so switching
-   * back costs no retyping — `llmServer` picks, `vllmUrl`/`vllmModel` are the
-   * vLLM pair, `ollamaUrl`/`cleanTextModel` the Ollama pair. This door mirrors
-   * `clean-dialog.add()` field for field, so under vLLM the model is
-   * `vllmModel`, which is EMPTY by default and means "whatever the server is
-   * serving" — the engine asks /v1/models and records the served id. An empty
-   * model is therefore a real value here, not a missing one, and `argsFor`
-   * omits `--model` for it rather than sending an empty name.
+   * WHICH URL AND WHICH MODEL FIELD — and that is now ALL `llmServer` decides.
+   *
+   * Foundry 19f5e70 gave the text acts `--server ollama|vllm` and kept both
+   * servers' settings side by side so switching back cost no retyping.
+   * `646e8a1` (v1.3.0) deleted the second dialect and the flag with it, but NOT
+   * the two stored pairs — `vllmUrl`/`vllmModel` and `ollamaUrl`/`cleanTextModel`
+   * are both still written by Foundry's own Settings row, which lives in the
+   * sealed subtree and is theirs to retire. So the key survives its own name,
+   * purely as the selector between them, and `endpointKeysFor` (the app's own
+   * reader, imported rather than re-implemented — "the CLI mirrors the app's
+   * code path") says so once, by name, and hands back the two lookups.
+   *
+   * Under the vLLM pair the model is `vllmModel`, which is EMPTY by default and
+   * means "whatever the server is serving" — the engine asks /v1/models and
+   * records the served id. An empty model is therefore a real value here, not a
+   * missing one, and `argsFor` omits `--model` for it rather than sending an
+   * empty name. Since `646e8a1` that is true of every run, because the engine
+   * has no act-level model defaults left at all.
    */
-  const server = said(args.server) ?? settings.llmServer;
-  if (server !== 'ollama' && server !== 'vllm') {
-    throw new Error(`--server ${server} is not a server kind this door knows; it is ollama or vllm.`);
-  }
-  const ollama = said(args.ollama) ?? (server === 'vllm' ? settings.vllmUrl : settings.ollamaUrl);
+  const { endpointKeysFor } = require(path.join(BF_DIST, 'narration-clean-text.js'));
+  const { urlKey, modelKey } = endpointKeysFor(settings.llmServer, appSettingsPath());
+  const ollama = settings[urlKey];
   /*
    * THE MODEL, AND UNDER vLLM IT IS THE PROFILE'S SERVED NAME.
    *
@@ -245,10 +272,20 @@ async function main() {
    * quietly record a cleanup against a model that did not do it.
    */
   const textServer = require(path.join(BF_DIST, 'text-server.js'));
-  const profile = server === 'vllm' ? textServer.profileForKind('clean') : null;
+  /*
+   * THE GATE IS THE ENDPOINT, NOT A SERVER KIND — the same move
+   * `electron/queue-steps/foundry-job.ts` made, and for the same reason: with
+   * `--server` gone the only question left is whether this URL names the text
+   * server BookForge manages, which is what `textServerRoute` has always
+   * answered. A machine set to `ollama` whose URL happens to be BookForge's own
+   * server is now served rather than skipped.
+   */
+  const profile = textServer.textServerRoute(ollama).manage
+    ? textServer.profileForKind('clean')
+    : null;
   const model = profile === null
-    ? (said(args.model) ?? settings.cleanTextModel)
-    : textServer.servedModelForRequest(said(args.model) ?? settings.vllmModel, profile, 'clean');
+    ? (said(args.model) ?? settings[modelKey])
+    : textServer.servedModelForRequest(said(args.model) ?? settings[modelKey], profile, 'clean');
   let concurrency;
   if (args.concurrency !== undefined && args.concurrency !== true) {
     concurrency = Number(args.concurrency);
@@ -275,14 +312,23 @@ async function main() {
     ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
     model,
     ollama,
-    ...(server === 'vllm' ? { server: 'vllm' } : {}),
     ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
     ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
     stepId: plan.stepId,
-    // The two headless-only fields. Absent is the engine's own default in both
-    // cases — 4 blocks in flight, and the weights released at the end.
+    /*
+     * The one headless-only field left. Absent is the engine's own default,
+     * deliberately not spelled here: a copy of their number is a second place
+     * it lives, and `646e8a1` moved it from 4 to 12.
+     *
+     * `keepModel` is NOT set and cannot be. `--keep-model` went with the Ollama
+     * dialect and the engine never loads or unloads now; the vendored `argsFor`
+     * STILL turns a `keepModel: true` into the retired flag
+     * (foundry-app/electron/job-queue.ts:2683, reported to the Foundry side),
+     * so setting it here would compose a command line the engine refuses at
+     * argument parsing. `--keep-model` typed on this door's own line is refused
+     * by name up top.
+     */
     ...(concurrency !== undefined ? { concurrency } : {}),
-    ...(args['keep-model'] === true ? { keepModel: true } : {}),
   };
 
   const parentStep = await positionStepId(foundryProjectDir);
@@ -313,20 +359,18 @@ async function main() {
     : `${standing.id}  ${standing.action} — ${standing.label}`}`);
   console.log(`[clean] parentStep       ${parentStep ?? '(none)'}`);
   console.log(`[clean] mints step       ${plan.stepId ?? '(none)'}`);
-  console.log(`[clean] server           ${server}${said(args.server) ? ' (--server)' : ' (app-settings llmServer)'}`);
   console.log(`[clean] model            ${model.length > 0 ? model : '(none — the served model, resolved and recorded by the engine)'}`
-    + `${said(args.model) ? ' (--model)' : profile !== null ? ` (text-server profile ${profile.id})` : ' (app-settings cleanTextModel)'}`);
-  console.log(`[clean] endpoint         ${ollama}${said(args.ollama) ? ' (--ollama)' : server === 'vllm' ? ' (app-settings vllmUrl)' : ' (app-settings ollamaUrl)'}`);
+    + `${said(args.model) ? ' (--model)' : profile !== null ? ` (text-server profile ${profile.id})` : ` (app-settings ${modelKey})`}`);
+  console.log(`[clean] endpoint         ${ollama} (app-settings ${urlKey}, chosen by llmServer)`);
   if (profile !== null) {
     const route = textServer.textServerRoute(ollama);
     console.log(`[clean] text server      ${route.manage
       ? `BookForge starts and stops it (${profile.servedName}, ~/${profile.modelDir})`
       : route.note}`);
   }
-  console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default (4)"}`);
-  console.log(`[clean] keep model       ${request.keepModel === true
-    ? 'yes — --keep-model, the weights stay resident'
-    : 'no — the weights are released when the run ends'}`);
+  console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default, unspelled here"}`);
+  console.log('[clean] residency        the operator\'s — the engine neither loads nor unloads '
+    + '(foundry 646e8a1)');
   console.log(`[clean] engine           ${engine.command}${engine.args.length ? ` ${engine.args.join(' ')}` : ''}  (${engine.source})`);
   console.log(`[clean] engine version   ${version}`);
   console.log(`[clean] foundry build    ${FOUNDRY_DIST}`);

@@ -596,11 +596,30 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
         `${rel} sends a REQUEST, so it must name the served model on it`);
     }
   }
-  // The bare-EPUB and clean-lines doors compose a command line instead, and the
-  // rule there is the flag and the omission.
+  /*
+   * The bare-EPUB and clean-lines doors compose a command line instead, and the
+   * rule there is now ONE flag and one omission.
+   *
+   * It used to be two: `--server vllm` written and `--server ollama` not.
+   * Foundry `646e8a1` (v1.3.0) deleted the second dialect and the flag with it,
+   * so the positive assertion becomes a NEGATIVE one — no door may write a flag
+   * the engine answers `unknown option` to. Kept as a source assertion rather
+   * than dropped, because "we removed it" is only true until somebody puts it
+   * back, and the thing that would put it back is a copied line from an older
+   * door.
+   */
+  for (const rel of ['electron/narration-clean-text.ts', 'cli/clean-lines-step.js',
+    'cli/clean-step.js']) {
+    const source = fs.readFileSync(path.join(REPO, rel), 'utf8');
+    assert.ok(!/'--server'|"--server"/.test(source),
+      `${rel} writes --server, which foundry 646e8a1 (v1.3.0) refuses by name`);
+    assert.ok(!/'--keep-model'|"--keep-model"/.test(source),
+      `${rel} writes --keep-model, which foundry 646e8a1 (v1.3.0) refuses by name`);
+    assert.ok(!/'--ollama'|"--ollama"/.test(source),
+      `${rel} writes --ollama, which foundry 646e8a1 (v1.3.0) refuses by name; it is --endpoint`);
+  }
   for (const rel of ['electron/narration-clean-text.ts', 'cli/clean-lines-step.js']) {
     const source = fs.readFileSync(path.join(REPO, rel), 'utf8');
-    assert.ok(/'--server', 'vllm'/.test(source), `${rel} must write --server vllm`);
     assert.ok(/settings\.model\.length > 0 \? \['--model', settings\.model\] : \[\]/.test(source),
       `${rel} must OMIT --model when the model is empty, never send --model ""`);
   }

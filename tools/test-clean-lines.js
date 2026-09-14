@@ -101,6 +101,14 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
       foundryVersionAtLeast: (v, min) => v >= min,
       FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
       cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'http://x:1', source: 'the test' }),
+      /*
+       * THE ARBITER IS ASKED ON EVERY RUN NOW, not only under a vLLM setting:
+       * foundry 646e8a1 deleted the server kind, so "is this endpoint the text
+       * server BookForge manages" is the whole gate. The fake answers NO for
+       * http://x:1, which is what this check is about — one spawn and no server
+       * lifecycle. The bracket itself is covered by tools/test-text-server.js.
+       */
+      textServerRoute: () => ({ manage: false, note: 'http://x:1 is somebody else\'s server' }),
       parseCleanTextProgress: (line) => {
         const m = /^clean-text:\s+(\d+)\/(\d+)$/.exec(line.trim());
         return m ? { done: Number(m[1]), total: Number(m[2]) } : null;
@@ -154,6 +162,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
         foundryVersionAtLeast: (v, min) => v >= min,
         FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
+        textServerRoute: () => ({ manage: false, note: 'e is somebody else\'s server' }),
         parseCleanTextProgress: () => null,
         runFoundry: async () => { spawned = true; return { code: 0, stdout: '', stderr: '' }; },
       }), /predates clean-text --book/);
@@ -170,6 +179,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
         foundryVersionAtLeast: () => true,
         FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
+        textServerRoute: () => ({ manage: false, note: 'e is somebody else\'s server' }),
         parseCleanTextProgress: () => null,
         runFoundry: async () => ({ code: 3, stdout: '', stderr: 'the model is not pulled' }),
       }), /exited 3[\s\S]*the model is not pulled/);

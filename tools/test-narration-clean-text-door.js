@@ -338,12 +338,15 @@ test('BOTH halves are the hosted press\'s, out of the one settings file', async 
   assert.strictEqual(clamped.endpoint, 'http://localhost:11434');
 });
 
-test('under vLLM it reads the OTHER pair of keys, and empty is a real model', async () => {
+test('llmServer still picks the PAIR OF KEYS, and empty is a real model', async () => {
   /*
-   * Foundry 19f5e70 (Owen, 2026-09-08: "lets build in vllm batching. ollama
-   * batching doesnt work") keeps BOTH servers' settings side by side so flipping
-   * back costs no retyping: `llmServer` picks, `vllmUrl`/`vllmModel` are the vLLM
-   * pair, `ollamaUrl`/`cleanTextModel` the Ollama pair. This door mirrors
+   * Foundry 19f5e70 kept BOTH servers' settings side by side so flipping back
+   * cost no retyping: `llmServer` picks, `vllmUrl`/`vllmModel` are one pair,
+   * `ollamaUrl`/`cleanTextModel` the other. `646e8a1` (v1.3.0) deleted the second
+   * DIALECT and the `--server` flag, but not the two stored pairs — Foundry's own
+   * Settings row still writes them and is theirs to retire — so the key outlives
+   * its own name as a pure key selector, and `CleanTextEngineSettings` no longer
+   * carries a `server` field for anything to branch on. This door mirrors
    * `clean-dialog.add()` field for field, exactly as cli/clean-step.js does.
    */
   const dir = path.join(ROOT, 'settings-vllm');
@@ -359,7 +362,9 @@ test('under vLLM it reads the OTHER pair of keys, and empty is a real model', as
     cleanTextModel: 'qwen3.5:9b-q8_0', ollamaUrl: 'http://localhost:11434',
   }), 'utf8');
   const chosen = await door.cleanTextEngineSettingsIn(dir);
-  assert.strictEqual(chosen.server, 'vllm');
+  assert.strictEqual(chosen.server, undefined,
+    'the server KIND is retired (foundry 646e8a1); nothing may branch on it');
+  assert.ok(/vllmUrl\/vllmModel chosen by/.test(chosen.source), chosen.source);
   assert.strictEqual(chosen.model, '', 'an empty vllmModel is a VALUE, not a missing one');
   // The trailing slash goes, exactly as `clampOllamaUrl` drops it there.
   assert.strictEqual(chosen.endpoint, 'http://localhost:8300/v1');
@@ -369,7 +374,7 @@ test('under vLLM it reads the OTHER pair of keys, and empty is a real model', as
   const argv = door.cleanTextArgs('/in.epub', '/out.epub', chosen);
   assert.deepStrictEqual(argv, [
     'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
-    '--endpoint', 'http://localhost:8300/v1', '--server', 'vllm',
+    '--endpoint', 'http://localhost:8300/v1',
   ]);
   assert.strictEqual(argv.includes('--model'), false, 'an empty model is OMITTED');
 
@@ -380,7 +385,7 @@ test('under vLLM it reads the OTHER pair of keys, and empty is a real model', as
   const named = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(named.model, 'Qwen3.5-9B-bf16');
   assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', named).slice(-4),
-    ['--server', 'vllm', '--model', 'Qwen3.5-9B-bf16']);
+    ['--endpoint', 'http://localhost:8300/v1', '--model', 'Qwen3.5-9B-bf16']);
 
   // A name with a space in it is a name no server has: `clampServedModel` reads it
   // as empty rather than as a tag default — the one place it must NOT behave like
@@ -395,15 +400,19 @@ test('under vLLM it reads the OTHER pair of keys, and empty is a real model', as
   assert.strictEqual(clamped.endpoint, 'http://localhost:8000/v1');
 });
 
-test('under OLLAMA the argv is byte-identical to what it was before vLLM existed', async () => {
+test('an absent llmServer reads the ollamaUrl pair, and the argv names one door', async () => {
   const dir = path.join(ROOT, 'settings-ollama-argv');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
     cleanTextModel: 'qwen3.5:9b-bf16', ollamaUrl: 'http://titan:11434',
   }), 'utf8');
   const settings = await door.cleanTextEngineSettingsIn(dir);
-  assert.strictEqual(settings.server, 'ollama', 'an absent llmServer is ollama');
-  // NO `--server ollama`: an engine that predates the flag still runs this door.
+  assert.ok(/ollamaUrl\/cleanTextModel chosen by/.test(settings.source), settings.source);
+  /*
+   * NO `--server` IN EITHER DIRECTION. It is not that `ollama` was the engine's
+   * default and therefore unwritten (the 19f5e70 rule): `646e8a1` deleted the
+   * flag, so writing it at all would be `foundry: unknown option --server`.
+   */
   assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', settings), [
     'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
     '--endpoint', 'http://titan:11434', '--model', 'qwen3.5:9b-bf16',
@@ -530,12 +539,21 @@ test('a STAMPED book is ADMITTED, and the run reaches the model the settings nam
       assert.ok(/punctuation \(s1\)/.test(err.message),
         `stage 1 must have run over the book's blocks: ${err.message}`);
       // THE ENDPOINT, AND NOT THE MODEL, and that is the engine's shape rather
-      // than a gap here: it probes `/api/tags` before it ever names a tag, so a
+      // than a gap here: it probes the listing before it ever names a tag, so a
       // dead endpoint is reported without one. What model a run asks for is
       // proved by the settings case above and by the live leg below.
       assert.ok(/127\.0\.0\.1:1/.test(err.message),
         `the endpoint the settings named must be the one it dialled: ${err.message}`);
-      assert.ok(/ollama serve/.test(err.message),
+      /*
+       * THE REMEDY SENTENCE CHANGED WITH THE DIALECT, and the assertion moved
+       * with it rather than being loosened. Through foundry 1.2.0 an unreachable
+       * endpoint said `ollama serve`; `646e8a1` (v1.3.0) deleted the Ollama
+       * transport, and the engine now says it *"uses an OpenAI-compatible
+       * inference server and never starts one"* and names the two things a
+       * person can do. What is being held is unchanged: the ENGINE'S OWN remedy
+       * reaches the user instead of being swallowed into a generic failure.
+       */
+      assert.ok(/never starts one/.test(err.message),
         `the engine's own remedy must survive to the user: ${err.message}`);
       return true;
     });

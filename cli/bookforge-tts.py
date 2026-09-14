@@ -96,6 +96,30 @@ NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door
 NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"        # the persisted text cleanup
 CLEAN_LINES = REPO_ROOT / "cli" / "clean-lines.js"              # a file of lines through clean-text, by position
 CLEAN_STEP = REPO_ROOT / "cli" / "clean-step.js"                # the hosted Foundry Clean text press, headless
+
+# The flags `foundry` used to take on its text acts, and the one sentence that
+# refuses them. Foundry 646e8a1 (v1.3.0, tag engine-one-door) deleted the Ollama
+# dialect; --server, --ollama and --keep-model went with it rather than behind a
+# compatibility flag. This mirrors cli/retired-engine-flags.js, which is the same
+# refusal for the node adapters these commands spawn - said HERE as well because
+# a flag this parser accepts and then quietly drops would reach the adapter as a
+# command line that never mentioned it. See docs/NARRATION_TEXT_PASS.md.
+def _refuse_retired(flag, instead):
+    return (f"{flag} was retired from the foundry engine by 646e8a1 (v1.3.0, tag "
+            f"engine-one-door), which deleted the Ollama dialect. Nothing was spawned. "
+            f"{instead}")
+
+
+RETIRED_OLLAMA = _refuse_retired(
+    "--ollama",
+    "The endpoint is app-settings.json's, the same one the hosted Clean text press "
+    "dials, and it goes on the line as --endpoint.")
+RETIRED_KEEP_MODEL = _refuse_retired(
+    "--keep-model",
+    "The engine never loads and never unloads: the operator makes a model resident "
+    "before a pass is spawned, and a pass ending is not a reason to take it off. "
+    "BookForge's own --keep-server, which holds its text SERVER up between runs, is a "
+    "different thing and still works.")
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
@@ -1043,6 +1067,7 @@ def cmd_clean_lines(args):
     hosted Clean text press uses. A killed run keeps its records; the next run asks
     only about the lines with no answer. See cli/clean-lines-step.js.
     """
+    _require(not args.keep_model, RETIRED_KEEP_MODEL)
     _require(bool(args.input), "--clean-lines needs --input <lines.txt>")
     _require(bool(args.language), "--clean-lines needs --language <subtag> (e.g. en)")
     _require(bool(shutil.which("node")), "node not found on PATH")
@@ -1054,11 +1079,8 @@ def cmd_clean_lines(args):
            "--input", str(_user_path(args.input)), "--language", args.language]
     if args.output:
         cmd += ["--output", str(_user_path(args.output))]
-    if args.keep_model:
-        cmd += ["--keep-model"]
-
     if args.dry_run:
-        print("[bookforge-tts] DRY RUN - clean lines, no model loaded")
+        print("[bookforge-tts] DRY RUN - clean lines")
         print("  spawn:", " ".join(cmd))
         return 0
 
@@ -1076,12 +1098,17 @@ def cmd_clean(args):
     BookForge's own queue calls to run a Foundry job. So it lands the same ledger
     step, writes the same records and stamp, and can be timed.
 
-    The model comes from app-settings `cleanTextModel` unless --model says
-    otherwise, the endpoint from `ollamaUrl` unless --ollama does. --concurrency
-    is the engine's `--concurrency` (blocks in flight; absent = the engine's own
-    4) and changes the speed, never the text. The weights are RELEASED when the
-    run ends - `--keep-model` is the opt-in for back-to-back runs.
+    The model and the endpoint both come from app-settings.json - the same file
+    and the same two keys the hosted press reads - unless --model says otherwise.
+    --concurrency is the engine's `--concurrency` (blocks in flight; absent = the
+    engine's own) and changes the speed, never the text.
+
+    --ollama and --keep-model are REFUSED BY NAME: foundry 646e8a1 (v1.3.0) took
+    the Ollama dialect out, so the endpoint goes on the line as --endpoint and
+    the engine neither loads nor unloads a model.
     """
+    _require(not args.ollama, RETIRED_OLLAMA)
+    _require(not args.keep_model, RETIRED_KEEP_MODEL)
     _require(bool(args.project or args.foundry_project),
              "--clean needs --project <BookForge project dir> (or --foundry-project <dir>)")
     _require(bool(shutil.which("node")), "node not found on PATH")
@@ -1096,12 +1123,8 @@ def cmd_clean(args):
         cmd += ["--foundry-project", str(_user_path(args.foundry_project))]
     if args.model:
         cmd += ["--model", args.model]
-    if args.ollama:
-        cmd += ["--ollama", args.ollama]
     if args.concurrency is not None:
         cmd += ["--concurrency", str(args.concurrency)]
-    if args.keep_model:
-        cmd += ["--keep-model"]
     if args.foundry_dist:
         cmd += ["--foundry-dist", str(_user_path(args.foundry_dist))]
     if args.dry_run:
@@ -2375,28 +2398,31 @@ on the document chain. This door produces a FILE, and a re-export loses it.""",
         ],
     },
     "clean-lines": {
-        "usage": "bookforge-tts --clean-lines --input FILE --language CODE [--output FILE] [--keep-model]",
+        "usage": "bookforge-tts --clean-lines --input FILE --language CODE [--output FILE]",
         "doc": """A FILE OF LINES through the narration text cleanup, written back BY POSITION.
 
 One training transcript per line in, the same lines cleaned out, in ONE process:
-the model loads once, the context window is pinned from the longest line, every
-line is asked at temperature 0, and the model unloads at the end (Owen,
-2026-09-07). Behind it is `foundry clean-text --book` — BookForge writes a book
-file with one paragraph block per line and spawns the same binary, model and
-endpoint the hosted Clean text press uses.
+the context window is pinned from the longest line and every line is asked at
+temperature 0 (Owen, 2026-09-07). Behind it is `foundry clean-text --book` —
+BookForge writes a book file with one paragraph block per line and spawns the
+same binary, model and endpoint the hosted Clean text press uses.
+
+The engine neither loads nor unloads the model: since foundry 646e8a1 (v1.3.0)
+residency is the operator's act before the run, and --keep-model is refused.
 
 Line N out is line N in, blanks stay blank, so a caller can zip it against an
 audio list by position. A killed run keeps its records
 (<stem>.clean-lines/lines.records.jsonl) and the next run asks only about the
 lines with no answer. A line the engine never answered is NEVER copied through as
 if it had been cleaned.""",
-        "reads": ["--config", "--dry-run", "--input", "--output", "--language", "--keep-model"],
-        "refuses": [],
+        "reads": ["--config", "--dry-run", "--input", "--output", "--language"],
+        "refuses": [
+            ("--keep-model", "foundry 646e8a1 (v1.3.0) retired it with the Ollama dialect: the "
+                             "engine never loads and never unloads a model"),
+        ],
         "examples": [
             'bookforge-tts --clean-lines --input lines.txt --language en',
             'bookforge-tts --clean-lines --input lines.txt --output cleaned.txt --language en',
-            '# leave the model loaded for several runs back to back:\n'
-            'bookforge-tts --clean-lines --input lines.txt --language en --keep-model',
         ],
     },
     "clean": {
@@ -2417,8 +2443,13 @@ the button from refuses here too. The engine is the locally-BUILT foundry
 (--foundry-dist), because --concurrency arrived in 1.2.0 and the installed
 component can be months older.""",
         "reads": ["--config", "--dry-run", "--project", "--foundry-project", "--model",
-                  "--ollama", "--concurrency", "--keep-model", "--foundry-dist"],
-        "refuses": [],
+                  "--concurrency", "--foundry-dist"],
+        "refuses": [
+            ("--ollama", "foundry 646e8a1 (v1.3.0) retired it with the Ollama dialect: the "
+                         "endpoint is app-settings.json's and goes on the line as --endpoint"),
+            ("--keep-model", "same commit: the engine never loads and never unloads, so there "
+                             "is nothing to keep. --keep-server holds BookForge's text server"),
+        ],
         "examples": [
             'bookforge-tts --clean --project "<library>/projects/<slug>"',
             'bookforge-tts --clean --project "<library>/projects/<slug>" \\\n'
@@ -3308,11 +3339,13 @@ def _flag_registry():
     p.add_argument("--concurrency", type=int, default=None,
                    help="--clean: blocks in flight at once (default: the engine's own, 4). "
                         "Changes the speed, never the text.", metavar="N")
-    p.add_argument("--ollama", help="--clean: the Ollama endpoint (default: app-settings ollamaUrl)",
+    p.add_argument("--ollama", help="--clean: RETIRED by foundry 646e8a1 (v1.3.0). The endpoint "
+                                    "comes from app-settings.json, as it does for the hosted "
+                                    "press; typing this refuses the run by name",
                    metavar="URL")
     p.add_argument("--keep-model", dest="keep_model", action="store_true",
-                   help="--clean-lines / --clean: leave the model loaded when the run ends "
-                        "(default: the weights are released)")
+                   help="--clean-lines / --clean: RETIRED by foundry 646e8a1 (v1.3.0). The engine "
+                        "never loads and never unloads; typing this refuses the run by name")
     p.add_argument("--output", help="--clean-lines: where the cleaned lines go (default: <input>.cleaned.txt beside it)",
                    metavar="FILE")
 

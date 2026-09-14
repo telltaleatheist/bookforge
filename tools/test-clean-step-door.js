@@ -110,10 +110,25 @@ test('a concurrency that is not a whole number of blocks is not passed on', () =
   }
 });
 
-test('the model is released unless --keep-model says the machine is shared', () => {
+/*
+ * THE VENDORED `argsFor` STILL SPELLS `--keep-model`, AND THE ENGINE NO LONGER
+ * TAKES IT. Foundry `646e8a1` (v1.3.0) retired the flag with the Ollama dialect
+ * but left `if (request.keepModel === true) args.push('--keep-model')` standing
+ * in `foundry-app/electron/job-queue.ts:2683`; reported to the Foundry side and
+ * NOT patched here, because the subtree is sealed.
+ *
+ * So this pins the HAZARD rather than the behaviour: a `keepModel: true` request
+ * composes a command line the engine refuses at argument parsing, and the only
+ * thing between that and a person is `cli/clean-step.js` never setting the field
+ * and refusing `--keep-model` by name. The day Foundry deletes the push, this
+ * test says so in its own message instead of going quietly green.
+ */
+test('keepModel is a trap in the vendored argsFor, and nothing here sets it', () => {
   assert.ok(!argsFor({ ...BASE }).includes('--keep-model'));
   assert.ok(!argsFor({ ...BASE, keepModel: false }).includes('--keep-model'));
-  assert.ok(argsFor({ ...BASE, keepModel: true }).includes('--keep-model'));
+  assert.ok(argsFor({ ...BASE, keepModel: true }).includes('--keep-model'),
+    'the vendored argsFor stopped spelling --keep-model, so Foundry fixed job-queue.ts:2683. '
+    + 'Delete this test and the CleanRequest.keepModel note in cli/clean-step.js with it.');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +187,41 @@ if (fixture === null) {
       })(),
     },
   );
+
+  /**
+   * The same line, EXPECTED TO FAIL, with the refusal returned as text.
+   *
+   * `dryRun` throws on a non-zero exit and swallows the message into an Error,
+   * which is the wrong shape for the one thing a refusal has to be tested on:
+   * WHAT IT SAID. A run that unexpectedly SUCCEEDS is the failure here and is
+   * reported as one, rather than being read as an empty refusal that passes
+   * every `includes` on an empty string.
+   */
+  /**
+   * THE COMPOSED COMMAND LINE, and only it.
+   *
+   * The whole dry run is asked about elsewhere, but "no retired flag is written"
+   * is a question about the ARGV and nothing else — the door's own log legitimately
+   * says the words `--server` and `--keep-model` while explaining that they are
+   * retired, and a test that read the log would fail on the sentence that proves
+   * the fix.
+   */
+  const spawnLine = (out) => {
+    const line = out.split('\n').find((l) => l.startsWith('[clean] spawn'));
+    assert.ok(line !== undefined, `the dry run printed no spawn line:\n${out}`);
+    return line;
+  };
+
+  const refusalOf = (extra) => {
+    try {
+      const out = dryRun(extra);
+      assert.fail(`${extra.join(' ')} was accepted and composed a run:\n${out}`);
+    } catch (err) {
+      if (err instanceof assert.AssertionError) throw err;
+      return `${err.stdout ?? ''}${err.stderr ?? ''}${err.message}`;
+    }
+    return '';
+  };
 
   /**
    * What this machine's app-settings say, asked UNDER THE SHIM.
@@ -238,13 +288,29 @@ if (fixture === null) {
     assert.ok(/nothing was started/i.test(out), out);
   });
 
-  test('the model is released by default, and --keep-model is the opt-in', () => {
+  test('--keep-model and --ollama are refused BY NAME, and never dropped', () => {
     const plain = dryRun([]);
     assert.ok(!plain.includes('--keep-model'), 'a plain run put --keep-model on the line');
-    assert.ok(plain.includes('the weights are released'), plain);
-    const kept = dryRun(['--keep-model']);
-    const spawn = kept.split('\n').find((line) => line.startsWith('[clean] spawn'));
-    assert.ok(spawn.includes('--keep-model'), spawn);
+    assert.ok(!plain.includes('--ollama'), 'a plain run put --ollama on the line');
+    /*
+     * A DROP IS THE ONE ANSWER THAT MUST NOT PASS. `--ollama http://elsewhere`
+     * quietly ignored would run the job against the machine app-settings names
+     * while the caller believed it went somewhere else, which is exactly what
+     * the no-fallbacks rule is about. Both refusals must name the flag AND the
+     * commit that retired it, so a reader can tell a decision from a parser
+     * accident.
+     */
+    for (const argv of [['--keep-model'], ['--ollama', 'http://elsewhere:11434']]) {
+      const refused = refusalOf(argv);
+      assert.ok(refused.includes(argv[0]), `the refusal must name ${argv[0]}:
+${refused}`);
+      assert.ok(refused.includes('646e8a1'),
+        `the refusal must name the commit that retired ${argv[0]}:
+${refused}`);
+      assert.ok(!refused.includes('[clean] spawn'),
+        `${argv[0]} reached a composed command line instead of being refused:
+${refused}`);
+    }
   });
 
   test('no --model said means app-settings cleanTextModel, never defaultLlmModel', () => {
@@ -277,8 +343,12 @@ if (fixture === null) {
       assert.ok(out.includes(`--model ${served}`),
         'the served model the host is about to start must be ON the line');
       assert.ok(!/--model\s+["']?\s*(?:$|["'])/m.test(out), 'never an empty --model');
-      assert.ok(out.includes('--server vllm'), 'the spawn must declare --server vllm');
-      assert.ok(out.includes('[clean] server           vllm (app-settings llmServer)'), 'the server line must name the setting');
+      assert.ok(!spawnLine(out).includes('--server'),
+        `foundry 646e8a1 refuses --server; nothing may write it:
+${spawnLine(out)}`);
+      assert.ok(out.includes('(app-settings vllmUrl, chosen by llmServer)'),
+        `the endpoint line must name the key it came from:
+${out}`);
       // And WHOSE server the endpoint is, said before anything is started.
       assert.ok(/\[clean\] text server/.test(out), `the text-server route must be printed:\n${out}`);
     } else {
@@ -286,7 +356,9 @@ if (fixture === null) {
         out.includes(`[clean] model            ${stored.cleanTextModel} (app-settings cleanTextModel)`),
         `expected the stored ${stored.cleanTextModel}; got:\n${out.split('\n').filter((l) => l.includes('model')).join('\n')}`,
       );
-      assert.ok(!out.includes('--server'), 'an ollama run must not declare a server kind foundry defaults to');
+      assert.ok(!spawnLine(out).includes('--server'),
+        `foundry 646e8a1 refuses --server; nothing may write it:
+${spawnLine(out)}`);
     }
     if (typeof raw.defaultLlmModel === 'string' && raw.defaultLlmModel !== stored.cleanTextModel) {
       assert.ok(!out.includes(`--model ${raw.defaultLlmModel} `), 'the door reached for defaultLlmModel');

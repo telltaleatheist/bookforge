@@ -215,19 +215,28 @@ async function runCleanLines(opts, deps) {
   fs.writeFileSync(bookPath, bookFileFor(parsed.items, { engine: installed.version, language }), 'utf8');
 
   /*
-   * WHICH SERVER, AND THEREFORE WHICH TWO FLAGS. Foundry 19f5e70 (Owen,
-   * 2026-09-08: "lets build in vllm batching. ollama batching doesnt work") gave
-   * `clean-text` a `--server ollama|vllm`, declared and never sniffed from a URL.
-   * This door gets exactly what the bare-EPUB door gets, and by the same rules:
+   * ONE DOOR, THREE FLAGS. Foundry `646e8a1` (v1.3.0, tag `engine-one-door`)
+   * deleted the Ollama dialect and every flag that only existed to choose it:
+   * `--server`, `--ollama` and `--keep-model` are all `unknown option` now.
+   * What is left is the pair this door has always written, under the rules that
+   * did not change:
    *
-   *   · `--server vllm` is WRITTEN and `--server ollama` is NOT, so the ollama
-   *     line is byte-identical to what it was before vLLM existed;
+   *   · `--endpoint <url>` is THE server. Absent, the engine would read
+   *     `backend.endpointUrl` from its own settings — which is the READING
+   *     door's setting, the same server — but it is written on every line this
+   *     app composes, because a job must not depend on the engine's fallback to
+   *     say which machine it runs on.
    *   · `--model` is OMITTED when the model is empty — never `--model ""` —
-   *     because empty is vLLM's meaningful default ("whatever it is serving"),
-   *     which the engine resolves from /v1/models and RECORDS.
+   *     because empty is the meaningful default ("whatever it is serving"),
+   *     which the engine resolves from /v1/models and RECORDS. Since `646e8a1`
+   *     there are no act-level model defaults at all, so an absent `--model` is
+   *     the served model on every run rather than only under vLLM.
    *
-   * `--keep-model` is untouched and stays what it was: an ollama word (keep the
-   * weights resident), meaningless under vLLM and harmless there.
+   * `opts.keepModel` IS NO LONGER A THING THIS FUNCTION CAN HONOUR, and it is
+   * refused at the door rather than dropped here (`cli/clean-lines.js`,
+   * `refuseRetiredEngineFlags`). The engine never loads and never unloads: a
+   * server holding the wrong model refuses by name, and residency is the
+   * operator's act before the spawn.
    */
   const args = [
     'clean-text',
@@ -235,9 +244,7 @@ async function runCleanLines(opts, deps) {
     '--records', recordsPath,
     '--stamp', stampPath,
     '--endpoint', settings.endpoint,
-    ...(settings.server === 'vllm' ? ['--server', 'vllm'] : []),
     ...(settings.model.length > 0 ? ['--model', settings.model] : []),
-    ...(opts.keepModel ? ['--keep-model'] : []),
   ];
   log(
     `[clean-lines] ${parsed.items.length} line(s) of ${parsed.total} in ${path.basename(inputPath)} → `
@@ -253,13 +260,18 @@ async function runCleanLines(opts, deps) {
    * Foundry starts no server; BookForge does, and a dev run through this door is
    * no different from a queued one — "the CLI mirrors the app's code path".
    *
-   * Only under vLLM, and only when the endpoint is the server this machine
-   * manages: any other URL is somebody else's and is used exactly as given. The
-   * stop is unconditional on the way out unless `--keep-server` was asked for,
-   * which is the flag for somebody about to make several runs back to back.
+   * ONLY WHEN THE ENDPOINT IS THE SERVER THIS MACHINE MANAGES: any other URL is
+   * somebody else's and is used exactly as given. That one question used to be
+   * asked behind a second one (`settings.server === 'vllm'`), and Foundry
+   * `646e8a1` deleted the server kind, so the endpoint is the whole gate now —
+   * which is also the better question, because a machine set to `ollama` whose
+   * URL is BookForge's own text server used to be skipped in silence.
+   *
+   * The stop is unconditional on the way out unless `--keep-server` was asked
+   * for, which is the flag for somebody about to make several runs back to back.
    */
   let started = null;
-  if (settings.server === 'vllm' && d.textServerRoute(settings.endpoint).manage) {
+  if (d.textServerRoute(settings.endpoint).manage) {
     d.noteTextQueueBusy();
     const profile = d.profileForKind('clean');
     const startedAt = Date.now();
@@ -268,7 +280,7 @@ async function runCleanLines(opts, deps) {
     log(
       `[clean-lines] the text server is serving ${up.servedName} at ${up.url} `
       + `(${((Date.now() - startedAt) / 1000).toFixed(1)}s to be ready)`);
-  } else if (settings.server === 'vllm') {
+  } else {
     log(`[clean-lines] ${d.textServerRoute(settings.endpoint).note}`);
   }
 

@@ -466,6 +466,15 @@ function stateOf(step: QueueStep): FoundryJobState {
  *     because the line carries no command prefix.
  *  2. `translate: block 412/2081 (…)` — BLOCKS, not pages, matched on the word
  *     `block` so the retry notices (`attempt 2/3`) cannot be read as progress.
+ *     `simplify:` is the SAME line under the act's own name: Foundry `646e8a1`
+ *     (`src/translate/act.ts`) prefixes every line of a `--rewrite` run with
+ *     `simplify`, on Owen's ruling that *"they can't lie to the user and say a
+ *     translate job is running when it's actually a simplify job"*. Both are
+ *     accepted and both answer `phase: 'translate'` — the phase names the SHAPE
+ *     of the progress (blocks of a text act) and the row's own kind names the
+ *     act, which is exactly how the vendored function reads it. Without this
+ *     alternation a hosted Simplify's bar stops dead at the first block and
+ *     every line of its progress falls through as plain log text.
  *  3. `clean-text: 412/2081` — the one pattern with no noun to match on, and so
  *     the discipline is spelled the other way round: the fraction is anchored to
  *     the END of the line. `clean-text` says what it counts only in its FINAL
@@ -491,7 +500,7 @@ export function parseFoundryProgressLine(line: string): FoundryJobProgress | nul
     return { phase: 'render', page: Number(rendered[1]), total: Number(rendered[2]) };
   }
 
-  const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  const block = /^(?:translate|simplify):\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (block) {
     return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
   }

@@ -860,8 +860,6 @@ the same model and endpoint out of `app-settings.json`, and zips the records bac
 # lines.txt: one item per line. Output defaults to lines.cleaned.txt beside it.
 python cli/bookforge-tts.py --clean-lines --input lines.txt --language en
 python cli/bookforge-tts.py --clean-lines --input lines.txt --output cleaned.txt --language en
-# Leave the model loaded afterwards (an Ollama shared with other work):
-python cli/bookforge-tts.py --clean-lines --input lines.txt --language en --keep-model
 
 # The node adapter directly:
 node --require ./cli/electron-stub.js cli/clean-lines.js --input lines.txt --language en
@@ -920,16 +918,22 @@ node --require ./cli/electron-stub.js cli/clean-step.js --project "<dir>" --dry-
   project's ledger, exactly as `LedgerService.standingIn` answers it in the window, and
   `canCleanFrom` is asked about it — a position the dialog would not offer the button
   from refuses here too.
-- `--model` / `--ollama` override the settings the dialog seeds itself from
-  (`cleanTextModel`, `ollamaUrl` in the app's own `app-settings.json`) — **not**
-  `defaultLlmModel`, which names a 27b that cleans at a fifth of the 9b's rate.
+- `--model` overrides the setting the dialog seeds itself from (`cleanTextModel` in the
+  app's own `app-settings.json`) — **not** `defaultLlmModel`, which names a 27b that
+  cleans at a fifth of the 9b's rate. The ENDPOINT is not overridable from here: it is
+  whichever URL `app-settings.json` holds, so the headless run and the hosted press
+  cannot dial different machines.
 - `--concurrency <n>` is the engine's own `--concurrency`: blocks in flight at once,
-  absent meaning the engine's default of 4. It changes the **speed, never the text** —
+  absent meaning the engine's own default. It changes the **speed, never the text** —
   every block is asked the same question at temperature 0.
-- **The model is released when the run ends.** `foundry clean-text` unloads the weights
-  (`keep_alive: 0`) unless it is told the machine is shared, so a run that finishes
-  hands the GPU back. `--keep-model` is the opt-in for several runs back to back, and is
-  the only thing that puts `--keep-model` on the line.
+- **`--ollama` and `--keep-model` are refused by name.** Foundry `646e8a1` (v1.3.0, tag
+  `engine-one-door`) deleted the Ollama dialect, and `--server`, `--ollama` and
+  `--keep-model` went with it. The endpoint goes on the line as `--endpoint`, and the
+  engine never loads and never unloads a model — residency is the operator's act before
+  a pass is spawned, and a server holding the wrong one refuses by name. They are
+  refused here rather than dropped, because a dropped `--ollama` would send the run to a
+  machine you did not choose. (BookForge's own `--keep-server`, which holds its text
+  SERVER up between runs, is a different thing and still works.)
 - `--dry-run` prints the resolved project, the position and the step it will mint, the
   request as JSON and **the exact argv `runJob` would spawn** — composed by Foundry's
   own `argsFor`, never by a copy of it here — and spawns nothing. It still makes the
