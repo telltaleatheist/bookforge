@@ -2239,6 +2239,34 @@ export interface ParallelTtsSettings {
    * finishing the book in the catalog's voice.
    */
   higgsOverride?: HiggsRenderOverride;
+  /**
+   * RENDER THE GENERATION STEP ON A CRUCIBLE SERVER INSTEAD OF SPAWNING
+   * NARRATOR HERE (docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.4).
+   *
+   * `server` NAMES an entry in `<userData>/crucible-servers.json` — it is not a
+   * URL, and there is no default. The reserved name `local` will resolve to
+   * this machine's own server once item 2.1 lands; until then it is an ordinary
+   * registry name and an unregistered one is refused by name.
+   *
+   * Absent means the local spawn, which is every render today. **This is a
+   * seam, not a preference:** when it is set, the render happens on that server
+   * or the job FAILS NAMING WHY. There is no fallback to the local card — see
+   * `electron/crucible/render.ts` for why a quiet downgrade would take somebody
+   * else's GPU and finish the book in a voice nobody chose.
+   *
+   * It is PART OF THE SETTINGS for `higgsOverride`'s reason: `savePersistentState`
+   * writes the settings whole into session_state.json, so a Continue of a
+   * remote render resumes on the same machine rather than silently finishing
+   * the book on this one.
+   *
+   * NEEDS (2.2): the Servers settings row, its IPC handlers and the renderer
+   * field that writes a chosen server here. Until that lands the only caller
+   * that can set it is the CLI (`bookforge-tts --tts --crucible-server <name>`),
+   * which is deliberate — item 2.4 ships the seam, and Owen tests in-app first.
+   */
+  crucible?: {
+    server: string;
+  };
 }
 
 /**
@@ -2589,12 +2617,9 @@ async function findMissingSentenceFiles(prepInfo: PrepInfo): Promise<number[]> {
 
   // Flatten chapter_sentences exactly like the worker does, to know which
   // indices legitimately have no file (empty text → worker writes nothing).
-  const statePath = path.join(toReadablePath(prepInfo.processDir), 'session-state.json');
-  const state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
-  if (!Array.isArray(state.chapter_sentences)) {
-    throw new Error(`session-state.json has no chapter_sentences: ${statePath}`);
-  }
-  const allSentences: string[] = state.chapter_sentences.flat();
+  // ONE reader, shared with the Crucible path's chunk list, so the two cannot
+  // disagree about what the book's chunks are.
+  const allSentences: string[] = await readFlattenedChunkTexts(prepInfo);
 
   const missing: number[] = [];
   for (let i = 0; i < prepInfo.totalSentences; i++) {
@@ -2919,6 +2944,23 @@ interface ConversionSession {
   // OOM-retry respawn (retryWorker) and workers 1..n are the same render as
   // worker 0 and must not re-ask.
   gpuOwnershipChecked?: boolean;
+  /**
+   * The live Crucible render's handle, when this session's generation step runs
+   * on a server instead of in a child process (`settings.crucible.server`).
+   *
+   * `stopParallelConversion` kills process trees; a remote render has no
+   * process here to kill, and abandoning its event stream would leave the job
+   * running on the other machine — holding the exclusive lane and the card for
+   * the rest of the book. So the stop calls THIS, which is
+   * `DELETE /v1/jobs/{id}`.
+   */
+  crucibleCancel?: () => Promise<void>;
+  /**
+   * The Crucible job id this session's generation step is (or was) running as.
+   * Recorded for the log and for a resume that attaches to a job still running
+   * on the server rather than submitting a second one.
+   */
+  crucibleJobId?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -5029,6 +5071,244 @@ function postRenderAlignProgress(session: ConversionSession, message: string): A
     estimatedRemaining: 0,
     message,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GENERATION STEP, ON A CRUCIBLE SERVER
+//
+// One function, standing exactly where the `startWorker` loop stands: it is
+// handed a session whose prep has already run and whose sentences directory
+// already exists, and it leaves that directory holding the same `<index>.flac`
+// files a local worker would have written. Everything after it —
+// `completeAfterWorkers`, the coverage gate, `normalizeWslSessionToWindows`,
+// denoise, RVC, assembly — is untouched and cannot tell the difference.
+//
+// docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.4; crucible docs/PHASE6-REMOTE-RENDER.md
+// section 6.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `true` when this job's generation step belongs to a Crucible server. */
+function crucibleServerForJob(settings: ParallelTtsSettings | undefined): string | null {
+  const name = settings?.crucible?.server;
+  if (name === undefined) return null;
+  if (typeof name !== 'string' || name.trim() === '') {
+    // Present and empty is a caller that meant to name a server and did not.
+    // Rendering locally instead would be the silent downgrade this whole seam
+    // exists to refuse.
+    throw new Error('settings.crucible is set but names no server. It takes the NAME of an entry '
+      + 'in <userData>/crucible-servers.json (bookforge-tts --crucible-list); there is no default '
+      + 'server and no local fallback.');
+  }
+  return name.trim();
+}
+
+/**
+ * The book's chunk texts, flattened exactly as the worker flattens them.
+ *
+ * `session-state.json`'s `chapter_sentences` is the authority — it is what the
+ * prep wrote and what a local worker reads — so this is a READ of it, never a
+ * second packing. An index whose text is empty is one the local worker writes
+ * no file for, and neither does this.
+ */
+async function readFlattenedChunkTexts(prepInfo: PrepInfo): Promise<string[]> {
+  const statePath = path.join(toReadablePath(prepInfo.processDir), 'session-state.json');
+  const state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+  if (!Array.isArray(state.chapter_sentences)) {
+    throw new Error(`session-state.json has no chapter_sentences: ${statePath}`);
+  }
+  return state.chapter_sentences.flat() as string[];
+}
+
+/**
+ * Which chunk indices this session still owes audio for, and their text.
+ *
+ * Assembled from the workers' own assignments, so a fresh render, a
+ * `renderRangeHeadless` single range and a resume's scattered `assignedIndices`
+ * all produce the right set without a second notion of "what to render".
+ * Indices whose FLAC is already on disk and larger than 1024 bytes are skipped
+ * for the same reason narrator's own resume skips them — and the 1024 is
+ * narrator's `RESUME_MIN_BYTES`, mirrored here and in `seedResumeSentences`.
+ */
+async function crucibleChunksForSession(
+  session: ConversionSession,
+): Promise<{ index: number; text: string }[]> {
+  const prep = session.prepInfo;
+  if (!prep) throw new Error('a Crucible render needs prep info; prepareSession has not run');
+  const texts = await readFlattenedChunkTexts(prep);
+  const sentencesDir = toReadablePath(prep.chaptersDirSentences);
+
+  const wanted = new Set<number>();
+  for (const worker of session.workers) {
+    if (worker.assignedIndices && worker.assignedIndices.length > 0) {
+      for (const i of worker.assignedIndices) wanted.add(i);
+      continue;
+    }
+    for (let i = worker.sentenceStart; i <= worker.sentenceEnd; i++) wanted.add(i);
+  }
+
+  const chunks: { index: number; text: string }[] = [];
+  for (const index of [...wanted].sort((a, b) => a - b)) {
+    if (index < 0 || index >= prep.totalSentences) continue;
+    const text = texts[index];
+    if (!text || !text.trim()) continue;             // the worker writes no file either
+    try {
+      const stat = await fs.stat(path.join(sentencesDir, `${index}.flac`));
+      if (stat.size > 1024) continue;                // already rendered (seeded or resumed)
+    } catch { /* absent — render it */ }
+    chunks.push({ index, text });
+  }
+  return chunks;
+}
+
+/**
+ * Run this session's generation step on a Crucible server.
+ *
+ * Called instead of the `startWorker` loop and, like it, NOT awaited: the
+ * bridge's completion path is event-driven, and the caller's contract is that
+ * generation ends by every worker reaching a terminal status and
+ * `checkAllWorkersComplete` being called. So this drives the same state machine
+ * with one difference — the "workers" here are bookkeeping rather than
+ * processes, and there is exactly one remote job behind all of them.
+ *
+ * **A Crucible refusal is never retried locally.** `completeAfterWorkers`
+ * retries a failed worker up to MAX_WORKER_RETRIES by calling `retryWorker`,
+ * which SPAWNS narrator — which is the silent downgrade this seam refuses. So
+ * a failure here marks the workers as having exhausted their retries, and the
+ * job fails carrying the server's own words.
+ *
+ * RULING OWED: **does a remote render hold this machine's GPU lease?** Nothing
+ * here changes it — `acquireGpuForJob` runs before this, exactly as it does for
+ * a local render, so a book rendered on the Mac still holds the PC's lock for
+ * its whole duration and its VRAM preflight can still refuse the job over a
+ * card the render will never touch. That is deliberately the conservative
+ * answer for tonight: the common case is `local`, where the card really is this
+ * card, and two things believing they own it is the failure
+ * `crucible/docs/ARCHITECTURE.md` R3 is about. The honest version needs the
+ * lease to know WHICH machine's card a job wants, which is a change to
+ * gpu-arbiter and Owen's call.
+ *
+ * RULING OWED: **resume across an app restart.** `runCrucibleRender` can
+ * `attachTo` a job already running on the server (that is what `lastEventId` is
+ * for), but nothing persists `session.crucibleJobId` into session-state.json,
+ * so a Continue after a restart submits a NEW job for whatever chunks are still
+ * missing rather than re-attaching to the one still rendering. That is correct
+ * but wasteful, and the wrong half of it — two jobs for one book — is only
+ * prevented by the server admitting one job at a time. Persisting the id is a
+ * change to the session record's shape.
+ */
+function startCrucibleGeneration(session: ConversionSession, server: string): void {
+  const jobId = session.jobId;
+  const settings = session.config.settings;
+  const prep = session.prepInfo;
+  if (!prep) throw new Error('a Crucible render needs prep info; prepareSession has not run');
+
+  for (const worker of session.workers) {
+    worker.status = 'running';
+    worker.startedAt = Date.now();
+    worker.lastProgressAt = Date.now();
+    worker.process = null;
+  }
+
+  // The voice is resolved BEFORE anything is submitted, because an unmapped
+  // voice is a refusal about this job and not about that server.
+  const finish = (ok: boolean, error?: string): void => {
+    for (const worker of session.workers) {
+      if (ok) {
+        worker.status = 'complete';
+      } else {
+        worker.status = 'error';
+        worker.error = error;
+        // See the docstring: no local respawn behind the operator's back.
+        worker.retryCount = MAX_WORKER_RETRIES;
+      }
+    }
+    session.crucibleCancel = undefined;
+    checkAllWorkersComplete(session).catch((err) => reportWorkerCompletionCrash(session, err));
+  };
+
+  void (async () => {
+    try {
+      const { crucibleVoiceFor, runCrucibleRender } = await import('./crucible/render.js');
+      const voice = crucibleVoiceFor(settings.ttsEngine, higgsModelForJob(settings).id);
+      const chunks = await crucibleChunksForSession(session);
+      if (chunks.length === 0) {
+        // Every chunk this session was assigned already has audio. That is a
+        // finished generation step, not an empty submit — the local path
+        // reaches the same conclusion by the worker exiting immediately.
+        await logger.log('INFO', jobId,
+          `Crucible render: every assigned chunk already has audio in ${prep.chaptersDirSentences}`);
+        finish(true);
+        return;
+      }
+
+      await logger.log('INFO', jobId,
+        `Crucible render on "${server}": ${chunks.length} chunk(s), voice "${voice}" `
+        + `(BookForge voice ${higgsModelForJob(settings).id})`);
+      writeWorkerLog(`[CRUCIBLE] ${server}: submitting ${chunks.length} chunk(s) as "${voice}"`);
+
+      const outcome = await runCrucibleRender({
+        server,
+        renderId: jobId,
+        voice,
+        language: settings.language,
+        chunks,
+        sentencesDir: toReadablePath(prep.chaptersDirSentences),
+        onStarted: ({ jobId: crucibleJobId, cancel }) => {
+          session.crucibleJobId = crucibleJobId;
+          session.crucibleCancel = cancel;
+        },
+        onProgress: (progress) => {
+          // THE SERVER'S OWN FRACTION drives the stage line. The chunk tally
+          // below drives the bar and the ETA, because those are counted in
+          // files this machine actually has.
+          session.stageDetail = `${server}: ${progress.message} (${Math.round(progress.fraction * 100)}%)`;
+          emitProgress(session);
+        },
+        onChunkWritten: (index) => {
+          // ONE tally, the same one the local path feeds. `noteRendered` is
+          // index-set based, so a replayed artifact event cannot double-count.
+          const worker = session.workers.find((w) => (
+            w.assignedIndices
+              ? w.assignedIndices.includes(index)
+              : index >= w.sentenceStart && index <= w.sentenceEnd
+          )) ?? session.workers[0];
+          if (noteRendered(session, worker, index)) {
+            worker.currentSentence = index;
+            if (!session.firstSentenceCompletedTime) session.firstSentenceCompletedTime = Date.now();
+            emitProgress(session);
+          }
+        },
+        onLog: (message) => {
+          writeWorkerLog(`[CRUCIBLE] ${message}`);
+        },
+      });
+
+      // A failed chunk is REPORTED and the run continues (PHASE3-TTS.md section
+      // 6; Owen 2026-09-05: the audit reports, it does not block). The indices
+      // with no audio have no file, and the completeness gate downstream is the
+      // one place that decides what a hole means.
+      for (const failure of outcome.result.failed) {
+        await logger.log('WARN', jobId,
+          `Crucible chunk ${failure.index} produced no audio: ${failure.message}`);
+      }
+      await logger.log('INFO', jobId,
+        `Crucible render finished: ${outcome.result.rendered} rendered, ${outcome.written} file(s) `
+        + `downloaded, ${outcome.result.failed.length} failed (job ${outcome.jobId})`);
+      finish(true);
+    } catch (err) {
+      if (session.cancelled) {
+        // The stop path already reported the cancellation and removed the
+        // session; a cancelled stream throwing afterwards is that cancellation
+        // arriving, not a second failure.
+        writeWorkerLog(`[CRUCIBLE] render ended after cancel: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      await logger.log('ERROR', jobId, `Crucible render failed: ${detail}`).catch(() => {});
+      writeWorkerLog(`[CRUCIBLE] FAILED: ${detail}`);
+      finish(false, detail);
+    }
+  })();
 }
 
 /**
@@ -8536,24 +8816,37 @@ export async function startParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    for (let i = 0; i < workers.length; i++) {
-      const worker = workers[i];
-      const range: WorkerRange = isChapterMode
-        ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
-        : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+    // Inside the try so a malformed `settings.crucible` releases the GPU lease
+    // rather than leaking it — the same reason the worker loop is in here.
+    const crucibleServer = crucibleServerForJob(config.settings);
+    if (crucibleServer !== null) {
+      // THE SEAM (item 2.4). One remote job instead of N local workers. No
+      // watchdog and no rendered-file poller: both exist to notice a CHILD
+      // PROCESS that has gone quiet, and there is no child here — the server's
+      // own progress frames are the heartbeat, and the download is what puts
+      // files on this disk.
+      startCrucibleGeneration(session, crucibleServer);
+      await logger.log('INFO', jobId, `Generation runs on crucible "${crucibleServer}"`);
+    } else {
+      for (let i = 0; i < workers.length; i++) {
+        const worker = workers[i];
+        const range: WorkerRange = isChapterMode
+          ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
+          : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
 
-      if (isWindows && i > 0) {
-        // Stagger worker starts on Windows to avoid conda temp file conflicts
-        await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+        if (isWindows && i > 0) {
+          // Stagger worker starts on Windows to avoid conda temp file conflicts
+          await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+        }
+        startWorker(session, i, range);
       }
-      startWorker(session, i, range);
-    }
 
-    // Start the watchdog to detect stuck workers, plus (Mac/MLX) the rendered-file
-    // poller that reports bucket completions stdout won't mention for minutes.
-    startWatchdog(session);
-    startRenderedPoller(session);
-    await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
+      // Start the watchdog to detect stuck workers, plus (Mac/MLX) the rendered-file
+      // poller that reports bucket completions stdout won't mention for minutes.
+      startWatchdog(session);
+      startRenderedPoller(session);
+      await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
+    }
   } catch (err) {
     // A throw between acquiring the GPU and the workers running would leak the
     // lock (the completion poll below never starts). Release it before bailing.
@@ -8754,12 +9047,19 @@ export async function renderRangeHeadless(
   // Spawn the worker (WSL-safe for Orpheus) + the stuck-worker watchdog. The worker's
   // close handler drives checkAllWorkersComplete → skipAssembly branch → session delete.
   try {
-    startWorker(session, 0, {
-      sentenceStart: workers[0].sentenceStart,
-      sentenceEnd: workers[0].sentenceEnd
-    });
-    startWatchdog(session);
-    startRenderedPoller(session);
+    // The same seam as the app's path (item 2.4), so the CLI mirrors the app's
+    // code path rather than acquiring a second way to reach a Crucible.
+    const crucibleServer = crucibleServerForJob(settings);
+    if (crucibleServer !== null) {
+      startCrucibleGeneration(session, crucibleServer);
+    } else {
+      startWorker(session, 0, {
+        sentenceStart: workers[0].sentenceStart,
+        sentenceEnd: workers[0].sentenceEnd
+      });
+      startWatchdog(session);
+      startRenderedPoller(session);
+    }
   } catch (err) {
     releaseSessionGpu(session);
     activeSessions.delete(jobId);
@@ -8838,10 +9138,39 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   });
   const ttsEngine = session.config?.settings?.ttsEngine;
 
+  // A REMOTE RENDER IS CANCELLED ON THE SERVER, not by hanging up.
+  //
+  // There is no child process here for the teardown below to kill. Dropping the
+  // event stream would leave the Crucible job RUNNING on the other machine —
+  // holding its exclusive lane and its card for the rest of the book — and the
+  // next thing BookForge submitted would be refused `server_busy` by a job the
+  // user thinks they stopped. Awaited, like the WSL teardown and for the same
+  // reason: `stopAndCacheParallelConversion` must not flush the cache while the
+  // other end is still writing.
+  if (session.crucibleCancel) {
+    const cancel = session.crucibleCancel;
+    session.crucibleCancel = undefined;
+    try {
+      await cancel();
+    } catch (err) {
+      // Reported, never swallowed and never fatal: the local stop must still
+      // finish, and a job left running on a server is something the operator
+      // has to be told about rather than something to retry here.
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[PARALLEL-TTS] crucible job ${session.crucibleJobId ?? '?'} could not be cancelled: ${detail}`);
+      logger.log('ERROR', jobId,
+        `Crucible job ${session.crucibleJobId ?? '?'} could not be cancelled: ${detail}. `
+        + 'It may still be running on that server — stop it there.').catch(() => {});
+    }
+  }
+
   // Mark workers cancelled up front so the UI reflects the stop while the graceful
   // teardown below runs.
   for (const worker of session.workers) {
-    if (worker.process) {
+    // A Crucible session's "workers" are bookkeeping with no process, so the
+    // `worker.process` test would leave them reading `running` forever on a
+    // stopped job.
+    if (worker.process || session.crucibleJobId) {
       worker.status = 'error';
       worker.error = 'Cancelled';
     }
@@ -10567,15 +10896,24 @@ export async function resumeParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    for (let i = 0; i < workers.length; i++) {
-      const worker = workers[i];
-      const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+    // A resume of a remote render goes back to the SAME server (item 2.4).
+    // `crucibleChunksForSession` reads the workers' `assignedIndices`, so the
+    // scattered missing set is exactly what is submitted — one job for the
+    // gaps, not a re-render of the book.
+    const crucibleServer = crucibleServerForJob(config.settings);
+    if (crucibleServer !== null) {
+      startCrucibleGeneration(session, crucibleServer);
+    } else {
+      for (let i = 0; i < workers.length; i++) {
+        const worker = workers[i];
+        const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
 
-      if (isWindows && i > 0) {
-        // Stagger worker starts on Windows to avoid conda temp file conflicts
-        await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+        if (isWindows && i > 0) {
+          // Stagger worker starts on Windows to avoid conda temp file conflicts
+          await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+        }
+        startWorker(session, i, range);
       }
-      startWorker(session, i, range);
     }
   } catch (err) {
     releaseSessionGpu(session);

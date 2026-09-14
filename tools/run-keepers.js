@@ -111,6 +111,15 @@ const SUITES = [
   // assumes. Before it, a guard fire's only record was a WARN line in a shared
   // daily text file (ARCHITECTURE.md R4).
   'test-chunk-guard-ledger',
+  // The generation step on somebody else's card (rollout item 2.4), against a
+  // FAKE Crucible — the real one needs the card. It pins the five things that
+  // would otherwise be found at 3 a.m. on a real book: the whole book goes up
+  // in ONE job (a chapter at a time looks identical until you watch the
+  // percentage), the SERVER's fraction is what the bar reports, one ledger
+  // record per chunk carrying the engine's own verdict, `<index>.flac` under
+  // the local naming, and a 409 server_busy that FAILS the render naming the
+  // holder instead of quietly taking this machine's GPU.
+  'test-crucible-render',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

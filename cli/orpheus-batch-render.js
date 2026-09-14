@@ -318,6 +318,26 @@ async function main() {
     speed: 1.0,
     enableTextSplitting: false,
   };
+  // RENDER THE GENERATION STEP ON A CRUCIBLE SERVER (rollout item 2.4).
+  //
+  // The same field the app's narration job will carry once the Servers settings
+  // row exists (2.2), set on the same `ParallelTtsSettings` object and read by
+  // the same seam inside `renderRangeHeadless` — the CLI mirrors the app's code
+  // path, it does not acquire a second way in. The value NAMES a registered
+  // server (`bookforge-tts --crucible-list`); `local` is the reserved name for
+  // this machine's own server once 2.1 lands.
+  //
+  // Nothing here falls back to the local card: an unregistered name, a busy
+  // server, a voice that host does not have, or `tts` disabled there all fail
+  // the run naming which one it was.
+  if (args['crucible-server']) {
+    if (args['crucible-server'] === true || String(args['crucible-server']).trim() === '') {
+      throw new Error('--crucible-server needs the NAME of a registered Crucible server '
+        + '(bookforge-tts --crucible-list). There is no default server.');
+    }
+    settings.crucible = { server: String(args['crucible-server']).trim() };
+    console.log(`[batch] generation runs on crucible "${settings.crucible.server}" (not this machine's narrator)`);
+  }
   // Explicit model directory (CLI --model-dir): bypasses models.json resolution. Must be
   // in the spawn target's namespace (a /home/... WSL path, or a \\wsl$ / C:\ path that
   // buildWslBashCommand will translate).

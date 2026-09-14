@@ -513,6 +513,15 @@ def cmd_tts(args):
         _require(not args.voice_token,
                  "--voice-token is not supported in --mode streaming (the app path binds a "
                  "voice by id; use --voice)")
+        # A Crucible render job and a Crucible streaming session are two doors
+        # (POST /v1/jobs vs POST /v1/tts/stream) with different rules — the
+        # session refuses a voice that is not already resident, and one session
+        # at a time per server. Rollout item 2.4 wires the RENDER door only, so
+        # this is refused by name rather than accepted and dropped.
+        _require(not args.crucible_server,
+                 "--crucible-server renders the generation step of a BATCH run on a Crucible "
+                 "(--mode tts). The Listen path is a Crucible STREAMING session, a different "
+                 "door with different rules, and it is not wired yet.")
 
     # Resolve relative paths against the USER'S cwd — the node adapter runs with
     # cwd=REPO_ROOT, so a bare 'sample.wav' would otherwise land inside the repo (and a
@@ -554,6 +563,13 @@ def cmd_tts(args):
         cmd += ["--library", str(_user_path(args.library))]
     if args.mode == "tts" and args.skip_text_cleanup:
         cmd += ["--skip-text-cleanup"]
+    # Rollout item 2.4: the generation step on a Crucible server. Set on the SAME
+    # ParallelTtsSettings object the app's narration job will carry (2.2), so the
+    # CLI mirrors the app's code path instead of gaining a second door.
+    # --mode streaming is refused above: a streaming session is a different
+    # Crucible door (POST /v1/tts/stream) and is not wired here.
+    if args.mode == "tts" and args.crucible_server:
+        cmd += ["--crucible-server", args.crucible_server]
     if args.mode == "tts" and args.keep_sentences:
         cmd += ["--keep-sentences"]
     if args.mode == "tts" and args.keep_session:
@@ -2010,14 +2026,13 @@ COMMAND_FLAGS = {
         "doc": """Render a book, a passage, or bare test chunks to a WAV — the app's own render path.
 
 --mode tts (default) is the AUDIOBOOK/BATCH path: parallel-tts-bridge ->
-renderRangeHeadless -> the prep packs the chunks -> the worker. --mode streaming is
-the LISTEN path: the app's real tts-api-server driven over the protocol in
-docs/TTS_API.md, so the run goes through handleSpeak, splitForTts and the pool's
-batch ladder exactly as pressing play does.
-
-The narration prep runs first, automatically (see --prep). The per-sentence FLACs
-are flat-concatenated into a BARE WAV — no chapters, cover or metadata; for the
-book the app ships, use --audiobook.""",
+renderRangeHeadless -> the prep packs the chunks -> the worker (or, with
+--crucible-server, a Crucible). --mode streaming is the LISTEN path: the app's real
+tts-api-server over the protocol in docs/TTS_API.md, so the run goes through
+handleSpeak, splitForTts and the pool's batch ladder exactly as pressing play does.
+The narration prep runs first, automatically (see --prep). The per-sentence FLACs are
+flat-concatenated into a BARE WAV — no chapters, cover or metadata; use --audiobook for
+the book the app ships.""",
         "reads": [
             "--config", "--dry-run", "--engine", "--mode", "--voice", "--input", "--text",
             "--out", "--title", "--library", "--language", "--model-dir", "--checkpoint-dir",
@@ -2025,9 +2040,10 @@ book the app ships, use --audiobook.""",
             "--min-p", "--top-k", "--rep-penalty", "--safe-band", "--max-chars",
             "--batch-width", "--mem-budget-gb", "--as-chunks", "--max-chunks",
             "--keep-sentences", "--keep-session", "--read-ahead", "--skip-text-cleanup",
-            "--orpheus-install", "--conda-env",
+            "--orpheus-install", "--conda-env", "--crucible-server",
         ],
         "refuses": [
+            ("--crucible-server", "in --mode streaming: that is Crucible's streaming door, not wired"),
             ("--model-dir", "on --engine higgs: a Higgs checkpoint is --checkpoint-dir"),
             ("--checkpoint-dir", "orpheus names --model-dir; streaming has no per-request seam"),
             ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
@@ -2048,14 +2064,13 @@ book the app ships, use --audiobook.""",
             '# one chunk per line, narrated as printed, capped at the first 20:\n'
             'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl \\\n'
             '    --as-chunks --max-chunks 20 --out chunks.wav',
-            '# a checkpoint under test, on the MAC (MLX reads it here, so the path must exist here):\n'
-            'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl --as-chunks \\\n'
-            '    --out mb440.wav --checkpoint-dir \\\n'
-            '    "$HOME/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_440_prod"',
-            '# the same on the PC: the reading happens in the WSL guest, so the path is\n'
-            '# GUEST-native and is NOT stat\'d here:\n'
+            '# a checkpoint under test — the path is read WHERE THE RENDER RUNS (absolute on the\n'
+            '# Mac, GUEST-native and not stat\'d here on the PC):\n'
             'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl --as-chunks \\\n'
             '    --out mb616.wav --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616',
+            '# the GENERATION step on a Crucible server (the FLACs come back over HTTP):\n'
+            'bookforge-tts --tts --engine higgs --voice mistborn --input book.epub --out mb.wav \\\n'
+            '    --crucible-server mac',
             '# the Listen path, reading only two blocks ahead:\n'
             'bookforge-tts --tts --mode streaming --voice deathstalker --input article.txt \\\n'
             '    --out listen.wav --read-ahead 2',
@@ -2976,9 +2991,10 @@ def _flag_registry():
                         "narrator's --sentence_per_paragraph), narrated as printed. Refused with "
                         "an EPUB, which the app's own packer chunks")
     p.add_argument("--max-chunks", dest="max_chunks", type=int, default=None,
-                   help="--tts only: cap generation at N chunks (settings.testMode + "
-                        "testSentences, the pair the app's own settings carry). Refused with "
-                        "--audiobook: a capped book is not an audiobook", metavar="N")
+                   help="--tts only: cap generation at N chunks. "
+                        "It is settings.testMode + testSentences, the pair the app's own "
+                        "settings carry. Refused with --audiobook: a capped book is not an "
+                        "audiobook", metavar="N")
     p.add_argument("--library", dest="library",
                    help="--tts / --prep --input: the library root whose tmp/ holds the sessions "
                         "and the narration cuts (the app's <library>/tmp, unless Settings states "
@@ -2994,9 +3010,9 @@ def _flag_registry():
                    help="--audiobook: ignore any cached session and re-render from scratch "
                         "(default: resume — skip sentences already rendered in a prior run)")
     p.add_argument("--skip-text-cleanup", dest="skip_text_cleanup", action="store_true",
-                   help="--audiobook: do NOT run the narration text cleanup, and tell the render "
-                        "door so — the book is read exactly as printed. The app's \"No, narrate "
-                        "as printed\" button, headless")
+                   help="--tts / --audiobook: do NOT run the narration text cleanup. "
+                        "The render door is told so, and the book is read exactly as printed "
+                        "— the app's \"No, narrate as printed\" button, headless")
 
     p.group("Model choice (--tts, --audiobook): engine, voice, checkpoint under test",
             "The ARM is never a flag: renderRangeHeadless routes by platform (Mac MLX,\n"
@@ -3388,6 +3404,19 @@ def _flag_registry():
                    "--crucible-unload / --crucible-chat, and by --ai-cleanup / --ai-simplify "
                    "with --provider crucible. Refused for every other provider — a flag that "
                    "looked set and was dropped is the failure this rule exists to end",
+                   metavar="N")
+    p.add_argument("--crucible-server", dest="crucible_server",
+                   help="--tts: run the generation step on a REGISTERED Crucible. "
+                        "It names an entry in the registry (--crucible-list), never a URL; "
+                        "`local` is the reserved name for this machine's own server. Every "
+                        "chunk goes up in ONE tts job, the engine's guard verdicts come back on "
+                        "the chunk events, and the FLACs are downloaded into the session's "
+                        "sentences dir — the prep before it and the assembly, RVC pass and "
+                        "coverage audit after it all run here, unchanged. There is NO fallback "
+                        "to the local card: a busy server, a voice that host does not have, or "
+                        "tts disabled there fails the run naming which it was. Separate from "
+                        "--server, which picks the server for the --crucible-* operator verbs "
+                        "and for --ai-cleanup",
                    metavar="N")
     p.add_argument("--file", help="--crucible-echo: the file whose bytes are sent through the "
                    "echo job and compared with what comes back", metavar="FILE")

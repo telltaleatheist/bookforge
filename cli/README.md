@@ -131,7 +131,40 @@ python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input 
 # See exactly what would run, touch no GPU — it also PACKS the input book and
 # prints the settings object, so a text/jsonl render is reproducible before it runs:
 python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out s.wav --dry-run
+
+# Render the GENERATION step on a Crucible server instead of on this machine:
+python cli/bookforge-tts.py --tts --engine higgs --voice mistborn --input book.epub \
+    --out mb.wav --crucible-server mac
 ```
+
+**`--crucible-server <name>`: the generation step on somebody else's card.** With it,
+the chunks the prep packed go up to a Crucible as **one `tts` job** — all of them, so
+the server has a denominator and reports a real percentage — the engine's own guard
+verdict for every chunk comes back on the job's `chunk` events and into the guard
+ledger, and each `<index>.flac` is downloaded into the session's sentences directory as
+its artifact is announced. **Everything else is unchanged:** the narration prep runs
+here before it, and the coverage audit, the RVC pass, the denoise pass and the assembly
+run here after it, reading the same directory they always read. See
+`electron/crucible/render.ts` and crucible `docs/PHASE6-REMOTE-RENDER.md`.
+
+It takes the **name of a registered server** (`--crucible-list`), never a URL; `local`
+is the reserved name for this machine's own server. Four things to know:
+
+- **There is no fallback to the local card.** A server that is busy (`server_busy`,
+  reported with the SDK's "GPU busy: `<holder>`" line), that has `tts` disabled
+  (`job_type_disabled`), that is serving a streaming session (`engine_in_use`), or that
+  does not have the voice, fails the run **naming which one it was**. Rendering the
+  book here instead would take a card somebody else is using and finish it in a voice
+  nobody chose.
+- **Higgs only, and catalog voices only.** Every voice a Crucible serves declares
+  `narrator_engine = "higgs-v3"`; `--engine orpheus` is refused by name. So is a
+  `--checkpoint-dir` override (those weights are a directory on this machine) and a
+  `zeroshot-*` voice (the render door carries no reference clip).
+- **Cancelling cancels the remote job.** Ctrl+C, or Stop in the app, sends
+  `DELETE /v1/jobs/<id>` — dropping the connection would leave that server rendering
+  the rest of the book. The chunks already downloaded stay on disk.
+- **`--mode streaming` refuses it.** A Crucible streaming session is a different door
+  with different rules, and it is not wired yet.
 
 **Where a `--tts` run keeps its sessions.** narrator has no default sessions root
 — every spawn carries a `--session_dir` derived from the one that was stated — so
