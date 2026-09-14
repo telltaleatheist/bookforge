@@ -43,9 +43,13 @@ remove its own local slots if theres a crucible server installed locally?"* Read
 code, not from memory. Each item names the file that proves it.
 
 **Owen, 2026-09-14 (after reading this map): *"well lets fix it. i did expect orpheus to be in
-there. sounds like the job isn't done yet."*** Rulings taken from that: **B1 = Orpheus goes INTO
-Crucible** (manifests + its own env, built from the existing `orpheus_tts` conda env's freeze —
-vLLM 0.7.3, torch 2.5.1+cu121); **D-registry = hosted Foundry reads BookForge's server
+there. sounds like the job isn't done yet."*** Rulings taken from that, then CORRECTED an hour later — **Owen, 2026-09-14: *"xtts is
+completely deprecated and removed as of when narrator was created. orpheus is deprecated too but
+hasnt been removed yet. higgs is the frontier."*** So **B1 = Orpheus is DEPRECATED, not built into
+Crucible**: it lives only on the legacy local path and is DELETED with that layer after the in-app
+pass; the Orpheus wizard step and Settings section go now (audit `docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md`);
+Crucible's stray `orpheus` entries (`ttsstream.py` batch width, jobenv's "two tts envs") are
+removed so the server does not name an engine it will never serve. Higgs is the one narration engine; **D-registry = hosted Foundry reads BookForge's server
 registry** (one owner; Foundry's own registry is standalone-only); A1, A3, A5 and the stale
 hosted-env refusal are BUILT, not ruled. Agents: scheduler (BookForge), hosted-Foundry seam
 (BookForge), Orpheus (Crucible, after the phase-13 server agent lands), then the page and the
@@ -86,7 +90,7 @@ apps' doors.
 
 ### B. Engines — one is missing entirely
 
-- **B1. Orpheus is not in Crucible.** Every voice manifest is `narrator_engine = "higgs-v3"`;
+- **B1. Orpheus is not in Crucible — and will not be (ruled deprecated 2026-09-14, see above).** Kept for the record: Every voice manifest is `narrator_engine = "higgs-v3"`;
   `engines/narrator.py` knows Orpheus only as a comment. CLAUDE.md still calls Orpheus "the
   narration engine" and the wizard gives it a step of its own. So an Orpheus render or Listen
   can ONLY take the legacy WSL path, and deleting that layer (A2) deletes Orpheus. Ruling:
