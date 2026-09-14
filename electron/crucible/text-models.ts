@@ -59,8 +59,9 @@ export type CrucibleTextModelErrorCode =
 export class CrucibleTextModelError extends Error {
   readonly code: CrucibleTextModelErrorCode;
 
+  /** The code is PREFIXED onto the message — see `CrucibleTextActError`. */
   constructor(code: CrucibleTextModelErrorCode, message: string) {
-    super(message);
+    super(`${code}: ${message}`);
     this.name = 'CrucibleTextModelError';
     this.code = code;
   }

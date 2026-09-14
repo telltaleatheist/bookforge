@@ -34,18 +34,30 @@
  * the SDK's `loadModel`), because a load EVICTS whatever is resident — which on
  * a shared server is somebody else's book.
  *
- * ── WHY EVERY CRUCIBLE TEXT ACT IS REFUSED TODAY ───────────────────────────
+ * ── HOW FAR THE CALLER REACHES INTO THE SPAWN'S ENVIRONMENT ────────────────
  *
- * Two gaps in the foundry ENGINE, measured by reading its source rather than by
- * running it, both written out in `text-acts.ts`'s header: it appends `/v1` to
- * Crucible's `/v1/openai` base (`normaliseVllmEndpoint`), and the hosted window
- * gives a spawn no per-run environment. Neither is BookForge's to fix. So this
- * module composes the whole answer and then refuses it —
- * `foundry_engine_cannot_reach_crucible` — rather than spawning a run that would
- * 404 an hour in or reach the server unauthenticated. The gate is a VERSION
- * FLOOR (`FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT`, beside every other foundry floor
- * this app enforces in `foundry-host-queue.ts`), so the day an engine ships both
- * fixes, that constant is the entire change here.
+ * The credential travels in the engine process's environment, so the one thing
+ * this module must know about a caller is whether it can GIVE that process an
+ * environment. It is {@link EndpointHeaderReach}, it is required, and it decides
+ * whether the act runs at all:
+ *
+ *   `spawn`   — an explicit `env` on this child and no other. BookForge's own
+ *               engine door (`runFoundry`). RUNS.
+ *   `process` — the process IS the act: a single-purpose CLI run that spawns
+ *               nothing else while it works. RUNS.
+ *   `none`    — somebody else's spawn inside a shared process: the app's hosted
+ *               queue step, where the vendored `runEngine` uses
+ *               `env: process.env` and takes no overlay. **REFUSED BY NAME**
+ *               (`hosted_engine_takes_no_per_run_env`), never quietly run
+ *               against llama-server.
+ *
+ * There is no version comparison here. The blocker is a property of the
+ * VENDORED SUBTREE — a line of somebody else's code — and a floor that could go
+ * green on a version bump while the subtree still spawns the same way would be
+ * a guard that passes without the thing it guards.
+ * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `foundry-host-queue.ts` is named in the
+ * refusal as the release to re-vendor at, and carries the RULING OWED about what
+ * it should be keyed to.
  */
 import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
 import type { ModelInfo } from '@crucible/client';
@@ -79,8 +91,12 @@ export type CrucibleTextActErrorCode =
   | 'crucible_server_not_named'
   /** `any`, and not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
-  /** The installed foundry engine cannot address a Crucible. See the header. */
-  | 'foundry_engine_cannot_reach_crucible'
+  /**
+   * The caller cannot give the engine process its own environment, so the
+   * credential — and the act name that changes per run — has nowhere to go.
+   * The app's hosted queue step, and only it. See the header.
+   */
+  | 'hosted_engine_takes_no_per_run_env'
   /** The chosen server has no manifest for this act's model id. */
   | 'crucible_unknown_model'
   /** It has one, and nothing is serving it. The operator's job, never ours. */
@@ -93,8 +109,15 @@ export class CrucibleTextActError extends Error {
   /** The SDK's "GPU busy: foundry, tts 62% done", for `noteStepBusy`. */
   readonly busyLine?: string;
 
+  /**
+   * The code is PREFIXED onto the message, not only carried beside it.
+   *
+   * `ai-bridge.ts`'s Crucible refusals do the same, and for the reason this
+   * one exists: a CLI and a queue row show `err.message` and nothing else, so
+   * "refused by name" is only true where the name is in the sentence.
+   */
   constructor(code: CrucibleTextActErrorCode, message: string, busyLine?: string) {
-    super(message);
+    super(`${code}: ${message}`);
     this.name = 'CrucibleTextActError';
     this.code = code;
     if (busyLine !== undefined) this.busyLine = busyLine;
@@ -121,8 +144,6 @@ export interface TextVenueHost {
   loadModel(name: string, model: string): Promise<void>;
   /** The Crucible model id chosen for this act, or a named refusal. */
   modelFor(act: CrucibleTextAct): string;
-  /** The installed foundry engine's version, e.g. `1.3.0`. */
-  engineVersion(): Promise<string>;
 }
 
 /** The real one: the app's records, the real registry and real HTTP. */
@@ -146,10 +167,6 @@ export function processTextVenueHost(): TextVenueHost {
       }
     },
     modelFor: textModelFor,
-    async engineVersion(): Promise<string> {
-      const { foundryVersion } = await import('../foundry-bridge.js');
-      return (await foundryVersion()).version;
-    },
   };
 }
 
@@ -211,7 +228,28 @@ export async function decideWhereTextActRuns(
   );
 }
 
+/**
+ * HOW FAR A CALLER REACHES INTO THE ENGINE PROCESS'S ENVIRONMENT.
+ *
+ * Required on every call, never defaulted: the credential and the per-run act
+ * name travel in that environment, so a caller that cannot set one cannot run
+ * the act, and a default would answer that question on somebody's behalf.
+ * See this module's header for what each answer means.
+ */
+export type EndpointHeaderReach =
+  /** An explicit `env` on this child and no other — `runFoundry`'s overlay. */
+  | 'spawn'
+  /** The process IS the act: a single-purpose CLI run. `withProcessEndpointHeaders`. */
+  | 'process'
+  /** Somebody else's spawn inside a shared process. Refused by name. */
+  | 'none';
+
 export interface CrucibleTextActOptions {
+  /**
+   * How far this caller reaches into the engine process's environment.
+   * REQUIRED — see {@link EndpointHeaderReach}.
+   */
+  headerReach: EndpointHeaderReach;
   /**
    * Submit a `load-model` job and wait for it before the residency check.
    *
@@ -250,16 +288,19 @@ export async function resolveCrucibleTextEngine(
   act: CrucibleTextAct,
   server: string,
   host: TextVenueHost,
-  opts: CrucibleTextActOptions = {},
+  opts: CrucibleTextActOptions,
 ): Promise<CrucibleTextEngine> {
-  const { FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT, foundryTooOldForCrucibleText } =
-    await import('../foundry-host-queue.js');
-  const { foundryVersionAtLeast } = await import('../../shared/vlm/readings-bank.js');
-  const installed = await host.engineVersion();
-  if (!foundryVersionAtLeast(installed, FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT)) {
+  /*
+   * THE REACH QUESTION FIRST, because a caller that cannot give the engine an
+   * environment cannot run the act however resident the model is — and asking
+   * a server about its models to produce the same no would be a round trip
+   * spent on a decision already made.
+   */
+  if (opts.headerReach === 'none') {
+    const { hostedEngineTakesNoPerRunEnv } = await import('../foundry-host-queue.js');
     throw new CrucibleTextActError(
-      'foundry_engine_cannot_reach_crucible',
-      foundryTooOldForCrucibleText(installed, act, server),
+      'hosted_engine_takes_no_per_run_env',
+      hostedEngineTakesNoPerRunEnv(act, server),
     );
   }
 

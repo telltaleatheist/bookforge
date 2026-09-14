@@ -279,7 +279,20 @@ export const foundryJobStep: StepModule = {
       );
       if (venue.where === 'crucible') {
         try {
-          crucible = await resolveCrucibleTextEngine(act, venue.server, venueHost);
+          /*
+           * `none`: the spawn is NOT ours. Foundry's vendored `runEngine` uses
+           * `env: process.env` and takes no overlay, and this is the app's
+           * main process — ~180 spawn sites, concurrent queue lanes — so a map
+           * put on its environment would be inherited by every child that has
+           * no business with a credential, and two acts inside it would each
+           * send the other's act name. `resolveCrucibleTextEngine` refuses
+           * this by name before anything else is asked.
+           *
+           * BookForge's OWN Clean text door (`narration-clean-text.ts`) and
+           * the CLI clean routes answer `spawn`/`process` and run for real.
+           */
+          crucible = await resolveCrucibleTextEngine(
+            act, venue.server, venueHost, { headerReach: 'none' });
         } catch (err) {
           /*
            * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
@@ -333,16 +346,11 @@ export const foundryJobStep: StepModule = {
      */
     let row: FoundryJobRow;
     /*
-     * ── THE CREDENTIAL, AND THE ONE PLACE IT CANNOT BE PASSED PER SPAWN ──────
-     *
-     * `withHostedEndpointHeaders` is a DATED STOPGAP, labelled as one where it
-     * is defined (electron/crucible/text-acts.ts): the vendored window spawns
-     * the engine with `env: process.env` and takes no overlay, so the map goes
-     * on this process's environment for the duration of the act and is deleted
-     * in a `finally`. The root fix is one parameter on foundry's `runEngine`,
-     * and is a request on them rather than work outstanding here.
-     *
-     * Nothing is on the environment for a LOCAL run: `run` is called directly.
+     * NO CREDENTIAL EVER TRAVELS FROM HERE. A Crucible venue has already been
+     * refused above (`headerReach: 'none'`), so everything that reaches this
+     * line is a local run against the endpoint Foundry's settings name, and
+     * `runFoundry`'s own strip keeps `$FOUNDRY_ENDPOINT_HEADERS` off the child
+     * even if something else in this process ever put one on the environment.
      */
     const run = async (): Promise<FoundryJobRow> => foundryRunner()(request, {
       parentStep: config.parentStep,
@@ -396,11 +404,7 @@ export const foundryJobStep: StepModule = {
       },
     });
     try {
-      row = crucible === null
-        ? await run()
-        : await (await import('../crucible/text-acts.js')).withHostedEndpointHeaders(
-          crucible.env, `${act ?? 'foundry'} ${config.label}`, run,
-        );
+      row = await run();
     } finally {
       /*
        * SUCCESS OR FAILURE ALIKE. A row that threw must hand the card back

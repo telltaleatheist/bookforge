@@ -647,7 +647,9 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
       'clean',
       venue.server,
       venueHost,
-      opts.loadFirst === true ? { loadFirst: true } : {},
+      // `spawn`: THIS door owns the spawn and hands `runFoundry` an explicit
+      // `env` below, so the credential reaches that child and no other.
+      { headerReach: 'spawn', ...(opts.loadFirst === true ? { loadFirst: true } : {}) },
     )
     : null;
 

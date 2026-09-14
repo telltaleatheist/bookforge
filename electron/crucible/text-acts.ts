@@ -40,36 +40,37 @@
  *     writing anything into `process.env`, and why {@link stripEndpointHeaders}
  *     exists for the spawn door that must not carry it.
  *
- * ── TWO ENGINE GAPS, MEASURED TONIGHT, THAT THIS CANNOT PAPER OVER ──────────
+ * ── WHO CAN GIVE A SPAWN ITS OWN ENVIRONMENT, AND WHO CANNOT ───────────────
  *
- * Read before changing anything here. Both were found by reading foundry's own
- * source at `83d7b66`/v1.3.0 — the engine BookForge spawns today — rather than
- * by trying a run, and either one alone makes a Crucible text act impossible:
+ * Read before changing anything here. Two gaps were found on 2026-09-13 by
+ * reading foundry's source rather than by running it. **The first is fixed** —
+ * crucible `a97ef70` mounts the OpenAI door where OpenAI clients look, see
+ * {@link CRUCIBLE_OPENAI_BASE_PATH} — and a real `clean` act has now run end to
+ * end against the local server. The second stands, and it is not about an
+ * engine version at all:
  *
- *  1. **The engine cannot ADDRESS Crucible's OpenAI door.** Crucible mounts it
- *     at `<url>/v1/openai/{models,chat/completions}` (`crucible/api.py`, the
- *     `private` router's `/v1` prefix plus `/openai/...`; PHASE2-LLM.md §5).
- *     foundry's `normaliseVllmEndpoint` (`src/translate/vllm.ts:78`) appends
- *     `/v1` to any base whose LAST segment is not `/v<digits>` — so
- *     `…/v1/openai` becomes `…/v1/openai/v1/models`, a 404. There is no base URL
- *     that satisfies both: the fix is one regex in foundry, or an alias in
- *     Crucible, and neither is BookForge's to write.
- *  2. **A HOSTED act has no per-run environment.** The vendored window spawns
- *     the engine with `env: process.env` (`foundry-app/electron/engine.ts:140`,
- *     identical upstream), so BookForge cannot hand THAT child an overlay the
- *     way it hands one to its own spawn. The act name changes per run, so a
- *     process-wide variable is not merely untidy — it is wrong, because two acts
- *     would name each other.
+ * > **The vendored Foundry window spawns the engine with `env: process.env`**
+ * > (`foundry-app/electron/engine.ts:140`, and the same line upstream), and
+ * > takes no overlay. BookForge cannot hand THAT child an environment of its
+ * > own.
  *
- * Until an engine ships both fixes, a Crucible text act is **refused by name**
- * before anything spawns (`electron/crucible/text-venue.ts`,
- * `foundry_engine_cannot_reach_crucible`), and the refusal carries both gaps and
- * the one switch that gets work moving again. It is NOT quietly run against
- * llama-server: that is the silent downgrade this whole seam exists to refuse.
+ * That matters because the act name changes per run. A map on a shared
+ * process's environment is not merely untidy — two acts inside one process
+ * would each send the other's `X-Crucible-Act`, which is exactly the lie Owen
+ * ruled out.
  *
- * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `electron/foundry-host-queue.ts` is the
- * floor, beside every other foundry version floor this app enforces. The day
- * foundry releases both fixes, that constant is the whole change.
+ * So the question every caller must answer is **how far its reach into the
+ * spawn's environment goes**, and it is a required argument rather than a
+ * default: {@link EndpointHeaderReach} in `text-venue.ts`. `spawn` (an explicit
+ * `env` on this child and no other) is BookForge's own engine door and runs for
+ * real. `process` is a single-purpose CLI run, where the process IS the act.
+ * `none` is the app's hosted queue step — somebody else's spawn inside a shared
+ * process — and it is **refused by name**, never quietly run against
+ * llama-server.
+ *
+ * `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `electron/foundry-host-queue.ts` marks
+ * the release to re-vendor at, and carries the RULING OWED about what it should
+ * be keyed to now that 1.3.0 is void.
  */
 
 /**
@@ -100,23 +101,38 @@ export const CRUCIBLE_API_VERSION = '1';
 export const CRUCIBLE_ACT_HEADER = 'X-Crucible-Act';
 
 /**
- * The OpenAI-compatible base for one server, as the engine's `--endpoint`.
+ * The path an OPENAI CLIENT is given as its base URL, and the one owner of it.
  *
- * `<url>/v1/openai`, and it is READ OFF crucible's own router rather than
- * guessed: `api.py` builds `private = APIRouter(prefix="/v1", …)` and mounts
- * `@private.get("/openai/models")` and `@private.post("/openai/chat/completions")`
- * on it. PHASE2-LLM.md §5 tabulates the same two routes.
+ * `/openai` — NOT `/v1/openai`, and the difference is the whole of what was
+ * wrong on 2026-09-13.
  *
- * The registry stores a base URL WITHOUT `/v1` (servers.ts refuses one that
- * carries it, because the SDK appends the prefix itself), so this appends the
- * whole of it.
+ * Crucible's own namespace for that door is `/v1/openai/{models,chat/completions}`
+ * (`crucible/api.py`'s `private` router, PHASE2-LLM.md §5), and the SDK uses it.
+ * But an OpenAI client is not given a route, it is given a BASE, and it composes
+ * `<base>/v1/models` and `<base>/v1/chat/completions` itself — foundry's
+ * `normaliseVllmEndpoint` (`src/translate/vllm.ts`) appends `/v1` to any base
+ * that does not already end in a version. Handing it `…/v1/openai` therefore
+ * produced `…/v1/openai/v1/models`, a 404 against a door that existed.
  *
- * See gap 1 in this module's header: an engine at v1.3.0 mangles this. The
- * function is still the one owner of the answer — the fix is on the engine's
- * side and this string is what it will be fixed to accept.
+ * Crucible `a97ef70` mounts the SAME two handlers — same auth, same version
+ * header, nothing duplicated but the path — at `/openai/v1/…`, which is where
+ * every OpenAI client looks. So the base this app hands an engine is
+ * `<url>/openai`, the engine makes it `<url>/openai/v1`, and the two spellings
+ * name one door.
+ *
+ * PROVEN LIVE, 2026-09-13: `foundry clean-text --epub … --model qwen3.5-9b
+ * --endpoint http://127.0.0.1:7100/openai` against the resident 9B — 734
+ * blocks, 265 changed, 78.5 s, EPUB written.
+ *
+ * The registry stores a base URL with no version on it at all (servers.ts
+ * refuses one carrying `/v1`, because the SDK appends its own prefix), so this
+ * appends exactly one segment.
  */
+export const CRUCIBLE_OPENAI_BASE_PATH = '/openai';
+
+/** The OpenAI-compatible base for one server, as the engine's `--endpoint`. */
 export function crucibleChatBase(url: string): string {
-  return `${url.replace(/\/+$/, '')}/v1/openai`;
+  return `${url.replace(/\/+$/, '')}${CRUCIBLE_OPENAI_BASE_PATH}`;
 }
 
 /** The map itself. Values are never rendered anywhere but {@link maskEndpointHeaders}. */
@@ -182,44 +198,49 @@ export function stripEndpointHeaders(
   return rest;
 }
 
-/** Is the hosted window's credential window open right now? */
+/** Who holds the process-wide credential window right now. */
 let hostedHolder: string | null = null;
 
 /**
- * ── A DATED STOPGAP, AND IT IS LABELLED AS ONE ──────────────────────────────
+ * ── THE CREDENTIAL ON A WHOLE PROCESS, AND THE ONE PLACE THAT IS HONEST ─────
  *
- * The hosted Foundry window spawns the engine with `env: process.env`
- * (`foundry-app/electron/engine.ts:140`, and the same line upstream) — a sealed
- * subtree, a mechanical copy of somebody else's program, so BookForge cannot
- * hand that child an overlay. The only environment it can influence is its own.
+ * The map belongs on ONE child's environment. Where the caller owns the spawn
+ * it goes there and nowhere else (`runFoundry`'s `env` overlay, reach `spawn`).
+ * This is the other case: the spawn belongs to somebody else's code — Foundry's
+ * vendored `runEngine`, which uses `env: process.env` and takes no overlay — so
+ * the only environment BookForge can influence is its own.
  *
- * So this opens a window: the map is on `process.env` for the duration of ONE
- * hosted act and is deleted in a `finally`. What that costs is honest and worth
- * writing down — **any other child BookForge spawns during the window inherits
- * it**, which is precisely the inheritance the contract fixes with an explicit
- * `env` at each spawn. BookForge's own engine door (`runFoundry`) is given that
- * explicit env; the other spawn sites are not, and cannot be until the seam
- * exists.
+ * **THAT IS ONLY ACCEPTABLE WHERE THE PROCESS *IS* THE ACT**, which means
+ * exactly one caller: a single-purpose CLI run (`cli/clean-step.js`), started to
+ * do this one thing, spawning nothing else while it does it, and exiting after.
+ * There the process environment and the act's environment are the same set, and
+ * "stripped from every child that does not need it" is satisfied because there
+ * are no other children.
  *
- * **THE ROOT FIX, which is a request on Foundry and not work outstanding here:**
- * `runEngine(args, onLine)` takes a third argument — an env overlay — and
- * `job-queue.ts` passes the request's headers into it. One parameter, two call
- * sites, and this function is deleted the day it lands.
+ * **IT IS NOT ACCEPTABLE IN THE APP, and the app does not use it.** BookForge's
+ * main process has ~180 spawn sites and runs queue lanes concurrently, so a map
+ * on its environment would be inherited by a rasteriser, an ffmpeg, a python
+ * env — the inheritance the contract fixes mechanically. The hosted queue step
+ * therefore REFUSES a Crucible text act by name (reach `none`) rather than
+ * reaching for this.
  *
- * Single-entry by construction: two acts in the window would name each other's
- * act in each other's header, which is the lie Owen's ruling forbids. The queue
- * runs text acts on the `gpu` lane, one at a time, so this guard is a proof
- * rather than a policy — and if it ever fires, the run is refused rather than
- * mis-labelled.
+ * **THE ROOT FIX, a request on Foundry rather than work outstanding here:**
+ * `runEngine(args, onLine, env?)` — one optional overlay — and `job-queue.ts`
+ * passing the request's headers into it. One parameter, two call sites; this
+ * function and the hosted refusal both go the day it lands.
+ *
+ * Single-entry by construction: two acts inside one window would each send the
+ * other's act name, which is the lie Owen's ruling forbids. If the guard ever
+ * fires, the run is refused rather than mis-labelled.
  */
-export async function withHostedEndpointHeaders<T>(
+export async function withProcessEndpointHeaders<T>(
   overlay: Record<string, string>,
   holder: string,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (hostedHolder !== null) {
     throw new Error(
-      `crucible_hosted_headers_busy: "${holder}" cannot open the hosted credential window while `
+      `crucible_process_headers_busy: "${holder}" cannot open the credential window while `
       + `"${hostedHolder}" holds it. The window puts one act's headers on this process's `
       + 'environment, and two acts inside it would each send the other\'s act name — which is the '
       + 'one thing a Crucible must never be told (crucible/inflight.py, unknown_act). Nothing ran.');
@@ -237,7 +258,7 @@ export async function withHostedEndpointHeaders<T>(
   }
 }
 
-/** Who holds the hosted credential window, for a refusal that names them. */
-export function hostedEndpointHeadersHolder(): string | null {
+/** Who holds the process-wide credential window, for a refusal that names them. */
+export function processEndpointHeadersHolder(): string | null {
   return hostedHolder;
 }

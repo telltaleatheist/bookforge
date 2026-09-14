@@ -215,10 +215,27 @@ if (fixture === null) {
    */
   const doorUserData = path.join(ROOT, 'userData');
   fs.mkdirSync(doorUserData, { recursive: true });
-  const realSettings = path.join(require(STUB).USER_DATA, 'app-settings.json');
-  if (fs.existsSync(realSettings)) {
-    fs.copyFileSync(realSettings, path.join(doorUserData, 'app-settings.json'));
+  for (const name of ['app-settings.json', 'tool-paths.json']) {
+    /*
+     * `app-settings.json` because "whichever the machine is on" is what the
+     * model tests assert, and `tool-paths.json` because the reserved server
+     * `local` is read out of the WSL guest this app is configured with — an
+     * empty userData has no distro, and the venue test below would then be
+     * measuring the fixture rather than the door.
+     */
+    const real = path.join(require(STUB).USER_DATA, name);
+    if (fs.existsSync(real)) fs.copyFileSync(real, path.join(doorUserData, name));
   }
+  /*
+   * A per-act Crucible model, so the venue test below walks PAST the
+   * "no model chosen" refusal and proves the record is read through this door.
+   * Whether that id is resident on the machine running the suite is not this
+   * suite's business — both answers are the seam refusing by name before a
+   * spawn, which is what the test asserts.
+   */
+  fs.writeFileSync(
+    path.join(doorUserData, 'crucible-models.json'),
+    JSON.stringify({ clean: 'qwen3.5-9b' }), 'utf8');
   const writeRouting = (legacyLocalRender) => fs.writeFileSync(
     path.join(doorUserData, 'crucible-routing.json'),
     JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender }),
@@ -471,20 +488,47 @@ ${spawnLine(out)}`);
    * venues are two states of one record and a test that left it changed would
    * be the next test's fixture.
    */
-  test('--crucible-server names the venue, and an engine that cannot reach one says so', () => {
+  test('--crucible-server names the venue, and the dry run composes the Crucible line', () => {
     writeRouting(false);
     let said = '';
     try { said = dryRun(['--crucible-server', 'local']); }
     catch (err) { said = `${err.stdout || ''}${err.stderr || ''}`; }
     finally { writeRouting(true); }
-    assert.ok(said.includes('cannot address one'),
-      `expected the named engine refusal; got: ${said}`);
-    assert.ok(said.includes('normaliseVllmEndpoint'), said);
-    assert.ok(said.includes('FOUNDRY_ENDPOINT_HEADERS'), said);
-    // NO SILENT LOCAL RUN: a refused act must not have composed a line.
-    assert.ok(!said.includes('[clean] spawn'),
-      `the act composed a command line after the gate refused it:
-${said}`);
+    /*
+     * A MACHINE WITHOUT A LOCAL CRUCIBLE IS A NAMED STATE, not a failure of
+     * this test: `local` is read from the server's own config.toml (through
+     * WSL on Windows), and a box that has none says so. Skipped by name
+     * rather than passed quietly, exactly as the fixture is above.
+     */
+    if (/no_local_config|no WSL distro|no crucible server named/.test(said)) {
+      console.log('       (no local Crucible on this machine — the venue half is skipped)');
+      return;
+    }
+    /*
+     * A model not chosen or not resident is ALSO a pass for this test: both
+     * are the seam refusing by name, before any spawn, which is what the
+     * flag exists to reach. What must never happen is the run composing a
+     * line against the LOCAL endpoint while the flag named a server.
+     */
+    if (/crucible_text_model_not_set|crucible_model_not_resident|crucible_unknown_model/.test(said)) {
+      assert.ok(!said.includes('[clean] spawn'),
+        `a refused Crucible act still composed a command line:\n${said}`);
+      return;
+    }
+    assert.ok(said.includes('[clean] venue'), `no venue line in:\n${said}`);
+    assert.ok(/\[clean\] venue\s+crucible "local"/.test(said), said);
+    // The base an OpenAI client is given, and the act named truthfully.
+    assert.ok(/\[clean\] endpoint\s+http.*\/openai$/m.test(said),
+      `the endpoint is not the OpenAI base:\n${said}`);
+    assert.ok(said.includes('act clean'), said);
+    // The credential is masked wherever it is shown, and never on the line.
+    assert.ok(/headers .*Bearer \*\*\*\*/.test(said), said);
+    const spawnLine = said.split('\n').find((l) => l.startsWith('[clean] spawn'));
+    if (spawnLine) {
+      assert.ok(!spawnLine.includes('FOUNDRY_ENDPOINT_HEADERS'), spawnLine);
+      assert.ok(!/Bearer [A-Za-z0-9_.-]{8}/.test(spawnLine),
+        `a bearer token reached the composed command line:\n${spawnLine}`);
+    }
   });
 }
 

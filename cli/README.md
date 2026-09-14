@@ -981,8 +981,11 @@ python cli/bookforge-tts.py --narration-text --input book.epub --crucible-server
 
 What changes on the line and what does not:
 
-- `--endpoint` becomes `<server url>/v1/openai`, Crucible's OpenAI-compatible door
-  (`crucible/api.py`; `docs/PHASE2-LLM.md` §5).
+- `--endpoint` becomes `<server url>/openai` — the BASE an OpenAI client is given,
+  which the engine turns into `/openai/v1/models` and `/openai/v1/chat/completions`
+  itself. Crucible mounts its OpenAI door there for exactly that reason
+  (`a97ef70`); `/v1/openai` is the same door under Crucible's own namespace and is
+  what the SDK uses, but handing it to a client that appends `/v1` produced a 404.
 - `--model` becomes the **Crucible model id chosen for that act** in
   Settings → AI → Crucible (`<userData>/crucible-models.json`), never the Ollama tag in
   `cleanTextModel` — the two are different namespaces with different owners, and no
@@ -1005,14 +1008,17 @@ passes with the local engines instead"*), then the ranked server list. With the 
 off and a server enabled, the act goes to Crucible **or is refused by name** — there is
 no quiet drop to llama-server.
 
-> **Today every Crucible text act is refused, and the refusal says why.** The installed
-> foundry engine (1.3.0) cannot address one: it appends `/v1` to whatever endpoint it is
-> given, so `…/v1/openai` is dialled as `…/v1/openai/v1`
-> (`src/translate/vllm.ts`, `normaliseVllmEndpoint`), and a HOSTED act gets no per-run
-> environment to carry the header map in (`app/electron/engine.ts` spawns with
-> `env: process.env`). Both land in foundry `1.4.0`; the floor is
-> `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` in `electron/foundry-host-queue.ts` and bumping it
-> is the whole change on this side. Until then, the switch above is how work gets done.
+**This runs for real, and one path does not.** A `clean` act through BookForge's own
+engine door has been measured end to end against `local` — 734 blocks, 265 changed,
+78.5 s — so `--narration-text`, `--clean-lines` and `--clean` all work. What does not
+is the **hosted Foundry window's own queue** inside the app: it spawns the engine
+through the vendored `runEngine`, which uses `env: process.env` and takes no per-run
+environment, so there is nowhere to put the header map — and the act name changes per
+run, so a map on a shared process's environment would let two acts name each other.
+That step refuses by name (`hosted_engine_takes_no_per_run_env`) and the switch above
+keeps it working. The CLI is different and the difference is the point: a CLI run IS
+the act, so its own process environment is the act's, and there is no other child to
+strip it from.
 
 ## Sentence generation (`--generate-sentences`)
 

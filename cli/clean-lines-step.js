@@ -252,7 +252,8 @@ async function runCleanLines(opts, deps) {
   const venueHost = d.processTextVenueHost();
   const venue = await d.decideWhereTextActRuns(opts.crucibleServer, venueHost);
   const crucible = venue.where === 'crucible'
-    ? await d.resolveCrucibleTextEngine('clean', venue.server, venueHost)
+    // `spawn`: this door calls `runFoundry` with an explicit `env` below.
+    ? await d.resolveCrucibleTextEngine('clean', venue.server, venueHost, { headerReach: 'spawn' })
     : null;
 
   const args = crucible === null

@@ -30,6 +30,11 @@
  *     running it somewhere else.
  *  6. **The legacy switch routes to the local engines and says so by name** —
  *     one switch for renders and text passes both.
+ *  7. **A caller that cannot give the engine process an environment is
+ *     REFUSED.** The credential and the per-run act name travel there, so
+ *     the app's hosted queue step — somebody else's spawn inside a shared
+ *     process — gets a named no rather than a run that reaches the server
+ *     unauthenticated, or one whose act name is another act's.
  *
  * No GPU, no model, no network beyond 127.0.0.1, and no registry but its own.
  */
@@ -124,11 +129,6 @@ function scriptedHost(over) {
     ],
     loadModel: async () => { throw new Error('loadModel must not be called unless loadFirst'); },
     modelFor: (act) => (act === 'clean' ? 'qwen3.5-9b' : 'qwen3.8-27b-4bit'),
-    // The floor is on a version that does not exist yet (see
-    // FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT), so every happy-path check has to say
-    // it is running an engine that carries both fixes. That is the point of the
-    // gate, and check 7 drives the other side of it.
-    engineVersion: async () => '9.9.9',
   }, over || {});
 }
 
@@ -189,18 +189,36 @@ async function main() {
   });
 
   // ── 3. The endpoint ────────────────────────────────────────────────────────
-  await check('the endpoint is the server\'s own OpenAI door', () => {
+  /*
+   * THE BASE, AND THE ONE SEGMENT THAT WAS WRONG.
+   *
+   * An OpenAI client is handed a BASE and composes `<base>/v1/models`
+   * itself (foundry's `normaliseVllmEndpoint`). Crucible `a97ef70` mounts
+   * its OpenAI door at `/openai/v1/...` for exactly that, so the base is
+   * `<url>/openai` — `<url>/v1/openai` produced `/v1/openai/v1/models` and
+   * a 404 against a door that existed. Asserted through the path a client
+   * actually requests, not just the base, because the base alone is what
+   * looked right before.
+   */
+  await check('the base is what an OpenAI client composes the real path from', () => {
+    assert.strictEqual(acts.CRUCIBLE_OPENAI_BASE_PATH, '/openai');
     assert.strictEqual(acts.crucibleChatBase('http://127.0.0.1:7100'),
-      'http://127.0.0.1:7100/v1/openai');
+      'http://127.0.0.1:7100/openai');
     assert.strictEqual(acts.crucibleChatBase('http://mac:7100/'),
-      'http://mac:7100/v1/openai');
+      'http://mac:7100/openai');
+    // What foundry then asks for, by its own rule: append /v1 unless the
+    // last segment already is a version.
+    const base = acts.crucibleChatBase('http://127.0.0.1:7100');
+    const composed = /\/v\d+$/.test(base) ? base : `${base}/v1`;
+    assert.strictEqual(composed, 'http://127.0.0.1:7100/openai/v1');
   });
 
   // ── 4. The composed answer, and what lands on the argv ─────────────────────
   let engine = null;
   await check('a resident model composes endpoint, model, act and the env overlay', async () => {
-    engine = await venue.resolveCrucibleTextEngine('clean', 'local', scriptedHost());
-    assert.strictEqual(engine.endpoint, 'http://127.0.0.1:7100/v1/openai');
+    engine = await venue.resolveCrucibleTextEngine(
+      'clean', 'local', scriptedHost(), { headerReach: 'spawn' });
+    assert.strictEqual(engine.endpoint, 'http://127.0.0.1:7100/openai');
     assert.strictEqual(engine.model, 'qwen3.5-9b');
     assert.strictEqual(engine.act, 'clean');
     assert.deepStrictEqual(Object.keys(engine.env), ['FOUNDRY_ENDPOINT_HEADERS']);
@@ -215,7 +233,7 @@ async function main() {
       { model: 'qwen3.5:9b-q8_0', endpoint: 'http://localhost:11434', keepWarmMinutes: 0, source: 'x' },
       { endpoint: engine.endpoint, model: engine.model });
     const line = argv.join(' ');
-    assert.ok(line.includes('--endpoint http://127.0.0.1:7100/v1/openai'), line);
+    assert.ok(line.includes('--endpoint http://127.0.0.1:7100/openai'), line);
     assert.ok(line.includes('--model qwen3.5-9b'), line);
     assert.ok(!line.includes(TOKEN), `the token reached the command line: ${line}`);
     assert.ok(!/FOUNDRY_ENDPOINT_HEADERS/.test(line), line);
@@ -243,7 +261,7 @@ async function main() {
       loadModel: async () => { loaded = true; },
     });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('clean', 'local', host),
+      () => venue.resolveCrucibleTextEngine('clean', 'local', host, { headerReach: 'spawn' }),
       (err) => {
         assert.strictEqual(err.code, 'crucible_model_not_resident');
         assert.ok(err.message.includes('qwen3.5-9b'), err.message);
@@ -260,7 +278,7 @@ async function main() {
   await check('a model the server has never heard of refuses as UNKNOWN, not as absent', async () => {
     const host = scriptedHost({ modelFor: () => 'llama9000' });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('translate', 'mac', host),
+      () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'spawn' }),
       (err) => {
         assert.strictEqual(err.code, 'crucible_unknown_model');
         assert.ok(err.message.includes('llama9000'), err.message);
@@ -273,7 +291,7 @@ async function main() {
       modelFor: (act) => textModels.textModelFor(act),  // the real record: empty here
     });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('analysis', 'local', host),
+      () => venue.resolveCrucibleTextEngine('analysis', 'local', host, { headerReach: 'spawn' }),
       (err) => {
         assert.strictEqual(err.code, 'crucible_text_model_not_set');
         assert.ok(err.message.includes('analysis'), err.message);
@@ -285,9 +303,10 @@ async function main() {
   await check('the explicit load door is called ONLY with loadFirst', async () => {
     const calls = [];
     const host = scriptedHost({ loadModel: async (s, m) => { calls.push([s, m]); } });
-    await venue.resolveCrucibleTextEngine('simplify', 'mac', host);
+    await venue.resolveCrucibleTextEngine('simplify', 'mac', host, { headerReach: 'spawn' });
     assert.deepStrictEqual(calls, [], 'a plain run asked the server to load a model');
-    await venue.resolveCrucibleTextEngine('simplify', 'mac', host, { loadFirst: true });
+    await venue.resolveCrucibleTextEngine(
+      'simplify', 'mac', host, { headerReach: 'spawn', loadFirst: true });
     assert.deepStrictEqual(calls, [['mac', 'qwen3.8-27b-4bit']]);
   });
 
@@ -321,25 +340,40 @@ async function main() {
     assert.ok(named.message.includes('listen'), named.message);
   });
 
-  // ── 7. The engine gate, which is why nothing runs tonight ──────────────────
-  await check('an engine that cannot address a Crucible refuses before any spawn', async () => {
+  // ── 7. Who may run it at all: the reach into the spawn's environment ──────
+  await check('a caller with NO reach into the environment is refused by name', async () => {
     let asked = false;
-    const host = scriptedHost({
-      engineVersion: async () => '1.3.0',
-      models: async () => { asked = true; return []; },
-    });
+    const host = scriptedHost({ models: async () => { asked = true; return []; } });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('translate', 'mac', host),
+      () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'none' }),
       (err) => {
-        assert.strictEqual(err.code, 'foundry_engine_cannot_reach_crucible');
-        assert.ok(err.message.includes('1.3.0'), err.message);
-        assert.ok(err.message.includes('normaliseVllmEndpoint'), err.message);
+        assert.strictEqual(err.code, 'hosted_engine_takes_no_per_run_env');
+        // Named for the CAPABILITY it waits on, never for a version number:
+        // the blocker is a line in the vendored subtree, and a floor that
+        // went green on a release would be a guard passing without its
+        // subject.
+        assert.ok(err.message.includes('env: process.env'), err.message);
         assert.ok(err.message.includes('FOUNDRY_ENDPOINT_HEADERS'), err.message);
-        // The one switch, named where a person meets the refusal.
+        assert.ok(!/\b1\.3\.0\b/.test(err.message),
+          `the refusal blames a version rather than the capability:\n${err.message}`);
+        // And it says what DOES work: a refusal with no way forward is what
+        // the no-band-aids rule is about.
+        assert.ok(err.message.includes('CLI clean routes'), err.message);
         assert.ok(err.message.includes('local engines'), err.message);
         return true;
       });
-    assert.strictEqual(asked, false, 'the server was asked for its models after the gate said no');
+    assert.strictEqual(asked, false, 'the server was asked for its models after the reach said no');
+  });
+
+  await check('an own spawn and a single-purpose process may both run one', async () => {
+    for (const headerReach of ['spawn', 'process']) {
+      const composed = await venue.resolveCrucibleTextEngine(
+        'translate', 'mac', scriptedHost(), { headerReach });
+      assert.strictEqual(composed.model, 'qwen3.8-27b-4bit', headerReach);
+      assert.strictEqual(composed.endpoint, 'http://127.0.0.1:7100/openai', headerReach);
+      assert.strictEqual(
+        JSON.parse(composed.env.FOUNDRY_ENDPOINT_HEADERS)['X-Crucible-Act'], 'translate');
+    }
   });
 
   // ── 8. The venue: one record, one switch, no silent local run ──────────────
@@ -435,10 +469,10 @@ async function main() {
   });
 
   // ── 10. The hosted credential window, and the one thing it must not do ─────
-  await check('the hosted window sets the variable, then removes it', async () => {
+  await check('the process window sets the variable, then removes it', async () => {
     delete process.env.FOUNDRY_ENDPOINT_HEADERS;
     let insideValue = null;
-    await acts.withHostedEndpointHeaders(engine.env, 'clean a book', async () => {
+    await acts.withProcessEndpointHeaders(engine.env, 'clean a book', async () => {
       insideValue = process.env.FOUNDRY_ENDPOINT_HEADERS;
     });
     assert.strictEqual(insideValue, engine.env.FOUNDRY_ENDPOINT_HEADERS);
@@ -448,18 +482,18 @@ async function main() {
 
   await check('a THROWN act still removes the variable', async () => {
     delete process.env.FOUNDRY_ENDPOINT_HEADERS;
-    await assert.rejects(() => acts.withHostedEndpointHeaders(
+    await assert.rejects(() => acts.withProcessEndpointHeaders(
       engine.env, 'clean a book', async () => { throw new Error('the engine died'); }));
     assert.strictEqual(process.env.FOUNDRY_ENDPOINT_HEADERS, undefined);
   });
 
   await check('two acts cannot share the window — one would wear the other\'s act name', async () => {
     delete process.env.FOUNDRY_ENDPOINT_HEADERS;
-    await acts.withHostedEndpointHeaders(engine.env, 'clean a book', async () => {
+    await acts.withProcessEndpointHeaders(engine.env, 'clean a book', async () => {
       await assert.rejects(
-        () => acts.withHostedEndpointHeaders(
+        () => acts.withProcessEndpointHeaders(
           acts.endpointHeadersEnv(TOKEN, 'simplify'), 'simplify another', async () => {}),
-        /crucible_hosted_headers_busy[\s\S]*clean a book/);
+        /crucible_process_headers_busy[\s\S]*clean a book/);
     });
     assert.strictEqual(process.env.FOUNDRY_ENDPOINT_HEADERS, undefined);
   });
@@ -522,7 +556,9 @@ async function main() {
       const map = acts.endpointHeaderMap(TOKEN, 'analysis');
       await new Promise((resolve, reject) => {
         const req = http.request(
-          { host: '127.0.0.1', port, path: '/v1/openai/models', headers: map },
+          // The path foundry composes from the base this app hands it:
+          // `<base>/v1/models` where base is `<url>/openai`.
+          { host: '127.0.0.1', port, path: '/openai/v1/models', headers: map },
           (res) => { res.resume(); res.on('end', resolve); });
         req.on('error', reject);
         req.end();

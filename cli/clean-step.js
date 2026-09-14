@@ -304,7 +304,17 @@ async function main() {
   const venueHost = textVenue.processTextVenueHost();
   const venue = await textVenue.decideWhereTextActRuns(said(args['crucible-server']) ?? undefined, venueHost);
   const crucible = venue.where === 'crucible'
-    ? await textVenue.resolveCrucibleTextEngine('clean', venue.server, venueHost)
+    /*
+     * `process`, not `spawn`: this door runs the act through Foundry's own
+     * `runJob`, which spawns the engine with `env: process.env` and takes no
+     * overlay. In THIS process that is honest — a CLI run is started to do this
+     * one act, spawns nothing else while it does it, and exits — so the process
+     * environment and the act's environment are the same set. The APP's hosted
+     * queue step answers `none` for the same spawn and is refused, because its
+     * process is shared with ~180 other spawn sites.
+     */
+    ? await textVenue.resolveCrucibleTextEngine(
+      'clean', venue.server, venueHost, { headerReach: 'process' })
     : null;
 
   const profile = crucible === null && textServer.textServerRoute(ollama).manage
@@ -480,16 +490,15 @@ async function main() {
       },
     });
     /*
-     * The credential window, and it is the app's own dated stopgap rather than
-     * a CLI invention: Foundry's `runJob` spawns the engine with
-     * `env: process.env` and takes no overlay, so the map goes on this
-     * process's environment for the duration and is deleted in a `finally`
-     * (`electron/crucible/text-acts.js`, withHostedEndpointHeaders).
+     * The credential on this process's environment for the duration of the
+     * act, deleted in a `finally` (`electron/crucible/text-acts.js`,
+     * withProcessEndpointHeaders). Legitimate HERE and nowhere in the app: a
+     * CLI run is the act, so there is no other child to strip it from.
      */
     row = crucible === null
       ? await run()
       : await require(path.join(BF_DIST, 'crucible', 'text-acts.js'))
-        .withHostedEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run);
+        .withProcessEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run);
   } finally {
     // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
     // stay.
