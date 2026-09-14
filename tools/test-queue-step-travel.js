@@ -217,32 +217,73 @@ const STEPS = {
 
   // ── 5. The AI provider block ─────────────────────────────────────────────
 
-  await check('the crucible provider takes the row\'s machine and never invents one', () => {
-    const config = { aiProvider: 'crucible', aiModel: 'qwen3.5-9b' };
-    assert.deepStrictEqual(aiProvider.providerConfigOf(config, 'mac'), {
-      provider: 'crucible',
-      crucible: { server: 'mac', model: 'qwen3.5-9b' },
+  await check('the crucible provider takes the row\'s machine and the ACT, and invents neither',
+    () => {
+      /*
+       * THE BLOCK LOST ITS MODEL AND GAINED AN ACT (2026-09-14, crucible
+       * PHASE15 §5.3). It used to be `{server, model}` with the model copied
+       * off the row's `aiModel`; a text door now sends `capability.selected`
+       * for its CLASS, read from the server it was placed on, so the row has
+       * no id to hand over and the block carries the class instead. The act
+       * is required and never defaulted — Owen, 2026-09-13: *"they can't lie
+       * to the user and say a translate job is running when it's actually a
+       * simplify job."*
+       */
+      const config = { aiProvider: 'crucible', aiModel: 'qwen3.5-9b' };
+      assert.deepStrictEqual(aiProvider.providerConfigOf(config, 'clean', 'mac'), {
+        provider: 'crucible',
+        crucible: { server: 'mac', act: 'clean' },
+      });
+      assert.deepStrictEqual(aiProvider.providerConfigOf(config, 'translate', 'mac'), {
+        provider: 'crucible',
+        crucible: { server: 'mac', act: 'translate' },
+      });
+      for (const [assigned, why] of [
+        [undefined, 'a row that was never assigned'],
+        ['any', '`any` is not a machine'],
+        [waitFor.LEGACY_LOCAL_NARRATOR, 'the legacy switch is on'],
+      ]) {
+        assert.throws(() => aiProvider.providerConfigOf(config, 'clean', assigned), (err) => {
+          assert.match(err.message, /^crucible_server_not_named: /, why);
+          return true;
+        }, why);
+      }
     });
-    for (const [assigned, why] of [
-      [undefined, 'a row that was never assigned'],
-      ['any', '`any` is not a machine'],
-      [waitFor.LEGACY_LOCAL_NARRATOR, 'the legacy switch is on'],
-    ]) {
-      assert.throws(() => aiProvider.providerConfigOf(config, assigned), (err) => {
-        assert.match(err.message, /^crucible_server_not_named: /, why);
-        return true;
-      }, why);
-    }
-  });
 
-  await check('every other provider is untouched by the new argument', () => {
+  await check('a provider this build REMOVED is refused by name, never re-pointed', () => {
+    /*
+     * REWRITTEN 2026-09-14. This used to be "every other provider is untouched
+     * by the new argument" and asserted that `ollama` still produced an
+     * `{baseUrl, model}` block and that `claude` refused for want of a key.
+     * There is no other provider now. Owen: *"they dont have ollama fallbacks
+     * or cloud anything at all"* — `ollama`, `claude` and `openai` are gone as
+     * providers and are UPSTREAMS on the engine, reached by ROUTING a class to
+     * one (crucible `docs/PHASE15-HOST.md` §5.3).
+     *
+     * A row queued before that still names one on disk, so the thing worth
+     * pinning is the ABSENCE, by name: it is refused with a code, and it is
+     * NOT quietly re-pointed at a survivor. Re-pointing is the fallback this
+     * codebase forbids, and it would move somebody's book onto a different
+     * engine and a different bill without asking.
+     */
+    for (const gone of ['ollama', 'claude', 'openai']) {
+      assert.throws(
+        () => aiProvider.providerConfigOf({ aiProvider: gone, aiModel: 'm' }, 'clean', 'mac'),
+        (err) => {
+          assert.match(err.message, /^ai_provider_removed: /,
+            'the code leads the message, so every surface reads the same name');
+          assert.ok(err.message.includes(`"${gone}"`), `and it says which one: ${err.message}`);
+          assert.match(err.message, /Settings → AI/,
+            'and where the upstream lives now, or the row is dead with no way to act on it');
+          return true;
+        },
+        gone);
+    }
+    // And the two survivors are exactly two: a provider list that grew a
+    // fourth arm here would be a second opinion about what this build has.
     assert.deepStrictEqual(
-      aiProvider.providerConfigOf({ aiProvider: 'ollama', aiModel: 'm' }, 'mac'),
-      { provider: 'ollama', ollama: { baseUrl: 'http://localhost:11434', model: 'm' } });
-    assert.throws(
-      () => aiProvider.providerConfigOf({ aiProvider: 'claude', aiModel: 'm' }, 'mac'),
-      /carries no API key/,
-      'a credential is still never defaulted to an empty string');
+      aiProvider.providerConfigOf({ aiProvider: 'local', aiModel: 'cogito' }, 'clean'),
+      { provider: 'local', local: { model: 'cogito' } });
   });
 
   summary('queue step travel');

@@ -36,8 +36,14 @@
  *     `clean` act and its model is `<userData>/crucible-models.json`.
  *  4. A ROW THAT NAMES NO SERVER IS REFUSED BY NAME. A default here would be
  *     the manufactured instruction crucible §4.2.1a exists to prevent.
- *  5. WHICH MODEL EACH ACT LEASES, so the scheduler can compare it to what the
- *     row is already holding — a lease is per model and a server holds one.
+ *  5. NO PASS NAMES THE MODEL IT LEASES (rewritten 2026-09-14). This used to
+ *     say the opposite — each act named its id so the scheduler could compare
+ *     it to what the row was already holding — and that was right while the
+ *     row owned the mapping. It does not: the id is `capability.selected` for
+ *     the class ON THE PLACED SERVER, and `leasedModel` is synchronous and
+ *     asked before placement. So all four answer null, with the cost of that
+ *     (a lease given back at the seam) recorded as OWED rather than paid for
+ *     with a lookup table this app has no business owning.
  *  6. THE TRANSPORT REALLY HAS A CRUCIBLE ARM. `callAI` is what a translate
  *     pass reaches the model through, and it had four providers; a declaration
  *     that the pass travels, over a transport that cannot, is a row that fails
@@ -63,6 +69,10 @@ const stub = installElectronStub('bf-pass-travel-');
 
 const pass = require(path.join(DIST, 'queue-steps', 'pass.js'));
 const aiProvider = require(path.join(DIST, 'queue-steps', 'ai-provider.js'));
+const runtime = require(path.join(DIST, 'queue-steps', 'runtime.js'));
+// The cloud lane lives here now, not on a row's provider — see the `resource`
+// check below, which is the one that used to read a provider for it.
+const slots = require(path.join(REPO, 'dist', 'shared', 'queue', 'slot-sets.js'));
 const textAi = require(path.join(DIST, 'text-ai.js'));
 const servers = require(path.join(DIST, 'crucible', 'servers.js'));
 const passes = require(path.join(DIST, 'processing-passes.js'));
@@ -136,59 +146,114 @@ function passConfig(kind, ai) {
       'a string replace over a zip would occupy a remote slot with nothing');
   });
 
-  await check('a pass against a cloud API contends for the CPU pool, not the card', () => {
-    assert.strictEqual(
-      PASSES.simplify.resource(passConfig('simplify', { aiProvider: 'claude', aiModel: 'm' })),
-      'cpu', 'network latency made to wait behind a nine-hour narration is the old defect');
-    assert.strictEqual(
-      PASSES.simplify.resource(passConfig('simplify', { aiProvider: 'crucible', aiModel: 'm' })),
-      'gpu');
+  await check('the cloud lane hangs off the SERVER now — every provider left is the card', () => {
+    /*
+     * REWRITTEN 2026-09-14, and the fact did NOT disappear — it changed owner.
+     *
+     * This check used to say "a pass against a cloud API contends for the CPU
+     * pool, not the card", and drove it with `aiProvider: 'claude'`. The
+     * observation behind it is still true: a run forwarded to a hosted API is
+     * network latency, it holds no card, and making it wait behind a
+     * nine-hour narration is the queue punishing a job for the company it
+     * keeps. What is gone is the ROW being able to answer it. `claude` and
+     * `openai` are not providers any more (crucible `docs/PHASE15-HOST.md`
+     * §5.3); an engine ROUTES a capability class upstream, and whether this
+     * run is such a run depends on the SERVER it was placed on, which the
+     * row's own config knows nothing about. Two books on two engines can
+     * route the same class differently.
+     *
+     * So `resourceForProvider` now answers `gpu` for both survivors, which is
+     * the honest remainder — both are a model on a card — and the cloud arm
+     * is a LANE per server in `shared/queue/slot-sets.ts`, chosen at
+     * admission from the route. Pinned here together so the pair cannot drift
+     * apart: the day something teaches `resource` a `cpu` answer again, this
+     * goes red beside the lane that already does the job.
+     */
+    for (const provider of ['local', 'crucible']) {
+      assert.strictEqual(
+        PASSES.simplify.resource(passConfig('simplify', { aiProvider: provider, aiModel: 'm' })),
+        'gpu', `${provider} is a model on a card`);
+      assert.strictEqual(runtime.resourceForProvider({ aiProvider: provider }), 'gpu',
+        `${provider}: the pass reads the same one rule every AI step reads`);
+    }
     assert.strictEqual(PASSES['narration-text'].resource(passConfig('narration-text')), 'gpu',
       'the cleanup holds a 17 GB model for as long as a translation does');
+
+    // AND THE LANE IT MOVED TO EXISTS, with both its numbers literal: no card
+    // is settled by an upstream-routed run, and what it does occupy is this
+    // queue's own willingness to have two requests outstanding per engine.
+    assert.strictEqual(slots.cloudLaneOf('mac'), 'mac:cloud');
+    assert.strictEqual(slots.isCloudLane('mac:cloud'), true);
+    assert.strictEqual(slots.isCloudLane('mac'), false, 'the engine itself is not its own lane');
+    assert.strictEqual(slots.CLOUD_LANE_SLOTS, 2);
+    const lane = slots.slotSets({ enabledServers: ['mac'], occupied: [] })
+      .find((set) => set.id === slots.cloudLaneOf('mac'));
+    assert.ok(lane, 'every registered engine has a lane for the classes it routes elsewhere');
+    assert.strictEqual(lane.gpu, 0, 'not "a card we are not counting" — there is none');
+    assert.strictEqual(lane.cpu, 2, 'the same width `local-work` gets, for the same reason');
   });
 
   // ── 3. Which model each act leases ───────────────────────────────────────
 
-  await check('a pass leases only against a Crucible, and names the model it will hold', () => {
-    const crucible = passConfig('simplify', { aiProvider: 'crucible', aiModel: 'qwen3.8-27b-4bit' });
-    assert.strictEqual(PASSES.simplify.leasesModel(crucible), true);
-    assert.strictEqual(PASSES.simplify.leasedModel(crucible), 'qwen3.8-27b-4bit',
-      'the id comes from the row\'s own aiModel — the field the act itself runs on');
-    const ollama = passConfig('simplify', { aiProvider: 'ollama', aiModel: 'qwen3.5:9b' });
-    assert.strictEqual(PASSES.simplify.leasesModel(ollama), false,
-      'Ollama keeps its own VRAM through keep_alive');
-    assert.strictEqual(PASSES.simplify.leasedModel(ollama), null);
+  await check('EVERY pass leases without naming a model — the server owns that mapping', () => {
+    /*
+     * ONE CHECK OUT OF THREE, 2026-09-14, because there is one answer now.
+     *
+     * It used to be split: `simplify` and `translate-pass` named the id from
+     * the row's own `aiModel`, `narration-text` already answered null, and a
+     * third check pinned that a BLANK `aiModel` did not become an empty id.
+     * Phase 15 makes the clean pass's reason true of all of them — a text
+     * door sends `capability.selected` for its CLASS, read from the server
+     * the run was placed on (crucible PHASE15 §5.3), so the row carries no id
+     * to name and the blank case is not a case any more.
+     *
+     * Null is an ANSWER, not a gap: it never equals an open lease's subject,
+     * so the lease is given back at the seam — exactly the behaviour before
+     * one-lease-per-row existed. It costs a clean-then-simplify row its lease
+     * across the chain, which is a real cost, recorded as OWED in the module
+     * and repaired by an ASYNC `leasedModel` given the run's venue — never by
+     * a table over here. `leasedModel` is synchronous and is asked BEFORE the
+     * step is placed, so it has neither a server name nor a round trip, and a
+     * lookup saying "simplify is the 27B" would be a second owner of a
+     * per-host fact (crucible `docs/ARCHITECTURE.md` R1) and wrong on the
+     * first machine with a smaller card.
+     */
+    for (const [type, config] of [
+      ['simplify', passConfig('simplify', { aiProvider: 'crucible', aiModel: 'qwen3.8-27b-4bit' })],
+      ['translate-pass', passConfig('translate', { aiProvider: 'crucible', aiModel: 'qwen3.8-27b-4bit' })],
+      ['narration-text', passConfig('narration-text')],
+    ]) {
+      assert.strictEqual(PASSES[type].leasesModel(config), true,
+        `${type} asks the model about every block of the book`);
+      assert.strictEqual(PASSES[type].leasedModel(config), null,
+        `${type} must not name an id the SERVER chooses from its own capability record`);
+    }
+    // The two that lease nothing, for two different reasons, and both still
+    // answer null rather than an empty id.
+    const legacy = passConfig('simplify', { aiProvider: 'local', aiModel: 'cogito' });
+    assert.strictEqual(PASSES.simplify.leasesModel(legacy), false,
+      'the bundled llama is this machine\'s process; there is no server lease to take');
+    assert.strictEqual(PASSES.simplify.leasedModel(legacy), null);
     assert.strictEqual(PASSES['footnote-refs'].leasesModel(passConfig('footnote-refs')), false);
     assert.strictEqual(PASSES['footnote-refs'].leasedModel(passConfig('footnote-refs')), null);
-  });
 
-  await check('the clean pass leases, and names no model — the SERVER owns that now', () => {
-    const config = passConfig('narration-text');
-    assert.strictEqual(PASSES['narration-text'].leasesModel(config), true,
-      'it asks the model about every block of the book');
-    assert.strictEqual(PASSES['narration-text'].leasedModel(config), null,
-      'the act-to-model mapping moved to the chosen server\'s capability record (2026-09-14), '
-      + 'which needs a server name and a round trip — and this question is synchronous and '
-      + 'asked before the step is placed');
     /*
-     * AND THE TABLE MUST NOT COME BACK. Null costs a clean row its lease
-     * across a chain, which is a real cost and is recorded as OWED in the
-     * module — but the repair is an async `leasedModel` given the run's venue,
-     * NOT a second copy of the mapping over here. A server measures its own
-     * card; an id chosen in this app is a second opinion about a decision that
-     * already has an owner (crucible `docs/ARCHITECTURE.md` R1).
+     * AND THE TWO WAYS THE TABLE COULD COME BACK ARE PINNED BY ABSENCE.
+     *
+     * `crucibleModelForAiStep` was the helper beside `providerConfigOf` that
+     * read a row's `aiModel` and handed it to the scheduler as the lease's
+     * subject. It is DELETED, and its absence is asserted by name rather than
+     * left to a reader to notice — an export that comes back would be the
+     * whole mapping back with it.
      */
+    assert.strictEqual(aiProvider.crucibleModelForAiStep, undefined,
+      'crucibleModelForAiStep is back — the id is the server\'s answer, asked at run time, '
+      + 'and a synchronous reader of the row cannot know it');
     const src = fs.readFileSync(path.join(REPO, 'electron', 'queue-steps', 'pass.ts'), 'utf-8');
     assert.ok(!/['"]qwen/i.test(src),
       'pass.ts names a model id — the act-to-model mapping is the server\'s, not a table here');
     assert.ok(!fs.existsSync(path.join(stub.userData, 'crucible-models.json')),
       'and the retired per-act record is not being written again');
-  });
-
-  await check('a crucible pass whose model is blank names none rather than an empty id', () => {
-    const blank = passConfig('simplify', { aiProvider: 'crucible', aiModel: '  ' });
-    assert.strictEqual(PASSES.simplify.leasedModel(blank), null,
-      'an empty id would be compared against an open lease and could never match anything');
   });
 
   // ── 4. The row's machine, refused by name when it names none ─────────────
@@ -228,21 +293,50 @@ function passConfig(kind, ai) {
       'processing-passes builds a provider block by hand again — it is providerConfigOf\'s job');
     assert.ok(!/(claudeApiKey|openaiApiKey) \|\| ''/.test(src),
       'a credential defaulted to an empty string sends an empty Authorization header');
-    assert.strictEqual((src.match(/providerConfigOf\(params, assignedVenue\)/g) || []).length, 2,
-      'both AI passes must hand it the row\'s assigned machine, or the crucible arm has nothing');
+    /*
+     * AND EACH CALL STATES ITS OWN ACT — the argument that arrived 2026-09-14.
+     *
+     * `providerConfigOf(params, act, assignedVenue)`. The act is the
+     * capability class the run is; it decides which model the engine answers
+     * with and it travels to the server in `X-Crucible-Act`, so `/v1/activity`
+     * says what is actually running. Owen, 2026-09-13: *"they can't lie to the
+     * user and say a translate job is running when it's actually a simplify
+     * job."* A shared spelling would be exactly that lie, so the two passes
+     * are pinned to DIFFERENT literal acts — one each, matched to the pass —
+     * rather than to a count of identical calls.
+     */
+    for (const [act, count] of [['simplify', 1], ['translate', 1]]) {
+      const calls = src.match(
+        new RegExp(`providerConfigOf\\(params, '${act}', assignedVenue\\)`, 'g')) || [];
+      assert.strictEqual(calls.length, count,
+        `the ${act} pass must hand providerConfigOf its own act AND the row's assigned machine `
+        + '— a missing venue leaves the crucible arm with nothing, and a borrowed act reports '
+        + 'the wrong work on the server');
+    }
+    assert.strictEqual((src.match(/providerConfigOf\(/g) || []).length, 2,
+      'two AI passes, two calls — a third would be a door nothing above accounts for');
   });
 
   // ── 5. The mapping's own answer ──────────────────────────────────────────
 
   await check('one mapping answers for a pass block exactly as it does for a step config', () => {
+    /*
+     * A pass's `simplify`/`translate` sub-object carries the same two fields a
+     * step config carries at the top level, and it is handed to the SAME
+     * function — which is the point of the module. The block it composes lost
+     * its `model` and gained its `act` on 2026-09-14 (crucible PHASE15 §5.3):
+     * the id is `capability.selected` on the placed server, so the only two
+     * things this app knows here are WHICH engine and WHAT CLASS.
+     */
     const params = { aiProvider: 'crucible', aiModel: 'qwen3.8-27b-4bit' };
-    assert.deepStrictEqual(aiProvider.providerConfigOf(params, 'mac'), {
+    assert.deepStrictEqual(aiProvider.providerConfigOf(params, 'simplify', 'mac'), {
       provider: 'crucible',
-      crucible: { server: 'mac', model: 'qwen3.8-27b-4bit' },
+      crucible: { server: 'mac', act: 'simplify' },
     });
-    assert.strictEqual(aiProvider.crucibleModelForAiStep(params), 'qwen3.8-27b-4bit');
-    assert.strictEqual(aiProvider.crucibleModelForAiStep({ aiProvider: 'ollama', aiModel: 'm' }),
-      null);
+    assert.deepStrictEqual(aiProvider.providerConfigOf(params, 'translate', 'mac'), {
+      provider: 'crucible',
+      crucible: { server: 'mac', act: 'translate' },
+    });
   });
 
   // ── 6. The transport really reaches a Crucible ───────────────────────────
@@ -360,13 +454,36 @@ function passConfig(kind, ai) {
         'better than a TypeError from inside a translation at chapter nine');
     });
 
-  await check('aiCallModel names the model each block carries', () => {
-    assert.strictEqual(textAi.aiCallModel({ provider: 'crucible', crucible: { server: 's', model: 'a' } }), 'a');
-    assert.strictEqual(textAi.aiCallModel({ provider: 'claude', claude: { apiKey: 'k', model: 'b' } }), 'b');
+  await check('aiCallModel names the model each block carries, and null until one is stamped', () => {
+    /*
+     * TWO PROVIDERS NOW, and the crucible case gained a second null.
+     *
+     * The `ollama`, `claude` and `openai` arms this used to walk are gone
+     * (crucible PHASE15 §5.3). What is left is the pair, and one new fact
+     * worth pinning: a crucible block does not carry a model when it is
+     * BUILT. `providerConfigOf` composes `{server, act}`; the id is STAMPED
+     * on it later, by `crucibleActModel` (electron/crucible/text-venue.ts),
+     * out of the capability record of the server the run was placed on.
+     *
+     * So before the run has asked, `null` is the truth and the only safe
+     * answer — this function's one consumer is a log line and the provenance
+     * record a run files about itself, and writing a guessed id into a book's
+     * provenance is worse than writing none.
+     */
     assert.strictEqual(
-      textAi.aiCallModel(aiProvider.providerConfigOf({ aiProvider: 'local', aiModel: 'cogito' })),
+      textAi.aiCallModel({ provider: 'crucible', crucible: { server: 's', act: 'clean', model: 'a' } }),
+      'a', 'once the server has answered, the stamped id is what the ledger records');
+    assert.strictEqual(
+      textAi.aiCallModel(aiProvider.providerConfigOf(
+        { aiProvider: 'crucible', aiModel: 'ignored' }, 'clean', 'mac')),
+      null,
+      'a freshly built crucible block has not asked the server yet, and a guess in the ledger '
+      + 'is worse than a blank');
+    assert.strictEqual(
+      textAi.aiCallModel(
+        aiProvider.providerConfigOf({ aiProvider: 'local', aiModel: 'cogito' }, 'clean')),
       'cogito',
-      'a local pass keeps its chosen model, which providerConfigOf files in the ollama arm');
+      'the legacy bundled arm keeps its chosen model, which providerConfigOf files under local');
     assert.strictEqual(textAi.aiCallModel({ provider: 'local' }), null,
       'and a block that names none reports none rather than inventing a name for the ledger');
   });

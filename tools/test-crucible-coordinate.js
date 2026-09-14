@@ -28,6 +28,14 @@
  *     generic failure (§5.4: a lease means another app is mid-run).
  *  5. **A refusal about the REQUEST fails ONCE by name.** `invalid_module` is
  *     remembered for the session and not re-posted on the next connect.
+ *  6. **THE CONNECT IS THREE READS, AND THE THIRD IS THE SCHEDULER'S**
+ *     (2026-09-14). `GET /v1/capability` joined `/v1/info` and `/v1/catalog`
+ *     so the route record (`electron/crucible/routes.ts`) is filled at the one
+ *     moment BookForge already has the server on the line — nothing polls for
+ *     which class an engine routes upstream. It does not change the verdict
+ *     about what is missing, and a capability read that FAILS is the same
+ *     `unreachable` as the other two: a server that cannot answer one of the
+ *     three is not answering.
  *
  * Plus the two surface checks the brief asks for: the "Set up for BookForge"
  * button is GONE from every renderer source, the wizard's connected face
@@ -41,7 +49,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const {
-  REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer,
+  REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, settingsRoutes,
 } = require('./fake-crucible');
 
 const COORDINATE = path.join(REPO, 'dist', 'electron', 'crucible', 'coordinate.js');
@@ -53,7 +61,36 @@ installElectronStub('bf-crucible-coordinate-');
 const coordinate = require(COORDINATE);
 const moduleSetup = require(path.join(REPO, 'dist', 'electron', 'crucible', 'module-setup.js'));
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
-const registerFake = fakeNamer(servers);
+
+/*
+ * A FAKE HAS TO BE REACHABLE THROUGH BOTH DOORS NOW.
+ *
+ * `fakeNamer` swaps `crucibleClientFor`, which is what `info()` and
+ * `catalog()` go through. Coordination's third read does not: `settings-wire`
+ * fetches `/v1/capability` itself, off `getServer(name).url` and its token,
+ * because a capability document is not in the SDK's surface. A fake named
+ * only to the client factory is therefore a registry MISS for that read, and
+ * coordination reports the whole connect `unreachable` — truthfully, which is
+ * why it has to be fixed here rather than papered over.
+ *
+ * So the same name is entered in both, from one place: `fakeNamer` mints it
+ * and the registry stub is keyed on what it minted, so the two cannot drift.
+ * The stub is the one `test-crucible-settings-seam.js` uses, verbatim.
+ */
+const registerFakeClient = fakeNamer(servers);
+const realGetServer = servers.getServer;
+const fakesByName = new Map();
+servers.getServer = function getServerWithFakes(name) {
+  const fake = fakesByName.get(name);
+  if (!fake) return realGetServer(name);
+  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
+};
+function registerFake(url) {
+  const name = registerFakeClient(url);
+  fakesByName.set(name, { url });
+  return name;
+}
+
 const { check, summary } = makeChecker();
 
 const MODULE = JSON.parse(fs.readFileSync(
@@ -76,19 +113,43 @@ function deps(overrides) {
  * awkward things. Everything it answers is the real wire shape — snake_case,
  * `{rows: …}` / `{tasks: …}` envelopes — because a fake that answered a looser
  * shape would pass this suite and fail against a server.
+ *
+ * ── IT SERVES CAPABILITY TOO, BY DELEGATION (2026-09-14) ──────────────────
+ *
+ * Coordination stopped being two reads. `coordinate.ts` now also asks
+ * `GET /v1/capability` on every connect, so the scheduler's route record is
+ * filled by the one moment BookForge already talks to a server and nothing
+ * has to poll for it. A fake with no capability door therefore makes EVERY
+ * connect `unreachable` — which is coordination telling the truth, and which
+ * silently turned twelve of these checks into assertions about a server that
+ * was not answering.
+ *
+ * The door is not re-typed here: `settingsRoutes` in `fake-crucible.js` owns
+ * `/v1/settings*` and `/v1/capability` in the server's own spelling, and this
+ * suite DELEGATES to it exactly as the lease suites delegate to
+ * `leaseRoutes` — a second capability body written out over here would be the
+ * duplicated fact the whole file exists to avoid. `settings` passes that
+ * handler's behaviour through, which is how `noCapabilityDoor` reaches it.
  */
 function startFake(options) {
   const opts = Object.assign({
     missing: [], jobTypes: MODULE.job_types.map((j) => j.type), refuse: null, acceptsWorkAfter: 0,
+    settings: {},
   }, options);
   const seen = {
     info: 0, catalog: 0, posts: [], taskLists: 0, eventStreams: [], activity: 0, cancelled: [],
   };
+  const settings = settingsRoutes(opts.settings);
   let posted = 0;
 
   return startFakeCrucible(async (req, res, ctx) => {
     const { send, sseWriter, url } = ctx;
     const route = url.pathname;
+
+    // The delegated door first, and its answer is final when it took the
+    // request — the same idiom `test-crucible-lease.js` uses, so a route this
+    // suite never knew about cannot be shadowed by one of the handlers below.
+    if (await settings.handle(req, res, ctx)) return true;
 
     if (route === '/v1/info' && req.method === 'GET') {
       seen.info += 1;
@@ -181,7 +242,7 @@ function startFake(options) {
     }
 
     return false;
-  }).then((fake) => Object.assign(fake, { seen }));
+  }).then((fake) => Object.assign(fake, { seen, settings: settings.settings }));
 }
 
 const BUSY = {
@@ -210,6 +271,51 @@ async function main() {
       assert.strictEqual(fake.seen.posts.length, 0,
         `a stocked engine must get ZERO task posts, got ${fake.seen.posts.length}`);
     } finally { await fake.close(); }
+  });
+
+  await check('the connect is THREE reads, and a capability that 404s is unreachable', async () => {
+    /*
+     * THE THIRD READ IS PINNED HERE BECAUSE IT IS INVISIBLE EVERYWHERE ELSE.
+     *
+     * `crucibleCapabilityWithRoutes` fills the scheduler's route record, and
+     * a route record is read inside a synchronous pump — so if this read were
+     * quietly dropped, coordination would go on reporting `stocked` and the
+     * only symptom would be a queue placing an upstream-routed class on a GPU
+     * slot. So: it happens, exactly once, on the same connect as the other
+     * two.
+     *
+     * And it is load-bearing in the same way they are. A server whose
+     * capability door 404s is not a server with one feature missing; it is a
+     * server this build cannot schedule against, and saying `stocked` about
+     * it would be a "maybe" (crucible `docs/ARCHITECTURE.md` R3). The fake's
+     * `noCapabilityDoor` breaks that ONE door — info and catalog still answer
+     * perfectly — which is what makes the verdict attributable to it.
+     */
+    coordinate.resetCoordinationForTests();
+    const stocked = await startFake({});
+    try {
+      const name = registerFake(stocked.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.strictEqual(stocked.seen.info, 1, 'info is read once');
+      assert.strictEqual(stocked.seen.catalog, 1, 'the catalog is read once');
+      assert.strictEqual(stocked.settings.capabilityReads, 1,
+        'capability is read once, on the same connect — not on a timer of its own');
+    } finally { await stocked.close(); }
+
+    coordinate.resetCoordinationForTests();
+    const noDoor = await startFake({ settings: { noCapabilityDoor: true } });
+    try {
+      const name = registerFake(noDoor.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'unreachable',
+        'a server that cannot answer one of the three reads is not answering');
+      assert.ok(state.message.includes(name), `the engine is named: ${state.message}`);
+      assert.strictEqual(noDoor.seen.posts.length, 0,
+        'and nothing is posted to a server whose answers could not all be read');
+      assert.strictEqual(noDoor.settings.capabilityReads, 1,
+        'the read was MADE and refused — the verdict is the door\'s, not a skipped call\'s');
+    } finally { await noDoor.close(); }
   });
 
   await check('the state it published is the state a screen would read', async () => {

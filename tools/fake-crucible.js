@@ -534,8 +534,23 @@ function modelLeasedRefusal(held) {
  *   refusePut(n)      null, or {status, code, message, details}
  *   refuseTest(name, n)  the same
  *   testModels(name)  what the upstream lists; default three ids
- *   omitRoute         true -> capability rows carry NO `route` (an old server)
+ *   omitRoute         true -> NO row carries `route` (a pre-phase-15 server)
+ *   routeMissingFor   a class name -> every OTHER row carries `route` and that
+ *                     one does not (the document a client must refuse)
+ *   badRouteFor       a class name -> that row's `route` is a value from a
+ *                     newer contract
  *   noSettingsDoor    true -> 404 on every settings route (a pre-phase-15 one)
+ *   noCapabilityDoor  true -> 404 on `GET /v1/capability` and nothing else.
+ *                     Spelled separately from `noSettingsDoor` because the two
+ *                     are different servers: a pre-phase-15 engine has no
+ *                     settings document but DOES answer capability, while a
+ *                     server that cannot answer capability is simply a server
+ *                     that is not answering — which is the third of the three
+ *                     reads `electron/crucible/coordinate.ts` makes on every
+ *                     connect, and the one a keeper has to be able to break on
+ *                     its own to prove the verdict is not decided by the other
+ *                     two. The attempt is still counted in `capabilityReads`:
+ *                     a read that was made and refused is a read that crossed.
  */
 const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis'];
 const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
@@ -593,7 +608,10 @@ function settingsRoutes(behaviour) {
       } else {
         upstreamDoc[name] = {
           configured: configured(name),
-          key_hint: configured(name) ? String(u.key).slice(-4) : null,
+          // WITH the leading ellipsis, exactly as the server sends it
+          // (crucible c5482ff) — a client renders this verbatim, so a fake
+          // that sent the four bare characters would let a stripper through.
+          key_hint: configured(name) ? '\u2026' + String(u.key).slice(-4) : null,
         };
       }
     }
@@ -641,8 +659,10 @@ function settingsRoutes(behaviour) {
         row.selected = 'dots-ocr';
         row.reason = 'dots-ocr fits';
       }
-      if (behaviour.omitRoute !== true) {
-        row.route = routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
+      if (behaviour.omitRoute !== true && behaviour.routeMissingFor !== c) {
+        row.route = behaviour.badRouteFor === c
+          ? 'somewhere-else'
+          : routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
       }
       return row;
     }),
@@ -679,6 +699,9 @@ function settingsRoutes(behaviour) {
 
       if (route === '/v1/capability' && req.method === 'GET') {
         state.capabilityReads += 1;
+        if (behaviour.noCapabilityDoor === true) {
+          return serve(res, 404, { error: { code: 'not_found', message: 'no such route', details: null } });
+        }
         return serve(res, 200, capability());
       }
 
@@ -725,7 +748,7 @@ function settingsRoutes(behaviour) {
               status: 400,
               code: 'route_upstream_unconfigured',
               message: upstreamName + ' has no key',
-              details: { field: 'routes.' + cls },
+              details: { field: 'upstreams.' + upstreamName + '.key' },
             });
           }
           routes[cls] = value;

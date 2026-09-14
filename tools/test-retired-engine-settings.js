@@ -129,10 +129,41 @@ const getDefaults = SERVICE.slice(
   SERVICE.indexOf('setPipelineDefaults(defaults: PipelineDefaults): void {'));
 
 check('getPipelineDefaults resolves the stored engine through the shared rule', () => {
-  assert.ok(getDefaults.includes('resolveSavedTtsEngine(merged.ttsEngine)'),
-    'it does not call resolveSavedTtsEngine on the stored engine');
+  /*
+   * WHAT THIS PROTECTS, restated 2026-09-14 after the function was reworked.
+   *
+   * It used to read `resolveSavedTtsEngine(merged.ttsEngine)` literally, and
+   * the local was renamed `merged` → `repaired` when a SECOND repair arm
+   * landed beside it. The property was never the variable's name: it is that
+   * the stored value goes through the ONE rule in shared/, and that no copy of
+   * the retirement table is spelled out over here. A service that decided for
+   * itself which ids are retired would be a second owner of that fact, and
+   * would disagree with `assertRunnableTtsEngine` the first time the list
+   * changed.
+   */
+  const call = /resolveSavedTtsEngine\((\w+)\.ttsEngine\)/.exec(getDefaults);
+  assert.ok(call, 'it does not call resolveSavedTtsEngine on the merged record\'s engine');
+  assert.ok(new RegExp(`${call[1]}\\s*(:|=)[^\\n]*DEFAULT_PIPELINE_DEFAULTS`).test(getDefaults),
+    `it resolves ${call[1]}.ttsEngine, which is not the record merged over the built-in defaults`);
   assert.ok(SERVICE.includes('resolveSavedTtsEngine') && SERVICE.includes('@shared/tts/engine-caps'),
     'it does not import the rule from shared/');
+  for (const id of RETIRED) {
+    assert.ok(!new RegExp(`['"]${id}['"]`).test(getDefaults),
+      `getPipelineDefaults names "${id}" itself — the retired list belongs to engine-caps`);
+  }
+  /*
+   * AND THE SAME DOCTRINE FOR THE ARM THAT LANDED BESIDE IT. A stored AI
+   * provider is repaired by `resolveSavedAIProvider`, imported from the model
+   * types, for exactly the reason the engine is: `ollama`, `claude` and
+   * `openai` left BookForge on 2026-09-14 and a role whose picker shows
+   * nothing selected is the same dead page the retired engine used to make.
+   */
+  assert.ok(/resolveSavedAIProvider\(/.test(getDefaults),
+    'the stored AI provider is repaired by hand rather than through the shared rule');
+  for (const gone of ['ollama', 'claude', 'openai']) {
+    assert.ok(!new RegExp(`['"]${gone}['"]`).test(getDefaults),
+      `getPipelineDefaults names "${gone}" itself — the removed list belongs to ai-config.types`);
+  }
 });
 
 check('a migration is WRITTEN BACK, or the stale value is re-read forever', () => {
@@ -146,8 +177,41 @@ check('the migration resets the VOICE too — the pair has to stay renderable', 
 });
 
 check('nothing recorded is NOT treated as a migration', () => {
-  assert.ok(getDefaults.includes('stored?.ttsEngine === undefined'),
-    'a fresh install would take the migration path and log an error');
+  /*
+   * A FRESH INSTALL HAS NO STORED RECORD, and must not be told one of its
+   * choices was migrated.
+   *
+   * The built-in defaults are spread in first, so by the time the repair arms
+   * run the merged record ALWAYS carries an engine and three providers — and
+   * `resolveSavedTtsEngine` will happily answer about the default too. What
+   * keeps a first launch quiet is that each arm asks the STORED record, not
+   * the merged one, whether the user ever chose anything. Read the guards
+   * rather than the shape of the migration: this used to pin the single
+   * spelling `stored?.ttsEngine === undefined` from an early return, and the
+   * rework turned that into a positive guard around the arm and a per-role
+   * `continue` beside it. Both are the same property.
+   */
+  assert.ok(/if \(stored\?\.ttsEngine !== undefined\)/.test(getDefaults),
+    'the engine repair is not gated on the STORED record carrying an engine, so a fresh '
+    + 'install would take the migration path and log an error');
+  assert.ok(/if \(stored\?\.\[`\$\{role\}Provider`\] === undefined\) continue;/.test(getDefaults),
+    'the provider repair is not gated on the STORED record carrying that role\'s provider');
+  /*
+   * AND NOTHING IS WRITTEN BACK WHEN NOTHING WAS REPAIRED. A first launch
+   * that persisted the defaults would turn "the user has never chosen" into
+   * "the user chose exactly these", which is the same lie one step later —
+   * and it would do it on every read, since `getPipelineDefaults` is called
+   * from a picker's render.
+   */
+  assert.ok(/if \(!anyRepair\) return repaired;/.test(getDefaults),
+    'a read with no repair in it still writes the settings file');
+  /*
+   * A TRIPWIRE ON THE COUNT: two arms, two sentences. A third console.error
+   * appearing in this function is a repair nothing above accounts for, and it
+   * would be the one that fires on a machine with nothing stored.
+   */
+  assert.strictEqual((getDefaults.match(/console\.error/g) || []).length, 2,
+    'getPipelineDefaults logs a migration this check does not know about');
 });
 
 console.log(`\n${failed === 0 ? 'ALL OK' : 'FAILED'}  retired engine settings: ${passed} passed, ${failed} failed`);
