@@ -57,12 +57,18 @@ apps' doors.
 
 ### A. The scheduler — the two questions, answered NO and NOT YET
 
-- **A1. Per-server GPU slots are NOT built.** `RESOURCE_SLOTS.gpu` is one global number
-  (`shared/queue/bench.ts`; `electron/queue-engine.ts:1809` says "RULING OWED" in its own
-  words). A book rendering on the Mac holds THIS machine's one GPU slot, so two books cannot
-  render on two machines at once — which is the entire point of a second server. PHASE7-LANES
-  §2.4 is the design (one `[gpu][cpu][cpu]` set per server, plus a `local [cpu][cpu]` set for
-  work BookForge does itself: assembly, muxing). Scheduler change, not routing. **BUILD.**
+- **A1. Per-server GPU slots — BUILT 2026-09-14 (`67139746`).** `RESOURCE_SLOTS` is gone;
+  `shared/queue/slot-sets.ts` is the capacity model and the engine composes the set list from
+  the routing record onto every snapshot. One `[gpu]` set per ENABLED server (`local`
+  included), one for the legacy narrator spawn, and `local-work [cpu][cpu]` for what BookForge
+  does itself. A GPU step counts against the venue it RESOLVED to, recorded on the step
+  (`QueueStep.venue`); `any` takes the first server whose slot is FREE in rank order; a
+  disabled server keeps its set, marked `retiring`, until its occupant lands (§4.3); and
+  `thisMachinesCardHeldBy` states the thing the old global number prevented by accident — the
+  legacy spawn and a local Crucible are two venues over one card. The bench draws a lane per
+  machine and a row waiting for a card is told WHICH card. 26-check keeper
+  `tools/test-queue-slot-sets.js`. Two rulings recorded in §3 (the server CPU number, and the
+  legacy set's own slot).
 - **A2. Local slots are not "removed" when a local Crucible exists — they are RENAMED.** Once
   `local` resolves, this machine's card IS the `local` server's GPU slot; there is no separate
   "BookForge's own GPU" slot to remove. What still exists beside it is the LEGACY SPAWN LAYER
@@ -72,11 +78,16 @@ apps' doors.
 - **A3. Only two step kinds travel.** `machines()` is declared by `tts-conversion.ts` (`any`)
   and `foundry-job.ts` (per config). Every other GPU step — `align.ts`, `rvc-enhancement.ts`,
   `final-denoise.ts`, `vlm-convert.ts`, `generate-sentences.ts` (asr), `translation.ts`,
-  `ai-provider.ts`, `book-analysis.ts` — has a Crucible DOOR in `electron/crucible/` but the
-  queue step has not been taught to use it, so a book assigned to the Mac renders there and
-  then does its RVC, denoise and align HERE (`queue-engine.ts:1817`). §4.4 says every step of
-  one book runs where the book was assigned. **BUILD: `machines()` on each, using the door
-  that already exists; then A1 makes them run in parallel.**
+  `ai-provider.ts`, `book-analysis.ts` — had a Crucible DOOR in `electron/crucible/` that the
+  queue step had not been taught to use. **BUILT 2026-09-14 (`61238640`):** all eight declare
+  `machines()` and take the run's venue through `runVenueOfRow` instead of deciding again.
+  `rvc-enhancement` and `final-denoise` cross-check the row against the session's own record
+  and refuse a disagreement by name; `vlm-convert`'s door had no venue-following path at all
+  and now takes one; `generate-sentences` travels for `whisper` only; the two AI steps travel
+  against `crucible` only, and each bridge gained a Crucible arm through one extracted
+  `crucibleChatOnce`. `align` travels and then REFUSES BY NAME before submitting, because a
+  remote alignment cannot finish until B5 — see §3. 12-check keeper
+  `tools/test-queue-step-travel.js`. Still local: the PASS steps (§3).
 - **A4. Double admission on the local card.** For work `onThisMachine`, the queue still asks
   the lock file (`external-gpu-job.lock`) and the GPU arbiter AFTER Crucible admission
   (`queue-engine.ts:1844`). With a local Crucible, the server's `409 server_busy` and its
@@ -84,9 +95,15 @@ apps' doors.
   (not a Crucible client) tells BookForge the card is taken. Ruling: does the fine-tune
   register with Crucible (a lease on the card with no model — a new lease kind), or does the
   lock file stay as the one non-Crucible holder? **RULING.**
-- **A5. A row that cleans THEN simplifies takes two leases** (the model may unload between
-  them). One lease per row needs a seam in `queue-engine.ts` and cannot carry one truthful act
-  name. **BUILD, small.**
+- **A5. One lease per row — BUILT 2026-09-14 (`52ed21c8`).** The scheduler runs every step
+  inside a ROW SCOPE named by the run's id (`AsyncLocalStorage`, injected so the engine keeps
+  its no-Electron property), and inside a scope `withCrucibleLease` hands its lease to the
+  scope instead of releasing it. `settleStep` gives it back the moment nothing follows, which
+  `StepModule.leasesModel` is what answers — so the lease is never held across an assembly or
+  an hour of narration. Heartbeat and release semantics unchanged. 12-check keeper
+  `tools/test-crucible-row-lease.js`. The act name it could not settle is a ruling in §3:
+  Crucible's vocabulary has no name for "a row of acts", so the lease is stamped with the act
+  that opened it while every request still names itself truthfully in `X-Crucible-Act`.
 
 ### B. Engines — one is missing entirely
 
@@ -389,6 +406,55 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   to rule once a hosted act actually runs: does BookForge's per-act choice travel, or is the
   server's capability record the only picker, in which case BookForge's own text acts should
   read it too?
+- **From A1 (`shared/queue/slot-sets.ts`), the per-server slot sets:** PHASE7-LANES §2.4's
+  table gives every server `[gpu][cpu][cpu]` and says in the same row that the CPU number is
+  *"Zero today — no CPU work is sent to a server yet, and the slots exist so the bench and
+  the model do not change when it is."* Built as `SERVER_CPU_SLOTS = 0`, because a lane the
+  scheduler will never fill is a maybe (ARCHITECTURE.md R3) — no step module declares
+  travelling CPU work, so every `cpu` step goes to `local-work`. **Ruling: confirm 0, or say
+  the bench should draw two idle lanes per server against Crucible's ancillary lane landing.**
+  One constant, one line, either way.
+- **From A1, the LEGACY set and this machine's one card.** The legacy narrator spawn has a GPU
+  slot of its own so the stopgap keeps its old behaviour, and it is present for as long as that
+  spawn layer is (§0b A2 deletes both). §2.4 says *"there is no local gpu row"* — under it, the
+  legacy spawn would occupy the LOCAL server's slot instead. It does not, because a GPU step
+  whose module has not been taught to travel spawns here whatever the switch says and would
+  otherwise have no set to charge. `thisMachinesCardHeldBy` is what stops the two sets starting
+  two jobs on one 3090 Ti, which the old global `gpu: 1` prevented by accident. **Ruling owed
+  only if the layer outlives the in-app pass**; if it is deleted as planned the question goes
+  with it.
+- **From A3 (`electron/queue-steps/align.ts`): align refuses BEFORE it submits, not after.**
+  `electron/crucible/align.ts` was built to land `alignment.json` and then refuse
+  `crucible_align_narrator_door_owed` — a loud dated partial, with the GPU work banked (R6).
+  A row assigned to a server now refuses at the STEP, before anything is submitted, because
+  loading a 3 GB aligner on somebody's card to produce an artifact nothing can read is a worse
+  answer than the honest one. The after-the-fact message is unchanged and still what the
+  in-flight path says. **Ruling: is the banked `alignment.json` worth the card once narrator's
+  items-in door (B5) exists? If it is, the early refusal comes out in the same commit that
+  lands that door.**
+- **From A3: the PASS steps do not travel yet** — `simplify`, `translate-pass`,
+  `narration-text` and `footnote-refs` (`electron/queue-steps/pass.ts`). They are `cleanupEpub`
+  underneath, so they are exactly the clean-then-simplify row A5 is about, but
+  `electron/processing-passes.ts` builds the provider block BY HAND — a fourth copy of the
+  mapping `queue-steps/ai-provider.ts` owns — and has no `crucible` arm at all. Teaching them
+  to travel is: collapse that copy onto `providerConfigOf`, thread the row's venue into
+  `runProcessingPass`, declare `machines` and `leasesModel`. **BUILD, next.**
+- **From A3: `foundry-job.ts` should declare `leasesModel`.** It is the other hosted text act
+  and it holds a model the same way; without the declaration its rows keep today's per-act
+  lease, which is not a regression but is not A5 either. One line, in a file another agent
+  owns tonight: `leasesModel: (config) => { const kind = (config as unknown as
+  FoundryJobStepConfig).request?.kind; return kind === 'clean' || kind === 'translate' ||
+  kind === 'simplify'; }`.
+- **From A5 (`electron/crucible/lease.ts`): a row-wide lease carries the act that OPENED it,
+  and Crucible has no name for "a row of acts".** `require_act_name` refuses anything outside
+  its capability classes, and a lease carries one `act` with no route to re-state it. So a row
+  that cleans and then simplifies holds one lease stamped `clean`. That is honest about what a
+  lease answers (*why is this model being held*) and the other question — *what is running
+  right now* — is answered per request by `X-Crucible-Act`, truthfully, and reported by
+  `/v1/activity` as the in-flight entry's act. **Ruling: either Crucible gains a way to
+  re-state a lease's act (an `act` on the heartbeat, or a PATCH), or a lease carries a LIST of
+  acts, or this stays as the opening act's name.** The vocabulary is the server's, so it is not
+  BookForge's to settle.
 - Needs your hands, not a ruling: `sudo loginctl enable-linger telltale` in WSL (the service dies with your last shell otherwise); (Foundry v1.3.0 is VOID per Owen's 22:40 reframe — do not publish it); the first `wsl.exe` read against a cold VM returning −1 wants a reproduction.
 
 ## 4. State log
