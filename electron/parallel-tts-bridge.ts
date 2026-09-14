@@ -2522,7 +2522,6 @@ import {
   narratorScratchRoot,
   getPythonInvocation,
   PythonInvocation,
-  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,
@@ -2535,7 +2534,6 @@ import {
   buildToolsSpawnEnv,
   impliedExportDirOf,
 } from './narrator-paths';
-import { legacyGuestSessionsRoot } from './tool-paths';
 
 // Helper to resolve the Python invocation — the tools env when no engine is named,
 // the engine's own env otherwise (a guest marker for Orpheus/Higgs in WSL).
@@ -9926,47 +9924,20 @@ function normalizePathForComparison(p: string): string {
   return normalized;
 }
 
-/**
- * THE PRE-PHASE-6 GUEST ROOT, CHECKED ONCE, ONLY TO REFUSE.
+/*
+ * `refuseLegacyGuestSessions()` IS DELETED (2026-09-14, audit section 3.16).
  *
- * Sessions that were in flight when a machine upgraded are still sitting in
- * `<wslE2aPath>/tmp` inside the guest. Scanning both roots would be try-A-then-B
- * over a directory nothing writes any more; scanning neither and saying nothing
- * would restart a half-rendered book at sentence 0 with no explanation. So the
- * old root is looked at ONCE per process and, if it still holds sessions, the
- * scan REFUSES and names it.
+ * It read `tool-paths.json` -> `wslE2aPath`, a dead key naming the guest's
+ * ebook2audiobook CHECKOUT, so it could refuse a scan when pre-Phase-6 sessions
+ * were still sitting in `<wslE2aPath>/tmp`. e2a has been gone from this repo
+ * since 2026-09-05 and the refusal was the last thing anywhere reading that
+ * key. A refusal about an upgrade path nobody is still on is a UNC listing on
+ * the main thread, once per process, for a directory that does not exist.
  *
- * Cached because it is a UNC listing on the main thread and the answer cannot
- * change without a person moving files. `null` means "nothing there" and is the
- * normal answer on every machine that has rendered since the move.
+ * The key itself goes with it. A machine that genuinely still has sessions in
+ * the old root moves them to the root `getWslSessionsRoot()` names, which is
+ * what the refusal told people to do.
  */
-let legacyGuestSessions: string | null | undefined;
-
-function refuseLegacyGuestSessions(): void {
-  if (legacyGuestSessions === undefined) {
-    legacyGuestSessions = null;
-    const legacy = legacyGuestSessionsRoot();
-    if (legacy) {
-      try {
-        const unc = wslPathToWindows(legacy);
-        const stale = fsSync.readdirSync(unc).filter((n) => n.startsWith('ebook-'));
-        if (stale.length) legacyGuestSessions = `${legacy} (${stale.length} session(s))`;
-      } catch {
-        /* the old root is gone, or WSL cannot read it — nothing to refuse */
-      }
-    }
-  }
-  if (legacyGuestSessions) {
-    throw new Error(
-      `Unfinished WSL render sessions are still in the OLD guest sessions root: ` +
-        `${legacyGuestSessions}. BookForge now writes guest sessions to ` +
-        `${getWslSessionsRoot()}, and it will not read two roots — a resume that quietly ` +
-        'found a session in a directory nothing writes any more is how a book gets ' +
-        'half-rendered twice. Move those directories to the new root to resume them, ' +
-        'or delete them to start clean; then clear `wslE2aPath` from tool-paths.json.',
-    );
-  }
-}
 
 /**
  * Every sessions root to search: the host scratch, plus the WSL guest root (via
@@ -9984,9 +9955,8 @@ function getSessionTmpDirs(): string[] {
   // never settles (strands the resume-check promises + libuv threadpool slots).
   // When WSL is down, resume checks degrade to the durable Windows project cache,
   // which is the primary resume source anyway.
-  if (os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus())) {
+  if (os.platform() === 'win32' && shouldUseWsl2ForOrpheus()) {
     if (isWslAliveCached()) {
-      refuseLegacyGuestSessions();
       // Convert WSL path to Windows UNC so Node.js can read it
       const uncTmpDir = wslPathToWindows(getWslSessionsRoot());
       // Only add if it's a different path than the native one

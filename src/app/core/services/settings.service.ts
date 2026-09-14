@@ -318,9 +318,22 @@ export interface SettingsSection {
  * SettingsService - Manages application settings
  *
  * Provides:
- * - Built-in settings sections (General, Appearance)
+ * - Built-in settings sections (the eleven of the 2026-09-14 rework)
  * - Plugin settings sections (dynamically registered)
- * - Persistence to ~/Documents/BookForge/settings.json
+ * - Persistence to the RENDERER's localStorage, under the key
+ *   `bookforge-settings` (see `saveSettings` / `loadSettings` below).
+ *
+ * THE OLD DOCBLOCK CLAIMED `~/Documents/BookForge/settings.json`, AND THAT WAS
+ * NEVER TRUE OF ANY BUILD (audit docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md
+ * section 1a). It matters far beyond tidiness: because this blob lives in the
+ * renderer, MOST settings on these pages have NO main-process reader at all —
+ * their value reaches main only as an argument the renderer passes on an IPC
+ * call. The settings that a main-process reader can actually see are exactly
+ * those persisted THROUGH main: `tool-paths.json`, `tts-engine.json`,
+ * `tts-api.json`, `crucible-servers.json`, `crucible-routing.json`,
+ * `app-settings.json` and the component registry. Anyone adding a setting that
+ * the CLI, the queue or a spawn must read has to put it in one of those, not
+ * here.
  */
 @Injectable({
   providedIn: 'root'
@@ -355,6 +368,21 @@ export class SettingsService {
    */
   private initializeBuiltinSections(): void {
     const builtinSections: SettingsSection[] = [
+      /*
+       * ELEVEN SECTIONS, IN THIS ORDER (audit
+       * docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md section 7).
+       *
+       * Fifteen became eleven on 2026-09-14. The four that went — Orpheus,
+       * Higgs, RVC Enhancement, Speech to Text — existed for one reason: an
+       * engine needed an env, a models directory, a doctor and a voice catalog
+       * on one screen. Crucible owns all four, once per machine, so the pages
+       * had no content left. Orpheus is additionally DEPRECATED (Owen,
+       * 2026-09-14) and Higgs is the one narration engine.
+       *
+       * And Crucible Servers is promoted from thirteenth to SECOND, because
+       * after the cutover it is the screen that decides whether anything
+       * renders at all.
+       */
       {
         id: 'library',
         name: 'Library',
@@ -363,42 +391,25 @@ export class SettingsService {
         fields: [], // Library section has custom UI
       },
       {
-        id: 'general',
-        name: 'General',
-        description: 'General application settings',
-        icon: '⚙️',
-        fields: [
-          {
-            key: 'maxRecentFiles',
-            type: 'number',
-            label: 'Recent files limit',
-            description: 'Maximum number of recent files to remember',
-            default: 10,
-            min: 5,
-            max: 50,
-          },
-          {
-            key: 'diffIgnoreWhitespace',
-            type: 'boolean',
-            label: 'Ignore whitespace in diffs',
-            description: 'When reviewing AI cleanup changes, ignore differences in whitespace, paragraph breaks, and newlines',
-            default: true,
-          },
-        ],
-      },
-      {
-        id: 'storage',
-        name: 'Storage',
-        description: 'Manage cached data and storage',
-        icon: '💾',
-        fields: [], // Storage section has custom UI, not standard fields
+        id: 'crucible',
+        name: 'Crucible Servers',
+        description: 'Inference servers the queue may use: this machine’s, and any you add',
+        icon: '🛰️',
+        fields: [], // Custom UI (app-crucible-servers-panel)
       },
       {
         id: 'ai',
         name: 'AI',
-        description: 'Configure AI provider for OCR text cleanup',
+        description: 'Which Crucible model does the reading and writing',
         icon: '🤖',
-        fields: [], // AI section has custom UI
+        fields: [], // AI section has custom UI (app-ai-setup-wizard)
+      },
+      {
+        id: 'pipeline-defaults',
+        name: 'Pipeline Defaults',
+        description: 'What a new book starts from: model, engine, voice, speed, output format',
+        icon: '🎚️',
+        fields: [],
       },
       {
         id: 'audiobook',
@@ -414,14 +425,16 @@ export class SettingsService {
             default: '/Volumes/Callisto/books/audiobooks',
             placeholder: '/Volumes/Callisto/books/audiobooks',
           },
-          {
-            key: 'condaPath',
-            type: 'path',
-            label: 'Conda Executable',
-            description: 'Path to conda executable. Leave empty for auto-detect.',
-            default: '',
-            placeholder: 'Auto-detect',
-          },
+          /*
+           * `condaPath` IS GONE FROM HERE (2026-09-14, audit section 3.5).
+           *
+           * It was a SECOND control for the same key Settings → Advanced
+           * already owns (`tool-paths.json` → `condaPath`), which is one fact
+           * with two doors — and the remaining one is itself DELETE-AFTER-PASS,
+           * because both readers (`narrator-paths.ts`, `narrator-spawn.ts`) are
+           * the legacy local narrator spawn. Deleting the duplicate now costs
+           * nothing: Advanced is where a tool PATH has always lived.
+           */
           {
             key: 'narratorScratchPath',
             type: 'path',
@@ -442,91 +455,53 @@ export class SettingsService {
       {
         id: 'tts-api',
         name: 'TTS Server',
-        description: 'Streaming engine workers and external client API (browser extension)',
+        description: 'The streaming voice, and the external client API (browser extension)',
         icon: '🔊',
         fields: [], // TTS Server section has custom UI
       },
-      // ── Per-engine pages: everything an engine needs (env, models, voices,
-      // accelerators, engine-specific config) lives on ITS page, so setup reads
-      // as "pick your engine, set it up here". Cross-cutting tools stay in the
-      // General Add-ons page below.
       {
-        // Orpheus — engine install, downloadable custom voices (HuggingFace
-        // catalogue), models directory, and the WSL2 runner (Windows).
-        id: 'orpheus',
-        name: 'Orpheus',
-        description: 'Orpheus TTS: engine, custom voice models, and WSL2 setup',
-        icon: '🎙️',
-        fields: [], // Custom UI
-      },
-      {
-        // Higgs — the WSL vllm-omni serving env, its two required site-packages
-        // patches, and the voice catalog. Same shape as the Orpheus page.
-        id: 'higgs',
-        name: 'Higgs',
-        description: 'Higgs Audio v3: the WSL serving environment and the voice catalog',
-        icon: '🎚️',
-        fields: [], // Custom UI (app-higgs-voices-panel + app-add-ons-panel)
-      },
-      {
-        // Dedicated screen for the optional RVC voice-enhancement engine + its
-        // voice models. Custom UI (app-rvc-enhancement-panel).
-        id: 'enhancement',
-        name: 'RVC Enhancement',
-        description: 'Optional RVC engine + voice models that re-render finished narration to smooth synthetic artifacts',
-        icon: '✨',
-        fields: [],
-      },
-      {
-        // The transcription runtime (Whisper under the hood — never named in the
-        // UI) + downloadable models behind "Generate sentences" (recorded
-        // audiobook → synced on-screen text).
-        id: 'speech-to-text',
-        name: 'Speech to Text',
-        description: 'Transcribe recorded audiobooks into synced text (“Generate sentences”)',
-        icon: '📝',
-        fields: [], // Custom UI (app-add-ons-panel filtered to whisper + app-whisper-models-panel)
-      },
-      {
-        // Cross-cutting optional tools that don't belong to one engine:
-        // Calibre (ebook conversion), Tesseract (OCR), GPU AI text cleanup.
         id: 'add-ons',
         name: 'General Add-ons',
-        description: 'Cross-cutting optional tools: Calibre, Tesseract, GPU-accelerated AI cleanup',
+        description: 'The three tools BookForge still installs: Calibre, Tesseract, the Foundry engine',
         icon: '🧩',
         fields: [], // Custom UI (app-add-ons-panel)
       },
       {
-        // The Crucible inference servers this machine can send GPU work to: the
-        // one on this machine (read from its own config.toml, never copied) and
-        // any remote Owen adds. Rank by drag, enable per server, and the one
-        // setting for what a new queue row waits for. Custom UI
-        // (app-crucible-servers-panel); the contract is crucible
-        // docs/PHASE7-LANES.md sections 4.2.2 and 7.
-        id: 'crucible',
-        name: 'Crucible Servers',
-        description: 'Inference servers the queue may use: this machine’s, and any you add',
-        icon: '🛰️',
-        fields: [], // Custom UI
+        id: 'storage',
+        name: 'Storage',
+        description: 'Manage cached data and storage',
+        icon: '💾',
+        fields: [], // Storage section has custom UI, not standard fields
       },
       {
-        // Default AI / TTS / output selections the processing pipeline seeds
-        // itself from. Custom UI (app-pipeline-defaults-panel).
-        id: 'pipeline-defaults',
-        name: 'Pipeline Defaults',
-        description: 'Default AI, TTS, and output choices for the processing pipeline',
-        icon: '🎚️',
-        fields: [],
-      },
-      {
-        // Thin advanced section: genuine overrides only (tool paths). Conda is
-        // hidden on packaged builds (bundled env). Orpheus/WSL config moved to
-        // the Orpheus page in the per-engine reorg.
         id: 'tools',
         name: 'Advanced',
-        description: 'Advanced overrides: tool paths (ffmpeg, conda, ebook2audiobook)',
+        description: 'Advanced overrides: ffmpeg and the CPU tools Python environment',
         icon: '🔧',
         fields: [], // Tools section has custom UI
+      },
+      {
+        id: 'general',
+        name: 'General',
+        description: 'General application settings',
+        icon: '⚙️',
+        fields: [
+          /*
+           * `maxRecentFiles` IS GONE (2026-09-14, audit section 3.2).
+           *
+           * NO READER, repo-wide: the declaration was the only occurrence of
+           * the string anywhere outside this file. A number control that
+           * reports success and caps nothing is worse than no control, because
+           * somebody who sets it to 50 believes they have changed something.
+           */
+          {
+            key: 'diffIgnoreWhitespace',
+            type: 'boolean',
+            label: 'Ignore whitespace in diffs',
+            description: 'When reviewing AI cleanup changes, ignore differences in whitespace, paragraph breaks, and newlines',
+            default: true,
+          },
+        ],
       },
     ];
 
@@ -762,13 +737,19 @@ export class SettingsService {
     // server is named.
     defaults['vlmEndpointConfig'] = { ...DEFAULT_VLM_ENDPOINT_CONFIG };
 
-    // Initialize bookshelf server config with defaults.
-    // Enabled by default: the Bookshelf server starts on launch so the library
-    // is immediately browsable on the network. Users can stop it from the nav rail.
-    defaults['bookshelfConfig'] = {
-      enabled: true,
-      port: 8765
-    };
+    /*
+     * The bookshelf server's PORT, and only the port.
+     *
+     * `enabled` IS GONE (2026-09-14, audit section 3.6). It was set as a side
+     * effect of Start and Stop and read by NOTHING but the settings UI itself:
+     * nothing auto-starts the server from it, despite a comment here that said
+     * it did. A flag that records an intention nobody acts on is worse than no
+     * flag — either it starts the server at launch or it should not exist, and
+     * making it start one is a behaviour change nobody asked for. Start and
+     * Stop remain exactly as live as they were; they just no longer write a
+     * value down afterwards.
+     */
+    defaults['bookshelfConfig'] = { port: 8765 };
 
     this.values.set(defaults);
   }
@@ -843,25 +824,21 @@ export class SettingsService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Bookshelf server configuration
+   * The bookshelf server's port. A record written last year may still carry an
+   * `enabled` key; it is ignored rather than refused — an old record must still
+   * PARSE, and the field it names no longer exists on either side.
    */
-  getBookshelfConfig(): { enabled: boolean; port: number } {
-    const config = this.values()['bookshelfConfig'] as { enabled: boolean; port: number } | undefined;
-    return config || { enabled: false, port: 8765 };
+  getBookshelfConfig(): { port: number } {
+    const config = this.values()['bookshelfConfig'] as { port?: number } | undefined;
+    return { port: config?.port ?? 8765 };
   }
 
-  /**
-   * Set bookshelf server configuration
-   */
-  setBookshelfConfig(config: { enabled: boolean; port: number }): void {
+  setBookshelfConfig(config: { port: number }): void {
     this.values.update(v => ({ ...v, bookshelfConfig: config }));
     this.saveSettings();
   }
 
-  /**
-   * Update bookshelf server configuration
-   */
-  updateBookshelfConfig(updates: Partial<{ enabled: boolean; port: number }>): void {
+  updateBookshelfConfig(updates: Partial<{ port: number }>): void {
     const current = this.getBookshelfConfig();
     this.setBookshelfConfig({ ...current, ...updates });
   }

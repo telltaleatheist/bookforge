@@ -8,8 +8,15 @@ import { LibraryService } from '../core/services/library.service';
  * important on macOS where there's no uninstaller script: it deletes everything
  * BookForge downloaded (engine, models, language packs, caches, settings) while
  * keeping the user's library/books. Two-step confirm to prevent an accidental
- * wipe. Surfaced on the first Settings page, the Storage page, and the guided
- * Configuration page so it's easy to find.
+ * wipe. Surfaced on the Storage page (one copy — the Library page's duplicate
+ * was deleted on 2026-09-14) and the guided Configuration page.
+ *
+ * IT MUST SAY WHAT IT DOES NOT TOUCH, and since 2026-09-14 that includes the
+ * Crucible on this machine. `~/.crucible/{models,voices,rvc,envs}` is the
+ * SERVER's store, shared with every other app on the machine (rollout ruling:
+ * one Crucible per machine, and it is the shared pool) — removing it here
+ * would take Foundry's weights with BookForge's, and this app does not own a
+ * byte of it. Crucible's own page is where a subject is removed.
  */
 @Component({
   selector: 'app-remove-all-data',
@@ -22,7 +29,10 @@ import { LibraryService } from '../core/services/library.service';
         <p>
           Deletes everything BookForge downloaded — the audiobook engine, voice &amp; AI
           models, language packs, GPU components, caches, and settings.
-          <strong>Your library and books are kept</strong> (they’re your files, not ours).
+          <strong>Your library and books are kept</strong> (they’re your files, not ours),
+          and so is any <strong>Crucible</strong> on this machine — its models, voices and
+          job environments live in <code>~/.crucible</code>, which belongs to the server and
+          is shared with every other app that uses it. Remove those from Crucible’s own page.
           @if (isMac) {
             Afterward, quit BookForge and drag it from Applications to the Trash to finish.
           } @else {

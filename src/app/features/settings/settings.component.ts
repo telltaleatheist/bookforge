@@ -8,15 +8,10 @@ import { ElectronService, OrpheusBatchConfig, StreamEngineName } from '../../cor
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
-import { WhisperModelsPanelComponent } from './components/whisper-models-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
-import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { ComponentService } from '../../core/services/component.service';
 import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
-import { RvcEnhancementPanelComponent } from './components/rvc-enhancement-panel.component';
-import { OrpheusVoicesPanelComponent } from './components/orpheus-voices-panel.component';
-import { HiggsVoicesPanelComponent } from './components/higgs-voices-panel.component';
 import { CrucibleServersPanelComponent } from './components/crucible-servers-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
@@ -37,7 +32,14 @@ function toolPathText(raw: string | boolean | undefined): string {
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, CrucibleServersPanelComponent, RemoveAllDataComponent],
+  /*
+   * FIVE COMPONENTS LEFT THIS LIST ON 2026-09-14, and their files are deleted:
+   * OrpheusVoicesPanel, HiggsVoicesPanel, RvcEnhancementPanel,
+   * WhisperModelsPanel and MultiWorkerToggle. Nothing else in src/ mounted any
+   * of them — this page and the first-run wizard were their only two hosts,
+   * and both lost the sections/steps that did (audit sections 6 and 7).
+   */
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, AiSetupWizardComponent, PipelineDefaultsPanelComponent, CrucibleServersPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -155,9 +157,14 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </p>
                 </div>
 
-                <!-- In-app uninstall, surfaced on the first settings page so it's
-                     easy to find (esp. macOS, which has no uninstaller script). -->
-                <app-remove-all-data />
+                <!--
+                  THE SECOND COPY OF <app-remove-all-data /> IS GONE FROM HERE
+                  (2026-09-14, audit sections 3.1 and 3.3). One in-app uninstall
+                  is enough, and it belongs on Storage, beside the caches and
+                  the archive move — which is where somebody looking to reclaim
+                  disk actually goes. Two buttons that erase the same thing is
+                  two chances to press one by accident.
+                -->
               </div>
             } @else if (section.id === 'storage') {
               <!-- Storage section has custom UI -->
@@ -424,11 +431,13 @@ function toolPathText(raw: string | boolean | undefined): string {
                 <div class="settings-group">
                   <h4>Voice Engine</h4>
                   <p class="field-description">
-                    The TTS engine used for streaming playback — the in-app Listen tab,
-                    the TTS API server and the browser extension. <strong>Orpheus</strong>
-                    switches voices for free; <strong>Higgs</strong> renders faster and
-                    its voice is the checkpoint the server starts on, so a voice change
-                    restarts it. Applies the next time the engine starts.
+                    The engine used for streaming playback — the in-app Listen tab, the
+                    TTS API server and the browser extension. <strong>Higgs</strong> is
+                    the narration engine; its voice is the checkpoint the server starts
+                    on, so a voice change restarts it. Orpheus is deprecated and is
+                    offered only while the local engines are still here. This names an
+                    engine, not an install: on a Crucible venue the streaming session is
+                    the server's, and what the engine needs is installed there.
                   </p>
                   <!-- One button per engine main reports, never a hand-written list:
                        an engine this machine cannot run is offered disabled with
@@ -461,40 +470,18 @@ function toolPathText(raw: string | boolean | undefined): string {
                   }
                 </div>
 
-                <!-- Orpheus processing batch size. Streaming uses a small fixed
-                     batch (STREAM_BATCH_WIDTH) tuned for latency, not this value. -->
-                @if (workerCfg.isOrpheus() && orpheusBatch(); as ob) {
-                  <div class="settings-group">
-                    <h4>Batch size (audiobook processing)</h4>
-                    <p class="field-description">
-                      How many sentences Orpheus generates concurrently for
-                      <strong>audiobook processing</strong>. Higher = more throughput
-                      but more {{ ob.platform === 'mac' ? 'memory' : 'GPU load' }}.
-                      Default for this machine: <strong>{{ ob.platformDefault }}</strong>.
-                      (Live streaming uses a small fixed batch tuned for low latency.)
-                    </p>
-                    <div class="worker-options">
-                      <input
-                        type="number"
-                        class="batch-input"
-                        [min]="ob.min"
-                        [max]="ob.max"
-                        [disabled]="ob.envOverride"
-                        [ngModel]="ob.userMax ?? ob.platformDefault"
-                        (ngModelChange)="setOrpheusBatch($event)"
-                      />
-                      <desktop-button
-                        variant="ghost"
-                        size="sm"
-                        [disabled]="ob.envOverride || ob.userMax === null"
-                        (click)="resetOrpheusBatch()"
-                      >Reset to default</desktop-button>
-                    </div>
-                    @if (ob.envOverride) {
-                      <span class="hint">Forced by the ORPHEUS_BATCH_SIZE environment variable ({{ ob.value }}).</span>
-                    }
-                  </div>
-                }
+                <!--
+                  "Batch size (audiobook processing)" WAS HERE and is deleted
+                  (2026-09-14, audit section 3.7). Its only reader was the
+                  legacy WSL Orpheus spawn (orpheus-batch.ts ->
+                  parallel-tts-bridge.ts), and on a Crucible the render width is
+                  the SERVER's — HIGGS_MAX_NUM_SEQS in its own config, which is
+                  the DIVISION OF KNOWLEDGE ruling: tuning is Crucible config,
+                  never a wire field and never a client's control. The record
+                  <userData>/orpheus-batch.json and its reader stay until the
+                  spawn layer goes; what is gone is the door that let somebody
+                  set a number for a machine that no longer decides it.
+                -->
 
                 <!-- Voice: which voice the streaming engine speaks with. Applies to
                      the in-app Listen, the TTS API server, and the browser extension.
@@ -527,66 +514,30 @@ function toolPathText(raw: string | boolean | undefined): string {
                   }
                 </div>
 
-                <!-- Generation device: CPU vs NVIDIA GPU for streaming playback.
-                     GPU needs the downloadable CUDA pack (offered right here). -->
-                <div class="settings-group">
-                  <h4>Generation Device</h4>
-                  <p class="field-description">
-                    Where streaming playback generates audio. <strong>CPU</strong> works
-                    everywhere and frees memory.
-                    @if (isMac()) {
-                      <strong>GPU (MPS)</strong> uses the Apple-Silicon GPU — it's a real
-                      choice.
-                    } @else {
-                      <strong>GPU</strong> (NVIDIA/CUDA) is much faster but needs the GPU
-                      acceleration pack below. <strong>Auto</strong> uses the GPU when it's
-                      available.
-                    }
-                    Applies the next time the engine starts.
-                  </p>
-                  <div class="worker-options">
-                    <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'auto'" (click)="setStreamDevice('auto')">Auto</button>
-                    <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'cpu'" (click)="setStreamDevice('cpu')">CPU</button>
-                    @if (isMac()) {
-                      <button
-                        class="worker-btn"
-                        [class.selected]="workerCfg.devicePref() === 'mps'"
-                        title="Generate on the Apple-Silicon GPU (Metal/MPS)"
-                        (click)="setStreamDevice('mps')"
-                      >GPU (MPS)</button>
-                    } @else {
-                      <button
-                        class="worker-btn"
-                        [class.selected]="workerCfg.devicePref() === 'gpu'"
-                        [disabled]="!workerCfg.isCudaMachine()"
-                        [title]="workerCfg.isCudaMachine() ? 'Generate on your NVIDIA GPU' : 'No NVIDIA GPU detected'"
-                        (click)="setStreamDevice('gpu')"
-                      >GPU</button>
-                    }
-                  </div>
-                  @if (!isMac() && workerCfg.devicePref() === 'gpu' && !gpuPackInstalled()) {
-                    <span class="hint warn-text">GPU selected, but the GPU acceleration pack isn't installed yet — download it below, then restart the engine.</span>
-                  }
+                <!--
+                  TWO CONTROLS WERE DELETED HERE, AND BOTH WERE INERT
+                  (2026-09-14, audit sections 3.7 and 2.5).
 
-                  <!-- CUDA acceleration download (NVIDIA only) — not applicable on
-                       Apple Silicon, whose GPU (MPS) needs no download. -->
-                  @if (!isMac()) {
-                    <app-add-ons-panel [onlyGpu]="true" />
-                  }
-                </div>
+                  "Generation Device" (Auto / CPU / GPU / MPS) looked like the
+                  most consequential choice on the page and set NOTHING: it was
+                  not persisted anywhere, and the only implementation of
+                  setStreamWorkerConfig (orpheus-worker-pool.ts) is an explicit
+                  no-op that reports back a hardcoded devicePref 'auto'; the
+                  Crucible backend's copy (crucible/stream.ts) is a no-op too.
+                  It also contradicted GPU IS ONE GLOBAL CHOICE — the VENUE is
+                  the choice now, and a render's device is the card of whichever
+                  server the venue named.
 
-                <!-- Streaming Engine: multiple workers are a rare opt-in (only
-                     help on shared-memory Apple Silicon). The toggle persists
-                     itself and applies on the next engine start. -->
-                <div class="settings-group">
-                  <h4>Streaming Engine</h4>
-                  <p class="field-description">
-                    Worker count is shared by all streaming playback — the Listen
-                    window, the browser extension, everything — and applies the next
-                    time the engine starts.
-                  </p>
-                  <app-multi-worker-toggle />
-                </div>
+                  "Streaming Engine" (enable multiple workers, 1-4) was the same
+                  defect with a worse promise: getStreamWorkerConfig() returns a
+                  fixed enabled:false, count:1, min:1, max:1, and the hint text
+                  said "Becomes the default everywhere".
+
+                  The CUDA acceleration pack went with the device buttons, which
+                  is where it was offered: it is a local pack for a local engine
+                  (DELETE-AFTER-PASS), and it is still reachable from General
+                  Add-ons for as long as the legacy layer exists.
+                -->
 
                 <div class="save-section">
                   <desktop-button variant="primary" size="md" (click)="saveTtsServer()" [disabled]="!ttsServerDirty() || ttsApiSaving()">
@@ -622,9 +573,28 @@ function toolPathText(raw: string | boolean | undefined): string {
                   <p class="loading-hint">Loading tool paths...</p>
                 }
 
-                <!-- Conda Path — hidden on packaged builds (they run on the
-                     bundled relocatable env and never need conda). Shown in
-                     dev / bring-your-own setups. -->
+                <!--
+                  Conda Path — hidden on packaged builds (they run on the
+                  bundled relocatable env and never need conda). Shown in dev /
+                  bring-your-own setups.
+
+                  DELETE-AFTER-PASS, 2026-09-14 (audit section 3.15). Both
+                  readers of "tool-paths.json" -> "condaPath" are the LEGACY
+                  LOCAL NARRATOR SPAWN — "narrator-paths.ts" (env resolution for
+                  a per-engine conda env) and "narrator-spawn.ts" (the spawn's
+                  own conda prefix) — so this row dies in the commit that
+                  deletes that layer, behind "legacyLocalRender", after Owen's
+                  in-app pass.
+
+                  IT IS NOT DELETED NOW, deliberately, and the audit's section 7
+                  summary line ("Advanced loses conda") is deferred one commit
+                  for a stated reason: this is the LAST door to that key now
+                  that the Audiobook duplicate is gone, and the layer that reads
+                  it is still the one a bring-your-own setup renders with during
+                  the very pass that decides when the layer dies. Removing the
+                  door before the reader would strand exactly the machine the
+                  pass is run on.
+                -->
                 @if (!usingBundledEnv()) {
                 <div class="tool-row">
                   <div class="tool-info">
@@ -759,442 +729,39 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </p>
                 </div>
               </div>
-            } @else if (section.id === 'orpheus') {
-              <!-- Orpheus: engine, custom voice catalogue, models dir + HF
-                   credentials, and the WSL2 runner (Windows). -->
-              <div class="tools-section">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The Orpheus TTS engine environment.</p>
-                  <app-add-ons-panel [only]="orpheusAddOnIds"></app-add-ons-panel>
-                </div>
-
-                <!-- Orpheus custom models directory -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>Orpheus models directory</h4>
-                    <p class="tool-description">
-                      Folder holding custom Orpheus voices (each voice is a subfolder with a model). Leave blank for the default.
-                      @if (isWindows()) {
-                        With WSL2, point this at a WSL-native folder via its UNC path (e.g. \\wsl$\Ubuntu\home\you\orpheus-models) so models load off ext4 instead of the slow /mnt/c mount.
-                      }
-                    </p>
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('orpheusModelsDir')"
-                        placeholder="Default (app data)"
-                        (change)="updateToolPath('orpheusModelsDir', $any($event.target).value)"
-                      />
-                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('orpheusModelsDir')">
-                        Browse...
-                      </desktop-button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- HuggingFace account for the Orpheus voice catalogue -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>HuggingFace account</h4>
-                    <p class="tool-description">Your HF username. Voices you tag <code>bookforge-orpheus-voice</code> there become downloadable below.</p>
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('orpheusHfUser')"
-                        placeholder="e.g. owenmorgan"
-                        (change)="updateToolPath('orpheusHfUser', $any($event.target).value)"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <!-- HuggingFace token -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>HuggingFace token</h4>
-                    <p class="tool-description">For private voice repos. Leave blank to use ~/.cache/huggingface/token.</p>
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="password"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('huggingFaceToken')"
-                        placeholder="hf_…"
-                        (change)="updateToolPath('huggingFaceToken', $any($event.target).value)"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <!-- The model that reads printed numbers as spoken words before a
-                     narration starts. Blank = the normalizer's own declared
-                     default (qwen3.5:9b-q8_0), which is why there is no value shown
-                     here until someone states one. -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>Number-reading model</h4>
-                    <p class="tool-description">The Ollama model that turns printed numbers into spoken words ("June 12, 1933" → "June twelfth, nineteen thirty-three") before narration. Blank uses <code>qwen3.5:9b-q8_0</code>.</p>
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('ttsNumberNormalizerModel')"
-                        placeholder="qwen3.5:9b-q8_0"
-                        (change)="updateToolPath('ttsNumberNormalizerModel', $any($event.target).value)"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Custom Orpheus voices — engine + downloadable voices + the
-                     user-managed source list (same panel as the setup Orpheus step). -->
-                <div class="wsl-section">
-                  <h3 class="wsl-section-title">Orpheus voices</h3>
-                  <app-orpheus-voices-panel />
-                </div>
-
-                <!-- WSL2 Settings (Windows only, for Orpheus TTS) -->
-                @if (isWindows()) {
-                  <div class="wsl-section">
-                    <h3 class="wsl-section-title">WSL2 for Orpheus TTS</h3>
-                    <p class="wsl-description">
-                      Run Orpheus TTS in WSL2 for full CUDA graph performance (~6x faster than Windows native).
-                    </p>
-
-                    @if (wslAvailable(); as wsl) {
-                      @if (wsl.available) {
-                        <div class="wsl-status available">
-                          <span class="status-badge detected">WSL2 Available</span>
-                          <span class="wsl-version">WSL v{{ wsl.version || 2 }}</span>
-                        </div>
-
-                        <!-- Enable toggle -->
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>Enable WSL2 for Orpheus</h4>
-                            <p class="tool-description">Use WSL2 to run Orpheus TTS with full CUDA graphs</p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="checkbox"
-                              class="toggle-input"
-                              [checked]="getToolPathFlag('useWsl2ForOrpheus')"
-                              (change)="toggleWsl2ForOrpheus($any($event.target).checked)"
-                            />
-                          </div>
-                        </div>
-
-                        <!-- WSL Distro -->
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>WSL Distribution</h4>
-                            <p class="tool-description">Select the WSL distro with ebook2audiobook installed</p>
-                          </div>
-                          <div class="tool-control">
-                            <desktop-select
-                              class="text-input"
-                              [options]="wslDistroOptions(wsl.distros, wsl.defaultDistro)"
-                              [ngModel]="getToolPathValue('wslDistro') || wsl.defaultDistro || ''"
-                              (ngModelChange)="selectWslDistro($event)"
-                            ></desktop-select>
-                          </div>
-                        </div>
-
-                        <!-- WSL Conda Path -->
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>WSL Conda Path</h4>
-                            <p class="tool-description">Path to conda inside WSL (e.g., /home/user/miniconda3/bin/conda)</p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="text"
-                              class="text-input"
-                              [value]="getToolPathValue('wslCondaPath')"
-                              placeholder="/home/$USER/miniconda3/bin/conda"
-                              (change)="updateToolPath('wslCondaPath', $any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-
-                        <!-- WSL sessions root -->
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>WSL Sessions Root</h4>
-                            <p class="tool-description">Where a WSL render writes its session inside the guest. Leave empty for &lt;guest home&gt;/bookforge-sessions, derived from the conda path above.</p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="text"
-                              class="text-input"
-                              [value]="getToolPathValue('wslSessionsRoot')"
-                              placeholder="&lt;guest home&gt;/bookforge-sessions"
-                              (change)="updateToolPath('wslSessionsRoot', $any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-
-                        <!-- Page reading (Convert to EPUB) served from WSL -->
-                        <h3 class="wsl-section-title">WSL2 for page reading</h3>
-                        <p class="wsl-description">
-                          Convert to EPUB reads every page with a document vision model. vLLM has no
-                          Windows build at all, so on this machine the model is served from a WSL
-                          conda environment you set up yourself — point BookForge at it and it will
-                          start and stop the server around each conversion.
-                        </p>
-
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>Enable WSL2 for page reading</h4>
-                            <p class="tool-description">Serve the document vision model from WSL when converting a PDF</p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="checkbox"
-                              class="toggle-input"
-                              [checked]="getToolPathFlag('useWsl2ForVlm')"
-                              (change)="toggleWsl2ForVlm($any($event.target).checked)"
-                            />
-                          </div>
-                        </div>
-
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>WSL conda environment</h4>
-                            <p class="tool-description">Name of the conda env holding vLLM (e.g. dots)</p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="text"
-                              class="text-input"
-                              [value]="getToolPathValue('wslVlmCondaEnv')"
-                              placeholder="dots"
-                              (change)="updateToolPath('wslVlmCondaEnv', $any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-
-                        <div class="tool-row">
-                          <div class="tool-info">
-                            <h4>Vision model</h4>
-                            <p class="tool-description">
-                              HuggingFace repo the server loads. Downloaded into WSL on first use.
-                            </p>
-                          </div>
-                          <div class="tool-control">
-                            <input
-                              type="text"
-                              class="text-input"
-                              [value]="getToolPathValue('wslVlmModel')"
-                              placeholder="rednote-hilab/dots.ocr"
-                              (change)="updateToolPath('wslVlmModel', $any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-
-                        <!-- Save and Verify Buttons -->
-                        <div class="wsl-verify-section">
-                          <desktop-button
-                            variant="primary"
-                            size="sm"
-                            (click)="saveWslSettings()"
-                            [disabled]="wslSaving()"
-                          >
-                            {{ wslSaving() ? 'Saved!' : 'Save WSL Settings' }}
-                          </desktop-button>
-                          <desktop-button
-                            variant="ghost"
-                            size="sm"
-                            (click)="verifyWslSetup()"
-                            [disabled]="wslVerifying()"
-                          >
-                            {{ wslVerifying() ? 'Verifying...' : 'Verify WSL Setup' }}
-                          </desktop-button>
-
-                          @if (wslSetupStatus(); as setup) {
-                            <div class="wsl-setup-status" [class.valid]="setup.valid" [class.invalid]="!setup.valid">
-                              @if (setup.valid) {
-                                <span class="status-icon">&#10003;</span>
-                                <span>WSL setup verified - ready for Orpheus TTS</span>
-                              } @else {
-                                <span class="status-icon">&#10007;</span>
-                                <div class="setup-checklist">
-                                  <div [class.found]="setup.condaFound" [class.not-found]="!setup.condaFound">
-                                    {{ setup.condaFound ? '✓' : '✗' }} Conda
-                                  </div>
-                                  <div [class.found]="setup.sessionsRootFound" [class.not-found]="!setup.sessionsRootFound">
-                                    {{ setup.sessionsRootFound ? '✓' : '✗' }} sessions root
-                                  </div>
-                                  <div [class.found]="setup.orpheusEnvFound" [class.not-found]="!setup.orpheusEnvFound">
-                                    {{ setup.orpheusEnvFound ? '✓' : '✗' }} orpheus_tts conda env
-                                  </div>
-                                </div>
-                                @if (setup.errors.length > 0) {
-                                  <div class="setup-errors">
-                                    @for (error of setup.errors; track error) {
-                                      <p class="error-text">{{ error }}</p>
-                                    }
-                                  </div>
-                                }
-                              }
-                            </div>
-                          }
-                        </div>
-                      } @else {
-                        <div class="wsl-status not-available">
-                          <span class="status-badge not-found">WSL2 Not Available</span>
-                          <p class="wsl-help">
-                            To use WSL2 for Orpheus TTS, install WSL using: <code>wsl --install</code>
-                          </p>
-                        </div>
-                      }
-                    } @else {
-                      <div class="wsl-loading">
-                        <span>Detecting WSL...</span>
-                      </div>
-                    }
-                  </div>
-                }
-
-                <!-- The path/credential fields above share the tool-paths draft;
-                     this Save persists them (same handlers as Advanced). -->
-                <div class="save-section">
-                  <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
-                    {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
-                  </desktop-button>
-                  @if (toolPathsDirty()) {
-                    <desktop-button variant="ghost" size="md" (click)="discardTools()" [disabled]="toolPathsSaving()">
-                      Discard
-                    </desktop-button>
-                    <span class="unsaved-hint">You have unsaved changes</span>
-                  }
-                </div>
-
-                @if (toolPathsSaveStatus(); as status) {
-                  <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
-                    {{ status.message }}
-                  </div>
-                }
-              </div>
-            } @else if (section.id === 'higgs') {
-              <!-- Higgs: the WSL serving env (doctor + installer) and the voice
-                   catalog. The WSL routing toggle sits here rather than on the
-                   Orpheus page because the two envs are independent — a machine
-                   can have one and not the other. -->
-              <div class="tools-section">
-                @if (isWindows()) {
-                  <div class="wsl-section">
-                    <h3 class="wsl-section-title">WSL2 for Higgs</h3>
-                    <p class="wsl-description">
-                      Higgs Audio v3 serves through vLLM-Omni, which has no Windows build at
-                      all — so unlike Orpheus (which runs natively, just slowly), this is not
-                      a speed switch: it is what lets the engine run. It uses the same WSL
-                      distribution and conda path as the Orpheus settings.
-                    </p>
-                    <div class="tool-row">
-                      <div class="tool-info">
-                        <h4>Enable WSL2 for Higgs</h4>
-                        <p class="tool-description">Route Higgs narration jobs through WSL</p>
-                      </div>
-                      <div class="tool-control">
-                        <input
-                          type="checkbox"
-                          class="toggle-input"
-                          [checked]="getToolPathFlag('useWsl2ForHiggs')"
-                          (change)="toggleWsl2ForHiggs($any($event.target).checked)"
-                        />
-                      </div>
-                    </div>
-                    <div class="tool-row">
-                      <div class="tool-info">
-                        <h4>WSL Higgs conda env</h4>
-                        <p class="tool-description">Name of the conda env holding vllm-omni (default: higgs3)</p>
-                      </div>
-                      <div class="tool-control">
-                        <input
-                          type="text"
-                          class="text-input"
-                          [value]="getToolPathValue('wslHiggsCondaEnv')"
-                          placeholder="higgs3"
-                          (change)="updateToolPath('wslHiggsCondaEnv', $any($event.target).value)"
-                        />
-                      </div>
-                    </div>
-                    <!-- The forced aligner's env. Windows-only here because on a
-                         Mac it is the "Qwen3 forced aligner (Apple Silicon)"
-                         add-on and needs no setting; qwen-asr wants a CUDA torch
-                         env, which on this machine lives in the guest. No
-                         placeholder default on purpose: there is no conventional
-                         name for an env built by hand, and BookForge refuses by
-                         name rather than guessing one. -->
-                    <div class="tool-row">
-                      <div class="tool-info">
-                        <h4>Qwen3 aligner WSL env</h4>
-                        <p class="tool-description">Name of the conda env holding qwen-asr — used to force-align the rendered chunks and to generate sentences</p>
-                      </div>
-                      <div class="tool-control">
-                        <input
-                          type="text"
-                          class="text-input"
-                          [value]="getToolPathValue('qwenAlignEnv')"
-                          placeholder="qwen-align"
-                          (change)="updateToolPath('qwenAlignEnv', $any($event.target).value)"
-                        />
-                      </div>
-                    </div>
-                    <div class="save-section">
-                      <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
-                        {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
-                      </desktop-button>
-                    </div>
-                  </div>
-                }
-
-                <div class="wsl-section">
-                  <app-higgs-voices-panel />
-                </div>
-              </div>
-            } @else if (section.id === 'enhancement') {
-              <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
-              <app-rvc-enhancement-panel></app-rvc-enhancement-panel>
-            } @else if (section.id === 'speech-to-text') {
-              <!-- Speech to Text: the transcription runtime + downloadable
-                   models behind "Generate sentences". -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The speech-to-text engine.</p>
-                  <app-add-ons-panel [only]="whisperAddOnIds"></app-add-ons-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Models</h3>
-                  <p class="addons-group-sub">Models that transcribe recorded audiobooks into synced text ("Generate sentences"). Bigger models are more accurate but slower.</p>
-                  <app-whisper-models-panel></app-whisper-models-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Ebook Alignment</h3>
-                  <p class="addons-group-sub">Aligns your ebook's text to the narration for perfectly-spelled, accurately-timed read-along sentences ("Align to my ebook"). The Qwen3 aligner is a much faster Apple-Silicon alternative and only appears on an Apple-Silicon Mac.</p>
-                  <app-add-ons-panel [only]="alignAddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
             } @else if (section.id === 'add-ons') {
-              <!-- General add-ons: cross-cutting tools that don't belong to one
-                   engine. Engine-specific components live on their engine pages. -->
+              <!--
+                FOUR SECTIONS WERE DELETED ABOVE THIS ONE (2026-09-14, audit
+                docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md section 7): Orpheus,
+                Higgs, RVC Enhancement and Speech to Text.
+
+                They existed for a good reason at the time: an engine needs an
+                env, a models directory, a doctor and a voice catalog, and
+                putting all four on one screen is what made "pick your engine,
+                set it up here" readable. Crucible owns all four now, once per
+                machine (rollout section 2 ruling 1) — the envs are job types it
+                installs, the weights are subjects in its catalog, and
+                "crucible doctor" is the doctor — so each page had no content
+                left. Orpheus is additionally DEPRECATED (Owen, 2026-09-14) and
+                Higgs is the one narration engine; the Orpheus spawn layer
+                itself lives until the in-app pass deletes it, behind
+                legacyLocalRender.
+
+                Where each thing went: the environments and the weights are
+                installed from the SERVER's own page (Crucible Servers -> Open,
+                or the one press of "Set up for BookForge"). The WSL keys the
+                Orpheus page owned are read only by that legacy spawn and die
+                with it. wslDistro did not move, because it never belonged to
+                Orpheus: its non-legacy reader is crucible/local.ts, which finds
+                it in tool-paths.json exactly as before.
+
+                WHAT IS LEFT HERE is the three tools BookForge still installs.
+              -->
               <div class="addons-hub">
                 <div class="addons-group">
                   <h3 class="addons-group-title">General tools</h3>
-                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), GPU-accelerated AI text cleanup, and the small models that read page layout and strip footnote markers.</p>
-                  <app-add-ons-panel [only]="generalAddOnIds()"></app-add-ons-panel>
+                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), and the Foundry engine binary — the only downloads BookForge still owns. Everything else an engine needs is installed on the Crucible that runs it.</p>
+                  <app-add-ons-panel [only]="generalAddOnIds"></app-add-ons-panel>
                 </div>
               </div>
             } @else if (section.id === 'crucible') {
@@ -2285,13 +1852,15 @@ export class SettingsComponent implements OnInit {
 
   readonly selectedSection = signal('library');
 
-  /** True once the GPU acceleration pack (CUDA PyTorch) is installed. */
-  readonly gpuPackInstalled = computed(() => this.componentService.isInstalled('cuda-tts'));
-
-  /** Set the streaming engine's device preference (applies on next engine start). */
-  setStreamDevice(pref: 'auto' | 'cpu' | 'gpu' | 'mps'): void {
-    void this.workerCfg.setDevicePref(pref);
-  }
+  /*
+   * `gpuPackInstalled` and `setStreamDevice` ARE GONE (2026-09-14, audit
+   * section 3.7). They were the reader and the writer for "Generation Device",
+   * and the writer wrote to an explicit no-op: the ONLY implementation of
+   * `setStreamWorkerConfig` (orpheus-worker-pool.ts) does nothing and
+   * `getStreamWorkerConfig()` answers a hardcoded `devicePref: 'auto'`. The
+   * venue is the device choice now — GPU IS ONE GLOBAL CHOICE — and a render's
+   * card belongs to whichever server the venue named.
+   */
 
   /** Choose which TTS engine backs the Listen feature (applies on next start).
    *  One engine, one button — the parameter stays because main still refuses an
@@ -2384,9 +1953,6 @@ export class SettingsComponent implements OnInit {
   readonly ttsApiViewPort = computed(() => this.ttsApiDraft()?.port ?? this.ttsApiStatus()?.port ?? 8766);
   readonly ttsApiViewHost = computed(() => this.ttsApiDraft()?.host ?? this.ttsApiStatus()?.host ?? '127.0.0.1');
 
-  // The worker count is owned by <app-multi-worker-toggle> (WorkerConfigService),
-  // which persists itself immediately — so it's not part of this section's Save.
-
   // Dirty flag for the TTS Server section's Save button (port/host only)
   readonly ttsServerDirty = computed(() => {
     const status = this.ttsApiStatus();
@@ -2447,29 +2013,14 @@ export class SettingsComponent implements OnInit {
   // setting is hidden off-Mac.
   readonly isMac = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));
 
-  /** Orpheus max batch size config (Streaming engine section). Null until loaded. */
-  readonly orpheusBatch = signal<OrpheusBatchConfig | null>(null);
-
-  private async loadOrpheusBatch(): Promise<void> {
-    this.orpheusBatch.set(await this.electronService.getOrpheusBatchConfig());
-  }
-
-  /** Persist a new max (clamped in main); no-op if unchanged or env-forced. */
-  async setOrpheusBatch(value: number): Promise<void> {
-    const cfg = this.orpheusBatch();
-    if (!cfg || cfg.envOverride) return;
-    const n = Math.round(Number(value));
-    if (!Number.isFinite(n) || n < cfg.min || n > cfg.max) return;
-    if (n === (cfg.userMax ?? cfg.platformDefault)) return;
-    const updated = await this.electronService.setOrpheusMaxBatch(n);
-    if (updated) this.orpheusBatch.set(updated);
-  }
-
-  /** Clear the user override, reverting to the platform default. */
-  async resetOrpheusBatch(): Promise<void> {
-    const updated = await this.electronService.setOrpheusMaxBatch(null);
-    if (updated) this.orpheusBatch.set(updated);
-  }
+  /*
+   * The Orpheus batch-size reader and its two writers are GONE with the control
+   * (2026-09-14, audit section 3.7). Its only consumer is the legacy WSL
+   * Orpheus spawn; on a Crucible the render width is HIGGS_MAX_NUM_SEQS in the
+   * SERVER's own config, which is the DIVISION OF KNOWLEDGE ruling — tuning is
+   * Crucible config, never a client's control. `<userData>/orpheus-batch.json`
+   * and `electron/orpheus-batch.ts` are untouched and die with that layer.
+   */
 
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
@@ -2482,8 +2033,13 @@ export class SettingsComponent implements OnInit {
   });
 
   ngOnInit(): void {
-    // Deep-link: ?section=xtts preselects a section (used by the
-    // translation-step language gate, wizard voice/pack links, first-run setup).
+    // Deep-link: `?section=<id>` preselects one of the eleven sections — used
+    // by the translation-step language gate and by refusals that send somebody
+    // to a specific page ("Update foundry in Settings → General add-ons"). The
+    // guard below is what makes a stale link harmless: an id no section
+    // answers to leaves the default selected rather than drawing an empty page.
+    // (It used to read `?section=xtts`, naming a section this app has not had
+    // since XTTS was retired.)
     const section = this.route.snapshot.queryParamMap.get('section');
     if (section && this.allSections().some(s => s.id === section)) {
       this.selectedSection.set(section);
@@ -2494,9 +2050,6 @@ export class SettingsComponent implements OnInit {
     this.refreshBookshelfStatus();
     // Check TTS API server status
     this.refreshTtsApiStatus();
-    // Worker config is owned by WorkerConfigService (via app-multi-worker-toggle)
-    // Orpheus max batch size (Streaming engine section)
-    this.loadOrpheusBatch();
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
@@ -2522,30 +2075,32 @@ export class SettingsComponent implements OnInit {
     this.selectedSection.set(sectionId);
   }
 
-  // Component-id filters for the per-engine pages' embedded add-ons panels.
-  readonly orpheusAddOnIds = ['orpheus'];
-  readonly whisperAddOnIds = ['whisper'];
-  readonly alignAddOnIds = ['whisperx-env', 'qwen-align-env'];
   /**
-   * The cross-cutting tools, plus every downloadable task model that has no
-   * picker panel of its own — today that is the page-layout model. Those are
-   * DERIVED, not hard-coded, because their component ids carry a version
-   * ('blocks-model-foundry-blocks-v1-4b'); a literal list would silently stop
-   * showing them the day the catalog gains a v2, and the user would have no way
-   * to install a model the pipeline then asks for.
+   * THE THREE TOOLS BOOKFORGE STILL INSTALLS, and it is a literal list again
+   * (2026-09-14, audit section 3.12).
+   *
+   * foundry FIRST: it is the engine every document pass and every Clean text
+   * run spawns, its refusals send the user to this page ("Update foundry in
+   * Settings → General add-ons"), and until 2026-09-07 no page listed it at
+   * all — the startup check found 1.2.0, the queue refused 1.0.2 by name, and
+   * there was no row anywhere to press Update on. Then Calibre and Tesseract,
+   * two CPU tools with nothing to do with a card.
+   *
+   * TWO ENTRIES WERE DELETED, and the reason differs:
+   *
+   * - `llama-cuda` is the CUDA pack for the BUNDLED llama.cpp, whose only
+   *   purpose is the local text engine the ONE legacy switch covers. It is a
+   *   DELETE-AFTER-PASS row and the door to it goes now: an `llm` model is a
+   *   Crucible subject, and a second local llama.cpp is the second copy that
+   *   rollout ruling 1 forbids.
+   * - the `kind === 'blocks-model'` FILTER was a filter over an empty set. No
+   *   catalog entry declares that kind anywhere in the repo, so the derived
+   *   list it justified has always been `[]` and the page-layout model it
+   *   described is installable from nowhere. A computed that can only ever add
+   *   nothing is not a generalisation, it is a claim that something is
+   *   installable when it is not — so the list is a literal again, honestly.
    */
-  readonly generalAddOnIds = computed(() => [
-    // foundry FIRST: it is the engine every document pass and every Clean text
-    // run spawns, its refusals send the user to this page ("Update foundry in
-    // Settings → General add-ons"), and until 2026-09-07 no page listed it at
-    // all — the startup check found 1.2.0, the queue refused 1.0.2 by name, and
-    // there was no row anywhere to press Update on.
-    'foundry-cli',
-    'calibre', 'tesseract', 'llama-cuda',
-    ...this.componentService.components()
-      .filter((s) => s.component.kind === 'blocks-model')
-      .map((s) => s.component.id),
-  ]);
+  readonly generalAddOnIds = ['foundry-cli', 'calibre', 'tesseract'];
 
   getFieldValue(field: SettingField): unknown {
     // For plugin settings, prefix with plugin ID
@@ -2783,7 +2338,10 @@ export class SettingsComponent implements OnInit {
 
       if (result.success && result.data) {
         this.bookshelfStatus.set(result.data);
-        this.settingsService.updateBookshelfConfig({ enabled: true });
+        // Nothing is written down about "running": `bookshelfConfig.enabled`
+        // was read by nobody but the settings UI itself (audit section 3.6) and
+        // is deleted. The server's status is the server's, read back with
+        // `bookshelfStatus()`.
       } else {
         this.bookshelfError.set(result.error || 'Failed to start server');
       }
@@ -2802,7 +2360,6 @@ export class SettingsComponent implements OnInit {
       const result = await this.electronService.bookshelfStop();
       if (result.success) {
         this.bookshelfStatus.set({ running: false, port: 0, addresses: [] });
-        this.settingsService.updateBookshelfConfig({ enabled: false });
       } else {
         this.bookshelfError.set(result.error || 'Failed to stop server');
       }
@@ -2867,7 +2424,10 @@ export class SettingsComponent implements OnInit {
 
       if (result.success && result.data) {
         this.bookshelfStatus.set(result.data);
-        this.settingsService.updateBookshelfConfig({ enabled: true });
+        // Nothing is written down about "running": `bookshelfConfig.enabled`
+        // was read by nobody but the settings UI itself (audit section 3.6) and
+        // is deleted. The server's status is the server's, read back with
+        // `bookshelfStatus()`.
       } else {
         this.bookshelfError.set(result.error || 'Failed to start server');
       }

@@ -51,7 +51,6 @@ import {
   getConfiguredToolsEnvPath,
   getFfmpegPath,
   updateConfig as updateToolConfig,
-  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
@@ -524,7 +523,7 @@ export function wslToWindowsPath(wslPath: string): string {
  * Check if the current configuration should use WSL for TTS
  * Re-exported for convenience
  */
-export { shouldUseWsl2ForAllTts, shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv, wslPathToWindows };
+export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv, wslPathToWindows };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Safe env builder for tools spawns

@@ -120,9 +120,14 @@ export interface ToolPathsConfig {
   // /mnt/c 9p mount — the WSL spawn translates the UNC path to a native /home/... path.
   orpheusModelsDir?: string;
 
-  // HuggingFace account whose tagged repos form the Orpheus voice catalog
-  // ("bookforge-orpheus-voice"-tagged models). Empty = catalog disabled.
-  orpheusHfUser?: string;
+  /*
+   * `orpheusHfUser` IS DELETED (2026-09-14, audit section 3.8). It had a
+   * Settings row promising that a HuggingFace account's tagged repos would
+   * become downloadable, and NO READER anywhere in electron/ — the catalog has
+   * always been driven by `orpheusVoiceSources` instead
+   * (`orpheus-hf-catalog.ts`). A field that records an instruction nothing
+   * carries out is worse than no field.
+   */
   // HuggingFace access token for listing/downloading (esp. private) voice repos.
   // Empty = fall back to env HF_TOKEN / ~/.cache/huggingface/token.
   huggingFaceToken?: string;
@@ -164,8 +169,14 @@ export interface ToolPathsConfig {
   orpheusStreamingArtifact?: 'adapter' | 'merged';
 
   // WSL2 Configuration (Windows only)
-  useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
-  useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
+  /*
+   * `useWsl2ForAllTts` IS DELETED (2026-09-14, audit section 3.16). Its reader
+   * was `shouldUseWsl2ForAllTts()`, which was a hard-wired `return false` —
+   * so the key could be set and could never be true, and two call sites were
+   * spending a branch on it. Orpheus is the one engine that ever needed the
+   * guest, and `useWsl2ForOrpheus` is the toggle that says so.
+   */
+  useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (the one engine that needs the guest)
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
   wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
   /**
@@ -178,13 +189,15 @@ export interface ToolPathsConfig {
    * lived inside somebody else's repository.
    */
   wslSessionsRoot?: string;
-  /**
-   * DEAD KEY, read only to refuse. Pre-Phase-6 this named the guest's
-   * ebook2audiobook checkout and `<wslE2aPath>/tmp` was the sessions root.
-   * Sessions still sitting there are named in a refusal rather than silently
-   * scanned alongside the new root — see legacyGuestSessionsRoot().
+  /*
+   * `wslE2aPath` IS DELETED (2026-09-14, audit section 3.16). It named the
+   * guest's ebook2audiobook checkout, and its last reader was a refusal about
+   * pre-Phase-6 sessions still sitting in `<wslE2aPath>/tmp`. e2a left this
+   * repo on 2026-09-05; an upgrade refusal for a path that has not been
+   * written in a year is a UNC listing on the main thread for a directory that
+   * is not there. A machine that genuinely still holds those sessions moves
+   * them into `getWslSessionsRoot()`, which is what the refusal said to do.
    */
-  wslE2aPath?: string;
   wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 
   // Higgs Audio v3, served from WSL. The same shape as the Orpheus pair above and
@@ -343,10 +356,10 @@ export function loadConfig(): ToolPathsConfig {
  * immediately, because a value that is only renamed in memory is a value the
  * Settings panel will helpfully save back under the old name.
  *
- * `wslE2aPath` is NOT migrated. It named a checkout, not a sessions root, and
- * carrying it forward would keep writing BookForge's scratch into somebody
- * else's git repository. It is left in the file, unread except by the refusal
- * that names it (see legacyGuestSessionsRoot).
+ * `wslE2aPath` is NOT migrated and is no longer read AT ALL (2026-09-14). It
+ * named a checkout, not a sessions root, and carrying it forward would keep
+ * writing BookForge's scratch into somebody else's git repository. A file that
+ * still carries the key keeps it; nothing looks.
  *
  * Deliberately NOT wrapped in a try that swallows: if the rewrite fails, the
  * failure is the same one `saveConfig` reports for any other write, and hiding
@@ -483,7 +496,6 @@ export function saveConfig(config: ToolPathsConfig): void {
  * renderer's serialisation quirk into every call site forever.
  */
 const BOOLEAN_CONFIG_KEYS: ReadonlySet<string> = new Set([
-  'useWsl2ForAllTts',
   'useWsl2ForOrpheus',
   'useWsl2ForVlm',
   'useWsl2ForHiggs',
@@ -2009,19 +2021,20 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
 /**
  * WSL routing for TTS.
  *
- * `shouldUseWsl2ForAllTts()` stays off: only Orpheus needs WSL (vLLM CUDA graphs
- * don't capture on native Windows — see CLAUDE.md). XTTS/F5/Voxtral run natively.
+ * ONE FUNCTION, since 2026-09-14. `shouldUseWsl2ForAllTts()` was deleted with
+ * its key: it was a hard-wired `return false` that two call sites branched on,
+ * which is a question nobody was answering dressed as a setting.
  *
- * `shouldUseWsl2ForOrpheus()` is the explicit, user-driven opt-in: when the
- * "Enable WSL2 for Orpheus" toggle in Settings → Add-ons is on (config
- * `useWsl2ForOrpheus`), Orpheus jobs are routed through the WSL spawn path
- * (parallel-tts-bridge → spawnWithWslSupport → `-n <wslOrpheusCondaEnv>`).
- * Windows-only; always false elsewhere.
+ * `shouldUseWsl2ForOrpheus()` is the explicit, user-driven opt-in: when
+ * `useWsl2ForOrpheus` is set, Orpheus jobs are routed through the WSL spawn
+ * path (parallel-tts-bridge → spawnWithWslSupport → `-n <wslOrpheusCondaEnv>`).
+ * Orpheus is the one engine that ever needed the guest — vLLM CUDA graphs do
+ * not capture on native Windows. Windows-only; always false elsewhere.
+ *
+ * DELETE-AFTER-PASS: every reader of this is the legacy local narrator spawn,
+ * which goes behind `legacyLocalRender` after Owen's in-app pass. Orpheus is
+ * deprecated (Owen, 2026-09-14) and Higgs is the one narration engine.
  */
-export function shouldUseWsl2ForAllTts(): boolean {
-  return false;
-}
-
 export function shouldUseWsl2ForOrpheus(): boolean {
   if (os.platform() !== 'win32') return false;
   loadConfig();
@@ -2181,21 +2194,6 @@ export function getWslSessionsRoot(): string {
 }
 
 /**
- * The PRE-PHASE-6 guest sessions root, or null when the dead key is absent.
- *
- * Returned ONLY so a caller can REFUSE BY NAME. Sessions that were in flight
- * when this machine upgraded are still sitting in `<wslE2aPath>/tmp`, and the
- * two things BookForge must not do with them are equally bad: scan both roots
- * (try-A-then-B, and a resume that silently reads a directory nothing writes any
- * more), or say nothing and start the book again from sentence 0.
- */
-export function legacyGuestSessionsRoot(): string | null {
-  loadConfig();
-  const legacy = state.config.wslE2aPath?.trim();
-  return legacy ? `${legacy}/tmp` : null;
-}
-
-/**
  * Get WSL Orpheus conda environment name from config
  */
 export function getWslOrpheusCondaEnv(): string {
@@ -2306,13 +2304,11 @@ export const toolPaths = {
   detectWslAvailability,
   checkWslOrpheusSetup,
   checkWslHiggsSetup,
-  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslSessionsRoot,
-  legacyGuestSessionsRoot,
   getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
   getQwenAlignEnvSetting,
