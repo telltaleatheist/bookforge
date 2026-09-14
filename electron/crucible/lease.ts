@@ -22,7 +22,8 @@
  * act, and a chat that loaded would evict whatever the last client left there. So
  * the moment a cleanup run's completion returns, the server sees no job, no
  * lease, no session and no chat in flight, and unloads. The NEXT chunk is not
- * slow; it is answered **`model_not_resident`**, and the run dies at chunk 2 of
+ * slow; it is answered **`model_not_resident`** (the chat door's own code, which
+ * did not move), and the run dies at chunk 2 of
  * 600 with nothing having gone wrong anywhere.
  *
  * A lease is therefore what makes these doors function at all. Reading it as a
@@ -39,7 +40,7 @@
  * one admits nothing, reserves no lane and does not make a busy server take our
  * work. It says exactly one thing: *while this is open, nothing may move the
  * model off that card.* `load-model`, `unload-model`, `load-voice`, `tts` and
- * `align` are refused `409 model_leased` on that server while it is open —
+ * `align` are refused `409 leased` on that server while it is open —
  * including to us, because the server cannot tell two of our runs apart.
  *
  * It never gates a chat. Chats are what it protects.
@@ -91,7 +92,7 @@
  * the reason this is a module and not three inline calls: everything else on
  * these paths throws the SDK's own error types and every door switches on them,
  * so a route called by hand that threw a bare `Error` would turn `409
- * model_leased` — a WAIT — into "something went wrong", which is a failure.
+ * leased` — a WAIT — into "something went wrong", which is a failure.
  *
  * **THE DAY THE PIN MOVES, THIS FILE COLLAPSES TO THE SDK'S THREE METHODS.**
  * {@link leaseRequest} and its mapping go; {@link withCrucibleLease} stays, and
@@ -185,7 +186,7 @@ function leaseUserAgent(): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `409 model_leased`: somebody has said they are mid-run on that model.
+ * `409 leased`: somebody has said they are mid-run on that model.
  *
  * Its own type for {@link CrucibleBusy}'s reason — the body is not decoration.
  * The server answers with the holder's name, the act, when it started and when
@@ -258,15 +259,15 @@ export class CrucibleLeased extends CrucibleRefused {
 
 /**
  * The SDK's `isServerSpecificRefusal` — which decides whether a `waitFor: "any"`
- * walk should try the NEXT server — does not know `model_leased` on the pinned
+ * walk should try the NEXT server — does not know `leased` on the pinned
  * v0.5.0: it lists codes explicitly and answers `false` for anything it has not
- * seen. So today a `model_leased` stops an `any` walk rather than moving it
+ * seen. So today a `leased` stops an `any` walk rather than moving it
  * along, which costs an opportunity and never a wrong answer (the conservative
  * direction the SDK chose on purpose).
  *
  * This is the one place that knows better, and it is NOT a second copy of that
  * table: it answers only for this one code, for the callers that walk. The SDK's
- * next release puts `model_leased` in `SERVER_SPECIFIC_REFUSALS` and this goes.
+ * next release puts `leased` in `SERVER_SPECIFIC_REFUSALS` and this goes.
  */
 export function isCrucibleLeasedElsewhere(err: unknown): err is CrucibleLeased {
   return err instanceof CrucibleLeased;
@@ -338,7 +339,7 @@ async function leaseRequest(
     );
   }
   if (response.status >= 500) throw new CrucibleServerError(response.status, code, message);
-  if (response.status === 409 && code === 'model_leased') {
+  if (response.status === 409 && code === 'leased') {
     const held = (details ?? {}) as Record<string, unknown>;
     throw new CrucibleLeased(409, code, message, details, {
       leaseId: typeof held['lease_id'] === 'string' ? held['lease_id'] : '',
@@ -524,8 +525,8 @@ export function openCrucibleLeaseCount(): number {
 /**
  * Take the lease and arm the heartbeat that keeps it.
  *
- * A refusal PROPAGATES: `409 model_leased` as {@link CrucibleLeased} (a wait),
- * `409 model_not_resident` / `400 unknown_act` / `400 invalid_ttl` as
+ * A refusal PROPAGATES: `409 leased` as {@link CrucibleLeased} (a wait),
+ * `409 not_resident` / `400 unknown_act` / `400 invalid_ttl` as
  * {@link CrucibleRefused} carrying the server's own code and sentence. Nothing
  * here loops, and nothing here loads a model to make the lease possible — a load
  * evicts whatever is on that card, which on a shared server is somebody else's
@@ -584,7 +585,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
          * unprotected NOW while this run is mid-book. The answer is not a log line
          * but a NEW lease on the same model: the model is still resident (a server
          * that had lost it would already be answering our requests
-         * `model_not_resident`) and this run still intends every request it has
+         * `not_resident`) and this run still intends every request it has
          * left. A re-lease that is itself refused falls through to the log below,
          * and the run goes on unprotected AND SAID SO.
          */

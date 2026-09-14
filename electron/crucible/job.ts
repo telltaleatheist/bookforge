@@ -72,7 +72,7 @@
  *
  * It would also be self-defeating, which is the part worth stating plainly:
  * `tts` and `align` are in crucible's `EVICTS_THE_RESIDENT_MODEL`, so a lease
- * taken around one of those jobs would make the server refuse `409 model_leased`
+ * taken around one of those jobs would make the server refuse `409 leased`
  * — **to its own holder**, since a lease has no exemption for the client that
  * took it. The run would refuse itself.
  *

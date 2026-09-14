@@ -4420,7 +4420,7 @@ export async function cleanupEpub(
       run,
     );
   } catch (err) {
-    // A 409 `model_leased` is a WAIT, not a crash: another client has said it is
+    // A 409 `leased` is a WAIT, not a crash: another client has said it is
     // mid-run on that model. Reported with the holder's own line, the way every
     // other refusal on this path is — the message carries a machine-readable code
     // at its head.

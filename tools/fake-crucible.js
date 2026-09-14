@@ -347,8 +347,13 @@ function leaseRoutes(behaviour = {}) {
         const leaseId = `lease-${nextId++}`;
         lease.taken.push({ ...attempt, leaseId });
         send(res, 201, {
+          // `subject` and `kind`, as crucible 5e04e5f sends them: a lease names
+          // the resident THING, which is a voice or an aligner as often as a
+          // model, and the receipt is the one document with no `resident`
+          // beside it to read the id from.
           lease_id: leaseId,
-          model,
+          subject: model,
+          kind: behaviour.leaseKind || 'llm',
           client: attempt.userAgent,
           act: attempt.act,
           since: '2026-09-14T02:00:00+00:00',
@@ -391,16 +396,19 @@ function leaseRoutes(behaviour = {}) {
   };
 }
 
-/** `409 model_leased`, with the five details the server actually sends. */
+/** `409 leased`, with the details the server actually sends (`leased` since crucible 5e04e5f:
+ * a lease names the resident THING, so a code naming one kind would be false
+ * whenever narrator or the aligner holds the card). */
 function modelLeasedRefusal(held) {
   return {
     status: 409,
-    code: 'model_leased',
+    code: 'leased',
     message: `'${held.model}' is leased by '${held.client}' for '${held.act}' since ${held.since}, `
       + `until at least ${held.expiresAt} — so leasing it is refused rather than taking the model `
       + 'off the card underneath a run in progress.',
     details: {
       lease_id: held.leaseId,
+      kind: held.kind || 'llm',
       client: held.client,
       act: held.act,
       since: held.since,

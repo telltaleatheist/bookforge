@@ -368,7 +368,7 @@ const { check, summary } = makeChecker();
     since: '2026-09-14T01:00:00+00:00', expiresAt: '2026-09-14T01:02:00+00:00',
   };
 
-  await check('409 model_leased arrives typed, with the holder, the act and the since', async () => {
+  await check('409 leased arrives typed, with the holder, the act and the since', async () => {
     const routes = leaseRoutes({ refuseLease: () => modelLeasedRefusal(HELD) });
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);
@@ -381,7 +381,10 @@ const { check, summary } = makeChecker();
         );
       } catch (err) { caught = err; }
       assert.ok(caught instanceof lease.CrucibleLeased, 'its own type, not a generic refusal');
-      assert.strictEqual(caught.code, 'model_leased');
+      // `leased`, not `model_leased`: since crucible 5e04e5f a lease names the
+      // resident THING, and a code naming one kind would be false whenever
+      // narrator or the aligner holds the card.
+      assert.strictEqual(caught.code, 'leased');
       assert.strictEqual(caught.holder, 'foundry');
       assert.strictEqual(caught.act, 'translate');
       assert.strictEqual(caught.since, HELD.since);
