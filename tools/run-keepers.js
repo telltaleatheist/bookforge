@@ -167,6 +167,13 @@ const SUITES = [
   // lane and a session holds the claim already — and for `tts`/`align` a lease
   // would make the server refuse the very job that took it.
   'test-crucible-lease',
+  // AND ONE LEASE FOR A ROW OF THEM. A row that cleans and then simplifies took
+  // two leases, and Owen's unload ruling means the model is gone in the gap â€”
+  // so the second act is answered `model_not_resident` and the row dies between
+  // two steps that both worked. Every check here is a way the lease could
+  // quietly not be held across the seam, or be held across an hour of ffmpeg
+  // that has no use for it.
+  'test-crucible-row-lease',
   // The voice conversion on that same helper and that same fake (tier 3,
   // 2026-09-14). Its centre is an identity and a knob, each of which could be
   // lost with nothing failing: a voice has THREE spellings — BookForge's asset
@@ -322,6 +329,13 @@ const SUITES = [
   // one 3090 Ti start together, which looks like a working queue until both
   // runs OOM.
   'test-queue-slot-sets',
+  // WHERE EACH STEP OF A BOOK RUNS. Â§4.4 â€” every step of one book runs on the
+  // machine the book was assigned â€” and the failure is SILENT by construction:
+  // Â§4's safety default is that an undeclared step does not travel, so a
+  // missing `machines()` reads as a working queue while a book rendered on the
+  // Mac does its RVC, its hiss pass and its alignment on this card. One of
+  // those took a fine-tune's card at 00:50 on 2026-09-14.
+  'test-queue-step-travel',
   'test-queue-bench',
   // The only thing that knows what is happening inside an MLX decode. Its
   // rowsRetiredInCall is added to a user-visible chunk count (2026-09-11), so a
