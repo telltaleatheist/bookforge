@@ -350,6 +350,15 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **SERVICE DEFECT (found 2026-09-14 16:10 restarting the local server onto the page build):** the
+  unit says `Restart=on-failure`, so a clean SIGTERM (an operator's, or a future self-reload) leaves
+  the server DOWN, and the user manager's `/run/user/1000/systemd/private` had vanished so
+  `systemctl --user` could not reach it ("Failed to connect to bus") — recovered with
+  `systemctl restart user@1000` as root, after which the enabled unit came up on its own. Owed in
+  crucible `service.py`: `Restart=always` (+ `RestartSec`), and `crucible service status` should
+  detect an unreachable user manager and name the root command. Bootstrap's `ensureRunning()`
+  should do the same rather than report "running" from a stale pid.
+
 - **WHICH DEATHSTALKER IS THE VOICE? (found 2026-09-14 by Training pc's hash).** Crucible's
   `voices/deathstalker` (pulled from HF `owenmorgan/deathstalker-higgs-v3` rev d732c38, 09-13) and
   the local higgs gate's `ds_v7_930_prod` (merged 09-11) have identical safetensors headers and
