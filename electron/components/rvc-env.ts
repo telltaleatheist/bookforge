@@ -40,8 +40,8 @@ export const RVC_ENV_ID = 'rvc-env';
 // (packaging/env/patch-urvc-mps-memory.py) — fixes the Apple Silicon unified-
 // memory balloon on long convert-dir batches. See electron/rvc-bridge.ts.
 //
-// 2026.07.14: env repacked to REINTEGRATE audio-separator so the Enhance tab's
-// speech-separation stage can run in this env (electron/enhance-bridge.ts spawns
+// 2026.07.14: env repacked to REINTEGRATE audio-separator so the hiss/speech
+// separation stage can run in this env (electron/denoise-bridge.ts spawns
 // `python -m audio_separator.utils.cli` here). Added to the pack:
 //   - the git patch-1 fork of python-audio-separator
 //   - onnxruntime-gpu
@@ -61,7 +61,7 @@ export const RVC_ENV_ID = 'rvc-env';
 const RVC_ENV_VERSION = '2026.07.14b';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TODO(enhance-envs): fill after upload.
+// TODO(rvc-env): fill after upload.
 //
 // The 2026.07.14 repack (audio-separator reintegrated) is built + uploaded to the
 // GitHub Releases "assets" tag as a follow-up, so these are placeholders until
@@ -139,7 +139,7 @@ export function rvcEnvComponent(): OptionalComponent {
     description:
       'Optional engine that re-renders finished narration through a matching RVC '
       + 'voice model to smooth out synthetic artifacts. Also carries audio-separator '
-      + 'for the Enhance tab.',
+      + 'for the denoise pass.',
     kind: 'conda-env',
     acquisition: ['managed'],
     sizeBytes: RVC_ENV_HEADLINE_BYTES,
@@ -153,11 +153,11 @@ export function rvcEnvComponent(): OptionalComponent {
       minDiskMB: 8000,
     },
     artifacts: RVC_ENV_ARTIFACTS,
-    // Import BOTH the Enhance dep (audio_separator) AND the RVC convert path
+    // Import BOTH the denoise dep (audio_separator) AND the RVC convert path
     // (ultimate_rvc.core.generate.song_cover). Both are init-free — they do NOT
     // run ultimate_rvc.cli's initialize() (no model download), matching the app's
     // URVC_SKIP_INIT=1 invocation in rvc-bridge.ts. The old bare
-    // `import ultimate_rvc` passed even when audio-separator was absent (Enhance
+    // `import ultimate_rvc` passed even when audio-separator was absent (denoise
     // broken) and when the convert CLI itself was broken — this catches both.
     verify: {
       kind: 'python-import',

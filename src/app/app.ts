@@ -441,7 +441,8 @@ export class App implements OnInit {
       // Directly under Library, above Live TTS — Owen's placement: the chip in
       // the title bar shows the queue, but the tab is how he actually opens it,
       // and a reach he makes constantly belongs at the top of the rail. (It was
-      // demoted below Enhance for a day when the chip arrived; overruled.)
+      // demoted below the since-deleted Enhance tab for a day when the chip
+      // arrived; overruled.)
       id: 'queue',
       icon: '\u{23F3}', // Hourglass emoji
       label: 'Queue',
@@ -452,12 +453,6 @@ export class App implements OnInit {
       icon: '\u{1F3A4}', // Microphone emoji
       label: 'Live TTS',
       route: '/live-tts'
-    },
-    {
-      id: 'enhance',
-      icon: '\u{2728}', // Sparkles emoji
-      label: 'Enhance',
-      route: '/enhance'
     },
     {
       id: 'settings',

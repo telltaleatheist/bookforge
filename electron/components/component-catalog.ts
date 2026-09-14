@@ -20,7 +20,6 @@ import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
 import { whisperEnvComponent } from './whisper-env';
 import { rvcEnvComponent } from './rvc-env';
-import { resembleEnvComponent } from './resemble-env';
 import { whisperxEnvComponent } from './whisperx-env';
 import { qwenAlignEnvComponent } from './qwen-align-env';
 import type {
@@ -243,7 +242,6 @@ export function getCatalog(): OptionalComponent[] {
     cudaRvcComponent(),
     whisperEnvComponent(),
     rvcEnvComponent(),
-    resembleEnvComponent(),
     whisperxEnvComponent(),
     qwenAlignEnvComponent(),
     ...rvcVoiceComponents(),

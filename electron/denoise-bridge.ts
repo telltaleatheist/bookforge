@@ -70,15 +70,16 @@ const DENOISE_SR = 44100;
  *  enough that one separator process stays comfortably in memory. */
 const BLOCK_TARGET_S = 22 * 60;
 
-/** Where audio-separator downloads its model weights (same pinned dir as the
- *  Enhance tab's separation stage, so the weights download once, ever). */
+/** Where audio-separator downloads its model weights — one pinned dir shared by
+ *  every separator spawn, so the weights download once, ever. */
 function separatorModelDir(): string {
   return path.join(app.getPath('userData'), 'runtime', 'audio-separator-models');
 }
 
 /** The shipped run_audio_separator.py launcher (asarUnpack'd real file in
- *  packaged builds). Same resolution as the Enhance tab's — the audio-separator
- *  console script is unusable directly (no __main__ guard, stale .exe shebang).
+ *  packaged builds). Resolved rather than invoked as a console script — the
+ *  audio-separator one is unusable directly (no __main__ guard, stale .exe
+ *  shebang).
  *  One-shot only: the block pass uses the resident worker below. */
 function resolveSeparatorLauncher(): string {
   const candidates = [

@@ -23,59 +23,6 @@ import { getManagedBinaryPath } from './update/managed-bins';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * How the Enhance tab launches the Resemble Enhance CLI.
- * - 'native': run the resemble-enhance conda env's own python directly on Windows
- *   (the default — vLLM is the only engine that needs WSL; Resemble Enhance runs
- *   fine natively). This is a normal BookForge component env, managed/pointed the
- *   same way the other engine envs are.
- * - 'wsl': run a Linux python inside a WSL2 distro (optional/secondary mode).
- */
-export type EnhanceLaunchMode = 'native' | 'wsl';
-
-/**
- * Resemble Enhance CLI tuning params (the enhance_cli.py contract). An open
- * dict passed through as CLI flags (camelCase key → --kebab-case; boolean true
- * → bare flag, false → omitted), so upcoming tuning knobs (multi-seed ensemble,
- * envelope anchor, …) need no schema change here — the enhancer CLI defines
- * the vocabulary, this layer just forwards it.
- */
-export type EnhanceParamValue = number | string | boolean;
-export type EnhanceParams = Record<string, EnhanceParamValue>;
-
-/**
- * Enhance-tab configuration block. Only the Resemble Enhance step needs wiring:
- * decode uses the app's ffmpeg and separation reuses the RVC engine env
- * (audio-separator). Missing/incomplete config surfaces a specific error in the
- * UI — there is NO silent fallback to a guessed interpreter or script.
- */
-export interface EnhanceConfig {
-  /** Launch mode for the enhancer. Default 'native'. */
-  launchMode?: EnhanceLaunchMode;
-
-  // ── native mode ──
-  /**
-   * The resemble-enhance env ROOT (…/envs/resemble-enhance). Its own python runs
-   * the script. User-pointed the way engine envs are; when omitted, resolution
-   * falls back to the component system (see enhance-bridge getEnhanceEnvRoot).
-   * Empty ≠ a working default — an unresolved env is an error, not a guess.
-   */
-  nativeEnvPath?: string;
-  /** Absolute Windows path to enhance_cli.py (native mode). */
-  scriptPath?: string;
-
-  // ── wsl mode (optional) ──
-  /** Linux python interpreter, e.g. /home/user/miniconda3/envs/resemble-enhance/bin/python. */
-  wslPythonPath?: string;
-  /** Linux enhance_cli.py path. */
-  wslScriptPath?: string;
-  /** WSL distro name for the enhance run (defaults to the shared wslDistro). */
-  wslDistro?: string;
-
-  /** Default CLI params applied when a Process run doesn't override them. */
-  params?: EnhanceParams;
-}
-
 export interface ToolPathsConfig {
   // Conda/Python
   condaPath?: string;
@@ -248,10 +195,6 @@ export interface ToolPathsConfig {
    * setting nobody filled in — the same reasoning `getWslVlmCondaEnv()` gives.
    */
   qwenAlignEnv?: string;
-
-  // Enhance tab (local Adobe-Podcast-style speech cleanup). Only the Resemble
-  // Enhance step needs wiring; see EnhanceConfig.
-  enhance?: EnhanceConfig;
 
   /**
    * The Ollama model that reads printed numbers as spoken words for narration
@@ -533,16 +476,6 @@ export function updateConfig(updates: Partial<ToolPathsConfig>): ToolPathsConfig
 export function getConfig(): ToolPathsConfig {
   loadConfig();
   return { ...state.config };
-}
-
-/**
- * Get the Enhance-tab config block (empty object when unconfigured — callers
- * validate the specific fields they need and surface a precise error rather than
- * silently substituting a guessed interpreter/script path).
- */
-export function getEnhanceConfig(): EnhanceConfig {
-  loadConfig();
-  return { ...(state.config.enhance ?? {}) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2295,7 +2228,6 @@ export const toolPaths = {
   saveConfig,
   updateConfig,
   getConfig,
-  getEnhanceConfig,
   getCondaPath,
   getFfmpegPath,
   getConfiguredToolsEnvPath,

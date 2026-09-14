@@ -452,7 +452,7 @@ export interface ConvertFileOptions {
  * relocates the single produced file to `outputPath`. Resolves with `outputPath`.
  *
  * NOTE: this does NOT take the GPU arbiter lease — the caller is expected to hold
- * it for the surrounding pipeline (as the Enhance tab does).
+ * it for the surrounding pipeline (as `clipforge-chain.ts` does).
  */
 export async function convertFileRvc(opts: ConvertFileOptions): Promise<string> {
   const ready = rvcEnhancementReady();

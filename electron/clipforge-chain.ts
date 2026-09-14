@@ -20,9 +20,9 @@
  *  - NO FALLBACKS. A missing input, an unknown engine, a bad/absent setting, or a
  *    failed ffmpeg invocation is a LOUD thrown error — never a silent default, a
  *    guessed value, or a skipped step.
- *  - Engines not yet implemented (resemble-enhance, RVC) are DECLARED but
- *    UNAVAILABLE: naming one in a recipe throws "engine X arrives in phase 2b" —
- *    it does NOT silently pass audio through. roformer_denoise is LIVE (it runs
+ *  - Engines not yet implemented (RVC) are DECLARED but UNAVAILABLE: naming one
+ *    in a recipe throws "engine X arrives in phase 2b" — it does NOT silently
+ *    pass audio through. roformer_denoise is LIVE (it runs
  *    the same audio-separator pass the TTS pipeline uses, via denoise-bridge).
  *  - low-pass and resample are GUARDED behind explicit allow flags (measured
  *    poison for training audio: low-pass muffles, silent resample caused the RVC
@@ -583,7 +583,6 @@ export const STEP_REGISTRY: Record<string, StepEntry> = {
   },
 
   // ── phase-2b GPU engines: declared, NOT available ───────────────────────────
-  resemble_enhance: phase2bStub('resemble_enhance'),
   rvc: phase2bStub('rvc'),
 };
 

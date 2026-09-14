@@ -48,11 +48,11 @@
  *    behaviour and it is deliberate: previously the queue started anyway and two
  *    processes fought over the same VRAM.
  *  - the gpu-arbiter reports a holder that is not one of ours (llama's cleanup
- *    model, an enhance run, a clipforge chain). Same treatment.
+ *    model, a clipforge chain). Same treatment.
  *
  * It CHECKS the arbiter rather than acquiring it, because the bridges acquire it
- * themselves (parallel-tts-bridge, enhance-bridge, llama-bridge all call
- * `acquireGpu`). An engine that took the lock first would hand the bridge a
+ * themselves (parallel-tts-bridge and llama-bridge both call `acquireGpu`). An
+ * engine that took the lock first would hand the bridge a
  * deadlock against its own scheduler.
  */
 import { promises as fs } from 'node:fs';

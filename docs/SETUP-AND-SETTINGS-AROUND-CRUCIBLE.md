@@ -76,7 +76,6 @@ Settings page's.
 | `cuda-rvc` | CUDA pack for the RVC env | managed download | `electron/rvc-bridge.ts` |
 | `whisper-env` | conda env | managed download | `electron/components/whisper-env.ts:98` |
 | `rvc-env` | conda env | managed download | `electron/rvc-bridge.ts:50` |
-| `resemble-env` | conda env (Enhance) | external/native | `electron/enhance-bridge.ts:536` |
 | `whisperx-env` | conda env (alignment) | managed download | `electron/whisperx-align-bridge.ts:128` |
 | `qwen-align-env` | conda env (Qwen3 aligner) | managed download | `electron/qwen-aligner.ts:198` |
 | `rvc-voice-*` (7) | RVC voice weights | managed download, `electron/data/rvc-voice-assets.json` | `electron/rvc-models.ts` |
@@ -178,7 +177,7 @@ not-installed CUDA pack exactly once.
 From §1b and the panel audit, the four engine/tool steps offer, in total:
 `orpheus` (conda env, managed artifacts are STUBS with `url:''`), `rvc-env`
 (4.16 GB Windows / 577 MB macOS conda-pack), 7 RVC voice archives (80–185 MB each),
-`resemble-env` (3.47 GB Windows / 936 MB macOS), `whisperx-env` (421 MB),
+`whisperx-env` (421 MB),
 `qwen-align-env` (499 MB, macOS), `whisper` (35 MB overlay) + 6 whisper models
 (75 MB – 3.09 GB), `llama-cuda` (~570 MB), `cuda-tts` (2.72 GB), `cuda-rvc` (2.72 GB),
 and a Higgs WSL env + per-voice 8.5 GB checkpoint pulls.
@@ -379,7 +378,7 @@ whose kind is 'blocks-model']` (`settings.component.ts:2537-2548`).
 | option | what it does today | value lives | who reads it | DISP | why |
 |---|---|---|---|---|---|
 | Conda (path; hidden on packaged builds) | conda override | `tool-paths.json → condaPath` | `tool-paths.ts:665` → `narrator-paths.ts:409,417`, `narrator-spawn.ts:714` | **DELETE-AFTER-PASS** | second control for the same key as §3.5; both readers are the local spawn |
-| FFmpeg (path) | audio/video converter | `tool-paths.json → ffmpegPath` | `tool-paths.ts:692,740` → ~20 readers incl. `book-render-service.ts:552`, `metadata-tools.ts:504,777`, `enhance-bridge.ts`, `video-assembly-bridge.ts:681` | **KEEP** | assembly, muxing and duration probing stay local forever |
+| FFmpeg (path) | audio/video converter | `tool-paths.json → ffmpegPath` | `tool-paths.ts:692,740` → ~20 readers incl. `book-render-service.ts:552`, `metadata-tools.ts:504,777`, `video-assembly-bridge.ts:681` | **KEEP** | assembly, muxing and duration probing stay local forever |
 | Tools Python environment (path) | the env running assembly, resume, whisper, metadata tools | `tool-paths.json → toolsEnvPath` | `tool-paths.ts:428` → `narrator-paths.ts:192,221,226`, `vlm-convert.ts:167`, `component-catalog.ts:163` | **KEEP** | the CPU-side tools env is BookForge's own and is not a Crucible job type |
 | Save / Discard / Refresh Detection | commits the tool-paths draft | `tool-paths.json` | `toolPaths:updateConfig` | **KEEP** | |
 
@@ -392,7 +391,7 @@ whose kind is 'blocks-model']` (`settings.component.ts:2537-2548`).
 | `useWsl2ForAllTts` | `tool-paths.ts:2021` — hard-wired `return false` | **DELETE** | dead |
 | `wslE2aPath` | read only to produce a refusal (`tool-paths.ts:2192`) | **DELETE** | e2a is gone |
 | `clipforgeRoot` | ClipForge UI | **KEEP** | training-data root, not a Settings row |
-| `enhance.*` (launchMode, nativeEnvPath, scriptPath, params) | `tool-paths.ts:531` → `enhance-bridge.ts:557` | **RULING** | Resemble Enhance is a GPU act with no Crucible job type and no rollout-plan row. Does it become one, or stay a local env? |
+| ~~`enhance.*` (launchMode, nativeEnvPath, scriptPath, params)~~ | — | **DELETED** | RULING 7 answered (Owen, 2026-09-14: *"drop and remove the enhance page and the corresponding crucible route. it's unnecessary"*). The block, `enhance-bridge.ts`, `components/resemble-env.ts`, the page and its route are gone; `tools/test-no-enhance-doors.js` pins it. |
 
 ## 4. Hosted Foundry's settings and wizard (read-only subtree)
 
@@ -595,9 +594,11 @@ The 24 DELETE-AFTER-PASS rows all hang off ONE switch — `legacyLocalRender` in
 6. **§2.3 — the Crucible step does not probe on entry.** *§0b C2 says the step should show
    one of three faces on arrival (connected / install / connect-only); today all three
    doors are always offered, closed. Build it?*
-7. **§3.16 — Resemble Enhance.** *Enhance is a GPU act with a conda env
-   (`resemble-env`, 3.47 GB on Windows) and NO Crucible job type and no row in the rollout
-   plan. Does it become a job type, or stay a local env forever?*
+7. **§3.16 — Resemble Enhance.** **ANSWERED 2026-09-14 — NEITHER: it is DELETED.** Owen:
+   *"drop and remove the enhance page and the corresponding crucible route. it's
+   unnecessary."* The page, its route, `enhance-bridge.ts`, `components/resemble-env.ts`,
+   the `enhance:*` IPC channels and the `enhance.*` config block are gone, and no `enhance`
+   job type is ever built. `denoise` — the hiss separator — is a different thing and stays.
 8. **§4 — two owners for the clean-text model.** *BookForge writes `cleanTextModel` into
    Foundry's `app-settings.json` (the bf16 ruling) AND names a `clean` act model in
    `<userData>/crucible-models.json`. Which one wins once the act runs on a Crucible?*
@@ -837,7 +838,8 @@ commits `a1c99c41`, `ec24f361`, `7ce4c137`.
    from it: nothing.** It dies with `legacyLocalRender`.
 3. **§3.10 — a user's own RVC archive (RULING 3).** Untouched, with the ruling named in the
    audit row. `tool-paths.json → rvcVoiceSources` and its reader are unchanged.
-4. **§3.16 — Resemble Enhance (RULING 7).** Untouched, with the ruling named.
+4. **§3.16 — Resemble Enhance (RULING 7).** DELETED end to end on 2026-09-14, once the
+   ruling came back. Nothing was left behind to keep untouched.
 5. **§5 — `CatalogVoice` (RULING 10).** Left in place with the ruling written into its
    docblock: it is still imported by `electron/update/manifest-types.ts`, so deleting it is a
    decision about the remote update CATALOG, not about XTTS.

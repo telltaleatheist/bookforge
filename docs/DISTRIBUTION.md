@@ -31,7 +31,6 @@ and the code that decides whether the bytes that arrived are the right bytes.
 | **Tools Python env** (`e2a-env-<platform>.tar.gz` — the asset filename is history) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | `ENV_VERSION` + per-platform `sha256` in `ENV_RELEASES` — `electron/tools-env-bootstrap.ts` | `ensureTarballDownloaded` (hashes before *and* after download), then a ready-marker recording version + sha |
 | **RVC engine env** (`urvc-env-*`) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | `RVC_ENV_VERSION` — `electron/components/rvc-env.ts` | `downloadAndExtract` (sha256 of the reassembled whole) |
 | **F5-TTS env** | same | `F5_ENV_VERSION` — `electron/components/f5-env.ts` | same |
-| **Resemble Enhance env** | same | `RESEMBLE_ENV_VERSION` — `electron/components/resemble-env.ts` | same |
 | **WhisperX alignment env** | same | `WHISPERX_ENV_VERSION` — `electron/components/whisperx-env.ts` | same |
 | **Voxtral env** | same | `VOXTRAL_ENV_VERSION` — `electron/components/voxtral-env.ts` | same (macOS only; the Windows artifact is an unpublished stub — see §5.4) |
 | **DeepSpeed overlay** | same | `DEEPSPEED_VERSION` — `electron/components/deepspeed-xtts.ts` | **nothing** — `ARTIFACT_SHA256` is declared but never checked; see Known gaps §9.2 |
@@ -470,8 +469,9 @@ runtime copy, so `e2aIsReady()` gated on an interpreter that was never staged.
 
 **Why it exists.** GitHub Releases caps a single asset at 2 GiB. Three of our
 Windows conda envs exceed it after their CUDA payload was added: `urvc-env`
-(4.16 GB), `f5-env` (3.48 GB), `resemble-env` (3.47 GB). Splitting is the only
-way to keep them on the same host as everything else.
+(4.16 GB) and `f5-env` (3.48 GB). Splitting is the only way to keep them on the
+same host as everything else. (`resemble-env`, 3.47 GB, was the third until the
+Enhance tab was deleted; its component is gone, its release asset is not.)
 
 **How it is declared.** `ComponentArtifact` in
 `electron/components/component-types.ts` carries an optional `parts?: string[]`:
@@ -516,9 +516,8 @@ Current users of `parts[]`:
 |---|---|---|---|
 | `rvc-env` (`electron/components/rvc-env.ts`) | win32-x64 | 3 | 4,158,992,878 |
 | `f5-env` (`electron/components/f5-env.ts`) | win32-x64 | 2 | 3,476,487,943 |
-| `resemble-env` (`electron/components/resemble-env.ts`) | win32-x64 | 2 | 3,474,943,074 |
 
-All three declared byte counts match the sum of the published part sizes.
+Both declared byte counts match the sum of the published part sizes.
 
 ---
 
@@ -541,7 +540,7 @@ for an installed-and-verified component instead of guessing.
 
 ### 5.2 Conda-pack environments
 
-`f5-env`, `rvc-env`, `resemble-env`, `voxtral-env`, `whisperx-env` are all
+`f5-env`, `rvc-env`, `voxtral-env`, `whisperx-env` are all
 `kind: 'conda-env'` with `condaUnpack: true`. After extraction the manager runs
 the env's own `conda-unpack` **in the final directory**, never in the temp dir.
 This ordering is load-bearing and was learned the hard way: `conda-unpack`
