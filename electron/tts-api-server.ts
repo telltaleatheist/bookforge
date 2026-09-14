@@ -761,7 +761,7 @@ export class TtsApiServer {
       return;
     }
 
-    const { splitForTts } = await import('./text-ai.js');
+    const { splitForTts } = await import('../shared/listen-text/segment.js');
     // PUNCTUATION ONLY, and nothing else, on the streaming path.
     //
     // The book path runs three stages (`foundry clean-text`):
@@ -772,8 +772,8 @@ export class TtsApiServer {
     // a book and are a PASS the user runs, not something to do to a paragraph
     // somebody is waiting to hear.
     // The ONE deterministic Listen normalizer — punctuation, number rules, number
-    // expansion, acronyms — see listen-text.ts for the ruling and the order.
-    const { speakableListenText } = await import('./listen-text.js');
+    // expansion, acronyms — see shared/listen-text/normalize.ts for the ruling and the order.
+    const { speakableListenText } = await import('../shared/listen-text/normalize.js');
     const speakable = speakableListenText(text);
     // THE UNIT ON THE WIRE IS PER ENGINE, and the branch is explicit because the
     // two engines want opposite shapes:
@@ -782,7 +782,7 @@ export class TtsApiServer {
     //    packing its streaming rows to the voice's cap measured 2.3x SLOWER. The
     //    cap still comes from its own voice manifest (the ORPHEUS_MAX_CHARS
     //    channel the audiobook path reads).
-    //  - HIGGS: ramped chunks of one or more sentences (listen-chunks.ts). It
+    //  - HIGGS: ramped chunks of one or more sentences (shared/listen-text/chunks.ts). It
     //    renders one row at a time at a flat 2.0x, so width buys nothing and row
     //    LENGTH is the only lever on both prosody and seam latency.
     //
@@ -795,7 +795,7 @@ export class TtsApiServer {
       const { higgsPreflight } = await import('./higgs-spawn.js');
       const { higgsVoiceCapsForModel } = await import('./higgs-models.js');
       const { packListenChunks, listenBandFromCaps, describeListenChunks } =
-        await import('./listen-chunks.js');
+        await import('../shared/listen-text/chunks.js');
       let band;
       try {
         // higgsVoiceCapsForModel defaults to THIS MACHINE'S arm; never re-derive it.

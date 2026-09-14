@@ -28,6 +28,7 @@ import {
   type EpubContainerKind,
 } from './epub-container';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
+import type { NarrationTextRewrite } from '../shared/text/narration-rewrite.js';
 import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import { spliceForCollapsedText } from '../shared/document/element-text-edit';
@@ -6892,15 +6893,12 @@ export interface NarrationEpubWriteOptions {
  * carried rather than re-derived because the pass that produced the edit is the
  * one that proved the span occurs exactly once. Re-searching here would be a
  * second opinion about where the edit goes, and the two could differ.
+ *
+ * DECLARED in `shared/text/narration-rewrite.ts` since Phase 16 and re-exported
+ * here, so that the pure number rules can be typed against it without a browser
+ * bundle having to compile this file. See that file for why.
  */
-export interface NarrationTextRewrite {
-  /** The printed text, copied verbatim from the target. */
-  find: string;
-  /** What the narrator says instead. */
-  replace: string;
-  /** Where `find` starts in the target's text. */
-  at: number;
-}
+export type { NarrationTextRewrite } from '../shared/text/narration-rewrite.js';
 
 /**
  * Is this body EMPTY — nothing left in it that a reader would see?

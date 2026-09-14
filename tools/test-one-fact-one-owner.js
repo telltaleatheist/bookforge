@@ -47,7 +47,7 @@
  * folds' keep-sets from the JSON and asserts they are equal, and pins the
  * expression each reader uses to derive its set — change either side to a
  * different subset and it goes red. It also refuses a second hard-coded acronym
- * set in `listen-text.ts` by scanning the source, because that is the shape the
+ * set in `shared/listen-text/normalize.ts` by scanning the source, because that is the shape the
  * band-aid took, and finally folds the same fixtures through BOTH
  * implementations when a Python interpreter can be found.
  *
@@ -63,7 +63,7 @@ const { execFileSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
-const LISTEN_TEXT_JS = path.join(DIST, 'listen-text.js');
+const LISTEN_TEXT_JS = path.join(REPO, 'dist', 'shared', 'listen-text', 'normalize.js');
 const HIGGS_MODELS_JS = path.join(DIST, 'higgs-models.js');
 for (const m of [LISTEN_TEXT_JS, HIGGS_MODELS_JS]) {
   if (!fs.existsSync(m)) {
@@ -75,7 +75,7 @@ require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 const ACRONYMS_JSON = path.join(REPO, 'python', 'narrator', 'text', 'caps_acronyms.json');
 const PACKER_PY = path.join(REPO, 'python', 'narrator', 'text', 'paragraph_packer.py');
-const LISTEN_TEXT_TS = path.join(REPO, 'electron', 'listen-text.ts');
+const LISTEN_TEXT_TS = path.join(REPO, 'shared', 'listen-text', 'normalize.ts');
 const BANDS_JSON = path.join(REPO, 'electron', 'data', 'higgs-safe-bands.json');
 const CATALOG_JSON = path.join(REPO, 'electron', 'data', 'higgs-models.json');
 /** The loader reads the DIST copy, which is the only seam it has (see the header). */
@@ -101,7 +101,7 @@ test('BOTH FOLDS KEEP THE SAME SET, computed from the one JSON', () => {
   const narratorKeeps = [...new Set([...acronyms.lettered, ...acronyms.spokenAsWord])].sort();
   const { CAPS_ACRONYMS } = require(LISTEN_TEXT_JS);
   assert.deepStrictEqual([...CAPS_ACRONYMS].sort(), narratorKeeps,
-    'electron/listen-text.ts and python/narrator/text/paragraph_packer.py keep DIFFERENT sets of '
+    'shared/listen-text/normalize.ts and python/narrator/text/paragraph_packer.py keep DIFFERENT sets of '
     + 'caps tokens as printed. They are mirrors of one rule over one file: a token kept by one '
     + 'and title-cased by the other is the same heading read two ways.');
 });
@@ -126,20 +126,20 @@ test('narrator derives that set as lettered UNION spokenAsWord, and says so', ()
 test('Listen derives it from the JSON too, and consults nothing else', () => {
   const ts = read(LISTEN_TEXT_TS);
   assert.ok(/export const CAPS_ACRONYMS[^=]*=\s*new Set\(\[\s*\.\.\.capsAcronymCategory\('lettered'\),\s*\.\.\.capsAcronymCategory\('spokenAsWord'\),\s*\]\)/.test(ts),
-    'CAPS_ACRONYMS in listen-text.ts is no longer the union of the two JSON categories');
+    'CAPS_ACRONYMS in normalize.ts is no longer the union of the two JSON categories');
   assert.ok(/return CAPS_ACRONYMS\.has\(upper\) \|\| !VOWEL\.test\(upper\)/.test(ts),
     "foldCapsRun's keep test no longer reads CAPS_ACRONYMS — narrator's `_is_acronym` is "
     + '`in CAPS_ACRONYMS or no vowel`, and the mirror must be the same two clauses');
 });
 
-test('NO SECOND HARD-CODED ACRONYM SET in listen-text.ts', () => {
+test('NO SECOND HARD-CODED ACRONYM SET in shared/listen-text/normalize.ts', () => {
   // `KEEP_AS_PRINTED = new Set(['WWI', 'WWII'])` sat four lines under the comment
   // that forbids exactly this. The JSON is the place; a private list is how one
   // reader stops moving with the other.
   const ts = read(LISTEN_TEXT_TS);
   const literalSets = [...ts.matchAll(/new Set\(\s*\[\s*(['"])/g)];
   assert.deepStrictEqual(literalSets.map((m) => m.index), [],
-    'listen-text.ts builds a Set from string literals again. Caps tokens belong in '
+    'normalize.ts builds a Set from string literals again. Caps tokens belong in '
     + 'python/narrator/text/caps_acronyms.json, where narrator reads them too — a set written '
     + 'here moves on its own, which is how WWII reached a book as "Wwii".');
 });

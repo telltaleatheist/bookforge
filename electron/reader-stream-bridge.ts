@@ -228,7 +228,7 @@ export class ReaderStreamBridge {
       return;
     }
 
-    const { splitForTts } = await import('./text-ai.js');
+    const { splitForTts } = await import('../shared/listen-text/segment.js');
     // PUNCTUATION ONLY, and nothing else, on the streaming path.
     //
     // The book path runs three stages (`foundry clean-text`):
@@ -238,12 +238,12 @@ export class ReaderStreamBridge {
     // same quotes an audiobook does. The other two are minutes of model time over
     // a book and are a PASS the user runs, not something to do to a paragraph
     // somebody is waiting to hear.
-    // The ONE deterministic Listen normalizer (listen-text.ts): the same rewrite
+    // The ONE deterministic Listen normalizer (shared/listen-text/normalize.ts): the same rewrite
     // the TTS API server gives the extension's text.
-    const { speakableListenText } = await import('./listen-text.js');
+    const { speakableListenText } = await import('../shared/listen-text/normalize.js');
     const speakable = speakableListenText(text);
     // THE UNIT ON THE WIRE IS PER ENGINE — the same branch the TTS API server
-    // makes, for the same reasons (see its comment, and listen-chunks.ts):
+    // makes, for the same reasons (see its comment, and shared/listen-text/chunks.ts):
     // Orpheus streams one sentence per row because width, not row length, is its
     // throughput; Higgs streams ramped chunks of one or more sentences because it
     // renders one row at a time at a flat 2.0x and row length is the only lever
@@ -258,7 +258,7 @@ export class ReaderStreamBridge {
       const { higgsPreflight } = await import('./higgs-spawn.js');
       const { higgsVoiceCapsForModel } = await import('./higgs-models.js');
       const { packListenChunks, listenBandFromCaps, describeListenChunks } =
-        await import('./listen-chunks.js');
+        await import('../shared/listen-text/chunks.js');
       let band;
       try {
         // higgsVoiceCapsForModel defaults to THIS MACHINE'S arm; never re-derive it.

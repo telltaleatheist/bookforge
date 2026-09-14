@@ -1,5 +1,5 @@
 /**
- * listen-text.ts — the ONE deterministic normalizer every Listen sentence passes
+ * normalize.ts — the ONE deterministic normalizer every Listen sentence passes
  * through before it reaches the render server.
  *
  * ── The ruling this file exists for ─────────────────────────────────────────
@@ -59,13 +59,35 @@
  * shared predicate (`shared/text/sup-markers.ts`) the TTS export applies.
  */
 
-import { canonicalizePunctuationText } from './tts-punctuation';
-import { applyNumberRules } from './tts-number-rules';
-import { expandNumbersEn } from './number-expansion';
+/*
+ * ── WHY THIS FILE IS IN shared/ AND STILL REACHES INTO electron/ ────────────
+ *
+ * Phase 16 (docs/EXTENSION-TO-CRUCIBLE-PLAN.md §0) moved the Listen normalizer
+ * here — `electron/listen-text.ts` until then — because the browser extension
+ * now talks to a Crucible directly and must normalize the page's text ITSELF,
+ * with the same rules the app applies, or a book and a web page reach the same
+ * voice through two different definitions of "the text".
+ *
+ * The three modules below did NOT move with it, and that is deliberate. They
+ * are the shared normalization SPEC, and the orpheus-finetune training side
+ * loads them as `dist/electron/tts-punctuation.js` and
+ * `dist/electron/tts-number-rules.js` under plain node (see the header of
+ * `electron/tts-punctuation.ts` and docs/NARRATION_TEXT_PASS.md). Moving them
+ * would change a path a second repository reads, in silence, for a tidiness
+ * this file does not need: all four are pure string→string modules with no
+ * Electron, no fs and no config, so the extension's bundler and the Angular
+ * program compile them exactly as the main process does.
+ *
+ * So the arrow points shared → electron here, once, on purpose. It straightens
+ * the day the training side is re-pointed at `dist/shared/…`, and not before.
+ */
+import { canonicalizePunctuationText } from '../../electron/tts-punctuation.js';
+import { applyNumberRules } from '../../electron/tts-number-rules.js';
+import { expandNumbersEn } from '../../electron/number-expansion.js';
 // THE ONE ACRONYM LIST, narrator's file (python/narrator/text/caps_acronyms.json):
 // a relative import so tsc emits the JSON into dist beside the compiled module
 // and the packaged app carries it; narrator loads the same file standalone.
-import capsAcronyms from '../python/narrator/text/caps_acronyms.json';
+import capsAcronyms from '../../python/narrator/text/caps_acronyms.json';
 
 /**
  * THE ONE acronym list, validated exactly as narrator validates it.

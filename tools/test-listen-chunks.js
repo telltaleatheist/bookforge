@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..');
-const MODULE = path.join(REPO, 'dist', 'electron', 'listen-chunks.js');
+const MODULE = path.join(REPO, 'dist', 'shared', 'listen-text', 'chunks.js');
 if (!fs.existsSync(MODULE)) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
   process.exit(1);
@@ -299,13 +299,19 @@ test('a voice with NO cap is refused by name — never the Orpheus number', () =
 
 // ── the floor's source of truth ─────────────────────────────────────────────
 
-test('LISTEN_MIN_CHUNK_CHARS still matches text-ai.ts MIN_SEGMENT_CHARS', () => {
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'text-ai.ts'), 'utf-8');
-  const m = src.match(/const MIN_SEGMENT_CHARS\s*=\s*(\d+)/);
-  assert.ok(m, 'MIN_SEGMENT_CHARS has moved or been renamed in electron/text-ai.ts');
-  assert.strictEqual(LISTEN_MIN_CHUNK_CHARS, Number(m[1]),
-    'the packer mirrors that constant by hand (text-ai.ts cannot be imported outside '
-    + 'Electron) — they have drifted');
+test("LISTEN_MIN_CHUNK_CHARS IS the segmenter's floor, not a copy of it", () => {
+  // It was a hand-written 25 with a comment saying it mirrored
+  // `electron/text-ai.ts`, and this check read that file's SOURCE to prove the
+  // two had not drifted. Phase 16 put the packer and the segmenter in one
+  // directory, so the mirror became an import — what is checked now is that it
+  // STAYED one, because re-writing the number is how the pair comes back.
+  const { MIN_SEGMENT_CHARS } = require(path.join(REPO, 'dist', 'shared', 'listen-text', 'segment.js'));
+  assert.strictEqual(LISTEN_MIN_CHUNK_CHARS, MIN_SEGMENT_CHARS,
+    'the packer floor and the segmenter floor are meant to be one number');
+  const src = fs.readFileSync(path.join(REPO, 'shared', 'listen-text', 'chunks.ts'), 'utf-8');
+  assert.ok(/export const LISTEN_MIN_CHUNK_CHARS = MIN_SEGMENT_CHARS;/.test(src),
+    'chunks.ts states the floor again instead of importing it — that is the pair this '
+    + 'check existed to watch, and there is no longer any reason to have one');
 });
 
 // ── the log line ────────────────────────────────────────────────────────────

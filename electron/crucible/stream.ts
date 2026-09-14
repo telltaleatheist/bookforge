@@ -84,7 +84,7 @@
  * ── What is deliberately not here ──────────────────────────────────────────
  *
  * No chunking and no text normalisation — the surfaces pack the rows before the
- * scheduler sees them (`listen-chunks.ts`, `listen-text.ts`), from THIS
+ * scheduler sees them (`shared/listen-text/chunks.ts`, `shared/listen-text/normalize.ts`), from THIS
  * MACHINE'S catalog band. A row longer than the (voice, backend) cap is refused
  * by the server as `chunk_too_long`, never re-split here. RULING OWED: pack to
  * the venue server's advertised `pace` / `max_chars` (`GET /v1/voices`) instead

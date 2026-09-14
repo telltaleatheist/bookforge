@@ -25,14 +25,14 @@ import { spawn } from 'child_process';
 import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from './streaming-engine';
 import { getProjectPath, registerAudiobookOutput } from './manifest-service';
 import { embedAndVerifyVtt } from './metadata-tools';
-import { splitForTts } from './text-ai';
+import { splitForTts } from '../shared/listen-text/segment';
 // PUNCTUATION ONLY, the streaming path's share of the narration text pass.
 // This is the whole-book render the same bookshelf reader plays from, so its
 // text has to reach the voice with the same canonical ellipsis and the same
 // quotes the live stream and the audiobook do -- the third door, and the one the
 // first cut of this work missed (the adversarial review, 2026-09-04). The other
 // two stages are minutes of model time and are a PASS the user runs on the book.
-import { speakableListenText } from './listen-text';
+import { speakableListenText } from '../shared/listen-text/normalize';
 import { getFfmpegPath } from './tool-paths';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────

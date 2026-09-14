@@ -53,7 +53,11 @@
  * Doctrine, from the pass above it: pure functions only. No fs, no model, no
  * Electron. Every rule is reachable from a test with no GPU.
  */
-import type { NarrationTextRewrite } from './epub-processor.js';
+// From shared/, not from `./epub-processor.js` where it was declared until
+// Phase 16: this module is bundled into the browser extension (through
+// `shared/listen-text/normalize.ts`), and a type-only import still has to
+// typecheck the file it names. See shared/text/narration-rewrite.ts.
+import type { NarrationTextRewrite } from '../shared/text/narration-rewrite.js';
 import { ordinalToWords, pluralizeLastWord, yearToWords } from './number-expansion.js';
 
 /** Anything with an Arabic digit in it. */

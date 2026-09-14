@@ -54,7 +54,17 @@
  * same chunks out, forever. The extension resumes a partly-cached block by
  * index into this list, so a non-deterministic split would splice one chunk's
  * audio onto another chunk's text.
+ *
+ * ── Why it lives in shared/ (Phase 16) ──────────────────────────────────────
+ *
+ * It was `electron/listen-chunks.ts` until the browser extension became a
+ * Crucible client of its own (docs/EXTENSION-TO-CRUCIBLE-PLAN.md §0). The
+ * extension now packs its own rows, and the sentence above — a partly-cached
+ * block is resumed BY INDEX into this list — is exactly why there may not be a
+ * second implementation of it in the extension's bundle.
  */
+
+import { MIN_SEGMENT_CHARS } from './segment.js';
 
 /**
  * The opener's cap: how much is rendered before the first word is heard.
@@ -72,12 +82,15 @@ export const LISTEN_OPENER_CHARS = 300;
  * A piece shorter than this is not worth its own inference — the model gets no
  * context and the listener hears a fragment with a pause on each side of it.
  *
- * MIRRORS `MIN_SEGMENT_CHARS` in electron/text-ai.ts (25), which is itself e2a's
- * `SENTENCE_MIN_CHARS`. Not imported, because text-ai.ts pulls in ai-bridge and
- * with it the Electron app object; tools/test-listen-chunks.js reads the number
- * out of text-ai.ts's source and fails if the two ever drift.
+ * IT IS `MIN_SEGMENT_CHARS`, which is itself e2a's `SENTENCE_MIN_CHARS`. It was
+ * a RESTATEMENT of that number until Phase 16 — 25 written out again, with a
+ * comment saying the two must not drift and a keeper that read the other one out
+ * of `electron/text-ai.ts`'s SOURCE to check. The reason for the restatement was
+ * that text-ai.ts pulled in ai-bridge and with it the Electron app object; the
+ * segmenter now lives next door in `./segment.ts` and pulls in nothing, so this
+ * is an import and there is no longer a pair to compare.
  */
-export const LISTEN_MIN_CHUNK_CHARS = 25;
+export const LISTEN_MIN_CHUNK_CHARS = MIN_SEGMENT_CHARS;
 
 /** The length band one Higgs row may occupy, for one voice on one arm. */
 export interface ListenChunkBand {

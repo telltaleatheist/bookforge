@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Keeper for electron/listen-text.ts — the ONE deterministic normalizer every
+ * Keeper for shared/listen-text/normalize.ts — the ONE deterministic normalizer every
  * Listen sentence passes through (TTS API server / extension, reader bridge,
  * book render service). Owen's ruling of 2026-09-06: Listen is fast, so it is
  * cleaned deterministically to the best of our ability, no model.
@@ -11,8 +11,10 @@
 const assert = require('assert');
 const path = require('path');
 const DIST = path.join(__dirname, '..', 'dist', 'electron');
-const { speakableListenText, foldCapsRun, stripUnspokenGlyphs } = require(path.join(DIST, 'listen-text.js'));
-const { LETTERED_ACRONYMS } = require(path.join(DIST, 'listen-text.js'));
+/** shared/, not electron/: the extension bundles the same module (Phase 16). */
+const LISTEN_TEXT = path.join(__dirname, '..', 'dist', 'shared', 'listen-text', 'normalize.js');
+const { speakableListenText, foldCapsRun, stripUnspokenGlyphs } = require(LISTEN_TEXT);
+const { LETTERED_ACRONYMS } = require(LISTEN_TEXT);
 const { SPOKEN_AS_WORD } = require(path.join(DIST, 'tts-spoken-forms.js'));
 const fs = require('fs');
 {
