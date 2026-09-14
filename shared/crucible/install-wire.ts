@@ -157,6 +157,26 @@ export interface CrucibleInstallStep {
   done: boolean;
 }
 
+/**
+ * CAN THIS MACHINE HOLD A CRUCIBLE — yes, no, or a question that cannot be
+ * asked yet.
+ *
+ * THREE VALUES AND NOT A BOOLEAN, because on Windows the honest answer is
+ * sometimes the third one and a boolean would have to lie. Whether a Crucible
+ * can run here is whether the GUEST sees a card, and `crucibleHostFacts` will
+ * not answer that from the Windows-side `nvidia-smi` — a Windows driver that
+ * answers says nothing about whether the passthrough works. So a machine with
+ * no WSL2 guest, or one where nobody has said which guest, is `unknown`: not
+ * "no" (that would send somebody with a 4090 to the connect-only door) and not
+ * "yes" (that would be a guess about hardware nobody measured).
+ *
+ * `unknown` draws the SAME face as `yes` — the install document, whose first
+ * step is the thing that would settle it. That is not a maybe: the sentence in
+ * {@link CrucibleInstallPlan.hostableWhy} says exactly what is not known and
+ * what would answer it (crucible ARCHITECTURE.md R3).
+ */
+export type CrucibleHostability = 'yes' | 'no' | 'unknown';
+
 /** EVERYTHING THE "INSTALL ONE HERE" DOOR DRAWS, in one read. */
 export interface CrucibleInstallPlan {
   platform: InstallPlatform;
@@ -164,6 +184,14 @@ export interface CrucibleInstallPlan {
   host: CrucibleHostFacts;
   /** One sentence about this machine, from the facts above. */
   machine: string;
+  /**
+   * Could a Crucible live here. Composed in main from the facts, so the wizard
+   * step that shows ONE of three faces (PHASE13-OPERATOR.md §5.5) reads a
+   * decision rather than making a second one out of the same nulls.
+   */
+  hostable: CrucibleHostability;
+  /** Why, whichever way it went. ALWAYS set — a verdict with no reason is a bug. */
+  hostableWhy: string;
   /** The sequence, in order. */
   steps: CrucibleInstallStep[];
   /**
@@ -177,8 +205,18 @@ export interface CrucibleInstallPlan {
   readme: string;
   /** The release wheel the sequence installs. */
   wheel: string;
-  /** The job types BookForge's pipeline asks a Crucible for, in `init` order. */
-  jobTypes: string[];
+  /*
+   * `jobTypes` IS GONE FROM THIS SHAPE (2026-09-14, PHASE13-OPERATOR.md §5.4).
+   *
+   * It restated the six ids `shared/crucible/bookforge.module.json` now owns —
+   * a second list, kept in step by hand, in the one file whose job is to be
+   * correct about ids. The sequence no longer passes `--enable-*` to
+   * `crucible init` either: `crucible install <type>` MERGES the flag into
+   * config.toml and reloads the registry (§3.4), so the **Set up for
+   * BookForge** button turning the job types on is not a convenience, it is
+   * where they are decided. A screen that wants to name them asks
+   * `crucible:module`.
+   */
   /**
    * Whether the DRIVEN install can run. FALSE ON EVERY MACHINE TODAY:
    * `@crucible/bootstrap` ships with a Crucible release that has not been cut.

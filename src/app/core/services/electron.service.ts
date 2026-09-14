@@ -26,10 +26,12 @@ import type {
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
+  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   CrucibleTextActModels,
   CrucibleTextActName,
+  PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
@@ -4267,5 +4269,69 @@ export class ElectronService {
       this.isElectron
         ? (window as any).electron.crucible.install()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /*
+     * ── THE OPERATOR DOOR (crucible docs/PHASE13-OPERATOR.md section 5) ────
+     *
+     * Crucible serves its own page. Once a server exists, everything an
+     * operator does to it — install a job type, pull weights, watch a task,
+     * read the token — happens there, which is what deleted this app's printed
+     * step list and pull list. These four are what an app keeps.
+     */
+
+    /**
+     * One pasted `crucible://` line becomes Name / Address / Token.
+     *
+     * Parsed in MAIN by the SDK's `parsePairing`, which is the tested inverse
+     * of crucible's own producer. A line it does not recognise comes back
+     * `invalid_pairing` with that sentence and NOTHING is filled — a
+     * half-filled form from a line nobody can read is worse than an empty one.
+     */
+    parsePairing: (line: string): Promise<{ success: boolean; data?: PairingResult; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.parsePairing(line)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * Open a named server's own operator page.
+     *
+     * A window with no preload and no bridge, in its own session, pinned to
+     * that server's origin — the page is code this app does not own. The token
+     * never crosses this seam: main reads it from the registry.
+     */
+    openUi: (name: string): Promise<{ success: boolean; data?: { name: string; url: string }; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.openUi(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** What `shared/crucible/bookforge.module.json` asks a server for. */
+    module: (): Promise<{ success: boolean; data?: { version: string; jobTypes: string[]; subjects: string[] }; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.module()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * "Set up for BookForge" — post the vendored module, watch the task.
+     *
+     * Resolves with the LAST frame. A `server_busy` held by a LEASE rejects
+     * with the holder named verbatim, because a lease means another app on
+     * that machine is mid-run: an operator shown a dead button with no name
+     * concludes the button is broken and presses it until it is.
+     */
+    setUpModule: (name: string): Promise<{ success: boolean; data?: CrucibleModuleProgress; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setUpModule(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    cancelSetUp: (name: string, taskId: string): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.cancelSetUp(name, taskId)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Every frame of the running module task. Returns its own unsubscribe. */
+    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void): (() => void) =>
+      (this.isElectron
+        ? (window as any).electron.crucible.onModuleProgress(callback)
+        : () => { /* no main process to stream from */ }),
   };
 }

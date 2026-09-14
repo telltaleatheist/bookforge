@@ -7946,6 +7946,111 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── THE OPERATOR DOOR (crucible docs/PHASE13-OPERATOR.md section 5) ──────
+  //
+  // Crucible serves its own page. Everything a person does to a server after it
+  // exists happens there — install a job type, pull weights, watch the
+  // progress, read the token — which is what deleted the step list and the
+  // printed pull list from this app. What is left here is four doors: read one
+  // pasted line, open the page, post the module, cancel the task.
+  //
+  // None of these names collides with the hosted Foundry's `crucible:` family
+  // (`settings`, `save`, `test`, `test-at`, `add`, `add-local`,
+  // `set-wsl-distro`, `set-new-jobs-wait-for`, `install-plan`, `install` —
+  // foundry-app/IPC-CHANNELS.md), and `tools/test-ipc-collision.js` is what
+  // keeps that true rather than this comment.
+
+  /**
+   * One pasted `crucible://` line becomes the connect door's three fields.
+   *
+   * PURE, and it runs in MAIN because the SDK lives here: `parsePairing` is the
+   * inverse of `crucible/pairing.py`, tested against it with a literal in both
+   * repos, and a second parser in the renderer written from the format doc
+   * would be the two-owners defect in the one place the format exists to
+   * prevent it. A refusal is `invalid_pairing` with the SDK's own sentence —
+   * the line is elided at the fragment before it is ever put in an error, so
+   * the token cannot reach a log through this door.
+   */
+  ipcMain.handle('crucible:parse-pairing', async (_event, line: string) => {
+    try {
+      const { parsePairing } = await import('@crucible/client');
+      const { name, url, token } = parsePairing(line);
+      return { success: true, data: { ok: true, fields: { name, url, token } } };
+    } catch (err) {
+      return {
+        success: true,
+        data: { ok: false, refusal: { code: 'invalid_pairing', detail: (err as Error).message } },
+      };
+    }
+  });
+
+  /**
+   * Open a NAMED server's own operator page in a window with no bridge.
+   *
+   * The token is read here from the one owner of it — the registry, or `local`'s
+   * config.toml — and never typed, never sent to the renderer, never put in an
+   * external browser's history. The window's hardening is section 5.3 exactly
+   * and lives in `electron/crucible/operator-window.ts` with the argument for
+   * each line of it.
+   */
+  ipcMain.handle('crucible:open-ui', async (_event, name: string) => {
+    try {
+      const { openCrucibleOperatorWindow } = await import('./crucible/operator-window.js');
+      return { success: true, data: openCrucibleOperatorWindow(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * "Set up for BookForge": post `shared/crucible/bookforge.module.json` and
+   * stream the task's events to the row that pressed it.
+   *
+   * The frames go back on `crucible:module-progress` rather than as one awaited
+   * answer, because the interesting part of a module task is the twenty minutes
+   * in the middle. The awaited answer is the LAST frame, so a row that missed
+   * the stream still ends up drawing the truth.
+   */
+  ipcMain.handle('crucible:setup-module', async (event, name: string) => {
+    try {
+      const { setUpServerForBookForge } = await import('./crucible/module-setup.js');
+      const send = (progress: unknown) => {
+        if (!event.sender.isDestroyed()) event.sender.send('crucible:module-progress', progress);
+      };
+      return { success: true, data: await setUpServerForBookForge(name, send) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('crucible:cancel-setup', async (_event, name: string, taskId: string) => {
+    try {
+      const { cancelServerSetup } = await import('./crucible/module-setup.js');
+      await cancelServerSetup(name, taskId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** What the module asks for, so a screen can name it before anybody presses. */
+  ipcMain.handle('crucible:module', async () => {
+    try {
+      const { BOOKFORGE_MODULE, bookforgeModuleJobTypes, bookforgeModuleSubjects } =
+        await import('./crucible/module-setup.js');
+      return {
+        success: true,
+        data: {
+          version: BOOKFORGE_MODULE.version,
+          jobTypes: bookforgeModuleJobTypes(),
+          subjects: bookforgeModuleSubjects(),
+        },
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // The five `tts:*` channels that stood here are GONE (2026-09-05).
   //
   // They were the last live door onto ebook2audiobook: `tts:start-conversion`
@@ -13174,6 +13279,17 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // Any Crucible operator windows go with the app. They hold no work — each is
+  // a page on somebody's server, in its own session, with no bridge — so this
+  // is first and synchronous: a window left open would keep the process alive
+  // after every other teardown had finished.
+  try {
+    const { closeCrucibleOperatorWindows } = await import('./crucible/operator-window.js');
+    closeCrucibleOperatorWindows();
+  } catch (err) {
+    console.warn('[MAIN] could not close the Crucible operator windows:', (err as Error).message);
+  }
 
   // FIRST, and it is one synchronous flag plus a file write: stop the queue
   // claiming new work, and write the board. Everything below this line kills

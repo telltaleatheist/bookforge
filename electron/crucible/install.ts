@@ -58,18 +58,22 @@
  * app; this one shows it once, in the plan, beside the step that creates the
  * service).
  *
- * ── AND WHY BOOKFORGE ASKS FOR SIX JOB TYPES WHERE FOUNDRY ASKS FOR ONE ────
+ * ── WHAT THIS FILE NO LONGER SAYS, AND WHO SAYS IT NOW ─────────────────────
  *
- * Crucible installs one environment per job type and they are large. Foundry
- * does two things with a model — text acts and page reading — and both are the
- * `llm` job type, so its plan asks for `llm` alone. BookForge's pipeline is the
- * other five as well: it narrates (`tts`), transcribes (`asr`), aligns
- * (`align`), converts voices (`rvc`) and strips hiss (`denoise`). The plan says
- * so, and says which step is the one that takes the time.
+ * It used to end with three steps and eleven copyable commands: install the
+ * five job environments, measure the card, pull six named weights. All of that
+ * is DELETED (2026-09-14, PHASE13-OPERATOR.md §0 and §5.4). It was a second
+ * copy of two things that already have owners — `shared/crucible/
+ * bookforge.module.json`, generated in the crucible repo from its manifests,
+ * for WHAT this app needs; and Crucible's own operator page, for the doing of
+ * it. Two copies of one fact kept in step by hand is R1's shape, in the one
+ * file whose job is to be correct about ids.
  *
- * `denoise` has no installer of its own — it shares the rvc env, which is the
- * package's own `planJobTypes` rule (`denoise shares the rvc env and has no
- * installer of its own`) and the reason it is enabled but never installed.
+ * So the sequence here is exactly the PRE-SERVER MINUTE, the chicken-and-egg a
+ * page cannot do for itself: a guest, a Python, the wheel, `crucible init`, the
+ * service. Its last step is "Open Crucible", and everything after that happens
+ * there or through the **Set up for BookForge** button beside the server's row
+ * (`electron/crucible/module-setup.ts`).
  */
 
 import { spawnSync } from 'child_process';
@@ -80,8 +84,10 @@ import {
   readLocalServer,
 } from './local';
 import { getWslDistro } from '../tool-paths';
+import { BOOKFORGE_MODULE } from './module-setup';
 import type {
   CrucibleGpuFacts,
+  CrucibleHostability,
   CrucibleHostFacts,
   CrucibleHostRefusal,
   CrucibleHostRefusalCode,
@@ -97,8 +103,15 @@ import type {
 // The release this build's sequence installs
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The Crucible version this app's client pin and this plan both name. */
-export const CRUCIBLE_RELEASE = '0.5.0';
+/**
+ * The Crucible version this app's client pin and this plan both name.
+ *
+ * `0.6.0` since 2026-09-14: the operator door (PHASE13-OPERATOR.md §3.6) landed
+ * in that version's SDK and this app is built against it. The pin itself is a
+ * LABELLED STOPGAP — a tarball in `vendor/`, packed from the same commit the
+ * release will be cut from — see `package.json`'s `//crucible-client` key.
+ */
+export const CRUCIBLE_RELEASE = '0.6.0';
 
 /**
  * THE RELEASE WHEEL. It does not exist yet — see the header — and that is not a
@@ -137,28 +150,34 @@ export const DRIVEN_INSTALL_AVAILABLE = false;
  * be a bug report about a different app.
  */
 export const DRIVEN_INSTALL_UNAVAILABLE =
-  `The guided install ships with Crucible's next release — ${BOOTSTRAP_PACKAGE} `
-  + `${CRUCIBLE_RELEASE} is written and is published as an asset of it, and no release carries it `
-  + 'yet (Crucible\'s tags stop at v0.4.0). Until then the steps below are run by hand: they are '
-  + 'the same steps, in the same order, and this app will read the server back out of its own '
-  + 'config.toml when you are done.';
+  `The guided install ships as an asset of Crucible v${CRUCIBLE_RELEASE}, which is written and `
+  + `not yet published — ${BOOTSTRAP_PACKAGE} ${CRUCIBLE_RELEASE} exists in the crucible tree `
+  + '(sdk/bootstrap) and there is no release to install it from. Until then the steps below are '
+  + 'run by hand: they are the same steps, in the same order, and this app will read the server '
+  + 'back out of its own config.toml when you are done. Everything after that — the job '
+  + 'environments and the weights — is one press of "Set up for BookForge" beside its row.';
 
-/** The job types BookForge's pipeline asks a Crucible for, in `crucible init` order. */
-export const BOOKFORGE_JOB_TYPES = ['llm', 'asr', 'tts', 'align', 'rvc', 'denoise'] as const;
-
-/**
- * WHICH NARRATOR ENGINE THE `tts` ENV IS BUILT FOR.
+/*
+ * `BOOKFORGE_JOB_TYPES` AND `BOOKFORGE_NARRATOR_ENGINE` ARE GONE (2026-09-14).
  *
- * `crucible install tts` refuses without it, because cuda-linux has one env per
- * engine. `higgs-v3` is the engine BookForge narrates with today (memory
- * `higgs-engine-in-app`); Orpheus is the other and would be a second
- * `crucible install tts --narrator-engine orpheus` on the same server.
+ * PHASE13-OPERATOR.md §5.4, in as many words: the vendored
+ * `shared/crucible/bookforge.module.json` "is the ONLY place BookForge says
+ * what it needs from a server, replacing `BOOKFORGE_JOB_TYPES` and the pull
+ * list in `electron/crucible/install.ts`, which are deleted."
  *
- * RULING OWED: the plan names one engine. A machine that still renders Orpheus
- * books needs both envs, which is a second multi-gigabyte install and therefore
- * a question for a person rather than a line this file adds unasked.
+ * They were a hand-kept restatement of ids the crucible manifests own, with
+ * nothing comparing them — the day a manifest is renamed, the generator is
+ * re-run and this constant is not. The narrator engine went with them for the
+ * same reason: `higgs-v3` is spelled in the module file, generated from the
+ * voice manifests, and the RULING that used to be recorded here ("does a
+ * machine that still renders Orpheus books need both envs?") was answered by
+ * Owen on 2026-09-14 — Orpheus is DEPRECATED, Higgs is the one narration
+ * engine, and Orpheus lives only on the legacy local path until that layer is
+ * deleted after the in-app pass.
+ *
+ * What reads the module is `electron/crucible/module-setup.ts`, and
+ * `tools/test-crucible-module-file.js` is what keeps the copy honest.
  */
-export const BOOKFORGE_NARRATOR_ENGINE = 'higgs-v3';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The surface of `@crucible/bootstrap`, transcribed — see the header, step 2
@@ -327,6 +346,26 @@ export async function driveCrucibleInstall(
 }
 
 /**
+ * A `tts` entry's narrator engine, or a refusal naming the file.
+ *
+ * `crucible install tts` refuses without one (`narrator_engine_required`):
+ * cuda-linux has one venv per narrator engine. The generator cannot emit a
+ * `tts` entry without it, so this can only fire on a module file somebody
+ * edited by hand — which is exactly the thing that must not pass silently.
+ */
+function requireNarratorEngine(entry: { type: string; narrator_engine?: string }): string {
+  if (entry.narrator_engine === undefined || entry.narrator_engine.trim() === '') {
+    throw new Error(
+      'shared/crucible/bookforge.module.json has a `tts` job type with no `narrator_engine`. '
+      + 'cuda-linux builds one venv per narrator engine and the server refuses a bare `tts` by '
+      + 'name. That file is GENERATED in the crucible repo (scripts/gen-modules.py) and vendored '
+      + 'byte for byte — re-copy it rather than editing it.',
+    );
+  }
+  return entry.narrator_engine;
+}
+
+/**
  * The options BookForge would hand the package on THIS machine.
  *
  * Composed here, beside the hand sequence, so the two say the same thing: the
@@ -339,8 +378,16 @@ export function bookforgeInstallOptions(
   platform: NodeJS.Platform = process.platform,
   distro: string | undefined = getWslDistro(),
 ): BootstrapInstallOptions {
-  const jobTypes: BootstrapJobTypeRequest[] = BOOKFORGE_JOB_TYPES.map((type) =>
-    (type === 'tts' ? { type: 'tts' as const, narratorEngine: BOOKFORGE_NARRATOR_ENGINE } : type));
+  /*
+   * THE JOB TYPES COME FROM THE VENDORED MODULE, which is the one place this
+   * app states what it needs. The driven install and the **Set up for
+   * BookForge** button therefore ask for exactly the same things: one file,
+   * generated from the manifests, read by both.
+   */
+  const jobTypes: BootstrapJobTypeRequest[] = BOOKFORGE_MODULE.job_types.map((entry) =>
+    (entry.type === 'tts'
+      ? { type: 'tts' as const, narratorEngine: requireNarratorEngine(entry) }
+      : entry.type as Exclude<BootstrapJobTypeRequest, { type: 'tts' }>));
   return {
     ...(platform === 'win32' && distro !== undefined ? { distro } : {}),
     jobTypes,
@@ -729,17 +776,108 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
  */
 export function crucibleInstallPlan(host: InstallHost = processInstallHost()): CrucibleInstallPlan {
   const facts = crucibleHostFacts(host);
+  const verdict = hostabilityOf(facts);
   return {
     platform: facts.platform,
     host: facts,
     machine: describeMachine(facts),
+    hostable: verdict.hostable,
+    hostableWhy: verdict.why,
     steps: stepsFor(facts),
     elevated: elevatedFor(facts),
     readme: CRUCIBLE_README,
     wheel: CRUCIBLE_WHEEL,
-    jobTypes: [...BOOKFORGE_JOB_TYPES],
     driven: DRIVEN_INSTALL_AVAILABLE,
     drivenWhy: DRIVEN_INSTALL_UNAVAILABLE,
+  };
+}
+
+/**
+ * COULD A CRUCIBLE LIVE HERE — yes, no, or a question that cannot be asked yet.
+ *
+ * Composed in MAIN so the wizard's three-faced step (PHASE13-OPERATOR.md §5.5)
+ * reads a decision instead of making a second one out of the same nulls. Every
+ * branch answers from something measured; none of them infers from a null.
+ *
+ * THE THIRD VALUE IS THE HONEST ONE ON WINDOWS. What decides hostability there
+ * is whether the GUEST sees a card, and `crucibleHostFacts` refuses to answer
+ * that from the Windows-side `nvidia-smi` — a Windows driver that answers says
+ * nothing about whether the passthrough works. So a machine with no WSL2, or
+ * one where nobody has named the distro, is `unknown` rather than `no`: the
+ * install door is the document whose first step is the thing that would settle
+ * it, and telling somebody with a 4090 "this machine cannot host one" because
+ * they have not installed Ubuntu yet would be a wrong answer stated
+ * confidently.
+ */
+export function hostabilityOf(
+  facts: CrucibleHostFacts,
+): { hostable: CrucibleHostability; why: string } {
+  if (facts.platform === 'other') {
+    return {
+      hostable: 'no',
+      why: `Crucible has a cuda-linux backend and an mlx-darwin one, and ${facts.platformName} is `
+        + 'neither. Point BookForge at a Crucible on another machine — it is the same code path, '
+        + 'because the client speaks HTTP either way.',
+    };
+  }
+
+  if (facts.platform === 'darwin') {
+    if (facts.arch !== 'arm64') {
+      return {
+        hostable: 'no',
+        why: `mlx-darwin is Apple Silicon only and this Mac is ${facts.arch}. There is no Crucible `
+          + 'backend for an Intel Mac, so this one connects to a server rather than holding one.',
+      };
+    }
+    return {
+      hostable: 'yes',
+      why: 'Apple Silicon: the mlx-darwin backend runs on this machine\'s own unified memory, and '
+        + 'there is no card to be absent.',
+    };
+  }
+
+  // Linux and Windows both end at cuda-linux, and both are decided by whether
+  // the thing that would run the server can see an NVIDIA card.
+  if (facts.gpu !== null) {
+    return {
+      hostable: 'yes',
+      why: `${facts.gpu.name}, ${(facts.gpu.vramBytes / 1024 ** 3).toFixed(1)} GB, visible to the `
+        + `${facts.platform === 'win32' ? `WSL2 guest "${facts.wsl?.probed}"` : 'machine'} that `
+        + 'would run the server.',
+    };
+  }
+
+  if (facts.platform === 'win32') {
+    const two = facts.wsl?.distros.filter((d) => d.version === 2) ?? [];
+    if (two.length === 0) {
+      return {
+        hostable: 'unknown',
+        why: 'there is no WSL2 guest here yet, so nobody can ask whether the card is visible to '
+          + 'one — and BookForge will not answer that from the Windows-side nvidia-smi, because a '
+          + 'Windows driver that answers says nothing about whether the passthrough works. The '
+          + 'first step below is what settles it.',
+      };
+    }
+    if ((facts.wsl?.probed ?? null) === null) {
+      return {
+        hostable: 'unknown',
+        why: `this machine has WSL2 (${two.map((d) => d.name).join(', ')}) but BookForge has not `
+          + 'been told which guest the Crucible lives in, so the card question was not asked. '
+          + 'There is no default here on purpose: a server read from the wrong guest is a wrong '
+          + 'server.',
+      };
+    }
+    return {
+      hostable: 'no',
+      why: `the WSL2 guest "${facts.wsl?.probed}" does not see an NVIDIA card, and a cuda-linux `
+        + 'Crucible needs one. The refusals above name what would change that.',
+    };
+  }
+
+  return {
+    hostable: 'no',
+    why: 'no NVIDIA card was readable on this machine, and cuda-linux is the only backend for it. '
+      + 'The refusals above name what would change that.',
   };
 }
 
@@ -839,26 +977,11 @@ function stepsFor(facts: CrucibleHostFacts): CrucibleInstallStep[] {
       detail:
         'Writes ~/.crucible/config.toml with permissions 0600 and mints the bearer token. '
         + 'BookForge never copies that token: it reads the file every time, so a later '
-        + '`crucible init --force` is fixed by doing nothing at all. The job types are the six '
-        + `this app's pipeline uses — ${BOOKFORGE_JOB_TYPES.join(', ')}.`,
-      commands: [run(`crucible init ${BOOKFORGE_JOB_TYPES.map((t) => `--enable-${t}`).join(' ')}`)],
+        + '`crucible init --force` is fixed by doing nothing at all. NO `--enable-*` flags: '
+        + '`crucible install <type>` merges each one in and reloads the registry, so the job '
+        + 'types are turned on by "Set up for BookForge" rather than guessed at here.',
+      commands: [run('crucible init')],
       done: facts.local.present,
-    },
-    {
-      title: 'Install the job environments',
-      detail:
-        'THIS IS THE STEP THAT TAKES THE TIME — several gigabytes each, once. One environment per '
-        + `job type; \`tts\` must name its narrator engine because there is one env per engine. `
-        + '`denoise` has no line of its own: it shares the rvc env, which is why enabling it above '
-        + 'is all it needs.',
-      commands: [
-        run('crucible install llm --verbose'),
-        run(`crucible install tts --narrator-engine ${BOOKFORGE_NARRATOR_ENGINE} --verbose`),
-        run('crucible install asr --verbose'),
-        run('crucible install align --verbose'),
-        run('crucible install rvc --verbose'),
-      ],
-      done: false,
     },
     {
       title: 'Install the service',
@@ -871,37 +994,30 @@ function stepsFor(facts: CrucibleHostFacts): CrucibleInstallStep[] {
       commands: [run('crucible service install')],
       done: false,
     },
+    /*
+     * THE LAST STEP IS A BUTTON, AND THE THREE STEPS THAT USED TO BE HERE ARE
+     * GONE (2026-09-14, PHASE13-OPERATOR.md §0 and §5.2).
+     *
+     * "Install the job environments", "Measure the card" and "Pull the weights"
+     * were eleven copyable commands naming six weights and five envs — a second
+     * copy of what `shared/crucible/bookforge.module.json` states and what
+     * Crucible's own page installs with a button and a progress bar. Two copies
+     * of one fact, kept in step by hand, which is exactly R1's shape. They are
+     * replaced by the one door that does all of it: the page, and the **Set up
+     * for BookForge** button beside the server's row.
+     *
+     * What is left above is genuinely the PRE-SERVER MINUTE — the
+     * chicken-and-egg a page cannot do for itself, because until `crucible
+     * init` has run there is no page.
+     */
     {
-      title: 'Measure the card',
+      title: 'Open Crucible',
       detail:
-        'Writes the capability record — which classes this machine can serve and with which model. '
-        + 'Until this runs, a client asking what it can do is told "undecided" rather than '
-        + '"nothing", which is deliberately different news.',
-      commands: [run('crucible capability --write')],
-      done: false,
-    },
-    {
-      title: 'Pull the weights',
-      detail:
-        'One id per command — `crucible models pull` takes a single positional. These are the ones '
-        + 'BookForge asks for by name: the clean-text model, the transcriber, the aligner, the '
-        + 'default Higgs voice, RVC\'s shared base assets and the hiss separator. `crucible models '
-        + 'list` / `voices list` / `rvc list` show the rest, and nothing is pulled unasked.',
-      commands: [
-        run('crucible models pull qwen3.5-9b'),
-        run('crucible models pull faster-whisper-large-v3'),
-        run('crucible models pull qwen3-aligner'),
-        run('crucible voices pull higgs-default'),
-        run('crucible rvc pull-base'),
-        run('crucible denoise pull denoise-roformer'),
-      ],
-      done: false,
-    },
-    {
-      title: 'Come back here and press "Use the one on this machine"',
-      detail:
-        'That reads the server out of its own config.toml — name, address and token — so this app '
-        + 'keeps no copy of any of them. Nothing to paste.',
+        'Come back here: once that config.toml exists, BookForge reads the server out of it — '
+        + 'name, address and token — and this door becomes one button. Everything else about a '
+        + 'server happens on the server\'s OWN page: install a job type, pull weights, watch the '
+        + 'progress, read the token. "Set up for BookForge" beside its row posts this app\'s '
+        + 'module and does the whole stocking in one task.',
       commands: [],
       done: false,
     },

@@ -150,6 +150,74 @@ export type CrucibleProbeResult =
   | { outcome: 'refused'; message: string };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The operator door (crucible docs/PHASE13-OPERATOR.md sections 5.1, 5.3, 5.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What one pasted `crucible://` line becomes: the three fields the connect
+ * door already has.
+ *
+ * The line is read by the SDK's `parsePairing` IN MAIN, not here, and that is
+ * not a layering preference — the renderer has no `@crucible/client` and the
+ * producer of these lines is `crucible/pairing.py`, so a second parser written
+ * against a format doc would be the two-owners defect in the one place the
+ * format exists to prevent it (PHASE13 §2.1: a line whose meaning depends on
+ * which parser read it is not a format).
+ */
+export interface PairingFields {
+  name: string;
+  url: string;
+  token: string;
+}
+
+/**
+ * A pasted line that is not a pairing line, refused by name.
+ *
+ * `invalid_pairing` is shown VERBATIM and nothing is filled (§5.1). The
+ * `detail` is the SDK's own sentence about what was wrong with the shape — it
+ * never contains the token, which `parsePairing` elides before it throws.
+ */
+export interface PairingRefusal {
+  code: 'invalid_pairing';
+  detail: string;
+}
+
+/** Either three fields, or the named refusal. Never a half-filled form. */
+export type PairingResult =
+  | { ok: true; fields: PairingFields }
+  | { ok: false; refusal: PairingRefusal };
+
+/**
+ * One frame of a **Set up for BookForge** task, as the row draws it.
+ *
+ * Every field is a different kind of fact and they are separate for that
+ * reason: `line` is the installer's own output and is NOT load-bearing
+ * (crucible ARCHITECTURE.md R4), `bytes` is a pull's counts and is, and `step`
+ * is the only thing that says where in the module this is.
+ */
+export interface CrucibleModuleProgress {
+  /** The registry name (or `local`) this task is running on. */
+  server: string;
+  taskId: string | null;
+  state: 'running' | 'done' | 'failed' | 'cancelled';
+  /** `{name, index, total}` — for a module, one per entry plus the reload. */
+  step: { name: string; index: number; total: number } | null;
+  /** One line of pip's output. Draw it, never branch on it. */
+  line: string | null;
+  /** A pull's byte counts. `total` is null where no manifest sizes it. */
+  bytes: { done: number; total: number | null; file: string } | null;
+  /** A module entry that was already true. Idempotence, reported. */
+  skipped: string | null;
+  /**
+   * What the server offers after its reload step — the client is TOLD rather
+   * than having to diff two `/v1/info` reads (§3.4). Null until that step.
+   */
+  jobTypes: string[] | null;
+  /** The `failed` event's own code and message. Completed steps STAY (R6). */
+  error: { code: string; message: string } | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Models, and what is happening right now
 // ─────────────────────────────────────────────────────────────────────────────
 

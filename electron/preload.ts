@@ -59,10 +59,12 @@ import type {
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
+  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   CrucibleTextActModels,
   CrucibleTextActName,
+  PairingResult,
   RemoteServerRow as CrucibleRemoteServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
@@ -1399,6 +1401,42 @@ export interface ElectronAPI {
      * comes back shaped like `@crucible/bootstrap`'s own, `command` included.
      */
     install: () => Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }>;
+
+    /*
+     * ── THE OPERATOR DOOR (PHASE13-OPERATOR.md section 5) ───────────────────
+     *
+     * Crucible serves its own page, and after a server exists everything an
+     * operator does to it happens there. These four are what an app keeps.
+     */
+
+    /**
+     * One pasted `crucible://name@host:port/#token` line becomes the connect
+     * door's three fields. Never a half-filled form: a line the SDK does not
+     * recognise comes back `invalid_pairing` with its own sentence and nothing
+     * is filled.
+     */
+    parsePairing: (line: string) => Promise<{ success: boolean; data?: PairingResult; error?: string }>;
+    /**
+     * Open a NAMED server's own page in a window with no preload, no node
+     * integration, its own session partition and navigation pinned to that
+     * server's origin. The token is read in main from the registry (or
+     * `local`'s config.toml) and is never typed, sent here, or put in a
+     * browser's history.
+     */
+    openUi: (name: string) => Promise<{ success: boolean; data?: { name: string; url: string }; error?: string }>;
+    /** What `shared/crucible/bookforge.module.json` asks a server for. */
+    module: () => Promise<{ success: boolean; data?: { version: string; jobTypes: string[]; subjects: string[] }; error?: string }>;
+    /**
+     * "Set up for BookForge": post the vendored module and watch the task.
+     * Resolves with the LAST frame, so a row that missed the stream still ends
+     * up drawing the truth; a `server_busy` held by a LEASE rejects with the
+     * holder named, because that is the system working and not a fault.
+     */
+    setUpModule: (name: string) => Promise<{ success: boolean; data?: CrucibleModuleProgress; error?: string }>;
+    /** Cancel that task. The server answers `cancelling`; watch for `cancelled`. */
+    cancelSetUp: (name: string, taskId: string) => Promise<{ success: boolean; error?: string }>;
+    /** Every frame of the running module task, as the server emits them. */
+    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void) => () => void;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -2878,6 +2916,22 @@ const electronAPI: ElectronAPI = {
     textModels: () => ipcRenderer.invoke('crucible:text-models'),
     setTextModel: (act: string, model: string) =>
       ipcRenderer.invoke('crucible:set-text-model', act, model),
+    // The operator door. `open-ui`, `setup-module`, `cancel-setup`, `module`
+    // and `parse-pairing` are names the hosted Foundry's `crucible:` family
+    // does not have (foundry-app/IPC-CHANNELS.md), which
+    // tools/test-ipc-collision.js keeps true.
+    parsePairing: (line: string) => ipcRenderer.invoke('crucible:parse-pairing', line),
+    openUi: (name: string) => ipcRenderer.invoke('crucible:open-ui', name),
+    module: () => ipcRenderer.invoke('crucible:module'),
+    setUpModule: (name: string) => ipcRenderer.invoke('crucible:setup-module', name),
+    cancelSetUp: (name: string, taskId: string) =>
+      ipcRenderer.invoke('crucible:cancel-setup', name, taskId),
+    onModuleProgress: (callback: (progress: CrucibleModuleProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: CrucibleModuleProgress) =>
+        callback(progress);
+      ipcRenderer.on('crucible:module-progress', listener);
+      return () => { ipcRenderer.removeListener('crucible:module-progress', listener); };
+    },
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),

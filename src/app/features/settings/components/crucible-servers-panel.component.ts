@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -8,6 +8,7 @@ import { CrucibleDoorsComponent } from './crucible-doors.component';
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
+  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   RankedServerRow,
@@ -89,6 +90,8 @@ const LOCAL = 'local';
                 <span class="cru-badge local">local</span>
               </div>
               <span class="cru-url">{{ v.local.url }}</span>
+              <span class="cru-spacer"></span>
+              <desktop-button variant="ghost" size="sm" (click)="openUi(localName)">Open Crucible</desktop-button>
             </div>
             <p class="cru-meta">
               Token {{ v.local.tokenMasked }}, read from
@@ -142,6 +145,26 @@ const LOCAL = 'local';
               <span class="cru-badge stale">stale — a copy of this machine's own token</span>
             }
             <span class="cru-spacer"></span>
+            <!--
+              OPEN — PHASE13-OPERATOR.md §5.3. Every server row gets it,
+              because the server's own page is where everything about a server
+              now happens: install a job type, pull weights, watch the task,
+              read the token. The token is read in MAIN from the registry (or
+              the local server's config.toml) and never crosses this seam.
+            -->
+            <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Open</desktop-button>
+            <!--
+              SET UP FOR BOOKFORGE — §5.4. Posts the vendored module: the ONE
+              place this app states what it needs from a server. Idempotent, so
+              it is safe on a stocked server and is the honest way to find out
+              whether one is.
+            -->
+            <desktop-button
+              variant="ghost"
+              size="sm"
+              [disabled]="moduleBusy() === row.name"
+              (click)="setUpFor(row.name)"
+            >{{ moduleBusy() === row.name ? 'Setting up…' : 'Set up for BookForge' }}</desktop-button>
             <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="test(row.name)">
               {{ busy()[row.name] ? 'Testing…' : 'Test' }}
             </desktop-button>
@@ -295,6 +318,43 @@ const LOCAL = 'local';
             </div>
           }
 
+          <!--
+            THE MODULE TASK, IN THE ROW THAT STARTED IT (§5.4). A server_busy
+            held by a LEASE lands in moduleError with the holder's own words —
+            "held by a lease: foundry, translate" — and NOT as a generic
+            failure: a lease means another app on that machine is mid-run,
+            which is the system working.
+          -->
+          @if (moduleProgress()[row.name]; as m) {
+            <div class="cru-module">
+              <p class="cru-meta">
+                <strong>{{ m.state === 'running' ? 'Setting up' : m.state }}</strong>
+                @if (m.step) { · step {{ m.step.index }} of {{ m.step.total }}: {{ m.step.name }} }
+              </p>
+              @if (m.bytes) {
+                <p class="cru-meta">
+                  {{ m.bytes.file }} — {{ (m.bytes.done / 1048576).toFixed(0) }} MB{{ m.bytes.total ? ' of ' + (m.bytes.total / 1048576).toFixed(0) + ' MB' : '' }}
+                </p>
+              }
+              @if (m.line) { <p class="cru-meta mono">{{ m.line }}</p> }
+              @if (m.skipped) { <p class="cru-meta">already here — {{ m.skipped }}</p> }
+              @if (m.jobTypes) { <p class="cru-facts">now serving {{ m.jobTypes.join(', ') }}</p> }
+              @if (m.error) {
+                <p class="cru-refusal"><span class="cru-badge bad">{{ m.error.code }}</span> {{ m.error.message }}</p>
+                <p class="cru-meta">
+                  Every step that finished stays done — the environments and the weights are on
+                  disk. Pressing again skips everything that is already true.
+                </p>
+              }
+              @if (m.state === 'running' && m.taskId) {
+                <desktop-button variant="ghost" size="sm" (click)="cancelSetUp(row.name, m.taskId)">Cancel</desktop-button>
+              }
+            </div>
+          }
+          @if (moduleError()[row.name]; as err) {
+            <p class="cru-refusal">{{ err }}</p>
+          }
+
           @if (rowError()[row.name]; as err) {
             <p class="cru-refusal">{{ err }}</p>
           }
@@ -364,8 +424,31 @@ const LOCAL = 'local';
       <h4 class="cru-group">Add a Crucible server</h4>
       <p class="cru-sub">
         Only servers on OTHER machines are added here. The one on this machine is read from its own
-        config. Get its token by running <code>crucible token --show</code> on that host.
+        config. Open that server's page (or run <code>crucible token --url</code> on it) and copy
+        the one <code>crucible://</code> line it prints — it carries the name, the address and the
+        token, so nothing has to be transcribed.
       </p>
+      <!--
+        PHASE13-OPERATOR.md §5.1. The line is parsed in MAIN by the SDK's
+        parsePairing, the tested inverse of crucible's own producer; a line it
+        does not recognise is refused invalid_pairing with that sentence
+        VERBATIM and nothing is filled.
+      -->
+      <div class="cru-add">
+        <input
+          class="cru-input wide"
+          type="text"
+          placeholder="Paste from Crucible: crucible://name@host:port/#token"
+          [(ngModel)]="draftPaste"
+          (paste)="onPaste()"
+          (keyup.enter)="readPairing()" />
+        <desktop-button variant="ghost" size="sm" [disabled]="addBusy()" (click)="readPairing()">
+          Read it
+        </desktop-button>
+      </div>
+      @if (pairingRefusal(); as r) {
+        <p class="cru-refusal"><span class="cru-badge bad">{{ r.code }}</span> {{ r.detail }}</p>
+      }
       <div class="cru-add">
         <input class="cru-input" type="text" placeholder="Name (e.g. mac)" [(ngModel)]="draftName" />
         <input class="cru-input wide" type="text" placeholder="http://host:7100" [(ngModel)]="draftUrl" />
@@ -449,6 +532,14 @@ const LOCAL = 'local';
       color: var(--text-primary); font-size: 13px;
     }
     .cru-input.wide { flex: 2; min-width: 200px; }
+    .cru-module {
+      display: flex; flex-direction: column; gap: 3px; margin-top: 6px;
+      padding: 8px 10px; border-radius: 6px;
+      border: 1px solid var(--border-subtle, var(--border-default));
+      background: var(--bg-elevated, var(--surface-2));
+    }
+    /* pip's own output: shown, never branched on (crucible ARCHITECTURE.md R4). */
+    .cru-meta.mono { font-family: var(--font-mono, monospace); font-size: 11.5px; white-space: pre; overflow-x: auto; }
     code { font-family: var(--font-mono, monospace); background: var(--bg-elevated, var(--surface-2)); padding: 0 4px; border-radius: 3px; }
   `],
 })
@@ -477,12 +568,23 @@ export class CrucibleServersPanelComponent {
   readonly confirmRemove = signal<string | null>(null);
   readonly confirmOp = signal<string | null>(null);
 
+  draftPaste = '';
   draftName = '';
   draftUrl = '';
   draftToken = '';
   readonly addBusy = signal(false);
   readonly addProbe = signal<CrucibleProbeResult | null>(null);
   readonly addError = signal<string | null>(null);
+  readonly pairingRefusal = signal<{ code: string; detail: string } | null>(null);
+
+  /**
+   * THE MODULE TASK, PER ROW. One server at a time — a Crucible runs ONE task
+   * at a time and a second POST is refused `task_busy`, so a screen that let
+   * two rows be pressed at once would be manufacturing that refusal itself.
+   */
+  readonly moduleBusy = signal<string | null>(null);
+  readonly moduleProgress = signal<Record<string, CrucibleModuleProgress>>({});
+  readonly moduleError = signal<Record<string, string>>({});
 
   private readonly dragging = signal<string | null>(null);
   readonly dragName = this.dragging.asReadonly();
@@ -490,6 +592,12 @@ export class CrucibleServersPanelComponent {
   constructor() {
     void this.reload();
     void this.reloadWaitForCounts();
+    // Every frame of a running module task, filed under the server it names —
+    // so a row draws its own task and nobody else's.
+    const stop = this.electron.crucible.onModuleProgress((progress) => {
+      this.moduleProgress.update((all) => ({ ...all, [progress.server]: progress }));
+    });
+    inject(DestroyRef).onDestroy(stop);
   }
 
   // ── The list ───────────────────────────────────────────────────────────
@@ -778,10 +886,124 @@ export class CrucibleServersPanelComponent {
       this.draftName = '';
       this.draftUrl = '';
       this.draftToken = '';
+      this.draftPaste = '';
       this.addProbe.set(null);
+      this.pairingRefusal.set(null);
       await this.reload();
     } finally {
       this.addBusy.set(false);
+    }
+  }
+
+  // ── One pasted line becomes the three fields (PHASE13 §5.1) ────────────
+
+  /**
+   * A paste reads the line immediately, on the next tick.
+   *
+   * The `paste` event fires BEFORE ngModel has the new value, so reading it
+   * synchronously would parse whatever was in the field a moment ago — usually
+   * the empty string.
+   */
+  onPaste(): void {
+    setTimeout(() => { void this.readPairing(); }, 0);
+  }
+
+  /**
+   * `crucible://name@host:port/#token` → Name / Address / Token, or a named
+   * refusal with NOTHING filled.
+   *
+   * Parsed in MAIN by the SDK's `parsePairing`, which is the tested inverse of
+   * `crucible/pairing.py` — the two are held together by the same literal line
+   * appearing in both repos' tests. A second parser here, written from the
+   * format doc, would be exactly the two-owners defect the format's percent
+   * encoding exists to prevent.
+   */
+  async readPairing(): Promise<void> {
+    const line = this.draftPaste.trim();
+    if (line === '') return;
+    this.addBusy.set(true);
+    this.pairingRefusal.set(null);
+    this.addError.set(null);
+    try {
+      const res = await this.electron.crucible.parsePairing(line);
+      if (!res.success || !res.data) {
+        this.addError.set(res.error ?? 'The line could not be read, and nothing said why.');
+        return;
+      }
+      if (!res.data.ok) {
+        this.pairingRefusal.set(res.data.refusal);
+        return;
+      }
+      this.draftName = res.data.fields.name;
+      this.draftUrl = res.data.fields.url;
+      this.draftToken = res.data.fields.token;
+      this.draftPaste = '';
+      this.addProbe.set(null);
+    } finally {
+      this.addBusy.set(false);
+    }
+  }
+
+  // ── The operator door: Open, and Set up for BookForge ──────────────────
+
+  /**
+   * Open that server's own page (PHASE13 §5.3).
+   *
+   * A window with no preload, in its own session, pinned to that server's
+   * origin. The token is read in MAIN from the registry or from `local`'s own
+   * config.toml; nothing about it crosses this seam, and no external browser
+   * gets the `#token=` fragment into its history.
+   */
+  async openUi(name: string): Promise<void> {
+    const res = await this.electron.crucible.openUi(name);
+    if (!res.success) {
+      this.setRowError(
+        name, res.error ?? `The Crucible page for "${name}" could not be opened, and nothing said why.`);
+    }
+  }
+
+  /**
+   * Post `shared/crucible/bookforge.module.json` to this server and draw its
+   * task in this row (PHASE13 §5.4).
+   *
+   * ONE AT A TIME, because a Crucible runs one task at a time and a second POST
+   * is refused `task_busy` — a screen that let two rows be pressed together
+   * would be manufacturing that refusal itself.
+   */
+  async setUpFor(name: string): Promise<void> {
+    if (this.moduleBusy() !== null) return;
+    this.moduleBusy.set(name);
+    this.moduleError.update((all) => { const next = { ...all }; delete next[name]; return next; });
+    this.moduleProgress.update((all) => { const next = { ...all }; delete next[name]; return next; });
+    try {
+      const res = await this.electron.crucible.setUpModule(name);
+      if (!res.success) {
+        // A `server_busy` held by a LEASE arrives here with the holder's own
+        // words, and it is shown as it came: a lease means another app on that
+        // machine is mid-run, which is the system working.
+        this.moduleError.update((all) => ({
+          ...all,
+          [name]: res.error ?? `"${name}" refused the setup task and said nothing about why.`,
+        }));
+        return;
+      }
+      if (res.data) {
+        const done = res.data;
+        this.moduleProgress.update((all) => ({ ...all, [name]: done }));
+      }
+      await this.refreshServer(name);
+    } finally {
+      this.moduleBusy.set(null);
+    }
+  }
+
+  async cancelSetUp(name: string, taskId: string): Promise<void> {
+    const res = await this.electron.crucible.cancelSetUp(name, taskId);
+    if (!res.success) {
+      this.moduleError.update((all) => ({
+        ...all,
+        [name]: res.error ?? `The cancel on "${name}" refused and said nothing about why.`,
+      }));
     }
   }
 
