@@ -58,6 +58,27 @@
  * and one bulk copy of the finished set. The DURABLE home is unchanged — the set
  * still lands inside the session on `Z:`, and the atomic `.partial` → rename
  * commit is what makes the extra hop free (`commitDerivedSentences`).
+ *
+ * ── …AND THE ROFORMER ITSELF MAY RUN ON ANOTHER MACHINE ─────────────────────
+ *
+ * The resident `separator_worker.py` is one of two venues now
+ * (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3): `electron/crucible/denoise.ts` sends
+ * each block to a Crucible `denoise` job instead, and `denoiseAtVenue` decides
+ * which — the RUN's already-resolved venue first (the session's own
+ * `settings.crucible.server`, PHASE7-LANES.md §4.4: one book, one GPU), else the
+ * one decision every GPU door makes. The legacy switch is what keeps the local
+ * worker, and it says so by name.
+ *
+ * ONLY THE MODEL MOVES. The blocks, the offsets manifest, the frame-exact
+ * checks and the slicing all still happen here, because PHASE4-AUDIO.md §4.2
+ * rules that blocking stays in the client. So the two venues produce the same
+ * set from the same source, and the derivation manifest cannot tell them apart —
+ * which is deliberate: a denoised set is a denoised set, and re-deriving it
+ * because the operator changed machines would cost an hour of GPU for nothing.
+ *
+ * RULING OWED, the same one `rvc-job.ts` and `electron/crucible/asr.ts` record:
+ * this job takes the local GPU arbiter lease around its whole pass and still
+ * does when the roformer runs on a remote Crucible, where it bounds nothing.
  */
 
 import { publishBridgeEvent } from './bridge-events';
@@ -124,6 +145,16 @@ export interface FinalDenoiseConfig {
    * swallowing it would silently drop a value the user moved a slider to.
    */
   sentenceGap?: number;
+  /**
+   * RUN THIS DENOISE'S BLOCKS ON A NAMED CRUCIBLE SERVER.
+   *
+   * The caller's own instruction — the queue row's resolved `waitFor`, or an
+   * operator naming a machine. It may only AGREE with the run's venue (the
+   * session's own record): two answers for one run are refused by name
+   * (`run_venue_disagrees`), never ranked. Absent means the run's venue decides,
+   * and failing that the routing record.
+   */
+  crucible?: { server: string };
 }
 
 export interface FinalDenoiseProgress {
@@ -243,6 +274,12 @@ export interface DeriveHooks {
   onGapStart?: () => void;
   onDenoiseProgress?: (done: number, total: number) => void;
   signal?: AbortSignal;
+  /**
+   * Separate the blocks on this Crucible server instead of here. Absent is the
+   * resident local worker, which is every denoise today. `runFinalDenoise`
+   * decides it once (`denoiseAtVenue`); nothing else here reads it.
+   */
+  crucible?: { server: string };
 }
 
 export interface DerivedSet {
@@ -321,6 +358,8 @@ export async function deriveDenoisedSentences(
       signal: hooks.signal,
       onProgress: hooks.onDenoiseProgress,
       onLog: hooks.log,
+      // Absent = the resident local worker. Only the model moves.
+      ...(hooks.crucible === undefined ? {} : { crucible: hooks.crucible }),
     });
 
     // The denoise has read the gap set for the last time; drop it before the copy
@@ -391,9 +430,10 @@ export async function runFinalDenoise(
   warnProceedingWithoutGpu(lease, `the final denoise for job ${jobId}`);
 
   try {
-    const set = await deriveDenoisedSentences(plan, {
+    const log = (message: string): void => console.log(`[DENOISE-JOB] ${jobId}: ${message}`);
+    const hooks: DeriveHooks = {
       signal: abort.signal,
-      log: (message) => console.log(`[DENOISE-JOB] ${jobId}: ${message}`),
+      log,
       onGapStart: () => sendProgress(mainWindow, jobId, {
         phase: 'preparing', percentage: 0, message: 'Normalizing sentence gaps…',
       }),
@@ -404,7 +444,27 @@ export async function runFinalDenoise(
         total,
         message: `Denoising audio… (block ${done}/${total})`,
       }),
+    };
+
+    /*
+     * WHERE THE ROFORMER RUNS. The run's venue first — the session's own
+     * `settings.crucible.server`, which the render bridge persisted — then the
+     * one decision. There is no fallback to this card: a denoise nobody placed
+     * does not quietly happen here.
+     */
+    const { denoiseAtVenue } = await import('./crucible/denoise.js');
+    const { processVenueHost } = await import('./crucible/generation-venue.js');
+    const { readSessionRunVenue } = await import('./coverage-align-job.js');
+    const runVenue = readSessionRunVenue(config.processDir);
+    const at = await denoiseAtVenue<DerivedSet>({
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
+      host: processVenueHost(),
+      onLog: log,
+      legacyLocal: () => deriveDenoisedSentences(plan, hooks),
+      onCrucibleServer: (server) => deriveDenoisedSentences(plan, { ...hooks, crucible: { server } }),
     });
+    const set = at.outcome;
     activeAborts.delete(jobId);
     sendProgress(mainWindow, jobId, { phase: 'complete', percentage: 100, message: 'Denoise complete.' });
     return { success: true, outputDir: set.dir, reused: set.reused };

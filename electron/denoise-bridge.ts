@@ -53,6 +53,7 @@ import { app } from 'electron';
 import { getRvcEnvRoot, getRvcPython } from './rvc-bridge';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootstrap';
 import { toUnpackedPath } from './narrator-paths';
+import { crucibleBlockSeparator, type BlockSeparator } from './crucible/denoise';
 
 /** The proven denoise model (44.1 kHz native — see the rate note above). */
 const DENOISE_MODEL = 'denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt';
@@ -161,6 +162,20 @@ export interface DenoiseSentencesOptions {
   onLog?: (message: string) => void;
   /** Abort to cancel the run (kills the in-flight separator/ffmpeg child). */
   signal?: AbortSignal;
+  /**
+   * SEPARATE THE BLOCKS ON A NAMED CRUCIBLE SERVER INSTEAD OF HERE.
+   *
+   * Everything else is unchanged: this side still builds the ~22-minute blocks,
+   * still records the offsets manifest, still checks that the primary stem came
+   * back at 44.1 kHz the same length sample for sample, and still slices it back
+   * into the session's own format. Only the model moves — which is exactly what
+   * PHASE4-AUDIO.md §4.2 rules ("Blocking stays in the client … Crucible
+   * denoises one thing at a time").
+   *
+   * Absent means the resident `separator_worker.py` in the rvc-env, which is
+   * every denoise today. `denoise-job.ts` decides which, once.
+   */
+  crucible?: { server: string };
 }
 
 /** One sentence's slot in a block: its original filename and its exact length
@@ -184,6 +199,11 @@ interface BlockPlan {
  * `outputDir`. Every input must produce an output or the run fails loudly.
  */
 export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<string> {
+  // THE ENV IS NEEDED EITHER WAY, AND NOT FOR THE SAME REASON. Locally it
+  // carries the model; on a Crucible run it still carries the ffmpeg/ffprobe
+  // that build the blocks and slice the stems back, so the readiness check
+  // stands for both venues — what a Crucible removes is the separator, not the
+  // block machinery (PHASE4-AUDIO.md §4.2: blocking stays in the client).
   const ready = finalDenoiseReady();
   if (!ready.ok) throw new Error(ready.reason);
   const root = getRvcEnvRoot()!;
@@ -286,27 +306,29 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
     //    model loaded once), verify each (dry) stem, slice it back at the recorded
     //    offsets into the output dir.
     opts.onProgress?.(0, blocks.length);
-    const separator = new ResidentSeparator(python, root, DENOISE_MODEL, opts.signal);
+    // ONE SEAM, TWO ENGINES. Which stem is the primary one is the separator's to
+    // say — locally by the `(dry)` marker in the filename, remotely because
+    // `done` names it — and everything after that line is identical.
+    const separator: BlockSeparator = opts.crucible
+      ? crucibleBlockSeparator({
+        server: opts.crucible.server,
+        onLog: (line) => opts.onLog?.(line),
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      })
+      : localBlockSeparator(python, root, opts.signal);
     try {
-      opts.onLog?.(`Final denoise: loading ${DENOISE_MODEL} once for all ${blocks.length} block(s)…`);
-      const loadSeconds = await separator.start(work);
-      opts.onLog?.(`Final denoise: model resident after ${loadSeconds.toFixed(1)}s — denoising ${blocks.length} block(s).`);
+      opts.onLog?.(separator.starting(blocks.length));
+      opts.onLog?.(await separator.start(work, blocks.length));
 
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi];
         const dnDir = path.join(work, `dn_${String(bi).padStart(2, '0')}`);
         fs.mkdirSync(dnDir);
         throwIfAborted(opts.signal);
-        // eslint-disable-next-line no-await-in-loop -- blocks are intentionally serial (one GPU pass at a time)
-        await separator.separate(block.blockPath, dnDir);
-
-        // Exactly one (dry) stem, still at the model rate, still the block's exact
+        // The primary stem, still at the model rate, still the block's exact
         // length — anything else invalidates the offsets. (NO FALLBACKS.)
-        const dry = fs.readdirSync(dnDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
-        if (dry.length !== 1) {
-          throw new Error(`Final denoise: block ${bi} produced ${dry.length} "(dry)" stems in ${dnDir} — expected exactly 1.`);
-        }
-        const dryPath = path.join(dnDir, dry[0]);
+        // eslint-disable-next-line no-await-in-loop -- blocks are intentionally serial (one GPU pass at a time)
+        const dryPath = await separator.separate(block.blockPath, dnDir);
         const dryInfo = readWavInfo(dryPath);
         if (dryInfo.sampleRate !== DENOISE_SR) {
           throw new Error(`Final denoise: block ${bi} dry stem is ${dryInfo.sampleRate} Hz, expected ${DENOISE_SR} — the denoiser resampled it.`);
@@ -849,6 +871,40 @@ class ResidentSeparator {
     }, 2000);
     hard.unref();
   }
+}
+
+/**
+ * {@link ResidentSeparator} as a {@link BlockSeparator} — the local venue.
+ *
+ * The one thing it adds is WHICH STEM IS THE ANSWER: audio-separator names its
+ * outputs `<input>_(dry)_<model>.wav`, so the denoised audio is the file whose
+ * name carries `(dry)` and exactly one must. (Zero means the model produced
+ * something other than what it is supposed to; two means nothing can say which
+ * one is the denoised audio.) Its Crucible twin does not re-derive this from a
+ * filename — `done` names the primary stem there — which is why the choice
+ * lives behind the seam rather than in the block loop.
+ */
+function localBlockSeparator(python: string, root: string, signal?: AbortSignal): BlockSeparator {
+  const worker = new ResidentSeparator(python, root, DENOISE_MODEL, signal);
+  return {
+    starting(blocks: number): string {
+      return `Final denoise: loading ${DENOISE_MODEL} once for all ${blocks} block(s)…`;
+    },
+    async start(workDir: string, blocks: number): Promise<string> {
+      const loadSeconds = await worker.start(workDir);
+      return `Final denoise: model resident after ${loadSeconds.toFixed(1)}s — denoising ${blocks} block(s).`;
+    },
+    async separate(inputPath: string, outDir: string): Promise<string> {
+      await worker.separate(inputPath, outDir);
+      const dry = fs.readdirSync(outDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
+      if (dry.length !== 1) {
+        throw new Error(`Final denoise: ${path.basename(inputPath)} produced ${dry.length} `
+          + `"(${DENOISE_STEM})" stems in ${outDir} — expected exactly 1.`);
+      }
+      return path.join(outDir, dry[0]);
+    },
+    dispose: () => worker.dispose(),
+  };
 }
 
 /** One separator process over one file — the exact seed-pipeline invocation.

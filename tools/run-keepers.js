@@ -155,6 +155,12 @@ const SUITES = [
   // memory bound; and a job that ends `done` having converted fewer files than
   // it was given fails rather than handing assembly a gapped set.
   'test-crucible-rvc',
+  // The denoise, same night, same fake: only the SEPARATOR moves — blocking
+  // stays in the client — so the seam is one block in, the primary stem out, and
+  // the primary is the one the SERVER named, never the one whose filename says
+  // `(dry)`. A `done` with no primary and a primary the job never wrote are both
+  // refused by name; `params` is empty ON PURPOSE and the check says so.
+  'test-crucible-denoise',
   // The Listen path on somebody else's card (rollout tier 3): the three
   // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
   // session now stands beside the local narrator, chosen by the SAME venue
