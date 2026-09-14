@@ -58,6 +58,16 @@ export interface GenerateSentencesConfig {
   method?: 'whisper' | 'epub-align';
   /** When method='epub-align', the ebook ProjectVariant.id to align against. */
   epubVariantId?: string;
+  /**
+   * THE CALLER'S OWN VENUE for a whisper transcription: the NAME of a Crucible
+   * server (or `local`), when the caller chose one — a CLI `--crucible-server`,
+   * a row re-run on the machine it first ran on. Absent, the routing record
+   * decides (`decideWhereGenerationRuns`: the legacy switch, then rank), exactly
+   * as a render's venue is decided. Read only by the `whisper` method; the
+   * `epub-align` method is a local WhisperX spawn and stays one (see
+   * `electron/crucible/align.ts`'s header for why it is not ported).
+   */
+  crucible?: { server: string };
 }
 
 interface ActiveJob {
@@ -156,10 +166,23 @@ function sendComplete(
   outputPath?: string,
   error?: string,
   warning?: string,
+  /**
+   * WHERE the transcription ran — `crucible:<server>` or `legacy-local-narrator`
+   * — recorded on the completion so the queue row's artifact says which machine
+   * transcribed the book, the way a render's saved state says which rendered it.
+   */
+  venue?: string,
+  /** Present exactly on a Crucible `server_busy`: the SDK's holder line the queue holds the row on. */
+  busyLine?: string,
 ): void {
-  publishBridgeEvent('generate-sentences:complete', { jobId, success, outputPath, error, warning });
+  publishBridgeEvent('generate-sentences:complete', { jobId, success, outputPath, error, warning, venue, busyLine });
   if (win.isDestroyed()) return;
-  win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error, warning });
+  win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error, warning, venue, busyLine });
+}
+
+/** One word for a venue, for the log and the completion record. */
+function venueLabel(venue: { where: 'crucible'; server: string } | { where: 'legacy-local-narrator' }): string {
+  return venue.where === 'crucible' ? `crucible:${venue.server}` : venue.where;
 }
 
 export async function startGenerateSentences(
@@ -245,52 +268,6 @@ export async function startGenerateSentences(
     if (!modelDef) throw new Error(`Unknown Whisper model: ${config.modelId}`);
     const modelDir = whisperModelDir(config.modelId);
 
-    // Engine overlay not installed yet → install it as part of the job (~35 MB
-    // pip overlay into the runtime env). This is the ONLY place the engine is
-    // required, so the picker never blocks on it — the queue owns the install,
-    // where progress and failures are visible and logged.
-    const engineInstalled = isWhisperEnvInstalled();
-    glog(`[generate-sentences] engine installed=${engineInstalled}`);
-    if (!engineInstalled) {
-      sendProgress(mainWindow, jobId, 0, 'Installing the speech-to-text engine…');
-      glog('[generate-sentences] installing engine overlay…');
-      const inst = await componentManager.install(WHISPER_ENV_ID, (p) => {
-        if (p.message) sendProgress(mainWindow, jobId, 0, p.message);
-      });
-      glog(`[generate-sentences] engine install result ok=${inst.ok}`, { error: inst.error });
-      if (!inst.ok) throw new Error(inst.error || 'Failed to install the speech-to-text engine');
-      if (activeJobs.get(jobId)?.cancelled) {
-        sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
-        return;
-      }
-    }
-
-    // Model not on disk yet → download it first (deduped inside whisper-models,
-    // so if the download dock already started it we join that run instead of
-    // racing a second snapshot into the same dir). The job's bar stays at 0 with
-    // the download percent in the message, so transcription owns the 0–100 range.
-    const modelPresent = isWhisperModelPresent(config.modelId);
-    glog(`[generate-sentences] model ${config.modelId} present=${modelPresent} dir=${modelDir}`);
-    if (!modelPresent) {
-      sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model…`);
-      glog(`[generate-sentences] downloading model ${config.modelId}…`);
-      const dl = await downloadWhisperModel(config.modelId, (p) => {
-        // Drive the bar with the real download percent (this is its own 0–100
-        // phase; transcription re-drives 0–100 after, distinguished by message)
-        // so a multi-GB download never looks like a frozen 0%.
-        sendProgress(mainWindow, jobId, p.pct, `Downloading the ${modelDef.label} model… ${p.pct}%`);
-      });
-      glog(`[generate-sentences] model download ok=${dl.ok}`, { error: dl.error });
-      if (!dl.ok) throw new Error(dl.error || `Failed to download the ${modelDef.label} model`);
-      if (activeJobs.get(jobId)?.cancelled) {
-        sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
-        return;
-      }
-    }
-    if (!fs.existsSync(path.join(modelDir, 'model.bin'))) {
-      throw new Error(`The ${modelDef.label} model isn’t downloaded yet.`);
-    }
-
     const m4bPath = normalizeFsPath(config.m4bPath);
     if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
 
@@ -299,56 +276,165 @@ export async function startGenerateSentences(
     const outVtt = path.join(os.tmpdir(), `bookforge-transcript-${jobId}-${Date.now()}.vtt`);
     workingVttPath = outVtt;
 
-    sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
-    glog(`[generate-sentences] transcribe START audio=${m4bPath} out=${outVtt}`);
+    /*
+     * THE LOCAL SPAWN, EXACTLY AS IT HAS ALWAYS RUN — engine overlay, model
+     * download, `transcribe_audiobook.py` on this machine's card. It is now a
+     * closure because WHERE the transcription runs is decided first
+     * (`transcribeAtVenue`, the same decision a render makes), and this is the
+     * answer when the legacy switch is on. It is never a fallback: a Crucible
+     * that refuses fails the row by name and this closure is not called.
+     *
+     * A cancel inside it THROWS 'Cancelled' rather than completing the job
+     * itself: the catch below turns that one word into the completion it always
+     * did, and the outer finally cleans the VTT.
+     */
+    const transcribeLocally = async (): Promise<{ cues: number }> => {
+      // Engine overlay not installed yet → install it as part of the job (~35 MB
+      // pip overlay into the runtime env). This is the ONLY place the engine is
+      // required, so the picker never blocks on it — the queue owns the install,
+      // where progress and failures are visible and logged.
+      const engineInstalled = isWhisperEnvInstalled();
+      glog(`[generate-sentences] engine installed=${engineInstalled}`);
+      if (!engineInstalled) {
+        sendProgress(mainWindow, jobId, 0, 'Installing the speech-to-text engine…');
+        glog('[generate-sentences] installing engine overlay…');
+        const inst = await componentManager.install(WHISPER_ENV_ID, (p) => {
+          if (p.message) sendProgress(mainWindow, jobId, 0, p.message);
+        });
+        glog(`[generate-sentences] engine install result ok=${inst.ok}`, { error: inst.error });
+        if (!inst.ok) throw new Error(inst.error || 'Failed to install the speech-to-text engine');
+        if (activeJobs.get(jobId)?.cancelled) throw new Error('Cancelled');
+      }
 
-    // The script narrates its phases so a long book (where the percentage rounds to
-    // 0 for minutes) still shows something moving: model load → decode → a live
-    // "H:MM:SS / H:MM:SS · N sentences" position that ticks every ~1.5 s.
-    let deviceLabel = 'GPU';
-    const result = await transcribeAudiobook({
-      audioPath: m4bPath,
-      modelDir,
-      outPath: outVtt,
-      language: config.language || 'auto',
-      device: 'auto',
-      signal: controller.signal,
-      onDevice: (dev) => {
-        deviceLabel = dev === 'cuda' ? 'GPU' : 'CPU';
-        glog(`[generate-sentences] transcribing on ${dev}`);
-      },
-      onStage: (stage) => {
-        if (stage === 'loading') sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
-        else if (stage === 'decoding') sendProgress(mainWindow, jobId, 0, 'Decoding the audiobook…');
-        else if (stage === 'transcribing') sendProgress(mainWindow, jobId, 0, `Transcribing on the ${deviceLabel}…`);
-      },
-      onDecodeProgress: (processedSec, totalSec) => {
-        // Decode owns its own 0–100 pass on the bar (same pattern as the model
-        // download above; transcription re-drives 0–100 after, distinguished by
-        // message). With no container duration, show the moving position alone.
-        if (totalSec > 0) {
-          const pct = Math.min(100, Math.round((processedSec / totalSec) * 100));
-          sendProgress(mainWindow, jobId, pct, `Decoding the audiobook… ${fmtDur(processedSec)} / ${fmtDur(totalSec)}`);
-        } else {
-          sendProgress(mainWindow, jobId, 0, `Decoding the audiobook… ${fmtDur(processedSec)}`);
-        }
-      },
-      onProgress: (frac, detail) => {
-        const pct = Math.round(frac * 100);
-        const message = detail && detail.totalSec > 0
-          ? `Transcribing on the ${deviceLabel}… ${fmtDur(detail.processedSec)} / ${fmtDur(detail.totalSec)} · ${detail.cues} sentence${detail.cues === 1 ? '' : 's'}`
-          : `Transcribing on the ${deviceLabel}…`;
-        sendProgress(mainWindow, jobId, pct, message);
-      },
-    });
+      // Model not on disk yet → download it first (deduped inside whisper-models,
+      // so if the download dock already started it we join that run instead of
+      // racing a second snapshot into the same dir). The job's bar stays at 0 with
+      // the download percent in the message, so transcription owns the 0–100 range.
+      const modelPresent = isWhisperModelPresent(config.modelId);
+      glog(`[generate-sentences] model ${config.modelId} present=${modelPresent} dir=${modelDir}`);
+      if (!modelPresent) {
+        sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model…`);
+        glog(`[generate-sentences] downloading model ${config.modelId}…`);
+        const dl = await downloadWhisperModel(config.modelId, (p) => {
+          // Drive the bar with the real download percent (this is its own 0–100
+          // phase; transcription re-drives 0–100 after, distinguished by message)
+          // so a multi-GB download never looks like a frozen 0%.
+          sendProgress(mainWindow, jobId, p.pct, `Downloading the ${modelDef.label} model… ${p.pct}%`);
+        });
+        glog(`[generate-sentences] model download ok=${dl.ok}`, { error: dl.error });
+        if (!dl.ok) throw new Error(dl.error || `Failed to download the ${modelDef.label} model`);
+        if (activeJobs.get(jobId)?.cancelled) throw new Error('Cancelled');
+      }
+      if (!fs.existsSync(path.join(modelDir, 'model.bin'))) {
+        throw new Error(`The ${modelDef.label} model isn’t downloaded yet.`);
+      }
 
-    glog(`[generate-sentences] transcribe DONE ok=${result.ok}`, { cues: result.cues, device: result.device, error: result.error });
+      sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
+      glog(`[generate-sentences] transcribe START audio=${m4bPath} out=${outVtt}`);
 
-    if (activeJobs.get(jobId)?.cancelled) {
-      sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
-      return;
+      // The script narrates its phases so a long book (where the percentage rounds to
+      // 0 for minutes) still shows something moving: model load → decode → a live
+      // "H:MM:SS / H:MM:SS · N sentences" position that ticks every ~1.5 s.
+      let deviceLabel = 'GPU';
+      const result = await transcribeAudiobook({
+        audioPath: m4bPath,
+        modelDir,
+        outPath: outVtt,
+        language: config.language || 'auto',
+        device: 'auto',
+        signal: controller.signal,
+        onDevice: (dev) => {
+          deviceLabel = dev === 'cuda' ? 'GPU' : 'CPU';
+          glog(`[generate-sentences] transcribing on ${dev}`);
+        },
+        onStage: (stage) => {
+          if (stage === 'loading') sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
+          else if (stage === 'decoding') sendProgress(mainWindow, jobId, 0, 'Decoding the audiobook…');
+          else if (stage === 'transcribing') sendProgress(mainWindow, jobId, 0, `Transcribing on the ${deviceLabel}…`);
+        },
+        onDecodeProgress: (processedSec, totalSec) => {
+          // Decode owns its own 0–100 pass on the bar (same pattern as the model
+          // download above; transcription re-drives 0–100 after, distinguished by
+          // message). With no container duration, show the moving position alone.
+          if (totalSec > 0) {
+            const pct = Math.min(100, Math.round((processedSec / totalSec) * 100));
+            sendProgress(mainWindow, jobId, pct, `Decoding the audiobook… ${fmtDur(processedSec)} / ${fmtDur(totalSec)}`);
+          } else {
+            sendProgress(mainWindow, jobId, 0, `Decoding the audiobook… ${fmtDur(processedSec)}`);
+          }
+        },
+        onProgress: (frac, detail) => {
+          const pct = Math.round(frac * 100);
+          const message = detail && detail.totalSec > 0
+            ? `Transcribing on the ${deviceLabel}… ${fmtDur(detail.processedSec)} / ${fmtDur(detail.totalSec)} · ${detail.cues} sentence${detail.cues === 1 ? '' : 's'}`
+            : `Transcribing on the ${deviceLabel}…`;
+          sendProgress(mainWindow, jobId, pct, message);
+        },
+      });
+
+      glog(`[generate-sentences] transcribe DONE ok=${result.ok}`, { cues: result.cues, device: result.device, error: result.error });
+
+      if (activeJobs.get(jobId)?.cancelled) throw new Error('Cancelled');
+      if (!result.ok) throw new Error(result.error || 'Transcription failed');
+      return { cues: result.cues ?? 0 };
+    };
+
+    /*
+     * WHERE IT RUNS — decided once, the way a render's venue is decided
+     * (`electron/crucible/generation-venue.ts`: the caller's server, else the
+     * legacy switch, else the routing record). On a Crucible the m4b goes up as
+     * an `asr` job and the same VTT lands at `outVtt` (`electron/crucible/asr.ts`);
+     * everything after this block — the embed, the sidecar binding, the
+     * manifest link — reads that file and cannot tell which machine wrote it.
+     *
+     * A refusal (`server_busy` with the holder named, `model_not_installed`,
+     * an unreachable server) fails the row by name. Nothing here transcribes
+     * locally instead.
+     */
+    const { transcribeAtVenue } = await import('./crucible/asr.js');
+    const { processVenueHost } = await import('./crucible/generation-venue.js');
+    let venue: string;
+    try {
+      const outcome = await transcribeAtVenue({
+        ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
+        host: processVenueHost(),
+        audioPath: m4bPath,
+        whisperModelId: config.modelId,
+        ...(config.language === undefined ? {} : { language: config.language }),
+        outVttPath: outVtt,
+        signal: controller.signal,
+        legacyLocal: transcribeLocally,
+        onLog: (line) => glog(`[generate-sentences] ${line}`),
+        onProgress: (p) => {
+          // The same three phases the local script narrates, in the same words,
+          // with the SERVER's position and fraction behind them.
+          if (p.stage === 'warming') {
+            sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model on the server… ${p.message}`);
+          } else if (p.stage === 'decoding') {
+            const pos = p.processedSec !== null && p.totalSec !== null && p.totalSec > 0
+              ? ` ${fmtDur(p.processedSec)} / ${fmtDur(p.totalSec)}`
+              : p.processedSec !== null ? ` ${fmtDur(p.processedSec)}` : '';
+            sendProgress(mainWindow, jobId, 0, `Decoding the audiobook on the server…${pos}`);
+          } else {
+            const pct = Math.round(p.fraction * 100);
+            const message = p.processedSec !== null && p.totalSec !== null && p.totalSec > 0
+              ? `Transcribing on the server… ${fmtDur(p.processedSec)} / ${fmtDur(p.totalSec)}`
+                + (p.cues !== null ? ` · ${p.cues} segment${p.cues === 1 ? '' : 's'}` : '')
+              : 'Transcribing on the server…';
+            sendProgress(mainWindow, jobId, pct, message);
+          }
+        },
+      });
+      venue = venueLabel(outcome.venue);
+      glog(`[generate-sentences] transcribed at ${venue}: ${outcome.cues} cue(s)`
+        + (outcome.crucible ? ` (crucible job ${outcome.crucible.jobId}, ${outcome.crucible.model}@${outcome.crucible.revision})` : ''));
+    } catch (err) {
+      // A cancel that reached the server comes back as the job's `cancelled`
+      // ending; the flag is what says it was ours, and the word is the one the
+      // completion path has always read.
+      if (activeJobs.get(jobId)?.cancelled) throw new Error('Cancelled');
+      throw err;
     }
-    if (!result.ok) throw new Error(result.error || 'Transcription failed');
 
     // Seal the freshly-generated transcript INTO the m4b as a subtitle track — the
     // guaranteed audio↔transcript link the players read directly (immune to any
@@ -385,9 +471,9 @@ export async function startGenerateSentences(
     });
     if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
 
-    glog(`[generate-sentences] embedded transcript linked to variant, DONE job=${jobId} m4b=${m4bPath}`);
+    glog(`[generate-sentences] embedded transcript linked to variant, DONE job=${jobId} m4b=${m4bPath} venue=${venue}`);
     sendProgress(mainWindow, jobId, 100, 'Transcript ready');
-    sendComplete(mainWindow, jobId, true, m4bPath);
+    sendComplete(mainWindow, jobId, true, m4bPath, undefined, undefined, venue);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Generate sentences failed';
     if (message !== 'Cancelled') {
@@ -395,7 +481,13 @@ export async function startGenerateSentences(
         stack: err instanceof Error ? err.stack : undefined,
       });
     }
-    sendComplete(mainWindow, jobId, false, undefined, message);
+    // A 409 `server_busy` is a WAIT, not a failure (crucible ARCHITECTURE.md §3):
+    // the SDK's own holder line rides on the completion so the queue step can
+    // hold the row on it (`noteStepBusy`) rather than fail the book.
+    const busyLine = err instanceof Error && typeof (err as { busyLine?: unknown }).busyLine === 'string'
+      ? (err as unknown as { busyLine: string }).busyLine
+      : undefined;
+    sendComplete(mainWindow, jobId, false, undefined, message, undefined, undefined, busyLine);
   } finally {
     if (workingVttPath) {
       try { fs.unlinkSync(workingVttPath); } catch { /* absent/already cleaned */ }

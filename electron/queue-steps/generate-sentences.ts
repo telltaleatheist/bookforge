@@ -26,6 +26,10 @@ interface GsCompleteEvent {
   outputPath?: string;
   error?: string;
   warning?: string;
+  /** Where the whisper transcription ran: `crucible:<server>` or `legacy-local-narrator`. */
+  venue?: string;
+  /** A Crucible `server_busy`: the holder line. A wait, never a failure. */
+  busyLine?: string;
 }
 
 interface GsStepConfig {
@@ -37,6 +41,8 @@ interface GsStepConfig {
   language?: string;
   method?: 'whisper' | 'epub-align';
   epubVariantId?: string;
+  /** The caller's own Crucible server name for the whisper method; absent, the routing record decides. */
+  crucible?: { server: string };
 }
 
 export const generateSentencesStep: StepModule = {
@@ -81,17 +87,27 @@ export const generateSentencesStep: StepModule = {
         language: config.language || 'auto',
         method: config.method,
         epubVariantId: config.epubVariantId,
+        ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
       } as never);
 
       const result = await finished;
       if (!result.success || !result.outputPath) {
+        if (result.busyLine !== undefined) {
+          // The server is running somebody else's job: the row goes back to
+          // `queued` carrying the holder's own line and is tried again on the
+          // admission tick — the same hold the render seam asks for.
+          const { noteStepBusy } = await import('../queue-engine.js');
+          noteStepBusy(ctx.stepId, result.busyLine);
+        }
         throw new Error(result.error || 'Transcription failed and gave no reason.');
       }
       if (result.warning) ctx.step.completionNotes = [result.warning];
       return {
         kind: 'vtt',
         path: result.outputPath,
-        detail: { projectId: config.projectId, variantId: config.variantId },
+        // `venue` is recorded on the row's artifact the way a render's saved
+        // state records its server: which machine transcribed this book.
+        detail: { projectId: config.projectId, variantId: config.variantId, venue: result.venue },
       };
     } finally {
       unsubscribe();
