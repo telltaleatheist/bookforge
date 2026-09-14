@@ -690,23 +690,21 @@ export class AddOnsPanelComponent implements OnInit {
     return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc';
   }
 
-  // First run: pre-check GPU acceleration when the machine qualifies — the user
-  // unchecks it if they don't want it. One-shot (won't fight a manual deselect),
-  // selection mode only.
-  private autoSelectedGpu = false;
-  constructor() {
-    effect(() => {
-      if (!this.selectionMode() || this.autoSelectedGpu) return;
-      const ids = this.addOns()
-        .filter((s) => this.isCudaPack(s.component.id)
-          && s.state !== 'incompatible' && s.state !== 'installed'
-          && this.isDownloadable(s.component))
-        .map((s) => s.component.id);
-      if (ids.length === 0) return; // not loaded yet, or machine doesn't qualify
-      this.autoSelectedGpu = true;
-      this.sel.selectMany(ids);
-    });
-  }
+  /*
+   * THE AUTO-PRESELECT OF THE CUDA PACKS IS DELETED (2026-09-14, audit
+   * docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md §2.4).
+   *
+   * It ticked `llama-cuda`, `cuda-tts` and `cuda-rvc` on any NVIDIA machine the
+   * first time the wizard drew this panel — gigabytes of LOCAL GPU stack,
+   * chosen for somebody who had not asked, on exactly the machine that should
+   * instead be told to hold a Crucible. One inference server per machine is the
+   * rule (rollout §2 ruling 1) and these three packs are the local engines it
+   * replaces; every one of them is a DELETE-AFTER-PASS row hanging off
+   * `legacyLocalRender`.
+   *
+   * Nothing replaces it. A person who wants a local CUDA pack ticks it, which
+   * is what every other row on this panel already requires.
+   */
 
   /** The detected GPU name, for the CUDA pack's explainer line. */
   readonly gpuName = computed(() => {

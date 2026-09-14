@@ -5,10 +5,6 @@ import { Router } from '@angular/router';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { CrucibleDoorsComponent } from '../settings/components/crucible-doors.component';
-import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
-import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
-import { HiggsVoicesPanelComponent } from '../settings/components/higgs-voices-panel.component';
-import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
 import { ComponentService } from '../../core/services/component.service';
@@ -18,16 +14,47 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'crucible' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'crucible' | 'review';
   title: string;
   subtitle: string;
 }
 
 /**
- * First-run guided setup. Shown once, immediately after library onboarding
- * completes (see app.ts → onOnboardingComplete). Chains the four existing setup
- * surfaces — AI, voices, language packs, optional tools — into one skippable
- * flow, then drops the user on the Studio home. Every step is optional.
+ * First-run guided setup — FOUR STEPS since 2026-09-14.
+ *
+ * Shown once, immediately after library onboarding completes (app.ts →
+ * onOnboardingComplete), and reachable later from Settings → General → Guided
+ * setup, where it is titled "Configuration" and has a close button.
+ *
+ * ── THE RULE THE SHAPE FOLLOWS ─────────────────────────────────────────────
+ *
+ * `docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md` §6: **a setup step exists only
+ * for something the app itself owns.** Files, credentials, and which server.
+ * Everything about a model, a voice, an engine environment or a card belongs to
+ * Crucible's own page, reached with one button.
+ *
+ *   1. **Library** — where your books live. The one step nobody may skip, and
+ *      (since this rework) the one step you can go BACK to.
+ *   2. **AI and cloud keys** — which Crucible does the reading and writing.
+ *      Cloud keys are Foundry's, said in one sentence and not re-implemented.
+ *   3. **Crucible** — where the GPU work happens. PROBES ON ENTRY and shows one
+ *      of three faces (PHASE13-OPERATOR.md §5.5).
+ *   4. **Review** — what was chosen, plus the three small local tools.
+ *
+ * ── WHAT WAS DELETED, AND WHY IT WAS ONE STEP AND NOT FOUR ────────────────
+ *
+ * Orpheus, Higgs, Voice enhancement and the engine half of Optional tools.
+ * Each of them stood up a LOCAL copy of an engine: a conda env, a CUDA pack, a
+ * multi-gigabyte checkpoint — ~250 GB between them (rollout §0b A2). Every one
+ * is a Crucible job type or a subject a Crucible holds ONCE PER MACHINE
+ * (rollout §2 ruling 1), so four screens that each installed a private engine
+ * collapse into one question: which server. Orpheus additionally is DEPRECATED
+ * (Owen, 2026-09-14) and Higgs is the one narration engine.
+ *
+ * The multi-worker toggle went with the Tools step and was not re-homed: it
+ * persisted nowhere and its only implementation is an explicit no-op
+ * (`orpheus-worker-pool.ts` `setStreamWorkerConfig`), so it was a control that
+ * reported success and changed nothing.
  */
 @Component({
   selector: 'app-first-run-setup',
@@ -36,11 +63,7 @@ interface SetupStep {
     CommonModule,
     AiSetupWizardComponent,
     AddOnsPanelComponent,
-    CrucibleDoorsComponent,
-    RvcEnhancementPanelComponent,
-    OrpheusVoicesPanelComponent,
-    HiggsVoicesPanelComponent,
-    MultiWorkerToggleComponent
+    CrucibleDoorsComponent
   ],
   template: `
     <div class="setup-page">
@@ -159,41 +182,61 @@ interface SetupStep {
               </div>
             }
             @case ('ai') {
+              <!--
+                THE ONE SENTENCE THIS STEP OWNS ABOUT CLOUD, AND NOTHING ELSE.
+                Cloud keys have ONE owner (rollout §3, 2026-09-14): Foundry's
+                cloud card, hosted too. BookForge deleted its own Claude/OpenAI
+                key rows and its hardcoded model lists, so what belongs here is
+                the door, not a second key store.
+              -->
+              <p class="step-note">
+                Cloud keys live in Foundry’s Backend settings — the gear beside a book — and the
+                key is what lists the models, so there is nothing to choose here until one is
+                saved. This step is which Crucible does the reading and writing.
+              </p>
               <app-ai-setup-wizard [embedded]="true" />
             }
             @case ('crucible') {
-              <!-- The SAME three doors Settings → Crucible Servers mounts. One
-                   component, two hosts: a wizard that offered a "Connect" the
-                   settings row spelled differently would be two screens
-                   teaching two different things about one registry. -->
-              <app-crucible-doors />
+              <!-- The SAME component Settings → Crucible Servers mounts, in its
+                   PROBING face (PHASE13-OPERATOR.md §5.5): it measures on entry
+                   and shows exactly one of connected / install here / connect
+                   only. One component, two hosts — a wizard that offered a
+                   "Connect" the settings row spelled differently would be two
+                   screens teaching two different things about one registry. -->
+              <app-crucible-doors mode="probing" />
             }
-            @case ('orpheus') {
-              <app-orpheus-voices-panel />
-            }
-            @case ('higgs') {
-              <!-- The doctor and the voice catalog, the same panel Settings shows.
-                   Its own first section is the environment check, which is the
-                   only thing a first run can usefully act on. -->
-              <app-higgs-voices-panel />
-            }
-            @case ('rvc') {
-              <app-rvc-enhancement-panel />
-            }
-            @case ('tools') {
-              <div class="mw-setup-block">
-                <app-multi-worker-toggle />
-              </div>
-              <!-- Orpheus has its own step above; everything else (GPU packs,
-                   speech-to-text, Calibre, Tesseract) lives here. -->
-              <app-add-ons-panel [selectionMode]="true" [exclude]="orpheusIds" />
-            }
-            @case ('download') {
+            @case ('review') {
               <div class="review">
+                <!--
+                  WHAT WAS CHOSEN. Read back from the services that own each
+                  fact, never from a copy this page kept as the user advanced.
+                -->
+                <ul class="review-list chosen">
+                  <li>
+                    <span class="rl-name">Library</span>
+                    <span class="rl-size">{{ library.libraryPath() || 'not set' }}</span>
+                  </li>
+                  <li>
+                    <span class="rl-name">AI for cleanup</span>
+                    <span class="rl-size">{{ ai.available() ? 'set up' : 'not set up yet' }}</span>
+                  </li>
+                </ul>
+
+                <!--
+                  THE ONLY DOWNLOADS BOOKFORGE STILL OWNS. Calibre and Tesseract
+                  are CPU tools the user installs; foundry-cli is an engine
+                  binary. Every other row this panel used to offer — the conda
+                  envs, the CUDA packs, the voice and whisper weights — is a job
+                  environment or a subject a Crucible holds once per machine
+                  (rollout §2 ruling 1), reached from the previous step.
+                -->
+                <h3 class="review-head">Small local tools</h3>
+                <app-add-ons-panel [selectionMode]="true" [only]="localToolIds" />
+
                 @if (sel.count() === 0) {
                   <p class="review-empty">
-                    You’re all set — nothing extra selected. You can add voices, languages, or
-                    GPU acceleration anytime from Settings. Click Done to start using BookForge.
+                    Nothing extra selected, and there is nothing you have to select. Click Done to
+                    start using BookForge.
                   </p>
                 } @else {
                   <p class="review-intro">
@@ -237,10 +280,18 @@ interface SetupStep {
               {{ creatingLibrary() ? 'Setting up…' : 'Continue' }}
             </button>
           } @else {
+          <!--
+            The guard is "currentStep() <= 0", NOT "<= 1" (audit §6). The old
+            one made the LIBRARY step
+            unreachable the moment it was passed: from AI, Back was disabled, so
+            the one step nobody may skip was also the one step nobody could
+            revisit. Step 0 draws its own footer (with no Back), so this guard
+            only ever governs steps 1 and up.
+          -->
           <button
             type="button"
             class="btn ghost"
-            [disabled]="currentStep() <= 1"
+            [disabled]="currentStep() <= 0"
             (click)="back()"
           >
             Back
@@ -509,13 +560,26 @@ interface SetupStep {
     }
 
 
-    .mw-setup-block {
-      padding-bottom: 16px;
-      margin-bottom: 16px;
-      border-bottom: 1px solid var(--border-subtle, #2c2c2c);
+    /* The one sentence the AI step owns about cloud keys — see the template. */
+    .step-note {
+      margin: 0 0 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-secondary, #9a9a9a);
     }
 
     .review { display: flex; flex-direction: column; gap: 12px; }
+    .review-head {
+      margin: 8px 0 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary, #f0f0f0);
+    }
+    .review-list.chosen .rl-size {
+      white-space: normal;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
     .review-empty, .review-intro {
       margin: 0;
       font-size: 13px;
@@ -632,7 +696,9 @@ export class FirstRunSetupComponent {
   protected runtime = inject(RuntimeService);
   private components = inject(ComponentService);
   protected sel = inject(SetupDownloadService);
-  private library = inject(LibraryService);
+  // `protected`, not private: the Review step reads the chosen path back out of
+  // the service that owns it rather than out of a copy this page kept.
+  protected library = inject(LibraryService);
   private electron = inject(ElectronService);
   private studio = inject(StudioService);
 
@@ -669,6 +735,19 @@ export class FirstRunSetupComponent {
     this.selectedStatuses().reduce((sum, s) => sum + (s.component.sizeBytes || 0), 0),
   );
 
+  /**
+   * FOUR STEPS, and the rule the shape follows (audit §6): **a setup step
+   * exists only for something the app itself owns.** Files, credentials, and
+   * which server. Everything about a model, a voice, an engine environment or
+   * a card belongs to Crucible's own page, reached with one button.
+   *
+   * THE FOUR THAT WENT, and why they were one step and not four: Orpheus,
+   * Higgs, Voice enhancement and the engine half of Optional tools each
+   * installed a conda env or pulled a weight — ~250 GB between them (rollout
+   * §0b A2) — and every one of those is a job type or a subject a Crucible
+   * holds ONCE PER MACHINE. Four screens that each stood up a private copy of
+   * somebody else's engine become one question: which server.
+   */
   protected readonly steps: SetupStep[] = [
     {
       id: 'library',
@@ -678,63 +757,48 @@ export class FirstRunSetupComponent {
     },
     {
       id: 'ai',
-      title: 'Set up AI',
+      title: 'AI and cloud keys',
       subtitle:
-        'Optional — AI cleans up OCR text before narration. Add a bundled local model, connect Ollama, or save a Claude/OpenAI key.'
+        'Which model does the reading and writing, and whose credits pay for it. Pick the '
+        + 'Crucible that runs the text work; cloud keys are Foundry’s, in its Backend settings. '
+        + 'Skippable — a machine with no text model still narrates.'
     },
     {
-      // WHERE THE GPU WORK HAPPENS, offered once and skippable like every other
-      // step. A Crucible is one inference server per machine that every app
-      // talks to over HTTP — so this step is not "set up BookForge's GPU", it
-      // is "does this machine have a server, or does another one". Nothing here
-      // is a step anybody has to take: a laptop that renders nowhere yet is not
-      // broken, and the engines below still install locally.
+      // WHERE THE GPU WORK HAPPENS. Not an optional aside any more: once the
+      // legacy local-engine layer is deleted, this is the step that decides
+      // whether anything renders at all. It PROBES ON ENTRY and shows one face
+      // (PHASE13-OPERATOR.md §5.5).
       id: 'crucible',
-      title: 'Where the GPU work happens (optional)',
+      title: 'Where the GPU work happens',
       subtitle:
         'A Crucible is one inference server a machine runs for every app on it — narration, '
-        + 'transcription, alignment, text cleanup. Connect to one somewhere else, use the one on '
-        + 'this machine, or see what installing one here would take. Skip it and BookForge keeps '
-        + 'using this machine’s own engines.'
+        + 'transcription, alignment, text cleanup. Connect to one somewhere else, or get one on '
+        + 'this machine. Skippable, and honestly so: a laptop that renders on the Mac is a laptop '
+        + 'with one remote server, and one that renders nowhere yet is not broken — it just does '
+        + 'not render yet.'
     },
     {
-      id: 'orpheus',
-      title: 'Orpheus — the narration engine',
+      id: 'review',
+      title: 'Review',
       subtitle:
-        'The engine BookForge narrates with. Install it and its voice models here; add more voice sources anytime.'
-    },
-    {
-      // The second narration engine, beside Orpheus rather than buried in
-      // Settings. There is still no engine PICKER in this wizard — both steps
-      // are set-up pages — so a machine can arrive with both, one, or neither
-      // and the narration modal offers whichever the doctor says can run.
-      id: 'higgs',
-      title: 'Higgs (optional)',
-      subtitle:
-        'A second narration engine, served from WSL. Research/non-commercial licence — personal use. Check the environment here and install it if you want it.'
-    },
-    {
-      id: 'rvc',
-      title: 'Voice enhancement (optional)',
-      subtitle:
-        'RVC re-renders finished narration through a voice model to smooth out synthetic artifacts. Install the engine and voice models here.'
-    },
-    {
-      id: 'tools',
-      title: 'Optional tools',
-      subtitle:
-        'GPU acceleration (if we detect an NVIDIA card), speech-to-text for transcribing recorded audiobooks, plus Calibre and Tesseract for better EPUB conversion and OCR.'
-    },
-    {
-      id: 'download',
-      title: 'Review & download',
-      subtitle:
-        'Everything you checked, downloaded together at the end so the queue isn’t overloaded. You can leave anytime — downloads keep running in the corner.'
+        'What was chosen, and the three small local tools if you want them. No progress bars for '
+        + 'gigabytes, because there are none left to download here — a server’s environments and '
+        + 'weights are its own, installed from its page.'
     }
   ];
 
-  /** Orpheus gets its own step; the Tools step excludes it via this list. */
-  protected readonly orpheusIds = ['orpheus'];
+  /**
+   * THE ONLY DOWNLOADS BOOKFORGE STILL OWNS.
+   *
+   * Calibre and Tesseract are CPU tools with nothing to do with a card;
+   * `foundry-cli` is an engine binary that rasterises and drives text acts
+   * against a Crucible endpoint, and is not itself a model. Everything else the
+   * wizard used to offer — `orpheus`, `rvc-env`, `resemble-env`,
+   * `whisperx-env`, `qwen-align-env`, the whisper models, the RVC voices and
+   * the three CUDA packs — is a job environment or a subject Crucible installs
+   * and holds once per machine (rollout §2 ruling 1).
+   */
+  protected readonly localToolIds = ['calibre', 'tesseract', 'foundry-cli'];
 
   protected readonly currentStep = signal(0);
   protected readonly active = computed(() => this.steps[this.currentStep()]);
