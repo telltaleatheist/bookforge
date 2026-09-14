@@ -69,3 +69,86 @@ function normalize(value: unknown): number {
   if (value <= 0) return IDLE_NEVER;
   return Math.min(MAX_IDLE_MINUTES, Math.round(value));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The sweep — ONE rule, applied by every streaming backend
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How often the sweep asks whether the window has run out. */
+const IDLE_SWEEP_MS = 60_000;
+
+/** What a backend tells the sweep, and what the sweep may do to it. */
+export interface IdleWatchHooks {
+  /** A log prefix, e.g. `[Orpheus Pool]`, so the line names who parked. */
+  readonly label: string;
+  /** Is there anything to release right now? A stopped backend never fires. */
+  isActive(): boolean;
+  /** Service mode PARKS (the backend goes, the service stays armed) rather than shutting down. */
+  isServiceMode(): boolean;
+  /** Release the backend but keep the service armed. */
+  park(): void;
+  /** Release the backend and the service. */
+  shutdown(): void;
+}
+
+/**
+ * The idle rule as a thing a backend arms, touches and disarms.
+ *
+ * Lifted out of `orpheus-worker-pool.ts` on 2026-09-14, when the Listen path
+ * gained a second backend — a Crucible streaming session (`electron/crucible/
+ * stream.ts`) — that has to release itself on exactly the same rule: the
+ * user's window, read per sweep so a change applies to a running backend, and
+ * parking rather than stopping in service mode. Two hand-written sweeps would
+ * be one rule with two owners (crucible `docs/ARCHITECTURE.md` R1), and the
+ * day one of them forgot the service-mode branch a browser extension would
+ * find its endpoint gone instead of cold. So the sweep lives beside the
+ * setting it reads, and a backend supplies only the four facts it owns.
+ *
+ * `touch()` is what every generation calls; the sweep compares against the
+ * last touch. `arm()` starts the interval (and touches, so a freshly started
+ * backend is not idle by its own start-up time); `disarm()` clears it. The
+ * interval is `unref`'d so it never keeps the process alive on its own.
+ */
+export class IdleWatch {
+  private lastActivityAt = 0;
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(private readonly hooks: IdleWatchHooks) {}
+
+  /** Something just happened — the window starts over. */
+  touch(): void {
+    this.lastActivityAt = Date.now();
+  }
+
+  /** Start sweeping. Re-arming an armed watch restarts it. */
+  arm(): void {
+    this.disarm();
+    this.touch();
+    this.timer = setInterval(() => this.sweep(), IDLE_SWEEP_MS);
+    this.timer.unref?.();
+  }
+
+  disarm(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /** One tick of the rule. Exposed so a keeper can fire it without waiting a minute. */
+  sweep(): void {
+    const timeoutMs = getIdleTimeoutMs();
+    if (timeoutMs === null) return; // set to never
+    if (!this.hooks.isActive() || Date.now() - this.lastActivityAt <= timeoutMs) return;
+    const minutes = Math.round(timeoutMs / 60000);
+    // Service mode is not exempt: the weights come down either way. It just
+    // PARKS — the service stays armed and the next speak cold-starts a worker.
+    if (this.hooks.isServiceMode()) {
+      console.log(`${this.hooks.label} Idle for ${minutes} min — parking the engine (service stays armed)`);
+      this.hooks.park();
+    } else {
+      console.log(`${this.hooks.label} Idle for ${minutes} min — shutting down`);
+      this.hooks.shutdown();
+    }
+  }
+}

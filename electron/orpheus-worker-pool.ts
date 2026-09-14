@@ -49,7 +49,7 @@ import {
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
 import { higgsEnvExtras, higgsPreflight } from './higgs-spawn';
 import { higgsNarrationVoices, listRenderableHiggsModels } from './higgs-models';
-import { getIdleTimeoutMs } from './stream-idle';
+import { IdleWatch } from './stream-idle';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE STREAMING CONTRACT
@@ -610,9 +610,16 @@ let serviceMode = false;
 // Idle shutdown: kill the worker if nothing was generated for a while (and not
 // pinned as a resident service). Frees ~6 GB of VRAM the vLLM engine holds. The
 // window is a user setting (stream-idle.ts) — read per sweep so a change applies
-// to the running engine without a restart.
-let lastActivityAt = 0;
-let idleTimer: NodeJS.Timeout | null = null;
+// to the running engine without a restart. The SWEEP itself is stream-idle's
+// `IdleWatch`, shared with the Crucible streaming backend since 2026-09-14 so the
+// rule has one owner; this pool supplies the four facts the sweep asks for.
+const idleWatch = new IdleWatch({
+  label: '[Orpheus Pool]',
+  isActive: () => isSessionActive(),
+  isServiceMode: () => serviceMode,
+  park: () => { void endSession({ keepServiceArmed: true }); },
+  shutdown: () => { void endSession(); },
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Broadcast helpers (same channels XTTS uses so the existing UI just works)
@@ -662,34 +669,13 @@ function reportWarmup(message?: string): void {
 }
 
 function touchActivity(): void {
-  lastActivityAt = Date.now();
+  idleWatch.touch();
 }
 function startIdleWatch(): void {
-  stopIdleWatch();
-  touchActivity();
-  idleTimer = setInterval(() => {
-    const timeoutMs = getIdleTimeoutMs();
-    if (timeoutMs === null) return; // set to never
-    if (isSessionActive() && Date.now() - lastActivityAt > timeoutMs) {
-      const minutes = Math.round(timeoutMs / 60000);
-      // Service mode is not exempt: the weights come down either way. It just
-      // PARKS — the service stays armed and the next speak cold-starts a worker.
-      if (serviceMode) {
-        console.log(`[Orpheus Pool] Idle for ${minutes} min — parking the engine (service stays armed)`);
-        void endSession({ keepServiceArmed: true });
-      } else {
-        console.log(`[Orpheus Pool] Idle for ${minutes} min — shutting down`);
-        void endSession();
-      }
-    }
-  }, 60_000);
-  idleTimer.unref?.();
+  idleWatch.arm();
 }
 function stopIdleWatch(): void {
-  if (idleTimer) {
-    clearInterval(idleTimer);
-    idleTimer = null;
-  }
+  idleWatch.disarm();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
