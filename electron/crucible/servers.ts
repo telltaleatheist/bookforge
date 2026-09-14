@@ -74,6 +74,7 @@ import {
 } from './local';
 import { getWslDistro } from '../tool-paths';
 import type { LocalServerVia } from '../../shared/crucible/settings-wire';
+import { forgetCrucibleRoutes } from './routes';
 
 export { LOCAL_SERVER_NAME, CrucibleLocalError } from './local';
 export type { LocalServer } from './local';
@@ -503,7 +504,24 @@ export function addServer(server: { name: string; url: string; token: string }):
 
 /** Forget a remote server. See {@link ServerRegistry.remove}. */
 export function removeServer(name: string): CrucibleServerListing {
-  return defaultRegistry().remove(name);
+  const after = defaultRegistry().remove(name);
+  /*
+   * ITS ROUTES GO WITH IT.
+   *
+   * `crucible/routes.ts` remembers where each class runs on each engine, so
+   * the scheduler can ask inside a synchronous pump. A record about a server
+   * that is no longer registered is a record about nothing — and if the same
+   * NAME is added again for a different machine, it would be answered from
+   * for one pump before coordination corrects it, which is a row placed on a
+   * lane nobody chose. Forgotten here rather than left to expire, because the
+   * record has no expiry on purpose: age is not what makes a route wrong.
+   *
+   * Only on REMOVE, not on disable. A disabled server's routes are still true
+   * of it, its set stays on the bench until its occupant lands (§4.3), and
+   * forgetting them would make re-enabling it a wait rather than a resume.
+   */
+  forgetCrucibleRoutes(name);
+  return after;
 }
 
 /**

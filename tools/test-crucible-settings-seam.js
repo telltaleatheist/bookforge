@@ -438,7 +438,36 @@ async function withFake(behaviour, fn) {
     await refuses(() => seam.crucibleEngineSettings('gone'), 'settings_unreachable');
   });
 
-  summary('crucible settings seam');
+await check('removing a server forgets its routes; disabling one does not', () => {
+    /*
+     * A record about a server that is no longer registered is a record about
+     * nothing — and if the same NAME comes back for a different machine, it
+     * would be answered from for one pump before coordination corrects it,
+     * which is a row placed on a lane nobody chose. The record has no expiry
+     * on purpose (age is not what makes a route wrong), so the removal is what
+     * clears it.
+     */
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    routes.forgetCrucibleRoutes();
+    routes.noteCrucibleRoutes('doomed', { clean: 'upstream' });
+    routes.noteCrucibleRoutes('kept', { clean: 'upstream' });
+    assert.deepStrictEqual(routes.crucibleRoutesKnownFor(), ['doomed', 'kept']);
+    routes.forgetCrucibleRoutes('doomed');
+    assert.deepStrictEqual(routes.crucibleRoutesKnownFor(), ['kept']);
+    assert.strictEqual(routes.crucibleRouteOf('doomed', 'clean'), 'unknown');
+    assert.strictEqual(routes.crucibleRouteOf('kept', 'clean'), 'upstream');
+
+    // And `removeServer` is the door that calls it — source-read, because the
+    // registry write itself needs a real userData and is exercised elsewhere.
+    const servers = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'servers.ts'), 'utf-8');
+    const fn = servers.indexOf('export function removeServer');
+    assert.ok(fn > 0, 'removeServer moved');
+    const body = servers.slice(fn, servers.indexOf(String.fromCharCode(10) + '}', fn));
+    assert.ok(body.includes('forgetCrucibleRoutes(name)'),
+      'removing a server leaves its routes behind for the scheduler to answer from');
+  });
+
+    summary('crucible settings seam');
 })().catch((err) => {
   console.error(err);
   process.exit(1);
