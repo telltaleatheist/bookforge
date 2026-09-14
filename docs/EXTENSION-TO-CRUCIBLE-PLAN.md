@@ -99,13 +99,27 @@ sampling is unseeded. **What does NOT travel: the temperature spread** (`compute
 0.4/0.8/1.0 around Orpheus's 0.6 — an Orpheus-era practice). The module refuses temperatures
 by name rather than dropping them.
 
-**Ruling proposed (Owen decides):** the spread IS the take ladder, and a temperature is never on
-the wire. PHASE3 §3 already defines it — `[[voice.takes]]` per voice, take 0 = the boson
+**RULED (Owen, 2026-09-14, 20:xx):** *"we dont have to use temperature as the lever to get sentences
+to sound different, but the goal is to re-render sentences that dont sound quite right. prosody is
+bad, theres babbling or truncation, some other issue. thats why the feature exists. i was using
+temperature as a lever because it gives a different output. if we can get the same result without
+changing temperature then thats fine. i just know if a sentence/chunk was problematic before, itll
+likely be problematic again with the same settings used to originally generate it."*
+
+So the requirement is not "a temperature" — it is **a retake must not reuse the exact settings that
+produced the problem**. Unseeded sampling alone gives a different output at the same settings, which
+is the weak form; a different rung of the ladder is the strong form, and a problematic chunk needs
+the strong form at least once. Therefore: the spread IS the take ladder, a temperature is never on
+the wire, and Correct Sentences spreads its N candidates ACROSS the rungs, the first candidate on
+rung 1 (the measured alternative) — never N re-rolls of take 0 — so every audition list contains at
+least one candidate rendered under different settings than the original. With a two-rung ladder and
+N = 3 that is takes 1, 0, 1; the audition list names the rung of each. The ladder itself stays the
+engine's (per-voice config, PHASE3 §3), and a third rung, if one is ever measured, changes no client. PHASE3 §3 already defines it — `[[voice.takes]]` per voice, take 0 = the boson
 default, take 1 = the one measured alternative (0.7, with its written reason) — and the
 division-of-knowledge ruling says tuning is engine config, never a wire field. Correct
 Sentences then asks for `take: 0..k` across its N candidates (k ≤ the ladder's length,
 `unknown_take` past it), and the audition list says which rung each take came from. **The one
-thing owed before that works: narrator's sampling channel on `generate`/`generate_batch`**
+thing owed before that works (ASSIGNED 2026-09-14 evening, Opus agent): narrator's sampling channel on `generate`/`generate_batch`**
 (PHASE3 §4: "a take above 0 on a voice that declares a ladder is refused `sampling_not_wired`"
 until narrator carries it) — that is BookForge's `python/narrator`, not Crucible. Then
 `computeTakeTemperatures` and the legacy arm are deleted with the legacy layer.
@@ -190,7 +204,7 @@ retrieve and return the audio."*
 
 ## 5. Order of work
 
-1. Owen's ruling on §2 (takes are the spread). 2. `shared/listen-text/` + `shared/listen-client/`
+1. Owen's ruling on §2 (takes are the spread) — RULED, see §2; narrator's sampling channel assigned. 2. `shared/listen-text/` + `shared/listen-client/`
 extracted from the app with keepers (no behaviour change; the 8766 relay still runs on them).
 3. The extension: registry + picker + connect code; load/unload jobs; the stream client;
 Orpheus removed; "Buffer before playing" as a client gate. 4. BookForge's Streaming tab on the
