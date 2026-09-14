@@ -71,7 +71,7 @@ import {
   buildNarratorSpawn,
   narratorEngineEnvId,
   narratorPythonRoot,
-  narratorRunsInWsl,
+  narratorSpawnCrossesIntoWsl,
   toGuestPath,
   type NarratorPhase,
   type NarratorSpawnPlan,
@@ -264,14 +264,23 @@ export function buildHiggsSpawn(
     jobId: string;
     /** The door's own environment. Never overrides the Higgs voice variables. */
     envExtras?: Record<string, string>;
+    /**
+     * This phase runs on the host in the tools env because the render is on a
+     * Crucible server — `NarratorSpawnRequest.onHost`. The voice document is
+     * then written for the HOST arm too (its paths untranslated), which is the
+     * one thing here that has to agree with the spawn.
+     */
+    onHost?: boolean;
   },
 ): HiggsSpawnPlan {
+  const onHost = opts.onHost === true;
   return buildNarratorSpawn({
     engine: 'higgs',
     phase: kind,
     args: opts.args,
-    envExtras: { ...opts.envExtras, ...higgsEnvExtras(opts.model, opts.jobId, kind) },
+    envExtras: { ...opts.envExtras, ...higgsEnvExtras(opts.model, opts.jobId, kind, undefined, onHost) },
     cwdHint: opts.cwd,
+    ...(onHost ? { onHost } : {}),
   });
 }
 
@@ -316,11 +325,13 @@ export function higgsEnvExtras(
   jobId: string,
   kind: HiggsSpawnKind,
   streamBatchCeiling?: number,
+  onHost = false,
 ): Record<string, string> {
   const serving = higgsServingFor(model);
   // Asked of narrator-spawn rather than recomputed, so the arm the voice document
-  // is written FOR is provably the arm the spawn will take.
-  const viaWsl = narratorRunsInWsl('higgs', kind);
+  // is written FOR is provably the arm the spawn will take — `onHost` included,
+  // which is why it goes through the same function the spawn builder calls.
+  const viaWsl = narratorSpawnCrossesIntoWsl('higgs', kind, onHost);
   const arm = checkpointArmForSpawn(viaWsl);
   // The Mac's checkpoint paths are stored RELATIVE to userData (a Mac's
   // Application Support carries the account name, so an absolute one in a

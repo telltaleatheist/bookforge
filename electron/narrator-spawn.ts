@@ -94,6 +94,7 @@
  */
 
 import { app } from 'electron';
+import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -172,6 +173,53 @@ export interface NarratorSpawnRequest {
    * cross into, and two sources for one answer is how they come to disagree.
    */
   wslCondaEnv?: string;
+  /**
+   * RUN THIS PHASE ON THIS MACHINE, IN THE TOOLS ENV, whatever the engine's WSL
+   * toggle says — because the ENGINE is not running here at all.
+   *
+   * ── The one caller: a prep whose render goes to a Crucible server ────────
+   *
+   * When the generation step runs on a Crucible (`generation-venue.ts`), the
+   * only work narrator does on this machine is TEXT work: extract the EPUB,
+   * split it, pack the chunks, write `session-state.json`. That is `prep`, and
+   * it loads no model. Until 2026-09-14 a Crucible-bound render on Windows
+   * still sent that prep into the WSL guest — because `narratorRunsInWsl`
+   * answers for the ENGINE, and the engine's env is a guest env — so the
+   * session was written to ext4, the render's artifacts were downloaded over
+   * HTTP into a `\\wsl$` path, and `normalizeWslSessionToWindows` then had to
+   * copy the whole session back out. The copy is where it died: the library is
+   * on a network drive, and the guest's `/mnt/z` was a stale, root-owned mount
+   * point (measured that night: `test -d` yes, `mountpoint -q` no).
+   *
+   * With this set the phase never enters the guest: the interpreter is the
+   * tools env (`narratorNativePython(undefined)` — the same bundled python that
+   * already runs assembly, resume and list natively on every platform), every
+   * path stays a host path, and the session lives where the caller put it.
+   *
+   * ── Why the TOOLS env and not "the engine's native env" ─────────────────
+   *
+   * On Windows there is no native engine env to name: Orpheus's is the guest
+   * (`orpheus_wsl_env` marker) and Higgs's is refused by name
+   * (`getEnvPathForEngine`: "Higgs runs on vLLM-Omni, which has no Windows
+   * build") — both correct answers about RENDERING, and both wrong for a prep
+   * whose render is on another machine. The tools env is the one environment
+   * this app guarantees on every platform, and narrator's `pyproject.toml`
+   * declares the text-prep dependencies as BASE dependencies for exactly the
+   * "machine that only assembles" case. `hostPrepRefusal` measures that the
+   * env actually has them before anything is spawned, and refuses by name.
+   *
+   * RULING OWED: on macOS this moves a Crucible-venue prep out of `narrator-mlx`
+   * (which has the text deps) into the tools env (which is the adopted legacy
+   * e2a env there, unmeasured for `regex` / `iso639-lang`). The probe refuses by
+   * name with the fix if it lacks one; the alternative — "tools env on Windows,
+   * engine env elsewhere" — is a platform-conditional rule that says nothing
+   * about WHY, so it was not taken.
+   *
+   * REFUSED for any phase but `prep` (the worker and serve load the model, and
+   * the tools phases already run here) and refused together with `wslCondaEnv`
+   * (one says "never the guest", the other names a guest env).
+   */
+  onHost?: boolean;
   /**
    * Working directory for the NATIVE arm. narrator reads cwd for nothing
    * (PORT_NOTES section 9.3), so this only decides where relative paths a caller
@@ -423,6 +471,89 @@ export function narratorRunsInWsl(engine: NarratorEngineId | undefined, phase: N
 }
 
 /**
+ * THE ARM ONE SPAWN TAKES — guest or host — as ONE computation.
+ *
+ * `narratorRunsInWsl` answers for the engine; `onHost` (see the request field)
+ * overrides it for a text-only phase whose render is elsewhere. Both
+ * `buildNarratorSpawn` and `higgs-spawn.ts`'s voice document ask THIS, so the
+ * filesystem the document is written for is provably the one the command line
+ * is built for — which was the whole point of asking narrator-spawn rather than
+ * recomputing, and would be lost the moment the override lived in one of them.
+ */
+export function narratorSpawnCrossesIntoWsl(
+  engine: NarratorEngineId | undefined,
+  phase: NarratorPhase,
+  onHost: boolean,
+): boolean {
+  return !onHost && narratorRunsInWsl(engine, phase);
+}
+
+/**
+ * Can THIS machine run narrator's prep in the tools env? The refusal text, or null.
+ *
+ * MEASURED, not inferred from a package list: the tools env is asked to import
+ * the modules `compat/app.py:route_prep` imports — `narrator.compat.app`,
+ * `narrator.text.prep`, and for Higgs `narrator.engine.higgs.v3_engine` (the
+ * prep budget lives there; the module is numpy + urllib, no server) — with the
+ * same PYTHONPATH the spawn will carry. An ImportError here is the same
+ * ImportError the prep would have died with, said BEFORE the job holds a GPU
+ * lease and a session directory, and naming the interpreter and the module.
+ *
+ * Asked once per job by `prepareSession`, only on the `onHost` arm; the legacy
+ * arm keeps the Higgs doctor it always had.
+ */
+export async function hostPrepRefusal(engine: NarratorEngineId): Promise<string | null> {
+  const py = narratorNativePython(undefined);
+  const pythonRoot = narratorPythonRoot();
+  const modules = [
+    'narrator.compat.app',
+    'narrator.text.prep',
+    ...(engine === 'higgs' ? ['narrator.engine.higgs.v3_engine'] : []),
+  ];
+  const probe = `import importlib\n${modules.map((m) => `importlib.import_module(${JSON.stringify(m)})`).join('\n')}\n`;
+  const args = [...py.args, '-c', probe];
+  const env = buildToolsSpawnEnv({ PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' });
+
+  const outcome = await new Promise<{ code: number | null; stderr: string; spawnError?: string }>((resolve) => {
+    let stderr = '';
+    let settled = false;
+    const done = (v: { code: number | null; stderr: string; spawnError?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn(py.command, args, { env, cwd: app.getPath('userData'), shell: false, windowsHide: true });
+    } catch (err) {
+      done({ code: null, stderr: '', spawnError: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* already gone */ }
+      done({ code: null, stderr, spawnError: 'the probe did not answer within 60 s' });
+    }, 60_000);
+    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
+    child.on('error', (err) => { clearTimeout(timer); done({ code: null, stderr, spawnError: err.message }); });
+    child.on('close', (code) => { clearTimeout(timer); done({ code, stderr }); });
+  });
+
+  if (outcome.code === 0) return null;
+  const lines = outcome.stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const reason = outcome.spawnError
+    ?? (lines.length ? lines[lines.length - 1] : `exit code ${outcome.code}`);
+  return (
+    `This render's generation step runs on a Crucible server, so the book is prepped on this ` +
+    `machine in the tools environment — and that environment cannot run narrator's prep: ` +
+    `${reason}. Interpreter: ${py.command}${py.args.length ? ' ' + py.args.join(' ') : ''}; ` +
+    `narrator at ${pythonRoot}. Install narrator's text dependencies into it ` +
+    `(\`<that python> -m pip install -e ${pythonRoot}\`), or turn on "Render audiobooks with the ` +
+    `local narrator instead" in Settings → Crucible Servers to prep in the engine's own environment. ` +
+    `Nothing preps inside WSL for a render that does not run there.`
+  );
+}
+
+/**
  * Build the spawn for one narrator phase.
  *
  * Every path in `args` and every VALUE in `envExtras` is translated for the WSL
@@ -452,6 +583,22 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     );
   }
 
+  if (req.onHost) {
+    if (phase !== 'prep') {
+      throw new Error(
+        `buildNarratorSpawn: onHost was set on phase '${phase}'. Only prep is text-only work ` +
+          'that can run in the tools env while the engine renders elsewhere; the worker and ' +
+          'serve load the model, and the tools phases already run on the host.',
+      );
+    }
+    if (req.wslCondaEnv !== undefined) {
+      throw new Error(
+        `buildNarratorSpawn: onHost and wslCondaEnv '${req.wslCondaEnv}' were both given. One ` +
+          'says this phase never enters the guest, the other names the guest env to run it in.',
+      );
+    }
+  }
+
   if (req.wslCondaEnv !== undefined) {
     if (process.platform !== 'win32') {
       throw new Error(
@@ -471,7 +618,8 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
 
   const module = PHASE_MODULE[phase];
   const pythonRoot = narratorPythonRoot();
-  const viaWsl = req.wslCondaEnv !== undefined || narratorRunsInWsl(engine, phase);
+  const viaWsl = req.wslCondaEnv !== undefined
+    || narratorSpawnCrossesIntoWsl(engine, phase, req.onHost === true);
 
   const baseEnv: Record<string, string> = {
     PYTHONUNBUFFERED: '1',
@@ -516,7 +664,10 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     };
   }
 
-  const py = narratorNativePython(engine);
+  // `onHost`: the tools env, on purpose — see the request field. The engine's
+  // own native env is either the guest (Windows) or the render's env, and this
+  // phase's render is on another machine.
+  const py = narratorNativePython(req.onHost ? undefined : engine);
   const nativeArgs = [...py.args, '-u', '-m', module, ...args];
   return {
     command: py.command,

@@ -230,6 +230,7 @@ import {
   NARRATOR_WORKER_RE,
   SERVE_PROCESS_RE,
   buildNarratorSpawn,
+  hostPrepRefusal,
   narratorEngineId,
   narratorRunsInWsl,
   type NarratorEngineId,
@@ -706,7 +707,16 @@ export function getAudiobookDirFromBfp(bfpPath: string): string {
  */
 async function wslSeesDrive(driveLetter: string): Promise<boolean> {
   const distro = getWslDistro();
-  const probe = `test -d /mnt/${driveLetter.toLowerCase()}`;
+  // `mountpoint -q`, NOT `test -d`. The directory `/mnt/z` EXISTS in the guest
+  // whenever `ensureWslDrivesFor` (wsl-mounts.ts) has ever mounted the share: it
+  // `mkdir -p`s the mount point as root, the drvfs mount does not survive
+  // `wsl -t`, and the root-owned empty directory does. Measured 2026-09-14 after
+  // a copy-out died on `mkdir: cannot create directory '/mnt/z/bookforge':
+  // Permission denied`: `test -d /mnt/z` yes, `mountpoint -q /mnt/z` no, and
+  // `ls -ld` showed `drwxr-xr-x root root` dated three weeks earlier. A stale
+  // mount point answered "mounted", the guest road was taken, and a non-root
+  // `mkdir` inside a root-owned directory is exactly that error.
+  const probe = `mountpoint -q /mnt/${driveLetter.toLowerCase()}`;
   const args = distro ? ['-d', distro, 'bash', '-c', probe] : ['bash', '-c', probe];
   return await new Promise<boolean>((resolve) => {
     const proc = spawn('wsl.exe', args, { shell: false });
@@ -1670,6 +1680,121 @@ function jobRunsInWsl(ttsEngine?: string): boolean {
 }
 
 /**
+ * DOES THIS RENDER'S PREP — and therefore its SESSION — live in the WSL guest?
+ *
+ * `jobRunsInWsl` answers for the ENGINE on this machine. A render whose
+ * generation step runs on a Crucible server (`generation-venue.ts`) does not
+ * run the engine on this machine at all, so the engine's toggle says nothing
+ * about it: the session is created on a host-native path from the start, the
+ * prep runs here in the tools env (`NarratorSpawnRequest.onHost`), the render's
+ * artifacts arrive over HTTP into that directory, and assembly reads it in
+ * place. Nothing in such a run enters the guest — not the prep, not the session,
+ * not a copy out of it. See `prepareSession`.
+ *
+ * The legacy local venue keeps the engine's answer exactly as it was.
+ *
+ * EXPORTED for `tools/test-crucible-render-session.js`, which drives it with
+ * the real config reader behind `jobRunsInWsl` and both venues.
+ */
+export function prepRunsInWsl(venue: GenerationVenue, ttsEngine?: string): boolean {
+  if (venue.where === 'crucible') return false;
+  return jobRunsInWsl(ttsEngine);
+}
+
+/**
+ * THE SAME QUESTION FOR A LIVE SESSION — the one every teardown, mount and
+ * guest-clearing gate must ask, so a Crucible-venue session is never torn down
+ * in a guest it never entered, never has a drive mounted for it there, and
+ * never waits for a guest worker that does not exist.
+ *
+ * A session with no venue is one that never generates (assembly-only), and for
+ * it the engine's answer is what it always was.
+ */
+function sessionRunsInWsl(session: ConversionSession): boolean {
+  if (session.venue?.where === 'crucible') return false;
+  return jobRunsInWsl(session.config.settings.ttsEngine);
+}
+
+/** Where a new session is created — see `sessionHomeFor`. */
+export type SessionHome =
+  | {
+      inGuest: true;
+      /** The guest sessions root the session (and the staged EPUB) go under. */
+      guestRoot: string;
+      /** The session dir as the GUEST spells it (`/home/...`). */
+      sessionDir: string;
+      /** The same directory as the host reads it (`\\wsl$\...`). */
+      sessionDirForReading: string;
+    }
+  | {
+      inGuest: false;
+      /** A host-native path under the stated scratch root. */
+      sessionDir: string;
+      sessionDirForReading: string;
+    };
+
+/**
+ * WHERE A NEW SESSION LIVES, decided from the venue and the engine.
+ *
+ * The guest's filesystem for a legacy WSL prep, so the session dir and the
+ * staged EPUB are somewhere the spawned python can open; a host-native path
+ * under `narratorScratchRoot()` otherwise — and "otherwise" INCLUDES EVERY
+ * CRUCIBLE-VENUE RENDER, whatever the engine's WSL toggle says
+ * (`prepRunsInWsl`). Until 2026-09-14 this asked `jobRunsInWsl` alone, so a
+ * Higgs book bound for the Mac's Crucible was prepped inside the guest, its
+ * session written to ext4, the artifacts downloaded into a `\\wsl$` path, and
+ * the whole session then copied back out — onto a library share the guest could
+ * not write. The render had already finished. Now the session is native from the
+ * start and no step of such a run enters WSL.
+ *
+ * Lifted out of `prepareSession` (which spawns) so that
+ * `tools/test-crucible-render-session.js` can drive the shipped placement with
+ * the real config reader and both venues.
+ */
+export function sessionHomeFor(
+  venue: GenerationVenue,
+  ttsEngine: string | undefined,
+  sessionId: string,
+): SessionHome {
+  if (prepRunsInWsl(venue, ttsEngine)) {
+    // THE COPY-OUT DESTINATION, CHECKED BEFORE THE RENDER. After a legacy WSL
+    // render `normalizeWslSessionToWindows` copies the session from ext4 onto
+    // the scratch root, and `narratorScratchRoot()` refuses by name — naming
+    // the "Narrator scratch folder" setting — when that root's volume is not
+    // mounted. That answer used to arrive AFTER the whole book had rendered;
+    // asked here, it arrives before prep spawns.
+    //
+    // RULING OWED: a scratch root on a NETWORK drive is deliberately NOT refused
+    // here. The copy-out routes by a probed fact (`copyDirOutOfWsl`: the guest
+    // copies when it has the drive mounted, Windows copies through \\wsl$ when
+    // it does not), so a Z:\ root works on either road; the 2026-09-14 failure
+    // on exactly that root was the probe (`test -d` on a stale mount point),
+    // fixed in `wslSeesDrive`. Refusing a network root would refuse the default
+    // root (`<library>/tmp`, and the library is on the NAS) for every legacy
+    // render on this PC.
+    narratorScratchRoot();
+
+    // The session is created in the GUEST sessions root — BookForge's own
+    // directory inside WSL (`<guest home>/bookforge-sessions`), not the `tmp/`
+    // of an ebook2audiobook checkout, which is where it went until Phase 6.
+    const guestRoot = getWslSessionsRoot();
+    const sessionDir = `${guestRoot}/ebook-${sessionId}`;
+    return {
+      inGuest: true,
+      guestRoot,
+      sessionDir,
+      // Convert to Windows UNC path for reading from Node.js
+      sessionDirForReading: wslPathToWindows(sessionDir),
+    };
+  }
+  // Native session dir — the "Narrator scratch folder" setting, or <library>/tmp.
+  // Must match where the spawned narrator writes it (buildToolsSpawnEnv passes
+  // the same resolution as NARRATOR_SESSIONS_ROOT).
+  const sessionDir = path.join(narratorScratchRoot(), `ebook-${sessionId}`);
+  return { inGuest: false, sessionDir, sessionDirForReading: sessionDir };
+}
+
+/**
  * Check if a path is a WSL UNC path (\\wsl$\... or \\wsl.localhost\...)
  */
 function isWslUncPath(p: string): boolean {
@@ -2475,8 +2600,14 @@ function buildJobSpawn(opts: {
   /** Names the Higgs voice document written for this run; ignored for Orpheus. */
   jobId: string;
   cwdHint?: string;
+  /**
+   * The render is on a Crucible server, so this (prep-only) phase runs on the
+   * host in the tools env and never enters WSL — `NarratorSpawnRequest.onHost`.
+   */
+  onHost?: boolean;
 }): NarratorSpawnPlan {
   const engine = narratorEngineFor(opts.settings);
+  const onHost = opts.onHost === true;
   if (engine === 'higgs') {
     return buildHiggsSpawn(opts.phase, {
       model: higgsModelForJob(opts.settings),
@@ -2484,6 +2615,7 @@ function buildJobSpawn(opts: {
       cwd: opts.cwdHint ?? app.getPath('userData'),
       jobId: opts.jobId,
       envExtras: opts.envExtras,
+      ...(onHost ? { onHost } : {}),
     });
   }
   return buildNarratorSpawn({
@@ -2492,6 +2624,7 @@ function buildJobSpawn(opts: {
     args: opts.args,
     envExtras: opts.envExtras,
     cwdHint: opts.cwdHint,
+    ...(onHost ? { onHost } : {}),
   });
 }
 
@@ -2965,6 +3098,16 @@ interface ConversionSession {
    * on the server rather than submitting a second one.
    */
   crucibleJobId?: string;
+  /**
+   * WHERE THIS SESSION'S GENERATION STEP RUNS — decided once, before prep, and
+   * carried here so every later question ("does this session live in the WSL
+   * guest?", "is there a guest worker to tear down?", "must the session be
+   * copied out of WSL before assembly?") is answered from the same record the
+   * launch was. `sessionRunsInWsl` reads it.
+   *
+   * Absent only on a session that never generates (assembly-only).
+   */
+  venue?: GenerationVenue;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -3319,7 +3462,7 @@ export async function killAllWorkers(clearSessions = true): Promise<void> {
       clearInterval(session.watchdogTimer);
     }
 
-    if (jobRunsInWsl(ttsEngine)) {
+    if (sessionRunsInWsl(session)) {
       // ONE session-scoped guest teardown covers every worker of this session:
       // cooperative SIGTERM → verified wait → VM terminate for a survivor (never
       // SIGKILL — that's the WSL wedge trigger). Shorter grace: the app is quitting.
@@ -3435,32 +3578,49 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings,
+  /**
+   * WHERE THE RENDER RUNS, decided before this is called. It decides where the
+   * session is created and which python preps it — see `prepRunsInWsl`. Passed
+   * rather than re-decided here because the launch points remember it on the
+   * session, and one render must have one answer.
+   */
+  venue: GenerationVenue,
   prepJobId?: string  // Used only to address first-run model-download progress notes
 ): Promise<PrepInfo> {
   const sessionId = crypto.randomUUID();
+  const engine = narratorEngineFor(settings);
 
-  // The Higgs ENVIRONMENT, checked ONCE for this job — not once per worker.
-  // The doctor is a WSL round trip; running it per range put a ~1 s blocking
-  // call on the main thread (the one the bookshelf server shares) for a resource
-  // that cannot change between the workers of one job. Here it is awaited, in an
-  // async context, before anything spawns.
-  if (isHiggsJob(settings)) {
+  if (venue.where === 'crucible') {
+    // THE ENGINE IS NOT ON THIS MACHINE. The render goes to a Crucible server, so
+    // the Higgs doctor below — a WSL round trip that asks whether the GUEST's
+    // serving env is ready — is a question about a process this run never
+    // starts. What this run does start here is the prep, natively, in the tools
+    // env; and THAT is measured, once, before anything spawns: can the tools
+    // env import narrator's prep? Refused by name (interpreter, module, fix) if
+    // not, rather than falling back into the guest.
+    const refusal = await hostPrepRefusal(engine);
+    if (refusal) throw new Error(refusal);
+  } else if (isHiggsJob(settings)) {
+    // The Higgs ENVIRONMENT, checked ONCE for this job — not once per worker.
+    // The doctor is a WSL round trip; running it per range put a ~1 s blocking
+    // call on the main thread (the one the bookshelf server shares) for a resource
+    // that cannot change between the workers of one job. Here it is awaited, in an
+    // async context, before anything spawns.
     const envRefusal = await higgsEnvironmentRefusal();
     if (envRefusal) throw new Error(envRefusal);
   }
 
-  // When using WSL for Orpheus, the session is created in WSL's filesystem
-  // We need to use the WSL path for session directory and convert to Windows UNC for reading
-  // WHERE THE SESSION LIVES: the guest's filesystem for a guest prep, so the
-  // session dir and the staged EPUB are somewhere the spawned python can open.
+  // WHERE THE SESSION LIVES — `sessionHomeFor`: the guest for a legacy WSL prep,
+  // a host-native path for everything else, every Crucible-venue render included.
   //
   // The `|| (isHiggsJob(...) && higgsRunsInWsl())` that used to be needed here is
   // gone: `jobRunsInWsl` answers for Higgs now. It did not before, because every
   // caller was also the gate in front of `spawnWithWslSupport`, and a Higgs command
   // through that function came out an Orpheus command. See jobRunsInWsl's header.
-  const useWsl = jobRunsInWsl(settings.ttsEngine);
-  let sessionDir: string;
-  let sessionDirForReading: string;
+  const home = sessionHomeFor(venue, settings.ttsEngine, sessionId);
+  const useWsl = home.inGuest;
+  const sessionDir = home.sessionDir;
+  const sessionDirForReading = home.sessionDirForReading;
   // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
   // STAGED into WSL's own filesystem first: buildWslBashCommand maps drive
   // letters to /mnt/<letter>, but WSL auto-mounts only fixed drives — a library
@@ -3471,31 +3631,24 @@ export async function prepareSession(
   let ebookArgPath = epubPath;
   let stagedEbookUnc: string | null = null;
 
-  if (useWsl) {
-    // The session is created in the GUEST sessions root — BookForge's own
-    // directory inside WSL (`<guest home>/bookforge-sessions`), not the `tmp/`
-    // of an ebook2audiobook checkout, which is where it went until Phase 6.
-    const guestRoot = getWslSessionsRoot();
-    sessionDir = `${guestRoot}/ebook-${sessionId}`;
-    // Convert to Windows UNC path for reading from Node.js
-    sessionDirForReading = wslPathToWindows(sessionDir);
+  if (home.inGuest) {
     console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
 
     // Stage the ebook where WSL can read it. Prep copies it into the session
     // dir immediately (prepare_dirs), so the staged file is deleted again the
     // moment prep settles — see the finally below.
-    const stagedWsl = `${guestRoot}/staged-${sessionId}${path.extname(epubPath)}`;
+    const stagedWsl = `${home.guestRoot}/staged-${sessionId}${path.extname(epubPath)}`;
     stagedEbookUnc = wslPathToWindows(stagedWsl);
     await fs.mkdir(path.dirname(stagedEbookUnc), { recursive: true });
     await fs.copyFile(epubPath, stagedEbookUnc);
     ebookArgPath = stagedWsl;
     console.log(`[PARALLEL-TTS] Staged ebook for WSL: ${epubPath} -> ${stagedWsl}`);
-  } else {
-    // Native session dir — the "Narrator scratch folder" setting, or <library>/tmp.
-    // Must match where the spawned narrator writes it (buildToolsSpawnEnv passes
-    // the same resolution as NARRATOR_SESSIONS_ROOT).
-    sessionDir = path.join(narratorScratchRoot(), `ebook-${sessionId}`);
-    sessionDirForReading = sessionDir;
+  } else if (venue.where === 'crucible') {
+    console.log(
+      `[PARALLEL-TTS] Session is host-native (${sessionDir}): the render runs on crucible ` +
+      `"${venue.server}" and its artifacts are downloaded here; prep runs in the tools env; ` +
+      'nothing in this run enters WSL',
+    );
   }
 
   // Map UI device names to e2a CLI device names (app.py expects uppercase).
@@ -3617,6 +3770,9 @@ export async function prepareSession(
       phase: 'prep',
       args,
       jobId: prepJobId || sessionId,
+      // A Crucible-venue prep runs here, in the tools env, whatever the engine's
+      // WSL toggle says — the render is on another machine. See prepRunsInWsl.
+      onHost: venue.where === 'crucible',
       // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
       // worker. Precedence: an explicit user env override wins, else the selected
       // voice's declared packing cap, else nothing — NO invented default.
@@ -3631,7 +3787,7 @@ export async function prepareSession(
         // Orpheus runs there — and under buildNarratorSpawn every value in
         // envExtras DOES cross, where the old forwardKeys allowlist silently
         // dropped them.
-        ...(narratorRunsInWsl(narratorEngineFor(settings), 'prep')
+        ...(useWsl
           ? { ORPHEUS_DISABLE_EAGER: '1' }
           : { VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1' }),
         VLLM_USE_V1: '0',
@@ -5105,20 +5261,41 @@ function postRenderAlignProgress(session: ConversionSession, message: string): A
  * two backends do not produce the same audio, so half a book in each is an
  * audible seam no test asserts.
  *
+ * ASKED BEFORE PREP (2026-09-14), because the answer also decides WHERE the
+ * session is created and which python preps it — `prepareSession`,
+ * `prepRunsInWsl`: a Crucible-venue render is host-native from the start and
+ * never enters WSL. The fresh launch points ask this and carry the venue into
+ * their session literal; a resume asks `decideAndRememberVenue`.
+ *
  * There is no local fallback. When the legacy switch is off and no server can
- * be chosen, this THROWS with the reason, the caller releases the GPU lease and
- * the job fails saying which server it could not reach.
+ * be chosen, this THROWS with the reason — before a session directory or a
+ * GPU lease exists — and the job fails saying which server it could not reach.
  */
-async function decideAndRememberVenue(session: ConversionSession): Promise<GenerationVenue> {
-  const settings = session.config.settings;
+async function decideGenerationVenue(settings: ParallelTtsSettings): Promise<GenerationVenue> {
   const { decideWhereGenerationRuns, processVenueHost } = await import('./crucible/generation-venue.js');
   const venue = await decideWhereGenerationRuns(settings, processVenueHost());
   if (venue.where === 'crucible' && settings.crucible === undefined) {
-    // Written onto the LIVE settings object (which `savePersistentState`
-    // spreads into session_state.json) and onto the state already saved for
-    // this run, because the initial save happens before generation starts —
-    // miss the second and a Continue after a crash re-decides.
+    // Written onto the LIVE settings object, which `savePersistentState`
+    // spreads into session_state.json — so a Continue after a crash reads a
+    // name rather than deciding again.
     settings.crucible = { server: venue.server };
+  }
+  return venue;
+}
+
+/**
+ * THE ASK, FOR A SESSION THAT ALREADY EXISTS — a resume. The fresh launch
+ * points ask `decideGenerationVenue` BEFORE prep (the answer decides where the
+ * session is created, see `prepareSession`) and carry it into the session
+ * literal; a resume has its session first and asks here, then records the
+ * answer in the same two places: the session, and the state already saved for
+ * this run, because the initial save happened before this — miss the second
+ * and a Continue after a crash re-decides.
+ */
+async function decideAndRememberVenue(session: ConversionSession): Promise<GenerationVenue> {
+  const venue = await decideGenerationVenue(session.config.settings);
+  session.venue = venue;
+  if (venue.where === 'crucible') {
     const persisted = session.persistentState?.settings;
     if (persisted && persisted.crucible === undefined) persisted.crucible = { server: venue.server };
   }
@@ -5560,13 +5737,24 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       });
     }
 
-    // Orpheus runs in WSL; move its output onto Windows so RVC + assembly run
-    // natively (off the slow \\wsl$ 9p mount, and on the up-to-date Windows e2a
-    // that supports --sentences_dir). Reuses the Windows copy the project cache
-    // just made when available. A no-op for native engines; a THROW when the copy
-    // fails, because assembly is native now and the \wsl$ alternative silently
-    // mis-times a book (see normalizeWslSessionToWindows).
-    await normalizeWslSessionToWindows(session, cachedSentencesDir);
+    if (session.venue?.where === 'crucible') {
+      // NOT CALLED, ON PURPOSE. A Crucible-venue session was created on a
+      // host-native path and the render's artifacts were downloaded straight
+      // into it (prepareSession, prepRunsInWsl): there is no guest copy to bring
+      // out, and this run has entered WSL nowhere. Handing the normaliser such a
+      // session is refused inside it; tools/test-crucible-render-session.js pins
+      // that this branch never reaches it.
+      console.log(`[PARALLEL-TTS] Session rendered on crucible "${session.venue.server}" is host-native `
+        + `(${session.prepInfo?.sessionDir}); no WSL copy`);
+    } else {
+      // A legacy WSL render wrote its session to ext4; move it onto Windows so
+      // RVC + assembly run natively (off the slow \\wsl$ 9p mount). Reuses the
+      // Windows copy the project cache just made when available. A no-op for a
+      // native session; a THROW when the copy fails, because assembly is native
+      // now and the \\wsl$ alternative silently mis-times a book (see
+      // normalizeWslSessionToWindows).
+      await normalizeWslSessionToWindows(session, cachedSentencesDir);
+    }
 
     // Skip assembly when a separate assembly step follows in this chain.
     if (session.config.skipAssembly) {
@@ -5871,7 +6059,7 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
     if (worker.process) {
       console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
       await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
-      if (jobRunsInWsl(ttsEngine)) {
+      if (sessionRunsInWsl(session)) {
         // Session-scoped graceful teardown (Orpheus-WSL runs a single worker, so
         // "the session's workers" IS this worker). Never SIGKILL in the guest.
         await destroyWslSessionWorkers(session, `stuck worker ${worker.id}`);
@@ -5902,7 +6090,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   }
   // Never retry into a wedged WSL VM — mark the worker permanently failed so the
   // session resolves loudly instead of spawning more doomed GPU work.
-  if (isWslWedged() && jobRunsInWsl(config.settings.ttsEngine)) {
+  if (isWslWedged() && sessionRunsInWsl(session)) {
     worker.retryCount = MAX_WORKER_RETRIES;
     worker.status = 'error';
     worker.error = wslWedgedMessage();
@@ -6122,6 +6310,16 @@ async function normalizeWslSessionToWindows(
   windowsSentencesDir?: string,
 ): Promise<void> {
   const prep = session.prepInfo;
+  if (session.venue?.where === 'crucible') {
+    // A caller bug, not a state to handle: a Crucible-venue session is created
+    // native (prepareSession) and completeAfterWorkers does not bring it here.
+    // Saying so beats a silent return, which would hide the day that changes.
+    throw new Error(
+      `normalizeWslSessionToWindows was handed a session rendered on crucible "${session.venue.server}" `
+        + `(${prep?.sessionDir ?? 'no prep info'}). Such a session is host-native from the start and `
+        + 'never enters WSL; nothing about it is copied out of the guest.',
+    );
+  }
   if (!prep || process.platform !== 'win32') return;
   if (!isWslUncPath(prep.sessionDir)) return; // already native — nothing to do
 
@@ -7677,7 +7875,10 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
  * asks for nothing.
  */
 async function ensureGuestCanReachSession(session: ConversionSession): Promise<void> {
-  if (!jobRunsInWsl(session.config.settings.ttsEngine)) return;
+  // A Crucible-venue session is native and its render never enters the guest,
+  // so there is nothing for the guest to reach — and mounting the library share
+  // in WSL for it would be the first WSL call in a run that must make none.
+  if (!sessionRunsInWsl(session)) return;
   const prep = session.prepInfo;
   await ensureWslDrivesFor([
     prep?.sessionDir,
@@ -7694,11 +7895,14 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   // if the device resolved to CPU (old build / explicit CPU pick). So it must still be
   // VRAM-sized here — otherwise vLLM falls back to orpheus.py's 0.70-of-total default
   // (~17 GiB on a 24 GiB card) and maxes the GPU regardless of the chosen level.
-  const orpheusOnGpu = engine === 'orpheus'
-    && (deviceArg === 'CUDA' || (process.platform === 'win32' && shouldUseWsl2ForOrpheus()));
+  // THE SESSION'S arm, not the toggle's: a Crucible-venue Orpheus job runs no
+  // vLLM in the guest, so the wedge check and the clear-guest gate below — both
+  // of which enter WSL — do not apply to it. (Its lease and VRAM preflight still
+  // do; see the RULING OWED on startCrucibleGeneration.)
+  const orpheusViaWsl = engine === 'orpheus' && sessionRunsInWsl(session);
+  const orpheusOnGpu = engine === 'orpheus' && (deviceArg === 'CUDA' || orpheusViaWsl);
   if (deviceArg === 'CPU' && !orpheusOnGpu) return;
   const jobId = session.jobId;
-  const orpheusViaWsl = engine === 'orpheus' && process.platform === 'win32' && shouldUseWsl2ForOrpheus();
 
   // MERGED or ADAPTER? An adapter spawn needs ~1 GiB more free VRAM than the merged
   // equivalent, because vLLM does not account for the resident LoRA or the punica
@@ -8677,13 +8881,30 @@ export async function startParallelConversion(
   // Users who want to assemble an existing session should use the Reassembly feature.
   // TTS jobs always run prep to create a fresh session with the current settings.
 
+  // WHERE THE GENERATION STEP RUNS, decided BEFORE prep — because the answer
+  // decides where the session is created and which python preps it
+  // (prepareSession, prepRunsInWsl). Refused here, before a session directory
+  // or a GPU lease exists, when no server can be chosen: there is no local
+  // fallback (generation-venue.ts).
+  let venue: GenerationVenue;
+  try {
+    venue = await decideGenerationVenue(config.settings);
+  } catch (err) {
+    const error = `This render cannot be placed: ${err instanceof Error ? err.message : err}`;
+    console.error('[PARALLEL-TTS]', error);
+    await logger.failJob(jobId, error);
+    stopPowerBlock();
+    emitJobFailure(jobId, error);
+    return { success: false, error };
+  }
+
   // Prepare the session first. Prep is a real, minute-scale stage (extract the epub,
   // split it, pack chunks) that used to emit nothing — so announce it before starting,
   // or the job shows a blank 0% until the first worker spawns.
   let prepInfo: PrepInfo;
   emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
   try {
-    prepInfo = await prepareSession(config.epubPath, config.settings, jobId);
+    prepInfo = await prepareSession(config.epubPath, config.settings, venue, jobId);
     await logger.log('INFO', jobId, 'Prep complete', {
       totalSentences: prepInfo.totalSentences,
       totalChapters: prepInfo.totalChapters,
@@ -8765,7 +8986,8 @@ export async function startParallelConversion(
     // the "Preparing book" bar to complete.
     prepDoneAt: Date.now(),
     cancelled: false,
-    assemblyProcess: null
+    assemblyProcess: null,
+    venue,
   };
 
   activeSessions.set(jobId, session);
@@ -8858,9 +9080,8 @@ export async function startParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    // Inside the try so an unplaceable render releases the GPU lease rather than
-    // leaking it — the same reason the worker loop is in here.
-    const venue = await decideAndRememberVenue(session);
+    // The venue was decided before prep (it placed the session); this is the
+    // launch it decided.
     if (venue.where === 'crucible') {
       // THE SEAM (item 2.4). One remote job instead of N local workers. No
       // watchdog and no rendered-file poller: both exist to notice a CHILD
@@ -9011,8 +9232,14 @@ export async function renderRangeHeadless(
 }> {
   const jobId = opts?.jobId || `cli-${crypto.randomUUID()}`;
 
+  // The same seam AND the same decision as the app's path (items 2.4, 2.2), so
+  // the CLI mirrors the app's code path rather than acquiring a second way to
+  // reach a Crucible — or a second answer to where a render runs. Decided BEFORE
+  // prep, as the app does, because it places the session (prepareSession).
+  const venue = await decideGenerationVenue(settings);
+
   // Real e2a prep — identical packing/session-creation to a UI job.
-  const prepInfo = await prepareSession(inputPath, settings, jobId);
+  const prepInfo = await prepareSession(inputPath, settings, venue, jobId);
   if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
     throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
   }
@@ -9075,7 +9302,8 @@ export async function renderRangeHeadless(
     // the "Preparing book" bar to complete.
     prepDoneAt: Date.now(),
     cancelled: false,
-    assemblyProcess: null
+    assemblyProcess: null,
+    venue,
   };
   activeSessions.set(jobId, session);
 
@@ -9092,10 +9320,7 @@ export async function renderRangeHeadless(
   // Spawn the worker (WSL-safe for Orpheus) + the stuck-worker watchdog. The worker's
   // close handler drives checkAllWorkersComplete → skipAssembly branch → session delete.
   try {
-    // The same seam AND the same decision as the app's path (items 2.4, 2.2),
-    // so the CLI mirrors the app's code path rather than acquiring a second way
-    // to reach a Crucible — or a second answer to where a render runs.
-    const venue = await decideAndRememberVenue(session);
+    // The venue decided above, before prep.
     if (venue.where === 'crucible') {
       startCrucibleGeneration(session, venue.server);
     } else {
@@ -9224,7 +9449,7 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
     }
   }
 
-  if (jobRunsInWsl(ttsEngine)) {
+  if (sessionRunsInWsl(session)) {
     // ONE session-scoped guest teardown, AWAITED: cooperative SIGTERM (the worker
     // exits itself between sentences, releasing the GPU) → verified wait → VM
     // terminate for a survivor. Never SIGKILL (the WSL wedge trigger). Awaiting also
@@ -10917,6 +11142,20 @@ export async function resumeParallelConversion(
     });
   }
 
+  // A resume of a remote render goes back to the SAME server (item 2.4): the
+  // first run wrote its choice into the settings session_state.json persists,
+  // so this reads a name rather than deciding again (§4.3). Asked BEFORE the
+  // GPU and the guest gates below, which read the answer (`sessionRunsInWsl`):
+  // a Crucible-venue resume mounts nothing in WSL and waits for no guest worker.
+  let venue: GenerationVenue;
+  try {
+    venue = await decideAndRememberVenue(session);
+  } catch (err) {
+    stopStateSaveTimer(session);
+    activeSessions.delete(jobId);
+    throw err;
+  }
+
   // Take the GPU before the resumed workers load a TTS model, so the AI-cleanup
   // LLM steps off and they never co-reside in VRAM. No-op for CPU jobs.
   await ensureGuestCanReachSession(session);
@@ -10944,13 +11183,9 @@ export async function resumeParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    // A resume of a remote render goes back to the SAME server (item 2.4): the
-    // first run wrote its choice into the settings session_state.json persists,
-    // so this reads a name rather than deciding again (§4.3).
     // `crucibleChunksForSession` reads the workers' `assignedIndices`, so the
     // scattered missing set is exactly what is submitted — one job for the
     // gaps, not a re-render of the book.
-    const venue = await decideAndRememberVenue(session);
     if (venue.where === 'crucible') {
       startCrucibleGeneration(session, venue.server);
     } else {

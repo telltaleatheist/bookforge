@@ -751,12 +751,20 @@ async function bridgeSeamChecks() {
     //
     // The question used to be `crucibleServerForJob(settings)` — "did the
     // caller name a server". Item 2.2's routing record answers it for the app,
-    // which never named one, so the ask is now `decideAndRememberVenue`.
-    const asked = bridge.match(/decideAndRememberVenue\(/g) || [];
+    // which never named one, so the ask is now `decideGenerationVenue`. The two
+    // FRESH launch points ask it BEFORE prep (the answer places the session —
+    // tools/test-crucible-render-session.js); the resume asks through
+    // `decideAndRememberVenue`, which records the answer on a session that
+    // already exists.
+    const asked = bridge.match(/decideGenerationVenue\(/g) || [];
     assert.strictEqual(asked.length, 4,
-      `decideAndRememberVenue is called ${asked.length} time(s): its own definition plus the three `
-      + 'generation launch points (startParallelConversion, renderRangeHeadless, '
-      + 'resumeParallelConversion). A new launch point must ask too.');
+      `decideGenerationVenue is called ${asked.length} time(s): its own definition, the two fresh `
+      + 'launch points (startParallelConversion, renderRangeHeadless), and decideAndRememberVenue. '
+      + 'A new launch point must ask too.');
+    const remembered = bridge.match(/decideAndRememberVenue\(/g) || [];
+    assert.strictEqual(remembered.length, 2,
+      `decideAndRememberVenue is called ${remembered.length} time(s): its own definition plus the `
+      + 'resume (resumeParallelConversion).');
     const takes = bridge.match(/startCrucibleGeneration\(session, venue\.server\)/g) || [];
     assert.strictEqual(takes.length, 3, 'each launch point takes the seam');
     assert.strictEqual((bridge.match(/crucibleServerForJob/g) || []).length, 0,

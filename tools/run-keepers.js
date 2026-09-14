@@ -120,6 +120,12 @@ const SUITES = [
   // the local naming, and a 409 server_busy that FAILS the render naming the
   // holder instead of quietly taking this machine's GPU.
   'test-crucible-render',
+  // A render on a Crucible server never enters WSL (2026-09-14): the session
+  // is host-native from the start whatever the engine's toggle says, the prep
+  // runs in the tools env (measured before it spawns), the SHIPPED completion
+  // tail never calls the normaliser for it, and the scratch-root refusal is
+  // reached BEFORE a legacy WSL prep rather than after a finished render.
+  'test-crucible-render-session',
   // The ONE job helper every Crucible door shares (tier 3, 2026-09-14), and the
   // two doors built on it. Against a fake speaking the real routes — uploads as
   // multipart, SSE with ids and Last-Event-ID, artifacts with sidecars, DELETE.
