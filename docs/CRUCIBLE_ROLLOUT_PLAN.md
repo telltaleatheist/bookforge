@@ -85,7 +85,13 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - `orpheus-memory.ts` tier table deletion; narrator's verdict channel for the local driver.
 - Crucible: `crucible service install` over an already-loaded launchd agent fails `launchctl bootstrap … exited 5` (already loaded) — install must bootout first (idempotency, PHASE11); found 23:50 on the Mac while re-recording the PATH.
 - [x] Crucible SDK follow-ups *(01:40): `bcaa541` — `crucible.stream()` now RESOLVES ATTACHED (it reads the server's `ready` frame and checks voice/fingerprint/sample-rate/backend before returning), so BookForge's labelled ≤5 s `stream_not_attached` poll in `electron/crucible/stream.ts` can be deleted the day the client pin moves to a release carrying it; `f788faf` — `client.capability()` typed, with `capability_undecided` as a typed refusal; `3cd9d47` — `installed` on every capability row of `/v1/info` (align, asr, rvc, denoise, llm, tts) + the SDK type, and `describe_voices` stopped reading `residency._config` sideways. Crucible 1016 tests, SDK 182.*
-- [x] `@crucible/bootstrap` (install Crucible from BookForge's setup wizard; client mints the token and passes `crucible init --token`). *Built 00:50 (crucible `3550763` `init --token`, `ab6d7bd` the package, `6b15c6d` release.sh fourth asset): `sdk/bootstrap/` — `detectHost / install / ensureRunning / readLocalConfig / health`, injectable runner, the WSL plumbing facts from Foundry carried with tests, 117 unit tests; live on this PC: WSL Ubuntu v2, the 3090 Ti, the conda interpreter, config read, service running with linger on. Rulings owed (PHASE12 §6): the Mac's conda root is `/opt/homebrew/Caskroom/miniconda/base` (not one of the three ruled roots — `condaRoots` override until ruled); may `install()` create the `crucible` env; prebuilt env archives need a catalog + downloader; what the app does with `enableLinger`. Still owed: the setup screens in both apps that CALL it, and a Crucible release so it is installable.*
+- [x] `@crucible/bootstrap` (install Crucible from BookForge's setup wizard; client mints the token and passes `crucible init --token`). *Built 00:50 (crucible `3550763` `init --token`, `ab6d7bd` the package, `6b15c6d` release.sh fourth asset): `sdk/bootstrap/` — `detectHost / install / ensureRunning / readLocalConfig / health`, injectable runner, the WSL plumbing facts from Foundry carried with tests, 117 unit tests; live on this PC: WSL Ubuntu v2, the 3090 Ti, the conda interpreter, config read, service running with linger on. Rulings owed (PHASE12 §6): the Mac's conda root is `/opt/homebrew/Caskroom/miniconda/base` (not one of the three ruled roots — `condaRoots` override until ruled); may `install()` create the `crucible` env; prebuilt env archives need a catalog + downloader; what the app does with `enableLinger`. *Setup screens: BUILT in both apps (BookForge `eb7b4b73`, 02:30). BookForge's three doors live at
+  **Settings → Crucible Servers → "Get a Crucible"** and as a first-run step, "Where the GPU work
+  happens": connect to one elsewhere, use this machine's, or install one here — the third disabled
+  with its reason stated, since no release carries the tarball. The install PLAN is drawn from facts
+  BookForge can check itself (WSL2, the guest's card, an existing config) and lists the two commands
+  the host must run. 41-check keeper. Also fixed there: the page-reader status cards said "this
+  machine's GPU (WSL)" for a run about to go to a Crucible. Still owed: a Crucible release.*
 - Foundry: its four items, Ollama retirement, and consuming `local`/registry the same way (Bun parses TOML natively).
 - Foundry v1.3.0 (`83d7b66`) — tarballs built, `gh release create` needs Owen; the dev checkout's `dist/` already runs `83d7b66`, and until the release is cut the managed `foundry-cli` component stays on v1.2.0 (`eb69b7a`), whose engine still speaks `--server`. `foundry-cli-components.ts` pins nothing and takes the newest release, so cutting it is the whole fix.
 - [x] Re-vendor `foundry-app/` *(02:10, `27da6a21`: Foundry `e6d5424`, 21 commits, 158/158 blobs hash-verified; app and engine shas agree for the first time)*. Three findings: **`--server` came back** as a wire dialect (`openai|ollama|anthropic`) after being retired as a server KIND, so a keeper guarding "nothing may write `--server`" was right to go red and now asserts the declared dialect instead; **`app/package.json` carries `"foundry": "file:.."`**, which made `npm ci` create a junction from the subtree to the BookForge repository root — a later recursive delete of `foundry-app/node_modules` would have deleted the repo (deleted non-recursively, repo verified intact, the step is now mandatory in VENDORED.md, and a ruling is owed on whether Foundry drops that devDependency for the snapshot); and the clean-text pin moved by exactly one docblock word (`both doors` → `every door`, the same nine characters), which is a port, not a rule move, so `NORMALIZER_VERSION` was right to stay.
@@ -121,8 +127,20 @@ branch with tests; nothing is merged, because Owen tests in-app first.
    unload". "Done" is four facts, not a timer: no job on the lane, no lease open, no streaming
    session, no chat in flight. The lease built earlier tonight is what makes it safe — a client that
    intends a run of requests says so, and three books under one lease still load the model once.
-   Consequence to state plainly: BookForge's doors do not lease yet, so a BookForge chat run reloads
-   per request until they do. Being built.
+   **Built 02:20 (crucible `5bf7d62`), and the measured consequence is worse than "reloads":** the chat
+   door never loads, so a BookForge cleanup run finds the model gone the moment its previous
+   completion returned and is answered `model_not_resident` until something submits a load. The lease
+   is therefore what makes BookForge's Crucible provider FUNCTION, not merely what makes it fast.
+   **BookForge leases as of 02:45** (`4267bf5e`, `1ac6fbd4`): `withCrucibleLease` takes one lease per
+   RUN, heartbeats at a third of the ttl, and releases in a finally on success, throw, cancel and app
+   quit; a 404 on release is a no-op and a 404 on a heartbeat re-leases (the server restarted and
+   forgot). Leasing: the four text acts, the `crucible` AI provider, and page reading. NOT leasing, by
+   name and pinned: every one-job door (render, asr, align, rvc, denoise, re-roll — they hold the lane,
+   and `tts`/`align` would be refused by a lease they took themselves) and the streaming session (it
+   holds the claim). A second agent is extending the server's lease to cover a voice and an aligner,
+   because a book rendered or aligned chapter by chapter would otherwise pay a load per chapter.
+   Owed: a queue row that cleans THEN simplifies takes two leases, so the model can go between them —
+   one lease for the row needs a seam in `queue-engine.ts` and cannot carry one truthful act name.
 
 2. **Cloud is how an underpowered machine lights translate and simplify.** His words: *"if a user
    can't run a 27b for translation, the only way the translate/simplify cards can light up is if we
