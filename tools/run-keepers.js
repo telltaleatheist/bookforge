@@ -224,6 +224,23 @@ const SUITES = [
   // run BEFORE any spawn and never loads one on somebody's card, and an engine
   // that cannot address a Crucible says so rather than 404ing an hour in.
   'test-crucible-text-acts',
+  // THE HOSTED half of that same seam, and the only suite in this list whose
+  // subject is somebody else's SOURCE. `foundry-app/` is a vendored subtree, so
+  // every claim BookForge makes about what the hosted window can do is a fact
+  // with two owners — and on 2026-09-14 one of them changed and the other did
+  // not: foundry gave `runEngine` a per-run environment, the re-vendor brought
+  // it in, and the refusal went on quoting `env: process.env` for ten hours.
+  // This reads the subtree instead of remembering it: the engine spawn still
+  // takes an overlay (losing it would send BookForge's OWN text acts
+  // unauthenticated), the job seam still carries none, and the vendored
+  // registry still cannot resolve a credential hosted — the last of which is a
+  // TRIPWIRE that goes red on the re-vendor with the instructions on it, which
+  // is the point. Plus the registry BookForge hands that window under Owen's
+  // one-owner ruling: priority order, disabled entries kept and marked, `local`
+  // present exactly when it resolves, a name that will not resolve omitted and
+  // RECORDED, and a call before the first reading refused by name rather than
+  // answered with an empty list a window cannot tell from "you have none".
+  'test-foundry-hosted-crucible-seam',
   // The FIFTH act, and the one that is not a text act (rollout tier 3,
   // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
   // a job, because `pages` is a capability class whose `job_type` is `llm` —
@@ -299,9 +316,9 @@ const SUITES = [
   // queue right up until the audio is in the wrong voice or the night is gone.
   'test-queue-wait-for',
   // HOW MANY BOOKS ARE IN FLIGHT, AND WHERE. One slot set per machine
-  // (crucible `docs/PHASE7-LANES.md` Â§2.4). The defects are silent in both
+  // (crucible `docs/PHASE7-LANES.md` §2.4). The defects are silent in both
   // directions: too few slots and a second registered server is never used at
-  // all â€” a whole night of one card idle â€” and too many and two venues over
+  // all — a whole night of one card idle — and too many and two venues over
   // one 3090 Ti start together, which looks like a working queue until both
   // runs OOM.
   'test-queue-slot-sets',
