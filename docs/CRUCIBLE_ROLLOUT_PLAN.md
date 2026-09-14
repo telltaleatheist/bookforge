@@ -57,6 +57,41 @@ of `<userData>/app-settings.json`, is deleted with everything that called it.
 | `17b763d0` | the Phase 15 SDK vendored, and the npm cache trap that hides it (twice) |
 | `87770b0e` | the seam DELETED - the settings door goes through the real SDK |
 
+### THE WRITE-THROUGH PATH, RUN AGAINST A REAL PHASE 15 SERVER (2026-09-14, the Mac)
+
+Owen: *"we can freely test the logic pathways anyway by using the mac."* The Mac Studio runs
+the merged Phase 15 server (`mlx-darwin`, `192.168.68.79:7100`). Everything below went
+through BookForge's OWN doors — `parsePairing` → `addServer` → `engine-settings.ts` — from a
+node script against a TEMP userData, never curl and never the real registry. **The Mac's
+settings were put back and the final GET is byte-identical to the first.**
+
+| # | what ran | what came back |
+|---|---|---|
+| 0 | the paste box door: `parsePairing`, then `addServer` | registered; the listing carries `****…` and not the token |
+| 1 | `crucibleEngineSettings` | all four llm classes present; three upstreams present, none configured; `backendKind: mlx-darwin` |
+| 2 | `crucibleCapabilityWithRoutes` | `route` on EVERY row; `clean/translate/simplify/analysis/tts/rvc/denoise` all `local`; the record went `unknown` → `local`, which is what the scheduler asks synchronously |
+| 3 | coordination's READS | job types `denoise, echo, llm, rvc, tts`; **missing: `asr`, `align`, `faster-whisper-large-v3`, `qwen3-aligner`**. NOT posted — see below |
+| 4 | ONE `putSettings` with `{routes:{translate:"anthropic/claude-sonnet-5"}, upstreams:{anthropic:{key:…}}}` | `route: upstream`, `configured: true`, `keyHint: "…test"`; **no key anywhere in the document**; the route record re-recorded from the PUT's own answer with no second read |
+| 5 | a RE-READ of capability | `translate enabled=true route=upstream selected=anthropic/claude-sonnet-5`, and the reason keeps the local answer: *"routed to anthropic; the local answer would be: qwen3.8-27b fits: it needs 51.7 GiB and there is 61.0 GiB available…"* |
+| 6 | `testUpstream('anthropic', {key: 'sk-ant-test'})` | `{ok:false, refusal:{code:"upstream_rejected"}}` — an ANSWER, not a throw, reaching BookForge's projection intact |
+| 7 | `putSettings {routes:{translate:"local"}, upstreams:{anthropic:null}}` | back to `local`; `configured: false` |
+| 8 | final `crucibleEngineSettings` | **deep-equal to step 1** |
+
+**Nothing was posted at step 3, deliberately.** Owen allowed the Mac's CARD — "a small llm
+chat or a tts render" — and coordinating would have downloaded and built the `asr` and
+`align` environments plus two model pulls on his Mac, which is a different magnitude of
+thing. Every READ coordination makes was made; what it WOULD install is named above; the
+press is Owen's. (Nothing needed a completion either, so the Mac's card was never used.)
+
+**A fifth SDK defect, found here.** The `upstream_rejected` result's MESSAGE names the wrong
+party: *"crucible refused the token (upstream_rejected): anthropic refused this server's
+credentials with 401: API key is invalid."* The second half is right and is the SDK's own
+`serverMessage`; the prefix is its `CrucibleAuthError` prose, because `testUpstream` catches
+its own 401 and returns `message: error.message`. A person reading that would go and
+re-paste their CONNECT CODE, when what was wrong is the Anthropic key they just typed.
+BookForge passes it through verbatim — renaming another owner's refusal is the defect this
+whole phase is against — so this one is theirs to fix.
+
 **Nothing in phase 15 has met a card.** Owen's instruction while it was being built was to
 stay off the GPU: no job against the live engine, no run that loads a model. The one thing
 that touches the live server at all is a `GET /v1/capability` from `test-clean-step-door`,
@@ -198,7 +233,10 @@ a tripwire nobody can find the reason for gets deleted by the next person.
    put a 60 s `AbortController` on every settings call, and there is nowhere to put one on
    the client. A settings screen against a server that goes away mid-answer now waits on
    `fetch`'s own default. Small, real, and theirs to take back.
-5. A fifth, small, and this one is OURS by choice: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
+5. **`testUpstream`'s refusal MESSAGE names the wrong party** — found on the Mac, see the
+   transcript above. `{ok:false, code:'upstream_rejected'}` is right; the sentence beside it
+   is the SDK's `CrucibleAuthError` prose about OUR bearer token, not the upstream's key.
+6. A sixth, small, and this one is OURS by choice: an EMPTY pairing file. Ours throws; the SDK answers `null`. We keep ours,
    applying the SDK's own argument — its header says a malformed file must throw "because a
    line somebody's installer wrote badly is a broken install, and answering 'there is no
    server here' would send the user to install a second one", and a zero-length file is the
