@@ -71,7 +71,7 @@ import type {
 import type { CapabilityRecord, ModelInfo } from '@crucible/client';
 import { rankedServers, readRouting } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
-import { crucibleCapabilityWithRoutes } from './settings-wire';
+import { crucibleCapabilityWithRoutes } from './engine-settings';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
 import {
   crucibleChatBase,
@@ -182,13 +182,14 @@ export interface TextVenueHost {
    * network, which is what lets a keeper drive all three refusals with no
    * registry and no server.
    *
-   * IT ANSWERS WITH `route` (crucible PHASE15 §3.3), which is why it goes
-   * through `settings-wire.ts` rather than `CrucibleClient.capability()`: the
-   * SDK's parser builds a row from five named fields and DROPS `route`, so a
-   * client reading through it does not merely miss the field, it discards it.
-   * Two readers of one document would be two answers to "where does a class
-   * run" — this is the one read, and the scheduler's cloud lane and this
-   * file's model both come out of it.
+   * IT ANSWERS WITH `route` (crucible PHASE15 §3.3), and it goes through
+   * `engine-settings.ts` rather than straight to `CrucibleClient.capability()`
+   * for the one thing that function adds: a read of capability is a read of
+   * the routes, and it RECORDS them (`crucible/routes.ts`), which is what lets
+   * the scheduler answer "card or cloud" inside a synchronous pump. Two
+   * readers of one document would be two answers to "where does a class run" —
+   * this is the one read, and the scheduler's cloud lane and this file's model
+   * both come out of it.
    */
   capability(server: string): Promise<CrucibleCapabilityView>;
 }

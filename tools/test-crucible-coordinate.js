@@ -63,33 +63,19 @@ const moduleSetup = require(path.join(REPO, 'dist', 'electron', 'crucible', 'mod
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
 
 /*
- * A FAKE HAS TO BE REACHABLE THROUGH BOTH DOORS NOW.
+ * ONE DOOR AGAIN: `fakeNamer` swaps `crucibleClientFor`, and all three of
+ * coordination's reads go through it.
  *
- * `fakeNamer` swaps `crucibleClientFor`, which is what `info()` and
- * `catalog()` go through. Coordination's third read does not: `settings-wire`
- * fetches `/v1/capability` itself, off `getServer(name).url` and its token,
- * because a capability document is not in the SDK's surface. A fake named
- * only to the client factory is therefore a registry MISS for that read, and
- * coordination reports the whole connect `unreachable` — truthfully, which is
- * why it has to be fixed here rather than papered over.
- *
- * So the same name is entered in both, from one place: `fakeNamer` mints it
- * and the registry stub is keyed on what it minted, so the two cannot drift.
- * The stub is the one `test-crucible-settings-seam.js` uses, verbatim.
+ * For a while the third did not. `GET /v1/capability` was read by BookForge's
+ * own `fetch` off `getServer(name).url`, because the vendored SDK's parser
+ * DROPPED `route` and the queue's cloud lane is decided on that field — so
+ * this file had to enter the same fake in the registry as well, or the third
+ * read was a registry miss and the whole connect came back `unreachable`. The
+ * phase-15 SDK keeps `route`, `engine-settings.ts` reads capability through
+ * `client.capability()` like everything else, and the second stub is gone
+ * with it.
  */
-const registerFakeClient = fakeNamer(servers);
-const realGetServer = servers.getServer;
-const fakesByName = new Map();
-servers.getServer = function getServerWithFakes(name) {
-  const fake = fakesByName.get(name);
-  if (!fake) return realGetServer(name);
-  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
-};
-function registerFake(url) {
-  const name = registerFakeClient(url);
-  fakesByName.set(name, { url });
-  return name;
-}
+const registerFake = fakeNamer(servers);
 
 const { check, summary } = makeChecker();
 

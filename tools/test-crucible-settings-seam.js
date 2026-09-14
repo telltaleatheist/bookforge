@@ -1,20 +1,42 @@
 /**
- * THE ENGINE'S SETTINGS DOCUMENT, AND THE DAY THIS SEAM IS DELETED.
+ * THE ENGINE SETTINGS DOOR, DRIVEN THROUGH THE REAL SDK AGAINST A FAKE SERVER.
  *
- * crucible `docs/PHASE15-HOST.md` §3.1, §3.2, §3.3, §3.6, §3.8 and §5.1/§5.2.
+ * crucible `docs/PHASE15-HOST.md` §3.1, §3.2, §3.3, §3.8 and §5.2.
  *
- * ── CHECK 1 IS THE POINT OF THE WHOLE FILE ─────────────────────────────────
+ * ── WHAT THIS SUITE USED TO BE, AND WHAT IT IS NOW ─────────────────────────
  *
- * `electron/crucible/settings-wire.ts` and `electron/crucible/pairing-file.ts`
- * stand in for four SDK methods and one SDK field that do not exist in the
- * pinned `vendor/crucible-client-0.6.0.tgz`. The first check asserts they still
- * do not. **When it goes red, nothing has regressed** — the SDK landed, and the
- * failure is the instruction to delete the seam and point the callers at
- * `CrucibleClient`. A stopgap whose expiry is written in a comment is a stopgap
- * that outlives its reason; this one has a test.
+ * It was the keeper of a dated seam. `electron/crucible/settings-wire.ts`
+ * spoke four SDK methods and one SDK field that the pinned
+ * `vendor/crucible-client-0.6.0.tgz` did not have, and this file's first check
+ * asserted that it still did not — so that the day the SDK grew them, the
+ * failure would be the instruction to delete the seam rather than a regression
+ * to be puzzled over. The SDK grew them, the check went red, the seam is gone,
+ * and that check went with it: it had one job and it did it.
  *
- * Everything after it is the seam doing its job against a fake server that
- * speaks the wire in the SERVER's own spelling.
+ * What is left is the door itself, and every call below now goes through the
+ * real `CrucibleClient` — `settings()`, `putSettings()`, `testUpstream()`,
+ * `capability()` — projected onto this app's IPC shapes by
+ * `electron/crucible/engine-settings.ts`. The fake on the other end speaks the
+ * wire in the SERVER's own spelling, so what these checks exercise is the
+ * SDK's parser and this app's projection meeting over real bytes on a real
+ * socket.
+ *
+ * ── SECTION 4 HOLDS A TRIPWIRE, AND IT ASSERTS A DEFECT ON PURPOSE ────────
+ *
+ * PHASE15 §3.3 says a capability document in which NO row carries `route`
+ * comes from a server that predates the field and reads as all-local. The
+ * vendored SDK refuses that document instead, which Foundry measured against
+ * Owen's live server and which is being fixed under this same version.
+ * BookForge does not work around it — a client that caught the refusal and
+ * read "local" out of it would be a second opinion about a document the SDK
+ * owns — so the WRONG behaviour is pinned, counted, and carries the
+ * instruction to invert the check when the fix lands. It is not a `SKIP:`,
+ * because a skip is invisible and this one expires.
+ *
+ * The pairing-file checks that used to sit here have their own suite
+ * (`test-crucible-pairing-file.js`): `electron/crucible/pairing-file.ts` did
+ * not go with the seam, and a file that outlives the thing it was filed under
+ * needs its own keeper rather than a section in somebody else's.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -25,26 +47,36 @@ const {
   LLM_CLASSES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
 } = require('./fake-crucible.js');
 
-const SEAM = path.join(REPO, 'dist', 'electron', 'crucible', 'settings-wire.js');
-if (!fs.existsSync(SEAM)) {
-  console.log('SKIP: dist/electron/crucible/settings-wire.js is not built — run '
+const DOOR = path.join(REPO, 'dist', 'electron', 'crucible', 'engine-settings.js');
+if (!fs.existsSync(DOOR)) {
+  console.log('SKIP: dist/electron/crucible/engine-settings.js is not built — run '
     + 'npx tsc -p tsconfig.electron.json');
   process.exit(0);
 }
 
 installElectronStub('bf-crucible-settings-seam-');
 
-const seam = require(SEAM);
-const pairingFile = require(path.join(REPO, 'dist', 'electron', 'crucible', 'pairing-file.js'));
-const local = require(path.join(REPO, 'dist', 'electron', 'crucible', 'local.js'));
+const seam = require(DOOR);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
+const { CrucibleClient } = require('@crucible/client');
 
-const realGetServer = servers.getServer;
+/*
+ * A FAKE IS NAMED THROUGH THE ONE FACTORY THE DOOR USES.
+ *
+ * All four calls build a client through `crucibleClientFor` — the settings
+ * three, and since the phase-15 SDK the capability read as well, which used to
+ * reach a server by its registry entry and its own `fetch`. `addServer`
+ * refuses loopback URLs on purpose (the local server has one owner, its own
+ * config.toml), so a fake is reached by patching that one function rather than
+ * by weakening the registry, and every byte still crosses a real socket to the
+ * real fake.
+ */
+const realClientFor = servers.crucibleClientFor;
 const fakesByName = new Map();
-servers.getServer = function getServerWithFakes(name) {
+servers.crucibleClientFor = function crucibleClientForWithFakes(name, clientName) {
   const fake = fakesByName.get(name);
-  if (!fake) return realGetServer(name);
-  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
+  if (!fake) return realClientFor(name, clientName);
+  return new CrucibleClient({ url: fake.url, token: 'test-token-abcd', clientName });
 };
 let registered = 0;
 function nameFake(url) {
@@ -81,130 +113,7 @@ async function withFake(behaviour, fn) {
 
 (async () => {
   // ───────────────────────────────────────────────────────────────────────────
-  // 1. The expiry
-  // ───────────────────────────────────────────────────────────────────────────
-
-  await check('THE SEAM IS STILL NEEDED — @crucible/client has none of the five names', () => {
-    const sdkDir = path.join(REPO, 'node_modules', '@crucible', 'client', 'dist', 'esm');
-    const clientTypes = fs.readFileSync(path.join(sdkDir, 'client.d.ts'), 'utf-8');
-    const indexTypes = fs.readFileSync(path.join(sdkDir, 'index.d.ts'), 'utf-8');
-    const types = fs.readFileSync(path.join(sdkDir, 'types.d.ts'), 'utf-8');
-
-    const landed = [];
-    for (const name of seam.SDK_SETTINGS_NAMES_AWAITED) {
-      // A method on the client, or a bare export from the index. Either is the
-      // SDK having grown the name; both spellings are checked because §3.8
-      // gives three methods and one free function.
-      if (new RegExp(`^\\s{4}${name}\\(`, 'm').test(clientTypes)) landed.push(`CrucibleClient.${name}()`);
-      if (new RegExp(`\\b${name}\\b`).test(indexTypes)) landed.push(`index.d.ts exports ${name}`);
-    }
-    // `CapabilityRow.route` is the fifth: the SDK's own parser drops unknown
-    // fields, so the day it declares one is the day `crucibleCapabilityWithRoutes`
-    // stops being the only way to read it.
-    const row = /export interface CapabilityRow \{[\s\S]*?\n\}/.exec(types);
-    assert.ok(row !== null, 'the SDK no longer declares CapabilityRow at all — read it before deleting anything');
-    if (/\broute\b/.test(row[0])) landed.push('CapabilityRow.route');
-
-    assert.strictEqual(landed.length, 0,
-      'THIS IS NOT A REGRESSION — IT IS THE THING THIS SEAM WAS WAITING FOR.\n'
-      + `        @crucible/client now has: ${landed.join(', ')}.\n`
-      + '        Do this, in one commit:\n'
-      + '          1. delete electron/crucible/settings-wire.ts and pairing-file.ts;\n'
-      + '          2. point crucibleEngineSettings / putCrucibleEngineSettings /\n'
-      + '             testCrucibleUpstream / readCruciblePairingFile at CrucibleClient\n'
-      + '             (servers.ts crucibleClientFor is the one factory);\n'
-      + '          3. delete crucibleCapabilityWithRoutes and use client.capability(),\n'
-      + '             which now keeps `route`;\n'
-      + '          4. delete this check and keep the rest of this file pointed at the SDK.');
-  });
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // 2. The pairing file (§3.6, §5.1)
-  // ───────────────────────────────────────────────────────────────────────────
-
-  const hostWith = (over) => Object.assign({
-    platform: 'linux', env: {}, homedir: '/home/t', readFile: () => null,
-  }, over);
-
-  await check('the pairing file is where PHASE15 3.6 pins it, on each platform', () => {
-    assert.strictEqual(
-      pairingFile.cruciblePairingFilePath(hostWith({ platform: 'linux' })),
-      path.join('/home/t', '.crucible', 'pairing'));
-    assert.strictEqual(
-      pairingFile.cruciblePairingFilePath(hostWith({ platform: 'darwin' })),
-      path.join('/home/t', '.crucible', 'pairing'));
-    assert.strictEqual(
-      pairingFile.cruciblePairingFilePath(hostWith({
-        platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\t\\AppData\\Local' },
-      })),
-      path.join('C:\\Users\\t\\AppData\\Local', 'Crucible', 'pairing'));
-  });
-
-  await check('$CRUCIBLE_HOME overrides on every platform; an empty one does not', () => {
-    for (const platform of ['linux', 'darwin', 'win32']) {
-      assert.strictEqual(
-        pairingFile.cruciblePairingFilePath(hostWith({
-          platform, env: { CRUCIBLE_HOME: '/srv/cru', LOCALAPPDATA: 'C:\\L' },
-        })),
-        path.join('/srv/cru', 'pairing'), platform);
-    }
-    assert.strictEqual(
-      pairingFile.cruciblePairingFilePath(hostWith({ env: { CRUCIBLE_HOME: '' } })),
-      path.join('/home/t', '.crucible', 'pairing'));
-  });
-
-  await check('Windows with no LOCALAPPDATA is refused by name, never assembled from a username', () => {
-    let caught = null;
-    try {
-      pairingFile.cruciblePairingFilePath(hostWith({ platform: 'win32', env: {} }));
-    } catch (err) { caught = err; }
-    assert.ok(caught !== null, 'a path was produced out of nothing');
-    assert.strictEqual(caught.code, 'no_local_app_data');
-  });
-
-  await check('no file is null — a FACT, not a throw and not a retry', () => {
-    assert.strictEqual(pairingFile.readCruciblePairingFile(hostWith({})), null);
-  });
-
-  await check('a connect code is read and parsed by the SDK parser, with its file named', () => {
-    const line = 'crucible://crucible%40owens-pc@127.0.0.1:7100/#tok-abcdefghij\n';
-    const got = pairingFile.readCruciblePairingFile(hostWith({ readFile: () => line }));
-    assert.strictEqual(got.pairing.name, 'crucible@owens-pc');
-    assert.strictEqual(got.pairing.url, 'http://127.0.0.1:7100');
-    assert.strictEqual(got.pairing.token, 'tok-abcdefghij');
-    assert.strictEqual(got.file, path.join('/home/t', '.crucible', 'pairing'));
-  });
-
-  await check('an empty or malformed pairing file is NOT read as "no engine"', () => {
-    let caught = null;
-    try { pairingFile.readCruciblePairingFile(hostWith({ readFile: () => '  \n' })); } catch (e) { caught = e; }
-    assert.strictEqual(caught && caught.code, 'pairing_file_empty');
-    caught = null;
-    try { pairingFile.readCruciblePairingFile(hostWith({ readFile: () => 'http://127.0.0.1:7100' })); } catch (e) { caught = e; }
-    assert.strictEqual(caught && caught.code, 'pairing_file_invalid');
-    assert.ok(caught.message.includes('pairing'), 'the refusal names the file');
-    assert.ok(!caught.message.includes('tok-'), 'a refusal never carries a token');
-  });
-
-  await check('readLocalServer asks the pairing file FIRST, and does not touch WSL when it answers', () => {
-    const line = 'crucible://crucible%40owens-pc-wsl@127.0.0.1:7100/#tok-abcdefghij\n';
-    const got = local.readLocalServer({
-      platform: 'win32',
-      env: {},
-      homedir: 'C:\\Users\\t',
-      wslDistro: 'crucible',
-      pairing: hostWith({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\L' }, readFile: () => line }),
-      runWsl: () => { throw new Error('the WSL door was opened although a connect code was there'); },
-    });
-    assert.strictEqual(got.via, 'pairing');
-    assert.strictEqual(got.name, 'crucible@owens-pc-wsl');
-    assert.strictEqual(got.url, 'http://127.0.0.1:7100');
-    assert.strictEqual(got.token, 'tok-abcdefghij');
-    assert.strictEqual(got.configPath, path.join('C:\\L', 'Crucible', 'pairing'));
-  });
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // 3. Reading the document (§3.1)
+  // 1. Reading the document (§3.1)
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({
@@ -239,7 +148,7 @@ async function withFake(behaviour, fn) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 4. Writing through (§3.2, §5.2)
+  // 2. Writing through (§3.2, §5.2)
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({}, async ({ name, door }) => {
@@ -287,7 +196,7 @@ async function withFake(behaviour, fn) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 5. Test before Save (§3.2, §5.2)
+  // 3. Test before Save (§3.2, §5.2)
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({}, async ({ name, door }) => {
@@ -323,7 +232,7 @@ async function withFake(behaviour, fn) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 6. Capability keeps its route (§3.3) — the field the SDK's parser drops
+  // 4. Capability and its route (§3.3) — read by the SDK, recorded by us
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({ routes: { simplify: 'openai/gpt-5' }, upstreams: { openai: { key: 'sk-1234' } } },
@@ -341,31 +250,79 @@ async function withFake(behaviour, fn) {
     });
 
   await withFake({ omitRoute: true }, async ({ name }) => {
-    await check('a document where NO row has a route is a PRE-PHASE-15 server: every class is local', async () => {
-      // crucible eb59f7b. Owen's live WSL server answers this way until the
-      // phase-15 branch is deployed onto it, and for such a server every class
-      // IS local — it has no upstreams table to route to. A stated fact about
-      // that server, not a default filled in for a missing field, which is
-      // exactly why the next two checks refuse instead.
-      const record = await seam.crucibleCapabilityWithRoutes(name);
-      assert.ok(record.classes.length > 0);
-      for (const row of record.classes) {
-        assert.strictEqual(row.route, 'local', `${row.capability} read as ${row.route}`);
+    await check('TRIPWIRE: a PRE-PHASE-15 capability document is still refused by the SDK', async () => {
+      /*
+       * THIS CHECK ASSERTS A DEFECT, DELIBERATELY, AND HAS A DATE.
+       *
+       * crucible `eb59f7b` / PHASE15 §3.3 settle the reading for both apps: a
+       * document in which NO row carries `route` comes from a server that
+       * predates the field, and every class on such a server IS local — "a
+       * fact the document states, not a default the client fills … BookForge's
+       * helper and Foundry's package K alike". Owen's live WSL server answers
+       * exactly that way until the phase-15 branch is deployed onto it.
+       *
+       * The vendored SDK does not make that reading. `readCapabilityRow`
+       * requires the field (`oneOf(str(entry, 'route', …), ['local',
+       * 'upstream'])`), so the document is a `CrucibleProtocolError` and this
+       * app reports `settings_document_unreadable`. Foundry measured it
+       * against the live server and it is being fixed in the SDK, under this
+       * same version.
+       *
+       * IT IS NOT WORKED AROUND HERE. Catching that refusal and reading
+       * "every class is local" out of it would put a second opinion about the
+       * document beside the SDK's, which is the two-owners defect the whole
+       * seam was deleted to end. So the wrong behaviour is pinned, in the open,
+       * where it is counted rather than skipped — a `SKIP:` line is invisible
+       * and this one expires.
+       *
+       * WHEN THIS GOES RED, NOTHING HAS REGRESSED — IT IS THE FIX ARRIVING.
+       * Invert it: assert that `record.classes` is non-empty and that every
+       * row reads `route === 'local'`, and rename it back to "a document where
+       * NO row has a route is a PRE-PHASE-15 server: every class is local".
+       */
+      let caught = null;
+      try {
+        await seam.crucibleCapabilityWithRoutes(name);
+      } catch (err) {
+        caught = err;
       }
+      assert.ok(caught !== null,
+        'THIS IS NOT A REGRESSION — IT IS THE SDK FIX THIS TRIPWIRE WAS WAITING FOR.\n'
+        + '        CrucibleClient.capability() now reads a document in which no row carries a\n'
+        + '        `route`, as crucible PHASE15 §3.3 says it must. INVERT this check: assert\n'
+        + '        that every row of the record reads route === "local", and restore its old\n'
+        + '        name ("a document where NO row has a route is a PRE-PHASE-15 server: every\n'
+        + '        class is local"). Nothing in electron/crucible/engine-settings.ts changes —\n'
+        + '        the reading was always the SDK\'s to make.');
+      assert.strictEqual(caught.code, 'settings_document_unreadable',
+        `the SDK refused it as ${caught.code}, which is not the protocol error this pins: ${caught.message}`);
+      assert.ok(caught.message.includes('route'),
+        `the refusal does not name the field it could not read: ${caught.message}`);
     });
   });
 
   await withFake({ routeMissingFor: 'simplify' }, async ({ name }) => {
     await check('SOME rows with a route and one without is refused, naming the row', async () => {
-      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'capability_route_missing');
-      assert.ok(err.message.includes('simplify'), err.message);
+      /*
+       * THE SDK MAKES THIS REFUSAL, so BookForge no longer names it
+       * `capability_route_missing`: a second reader minting a nicer code for a
+       * document the SDK already refused is the two-owners defect wearing a
+       * label. What crossed with the old name was the CLASS — "simplify" — and
+       * what crosses now is the row's INDEX and the field path, which is the
+       * SDK's own way of naming a row and is still a name a person can act on.
+       */
+      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'settings_document_unreadable');
+      assert.ok(err.message.includes('classes[2]'), err.message);
+      assert.ok(err.message.includes('route'), err.message);
     });
   });
 
   await withFake({ badRouteFor: 'translate' }, async ({ name }) => {
-    await check('a route that is neither local nor upstream is refused, naming the row', async () => {
-      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'capability_route_unknown');
-      assert.ok(err.message.includes('translate'), err.message);
+    await check('a route that is neither local nor upstream is refused, naming the value', async () => {
+      // Also the SDK's now (`oneOf`), and it keeps the thing that matters most
+      // in this one: the VALUE it would have had to guess the meaning of.
+      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'settings_document_unreadable');
+      assert.ok(err.message.includes('classes[1]'), err.message);
       assert.ok(err.message.includes('somewhere-else'), err.message);
     });
   });
@@ -395,7 +352,7 @@ async function withFake(behaviour, fn) {
     });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 7. llama-windows: Windows IS a backend (AMENDED 2026-09-14, crucible 56cfe37)
+  // 5. llama-windows: Windows IS a backend (AMENDED 2026-09-14, crucible 56cfe37)
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({ backendKind: 'llama-windows' }, async ({ name }) => {
@@ -423,7 +380,7 @@ async function withFake(behaviour, fn) {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 8. Servers that cannot answer
+  // 6. Servers that cannot answer
   // ───────────────────────────────────────────────────────────────────────────
 
   await withFake({ noSettingsDoor: true }, async ({ name }) => {

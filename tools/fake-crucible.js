@@ -623,6 +623,14 @@ function settingsRoutes(behaviour) {
     };
   };
 
+  /*
+   * `shortfall_bytes`, not `shortfallBytes`: this fake speaks the SERVER's
+   * spelling and `crucible/config.py` writes snake_case, which is also what
+   * the SDK's own `readCapabilityRow` demands. It used to send the camelCase
+   * one and nothing noticed, because the reader it was tested against accepted
+   * either — a leniency that would have hidden the day a real server and this
+   * app disagreed about the name of the number that turns a class off.
+   */
   const capabilityRow = (c) => {
     const upstream = routes[c] !== undefined && routes[c] !== 'local';
     if (WSL_ONLY_CLASSES.indexOf(c) !== -1) {
@@ -632,7 +640,7 @@ function settingsRoutes(behaviour) {
         enabled: !here,
         selected: here ? '' : 'higgs-v3',
         reason: here ? WSL_ONLY_REASON : 'installed',
-        shortfallBytes: 0,
+        shortfall_bytes: 0,
       };
     }
     const local = localModelFor(c);
@@ -644,7 +652,7 @@ function settingsRoutes(behaviour) {
         ? 'routed to ' + String(routes[c]).split('/')[0] + '; the local answer would be: '
           + (local === null ? 'nothing fits' : local)
         : (local === null ? 'nothing on this card fits' : local + ' fits'),
-      shortfallBytes: 0,
+      shortfall_bytes: 0,
     };
   };
 

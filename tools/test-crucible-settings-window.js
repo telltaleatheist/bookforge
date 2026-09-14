@@ -58,9 +58,9 @@ const {
   WSL_ONLY_CLASSES, WSL_ONLY_REASON,
 } = require('./fake-crucible.js');
 
-const SEAM = path.join(REPO, 'dist', 'electron', 'crucible', 'settings-wire.js');
+const SEAM = path.join(REPO, 'dist', 'electron', 'crucible', 'engine-settings.js');
 if (!fs.existsSync(SEAM)) {
-  console.log('SKIP: dist/electron/crucible/settings-wire.js is not built — run '
+  console.log('SKIP: dist/electron/crucible/engine-settings.js is not built — run '
     + 'npx tsc -p tsconfig.electron.json');
   process.exit(0);
 }
@@ -69,13 +69,21 @@ installElectronStub('bf-crucible-settings-window-');
 
 const seam = require(SEAM);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
+const { CrucibleClient } = require('@crucible/client');
 
-const realGetServer = servers.getServer;
+/*
+ * ONE FACTORY, ONE MAP — the same stub `test-crucible-settings-seam.js` uses,
+ * and for the same reason: all four calls reach a server through
+ * `crucibleClientFor`, `addServer` refuses the loopback URLs a fake listens
+ * on, and patching the factory is what names one without weakening the
+ * registry.
+ */
+const realClientFor = servers.crucibleClientFor;
 const fakesByName = new Map();
-servers.getServer = function getServerWithFakes(name) {
+servers.crucibleClientFor = function crucibleClientForWithFakes(name, clientName) {
   const fake = fakesByName.get(name);
-  if (!fake) return realGetServer(name);
-  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
+  if (!fake) return realClientFor(name, clientName);
+  return new CrucibleClient({ url: fake.url, token: 'test-token-abcd', clientName });
 };
 let registered = 0;
 function nameFake(url) {

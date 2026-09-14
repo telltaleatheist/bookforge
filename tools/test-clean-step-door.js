@@ -576,6 +576,38 @@ ${out}`);
         `a refused Crucible act still composed a command line:\n${said}`);
       return;
     }
+    /*
+     * ── A THIRD NAMED STATE, AND IT IS A KNOWN SDK DEFECT ─────────────────
+     *
+     * This is the one check in this suite that asks the REAL `local` server
+     * (everything else is a dry run or a fake), so on Owen's PC it meets the
+     * live WSL Crucible — which is PRE-PHASE-15 and answers
+     * `GET /v1/capability` with no `route` on any row.
+     *
+     * crucible `docs/PHASE15-HOST.md` §3.3 (`eb59f7b`) says a document like
+     * that means "this server predates the field, and every class IS local".
+     * The vendored SDK's `readCapabilityRow` instead REQUIRES the field and
+     * throws — a defect the Crucible side confirmed on 2026-09-14 after
+     * Foundry measured the same thing, and which is being fixed. BookForge
+     * does not work around it (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §0d), so the
+     * act is refused by name before anything is composed.
+     *
+     * Which is exactly what this check exists to establish: **what must never
+     * happen is the run composing a line against the LOCAL endpoint while the
+     * flag named a server.** A refusal satisfies that, so it is recognised
+     * here rather than failing the suite over somebody else's bug — and it is
+     * NOT quiet: it prints, and the tripwire that will actually fire when the
+     * SDK is fixed lives in `tools/test-crucible-settings-seam.js` §4.
+     *
+     * DELETE THIS BRANCH when that tripwire goes red and is inverted.
+     */
+    if (/has no field "route"|settings_document_unreadable/.test(said)) {
+      console.log('       (the live local engine is pre-phase-15 and the vendored SDK refuses '
+        + 'its capability document — known, being fixed, see CRUCIBLE_ROLLOUT_PLAN 0d)');
+      assert.ok(!said.includes('[clean] spawn'),
+        `a refused Crucible act still composed a command line:\n${said}`);
+      return;
+    }
     assert.ok(said.includes('[clean] venue'), `no venue line in:\n${said}`);
     assert.ok(/\[clean\] venue\s+crucible "local"/.test(said), said);
     // The base an OpenAI client is given, and the act named truthfully.

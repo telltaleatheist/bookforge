@@ -327,7 +327,7 @@ check('the three vendor names appear only as the engine\'s upstream list', () =>
     // The contract's own vocabulary: the three names BookForge sends TO the
     // engine and resolves none of.
     'shared/crucible/settings-wire.ts',
-    'electron/crucible/settings-wire.ts',
+    'electron/crucible/engine-settings.ts',
     'electron/crucible/routes.ts',
     'src/app/features/settings/components/crucible-words.ts',
     /*

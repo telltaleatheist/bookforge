@@ -7875,20 +7875,22 @@ function setupIpcHandlers(): void {
   // What is left is a READ. The screen draws what the server decided; nothing
   // here writes a model choice anywhere.
 
-  // READ THROUGH THE SEAM, NOT THROUGH THE SDK — and the sixth field is why.
+  // READ THROUGH `engine-settings.ts`, WHICH IS WHERE THE ROUTES GET RECORDED.
   //
-  // This handler used to call `CrucibleClient.capability()`, whose parser
-  // builds each row out of exactly five named fields and DROPS `route`
-  // (`readCapabilityRow`, dist/esm/client.js). PHASE15 §3.3 added `route` to
-  // every row, the queue's `[cloud]` lane is decided on it, and a screen that
-  // has to say "translating on Anthropic" cannot say it from a document the
-  // parser silently emptied. So the read is `crucibleCapabilityWithRoutes`,
-  // which speaks the wire the contract describes and keeps the field — and the
-  // projection below carries it, because a projection that listed five of six
-  // fields would put the drop back one layer up.
+  // This handler used to reach past the SDK entirely, because the SDK's
+  // `capability()` built each row out of five named fields and DROPPED
+  // `route` — and PHASE15 §3.3 put `route` on every row, the queue's
+  // `[cloud]` lane is decided on it, and a screen that has to say "translating
+  // on Anthropic" cannot say it from a document the parser silently emptied.
+  // The phase-15 SDK keeps the field, so the read is the SDK's again; what
+  // `crucibleCapabilityWithRoutes` still adds is `noteCrucibleRoutes`, without
+  // which the scheduler's record stays empty and every routed row WAITS.
+  //
+  // The projection below carries all six fields, because a projection that
+  // listed five of them would put the old drop back one layer up.
   ipcMain.handle('crucible:capability', async (_event, name: string) => {
     try {
-      const { crucibleCapabilityWithRoutes } = await import('./crucible/settings-wire.js');
+      const { crucibleCapabilityWithRoutes } = await import('./crucible/engine-settings.js');
       const record = await crucibleCapabilityWithRoutes(name);
       return {
         success: true,
@@ -7938,11 +7940,11 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('crucible:engine-settings', async (_event, name: string) => {
     try {
-      const { crucibleEngineSettings } = await import('./crucible/settings-wire.js');
+      const { crucibleEngineSettings } = await import('./crucible/engine-settings.js');
       return { success: true, data: await crucibleEngineSettings(name) };
     } catch (err) {
       const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
-        await import('./crucible/settings-wire.js');
+        await import('./crucible/engine-settings.js');
       if (err instanceof CrucibleEngineSettingsError) {
         return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
       }
@@ -7968,11 +7970,11 @@ function setupIpcHandlers(): void {
     patch: CrucibleEngineSettingsPatch,
   ) => {
     try {
-      const { putCrucibleEngineSettings } = await import('./crucible/settings-wire.js');
+      const { putCrucibleEngineSettings } = await import('./crucible/engine-settings.js');
       return { success: true, data: await putCrucibleEngineSettings(name, patch) };
     } catch (err) {
       const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
-        await import('./crucible/settings-wire.js');
+        await import('./crucible/engine-settings.js');
       if (err instanceof CrucibleEngineSettingsError) {
         return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
       }
@@ -8002,11 +8004,11 @@ function setupIpcHandlers(): void {
     probe: CrucibleUpstreamProbe,
   ) => {
     try {
-      const { testCrucibleUpstream } = await import('./crucible/settings-wire.js');
+      const { testCrucibleUpstream } = await import('./crucible/engine-settings.js');
       return { success: true, data: await testCrucibleUpstream(name, upstream, probe) };
     } catch (err) {
       const { CrucibleEngineSettingsError, crucibleSettingsRefusalOf } =
-        await import('./crucible/settings-wire.js');
+        await import('./crucible/engine-settings.js');
       if (err instanceof CrucibleEngineSettingsError) {
         return { success: false, error: err.message, refusal: crucibleSettingsRefusalOf(err) };
       }

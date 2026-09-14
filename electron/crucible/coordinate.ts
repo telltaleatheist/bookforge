@@ -77,7 +77,7 @@ import {
 } from '@crucible/client';
 
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal } from './servers';
-import { crucibleCapabilityWithRoutes } from './settings-wire';
+import { crucibleCapabilityWithRoutes } from './engine-settings';
 import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
 import { LOCAL_SERVER_NAME } from './local';
 import { rankedServers } from './routing';
@@ -271,7 +271,7 @@ async function runCoordination(
      * `upstream` (crucible PHASE15 §3.3) — has to be answerable inside a
      * synchronous pump. Reading it here is what means nothing POLLS for it:
      * coordination runs on every connect to every enabled server (PHASE14
-     * §4a), and `settings-wire.ts` records the routes again out of every
+     * §4a), and `engine-settings.ts` records the routes again out of every
      * settings write's own answer. The record itself is `crucible/routes.ts`.
      *
      * It does not change coordination's verdict. A capability read that fails

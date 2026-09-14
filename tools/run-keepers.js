@@ -289,16 +289,21 @@ const SUITES = [
   // from every renderer source, the wizard's connected face offers nothing to
   // press, and every job type the module asks for has words a person can read.
   'test-crucible-coordinate',
-  // PHASE 15: the engine's own settings document, and the day this app's stand-in
-  // for it is deleted. `electron/crucible/settings-wire.ts` and `pairing-file.ts`
-  // speak four SDK methods and one SDK field that `vendor/crucible-client-0.6.0.tgz`
-  // does not have — the first check in this suite goes RED the day it does, and
-  // says which files to delete. The rest is the door itself: a key is write-only
-  // both ways, one PUT configures an upstream AND routes to it, a Test does not
-  // store what it tested, a capability row without a `route` is refused rather
-  // than read as local (the queue's cloud lane turns on that field), and a
-  // `llama-windows` engine answers for the five WSL-only classes with ONE
-  // sentence so a screen says it once.
+  // PHASE 15: the engine's own settings document, driven through the REAL SDK
+  // against a fake server. This suite used to keep a dated seam alive — its first
+  // check asserted that `vendor/crucible-client-0.6.0.tgz` still lacked the four
+  // methods `electron/crucible/settings-wire.ts` stood in for, so that the day it
+  // grew them the red would be the instruction rather than a mystery. It grew
+  // them; the seam is deleted, the check with it, and what is left is the door:
+  // a key is write-only both ways, one PUT configures an upstream AND routes to
+  // it, a Test does not store what it tested, and a `llama-windows` engine
+  // answers for the five WSL-only classes with ONE sentence so a screen says it
+  // once. Section 4 carries a TRIPWIRE that asserts a defect on purpose: the
+  // vendored SDK refuses a capability document in which no row carries `route`,
+  // where §3.3 says such a server predates the field and reads as all-local.
+  // That is being fixed in the SDK and is deliberately NOT worked around here —
+  // the check pins the wrong behaviour, in the open, with the instruction to
+  // invert it when the re-pack lands.
   'test-crucible-settings-seam',
   // THE CONNECT CODE ON THIS MACHINE, and the two places BookForge's reader and
   // the SDK's do not agree. Split out of the seam suite when the Phase 15 SDK
