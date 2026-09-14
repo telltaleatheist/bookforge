@@ -73,7 +73,12 @@ const LOCAL = 'local';
       }
 
       <!-- ── The server on this machine ─────────────────────────────────── -->
-      <h4 class="cru-group">This machine</h4>
+      <div class="cru-group-row">
+        <h4 class="cru-group">This machine</h4>
+        <!-- Re-read the config. The first wsl.exe call on a cold VM can fail
+             (wsl_read_failed) while it boots, and the fix is to ask again. -->
+        <desktop-button variant="ghost" size="sm" (click)="recheck()">Re-check</desktop-button>
+      </div>
       @if (view(); as v) {
         @if (v.local.present) {
           <div class="cru-card">
@@ -341,6 +346,7 @@ const LOCAL = 'local';
     .cru-intro, .cru-sub { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
     .cru-sub { font-size: 12px; }
     .cru-group { margin: 10px 0 0; font-size: 13px; font-weight: 700; color: var(--text-primary); }
+    .cru-group-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .cru-meta { margin: 2px 0 0; font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); line-height: 1.45; }
     .cru-note { font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
     .cru-error, .cru-refusal { margin: 4px 0 0; font-size: 12px; color: var(--error, #d05a5a); line-height: 1.45; }
@@ -422,6 +428,16 @@ export class CrucibleServersPanelComponent {
   }
 
   // ── The list ───────────────────────────────────────────────────────────
+
+  /**
+   * Ask again. The local server's config is read through `wsl.exe` on Windows,
+   * and the first call against a cold VM can fail while it boots — that is
+   * `wsl_read_failed`, a real answer, and asking again is the fix rather than a
+   * retry loop nobody can see.
+   */
+  async recheck(): Promise<void> {
+    await this.reload();
+  }
 
   private async reload(): Promise<void> {
     const res = await this.electron.crucible.servers();

@@ -41,6 +41,7 @@ import {
   CrucibleAuthError,
   CrucibleClient,
   CrucibleNotACrucible,
+  CrucibleRefused,
   CrucibleUnreachable,
   CrucibleVersionError,
   type Activity,
@@ -243,6 +244,17 @@ export async function activityOf(
       },
     };
   } catch (err) {
+    // A 404 here is not "no activity" and not a bad address: `/v1/activity`
+    // arrived in Crucible 0.5.0, so an older server simply has no such route.
+    // Measured against the Mac on 2026-09-13, which runs 0.4.0 and answered
+    // "404 not_found: Not Found" — a sentence nobody could have acted on.
+    if (err instanceof CrucibleRefused && err.status === 404) {
+      return {
+        outcome: 'refused',
+        message: `"${name}" has no /v1/activity route: that arrived in Crucible 0.5.0, and this `
+          + 'server is older. Everything else on this row works; upgrade it to see what it is doing.',
+      };
+    }
     return failureOutcome(err, `"${name}" (${client.url})`);
   }
 }
