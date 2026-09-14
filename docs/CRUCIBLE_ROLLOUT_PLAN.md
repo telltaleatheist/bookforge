@@ -4,6 +4,37 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0a. WHERE IT STANDS AT 06:00, 2026-09-14 — read this first
+
+**Crucible 0.6.0 is prepared, pushed and RUNNING on both machines** (`22eccf0`). Both were
+upgraded and restarted at 06:05 and both report nothing resident — the Mac dropped a model a
+test had left loaded four hours earlier, which is Owen's unload ruling doing its job.
+
+**What is proven on real hardware, four things:** the first Higgs render through Crucible
+(the Mac, 8/8 keeper checks); Foundry's `clean-text` through the chat door (734 blocks,
+78.5 s); a model lease held through a whole book with both a second lease and a competing
+load refused by name (Foundry's drive, 29 blocks, 99 s); and BookForge's own render seam
+reaching another machine (partial — it exposed two defects, both fixed).
+
+**What is built and has never met a card:** every other door. Each has a keeper against a
+fake server. Nothing in the app has rendered, cleaned, transcribed, aligned, converted,
+denoised or read a page on a GPU.
+
+**What needs Owen, in order:**
+
+1. **Publish v0.6.0** — one line, and it is what makes the client library and the installer
+   package installable and both apps' setup screens clickable:
+   `cd /c/Users/tellt/Projects/crucible && ./scripts/release.sh --branch feat/phase6-remote-render`
+2. **The in-app pass on a free card.** Settings → Crucible Servers, Test each, render a short
+   chapter. The first render goes to `local`.
+3. **Five rulings**, each blocking a build: narrator into its own repo (a friend cannot
+   install the tts env without credentials to a private one); `higgs-default` on cuda-linux;
+   zero-shot voices at the load door; the retake ladder's sampling channel; narrator's
+   items-in door so a remote alignment can finish.
+
+**Gates at 06:00:** Crucible 1054, client 184, bootstrap 117, narrator 1449, BookForge 142
+keepers, tsc clean. Both branches pushed, trees clean, nothing merged.
+
 ## 0. Where it actually stands tonight
 
 **Crucible** (the server) is finished as a codebase: every job type exists, is tested, and
