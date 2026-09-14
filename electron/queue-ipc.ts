@@ -33,7 +33,7 @@ import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { LOCAL_SERVER_NAME } from './crucible/local';
 import { readRouting } from './crucible/routing';
 import { pingServer } from './crucible/probe';
-import { closeCrucibleRowLease, withCrucibleRowScope } from './crucible/lease';
+import { crucibleLeaseSeam } from './crucible/lease';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
@@ -139,10 +139,7 @@ export async function startQueueEngine(): Promise<void> {
    * PER ROW. Wired HERE rather than imported by the engine, which keeps its one
    * property: no Electron, no registry, no HTTP.
    */
-  engine.setCrucibleLeaseHost({
-    withRowScope: withCrucibleRowScope,
-    closeRow: closeCrucibleRowLease,
-  });
+  engine.setCrucibleLeaseHost(crucibleLeaseSeam());
   await engine.configure({
     stateDir: app.getPath('userData'),
     gpuHolder,

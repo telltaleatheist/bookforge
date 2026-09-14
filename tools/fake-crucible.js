@@ -288,9 +288,25 @@ function legacyHost() {
  *   refuseLease(attempt, n)     → null, or {status, code, message, details}
  *   refuseHeartbeat(leaseId, n) → the same, e.g. 404 unknown_lease (a restart)
  *   refuseRelease(leaseId, n)   → the same, e.g. 404 unknown_lease (expired)
+ *   releaseDelayMs             → how long a DELETE takes to ANSWER (default 0)
  *
  * `n` is 1-based: "the FIRST heartbeat fails, later ones do not" is the shape a
  * re-lease check needs and a flag could not express.
+ *
+ * ── ONE LEASE PER SERVER, ENFORCED (added 2026-09-14) ──────────────────────
+ *
+ * The real server holds exactly one (`crucible/leases.py`) and answers `409
+ * leased` with the holder's name, act and clock to anything that asks for a
+ * second — INCLUDING the client that already holds it, because it cannot tell
+ * two of one app's runs apart. This fake used to grant every take, which made
+ * a whole class of defect invisible: BookForge's row scope kept a lease across
+ * a change of MODEL, and the next act's own load would have been refused by
+ * the lease this app was still holding. The suite proved that "worked".
+ *
+ * So a take while one is open is refused here exactly as the server refuses
+ * it, and the refusal is recorded on `lease.refusals` like every other. A
+ * keeper that WANTS the old permissiveness passes `allowConcurrentLeases: true`
+ * and has to say so.
  *
  * Everything that crossed is recorded on the returned `lease` object, including
  * the `User-Agent`, because the server records it as the holder's name and a
@@ -307,8 +323,20 @@ function leaseRoutes(behaviour = {}) {
     released: [],
     /** The refusals this fake answered, for a check that wants to count them. */
     refusals: [],
+    /**
+     * EVERY LEASE CALL THAT CROSSED, IN ORDER — `{kind, model?, leaseId, ok}`.
+     *
+     * `taken` and `released` answer "how many"; only this answers "in which
+     * order", which is the question a run of acts is about: a release that
+     * happens between two acts is a reload, and a take before the release
+     * ahead of it is a 409 this app hands itself. Recorded for refused calls
+     * too (`ok: false`), because a refusal is a thing that crossed.
+     */
+    wire: [],
   };
   let nextId = 1;
+  /** The one lease this server is holding, or null. See the header. */
+  let open = null;
   let leaseAttempts = 0;
   let heartbeatAttempts = 0;
   let releaseAttempts = 0;
@@ -344,8 +372,27 @@ function leaseRoutes(behaviour = {}) {
         };
         const refusal = behaviour.refuseLease ? behaviour.refuseLease(attempt, leaseAttempts) : null;
         if (refusal) return refuse(res, refusal);
+        /*
+         * A SERVER HOLDS ONE LEASE. Named per test through `behaviour` only so
+         * a keeper that is deliberately exercising the permissive shape has to
+         * say so out loud; the default is what the server does.
+         */
+        if (open !== null && behaviour.allowConcurrentLeases !== true) {
+          lease.wire.push({ kind: 'take', model, leaseId: null, ok: false });
+          return refuse(res, modelLeasedRefusal({
+            model: open.model,
+            client: open.userAgent,
+            act: open.act,
+            since: '2026-09-14T02:00:00+00:00',
+            expiresAt: '2026-09-14T02:02:00+00:00',
+            leaseId: open.leaseId,
+            kind: behaviour.leaseKind || 'llm',
+          }));
+        }
         const leaseId = `lease-${nextId++}`;
+        open = { ...attempt, leaseId };
         lease.taken.push({ ...attempt, leaseId });
+        lease.wire.push({ kind: 'take', model, leaseId, ok: true });
         send(res, 201, {
           // `subject` and `kind`, as crucible 5e04e5f sends them: a lease names
           // the resident THING, which is a voice or an aligner as often as a
@@ -370,7 +417,21 @@ function leaseRoutes(behaviour = {}) {
         const refusal = behaviour.refuseHeartbeat
           ? behaviour.refuseHeartbeat(leaseId, heartbeatAttempts)
           : null;
-        if (refusal) return refuse(res, refusal);
+        if (refusal) {
+          /*
+           * A SERVER THAT ANSWERS `unknown_lease` IS NOT HOLDING ONE.
+           *
+           * That refusal means the lease is gone — a restart forgot it, or it
+           * expired — and the client's correct answer is to take a new one on
+           * the same model. So the card has to be free here, or the fake would
+           * refuse the re-lease with a lease it has just said it does not have,
+           * which is a state no real server can be in.
+           */
+          if (refusal.code === 'unknown_lease' && open !== null && open.leaseId === leaseId) {
+            open = null;
+          }
+          return refuse(res, refusal);
+        }
         send(res, 200, { expires_at: '2026-09-14T02:04:00+00:00' });
         return true;
       }
@@ -383,7 +444,25 @@ function leaseRoutes(behaviour = {}) {
         const refusal = behaviour.refuseRelease
           ? behaviour.refuseRelease(leaseId, releaseAttempts)
           : null;
-        if (refusal) return refuse(res, refusal);
+        if (refusal) {
+          lease.wire.push({ kind: 'release', model: null, leaseId, ok: false });
+          return refuse(res, refusal);
+        }
+        // The card is free again — a release the server ACCEPTED is what makes
+        // the next take possible, which is the whole point of enforcing one.
+        /*
+         * A RELEASE TAKES TIME, and a keeper can say how much. The card is
+         * free only once the server has processed the DELETE, so a client that
+         * fires one and immediately asks for the next lease is refused. With
+         * `releaseDelayMs` at 0 that window is too small to observe reliably,
+         * which is exactly how a real race hides from a suite.
+         */
+        if (behaviour.releaseDelayMs) {
+          await new Promise((r) => setTimeout(r, behaviour.releaseDelayMs));
+        }
+        const was = open !== null && open.leaseId === leaseId ? open.model : null;
+        if (open !== null && open.leaseId === leaseId) open = null;
+        lease.wire.push({ kind: 'release', model: was, leaseId, ok: true });
         // A BARE 204: no body, no Content-Type. A client that tried to parse one
         // would throw here rather than on a real server at 3 a.m.
         res.writeHead(204);

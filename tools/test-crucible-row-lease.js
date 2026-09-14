@@ -26,6 +26,23 @@
  *     second take against the same server would be refused `409 leased` — by us,
  *     against ourselves. The first must be given back before the second is asked
  *     for, and in that order.
+ *  3b. AND THE SCHEDULER MUST NOT KEEP IT ACROSS THE SEAM EITHER (Foundry,
+ *     2026-09-14). `leasesModel` alone kept the row's lease open for any next
+ *     act that leases, and the acts of one row do not share a model: clean is
+ *     the 9B, simplify and translate the 27B. What that costs is precise, and
+ *     worth stating exactly because check 3 already covers the other half:
+ *     `withRowLease` DOES swap a lease when the model changes, so BookForge's
+ *     own chat acts do not deadlock. What the stale keep holds is the GAP —
+ *     from the moment clean settles to the moment simplify asks — and in that
+ *     gap a `load-model` for the 27B is refused `leased`, naming `bookforge`.
+ *     That load is not hypothetical: `resolveCrucibleTextEngine`'s `loadFirst`
+ *     door issues one before any lease is taken, and so does an operator at
+ *     the CLI. `StepModule.leasedModel` is what closes it.
+ *  3c. AND A RELEASE THAT HAS NOT LANDED IS NOT A RELEASE. `settleStep` fires
+ *     `closeRow` without awaiting the DELETE and pumps in the same tick, so
+ *     the next act can ask for its lease while the server still holds the
+ *     last one. Provable only against a server that is not instant — see the
+ *     slow-release check.
  *  4. OUTSIDE A ROW SCOPE NOTHING CHANGES. The CLI, Settings → AI and every
  *     headless caller must keep releasing in their own `finally`; a scope that
  *     leaked into them would hold a card for a whole ttl after a one-off press.
@@ -167,9 +184,19 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     });
 
   await check('two runs in flight at once never share a lease', async () => {
+    /*
+     * TWO SERVERS, because one server holds ONE lease and the fake enforces
+     * that now. Two rows in flight is two machines by construction — the slot
+     * sets give each server one GPU slot — so a single fake here would have
+     * been testing a shape that cannot occur, and would fail for the server's
+     * reason rather than for the scope's.
+     */
     const routes = leaseRoutes();
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);
+    const routesB = leaseRoutes();
+    const fakeB = await startFakeCrucible(routesB.handler);
+    const serverB = nameFake(fakeB.url);
     try {
       // Interleaved deliberately: a single mutable "current row" would hand the
       // second run the first's lease, which is the bug AsyncLocalStorage avoids.
@@ -183,7 +210,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       await new Promise((r) => setTimeout(r, 10));
       await lease.withCrucibleRowScope('job_b', () =>
         lease.withCrucibleLease(
-          { server, kind: 'model', id: 'model-b', act: 'translate', onLog: () => {} },
+          { server: serverB, kind: 'model', id: 'model-b', act: 'translate', onLog: () => {} },
           async () => {},
         ));
       releaseA();
@@ -197,6 +224,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       await lease.closeCrucibleRowLease('job_a');
       await lease.closeCrucibleRowLease('job_b');
       await fake.close();
+      await fakeB.close();
     }
   });
 
@@ -231,6 +259,9 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
 
   const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rowlease-'));
 
+  /** The model the scheduler checks pretend every act runs on, unless they say. */
+  const DEFAULT_MODEL = 'qwen3.5-9b';
+
   function fakeModule(type, opts = {}) {
     const runs = [];
     const mod = {
@@ -253,20 +284,39 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       },
       cancel() {},
     };
-    if (opts.leases === true) mod.leasesModel = () => true;
+    /*
+     * `leases` is `true` for the suite's default model, or a model ID. BOTH
+     * declarations go on together, because the scheduler needs both: one says
+     * a lease may be held, the other says on WHAT, and keeping it across the
+     * seam requires the id to match what is already held.
+     */
+    if (opts.leases !== undefined && opts.leases !== false) {
+      const id = opts.leases === true ? DEFAULT_MODEL : opts.leases;
+      mod.leasesModel = () => true;
+      mod.leasedModel = () => id;
+    }
     return mod;
   }
 
-  /** Records what the scheduler asked of the lease seam, with no network. */
-  function spyHost() {
+  /**
+   * Records what the scheduler asked of the lease seam, with no network.
+   *
+   * `subject` is what the row is pretending to hold. The scheduler compares it
+   * to the next step's `leasedModel`, so a spy that always answered null would
+   * make every keep-the-lease check vacuously pass.
+   */
+  function spyHost(subject = 'qwen3.5-9b') {
     const scopes = [];
     const closed = [];
+    const held = new Map();
     return {
       scopes,
       closed,
+      held,
       host: {
-        withRowScope(row, fn) { scopes.push(row); return fn(); },
-        async closeRow(row) { closed.push(row); },
+        withRowScope(row, fn) { scopes.push(row); held.set(row, subject); return fn(); },
+        async closeRow(row) { closed.push(row); held.delete(row); },
+        leaseSubject(row) { return held.get(row) ?? null; },
       },
     };
   }
@@ -329,6 +379,59 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     assert.strictEqual(spy.closed.length, 1, 'and it IS given back when the last act lands');
   });
 
+  await check('a row whose next act wants a DIFFERENT model gives the lease back at the seam',
+    async () => {
+      /*
+       * THE ARCHETYPAL ROW, and the one this seam broke. Clean runs on the 9B
+       * and simplify on the 27B, so keeping the clean lease open for the
+       * simplify would mean the simplify's own load is refused `leased` by
+       * BookForge, against BookForge, until the ttl lapsed.
+       */
+      const clean = fakeModule('narration-text', { consumes: 'epub', leases: 'qwen3.5-9b' });
+      const simplify = fakeModule('simplify', { consumes: 'epub', leases: 'qwen3.8-27b-4bit' });
+      const spy = spyHost('qwen3.5-9b');
+      await freshEngine('model-changes', [clean, simplify], spy);
+      engine.enqueue({
+        title: 'Mistborn',
+        steps: [
+          { type: 'narration-text', label: 'Clean', config: { kind: 'narration-text' },
+            sourceRef: { kind: 'epub', path: '/a.epub' } },
+          { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
+        ],
+      });
+      engine.start();
+      await settle(30);
+      clean.runs[0].resolve({ kind: 'epub', path: '/out/clean' });
+      await settle(30);
+      assert.strictEqual(spy.closed.length, 1,
+        'the 9B lease must be given back before an act that needs the 27B on the card');
+    });
+
+  await check('a next act that leases but will not say WHICH ends the run of acts', async () => {
+    // Undeclared is not "probably the same model": that assumption IS the
+    // defect above. A module with no answer releases, which is the behaviour
+    // before one lease per row existed.
+    const t = fakeModule('translation', { consumes: 'epub', leases: true });
+    const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report' });
+    b.leasesModel = () => true;
+    const spy = spyHost(DEFAULT_MODEL);
+    await freshEngine('unnamed-model', [t, b], spy);
+    engine.enqueue({
+      title: 'Mistborn',
+      steps: [
+        { type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+          sourceRef: { kind: 'epub', path: '/a.epub' } },
+        { type: 'book-analysis', label: 'Analyse', config: { aiProvider: 'crucible' },
+          parentIndex: 0 },
+      ],
+    });
+    engine.start();
+    await settle(30);
+    t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+    await settle(30);
+    assert.strictEqual(spy.closed.length, 1);
+  });
+
   await check('a row whose next step does NOT lease gives the card back at once', async () => {
     const t = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: true });
     const r = fakeModule('reassembly', { consumes: 'epub', produces: 'm4b' });
@@ -355,8 +458,10 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     // no card to hold. `leasesModel` is asked of the CONFIG for exactly this.
     const t = fakeModule('translation', { consumes: 'epub', produces: 'epub' });
     t.leasesModel = (config) => config.aiProvider === 'crucible';
+    t.leasedModel = (config) => (config.aiProvider === 'crucible' ? DEFAULT_MODEL : null);
     const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report' });
     b.leasesModel = (config) => config.aiProvider === 'crucible';
+    b.leasedModel = (config) => (config.aiProvider === 'crucible' ? DEFAULT_MODEL : null);
     const spy = spyHost();
     await freshEngine('config-decides', [t, b], spy);
     engine.enqueue({
@@ -415,6 +520,165 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     t.runs[0].resolve();
     await settle(30);
   });
+
+  // ---------------------------------------------------------------------------
+  // End to end: the scheduler, the real lease seam and a server that holds ONE
+  // ---------------------------------------------------------------------------
+  //
+  // The spy checks above prove the DECISION. These prove what crosses the wire,
+  // which is the only thing a real server sees - and the fake enforces one
+  // lease per server, so a keep that should have been a release shows up here
+  // as a `409 leased` this app handed itself rather than as a silent pass.
+  //
+  // The seam itself is the app's, composed once in `crucible/lease.ts` and
+  // mounted by `queue-ipc.ts`: a host written out again here would be a shape
+  // the app does not use.
+
+  /** A step that really leases, really releases, and resolves immediately. */
+  function leasingModule(type, where) {
+    return {
+      type,
+      consumes: where.consumes === undefined ? null : where.consumes,
+      produces: 'epub',
+      resource: () => 'gpu',
+      leasesModel: () => true,
+      leasedModel: () => where.model,
+      async run(ctx) {
+        return lease.withCrucibleLease(
+          { server: where.server, kind: 'model', id: where.model, act: where.act, onLog: () => {} },
+          async () => ({ kind: 'epub', path: `/out/${ctx.stepId}` }),
+        );
+      },
+      cancel() {},
+    };
+  }
+
+  const wireOf = (routes) => routes.lease.wire.map(
+    (w) => `${w.kind} ${w.model} ${w.ok ? 'ok' : 'REFUSED'}`);
+
+  await check('clean(9B) then simplify(27B) on the wire: take, release, take, release',
+    async () => {
+      const routes = leaseRoutes();
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      try {
+        const clean = leasingModule('narration-text', {
+          server, model: 'qwen3.5-9b', act: 'clean', consumes: 'epub' });
+        const simplify = leasingModule('simplify', {
+          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
+        await freshEngine('wire-two-models', [clean, simplify], { host: lease.crucibleLeaseSeam() });
+        engine.enqueue({
+          title: 'Mistborn',
+          steps: [
+            { type: 'narration-text', label: 'Clean', config: { kind: 'narration-text' },
+              sourceRef: { kind: 'epub', path: '/a.epub' } },
+            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
+          ],
+        });
+        engine.start();
+        await settle(80);
+
+        assert.deepStrictEqual(wireOf(routes), [
+          'take qwen3.5-9b ok',
+          'release qwen3.5-9b ok',
+          'take qwen3.8-27b-4bit ok',
+          'release qwen3.8-27b-4bit ok',
+        ], 'two acts, two models, two leases - and the first given back BEFORE the second is '
+          + 'asked for, or the server refuses us in our own name');
+        assert.deepStrictEqual(routes.lease.refusals, [],
+          'a refusal here is this app blocking itself, which is the whole defect');
+        assert.deepStrictEqual(routes.lease.taken.map((t) => t.act), ['clean', 'simplify'],
+          'each lease names its own act truthfully - a lease says WHY the model is held');
+      } finally {
+        await fake.close();
+      }
+    });
+
+  await check('the next act WAITS for the previous release, on a server that is not instant',
+    async () => {
+      /*
+       * THE RACE THE SCHEDULER'S OWN SHAPE CREATES. `settleStep` is
+       * synchronous by contract and fires `closeRow` WITHOUT awaiting it, then
+       * pumps - so the next step can be launched while the DELETE is still in
+       * flight and the server still believes the lease is held. A server holds
+       * ONE, so the next act's take is answered `409 leased`, naming us.
+       *
+       * With an instant fake the window is too small to observe, which is how
+       * this would have shipped. The release is slowed here so the wait in
+       * `withRowLease` is the only thing standing between the row and a
+       * refusal it handed itself.
+       */
+      const routes = leaseRoutes({ releaseDelayMs: 60 });
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      try {
+        const clean = leasingModule('narration-text', {
+          server, model: 'qwen3.5-9b', act: 'clean', consumes: 'epub' });
+        const simplify = leasingModule('simplify', {
+          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
+        await freshEngine('wire-slow-release', [clean, simplify],
+          { host: lease.crucibleLeaseSeam() });
+        engine.enqueue({
+          title: 'Mistborn',
+          steps: [
+            { type: 'narration-text', label: 'Clean', config: { kind: 'narration-text' },
+              sourceRef: { kind: 'epub', path: '/a.epub' } },
+            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
+          ],
+        });
+        engine.start();
+        // Waited on the WIRE and not on `released`, which is recorded when the
+        // DELETE arrives rather than when it is answered — the delay is the
+        // whole point of this check.
+        for (let i = 0; i < 40 && routes.lease.wire.length < 4; i += 1) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+
+        assert.deepStrictEqual(routes.lease.refusals, [],
+          'the second act must not overtake the first act\'s release');
+        assert.deepStrictEqual(wireOf(routes), [
+          'take qwen3.5-9b ok',
+          'release qwen3.5-9b ok',
+          'take qwen3.8-27b-4bit ok',
+          'release qwen3.8-27b-4bit ok',
+        ]);
+      } finally {
+        await fake.close();
+      }
+    });
+
+  await check('translate(27B) then simplify(27B) on the wire: ONE take, ONE release',
+    async () => {
+      const routes = leaseRoutes();
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      try {
+        const translate = leasingModule('translate-pass', {
+          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
+        const simplify = leasingModule('simplify', {
+          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
+        await freshEngine('wire-one-model', [translate, simplify],
+          { host: lease.crucibleLeaseSeam() });
+        engine.enqueue({
+          title: 'Mistborn',
+          steps: [
+            { type: 'translate-pass', label: 'Translate', config: { kind: 'translate' },
+              sourceRef: { kind: 'epub', path: '/a.epub' } },
+            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
+          ],
+        });
+        engine.start();
+        await settle(80);
+
+        assert.deepStrictEqual(wireOf(routes),
+          ['take qwen3.8-27b-4bit ok', 'release qwen3.8-27b-4bit ok'],
+          'same model, so the run of acts continues and the model is not unloaded between them');
+        assert.strictEqual(routes.lease.taken[0].act, 'translate',
+          'stamped with the act that OPENED it - crucible has no name for "a row of acts"');
+      } finally {
+        await fake.close();
+      }
+    });
 
   engine.clearStepModules();
   engine.setCrucibleLeaseHost(null);

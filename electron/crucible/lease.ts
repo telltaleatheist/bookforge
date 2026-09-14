@@ -757,6 +757,22 @@ function currentRow(): string | null {
 const rowLeases = new Map<string, CrucibleLease>();
 
 /**
+ * A RELEASE THAT HAS LEFT BUT NOT LANDED, per row.
+ *
+ * `settleStep` is synchronous by contract and fires `closeCrucibleRowLease`
+ * without awaiting it, so between two steps of one row there is a moment when
+ * this side has given the lease up and the SERVER still holds it. The next act
+ * taking its lease in that moment is answered `409 leased` — by us, naming us —
+ * and the row fails on a claim it made against itself.
+ *
+ * So a take for a row waits for that row's outstanding release first. It is not
+ * a retry and not a sleep: it is the same promise, awaited by the one caller
+ * that must not overtake it. Nothing else waits on it — a release is a courtesy
+ * everywhere else, and the ttl is the mechanism.
+ */
+const rowReleases = new Map<string, Promise<void>>();
+
+/**
  * Run one step inside its run's lease scope.
  *
  * Called by the scheduler around every step, leasing or not: a step that never
@@ -778,7 +794,14 @@ export async function closeCrucibleRowLease(row: string): Promise<void> {
   const lease = rowLeases.get(row);
   if (lease === undefined) return;
   rowLeases.delete(row);
-  await lease.release();
+  // Published BEFORE it is awaited, so the next act of this row — which may be
+  // launched in the same tick, this call having been fired without an await —
+  // finds it and waits rather than racing the server's own one-lease rule.
+  const going = lease.release().finally(() => {
+    if (rowReleases.get(row) === going) rowReleases.delete(row);
+  });
+  rowReleases.set(row, going);
+  await going;
 }
 
 /** For a keeper, and for a log line: is this row holding one? */
@@ -786,11 +809,47 @@ export function crucibleRowLease(row: string): CrucibleLease | null {
   return rowLeases.get(row) ?? null;
 }
 
+/**
+ * THE THREE CALLS THE SCHEDULER MAKES, composed once.
+ *
+ * `queue-engine.ts` takes this seam injected rather than imported, to keep its
+ * one property (no Electron, no registry, no HTTP) — but that made the
+ * COMPOSITION a thing each mount wrote out, and a keeper writing its own is a
+ * keeper that can pass against a shape the app does not use. There is one
+ * composition now: `queue-ipc.ts` mounts it, and the suites drive it.
+ *
+ * Deliberately not typed as `CrucibleLeaseHost`: importing that type would
+ * make this module depend on the scheduler it is injected into. The shape is
+ * structural, and `setCrucibleLeaseHost` is what checks it.
+ */
+export function crucibleLeaseSeam(): {
+  withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
+  closeRow(row: string): Promise<void>;
+  leaseSubject(row: string): string | null;
+} {
+  return {
+    withRowScope: withCrucibleRowScope,
+    closeRow: closeCrucibleRowLease,
+    // WHAT this run is holding, so the scheduler can compare it to what the
+    // next act needs. A lease is per model and a server holds one, so keeping
+    // it open across a change of model is a refusal this app hands itself.
+    leaseSubject: (row: string): string | null => crucibleRowLease(row)?.leased ?? null,
+  };
+}
+
 async function withRowLease<T>(
   row: string,
   options: CrucibleLeaseOptions,
   run: (lease: CrucibleLease) => Promise<T>,
 ): Promise<T> {
+  /*
+   * THE PREVIOUS ACT'S RELEASE MAY STILL BE IN THE AIR. The scheduler settles
+   * synchronously and closes the row's lease without awaiting the DELETE, so
+   * this act can begin while the server still believes the last one is held —
+   * and a server holds ONE lease. Waited for, not retried: see `rowReleases`.
+   */
+  const going = rowReleases.get(row);
+  if (going !== undefined) await going;
   const held = rowLeases.get(row);
   if (held !== undefined) {
     if (held.server === options.server && held.leased === options.id) {
