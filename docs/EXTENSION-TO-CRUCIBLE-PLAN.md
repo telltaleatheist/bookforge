@@ -49,13 +49,20 @@ streaming door (PHASE3-TTS.md §7's ruling), and Sunday keeps working.
   start is the door's native shape, and buffering is a client choice.
 - **After the extension is direct, BookForge's "TTS server" button and its options go
   (Owen, 2026-09-14: "we should remove the tts server button and its options from bookforge.
-  we need to make sure those options are added to the extension though").** Every option that
-  button's page and the Add-ons rows carry for the streaming engine moves to the extension's
-  Options page first, and the keeper that pins the deletion lists them by name: the voice,
-  speed, "Buffer before playing", the idle-unload window (`idleMinutes` — becomes the
-  extension asking the engine to unload after N idle minutes, a client timer that posts
-  `unload-model`), the recordings folder and tab-recording rows, the LAN server rows (now the
-  registry + picker). Nothing is removed from BookForge until the extension has it.
+  we need to make sure those options are added to the extension though" — then: "every IMPORTANT
+  option. some of these options are unimportant and dont need to carry over").** The keeper that
+  pins the deletion lists both columns by name:
+
+  | carried into the extension | dropped, and why |
+  |---|---|
+  | **voice** ("voice is important and must be available on the extension") — from `GET /v1/voices` of the selected server | **voice engine** — always Higgs today; the multi-engine door for "when we add a new voice engine, after higgs is superseded" is Crucible's: each `/v1/voices` row already names its `engine`, and the extension shows an engine column only when that list carries more than one — no selector of its own |
+  | **speed** | **generation device** — "always chosen by the crucible server": MLX/mlx-audio on the Mac, SGLang/vLLM on CUDA; never a client field |
+  | **Buffer before playing** (the client gate) | **enable multiple TTS workers** (`cpuWorkers`) — XTTS-only, XTTS is removed; gone |
+  | **idle-unload window** (`idleMinutes` → a client timer that posts `unload-model`) | the engine start/stop/restart rows — they ARE the popup's load/unload |
+  | **the server picker** (registry + connect code; replaces the LAN host/port/token rows) | |
+
+  The extension's own tab-recording rows are already the extension's and stay as they are.
+  Nothing is removed from BookForge until the extension has every row in the left column.
 - **After the extension is direct, BookForge's 8766 relay is deleted.** The iPhone Bookshelf
   reader keeps its own bridge on the bookshelf server (the phone needs the ingest endpoint and
   a LAN-addressable server, which is BookForge's), pointed at the same shared client.
