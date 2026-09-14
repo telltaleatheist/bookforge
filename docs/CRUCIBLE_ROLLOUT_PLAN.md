@@ -121,7 +121,7 @@ apps' doors.
 ### D. Foundry seam
 
 - **D1. Hosted Foundry's text acts — WORKED OUT, and what is left is a RE-VENDOR.** *(done
-  2026-09-14; BookForge `<D1>`.)* The refusal's premise had gone stale: foundry `f300fc6` gave
+  2026-09-14; BookForge `e284c7bb`, `b2c50d78`, `70d3b896`.)* The refusal's premise had gone stale: foundry `f300fc6` gave
   the vendored `runEngine` an `extraEnv` argument and the 2026-09-14 re-vendor brought it in at
   `e6d5424`, while the guard went on quoting `env: process.env` for ten hours. Reading the
   subtree rather than the comment found the REAL gap, one layer along: the seam BookForge calls
@@ -140,7 +140,7 @@ apps' doors.
   number standing in for a line of somebody else's code is how the stale guard survived.
 - **D-registry. HOSTED FOUNDRY READS BOOKFORGE'S SERVER REGISTRY** (Owen's ruling, 2026-09-14 —
   one owner; Foundry's own registry is standalone-only). *Both halves built, neither wired:
-  BookForge `<D1>`, foundry `e096734`.* Their `crucibleServers()` asks `FoundryHost.servers()`
+  BookForge `b2c50d78`, foundry `e096734`.* Their `crucibleServers()` asks `FoundryHost.servers()`
   hosted and DERIVES the slot list from it, which closes a break nobody had pressed yet —
   `computeSlots()` took the host's `slots?()` list while `placeOnSlot` looked the credential up
   in a settings file that is empty hosted, so a row pinned to "mac" parked for ever on *"no
