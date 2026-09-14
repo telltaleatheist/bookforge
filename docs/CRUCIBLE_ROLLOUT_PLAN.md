@@ -54,33 +54,41 @@ What tonight delivers, in three tiers. Everything in tier 1 and 2 is committed o
 branch with tests; nothing is merged, because Owen tests in-app first.
 
 ### Tier 1 — Crucible becomes the full server on both machines (no GPU needed)
-- [ ] PC: enable `tts`, `asr`, `align`, `rvc` in config.toml (add the keys; never `init --force`)
-- [ ] PC: `crucible install tts --narrator-engine higgs-v3`, `… orpheus`, `install asr`, `install align`, `install rvc`
-- [ ] PC: re-apply the two site-packages patches to the Higgs env; `crucible doctor` reports both `applied`
-- [ ] PC: pull the weights BookForge uses: voices `deathstalker`, `mistborn`, `owen`, `sigma`, `thirdreich`, `zeroshot`, `higgs-default`; `faster-whisper-large-v3`; `qwen3-aligner`; rvc `sigma`, `deathstalker-rvc-v3`
-- [ ] PC: `crucible capability --write`; `crucible doctor` healthy with every type ready
-- [ ] Mac: checkout `feat/phase6-remote-render` (v0.5.0), `pip install -e .`, same enables, installs and pulls
-- [ ] Mac: restart the server **at the 2 AM wake** (it drops whatever is resident; not during the stream)
-- [ ] `crucible service install` — a systemd user unit in WSL, a launchd agent on the Mac (PHASE5-APPS.md section 6.0 ruled a local Crucible is a *service*). Both servers come up at login and survive the app.
-- [ ] Owed to Foundry: per-model sampling and thinking defaults in manifests, applied server-side; then tell Foundry-pc-1.
-- [ ] `denoise` job type (shares the RVC env; `audio-separator` pinned by name)
+- [x] PC: enable `tts`, `asr`, `align`, `rvc` in config.toml (add the keys; never `init --force`) *19:45*
+- [x] PC: `crucible install tts --narrator-engine higgs-v3`, `… orpheus`, `install asr`, `install align`, `install rvc` *done 20:17; asr's recipe had pinned numpy 2.5.3 (Python ≥3.12 only) — pinned 2.4.6, and all four chosen-set recipes were regenerated from the real installs' `pip freeze` (crucible `1ec936d`)*
+- [x] PC: re-apply the two site-packages patches to the Higgs env; `crucible doctor` reports both `applied` *20:01*
+- [x] PC: pull the weights BookForge uses (all pulled by 20:10): voices `deathstalker`, `mistborn`, `owen`, `sigma`, `thirdreich`, `zeroshot`, `higgs-default`; `faster-whisper-large-v3`; `qwen3-aligner`; rvc `sigma`, `deathstalker-rvc-v3`
+- [x] PC: `crucible capability --write`; `crucible doctor` — every env ready, both patches applied, every type ready except `rvc` (base assets, see below) *20:25*
+- [x] Mac: checkout `feat/phase6-remote-render` (v0.5.0), `pip install -e .`, same enables, installs and pulls *done 19:55; asr/align have no mlx-darwin recipe and `capability --write` recorded them off, correctly; doctor: `tts` NOT READY only because ffmpeg is off the non-login PATH, `rvc` NOT READY for the base assets*
+- [x] Mac: restart the server *done 22:15 once Owen's stream ended and nothing was resident: checkout at the pushed branch, `pip install -e .`, `host = "0.0.0.0"` in its config, hand-started process stopped by Owen, `crucible service install` → launchd agent running v0.5.0, reachable from the PC; rvc base assets pulled; rvc env rebuilt with the separator pin; doctor: tts + rvc ready, `denoise` NOT READY until a pull verb exists — then `crucible denoise pull` landed (`83e3b86`) and both machines report `job denoise: ready`, installed `denoise-roformer` (0.91 GB, digests verified; one stamp per model; the puller and the job read one layout function). Crucible: 877 tests green.*
+- [x] `crucible service install` — a systemd user unit in WSL, a launchd agent on the Mac (PHASE5-APPS.md section 6.0 ruled a local Crucible is a *service*). *Built (crucible `a838101`); installed on the PC 20:30 — the unit crash-looped because `python -m crucible` from systemd's $HOME cwd resolved `crucible.voices` to the checkout's `voices/` manifest directory; hand-fixed, then the generator fix landed (crucible `b40de27`: the unit runs the console script in `WorkingDirectory=<CRUCIBLE_HOME>`) and `service install` was re-run on the PC at 22:35. **The WSL server is up as a service now** (`{"crucible":true,"name":"crucible@owens-pc-wsl"}`), no model resident, no VRAM taken. Needs Owen: `sudo loginctl enable-linger telltale` so it survives the last shell. Mac: at the 2 AM wake.*
+- [x] Owed to Foundry: per-model sampling and thinking defaults in manifests, applied server-side; then tell Foundry-pc-1. *Done 22:40 (crucible `835628e`, PHASE2-LLM.md §9): request states it → wins; else manifest; else engine; `X-Crucible-Sampling` header names the source per key; `qwen3.5-9b` ships `thinking = false`. Foundry told. Ruling owed: should `dots-ocr` state `temperature = 0` server-side?*
+- [x] `denoise` job type (shares the RVC env; `audio-separator` pinned by name) *done (crucible `380e9d2`: roformer pass in the rvc env, `audio-separator==0.31.1` compatible-not-resolved until the first real install; `enable_denoise` flag; capability class). Also `5593320`: the urvc base assets are pulled from HF by pinned digest (`crucible rvc pull-base`) — the upstream is the installed fork's own `JackismyShephard/ultimate-rvc`, not the ancestral repos, and the embedder's `config.json` joined the list (without it transformers will not load the directory). Crucible: 859 tests green.*
 
 ### Tier 2 — BookForge gets its doors (built + tested, unverified on a card)
 - [x] **2.1 Local discovery, registry holds remotes only** (the fix Owen said go on): `electron/crucible/local.ts` reads the local server's own `config.toml` (`$CRUCIBLE_HOME`, on Windows through `wsl.exe -d <distro> --exec`); the reserved server name `local` resolves to it; `addServer` refuses loopback URLs by name; the stale `wsl` entry is refused at use with the fix in the message. *Done 20:05 — 20-check keeper `tools/test-crucible-servers.js`; live: `--list` shows `local` read through WSL, `--server wsl` refused as stale, `--server mac` healthy; the stale `wsl` entry was removed from the real registry with the CLI's own repair door.*
-- [ ] **2.2 Servers settings row** (PHASE5-APPS §2, PHASE7-LANES §4.2.2): the local server first, then remotes; add/remove remote with **Test** (ping, then info); drag to rank; enable switch per server; **New jobs wait for: top-ranked / Any**. IPC + preload + renderer.
-- [ ] **2.3 The `crucible` AI provider reachable from Settings**: renderer enum gains `crucible`, the AI setup picks a server (from 2.2's list) and a *resident* model; `checkProviderConnection` finally receives its server parameter.
-- [ ] **2.4 Audiobook render through Crucible**: the narration modal's generation step submits a `tts` job (chunks up front, so there is a percentage), streams `chunk` events into the guard ledger, downloads artifacts into `sentencesDir` with the existing downloader, and assembly runs locally as it does today. The WSL narrator spawn stays **until Owen's in-app pass**, then is deleted in a commit he approves — a dated stopgap, not a fallback: the app takes the Crucible path whenever the selected server is reachable and refuses by name when it is not.
-- [ ] **2.5 Per-row `waitFor`** on queue items (PHASE7 §4.2.1) — the default written from the 2.2 setting; disabling a server surfaces the rows that name it.
+- [x] **2.2 Servers settings row** (PHASE5-APPS §2, PHASE7-LANES §4.2.2): the local server first, then remotes; add/remove remote with **Test** (ping, then info); drag to rank; enable switch per server; **New jobs wait for: top-ranked / Any**. IPC + preload + renderer. *Done 20:55 (`f6ef8d76`, `ea39bc58`): **Settings → Crucible Servers**; routing record `<userData>/crucible-routing.json` (`electron/crucible/routing.ts`, 19-check keeper); live read-only probe of the Mac OK; Load/Unload buttons wired and never pressed. Open: the first `wsl.exe` read against a cold VM returned exit −1 and the second succeeded — the card has a Re-check button, and the root cause is owed a reproduction.*
+- [x] **2.3 The `crucible` AI provider reachable from Settings**: renderer enum gains `crucible`, the AI setup picks a server (from 2.2's list) and a *resident* model; `checkProviderConnection` finally receives its server parameter. *Done 21:00 (`3a98ff70`): **Settings → AI → Crucible** card; a queue row cannot yet name a server (that is 2.5's `waitFor`), so that door refuses `crucible` by name.*
+- [x] **2.4 Audiobook render through Crucible** *(built 21:25, `944d1f02`: `electron/crucible/render.ts`, one `tts` job per book with `take: 0`, voices checked against `/v1/voices` before the POST, 26-check keeper against a fake Crucible; three rulings owed in the file: zero-shot voices, whether a remote render holds this machine's GPU lease, resume across an app restart. Follow-up done 21:50, `dbc5633b`: `decideWhereGenerationRuns` in `electron/crucible/generation-venue.ts` — caller's name wins, else the legacy switch, else the top-ranked server (not pinged: a named machine is an instruction), else for `any` the first enabled server whose ping answers; refusals `no_enabled_server` / `no_reachable_server`, never a silent drop to local. The resolved venue is written onto the run's saved state so Continue goes back to the same machine. On this PC the default venue is `local`, the WSL service. The legacy switch is in Settings → Crucible Servers: "Render audiobooks with the local narrator instead (legacy — removed after the in-app pass)".)*: the narration modal's generation step submits a `tts` job (chunks up front, so there is a percentage), streams `chunk` events into the guard ledger, downloads artifacts into `sentencesDir` with the existing downloader, and assembly runs locally as it does today. The WSL narrator spawn stays **until Owen's in-app pass**, then is deleted in a commit he approves — a dated stopgap, not a fallback: the app takes the Crucible path whenever the selected server is reachable and refuses by name when it is not.
+- [x] **2.5 Per-row `waitFor`** on queue items (PHASE7 §4.2.1) — the default written from the 2.2 setting; disabling a server surfaces the rows that name it. *Done 23:10 (`e91d2a41`): `shared/queue/wait-for.ts` holds the one pure decision and every hold sentence; `waitFor` on the run (one book = one GPU), `waitForResolved` written once at first admission; a row composed before this build carries NO instruction and holds until you pick (reported once at load — neither `local` nor `any` was manufactured); `409 server_busy` holds the row with the holder's name; queue page has the per-book picker; the Servers panel surfaces "N queued books are waiting for X, which is now disabled" with Change them to Any. 30-check keeper. Rulings owed: the GPU slot is still one global number (§2.4 per-server slots not built); only the render travels — RVC/align still run here; re-pointing an assigned book is refused.*
+
+- [x] **2.6 Hosted Foundry's text acts through Crucible** (found 22:30 when Owen asked): translate / simplify / analysis in the hosted window and the narration clean-text pass still spawn the engine at BookForge's own text server. The engine gets `--endpoint <server>/v1/openai`, the header map (`FOUNDRY_ENDPOINT_HEADERS`) with the act named truthfully in `X-Crucible-Act`, and a per-act Crucible model id from Settings; residency checked by name before the spawn; text steps become travelling queue steps; the ONE legacy switch covers the local text engines too. *Built (`0088a296`, corrected `23700dc6`): `electron/crucible/text-acts.ts` (four acts, header map, base `<server>/openai`), `text-models.ts` (`<userData>/crucible-models.json`, one Crucible model id per act, picked in Settings → AI → Crucible), `text-venue.ts` (`decideWhereTextActRuns` + residency by name + `crucible_server_busy` → queue hold); BookForge's OWN driver path (narration clean-text, the CLI clean routes) runs a Crucible text act for real; the hosted job-queue path refuses `hosted_engine_takes_no_per_run_env` until Foundry's vendored `engine.ts` takes a per-run environment — Foundry's to build (they are building the reframe now). 31-check keeper. Ruling owed: what the hosted floor keys on once Foundry's next release exists.*
 
 ### Tier 3 — needs Owen, a free card, or days
 - Owen's in-app pass on 2.2–2.4 with a free card; then delete the local narrator/llama/Ollama spawn layers.
-- Streaming (Play tab, extension, Reader) through `stream-scheduler.ts` → Crucible streaming session — one seam, three consumers.
-- Correct-sentences re-roll, ASR, align, RVC, VLM pages, denoise → their Crucible job types, each followed by deleting its spawn layer.
+- **After that pass — one copy per model per machine (Owen, 23:10).** Measured on the PC: Crucible holds the only copies that stay (`~/.crucible/{models 46G, voices 57G, envs 41G}`); to delete once the legacy paths are gone: WSL `~/higgs_v3_merged` (64G, the same merges Crucible mirrors), conda `higgs3`/`sglomni`/`orpheus_tts` (30G), the WSL HF cache (34G), the Ollama library (~120G: 9B ×3 quants, 27B ×2, cogito ×3, qwen3:32b), Foundry's own vLLM dots copy under `%LOCALAPPDATA%oundry` (its llama-server GGUFs stay for standalone). Formats cannot be shared across engines, so one copy = one engine per model per machine — the slot rule (a local Crucible replaces the local Ollama slot) is what makes it hold.
+- [x] Streaming (Play tab, extension, Reader) through `stream-scheduler.ts` → Crucible streaming session — one seam, three consumers. *Built 00:45 (`f079b456`, `323803fb`): `electron/crucible/stream.ts` — a `StreamingEngine` whose worker is a Crucible session behind the same `getActiveEngine()` the scheduler drives; venue from `decideWhereGenerationRuns`; the idle sweep lifted into one `IdleWatch` owner; the streaming door carries NO guard verdict (Owen's ruling: streaming stays unguarded) so the ledger records `stream-unguarded`; 22-check keeper. Labelled stopgap: the SDK's session hides `ready`, so the first `say` waits out `stream_not_attached` — root fix owed in `sdk/ts/src/stream.ts`. Rulings owed: may a Listen make a voice resident (no BookForge door loads a VOICE yet); pack Listen rows to the venue's pace band; Orpheus Listen stays local until Orpheus manifests exist; where a Listen ledger persists. First Listen on this PC refuses `voice_not_resident` until a voice is loaded on the WSL Crucible.*
+- [x] ASR and align → their Crucible job types *(01:00, `8c257cf1` the shared `runCrucibleJob` helper every later door uses, `838bf0f8` asr, `c1ba62ed` align, `48d10539` the rule that a run's later GPU steps follow the run's venue instead of deciding again — found live when an align step took the fine-tune's card). Align cannot FINISH remotely until narrator gains an items-in door (`narrator align --alignment <alignment.json>`): today a Crucible-venue alignment lands the model's items and then fails by name, and the legacy switch spawns the local narrator as before.*
+- [x] Correct-sentences re-roll, RVC, denoise → their Crucible job types *(01:25: `9f24a629` the voice conversion, `ae22b855` the hiss pass, `6693c3ef` a sentence re-roll — each follows the book to the machine that rendered it, via `venueForRunStep`)*. VLM pages done *(01:55, `1e63e971`)*: the door that moved is the ENDPOINT, not a job submit — Crucible has no `pages` job type (PHASE3-VLM: pictures through the `llm` proxy; `pages` is a capability CLASS), and BookForge never holds a page image, so `vlm-convert.ts` now hands Foundry's engine a Crucible base + the header map with `X-Crucible-Act: pages`, and `vlm-page-server.ts`'s spawn half is labelled DATED. **Trap found:** Foundry's pages door does NOT normalise its endpoint while its text door does, so the bases differ by design — text `<server>/openai`, pages `<server>/openai/v1`; a keeper re-reads both rules from Foundry's source and they have been told. Refuses on this machine until a Foundry release carries the header support (the pinned 1.2.0 binary does not read it and reports the same version as one that does — the floor is conservative on purpose); the legacy switch keeps conversions working. Owed: `vlm:reader-status` still tells the renderer "this machine's GPU (WSL)" for a run about to go to a Crucible — a small `main.ts` + renderer follow-up. Deleting each spawn layer waits for Owen's in-app pass.
+- [x] **The IPC collision** *(02:10, `bbac878a`)*: Foundry registered both `crucible:add` and `crucible:test`; two handlers of one name in one Electron process throw at startup, so the app would not have booted. Ours renamed — `crucible:add-server`, `crucible:test-server` — in `main.ts` and `preload.ts` only, since the renderer spells preload METHOD names and never a channel string (proved by grepping the built renderer). All sixteen of ours checked against their regenerated doc.
 - The ~34 remaining log-line contracts (R4); next two: `isOomError` (`parallel-tts-bridge.ts:4773`) and the `.m4b` path extraction (`:6156`, `reassembly-bridge.ts:2100`).
 - `orpheus-memory.ts` tier table deletion; narrator's verdict channel for the local driver.
-- `@crucible/bootstrap` (install Crucible from BookForge's setup wizard; client mints the token and passes `crucible init --token`).
+- Crucible: `crucible service install` over an already-loaded launchd agent fails `launchctl bootstrap … exited 5` (already loaded) — install must bootout first (idempotency, PHASE11); found 23:50 on the Mac while re-recording the PATH.
+- [x] Crucible SDK follow-ups *(01:40): `bcaa541` — `crucible.stream()` now RESOLVES ATTACHED (it reads the server's `ready` frame and checks voice/fingerprint/sample-rate/backend before returning), so BookForge's labelled ≤5 s `stream_not_attached` poll in `electron/crucible/stream.ts` can be deleted the day the client pin moves to a release carrying it; `f788faf` — `client.capability()` typed, with `capability_undecided` as a typed refusal; `3cd9d47` — `installed` on every capability row of `/v1/info` (align, asr, rvc, denoise, llm, tts) + the SDK type, and `describe_voices` stopped reading `residency._config` sideways. Crucible 1016 tests, SDK 182.*
+- [x] `@crucible/bootstrap` (install Crucible from BookForge's setup wizard; client mints the token and passes `crucible init --token`). *Built 00:50 (crucible `3550763` `init --token`, `ab6d7bd` the package, `6b15c6d` release.sh fourth asset): `sdk/bootstrap/` — `detectHost / install / ensureRunning / readLocalConfig / health`, injectable runner, the WSL plumbing facts from Foundry carried with tests, 117 unit tests; live on this PC: WSL Ubuntu v2, the 3090 Ti, the conda interpreter, config read, service running with linger on. Rulings owed (PHASE12 §6): the Mac's conda root is `/opt/homebrew/Caskroom/miniconda/base` (not one of the three ruled roots — `condaRoots` override until ruled); may `install()` create the `crucible` env; prebuilt env archives need a catalog + downloader; what the app does with `enableLinger`. Still owed: the setup screens in both apps that CALL it, and a Crucible release so it is installable.*
 - Foundry: its four items, Ollama retirement, and consuming `local`/registry the same way (Bun parses TOML natively).
 - Foundry v1.3.0 (`83d7b66`) — tarballs built, `gh release create` needs Owen; the dev checkout's `dist/` already runs `83d7b66`, and until the release is cut the managed `foundry-cli` component stays on v1.2.0 (`eb69b7a`), whose engine still speaks `--server`. `foundry-cli-components.ts` pins nothing and takes the newest release, so cutting it is the whole fix.
+- [x] Re-vendor `foundry-app/` *(02:10, `27da6a21`: Foundry `e6d5424`, 21 commits, 158/158 blobs hash-verified; app and engine shas agree for the first time)*. Three findings: **`--server` came back** as a wire dialect (`openai|ollama|anthropic`) after being retired as a server KIND, so a keeper guarding "nothing may write `--server`" was right to go red and now asserts the declared dialect instead; **`app/package.json` carries `"foundry": "file:.."`**, which made `npm ci` create a junction from the subtree to the BookForge repository root — a later recursive delete of `foundry-app/node_modules` would have deleted the repo (deleted non-recursively, repo verified intact, the step is now mandatory in VENDORED.md, and a ruling is owed on whether Foundry drops that devDependency for the snapshot); and the clean-text pin moved by exactly one docblock word (`both doors` → `every door`, the same nine characters), which is a port, not a rule move, so `NORMALIZER_VERSION` was right to stay.
 - Merging `feat/narrator-guarded-serve` and `feat/phase6-remote-render` — after the pass.
 
 ## 2. Rulings taken tonight (defaults Owen can overturn in the morning)
@@ -106,6 +114,26 @@ branch with tests; nothing is merged, because Owen tests in-app first.
    disk. Rendering is the card, and the card is fine-tuning.
 6. **The Mac restarts at 2 AM**, not during the stream.
 
+## 2a. Rulings Owen made overnight (2026-09-14, 01:40)
+
+1. **A model is unloaded the moment nothing holds it.** His words: *"Models should always be unloaded
+   when we're done with them. Every time."* This OVERRULES PHASE5-APPS.md §7's proposed "no idle
+   unload". "Done" is four facts, not a timer: no job on the lane, no lease open, no streaming
+   session, no chat in flight. The lease built earlier tonight is what makes it safe — a client that
+   intends a run of requests says so, and three books under one lease still load the model once.
+   Consequence to state plainly: BookForge's doors do not lease yet, so a BookForge chat run reloads
+   per request until they do. Being built.
+
+2. **Cloud is how an underpowered machine lights translate and simplify.** His words: *"if a user
+   can't run a 27b for translation, the only way the translate/simplify cards can light up is if we
+   connect a cloud model."* So the local floor stays the 27B and is not lowered to the 9B; the tile's
+   rule becomes *local floor OR an enabled cloud slot*. The key picks the models: the user enters an
+   API key, the app calls the provider's own listing with it, and the dropdown is what came back —
+   Briefcase's pattern (`backend/src/config/config.controller.ts`: OpenAI `/v1/models` with a bearer
+   token filtered to chat models; Anthropic `/v1/models` with `x-api-key` + `anthropic-version`,
+   labelled from `display_name`; no key is a stated empty list, not an error). Foundry owns the cloud
+   slots and has been told. BookForge's own AI providers should take the same treatment.
+
 ## 3. Rulings owed (record here, do not guess)
 
 - Extract `narrator` into its own repo? (PLAN.md owed 1 — the pin is currently a git sha
@@ -114,8 +142,138 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - What a Listen verdict is *for*, beyond the record.
 - Where urvc's base assets live for `rvc`.
 - Publish the promoted fine-tune merges so the pace bands match the measured arms.
+- From 2.4 (`electron/crucible/render.ts`): zero-shot voices — Crucible's `zeroshot` takes clips from the request and the render door refuses it; upload the clip, or local-only? Does a *remote* render hold this machine's GPU lease? Resume across an app restart (the job id is not persisted yet; Continue submits a new job for the missing chunks).
+- From 2.3: a queue row cannot yet name a Crucible server (2.5's `waitFor`), so the queue's `crucible` provider door refuses by name until then.
+- From the Crucible agent: should `crucible install <type>` end by offering the service (assumed no)? Fold `service status` into `doctor` (assumed no)? Should `dots-ocr` state `temperature = 0` server-side? Does audio-separator reach the network with both model files present (first real install settles it)? `torchcrepe` fetches its own weights, so `f0_method: "crepe"` may reach the network inside a job (every BookForge recipe uses `rmvpe`).
+- **Model lease (Q3 from Foundry):** on a shared Crucible a chat holds no lane, so a `load-voice` from BookForge evicts Foundry's translator at block 400 of 2000. Proposed: an explicit lease on the resident model (`POST /v1/models/{id}/lease`, heartbeat for liveness, `DELETE` at run end); loads and unloads refuse `409 model_leased` naming client, act, since. Not a timer. *Owen said go at 23:45; built 01:05 (crucible `c5eb431` server, `aa2a24f` SDK): one lease per server; blocks load-model / unload-model / load-voice / tts / align at the job door (each evicts the resident model), never a chat; `/v1/activity.lease`; in-memory, restart forgets; 22 + 11 tests. Foundry builds the client side in its dispatch (lease → spawn → heartbeat at ttl/3 → release in settle). BookForge's text acts and renders should take leases too — owed.*
+- **`[local]` block on model manifests** (Q2): *built (crucible `4e17842`): `[local]` validated like every other table; `scripts/gen-foundry-lineup.py` → `foundry-lineup.json` (schema 1, CI `--check`); Foundry told.* Rulings owed: `qwen3.8:27b-24g` is Owen's local Modelfile, not a published tag (`ollama pull` fails elsewhere) — name the published parent `qwen3.8:27b` or publish the Modelfile; Foundry's page reader pins `ggml-org/dots.ocr-GGUF` with the Q8_0 projector while the lineup names anthonym21's F16 — one must move.
+- **Owen's tile rule (recorded 2026-09-13 22:40):** translate/simplify tiles do not light unless the machine can run at least the 9B; a job that would take a week on CPU is disabled, not allowed.
+- **For your eyes (Foundry, overnight):** Foundry-pc-1 merged a third engine door, `--server anthropic` (Messages API, for analyze's verdict, with rate-limit backoff), at foundry `12b065d`. An older note in my memory says Claude-API simplify/translate was "not authorized" — if that still stands, it is theirs to hear from you; nothing in BookForge uses it.
+- Needs your hands, not a ruling: `sudo loginctl enable-linger telltale` in WSL (the service dies with your last shell otherwise); (Foundry v1.3.0 is VOID per Owen's 22:40 reframe — do not publish it); the first `wsl.exe` read against a cold VM returning −1 wants a reproduction.
 
 ## 4. State log
 
 - **19:50** plan written; wake timers set for 02:03 and 06:03; questions with defaults sent
   to Owen before his stream.
+- **19:45** Tier 1 installs started on both machines (nohup; logs `~/crucible-install-pc.log`
+  in WSL, `~/crucible-install-mac.log` + `~/crucible-install-mac-tts.log` on the Mac). The
+  Mac's first Higgs install failed on a zsh word-splitting quirk in my script (the argument
+  arrived as one word); re-run under bash at 19:53.
+- **20:05** 2.1 committed (`4787625a`). Three Opus agents running: 2.4 render seam, 2.2+2.3
+  Servers row and provider, and the Crucible trio (service verb, manifest defaults, denoise).
+  Foundry-pc-1 is taking its four engine items tonight and holds the registry work for
+  Owen's word in its own session.
+- **20:30** Foundry's engine phase landed (`646e8a1`, tag `engine-one-door`: one inference
+  door, `--server`/`--ollama`/`--keep-model` retired, act-named log prefixes, `fitsWindow`).
+  Fourth Opus agent started: re-vendor `foundry-app/` at 646e8a1 and retire the same flags
+  on BookForge's side (`narration-clean-text.ts`, the clean CLI adapters, the `server`
+  setting). Mac doctor found two real gaps — `ffmpeg` off the service PATH, RVC base
+  assets with no source — both queued to the Crucible agent as root fixes.
+- **21:30** 2.2, 2.3, 2.4 committed (`f6ef8d76`, `ea39bc58`, `3a98ff70`, `944d1f02`). Crucible:
+  service verb landed (`a838101`), recipes resolved (`1ec936d`), branch pushed; the WSL
+  server runs as a service with nothing resident. Foundry release prep done at `83d7b66`
+  (publishing is Owen's). In flight: the render-routing follow-up, the re-vendor, and the
+  Crucible agent's manifest defaults + denoise + rvc-base pull + service generator fix.
+- **22:20** Re-vendor done: `foundry-app/` at Foundry `83d7b66` (`afe10842`, 145/145 blobs
+  hash-verified), BookForge's own clean-text driver and CLI adapters stop speaking the
+  retired dialect (`992a2fbf`: `--server`/`--ollama`/`--keep-model` gone from the spawn
+  lines, refused by name in the CLI with the retiring commit; the `server` field of the
+  clean-text settings is gone; the on-disk `llmServer` key is read as a selector and
+  reported retired once). Found on the way: BookForge's mirror of Foundry's progress
+  parser had already drifted — hosted Simplify progress stuck at block one — fixed,
+  keeper 20/20. Two call-site pins moved for the Crucible seam (`8f3fd3d5`). Foundry's
+  vendored `job-queue.ts` still spells `--keep-model` behind a flag nothing sets (dead,
+  sealed subtree — reported to Foundry-pc-1). 2.5 (per-row `waitFor`) agent running.
+- **23:40** 2.5 landed (`e91d2a41`); `foundry-app/` re-vendored at Foundry `81fdc30` after
+  they removed the `--keep-model` residue (`a3ad3655`). Full keeper suite: 130 ran, 1 red —
+  `test-bookshelf-stream-teardown`, a real race (the session said "released" before its
+  snapshot directory was removed; lost under suite load, won alone). Fixed at the source
+  (`cd6ab8b3`: the release is awaitable). Crucible: manifest defaults (`835628e`) and the
+  service generator fix (`b40de27`) landed and are pushed; the WSL service was re-installed
+  from the fixed generator and answers `/v1/ping`.
+- **22:10** Owen finished streaming and gave me the card. The Mac is on v0.5.0 as a launchd
+  service, reachable from the PC. **The first real Crucible `tts` render found the real
+  gap**: narrator's vllm-omni arm needs `HIGGS_STACK`, `HIGGS_MAX_NUM_SEQS` and a launch
+  script (`serve_higgs_v3.sh` + the certified frames-7500 deploy profile) that lived only in
+  BookForge's `electron/scripts/higgs/`; Crucible set none of them. Fix in flight (Opus
+  agent): the launcher becomes narrator's own package data, Crucible states the three
+  variables (stack from the env spec, width from a `[serving]` table on each voice), the
+  narrator pin moves, the tts envs are reinstalled, then the live keeper runs again. Also
+  found: the regenerated rvc recipe had lost its PyTorch index line (`fa19e99`).
+- **22:40** Owen reframed standalone Foundry: Crucible optional there (the speed tier and where
+  WSL lives), Ollama through the one door as the beginner's default, the Ollama wizard stays,
+  Foundry's own vLLM launcher is deleted for good; hosted Foundry inside BookForge stays
+  Crucible-only. The 1.3.0 release prep is void. Foundry's three questions answered with
+  evidence (dots.ocr runs under llama.cpp with a GGUF+mmproj pair, not under Ollama; one
+  catalog of record = Crucible manifests with a `[local]` block; eviction mid-run = an
+  explicit model lease, ruling owed).
+- **22:57 THE FOUNDRY WIRE IS PROVEN LIVE.** `qwen3.5-9b` made resident on `local`; Foundry's
+  `clean-text` ran against it — 734 blocks, 265 changed, 78.5 s, EPUB written. One Crucible
+  fix on the way (`a97ef70`): the OpenAI door is also mounted at `/openai/v1/...`, where
+  every OpenAI client composes it; the base is `<server>/openai`. 2.6 (`0088a296`) built the
+  BookForge side with a version-floor refusal for that same gap — being corrected to the
+  `/openai` base now; the one remaining hosted gap is Foundry's own: the vendored engine
+  spawn takes no per-run environment, so the hosted job-queue path cannot carry a per-act
+  header map until Foundry's `engine.ts` does. dots-ocr weights pulled on the PC (6.1 GB).
+- **23:30** Owen handed the 3090 Ti to the fine-tuning agent (told "GPU free"; nothing of
+  mine resident). **The live TTS keeper is deferred to the next free window** — the launcher
+  fix lands without it and is verified only by narrator's and Crucible's own tests until
+  then. Cleared on Owen's word: Ollama `cogito:8b/14b/32b`, the duplicate `qwen3.8:27b` tag
+  (kept `27b-24g`), the 4-bit `qwen3.5:9b` (kept q8 and bf16); Foundry's ocr and footnote
+  adapters and the orphan `foundry-4b-f16.gguf` base (~60 GB freed). Foundry landed its
+  Package A (`374f18c`, engine `--server openai|ollama`) and B (`aa1c382`, local page reader
+  = llama-server + dots GGUF); C (registry/slots/dispatch) in progress; one re-vendor after C.
+- **23:45** Owen to bed: "power through until everything is done"; linger enabled; lease
+  ruled go; the Mac's card offered for the TTS proof. Mac service re-recorded with
+  Homebrew's PATH (ffmpeg refusal by name was the finding) and restarted; the live TTS
+  keeper is running against the Mac in remote mode. Five Opus agents in flight: the
+  narrator launcher (Crucible half), the model lease (server + SDK), the `[local]` block +
+  `foundry-lineup.json` generator, `@crucible/bootstrap`, and BookForge streaming through a
+  Crucible session. Foundry landed A and B; C and E in progress.
+- **00:05** The launcher landed: narrator owns `serve_higgs_v3.sh` + the certified profile as
+  package data (BookForge `0eeb0267`, narrator 1449 tests), Crucible states `HIGGS_STACK`
+  (from the env spec), `HIGGS_ENV`, `HIGGS_MAX_NUM_SEQS` (from a `[voice.serving]` table)
+  (`a7ab9af`, 894 tests); the tts envs were rebuilt on the new pin on both machines;
+  both doctors healthy. Two more real defects behind it, agent assigned: Crucible's
+  `load` sends `modelDir`, which narrator's served arm refuses by name, and narrator
+  resolves the voice in a `NARRATOR_HIGGS_VOICES` document Crucible never wrote. Rulings
+  owed: SGLang-Omni vs vllm-omni is named seven ways in this repo and the recipe installs
+  vllm-omni; what Orpheus's narrator arm needs on cuda-linux (a whole `ORPHEUS_*` set).
+- **00:20** Live keeper against the Mac (Owen offered its card): ping, voices, info, "nothing
+  resident" all pass; the render fails at LOAD — narrator's MLX arm refuses the per-load
+  `modelDir` exactly as the served arm does. Same defect, both arms; the load-contract agent
+  has the live text. Two Mac service restarts tonight were for the same stale-process class:
+  an editable install changed on disk under a running server (a doctor and a service verb
+  that compare the running version to the checkout would name it — item for Tier 3).
+- **01:20** The Higgs load contract landed (crucible `2d6b1f5`, 1009 tests): Crucible writes
+  `~/.crucible/narrator-higgs-voices.json` from the voice manifest + pulled dir at every
+  load and hands narrator `NARRATOR_HIGGS_VOICES`; the load message is the voice's name,
+  no `modelDir`, on both arms; narrator unchanged. Both servers restarted on it (with the
+  lease). Keeper rerunning on the Mac. Rulings owed: `higgs-default` (a token voice) on
+  cuda-linux is refused until narrator can name the base dir for a `default` voice —
+  Mac-only until then; zeroshot at the load door; take>0 needs a per-request sampling
+  channel. Also landed: the lease (`c5eb431`/`aa2a24f`), `[local]` + lineup (`4e17842`,
+  `9eb91bc`, `7e63905`), `@crucible/bootstrap` (`ab6d7bd` + `3550763` + `6b15c6d`);
+  BookForge streaming via a Crucible session (`f079b456`, `323803fb`).
+- **01:35 THE FIRST REAL HIGGS RENDER THROUGH CRUCIBLE PASSED — on the Mac, 8/8.** The live
+  keeper in remote mode against `crucible@owens-mac-studio` (v0.5.0+ at `2d6b1f5`, narrator
+  `0eeb0267`, deathstalker): voice loaded with `warming` lines, render ended `done`, a `chunk`
+  event per row with its own seconds/chars/chars-per-sec (`capped` null, as PHASE3 says),
+  both FLACs real and mono at 24 kHz naming the merge, a second render reused the resident
+  voice without restarting narrator, `unload-voice` freed it. No memory measurement (remote
+  mode cannot watch the card); the PC's measured peak still waits for a free 3090 Ti.
+- **01:50 BookForge's own render seam reached the Mac too** (`bookforge-tts --tts --engine
+  higgs --voice deathstalker --crucible-server mac`): the chunk rendered on the Mac's
+  Crucible (its engine log shows the 00:49 start). Two defects behind it, both assigned:
+  the new coverage-align step re-decided its venue (top-ranked = `local`) instead of
+  following the run's, and loaded the qwen3-aligner on the fine-tune's card for ~1 min —
+  unloaded, Finetuning-1 told; and a Crucible-bound run still preps its session inside
+  WSL and then copies it to `Z:ookforge	mp`, a share WSL cannot mount (the known CLI
+  defect) — a Crucible-venue run must live on a native path from the start.
+- **02:00 Foundry drove the lease end to end on the Mac** (their hand-run of the app's
+  dispatch against `2d6b1f5`): capability → load-model → lease (clean, ttl 120) → a second
+  lease and a load-model both `409 model_leased` naming the holder → the built engine's
+  `clean-text` through `<server>/openai` with the header map, 29 blocks in 99 s → heartbeat
+  → release → a second release `404 unknown_lease (released)` → `activity.lease` null. The
+  Mac's `qwen3.5-9b` is resident now (their run left it, by design). Foundry merged G (one
+  queue lane per compute slot) at `f7ad5a9`; E still running.
