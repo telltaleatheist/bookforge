@@ -6,14 +6,16 @@ import { FormsModule } from '@angular/forms';
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
-import type {
-  CrucibleModuleProgress,
-  CrucibleProbeResult,
-} from '@shared/crucible/settings-wire';
+import type { CrucibleProbeResult } from '@shared/crucible/settings-wire';
+import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
+import { coordinationWords } from './crucible-words';
 import type {
   CrucibleHostRefusal,
   CrucibleInstallPlan,
 } from '@shared/crucible/install-wire';
+
+/** The reserved name of the engine on this machine. Never a registry entry. */
+const LOCAL_ENGINE = 'local';
 
 /**
  * HOW A PERSON GETS A CRUCIBLE — and, since PHASE13, how little of that is
@@ -47,16 +49,18 @@ import type {
  * `hostable`): the renderer draws a verdict rather than making a second one out
  * of the same nulls.
  *
- * ── "SET UP FOR BOOKFORGE" ─────────────────────────────────────────────────
+ * ── THERE IS NO "SET UP FOR BOOKFORGE" BUTTON ─────────────────────
  *
- * §5.4. One button posts `shared/crucible/bookforge.module.json` — the
- * generated, vendored statement of what this app needs — and the task's own
- * events are drawn in place. A module is idempotent (installed entries are
- * SKIPPED), so it is safe to press on a stocked server and is the honest way to
- * find out whether one is. A `server_busy` held by a LEASE shows the HOLDER,
- * verbatim, because that means another app on that machine is mid-run: an
- * operator shown a dead button with no name concludes the button is broken and
- * presses it until it is.
+ * It was deleted on 2026-09-14 (crucible `docs/PHASE14-ENVPACKS.md` §4a, Owen:
+ * *"if its present, bookforge should coordinate with the installed crucible to
+ * make sure it has what it needs"*). Presence of the app is the request, so
+ * what these faces draw is the coordination STATE — checking, preparing,
+ * waiting with the holder named, or the named refusal — and the only button on
+ * the wizard's connected face is the wizard's own Next.
+ *
+ * A `server_busy` held by a LEASE shows the HOLDER, verbatim, because that
+ * means another app on that machine is mid-run: somebody shown a dead screen
+ * with no name concludes the app is broken.
  *
  * It owns NO STATE beyond what is being typed and what the running task has
  * said. Every door ends in a call to `electron.crucible.*`, main answers, and
@@ -82,26 +86,50 @@ import type {
                 </p>
                 <p class="hint">
                   Read from <code>{{ p.host.local.configPath }}</code>{{ p.host.local.via === 'wsl' ? ' inside WSL' : '' }}
-                  every time this app asks, so no copy of its token is kept here. It is already the
-                  reserved server <code>local</code>; there is nothing to add.
+                  every time this app asks, so no copy of its key is kept here. It is the engine
+                  BookForge will use, and BookForge has already made sure it has what it needs.
                 </p>
-                <div class="actions">
-                  <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="openUi('local')">
-                    Open Crucible
-                  </desktop-button>
-                  <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="setUpFor('local')">
-                    {{ busy() === 'module' ? 'Setting up…' : 'Set up for BookForge' }}
-                  </desktop-button>
-                </div>
-                <ng-container [ngTemplateOutlet]="moduleState" />
+                <!--
+                  NOTHING TO PRESS. A local engine is not a decision (the brief
+                  of 2026-09-14 §4, crucible PHASE14 §4a): it resolved, it is
+                  already the one BookForge uses, and BookForge has already
+                  told it what it needs. The only button on this step is Next,
+                  which belongs to the wizard.
+                -->
+                <ng-container [ngTemplateOutlet]="coordinationState" />
               </div>
             }
           } @else if (face() === 'install') {
             <!-- ── This machine can host one (or nothing says it cannot) ── -->
+            <!--
+              ONE SENTENCE, NOT A COMMAND LIST (the brief §4). A person meeting
+              this app for the first time is being asked WHICH ENGINE, and a
+              wizard that answered with eight shell commands has handed the
+              question back. The printed sequence still exists for a terminal
+              person — behind "Show the manual steps" in Settings → Crucible
+              Servers — and the driven installer arrives with the next release.
+            -->
             <div class="panel">
               <p class="machine">{{ p.machine }}</p>
               <p class="hint">{{ p.hostableWhy }}</p>
-              <ng-container [ngTemplateOutlet]="installBody" [ngTemplateOutletContext]="{ p: p }" />
+              <div class="driven">
+                <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
+                  {{ busy() === 'install' ? 'Installing…' : 'Set one up on this machine' }}
+                </desktop-button>
+                @if (!p.driven) {
+                  <span class="driven-why">
+                    BookForge can set one up for you here, and that installer arrives with the next
+                    Crucible release. Until then, connect to an engine on another machine below —
+                    or follow the manual steps in Settings → Crucible Servers.
+                  </span>
+                }
+              </div>
+              @if (installRefusal(); as r) {
+                <p class="bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
+                @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
+              }
+              <ng-container [ngTemplateOutlet]="coordinationState" />
+              <ng-container [ngTemplateOutlet]="connectForm" />
             </div>
           } @else {
             <!-- ── Not hostable: connect only, and say why by name ──────── -->
@@ -110,7 +138,7 @@ import type {
               <p class="bad">{{ p.hostableWhy }}</p>
               <p class="hint">
                 That is a state, not a fault. A laptop that renders on another machine is a laptop
-                with one remote server, and the client speaks HTTP either way.
+                with one engine somewhere else, and BookForge reaches it the same way either way.
               </p>
               <ng-container [ngTemplateOutlet]="connectForm" />
             </div>
@@ -126,7 +154,7 @@ import type {
       <div class="doors">
         <!-- ── 1. Connect to one elsewhere ─────────────────────────────── -->
         <button class="door" type="button" (click)="toggle('connect')">
-          <span class="door-name">Connect to a Crucible on another machine</span>
+          <span class="door-name">Connect to an engine on another machine</span>
           <span class="door-note">
             One already running somewhere else — another desk, another room. Nothing is installed here.
           </span>
@@ -139,9 +167,9 @@ import type {
 
         <!-- ── 2. Use the one on this machine ──────────────────────────── -->
         <button class="door" type="button" (click)="toggle('local')">
-          <span class="door-name">Use the Crucible on this machine</span>
+          <span class="door-name">Use the engine on this machine</span>
           <span class="door-note">
-            Read from its own config.toml — name, address and token. Nothing to paste.
+            Read from its own settings — name, address and key. Nothing to paste.
           </span>
         </button>
         @if (open() === 'local') {
@@ -151,9 +179,9 @@ import type {
                 <p class="ok"><strong>{{ l.serverName }}</strong> at {{ l.url }}</p>
                 <p class="hint">
                   Read from <code>{{ l.configPath }}</code>{{ l.via === 'wsl' ? ' inside WSL' : '' }}
-                  every time this app asks — no copy is kept here, so
-                  <code>crucible init --force</code> needs no action at all. It is already the
-                  reserved server <code>local</code> in the list above; there is nothing to add.
+                  every time this app asks — no copy of its key is kept here. It is already the
+                  engine called <code>local</code> in the list above; there is nothing to add,
+                  and BookForge has already made sure it has what it needs.
                 </p>
                 <!--
                   PHASE13 §5.2: once the reserved name 'local' resolves, this door is
@@ -162,10 +190,7 @@ import type {
                 -->
                 <div class="actions">
                   <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="openUi('local')">
-                    Open Crucible
-                  </desktop-button>
-                  <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="setUpFor('local')">
-                    {{ busy() === 'module' ? 'Setting up…' : 'Set up for BookForge' }}
+                    Open engine console
                   </desktop-button>
                   <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="testLocal()">
                     {{ busy() === 'local' ? 'Testing…' : 'Test it' }}
@@ -181,12 +206,12 @@ import type {
                     <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
                   }
                 }
-                <ng-container [ngTemplateOutlet]="moduleState" />
+                <ng-container [ngTemplateOutlet]="coordinationState" />
               } @else {
                 <p class="bad"><span class="code">{{ l.code }}</span> {{ l.reason }}</p>
                 <p class="hint">
-                  That is a state, not a fault — a machine that only ever renders on another one has
-                  no local Crucible and does not need one. The third door installs one here.
+                  That is a state, not a fault — a machine that only ever renders on another one
+                  has no engine of its own and does not need one. The third door sets one up here.
                 </p>
               }
             } @else {
@@ -197,10 +222,10 @@ import type {
 
         <!-- ── 3. Get one on this machine ──────────────────────────────── -->
         <button class="door" type="button" (click)="toggle('install')">
-          <span class="door-name">Install a Crucible on this machine</span>
+          <span class="door-name">Set an engine up on this machine</span>
           <span class="door-note">
-            The pre-server minute: a guest, a Python, the wheel, the service. Then its own page
-            does the rest.
+            The first minute, the part no page can do for itself. Then its own console does the
+            rest.
           </span>
         </button>
         @if (open() === 'install') {
@@ -228,7 +253,7 @@ import type {
         it, and its operator page has a copy button beside it.
       -->
       <label class="field">
-        <span class="flabel">Paste from Crucible</span>
+        <span class="flabel">Paste a connect code</span>
         <input
           type="text"
           placeholder="crucible://name@host:port/#token"
@@ -242,8 +267,8 @@ import type {
           {{ busy() === 'paste' ? 'Reading…' : 'Read it' }}
         </desktop-button>
         <span class="hint">
-          One line from that server's page (or <code>crucible token --url</code>) fills all three
-          below. Nothing is saved until you press Add.
+          One connect code from that machine's engine console fills all three below. Nothing is
+          saved until you press Add.
         </span>
       </div>
       @if (pairingRefusal(); as r) {
@@ -259,8 +284,8 @@ import type {
         <input type="text" placeholder="http://192.168.68.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
       </label>
       <label class="field">
-        <span class="flabel">Token</span>
-        <input type="password" autocomplete="off" placeholder="Bearer token" [(ngModel)]="draftToken" name="cruDoorToken" />
+        <span class="flabel">Access key</span>
+        <input type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" name="cruDoorToken" />
       </label>
       <div class="actions">
         <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="test()">
@@ -269,7 +294,9 @@ import type {
         <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="add()">
           {{ busy() === 'add' ? 'Adding…' : 'Add' }}
         </desktop-button>
-        <span class="hint">Test writes nothing, so a wrong address leaves nothing behind.</span>
+        <span class="hint">Test writes nothing, so a wrong address leaves nothing behind. Once it
+          is added, BookForge makes sure that engine has what it needs — there is nothing else to
+          press.</span>
       </div>
       @if (probe(); as p) {
         @if (p.outcome === 'ok') {
@@ -307,7 +334,7 @@ import type {
       -->
       <div class="driven">
         <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
-          {{ busy() === 'install' ? 'Installing…' : 'Install it for me' }}
+          {{ busy() === 'install' ? 'Installing…' : 'Set one up for me' }}
         </desktop-button>
         @if (!p.driven) { <span class="driven-why">{{ p.drivenWhy }}</span> }
       </div>
@@ -315,16 +342,30 @@ import type {
         <p class="bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
         @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
       }
-      <ng-container [ngTemplateOutlet]="moduleState" />
+      <ng-container [ngTemplateOutlet]="coordinationState" />
 
+      <!--
+        THE PRINTED SEQUENCE IS FOLDED AWAY (the brief §4). It is deleted from
+        the WIZARD outright and kept here, in Settings, behind one disclosure:
+        a terminal person setting a machine up by hand needs every line of it,
+        and everybody else needs to not be shown eight shell commands as the
+        answer to “where should the work happen”.
+      -->
+      <button class="door manual" type="button" (click)="manual.set(!manual())">
+        <span class="door-name">{{ manual() ? 'Hide the manual steps' : 'Show the manual steps' }}</span>
+        <span class="door-note">
+          For setting one up in a terminal yourself. Not needed if you use the button above, or
+          connect to an engine on another machine.
+        </span>
+      </button>
+      @if (manual()) {
       <h5 class="group">Run these, in order</h5>
       <p class="hint">
         {{ p.platform === 'win32'
           ? 'Each line runs inside the WSL guest. Crucible’s backend is Linux — Windows is never one.'
           : 'Each line runs in a terminal on this machine.' }}
-        This is only the pre-server minute — a guest, a Python, the wheel, the service. The job
-        environments and the weights are not here: they are one press of “Set up for BookForge”
-        once the server answers.
+        This is only the first minute — a guest, a Python, the wheel, the service. Nothing that
+        an engine RUNS is here: BookForge installs what it needs the moment it connects to one.
       </p>
       <ol class="steps">
         @for (s of p.steps; track s.title) {
@@ -361,35 +402,33 @@ import type {
       }
 
       <p class="hint">The argument behind all of it: <code>{{ p.readme }}</code></p>
+      }
     </ng-template>
 
-    <ng-template #moduleState>
-      @if (moduleError(); as e) { <p class="bad">{{ e }}</p> }
-      @if (moduleProgress(); as m) {
+    <!--
+      WHAT BOOKFORGE IS DOING WITH THIS ENGINE, and nothing to press
+      (crucible docs/PHASE14-ENVPACKS.md §4a). Every word of it comes from
+      crucible-words.ts, which is the only file in the app that turns a job
+      type into “the narration engine”.
+    -->
+    <ng-template #coordinationState>
+      @if (setupError(); as e) { <p class="bad">{{ e }}</p> }
+      @if (coordination(); as c) {
         <div class="module">
-          <p class="hint">
-            <strong>{{ m.state === 'running' ? 'Setting up' : m.state }}</strong>
-            @if (m.step) { · step {{ m.step.index }} of {{ m.step.total }}: {{ m.step.name }} }
-          </p>
-          @if (m.bytes) {
-            <p class="detail">
-              {{ m.bytes.file }} — {{ (m.bytes.done / 1048576).toFixed(0) }} MB{{ m.bytes.total ? ' of ' + (m.bytes.total / 1048576).toFixed(0) + ' MB' : '' }}
-            </p>
-          }
-          @if (m.line) { <pre class="cmd">{{ m.line }}</pre> }
-          @if (m.skipped) { <p class="detail">already here — {{ m.skipped }}</p> }
-          @if (m.jobTypes) { <p class="ok">now serving {{ m.jobTypes.join(', ') }}</p> }
-          @if (m.error) {
-            <p class="bad"><span class="code">{{ m.error.code }}</span> {{ m.error.message }}</p>
-            <p class="detail">
-              Every step that finished stays done — the environments and the weights are on disk.
-              Pressing again skips everything that is already true.
-            </p>
-          }
-          @if (m.state === 'running' && m.taskId) {
-            <div class="actions">
-              <desktop-button variant="ghost" size="sm" (click)="cancelSetUp(m)">Cancel</desktop-button>
-            </div>
+          <p class="hint"><strong>{{ words(c) }}</strong></p>
+          @if (c.phase === 'preparing') {
+            @if (c.progress.line) { <pre class="cmd">{{ c.progress.line }}</pre> }
+            @if (c.progress.state === 'failed') {
+              <p class="detail">
+                Everything that finished is still on that machine. BookForge picks up where it
+                stopped the next time it reaches this engine.
+              </p>
+            }
+            @if (c.progress.state === 'running' && c.progress.taskId) {
+              <div class="actions">
+                <desktop-button variant="ghost" size="sm" (click)="cancelSetUp(c.server, c.progress.taskId)">Stop</desktop-button>
+              </div>
+            }
           }
         </div>
       }
@@ -447,6 +486,7 @@ import type {
     }
     .driven { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
     .driven-why { font-size: 12px; line-height: 1.45; color: var(--text-secondary); flex: 1; min-width: 240px; }
+    .door.manual { margin-top: 4px; }
     .refusals { display: flex; flex-direction: column; gap: 8px; }
     .refusal { display: flex; flex-direction: column; gap: 2px; }
     .module {
@@ -475,8 +515,14 @@ export class CrucibleDoorsComponent {
   readonly changed = output<void>();
 
   readonly open = signal<'connect' | 'local' | 'install' | null>(null);
-  readonly busy = signal<'test' | 'add' | 'local' | 'install' | 'paste' | 'module' | null>(null);
+  readonly busy = signal<'test' | 'add' | 'local' | 'install' | 'paste' | null>(null);
   readonly error = signal<string | null>(null);
+  /**
+   * Is the printed command sequence unfolded? Settings only, and folded by
+   * default (the brief §4): it is the terminal person's document, and the
+   * wizard does not carry it at all.
+   */
+  readonly manual = signal(false);
 
   draftPaste = '';
   draftName = '';
@@ -489,8 +535,17 @@ export class CrucibleDoorsComponent {
   readonly plan = signal<CrucibleInstallPlan | null>(null);
   readonly installRefusal = signal<CrucibleHostRefusal | null>(null);
 
-  readonly moduleProgress = signal<CrucibleModuleProgress | null>(null);
-  readonly moduleError = signal<string | null>(null);
+  /**
+   * WHERE COORDINATION WITH THIS MACHINE'S ENGINE STANDS.
+   *
+   * Only ever `local` here: both faces that draw it are about this machine's
+   * own engine, and a remote's state belongs to its row in the servers panel.
+   */
+  readonly coordination = signal<CrucibleCoordinationState | null>(null);
+  /** A stop that refused. Its own line, because it is about the STOP. */
+  readonly setupError = signal<string | null>(null);
+  /** Has the connected face already asked? One ask per mount, not one per paint. */
+  private coordinateAsked = false;
 
   /** The local half of the measured facts — door 2's whole answer. */
   readonly localFacts = computed(() => this.plan()?.host.local ?? null);
@@ -521,8 +576,24 @@ export class CrucibleDoorsComponent {
       }
     });
 
-    const stop = this.electron.crucible.onModuleProgress((progress) => {
-      this.moduleProgress.set(progress);
+    /*
+     * THE WIZARD'S STEP LANDING ON "CONNECTED" IS A CONNECT (crucible
+     * PHASE14 §4a), so it coordinates — and it is the same run app start
+     * already began, because `coordinateServer` joins one in flight rather
+     * than starting a second. That is why this can be unconditional: the
+     * alternative, a screen deciding whether coordination is needed, is a
+     * second opinion about something main already owns (R1).
+     */
+    effect(() => {
+      if (this.face() === 'connected' && !this.coordinateAsked) {
+        this.coordinateAsked = true;
+        void this.coordinateLocal();
+      }
+    });
+
+    void this.readCoordination();
+    const stop = this.electron.crucible.onCoordination((state) => {
+      if (state.server === LOCAL_ENGINE) this.coordination.set(state);
     });
     this.destroyRef.onDestroy(stop);
   }
@@ -683,35 +754,43 @@ export class CrucibleDoorsComponent {
     }
   }
 
-  /**
-   * Post `shared/crucible/bookforge.module.json` and watch the task (§5.4).
-   *
-   * Idempotent by the server's design, so this is safe on a stocked server and
-   * is the honest way to find out whether one is.
-   */
-  async setUpFor(name: string): Promise<void> {
-    this.busy.set('module');
-    this.moduleError.set(null);
-    this.moduleProgress.set(null);
-    try {
-      const res = await this.electron.crucible.setUpModule(name);
-      if (!res.success) {
-        this.moduleError.set(
-          res.error ?? 'The setup task refused and said nothing about why.');
-        return;
-      }
-      if (res.data) this.moduleProgress.set(res.data);
-      this.changed.emit();
-    } finally {
-      this.busy.set(null);
-    }
+  /** The one sentence about coordination. Every word of it is in one file. */
+  words(state: CrucibleCoordinationState): string {
+    return coordinationWords(state);
   }
 
-  async cancelSetUp(progress: CrucibleModuleProgress): Promise<void> {
-    if (progress.taskId === null) return;
-    const res = await this.electron.crucible.cancelSetUp(progress.server, progress.taskId);
+  /** Whatever main already knows about this machine's engine. */
+  private async readCoordination(): Promise<void> {
+    const res = await this.electron.crucible.coordination();
+    if (!res.success || !res.data) return;
+    const local = res.data[LOCAL_ENGINE];
+    if (local !== undefined) this.coordination.set(local);
+  }
+
+  /**
+   * Make sure this machine's engine has what BookForge needs.
+   *
+   * NOT A BUTTON and never called by one: it is what "BookForge found an
+   * engine" means. It joins the run app start began rather than starting a
+   * second one, so calling it on arrival costs a promise and nothing else.
+   */
+  private async coordinateLocal(): Promise<void> {
+    const res = await this.electron.crucible.coordinate(LOCAL_ENGINE);
     if (!res.success) {
-      this.moduleError.set(res.error ?? 'The cancel refused and said nothing about why.');
+      this.setupError.set(res.error
+        ?? 'BookForge could not tell this machine\u2019s engine what it needs, and nothing said why.');
+      return;
+    }
+    if (res.data) this.coordination.set(res.data);
+    this.changed.emit();
+  }
+
+  /** Stop the work this engine is doing for BookForge. */
+  async cancelSetUp(name: string, taskId: string | null): Promise<void> {
+    if (taskId === null) return;
+    const res = await this.electron.crucible.cancelSetUp(name, taskId);
+    if (!res.success) {
+      this.setupError.set(res.error ?? 'Stopping that refused and said nothing about why.');
     }
   }
 
@@ -738,7 +817,11 @@ export class CrucibleDoorsComponent {
         this.changed.emit();
         await this.loadPlan();
         this.busy.set(null);
-        await this.setUpFor('local');
+        // ROUTED THROUGH THE ONE FUNCTION (the brief §1). A driven install ends
+        // with an engine that answers and holds nothing, and what stocks it is
+        // the same coordination every other connect uses — not a second path
+        // that only this button knows about.
+        await this.coordinateLocal();
         return;
       }
       if (res.refusal) {

@@ -8,12 +8,16 @@ import { CrucibleDoorsComponent } from './crucible-doors.component';
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
-  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   RankedServerRow,
   WaitForDefault,
 } from '@shared/crucible/settings-wire';
+import type {
+  CrucibleCoordinationMap,
+  CrucibleCoordinationState,
+} from '@shared/crucible/coordinate-wire';
+import { coordinationWords } from './crucible-words';
 
 /** The reserved name for the server on this machine. Never a registry entry. */
 const LOCAL = 'local';
@@ -64,10 +68,17 @@ const LOCAL = 'local';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="cru">
+      <!--
+        THE FIRST MENTION, and the only one in this panel that spells the
+        product out. Everything below says "engine" (the brief of 2026-09-14,
+        §3): the code keeps its names, the copy stops using them.
+      -->
       <p class="cru-intro">
-        A Crucible is one inference server for every app on a machine: it runs models and returns
-        bytes. BookForge reaches the server on this machine and any you add here over HTTP —
-        the same code path either way.
+        A <strong>GPU engine (Crucible)</strong> is one piece of software that runs the models
+        every app on a machine needs — narration, transcription, text. BookForge uses the engine
+        on this machine and any you connect to below, over the network, the same way either way.
+        When it connects to one it makes sure that engine has what BookForge needs, without
+        asking you anything.
       </p>
 
       @if (loadError(); as err) {
@@ -76,7 +87,7 @@ const LOCAL = 'local';
 
       <!-- ── The server on this machine ─────────────────────────────────── -->
       <div class="cru-group-row">
-        <h4 class="cru-group">This machine</h4>
+        <h4 class="cru-group">The engine on this machine</h4>
         <!-- Re-read the config. The first wsl.exe call on a cold VM can fail
              (wsl_read_failed) while it boots, and the fix is to ask again. -->
         <desktop-button variant="ghost" size="sm" (click)="recheck()">Re-check</desktop-button>
@@ -91,7 +102,7 @@ const LOCAL = 'local';
               </div>
               <span class="cru-url">{{ v.local.url }}</span>
               <span class="cru-spacer"></span>
-              <desktop-button variant="ghost" size="sm" (click)="openUi(localName)">Open Crucible</desktop-button>
+              <desktop-button variant="ghost" size="sm" (click)="openUi(localName)">Open engine console</desktop-button>
             </div>
             <p class="cru-meta">
               Token {{ v.local.tokenMasked }}, read from
@@ -110,14 +121,16 @@ const LOCAL = 'local';
       }
 
       <!-- ── Rank, enablement, and the queue's default ──────────────────── -->
-      <h4 class="cru-group">Servers the queue may use</h4>
+      <h4 class="cru-group">Engines the queue may use</h4>
       <p class="cru-sub">
         Drag to set the order — the first one that is free gets the work. The order IS the
-        priority; there are no rank numbers. A newly added server starts at the bottom.
+        priority; there are no rank numbers. A newly connected engine starts at the bottom.
+        Switching one off is how you say “not that one”: BookForge then asks it for nothing at
+        all.
       </p>
 
       @if (ranked().length === 0) {
-        <p class="cru-meta">No Crucible server yet. Add one below.</p>
+        <p class="cru-meta">No engine yet. Connect to one below.</p>
       }
 
       @for (row of ranked(); track row.name) {
@@ -154,17 +167,12 @@ const LOCAL = 'local';
             -->
             <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Open</desktop-button>
             <!--
-              SET UP FOR BOOKFORGE — §5.4. Posts the vendored module: the ONE
-              place this app states what it needs from a server. Idempotent, so
-              it is safe on a stocked server and is the honest way to find out
-              whether one is.
+              THERE IS NO "SET UP FOR BOOKFORGE" BUTTON — crucible
+              docs/PHASE14-ENVPACKS.md §4a. Presence of the app is the request:
+              BookForge coordinates with every engine it connects to, and this
+              row shows where that got to (below) instead of offering a thing
+              to press. What is drawn is the coordination state for this row.
             -->
-            <desktop-button
-              variant="ghost"
-              size="sm"
-              [disabled]="moduleBusy() === row.name"
-              (click)="setUpFor(row.name)"
-            >{{ moduleBusy() === row.name ? 'Setting up…' : 'Set up for BookForge' }}</desktop-button>
             <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="test(row.name)">
               {{ busy()[row.name] ? 'Testing…' : 'Test' }}
             </desktop-button>
@@ -182,7 +190,7 @@ const LOCAL = 'local';
                 <desktop-button variant="ghost" size="sm" (click)="confirmRemove.set(row.name)">Remove</desktop-button>
               }
             } @else {
-              <span class="cru-note">Not removable — it is this machine's config, not an entry.</span>
+              <span class="cru-note">Not removable — it is this machine's own engine.</span>
             }
           </div>
 
@@ -319,39 +327,35 @@ const LOCAL = 'local';
           }
 
           <!--
-            THE MODULE TASK, IN THE ROW THAT STARTED IT (§5.4). A server_busy
-            held by a LEASE lands in moduleError with the holder's own words —
-            "held by a lease: foundry, translate" — and NOT as a generic
-            failure: a lease means another app on that machine is mid-run,
-            which is the system working.
+            WHERE COORDINATION WITH THIS ENGINE GOT TO (PHASE14 §4a). One
+            sentence, composed in crucible-words.ts, which is the only file
+            in the app that turns a job type into "the narration engine". A
+            A server_busy held by a LEASE is drawn as a WAIT with the holder's
+            own words, never as a failure: a lease means another app on that
+            machine is mid-run, which is the system working.
           -->
-          @if (moduleProgress()[row.name]; as m) {
-            <div class="cru-module">
-              <p class="cru-meta">
-                <strong>{{ m.state === 'running' ? 'Setting up' : m.state }}</strong>
-                @if (m.step) { · step {{ m.step.index }} of {{ m.step.total }}: {{ m.step.name }} }
-              </p>
-              @if (m.bytes) {
-                <p class="cru-meta">
-                  {{ m.bytes.file }} — {{ (m.bytes.done / 1048576).toFixed(0) }} MB{{ m.bytes.total ? ' of ' + (m.bytes.total / 1048576).toFixed(0) + ' MB' : '' }}
-                </p>
-              }
-              @if (m.line) { <p class="cru-meta mono">{{ m.line }}</p> }
-              @if (m.skipped) { <p class="cru-meta">already here — {{ m.skipped }}</p> }
-              @if (m.jobTypes) { <p class="cru-facts">now serving {{ m.jobTypes.join(', ') }}</p> }
-              @if (m.error) {
-                <p class="cru-refusal"><span class="cru-badge bad">{{ m.error.code }}</span> {{ m.error.message }}</p>
-                <p class="cru-meta">
-                  Every step that finished stays done — the environments and the weights are on
-                  disk. Pressing again skips everything that is already true.
-                </p>
-              }
-              @if (m.state === 'running' && m.taskId) {
-                <desktop-button variant="ghost" size="sm" (click)="cancelSetUp(row.name, m.taskId)">Cancel</desktop-button>
+          @if (coordination()[row.name]; as c) {
+            <div class="cru-module" [class.bad]="c.phase === 'refused'">
+              <p class="cru-meta"><strong>{{ words(c) }}</strong></p>
+              @if (c.phase === 'preparing') {
+                @if (c.progress.line) { <p class="cru-meta mono">{{ c.progress.line }}</p> }
+                @if (c.progress.state === 'failed') {
+                  <p class="cru-meta">
+                    Everything that finished is still on that machine. BookForge picks up where
+                    it stopped the next time it reaches this engine.
+                  </p>
+                }
+                @if (c.progress.state === 'running' && c.progress.taskId) {
+                  <desktop-button
+                    variant="ghost"
+                    size="sm"
+                    (click)="cancelSetUp(row.name, c.progress.taskId)"
+                  >Stop</desktop-button>
+                }
               }
             </div>
           }
-          @if (moduleError()[row.name]; as err) {
+          @if (rowSetupError()[row.name]; as err) {
             <p class="cru-refusal">{{ err }}</p>
           }
 
@@ -382,7 +386,7 @@ const LOCAL = 'local';
         <span class="cru-waitfor-label">New jobs wait for:</span>
         <label class="cru-radio">
           <input type="radio" name="cru-waitfor" [checked]="waitFor() === 'top-ranked'" (change)="setWaitFor('top-ranked')" />
-          <span>the top-ranked server</span>
+          <span>the top-ranked engine</span>
         </label>
         <label class="cru-radio">
           <input type="radio" name="cru-waitfor" [checked]="waitFor() === 'any'" (change)="setWaitFor('any')" />
@@ -390,9 +394,9 @@ const LOCAL = 'local';
         </label>
       </div>
       <p class="cru-sub">
-        A row that names a server waits for that server, even when another is free — the machines
-        are not interchangeable. “Any” is for a night's work: each job takes the first server that
-        will have it, preferring this order. Rows already queued are never re-routed.
+        A book that names an engine waits for that engine, even when another is free — the
+        machines are not interchangeable. “Any” is for a night's work: each job takes the first
+        engine that will have it, preferring this order. Books already queued are never re-routed.
       </p>
 
       <!-- The dated stopgap, reachable on purpose and exactly once. -->
@@ -417,16 +421,16 @@ const LOCAL = 'local';
         screens teaching two different things about one registry. Connect to one
         elsewhere · use the one on this machine · install one here.
       -->
-      <h4 class="cru-group">Get a Crucible</h4>
+      <h4 class="cru-group">Get an engine</h4>
       <app-crucible-doors (changed)="recheck()"></app-crucible-doors>
 
       <!-- ── Add (the quick form, for a server whose details are to hand) ── -->
-      <h4 class="cru-group">Add a Crucible server</h4>
+      <h4 class="cru-group">Connect to an engine on another machine</h4>
       <p class="cru-sub">
-        Only servers on OTHER machines are added here. The one on this machine is read from its own
-        config. Open that server's page (or run <code>crucible token --url</code> on it) and copy
-        the one <code>crucible://</code> line it prints — it carries the name, the address and the
-        token, so nothing has to be transcribed.
+        Only engines on OTHER machines are added here — the one on this machine is read from its
+        own settings. On that machine, open its console and copy its <strong>connect code</strong>
+        (the <code>crucible token --url</code> line). It carries the name, the address and the
+        key, so nothing has to be typed out.
       </p>
       <!--
         PHASE13-OPERATOR.md §5.1. The line is parsed in MAIN by the SDK's
@@ -438,7 +442,7 @@ const LOCAL = 'local';
         <input
           class="cru-input wide"
           type="text"
-          placeholder="Paste from Crucible: crucible://name@host:port/#token"
+          placeholder="Paste a connect code: crucible://name@host:port/#token"
           [(ngModel)]="draftPaste"
           (paste)="onPaste()"
           (keyup.enter)="readPairing()" />
@@ -452,7 +456,7 @@ const LOCAL = 'local';
       <div class="cru-add">
         <input class="cru-input" type="text" placeholder="Name (e.g. mac)" [(ngModel)]="draftName" />
         <input class="cru-input wide" type="text" placeholder="http://host:7100" [(ngModel)]="draftUrl" />
-        <input class="cru-input" type="password" autocomplete="off" placeholder="Bearer token" [(ngModel)]="draftToken" />
+        <input class="cru-input" type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" />
         <desktop-button variant="ghost" size="sm" [disabled]="addBusy()" (click)="testAddress()">
           {{ addBusy() ? 'Testing…' : 'Test' }}
         </desktop-button>
@@ -532,6 +536,7 @@ const LOCAL = 'local';
       color: var(--text-primary); font-size: 13px;
     }
     .cru-input.wide { flex: 2; min-width: 200px; }
+    .cru-module.bad { border-color: var(--error, #d05a5a); }
     .cru-module {
       display: flex; flex-direction: column; gap: 3px; margin-top: 6px;
       padding: 8px 10px; border-radius: 6px;
@@ -578,13 +583,18 @@ export class CrucibleServersPanelComponent {
   readonly pairingRefusal = signal<{ code: string; detail: string } | null>(null);
 
   /**
-   * THE MODULE TASK, PER ROW. One server at a time — a Crucible runs ONE task
-   * at a time and a second POST is refused `task_busy`, so a screen that let
-   * two rows be pressed at once would be manufacturing that refusal itself.
+   * WHERE COORDINATION STANDS, PER SERVER (crucible PHASE14 §4a).
+   *
+   * Read once on arrival and kept level by the push, because coordination
+   * starts at APP START — before this panel exists — and a screen that only
+   * listened would draw nothing about a run that finished while it was closed.
+   * A server absent from the map is one nothing has asked yet, and the row
+   * draws no coordination line at all: "idle" as a printed state would be the
+   * panel announcing the absence of news.
    */
-  readonly moduleBusy = signal<string | null>(null);
-  readonly moduleProgress = signal<Record<string, CrucibleModuleProgress>>({});
-  readonly moduleError = signal<Record<string, string>>({});
+  readonly coordination = signal<CrucibleCoordinationMap>({});
+  /** A cancel that refused. Its own line, because it is about the STOP. */
+  readonly rowSetupError = signal<Record<string, string>>({});
 
   private readonly dragging = signal<string | null>(null);
   readonly dragName = this.dragging.asReadonly();
@@ -592,10 +602,11 @@ export class CrucibleServersPanelComponent {
   constructor() {
     void this.reload();
     void this.reloadWaitForCounts();
-    // Every frame of a running module task, filed under the server it names —
-    // so a row draws its own task and nobody else's.
-    const stop = this.electron.crucible.onModuleProgress((progress) => {
-      this.moduleProgress.update((all) => ({ ...all, [progress.server]: progress }));
+    void this.reloadCoordination();
+    // Every coordination state change, filed under the server it names — so a
+    // row draws its own engine's news and nobody else's.
+    const stop = this.electron.crucible.onCoordination((state) => {
+      this.coordination.update((all) => ({ ...all, [state.server]: state }));
     });
     inject(DestroyRef).onDestroy(stop);
   }
@@ -617,7 +628,7 @@ export class CrucibleServersPanelComponent {
     if (!res.success || !res.data) {
       // Never an empty list on failure: an empty list means "no servers", and
       // "we could not read the registry" is a different sentence with a fix.
-      this.loadError.set(res.error ?? 'The Crucible server list could not be read, and nothing said why.');
+      this.loadError.set(res.error ?? 'The list of engines could not be read, and nothing said why.');
       return;
     }
     this.loadError.set(null);
@@ -944,7 +955,7 @@ export class CrucibleServersPanelComponent {
     }
   }
 
-  // ── The operator door: Open, and Set up for BookForge ──────────────────
+  // ── The operator door: Open, and what coordination is doing ───────────
 
   /**
    * Open that server's own page (PHASE13 §5.3).
@@ -962,47 +973,36 @@ export class CrucibleServersPanelComponent {
     }
   }
 
-  /**
-   * Post `shared/crucible/bookforge.module.json` to this server and draw its
-   * task in this row (PHASE13 §5.4).
-   *
-   * ONE AT A TIME, because a Crucible runs one task at a time and a second POST
-   * is refused `task_busy` — a screen that let two rows be pressed together
-   * would be manufacturing that refusal itself.
-   */
-  async setUpFor(name: string): Promise<void> {
-    if (this.moduleBusy() !== null) return;
-    this.moduleBusy.set(name);
-    this.moduleError.update((all) => { const next = { ...all }; delete next[name]; return next; });
-    this.moduleProgress.update((all) => { const next = { ...all }; delete next[name]; return next; });
-    try {
-      const res = await this.electron.crucible.setUpModule(name);
-      if (!res.success) {
-        // A `server_busy` held by a LEASE arrives here with the holder's own
-        // words, and it is shown as it came: a lease means another app on that
-        // machine is mid-run, which is the system working.
-        this.moduleError.update((all) => ({
-          ...all,
-          [name]: res.error ?? `"${name}" refused the setup task and said nothing about why.`,
-        }));
-        return;
-      }
-      if (res.data) {
-        const done = res.data;
-        this.moduleProgress.update((all) => ({ ...all, [name]: done }));
-      }
-      await this.refreshServer(name);
-    } finally {
-      this.moduleBusy.set(null);
-    }
+  /** The row's one sentence about coordination. Every word of it is in one file. */
+  words(state: CrucibleCoordinationState): string {
+    return coordinationWords(state);
   }
 
+  /**
+   * The states main already holds, read once on arrival.
+   *
+   * There is nothing to press here and no run to start: coordination happens
+   * when BookForge CONNECTS to an engine (app start, a server added, a server
+   * switched back on), and this panel is a reader of it.
+   */
+  private async reloadCoordination(): Promise<void> {
+    const res = await this.electron.crucible.coordination();
+    if (!res.success || !res.data) {
+      // Never an empty map on failure: empty means "nothing has been asked
+      // yet", which is a different thing from "we could not ask main".
+      this.loadError.set(res.error ?? 'What each engine is preparing could not be read, and nothing said why.');
+      return;
+    }
+    this.coordination.set(res.data);
+  }
+
+  /** Stop a module task that is running on this engine. */
   async cancelSetUp(name: string, taskId: string): Promise<void> {
     const res = await this.electron.crucible.cancelSetUp(name, taskId);
     if (!res.success) {
-      this.moduleError.update((all) => ({
+      this.rowSetupError.update((all) => ({
         ...all,
-        [name]: res.error ?? `The cancel on "${name}" refused and said nothing about why.`,
+        [name]: res.error ?? `Stopping the work on "${name}" refused and said nothing about why.`,
       }));
     }
   }

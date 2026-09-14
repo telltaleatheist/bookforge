@@ -749,7 +749,8 @@ function toolPathText(raw: string | boolean | undefined): string {
 
                 Where each thing went: the environments and the weights are
                 installed from the SERVER's own page (Crucible Servers -> Open,
-                or the one press of "Set up for BookForge"). The WSL keys the
+                and BookForge installs what it needs the moment it connects to one).
+                The WSL keys the
                 Orpheus page owned are read only by that legacy spawn and die
                 with it. wslDistro did not move, because it never belonged to
                 Orpheus: its non-legacy reader is crucible/local.ts, which finds
