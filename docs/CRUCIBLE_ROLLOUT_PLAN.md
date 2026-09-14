@@ -120,8 +120,41 @@ apps' doors.
 
 ### D. Foundry seam
 
-- **D1. Hosted Foundry's text acts** refuse `hosted_engine_takes_no_per_run_env` until Foundry's
-  vendored `engine.ts` takes a per-run environment — Foundry's build; then **RE-VENDOR.**
+- **D1. Hosted Foundry's text acts — WORKED OUT, and what is left is a RE-VENDOR.** *(done
+  2026-09-14; BookForge `<D1>`.)* The refusal's premise had gone stale: foundry `f300fc6` gave
+  the vendored `runEngine` an `extraEnv` argument and the 2026-09-14 re-vendor brought it in at
+  `e6d5424`, while the guard went on quoting `env: process.env` for ten hours. Reading the
+  subtree rather than the comment found the REAL gap, one layer along: the seam BookForge calls
+  is `runJob(request, {parentStep, signal, onProgress})`, which carries no environment, and the
+  only thing that fills `extraEnv` is the vendored DISPATCHER's own placement
+  (`crucible-dispatch.ts`) — which hosted resolves credentials from a registry that is always
+  empty. So the act cannot be composed here and could not be composed there. **Foundry fixed
+  their half at `e096734`** (below); BookForge's half is built. What ships when `foundry-app/`
+  is re-vendored at or past that commit: the refusal, the reach value and the venue resolution
+  in `queue-steps/foundry-job.ts` all go, and the act's endpoint, model, header map, residency
+  and **lease** become the dispatcher's — a BookForge lease on that path would be refused as a
+  second lease (crucible allows one per server), which is the opposite of what the old note in
+  that file said. The refusal is now keyed to the VENDORED SUBTREE and read by
+  `tools/test-foundry-hosted-crucible-seam.js`, whose tripwire goes red ON the re-vendor with
+  the instructions on it; `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` is deleted, because a version
+  number standing in for a line of somebody else's code is how the stale guard survived.
+- **D-registry. HOSTED FOUNDRY READS BOOKFORGE'S SERVER REGISTRY** (Owen's ruling, 2026-09-14 —
+  one owner; Foundry's own registry is standalone-only). *Both halves built, neither wired:
+  BookForge `<D1>`, foundry `e096734`.* Their `crucibleServers()` asks `FoundryHost.servers()`
+  hosted and DERIVES the slot list from it, which closes a break nobody had pressed yet —
+  `computeSlots()` took the host's `slots?()` list while `placeOnSlot` looked the credential up
+  in a settings file that is empty hosted, so a row pinned to "mac" parked for ever on *"no
+  longer registered"*. Ours: `electron/crucible/host-registry.ts`, offered at the mount in
+  `main.ts`. Synchronous, because theirs is read while the queue page paints, so it answers from
+  a SNAPSHOT taken at named moments (app start, every write to the registry or the rank record,
+  and the Servers panel's read, which is where `local` is re-checked) — resolving `local` is a
+  `wsl.exe` spawn and one per paint is a stuttering window. A call before the first reading is
+  refused by name (`registry_snapshot_not_taken`) rather than answered with an empty list a
+  window cannot tell from *"this machine has no servers"*. Priority order, disabled entries kept
+  and marked, `local` present exactly when it resolves, a name that will not resolve omitted and
+  RECORDED. We never offered `slots?()`, so there is nothing to delete on this side; their
+  deletion of it lands with the re-vendor. **Owed: the re-vendor itself** (not built here), and
+  the seam gap it exposes — see §3.
 - **D2. Cloud slots** for translate/simplify on an underpowered machine — Foundry owns them
   (Owen's 01:40 ruling). BookForge's own AI providers already list models by key
   (`ai-bridge.ts:2148`, `2278`); the TILE rule (local floor OR an enabled cloud slot) is
@@ -309,6 +342,27 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - **`[local]` block on model manifests** (Q2): *built (crucible `4e17842`): `[local]` validated like every other table; `scripts/gen-foundry-lineup.py` → `foundry-lineup.json` (schema 1, CI `--check`); Foundry told.* Rulings owed: `qwen3.8:27b-24g` is Owen's local Modelfile, not a published tag (`ollama pull` fails elsewhere) — name the published parent `qwen3.8:27b` or publish the Modelfile; Foundry's page reader pins `ggml-org/dots.ocr-GGUF` with the Q8_0 projector while the lineup names anthonym21's F16 — one must move.
 - **Owen's tile rule (recorded 2026-09-13 22:40):** translate/simplify tiles do not light unless the machine can run at least the 9B; a job that would take a week on CPU is disabled, not allowed.
 - **For your eyes (Foundry, overnight):** Foundry-pc-1 merged a third engine door, `--server anthropic` (Messages API, for analyze's verdict, with rate-limit backoff), at foundry `12b065d`. An older note in my memory says Claude-API simplify/translate was "not authorized" — if that still stands, it is theirs to hear from you; nothing in BookForge uses it.
+- **From D1 (the hosted Foundry seam, 2026-09-14): the per-row venue does not cross `runJob`.**
+  BookForge resolves which Crucible a row waits for (`waitForResolved`, 2.5) and hands the job
+  to the hosted window — but the vendored side chooses the slot itself with
+  `waitForOfNewJob()`, which reads FOUNDRY's `newJobsWaitFor` and its derived slot list, and
+  `RunOptions` carries nothing to say otherwise. So after the re-vendor a hosted text act will
+  land on a machine the row did not name, and "one book, one GPU" (PHASE7-LANES §4.4) would be
+  two answers again. **Foundry's, and small: one field on `RunOptions` (or on the request) the
+  placement prefers over its own default.** Nothing here should paper over it — a second
+  scheduler deciding the machine is exactly what centralising the queue removed.
+- **From D1: who leases a hosted act.** Settled by reading, and written into
+  `queue-steps/foundry-job.ts`: the vendored dispatcher takes a model lease between making the
+  model resident and spawning the engine, Crucible allows one lease per server, so BookForge
+  must NOT lease around a hosted run. BookForge leases where BookForge spawns. Recorded here
+  because the file used to say the opposite and somebody would have built it.
+- **From D1: the two per-act model ids.** BookForge picks a Crucible model per act (Settings →
+  AI → Crucible, `<userData>/crucible-models.json`); the vendored dispatcher picks the SERVER's
+  own `selected` model for the capability class and says a configured id would be one that
+  server may have refused. Both are defensible and they are two owners of one fact (R1). Owen's
+  to rule once a hosted act actually runs: does BookForge's per-act choice travel, or is the
+  server's capability record the only picker, in which case BookForge's own text acts should
+  read it too?
 - Needs your hands, not a ruling: `sudo loginctl enable-linger telltale` in WSL (the service dies with your last shell otherwise); (Foundry v1.3.0 is VOID per Owen's 22:40 reframe — do not publish it); the first `wsl.exe` read against a cold VM returning −1 wants a reproduction.
 
 ## 4. State log
