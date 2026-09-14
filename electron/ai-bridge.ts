@@ -84,7 +84,7 @@ import {
 // The four text acts, and the narrowing every boundary needs. A static import:
 // `text-acts.ts` is pure constants and pure functions with no Electron and no
 // registry behind it, so naming it here costs nothing at load.
-import { isCrucibleTextAct, type CrucibleTextAct } from './crucible/text-acts.js';
+import { isCrucibleTextAct, isUpstreamModelId, type CrucibleTextAct } from './crucible/text-acts.js';
 import {
   recoverGapMarkers,
   extractStructuralMarkers,
@@ -3648,6 +3648,29 @@ export async function cleanupEpub(
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
+  /*
+   * AN UPSTREAM-ROUTED RUN TAKES NO LEASE, and the server would refuse one.
+   *
+   * crucible `docs/PHASE15-HOST.md` §3.4: a chat whose model is
+   * `<upstream>/<model>` is forwarded to that service on the operator's
+   * account — "no lease, no lane, the settlement untouched (nothing was on the
+   * card)" — and `POST /v1/models/{id}/lease` naming one is refused
+   * `lease_not_needed` with the sentence "an upstream model is never resident;
+   * send the chat". So taking one here would be this app asking for a refusal
+   * and then reporting it as a failure to clean a book.
+   *
+   * The discriminator is the contract's own and not a second opinion: a local
+   * model id never contains a slash, checked where ids are minted
+   * (`manifest_model_id_slash`). It is read through `isUpstreamModelId` so the
+   * queue's lane decision and this one cannot come to disagree about what an
+   * upstream model looks like.
+   */
+  if (isUpstreamModelId(named.model)) {
+    console.log(`[AI-CLEANUP] ${named.server} forwards ${named.act} to ${named.model} — no lease, `
+      + 'nothing of ours is on that card.');
+    return run();
+  }
+
   const { withCrucibleLease, CrucibleLeased } = await import('./crucible/lease.js');
   try {
     return await withCrucibleLease(

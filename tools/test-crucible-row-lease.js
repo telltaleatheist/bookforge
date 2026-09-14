@@ -683,5 +683,34 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
   engine.clearStepModules();
   engine.setCrucibleLeaseHost(null);
   try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* scratch */ }
-  summary('crucible row lease');
+await check('an UPSTREAM-routed act takes no lease — the server would refuse one', async () => {
+    /*
+     * crucible PHASE15 §3.4: a chat whose model is `<upstream>/<model>` is
+     * forwarded on the operator's account — "no lease, no lane, the settlement
+     * untouched (nothing was on the card)" — and a lease naming one is refused
+     * `lease_not_needed`, "an upstream model is never resident; send the
+     * chat". So a cleanup that routed upstream must not ask.
+     *
+     * Pinned two ways, because the behaviour lives in a door this suite does
+     * not drive: the DISCRIMINATOR is exercised for real (the contract's own
+     * slash rule, §1, enforced server-side at manifest load), and the GUARD is
+     * source-read at its one call site.
+     */
+    const acts = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-acts.js'));
+    assert.strictEqual(acts.isUpstreamModelId('anthropic/claude-sonnet-5'), true);
+    assert.strictEqual(acts.isUpstreamModelId('openai/gpt-5'), true);
+    assert.strictEqual(acts.isUpstreamModelId('ollama/qwen3.5:9b'), true);
+    assert.strictEqual(acts.isUpstreamModelId('qwen3.5-9b'), false,
+      'a local model id never contains a slash — that is the whole rule');
+    assert.strictEqual(acts.isUpstreamModelId('qwen3.8-27b-4bit'), false);
+
+    const bridge = fs.readFileSync(path.join(REPO, 'electron', 'ai-bridge.ts'), 'utf-8');
+    const guard = bridge.indexOf('isUpstreamModelId(named.model)');
+    const lease = bridge.indexOf('withCrucibleLease');
+    assert.ok(guard > 0, 'ai-bridge no longer asks whether the act was routed upstream');
+    assert.ok(guard < lease,
+      'the guard must come BEFORE the lease is taken; after it, the refusal has already happened');
+  });
+
+    summary('crucible row lease');
 })();

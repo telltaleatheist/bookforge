@@ -97,6 +97,26 @@ export function isCrucibleTextAct(value: unknown): value is CrucibleTextAct {
   return typeof value === 'string' && (CRUCIBLE_TEXT_ACTS as readonly string[]).includes(value);
 }
 
+/**
+ * IS THIS MODEL ID ONE THE ENGINE FORWARDS, rather than one it holds?
+ *
+ * crucible `docs/PHASE15-HOST.md` §1: an upstream model id is
+ * `<upstream>/<model>` — `anthropic/claude-sonnet-5` — and **"the slash is
+ * what tells a chat request apart from a local model id; a local model id
+ * never contains `/`"**. The server checks that at manifest load
+ * (`manifest_model_id_slash`), so the rule is enforced at the only place ids
+ * are minted and this is a reading of it rather than a second opinion.
+ *
+ * It is here, beside the act names, because it is the same kind of fact: a
+ * piece of the contract's vocabulary that several doors have to agree on. Two
+ * of them care right now — a run must not LEASE one of these (§3.4: a lease on
+ * an upstream model is refused `lease_not_needed`, "an upstream model is never
+ * resident; send the chat"), and the scheduler must not give it a GPU slot.
+ */
+export function isUpstreamModelId(model: string): boolean {
+  return model.includes('/');
+}
+
 /** The one variable, spelled once. crucible `docs/PHASE7-LANES.md` §8.0. */
 export const FOUNDRY_ENDPOINT_HEADERS_VAR = 'FOUNDRY_ENDPOINT_HEADERS';
 
