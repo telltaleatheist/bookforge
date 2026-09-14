@@ -188,7 +188,13 @@ export type PairingResult =
   | { ok: false; refusal: PairingRefusal };
 
 /**
- * One frame of a **Set up for BookForge** task, as the row draws it.
+ * One frame of the `module` task a server runs for BookForge.
+ *
+ * Nothing posts one on a button any more (crucible
+ * `docs/PHASE14-ENVPACKS.md` §4a): it is posted by
+ * `electron/crucible/coordinate.ts` when a READ of that server's catalog says
+ * something is missing, and this shape travels inside
+ * {@link CrucibleCoordinationState}'s `preparing`.
  *
  * Every field is a different kind of fact and they are separate for that
  * reason: `line` is the installer's own output and is NOT load-bearing

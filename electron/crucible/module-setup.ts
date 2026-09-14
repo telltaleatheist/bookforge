@@ -1,26 +1,36 @@
 /**
- * SET UP FOR BOOKFORGE — the one place this app says what it needs from a server.
+ * WHAT BOOKFORGE NEEDS FROM A SERVER, and the two acts that state it.
  *
- * PHASE13-OPERATOR.md §5.4. A server row's button posts
- * `shared/crucible/bookforge.module.json` as a `module` task and draws the
- * task's own events in the row. That file is GENERATED in the crucible repo
+ * PHASE13-OPERATOR.md §5.4 and PHASE14-ENVPACKS.md §4a.
+ * `shared/crucible/bookforge.module.json` is GENERATED in the crucible repo
  * from its manifests and vendored here byte for byte, which is what replaced
  * `BOOKFORGE_JOB_TYPES` and the printed pull list in `install.ts`: two
  * hand-kept restatements of ids the manifests already own, with nothing
  * comparing them (`tools/test-crucible-module-file.js` is now the thing that
  * does).
  *
+ * ── THERE IS NO "SET UP FOR BOOKFORGE" VERB HERE ANY MORE ──────────────────
+ *
+ * §4a deleted the button: presence of the app is the request. What posts this
+ * module is `coordinate.ts`, and only when a READ of `GET /v1/catalog` says
+ * something is missing. This file is left with the two mechanical halves —
+ * {@link postBookForgeModule} and {@link followModuleTask} — because
+ * coordination needs them separately: a task already running on a server is
+ * FOLLOWED rather than re-posted, and following it is the same frame
+ * translation as watching our own.
+ *
  * ── WHAT THIS MODULE IS, AND WHAT IT IS NOT ────────────────────────────────
  *
  * It is a SUBMIT and a READ. It installs nothing itself, spawns nothing, and
  * knows nothing about envs or weights — the server does all of it, one task at
  * a time, and reports `step` / `progress` / `skipped` / `done` / `failed` on
- * its own SSE stream. This file's whole job is to hand those frames to a row.
+ * its own SSE stream. This file's whole job is to hand those frames on.
  *
  * A module is IDEMPOTENT by the server's design: installed job types and
  * installed subjects inside a module are SKIPPED with a `skipped` event each
- * (§3.3). So the button is safe to press on a server that is already stocked,
- * and it is the honest way to find out whether one is.
+ * (§3.3). Idempotence is what makes a post safe when the catalog read and the
+ * post race; it is NOT a licence to post one on every connect, which is the
+ * thing §4a's amendment forbids.
  *
  * ── THE REFUSAL THAT MUST NOT READ AS A FAULT ──────────────────────────────
  *
@@ -28,12 +38,12 @@
  * open, the row shows the holder — *"held by foundry — translate,
  * qwen3.8-27b-4bit"* — and NOT a generic failure. A lease means another app on
  * the same machine is mid-run, which is the system working; an operator shown
- * a dead button with no name concludes the button is broken and presses it
- * until it is. The SDK's `CrucibleCardHeld` carries `fact` (`a job`, `a lease`,
- * `the claim`, `a chat`) and `who` (the server's own sentence), and both travel
- * to the row untranslated.
+ * a dead control with no name concludes it is broken. The SDK's
+ * `CrucibleCardHeld` carries `fact` (`a job`, `a lease`, `the claim`, `a chat`)
+ * and `who` (the server's own sentence), and both travel to the row
+ * untranslated.
  */
-import { CrucibleCardHeld, CrucibleRefused, type CrucibleModule } from '@crucible/client';
+import type { CrucibleModule } from '@crucible/client';
 
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
 import type { CrucibleModuleProgress } from '../../shared/crucible/settings-wire';
@@ -63,26 +73,38 @@ export function bookforgeModuleSubjects(): string[] {
 }
 
 /**
- * Post the module and stream the task to `onProgress`, one frame per event.
+ * Post the module. Answers the task id; THROWS every refusal untranslated.
+ *
+ * The refusal is not described here on purpose: `coordinate.ts` discriminates
+ * `server_busy` (a wait), `task_busy` (follow the other one) and a refusal
+ * about the request (fail once by name), and each of those is a different act.
+ * A function that flattened all three into an `Error` would force the caller to
+ * read the sentence back out of it.
+ */
+export async function postBookForgeModule(server: string): Promise<string> {
+  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  return client.submitTask({ type: 'module', module: BOOKFORGE_MODULE });
+}
+
+/**
+ * Follow a module task to its end, one frame per event.
  *
  * Resolves when the task reaches a terminal state, with the state it reached —
- * it does NOT throw on `failed`. A failed module is a thing the row draws (the
- * step that failed, the code, the message), not an exception the row has to
- * reconstruct one from. It DOES throw when the post itself is refused, because
- * then there is no task and nothing to draw.
+ * it does NOT throw on `failed`. A failed module is a thing a screen draws (the
+ * step that failed, the code, the message), not an exception it has to
+ * reconstruct one from.
+ *
+ * The task id may be ours or somebody else's: a Crucible runs one task at a
+ * time, so the module we would have posted and the task already running are
+ * competing for the same slot, and joining the stream of the one in progress is
+ * strictly better than queueing a second (PHASE13 §3.3 has no queue for tasks).
  */
-export async function setUpServerForBookForge(
+export async function followModuleTask(
   server: string,
+  taskId: string,
   onProgress: (progress: CrucibleModuleProgress) => void,
 ): Promise<CrucibleModuleProgress> {
   const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-
-  let taskId: string;
-  try {
-    taskId = await client.submitTask({ type: 'module', module: BOOKFORGE_MODULE });
-  } catch (err) {
-    throw describeModuleRefusal(err, server);
-  }
 
   let last: CrucibleModuleProgress = {
     server,
@@ -165,28 +187,4 @@ export async function setUpServerForBookForge(
 export async function cancelServerSetup(server: string, taskId: string): Promise<void> {
   const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   await client.cancelTask(taskId);
-}
-
-/**
- * Turn a refused POST into a sentence a ROW can show, with the holder named.
- *
- * `CrucibleCardHeld` first and by itself, because it is the refusal §5.4 says
- * must never render as a generic failure. Everything else keeps the server's
- * own code and message — `task_busy` naming the running task, `invalid_module`,
- * `unknown_subject` — which is what "refused by name" means at a button.
- */
-export function describeModuleRefusal(err: unknown, server: string): Error {
-  if (err instanceof CrucibleCardHeld) {
-    const refusal = new Error(
-      `crucible "${server}" cannot be set up right now: ${err.heldLine}. That is the system `
-      + 'working, not a fault — another app on that machine is mid-run and installing a job '
-      + 'type restarts the server\'s registry. Press this again when it lands.',
-    );
-    refusal.name = 'CrucibleCardHeld';
-    return refusal;
-  }
-  if (err instanceof CrucibleRefused) {
-    return new Error(`crucible "${server}" refused ${err.code}: ${err.message}`);
-  }
-  return err instanceof Error ? err : new Error(String(err));
 }
