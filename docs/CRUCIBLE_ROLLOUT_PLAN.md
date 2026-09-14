@@ -350,6 +350,14 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **WHICH DEATHSTALKER IS THE VOICE? (found 2026-09-14 by Training pc's hash).** Crucible's
+  `voices/deathstalker` (pulled from HF `owenmorgan/deathstalker-higgs-v3` rev d732c38, 09-13) and
+  the local higgs gate's `ds_v7_930_prod` (merged 09-11) have identical safetensors headers and
+  DIFFERENT tensor data — two merges of one family, each the "voice" to a different server. R1: one
+  owner. Ruling owed: which merge is canonical; then the HF mirror is re-uploaded from it (or not),
+  the voice manifest's revision pin follows, and the other copy is deleted. Same question applies to
+  mistborn/sigma/owen/thirdreich — nobody has hashed those.
+
 - **STOPGAP, 2026-09-14 — `@crucible/client` is pinned to a LOCAL TARBALL, and the pin is
   replaced by the v0.6.0 release URL the day Owen publishes.** `package.json` says
   `"@crucible/client": "file:vendor/crucible-client-0.6.0.tgz"`, with the whole of this
