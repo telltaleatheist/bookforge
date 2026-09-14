@@ -104,6 +104,7 @@ import {
  */
 import {
   cloudLaneOf,
+  isCloudLane,
   slotSetForStep,
   slotSetOccupancy,
   slotSets,
@@ -2783,6 +2784,21 @@ function reviveInterrupted(): void {
         const mod = modules.get(step.type);
         if (mod) {
           step.resource = mod.resource(step.config ?? {});
+          /*
+           * …EXCEPT WHERE THE STEP IS ALREADY ON A CLOUD LANE, and that is not
+           * an exception to the rule above but the rule applied to a pair.
+           *
+           * A step admitted to an engine that ROUTES its class upstream was
+           * written `venue: '<server>:cloud'` and `resource: 'cpu'` together,
+           * at the one moment both facts existed (crucible PHASE15 §5.3). The
+           * VENUE persists on purpose — §4.3, a job that started on a machine
+           * finishes on that machine — so re-deriving only the resource would
+           * split the pair and leave a `gpu` step sitting on a lane whose gpu
+           * count is 0. It would never be admitted again and nothing would say
+           * why. The module cannot answer this one: the route belongs to the
+           * server, and the module is not told which server.
+           */
+          if (step.venue !== undefined && isCloudLane(step.venue)) step.resource = 'cpu';
           // Same rule, same reason: the module is the authority on whether this
           // step can travel, and a build that teaches one to must be able to
           // say so about work already in the queue.

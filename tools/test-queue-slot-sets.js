@@ -665,6 +665,41 @@ test('an engine whose routes nobody has read yet is a WAIT, never a guess', asyn
   assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
 });
 
+test('a RESTART does not split the venue from the resource it was placed with', async () => {
+  /*
+   * The pair is written together at admission and the VENUE persists (§4.3, a
+   * job that started on a machine finishes on that machine). Re-deriving only
+   * the resource on load would leave a `gpu` step sitting on a lane whose gpu
+   * count is 0: never admitted again, and nothing saying why.
+   */
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  const dir = await fresh('cloud-restart', [ai], host);
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
+
+  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+  assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
+
+  // Same state directory, a fresh engine: exactly what a restart is.
+  const ai2 = fakeModule('translation', { travels: true });
+  ai2.crucibleClass = () => 'translate';
+  engine.clearStepModules();
+  engine.registerStepModule(ai2);
+  engine.setCrucibleRoutingHost(host.host);
+  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000 });
+  const reloaded = engine.snapshot().jobs.find((j) => j.id === a.id);
+  assert.ok(reloaded !== undefined, 'the row survived the restart');
+  const step = reloaded.steps[0];
+  assert.strictEqual(step.venue, 'mac:cloud', 'the venue persists — it is where the work went');
+  assert.strictEqual(step.resource, 'cpu',
+    'and the resource stays with it; re-deriving `gpu` here is a deadlock on a lane with none');
+  assert.strictEqual(slots.slotsOf(engine.snapshot().slotSets, step.venue, step.resource), 2);
+});
+
 test('a step with no capability class is untouched by any of this', async () => {
   // A render is not a routable class, so it never asks and never waits: the
   // record can be completely empty and it still takes the card.
