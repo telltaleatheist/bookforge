@@ -229,7 +229,7 @@ export interface StepModule {
    * holding somebody's model (`electron/crucible/lease.ts`, ONE LEASE PER ROW).
    *
    * Default FALSE, and that is the safe direction: an undeclared step ends the
-   * run of acts, which is exactly today's behaviour â€” a lease per act. Declaring
+   * run of acts, which is exactly today's behaviour — a lease per act. Declaring
    * it wrongly true would hold a card across work that does not use it.
    *
    * Asked of the CONFIG because a step's provider is a config field: the same
@@ -1575,6 +1575,34 @@ export interface CrucibleRoutingHost {
   reach(server: string): Promise<{ reachable: true } | { reachable: false; detail: string }>;
 }
 
+/**
+ * ONE LEASE PER ROW — the two calls the scheduler makes, injected.
+ *
+ * INJECTED rather than imported for the property this whole file keeps: no
+ * Electron, no registry, no HTTP. `electron/crucible/lease.ts` reaches the
+ * server registry and `app.on('before-quit')`, so importing it here would make
+ * the scheduler unloadable outside Electron — which the keeper suite, the CLI
+ * and every headless run depend on. `queue-ipc.ts` wires the real one.
+ *
+ * NULL IS A REAL STATE and not a missing fact: a build that wired no lease seam
+ * runs every step outside a row scope, which is exactly the behaviour before
+ * this existed — a lease per act, released by the act that took it. Nothing is
+ * masked, because nothing here was going to lease anyway.
+ */
+export interface CrucibleLeaseHost {
+  /** Run one step inside its run's lease scope. */
+  withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
+  /** Give back the lease this run was holding, if any. Never throws. */
+  closeRow(row: string): Promise<void>;
+}
+
+let crucibleLeaseHost: CrucibleLeaseHost | null = null;
+
+/** main wires this once, in `startQueueEngine`. The keeper passes a fake. */
+export function setCrucibleLeaseHost(host: CrucibleLeaseHost | null): void {
+  crucibleLeaseHost = host;
+}
+
 let crucibleHost: CrucibleRoutingHost | null = null;
 
 /** main wires this once, in `startQueueEngine`. The keeper passes a fake. */
@@ -2223,7 +2251,23 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
   };
 
   try {
-    const output = await mod.run(ctx);
+    /*
+     * EVERY STEP RUNS INSIDE ITS RUN'S CRUCIBLE LEASE SCOPE.
+     *
+     * The scope is what makes a row that cleans and then simplifies hold ONE
+     * lease instead of two — without it the model is unloaded between the acts
+     * and the second pays a full reload (`electron/crucible/lease.ts`, ONE
+     * LEASE PER ROW). Around EVERY step, not only the leasing ones: a step that
+     * never speaks to a Crucible simply never asks the scope for anything, and
+     * a list of which types lease kept here would be a second owner of what
+     * `leasesModel` already says.
+     *
+     * Named by the RUN, not by the step: the whole point is that the lease
+     * outlives one step. `settleStep` is what closes it.
+     */
+    const output = crucibleLeaseHost === null
+      ? await mod.run(ctx)
+      : await crucibleLeaseHost.withRowScope(job.id, () => mod.run(ctx));
     settleStep(job, step, { ok: true, output });
   } catch (err) {
     settleStep(job, step, { ok: false, error: (err as Error)?.message || String(err) });
@@ -2234,12 +2278,58 @@ type StepOutcome =
   | { ok: true; output: ArtifactRef }
   | { ok: false; error: string };
 
+/**
+ * IS THE RUN'S CRUCIBLE LEASE STILL WANTED once this step has ended?
+ *
+ * Yes exactly when a step that would use it is next in the chain — a child of
+ * the one that just finished, not yet terminal, whose module says its work is a
+ * run of chat completions (`StepModule.leasesModel`). That is what makes "one
+ * lease per row" mean *per consecutive run of acts*: clean → simplify keeps the
+ * model resident across both, and clean → assemble gives the card back before
+ * an hour of ffmpeg that has no use for it.
+ *
+ * ONLY AFTER A SUCCESS. A step that failed, was stopped, or came back
+ * `409 server_busy` has no next act — its children are cancelled with it, or it
+ * is itself going back into the queue — and its children are still `waiting` at
+ * the moment this is asked, so reading them would keep a card held for work
+ * that will never arrive. That is decided by the caller, which knows the
+ * outcome; this answers only the chain question.
+ */
+function leaseWantedAfter(job: QueueJob, step: QueueStep): boolean {
+  for (const child of job.steps) {
+    if (child.parentStepId !== step.id) continue;
+    if (TERMINAL_STEP_STATUSES.has(child.status)) continue;
+    const mod = modules.get(child.type);
+    if (mod?.leasesModel?.(child.config ?? {}) === true) return true;
+  }
+  return false;
+}
+
 function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void {
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
   const busyLine = live?.busyLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
+
+  /*
+   * THE RUN'S LEASE, GIVEN BACK UNLESS THE NEXT ACT WANTS IT.
+   *
+   * Fired on EVERY settle — success, failure, cancel and the 409 wait below —
+   * because a lease left open on a row that is not about to use it holds
+   * somebody's card for its whole ttl. A no-op when the row holds none, which
+   * is every row that never spoke to a Crucible.
+   *
+   * `void`, not awaited: the release is a DELETE over the network and the
+   * scheduler's settle is synchronous by design (every caller reads the row's
+   * new state on the next line). Nothing depends on the release having landed —
+   * the ttl is the mechanism and this is the courtesy — and `release()` never
+   * throws.
+   */
+  const leaseSurvives = outcome.ok && !stopped && leaseWantedAfter(job, step);
+  if (crucibleLeaseHost !== null && !leaseSurvives) {
+    void crucibleLeaseHost.closeRow(job.id);
+  }
 
   /*
    * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).

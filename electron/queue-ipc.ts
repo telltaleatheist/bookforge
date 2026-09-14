@@ -33,6 +33,7 @@ import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { LOCAL_SERVER_NAME } from './crucible/local';
 import { readRouting } from './crucible/routing';
 import { pingServer } from './crucible/probe';
+import { closeCrucibleRowLease, withCrucibleRowScope } from './crucible/lease';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
@@ -130,6 +131,18 @@ export async function startQueueEngine(): Promise<void> {
   // whether it travels and then reports the runs that carry one and say
   // nothing about where — see `waitForMigrationReport`.
   engine.setCrucibleRoutingHost(crucibleRoutingHost());
+  /*
+   * ONE LEASE PER ROW. The scheduler is the only thing that knows a RUN is a
+   * sequence of acts, so it is the only thing that can hold ONE lease across
+   * them — a row that cleans and then simplifies used to take two, and the
+   * model was unloaded in the gap. See `electron/crucible/lease.ts`, ONE LEASE
+   * PER ROW. Wired HERE rather than imported by the engine, which keeps its one
+   * property: no Electron, no registry, no HTTP.
+   */
+  engine.setCrucibleLeaseHost({
+    withRowScope: withCrucibleRowScope,
+    closeRow: closeCrucibleRowLease,
+  });
   await engine.configure({
     stateDir: app.getPath('userData'),
     gpuHolder,

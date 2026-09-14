@@ -75,13 +75,16 @@
  * `cleanupEpub` job, the whole engine spawn, the whole conversion. Where a door
  * looks like it wraps a single request, the caller is what wants wrapping.
  *
- * RULING OWED: a queue row that cleans a book and then simplifies it is TWO acts
- * against one resident model, and today each takes and releases its own lease —
- * so the model can go between them. One lease for the ROW, taken where
- * `queue-engine.ts` admits the run and released in its settle, is the shape
- * Foundry's dispatch already has; it needs a seam in the queue that does not
- * exist here yet, and the act name on a row-wide lease has to be decided (the
- * first act's? a row's worth of acts cannot be one truthful name).
+ * **A ROW OF ACTS IS ALSO ONE RUN (BUILT 2026-09-14).** A queue row that cleans
+ * a book and then simplifies it is two acts against one resident model, and
+ * each used to take and release its own lease — so the model was unloaded
+ * between them and the second act paid a full reload. The scheduler now runs
+ * every step inside a ROW SCOPE and the lease is handed to it instead of being
+ * released: see ONE LEASE PER ROW below for the seam, for why the scope is
+ * ambient, and for the one thing it could not settle — a lease carries a single
+ * act name and Crucible's vocabulary has no name for "a row of acts", so a
+ * row-wide lease is stamped with the act that OPENED it. That is a ruling owed
+ * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §3), not a decision taken here.
  *
  * ── Why this is hand-rolled HTTP and not three SDK calls ────────────────────
  *
@@ -123,6 +126,8 @@
  * it is how long the server should keep believing in a client it cannot see, not
  * how long the run will take.
  */
+
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   CrucibleAuthError,
@@ -514,6 +519,9 @@ function armQuitRelease(): void {
  * keeper that wants to prove the quit path gives the cards back.
  */
 export async function releaseAllCrucibleLeases(): Promise<void> {
+  // The row map first, so a scope that outlives this call cannot hand a
+  // released lease to a later act as if it were still open.
+  rowLeases.clear();
   await Promise.all([...openLeases].map((lease) => lease.release()));
 }
 
@@ -667,10 +675,154 @@ export async function withCrucibleLease<T>(
   options: CrucibleLeaseOptions,
   run: (lease: CrucibleLease) => Promise<T>,
 ): Promise<T> {
+  const row = currentRow();
+  if (row !== null) return withRowLease(row, options, run);
   const lease = await takeCrucibleLease(options);
   try {
     return await run(lease);
   } finally {
     await lease.release();
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// ONE LEASE PER ROW
+// ────────────────────────────────────────────────────────────────────────────
+//
+// ── The defect ─────────────────────────────────────────────────────────────
+//
+// A queue row that cleans a book and THEN simplifies it is two acts against one
+// resident model, and each took and released its own lease. Between the first
+// release and the second take nothing held the card, and Owen's 2026-09-14
+// ruling — *"Models should always be unloaded when we're done with them. Every
+// time."* — means the server unloads a 19 GB model in that gap and the second
+// act pays a full reload. The lease exists precisely to prevent that, and the
+// row-shaped case slipped through it (the RULING OWED at the top of this file).
+//
+// ── The seam ───────────────────────────────────────────────────────────────
+//
+// The scheduler runs every step inside a ROW SCOPE named by the run's id
+// (`queue-engine.ts`, `launch`). Inside a scope, `withCrucibleLease` does not
+// release at the end of its caller: it hands the lease to the scope, and the
+// scope keeps it until the SCHEDULER closes it — which is the moment the row has
+// no next step that would use it (`closeCrucibleRowLease`).
+//
+// ── Why the scope is AMBIENT rather than a parameter ───────────────────────
+//
+// Because the alternative is threading a run id through `cleanupEpub`,
+// `translateEpub`, `analyzeBook`, `runProcessingPass`, `runVlmConversion`,
+// `resolveCrucibleTextEngine` and every future door — six signatures and their
+// call sites changed to carry a fact none of them has any other use for, and a
+// seventh door added later that silently keeps the old behaviour by forgetting
+// to pass it. An `AsyncLocalStorage` makes the scheduler's own call stack the
+// carrier, so EVERY leasing door is row-aware without knowing the rule, and a
+// door called outside the queue (the CLI, Settings → AI) is unchanged: no
+// scope, so `withCrucibleLease` releases in its own `finally` exactly as before.
+//
+// ── The act name, and the ruling it is owed ────────────────────────────────
+//
+// A lease carries ONE act, and Crucible refuses any name outside its own
+// capability classes (`crucible/inflight.py`, `require_act_name`) — there is no
+// name for "a row of acts". So a row-wide lease is stamped with **the act that
+// OPENED it**, and the code says so out loud rather than pretending otherwise.
+//
+// What that is honest about: the lease answers *why is this model being held*,
+// and "because this row started cleaning this book" is a true answer for the
+// whole row. What it is NOT: a statement of what is running right now. That
+// question is answered per request by `X-Crucible-Act`, which every act sets
+// truthfully and which `/v1/activity` reports as the in-flight entry's act — so
+// the lie Owen ruled out on 2026-09-13 (a simplify calling itself a translate)
+// cannot happen here. A reader sees a `simplify` in flight under a lease opened
+// for `clean`, which is two true facts.
+//
+// RULING OWED, recorded in `docs/CRUCIBLE_ROLLOUT_PLAN.md` §3: either Crucible
+// gains a way to RE-STATE a lease's act (an act on the heartbeat, or a PATCH),
+// or a lease carries a LIST of acts, or this stays as the opening act's name.
+// It is not resolved here, because the vocabulary is the server's.
+
+/**
+ * The row a step is running under, or null outside the scheduler.
+ *
+ * `AsyncLocalStorage` rather than a module variable: two steps of two different
+ * runs are in flight at once (that is the whole point of the slot sets), and a
+ * single mutable "current row" would hand one run's lease to the other.
+ */
+const rowScope = new AsyncLocalStorage<string>();
+
+function currentRow(): string | null {
+  return rowScope.getStore() ?? null;
+}
+
+/** Leases held on behalf of a ROW rather than of one act. */
+const rowLeases = new Map<string, CrucibleLease>();
+
+/**
+ * Run one step inside its run's lease scope.
+ *
+ * Called by the scheduler around every step, leasing or not: a step that never
+ * touches a Crucible simply never asks the scope for anything.
+ */
+export function withCrucibleRowScope<T>(row: string, fn: () => Promise<T>): Promise<T> {
+  return rowScope.run(row, fn);
+}
+
+/**
+ * Give back the lease a row was holding, if any. Idempotent; never throws.
+ *
+ * The scheduler calls it when the row has no next step that would use it —
+ * which is what makes "one lease per row" mean *per consecutive run of acts*
+ * rather than *for the life of the row*, so a lease is never held across an
+ * assembly or an hour of narration.
+ */
+export async function closeCrucibleRowLease(row: string): Promise<void> {
+  const lease = rowLeases.get(row);
+  if (lease === undefined) return;
+  rowLeases.delete(row);
+  await lease.release();
+}
+
+/** For a keeper, and for a log line: is this row holding one? */
+export function crucibleRowLease(row: string): CrucibleLease | null {
+  return rowLeases.get(row) ?? null;
+}
+
+async function withRowLease<T>(
+  row: string,
+  options: CrucibleLeaseOptions,
+  run: (lease: CrucibleLease) => Promise<T>,
+): Promise<T> {
+  const held = rowLeases.get(row);
+  if (held !== undefined) {
+    if (held.server === options.server && held.leased === options.id) {
+      options.onLog?.(
+        `[crucible] reusing this run's lease on "${options.id}" at ${options.server} — opened for `
+        + `${held.act}, this act is ${options.act}. One lease per row, so the model is not `
+        + 'unloaded between them.',
+      );
+      return run(held);
+    }
+    /*
+     * A DIFFERENT MODEL OR A DIFFERENT MACHINE ends the run of acts the held
+     * lease was for: a server holds ONE lease, and nothing this row does next
+     * concerns the old one. Released before the take rather than after, because
+     * a second lease on the same server would be refused `409 leased` — by us,
+     * against ourselves.
+     */
+    options.onLog?.(
+      `[crucible] this run's lease was on "${held.leased}" at ${held.server}; this act wants `
+      + `"${options.id}" at ${options.server}, so the first is given back.`,
+    );
+    rowLeases.delete(row);
+    await held.release();
+  }
+  const lease = await takeCrucibleLease(options);
+  rowLeases.set(row, lease);
+  /*
+   * NO `finally` HERE, AND THAT IS THE WHOLE POINT. The lease outlives this
+   * act. Every way it can still be given back: the scheduler closes the row
+   * (`closeCrucibleRowLease`) when nothing follows, a later act of the same row
+   * swaps it above, the app quits (`releaseAllCrucibleLeases`), or the ttl
+   * expires — which is the mechanism, the other three being courtesies.
+   */
+  return run(lease);
 }
