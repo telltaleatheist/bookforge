@@ -693,23 +693,35 @@ async function cancelChecks() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The labelled stopgap: the first say waits for the SDK's stream to attach
+// THE ATTACH RACE, AND THE STOPGAP THAT IS GONE
+//
+// Until 2026-09-14 this drove a LABELLED STOPGAP: the first `say` of a session
+// polled around `stream_not_attached` for up to five seconds, because the SDK
+// attached its event stream from inside the iterator and swallowed the `ready`
+// frame, so a client could not know when its first row was allowed. That block
+// named where the fix belonged — in the SDK — and v0.6.0 landed it: the stream
+// is attached and `ready` is read BEFORE the session is handed over, so the
+// refusal "cannot be met by a caller of this client".
+//
+// So what is pinned now is the OPPOSITE property, and it is the stronger one:
+// with a server that delays attachment, the first row still goes ONCE, with no
+// wait and nothing logged about waiting.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function attachChecks() {
   const fake = await startFakeCrucible({ attachDelayMs: 150 });
   try {
     const { facade } = facadeFor(fake);
-    await checkQuiet('the first say of a session waits out stream_not_attached (labelled stopgap) instead of failing the sentence', async () => {
+    await checkQuiet('the first say needs no wait — the SDK attaches before handing the session over', async () => {
       assert.strictEqual((await facade.startSession()).success, true);
       assert.strictEqual((await facade.loadVoice('mistborn')).success, true);
       logLines.length = 0;
       const result = await facade.generateSentence(SENTENCES[0], 0, SETTINGS, true, () => false);
       assert.strictEqual(result.success, true, result.error);
-      assert.strictEqual(fake.state.says.length, 1, 'the row was said once, after the stream attached');
-      assert.ok(logLines.some((l) => /waiting for the event stream to attach/.test(l)),
-        'the wait is logged once, naming the stopgap');
-      // Attached now: a later row never waits, and a later refusal of that code would surface.
+      assert.strictEqual(fake.state.says.length, 1, 'the row was said once');
+      assert.ok(!logLines.some((l) => /waiting for the event stream to attach/.test(l)),
+        'the deleted stopgap is back: nothing may poll around stream_not_attached');
+      // And a later row behaves identically — there was never a first-row case.
       logLines.length = 0;
       const again = await facade.generateSentence(SENTENCES[1], 1, SETTINGS, true, () => false);
       assert.strictEqual(again.success, true, again.error);

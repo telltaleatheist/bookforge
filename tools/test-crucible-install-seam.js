@@ -59,7 +59,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const DIST = path.resolve(__dirname, '..', 'dist');
+const REPO = path.resolve(__dirname, '..');
+const DIST = path.join(REPO, 'dist');
 const MODULE = path.join(DIST, 'electron', 'crucible', 'install.js');
 const CONVERSION = path.join(DIST, 'shared', 'vlm', 'conversion.js');
 for (const file of [MODULE, CONVERSION]) {
@@ -198,21 +199,39 @@ check('the refusal shape is the package\'s: {code, message, command, detail}', (
   assert.strictEqual(refusal.detail, null, 'a missing detail must be null, never undefined');
 });
 
-check('BookForge asks for its own six job types, not Foundry\'s one', () => {
-  assert.deepStrictEqual(
-    [...install.BOOKFORGE_JOB_TYPES],
-    ['llm', 'asr', 'tts', 'align', 'rvc', 'denoise'],
-    'the pipeline narrates, transcribes, aligns, converts voices and strips hiss — all six',
-  );
-});
-
-check('the install options a person would drive carry the narrator engine', () => {
+/*
+ * `BOOKFORGE_JOB_TYPES` AND `BOOKFORGE_NARRATOR_ENGINE` ARE DELETED, and the
+ * check that pinned them is replaced by one that asks the file that owns them
+ * now (2026-09-14, PHASE13-OPERATOR.md section 5.4).
+ *
+ * They were a hand-kept restatement of ids the crucible manifests own, and
+ * `shared/crucible/bookforge.module.json` — GENERATED in that repo and
+ * vendored here byte for byte — is the single place BookForge says what it
+ * needs from a server. `tools/test-crucible-module-file.js` is what compares
+ * the copy to its source; this checks the one thing THIS seam cares about:
+ * the driven install asks for exactly what the module asks for, so a person
+ * who pressed the button and a person who pressed "Set up for BookForge" get
+ * the same server.
+ */
+check('the driven install asks for exactly what the vendored module asks for', () => {
+  const module_ = JSON.parse(fs.readFileSync(
+    path.join(REPO, 'shared', 'crucible', 'bookforge.module.json'), 'utf-8'));
   const options = install.bookforgeInstallOptions(() => {}, 'win32', 'Ubuntu');
   assert.strictEqual(options.distro, 'Ubuntu');
   assert.strictEqual(options.wheel, install.CRUCIBLE_WHEEL);
+
+  const asked = options.jobTypes.map((t) => (typeof t === 'string' ? t : t.type));
+  assert.deepStrictEqual(
+    asked, module_.job_types.map((e) => e.type),
+    'the driven install and the module ask for different job types',
+  );
+
+  // `tts` must carry its engine: cuda-linux has one venv per narrator engine
+  // and the package refuses a bare `tts` by name.
   const tts = options.jobTypes.find((t) => typeof t === 'object' && t.type === 'tts');
-  assert.ok(tts, '`tts` is a bare string — the package refuses that by name (one env per engine)');
-  assert.strictEqual(tts.narratorEngine, install.BOOKFORGE_NARRATOR_ENGINE);
+  const declared = module_.job_types.find((e) => e.type === 'tts');
+  assert.ok(tts, '`tts` is a bare string — the package refuses that by name');
+  assert.strictEqual(tts.narratorEngine, declared.narrator_engine);
   assert.ok(
     options.jobTypes.every((t) => typeof t === 'string' || t.type === 'tts'),
     'only tts takes an engine',
@@ -237,65 +256,84 @@ function commandsOf(plan) {
   return plan.steps.flatMap((s) => s.commands);
 }
 
-check('every job type is enabled by its own --enable-<type> flag, in one init', () => {
+/*
+ * ── WHAT THE PLAN NO LONGER CONTAINS, AND WHY THESE CHECKS INVERTED ───────
+ *
+ * Six checks stood here: `--enable-<type>` on `init`, `crucible install tts
+ * --narrator-engine`, the absence of `install denoise`, one id per `pull`
+ * command, the four weights by name, and `capability --write` after `service
+ * install`. Every one was correct about a hand sequence that has been DELETED
+ * (2026-09-14, PHASE13-OPERATOR.md section 0 and 5.2).
+ *
+ * The argument is theirs turned around: those eleven commands were a second
+ * copy of what `shared/crucible/bookforge.module.json` states and what
+ * Crucible's own page installs with a button and a progress bar. Keeping them
+ * in step by hand is exactly R1's shape, in the one file whose job is to be
+ * correct about ids.
+ *
+ * So the checks below assert the ABSENCE, by name and with the reason — which
+ * is the honest successor to a pin: this is a list that must stay short, and a
+ * pull list creeping back into the app is the regression.
+ */
+check('`crucible init` carries no --enable flags — the module turns job types on', () => {
   const plan = install.crucibleInstallPlan(host());
   const init = commandsOf(plan).filter((c) => c.includes('crucible init'));
   assert.strictEqual(init.length, 1, 'init is one command or the token would be minted twice');
-  for (const type of install.BOOKFORGE_JOB_TYPES) {
-    assert.ok(init[0].includes(`--enable-${type}`), `init does not enable ${type}: ${init[0]}`);
-  }
-});
-
-check('`crucible install tts` NAMES its narrator engine', () => {
-  const tts = commandsOf(install.crucibleInstallPlan(host()))
-    .find((c) => /crucible install tts/.test(c));
-  assert.ok(tts, 'nothing installs the tts env');
   assert.ok(
-    tts.includes(`--narrator-engine ${install.BOOKFORGE_NARRATOR_ENGINE}`),
-    `cuda-linux has one env per engine and a bare install is refused: ${tts}`,
+    !/--enable-/.test(init[0]),
+    '`crucible install <type>` MERGES the flag into config.toml and reloads the registry '
+    + '(PHASE13 section 3.4), so the job types are decided by "Set up for BookForge" and not '
+    + `guessed at here: ${init[0]}`,
   );
 });
 
-check('there is no `crucible install denoise` — it shares the rvc env', () => {
+check('the plan installs NO job environments — that is the module task', () => {
+  const commands = commandsOf(install.crucibleInstallPlan(host()));
+  const installs = commands.filter((c) => /crucible install /.test(c));
+  assert.deepStrictEqual(
+    installs, [],
+    'the env installs came back into the app. They are several gigabytes each, they are what '
+    + 'the vendored module asks a server for, and they are watched on the server\'s own page.',
+  );
+});
+
+check('the plan pulls NO weights — the pull list is deleted', () => {
+  const commands = commandsOf(install.crucibleInstallPlan(host()));
+  const pulls = commands.filter((c) => /crucible (models|voices|rvc|denoise) pull/.test(c));
+  assert.deepStrictEqual(
+    pulls, [],
+    'the printed pull list came back. Those six ids belong to the crucible manifests, are '
+    + 'restated in shared/crucible/bookforge.module.json by a GENERATOR, and are pulled by the '
+    + 'module task — a copy here is the thing that goes stale when a manifest is renamed.',
+  );
+});
+
+check('the plan does not measure the card either — `crucible install` writes that record', () => {
   const commands = commandsOf(install.crucibleInstallPlan(host()));
   assert.ok(
-    commands.some((c) => /crucible install rvc/.test(c)),
-    'nothing installs the rvc env, which denoise needs',
-  );
-  assert.ok(
-    !commands.some((c) => /crucible install denoise/.test(c)),
-    'denoise has no installer of its own (planJobTypes refuses it by name)',
+    !commands.some((c) => /crucible capability --write/.test(c)),
+    'capability --write is what `crucible install <type>` does as it goes (PHASE13 section 3.4), '
+    + 'so a separate step for it is one more thing to forget',
   );
 });
 
-check('weights are pulled ONE ID PER COMMAND — `models pull` takes one positional', () => {
-  const pulls = commandsOf(install.crucibleInstallPlan(host()))
-    .filter((c) => /crucible (models|voices|rvc|denoise) pull/.test(c));
-  assert.ok(pulls.length >= 4, `expected several pull commands, got ${pulls.length}`);
-  for (const command of pulls) {
-    const after = command.replace(/^.*crucible (?:models|voices|rvc|denoise) pull(?:-base)?/, '').trim();
-    const words = after.length === 0 ? [] : after.replace(/"\s*$/, '').split(/\s+/).filter(Boolean);
-    assert.ok(
-      words.length <= 1,
-      `"${command}" passes ${words.length} ids to a command that takes one (crucible/cli.py)`,
-    );
-  }
-});
-
-check('the four weights BookForge names by name are all there', () => {
-  const commands = commandsOf(install.crucibleInstallPlan(host())).join('\n');
-  for (const id of ['qwen3.5-9b', 'faster-whisper-large-v3', 'qwen3-aligner', 'higgs-default']) {
-    assert.ok(commands.includes(id), `nothing pulls ${id}`);
-  }
-  assert.ok(commands.includes('rvc pull-base'), 'the urvc base assets are never pulled');
-});
-
-check('the service is installed and the card is measured, in that order', () => {
+check('the service IS still installed here — it is the pre-server minute', () => {
+  // The one thing above that stayed, and the reason is the phase doc's own:
+  // a local Crucible is a SERVICE and no app owns it. This is the chicken-and-
+  // egg a page cannot do for itself, because until `crucible init` has run
+  // there is no page.
   const commands = commandsOf(install.crucibleInstallPlan(host()));
-  const service = commands.findIndex((c) => /crucible service install/.test(c));
-  const capability = commands.findIndex((c) => /crucible capability --write/.test(c));
-  assert.ok(service >= 0, 'the server is never made a service — PHASE5-APPS §6.0 ruled it is one');
-  assert.ok(capability > service, 'the capability record is written before the service exists');
+  assert.ok(
+    commands.some((c) => /crucible service install/.test(c)),
+    'the server is never made a service — PHASE5-APPS section 6.0 ruled it is one',
+  );
+});
+
+check('the last step is Open Crucible, and it has nothing to type', () => {
+  const steps = install.crucibleInstallPlan(host()).steps;
+  const last = steps[steps.length - 1];
+  assert.match(last.title, /Open Crucible/, `the sequence does not end at the page: ${last.title}`);
+  assert.deepStrictEqual(last.commands, [], 'the last step is a button, not a command');
 });
 
 check('the wheel and the tarball name the SAME Crucible release', () => {
@@ -513,7 +551,14 @@ check('DOOR 3: the button is disabled and the plan states the reason', () => {
   assert.strictEqual(plan.driven, false, 'a driven install is offered with no installer behind it');
   assert.ok(plan.drivenWhy.length > 40, 'the disabled button wears no explanation');
   assert.ok(plan.readme.startsWith('https://'), 'no link to the argument behind the sequence');
-  assert.deepStrictEqual([...plan.jobTypes], [...install.BOOKFORGE_JOB_TYPES]);
+  // `plan.jobTypes` is GONE from the wire with the constant behind it: a
+  // screen that wants to name what this app asks a server for reads the
+  // vendored module (`crucible:module`), which is generated from the
+  // manifests. What the plan states instead is whether this machine could
+  // hold a server at all, and it always says why.
+  assert.strictEqual(plan.jobTypes, undefined, 'the plan restates the module\'s ids again');
+  assert.ok(['yes', 'no', 'unknown'].includes(plan.hostable), `hostable: ${plan.hostable}`);
+  assert.ok(plan.hostableWhy.length > 20, 'a hostability verdict with no reason is a bug');
 });
 
 check('DOOR 3: no step claims `done` that this app has not actually checked', () => {

@@ -1143,24 +1143,24 @@ check('the higgs:doctor IPC handler DISPATCHES rather than calling the WSL docto
     'the handler is hard-wired to the WSL doctor again — this is the Mac defect');
 });
 
-check('the Settings Install/Repair button is gated on the HOST, not on the doctor\'s reply', () => {
-  // `doctor()` is null while the first check is in flight AND after a check that
-  // FAILED, and a Windows machine whose doctor cannot answer is exactly the one
-  // whose owner needs the repair door. Source-level because this is a template
-  // condition; the shape of the mistake is `doctor()?.arm === 'wsl'` guarding the
-  // button, which is what shipped in this branch's first draft.
-  const src = fs.readFileSync(path.join(
-    REPO, 'src', 'app', 'features', 'settings', 'components',
-    'higgs-voices-panel.component.ts'), 'utf-8');
-  const install = src.indexOf('(clicked)="install()"');
-  assert.ok(install > 0, 'the panel no longer has an install button');
-  // The nearest @if above the button is the one that gates it.
-  const guard = src.lastIndexOf('@if (', install);
-  const condition = src.slice(guard, src.indexOf('{', guard));
-  assert.match(condition, /hostArm\(\)/, 'the install button is not keyed on the host platform');
-  assert.doesNotMatch(condition, /doctor\(\)/,
-    'the repair door disappears exactly when the doctor cannot answer');
-});
+/*
+ * THE SETTINGS INSTALL/REPAIR BUTTON CHECK IS DELETED, because the panel is
+ * (2026-09-14).
+ *
+ * It read `higgs-voices-panel.component.ts` and asserted the Install / Repair
+ * button was gated on `hostArm()` and not on `doctor()` — a real defect, found
+ * in this branch's first draft, where the repair door disappeared exactly when
+ * the doctor could not answer. That panel and the whole Settings -> Higgs
+ * section are deleted: an engine's env, models dir, doctor and voice catalog
+ * are Crucible's now, once per machine (audit
+ * docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md section 7), and `crucible doctor`
+ * on that server's own page is the doctor.
+ *
+ * The rest of this suite is UNTOUCHED and is what still matters: which
+ * environment a machine is asked about, the platform dispatch between the two
+ * doctors, and the pins that stop BookForge and narrator disagreeing about a
+ * version or a weight file. Only the surface that drew the answer went.
+ */
 
 check('the mlx-audio pin agrees with the backend module', () => {
   // The doctor must state the expected version even when the backend module is

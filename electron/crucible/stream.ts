@@ -355,27 +355,30 @@ interface LiveSession {
   attached: boolean;
 }
 
-/**
- * STOPGAP, LABELLED — how long the first `say` of a session may wait for the
- * SDK's event stream to attach, and how often it asks.
+/*
+ * THE ATTACH-WAIT STOPGAP IS DELETED, BECAUSE THE SDK FIXED IT (2026-09-14).
  *
- * The server refuses a `say` on a session whose event stream has never been
- * opened (`stream_not_attached`, crucible/ttsstream.py `StreamSession.say`),
- * and the SDK's session attaches its stream from inside its iterator — on the
- * first `next()`, asynchronously — while swallowing the `ready` frame that is
- * the one signal "attached" has. So a client cannot know when its first `say`
- * is allowed; the SDK's own docstring example (`void session.say(...)` before
- * `for await`) is refused by the real server for exactly this reason.
+ * What stood here: `ATTACH_WAIT_MS` / `ATTACH_POLL_MS` and a bounded poll
+ * around the first `say` of a session. The server refuses a `say` on a
+ * session whose event stream has never been opened (`stream_not_attached`,
+ * `crucible/ttsstream.py`'s `StreamSession.say`), and the SDK up to v0.5.0
+ * attached its stream from inside the iterator — on the first `next()`,
+ * asynchronously — while swallowing the `ready` frame that was the one signal
+ * attachment had. A client could not know when its first row was allowed.
  *
- * ROOT CAUSE: the SDK hides attachment (`sdk/ts/src/stream.ts`). The fix is
- * there — expose it (an `attached` promise, or yield `ready`) — and the day
- * it lands this block is deleted. Until then: ONLY that code, ONLY before the
- * session's first accepted row, bounded, and logged once; then the refusal
- * surfaces by name like any other. Nothing is substituted and nothing is
- * retried after the session is known to be attached.
+ * That block named its own root cause and named where the fix belonged: *"the
+ * SDK hides attachment. The fix is there — expose it — and the day it lands
+ * this block is deleted."* v0.6.0 is that day. Its `StreamSession.say` now
+ * carries the guarantee in its own contract: *"The session's event stream is
+ * attached, and the server's `ready` frame read, before the session is handed
+ * over, so the server's `stream_not_attached` refusal cannot be met by a
+ * caller of this client."*
+ *
+ * So the poll is gone and nothing replaced it. A `stream_not_attached` that
+ * arrives anyway is now what it should always have been: a refusal, surfaced
+ * BY NAME like every other, because it would mean the guarantee above is
+ * false and retrying would hide that.
  */
-const ATTACH_WAIT_MS = 5_000;
-const ATTACH_POLL_MS = 25;
 
 /** What this engine needs from the world, so a keeper can drive it against a fake. */
 export interface CrucibleStreamingEngineDeps {
@@ -760,31 +763,21 @@ export class CrucibleStreamingEngine {
       resolve,
     };
     live.rows.set(id, row);
-    const waitUntil = Date.now() + ATTACH_WAIT_MS;
-    let waitedOnce = false;
-    for (;;) {
-      try {
-        await live.session.say(id, text, CRUCIBLE_STREAM_TAKE);
-        live.attached = true;
-        break;
-      } catch (err) {
-        const notAttachedYet = err instanceof CrucibleRefused && err.code === 'stream_not_attached'
-          && !live.attached && this.live === live && Date.now() < waitUntil;
-        if (notAttachedYet) {
-          // See ATTACH_WAIT_MS: the SDK's stream has not attached yet.
-          if (!waitedOnce) {
-            waitedOnce = true;
-            console.log(`[CrucibleStream] first row of session ${live.session.sessionId} is waiting for the `
-              + 'event stream to attach (SDK exposes no attach signal; see ATTACH_WAIT_MS)');
-          }
-          await new Promise((r) => setTimeout(r, ATTACH_POLL_MS));
-          continue;
-        }
-        live.rows.delete(id);
-        const refusal = describeCrucibleStreamRefusal(err, this.server ?? '?');
-        if (refusal instanceof CrucibleStreamRefused) return { success: false, error: refusal.message };
-        throw refusal;
-      }
+    /*
+     * ONE ATTEMPT. No poll, no wait: the SDK attaches the session's event
+     * stream and reads the server's `ready` frame BEFORE handing the session
+     * over (v0.6.0), so a row said here is a row the server is listening for.
+     * A `stream_not_attached` refusal would mean that guarantee is false, and
+     * it surfaces by name rather than being retried around.
+     */
+    try {
+      await live.session.say(id, text, CRUCIBLE_STREAM_TAKE);
+      live.attached = true;
+    } catch (err) {
+      live.rows.delete(id);
+      const refusal = describeCrucibleStreamRefusal(err, this.server ?? '?');
+      if (refusal instanceof CrucibleStreamRefused) return { success: false, error: refusal.message };
+      throw refusal;
     }
     return promise;
   };
