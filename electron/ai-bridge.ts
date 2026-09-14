@@ -1,10 +1,26 @@
 /**
- * AI Bridge - Multi-provider AI wrapper for text cleanup
+ * AI Bridge — the text-cleanup door, and since 2026-09-14 it opens onto exactly
+ * one place.
  *
- * Supports multiple AI providers:
- * - Ollama (local, free) at localhost:11434
- * - Claude (Anthropic API)
- * - OpenAI (ChatGPT API)
+ * Owen: *"bookforge/foundry gain a simple contract: send commands to the
+ * crucible server. period. they dont have ollama fallbacks or cloud anything at
+ * all."* So Ollama, Claude and OpenAI are GONE from this file — not disabled,
+ * not behind a flag, deleted — and with them the credential reader they shared,
+ * the two vendor REST clients and the one that talked to a local Ollama on its
+ * well-known port. An app that could still reach a cloud vendor on its own
+ * account would be a second place a key can live, which is the whole of what the ruling
+ * removes: keys now live INSIDE the Crucible engine, which forwards to the
+ * upstreams on the operator's account, and this process holds none and reads
+ * none.
+ *
+ * Two providers remain, and only one of them is a destination:
+ *
+ *  - `crucible` — the one door. A named entry in the server registry, an ACT
+ *    (`clean`/`translate`/`simplify`/`analysis`), and a model the SERVER chose.
+ *  - `local` — the bundled llama.cpp of the LEGACY local spawn layer, which is
+ *    scheduled for deletion as a whole after Owen's in-app pass (crucible
+ *    `docs/PHASE15-HOST.md` §6). It is not a fallback: nothing routes to it
+ *    except a caller that names it.
  */
 
 import { publishBridgeEvent } from './bridge-events';
@@ -65,7 +81,10 @@ import {
   finalizeDiffCache,
   clearDiffCache
 } from './diff-cache.js';
-import { getOllamaThinkFields } from './ollama-capabilities.js';
+// The four text acts, and the narrowing every boundary needs. A static import:
+// `text-acts.ts` is pure constants and pure functions with no Electron and no
+// registry behind it, so naming it here costs nothing at load.
+import { isCrucibleTextAct, type CrucibleTextAct } from './crucible/text-acts.js';
 import {
   recoverGapMarkers,
   extractStructuralMarkers,
@@ -94,12 +113,22 @@ import { expandNumbersEn, expandNumbersEnDetailed } from './number-expansion.js'
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ollama Context Sizing
+// Context Sizing
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// These two are MODEL-SIZE MATHS and they outlived the provider they were
+// written for. Ollama took `num_ctx` per request; neither provider left does —
+// a Crucible engine's context is fixed in the manifest when the model loads,
+// the bundled local engine's when the server starts. What the numbers still do
+// is bound the WINDOW a caller feeds a model (pickObservationWindow's densest
+// span, the hyphen batches), which is a real decision with real consequences,
+// so they stay, and `model` is read as a SIZE rather than as anything anybody
+// will run. The Ollama reasoning below is kept verbatim because it is why the
+// shape is the shape.
 
 /**
- * Estimate the num_ctx needed for an Ollama request.
- * Without this, Ollama allocates the model's full context window (e.g. 131K for cogito)
+ * Estimate the num_ctx needed for one request.
+ * Without this, Ollama allocated the model's full context window (e.g. 131K for cogito)
  * which wastes tens of GB of KV cache memory. Even generous estimates here are a fraction
  * of that. Uses 3 chars/token ratio with 1.5x headroom on top.
  *
@@ -176,70 +205,42 @@ export function numCtxMaxForModel(model: string): number {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
+/**
+ * TWO PROVIDERS, one of which is on its way out.
+ *
+ * `crucible` is THE door for everything this app cannot do on its own CPU: a
+ * named server runs the act and hands back bytes. `local` is the bundled
+ * llama.cpp of the LEGACY local spawn layer — the per-engine conda envs, the
+ * WSL path rewriting, the whole of it — whose deletion is scheduled separately,
+ * after Owen's in-app pass (crucible `docs/PHASE15-HOST.md` §6). It is kept
+ * because that layer still works and still has callers, NOT because anything
+ * falls back to it: with `crucible` chosen and unreachable, a run fails by name.
+ */
+export type AIProvider = 'crucible' | 'local';
 
 export interface AIProviderConfig {
   provider: AIProvider;
-  ollama?: {
-    baseUrl: string;
-    model: string;
-  };
-  /*
-   * THE TWO CLOUD DOORS CARRY NO CREDENTIAL, since 2026-09-14.
-   *
-   * Cloud keys have ONE owner — Foundry's cloud card, whose record is
-   * `<userData>/app-settings.json` -> `cloudProviders` — and `cloudCredentialsFor`
-   * below is where this process reads it. A caller that sent an `apiKey` here
-   * would be offering a second copy of a credential that already has a home,
-   * which is how the two drift.
-   *
-   * `model` is OUTPUT, not input: the preflight stamps the slot's model onto
-   * the config once, so every downstream reporting site (the resume
-   * checkpoint's model string, the analytics `modelName`, the job log) names
-   * the model the run ACTUALLY used. Nothing reads it to decide anything.
-   *
-   * ── `apiKey` IS STILL ON THIS SHAPE, AND THAT IS A LABELLED STOPGAP ──────
-   *
-   * Dated 2026-09-14. Every cloud door in THIS file, in `book-analysis.ts` and
-   * in `translation-bridge.ts` ignores it and asks Foundry's record. TWO call
-   * sites still write and read it, and both are in files a concurrent build
-   * owns: `queue-steps/ai-provider.ts` (`providerConfigOf`, which composes this
-   * block from a QUEUE ROW's `claudeApiKey`/`openaiApiKey` — a third key store)
-   * and `text-ai.ts`, which passes it to `callClaude` / `callOpenAI`. Moving
-   * those two onto `cloud-credentials.ts` deletes this field and the row
-   * columns behind it; until then a queue row with no key is refused BY NAME
-   * by `providerConfigOf` rather than reaching a provider with an empty
-   * credential, which is why leaving it is a stopgap and not a fallback.
-   */
-  claude?: {
-    /** IGNORED by every door in this file — see above. OWED, named above. */
-    apiKey: string;
-    /** OUTPUT: the preflight stamps the slot's model here, for reporting. */
-    model: string;
-  };
-  openai?: {
-    apiKey: string;
-    model: string;
-  };
-  // Bundled llama.cpp. The active model is chosen in AI Setup and resolved by
-  // llama-bridge; `model` here is informational only.
-  local?: {
-    model?: string;
-  };
+  /** Bundled llama.cpp (legacy). llama-bridge resolves the active model; `model` is informational. */
+  local?: { model?: string };
   /**
-   * A Crucible inference server (crucible docs/PHASE2-LLM.md section 7).
+   * A Crucible inference server (crucible `docs/PHASE15-HOST.md` §5.3).
    *
-   * `server` NAMES an entry in <userData>/crucible-servers.json — it is not a
-   * URL and it is not a default; `model` is a Crucible model id, which must
-   * already be RESIDENT on that server (a cleanup run never loads one). Both
-   * are refused by name when missing: see crucibleConfigOf.
+   * `server` NAMES an entry in <userData>/crucible-servers.json — never a URL,
+   * never defaulted. `act` says which capability class this run is, because
+   * Crucible refuses a run that lies about what it is doing. Neither is
+   * guessed: see {@link crucibleConfigOf}, which refuses both by name.
    *
-   * CLI-only for now. Nothing in the app's UI, IPC or settings can select this
-   * provider, which is deliberate — the CLI is phase 2's only consumer.
+   * `model` is OUTPUT and nothing reads it to decide anything. The MODEL a
+   * class runs on is the SERVER's decision — `crucible install` probes that
+   * card and picks what fits, a per-HOST fact — so the preflight reads
+   * `capability.selected` and stamps it here for the reporting sites (the
+   * resume checkpoint's model string, the analytics `modelName`, the job log)
+   * to name what actually ran.
    */
   crucible?: {
     server: string;
-    model: string;
+    act: CrucibleTextAct;
+    model?: string;
   };
 }
 
@@ -249,30 +250,10 @@ export interface ProviderConnectionResult {
   models?: string[];
 }
 
-export interface OllamaModel {
-  name: string;
-  size: number;
-  modifiedAt: string;
-}
-
 export interface AICleanupOptions {
   fixHyphenation: boolean;
   fixOcrArtifacts: boolean;
   expandAbbreviations: boolean;
-}
-
-export interface CleanupProgress {
-  chapterId: string;
-  chapterTitle: string;
-  currentChunk: number;
-  totalChunks: number;
-  percentage: number;
-}
-
-export interface CleanupResult {
-  success: boolean;
-  cleanedText?: string;
-  error?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,13 +321,16 @@ async function deleteCheckpoint(outputDir: string): Promise<void> {
 }
 
 function getProviderModel(config: AIProviderConfig): string {
-  if (config.provider === 'ollama') return config.ollama?.model || 'unknown';
-  if (config.provider === 'claude') return config.claude?.model || 'unknown';
-  if (config.provider === 'openai') return config.openai?.model || 'unknown';
   // Two servers can serve the same model id, so the checkpoint's model string
   // names the SERVER too — a resumed job must not silently continue on a
-  // different host's copy.
-  if (config.provider === 'crucible') return config.crucible ? `${config.crucible.server}/${config.crucible.model}` : 'unknown';
+  // different host's copy. The model half is whatever the preflight stamped
+  // from the server's capability record; before it has run there is nothing
+  // true to say, and 'unknown' is this function's existing word for that.
+  if (config.provider === 'crucible') {
+    return config.crucible
+      ? `${config.crucible.server}/${config.crucible.model ?? 'unknown'}`
+      : 'unknown';
+  }
   return 'unknown';
 }
 
@@ -354,7 +338,6 @@ function getProviderModel(config: AIProviderConfig): string {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-const OLLAMA_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'cogito:14b';
 const CHUNK_SIZE = 8000; // characters per chunk
 
@@ -372,8 +355,9 @@ export interface SkippedChunk {
 /**
  * Per-job cleanup accounting. Previously these were module-level globals, which
  * were only safe while exactly one cleanup job ran at a time. The queue can now
- * run two AI jobs concurrently (a cloud Claude/OpenAI job in its own lane
- * alongside a GPU/Ollama job), so a single job MUST own its own counters and
+ * run two AI jobs concurrently (a Crucible job whose class the engine forwards
+ * to an upstream runs in its own `[cloud]` lane, beside a job holding a GPU
+ * slot), so a single job MUST own its own counters and
  * skipped-chunk list — a shared global would cross-contaminate the two jobs'
  * skip reports and fallback thresholds. One instance is created per cleanupEpub
  * call and threaded through cleanChunkWithProvider → applyOutputSafeguards.
@@ -431,7 +415,6 @@ export function newCleanupJobState(): CleanupJobState {
 }
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
-const OLLAMA_INACTIVITY_TIMEOUT_MS = 300000; // Abort if Ollama sends no data for 5 minutes (covers model load + prompt eval; healthy generation streams tokens continuously)
 const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
 // Below this size a chunk that the AI skipped/refused/truncated is no longer
 // split further — it's registered as a skipped chunk and the original is kept.
@@ -1044,12 +1027,13 @@ function checkAIOutput(output: string, originalText: string): { skip: boolean; r
 /**
  * Provider-agnostic output safeguards for AI cleanup.
  *
- * Every provider (local llama.cpp, Ollama, Claude, OpenAI) routes its cleaned
- * output through this one function from cleanChunkWithProvider, so the quality
- * checks and skipped-chunk accounting are identical no matter which backend ran
- * — previously the cloud/Ollama paths each carried their own copy and the local
- * path had NONE, which is how a model that returned empty/short output silently
- * produced hard errors instead of a graceful, recorded fallback.
+ * Both providers (the bundled local llama.cpp, and a Crucible server) route
+ * their cleaned output through this one function from cleanChunkWithProvider,
+ * so the quality checks and skipped-chunk accounting are identical no matter
+ * which backend ran — when there were four providers each carried its own copy
+ * and the local path had NONE, which is how a model that returned empty/short
+ * output silently produced hard errors instead of a graceful, recorded
+ * fallback.
  *
  * Two checks, mirroring the historical per-provider logic:
  *  1. Skip markers / conversational drift → fall back to the original chunk.
@@ -1949,104 +1933,22 @@ export function simplifyBlockNumPredict(payload: string): number {
 // API Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Check if Ollama is running and accessible
- */
-export async function checkConnection(): Promise<{ connected: boolean; models?: OllamaModel[]; error?: string }> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      return { connected: false, error: `HTTP ${response.status}` };
-    }
-
-    const data = await response.json();
-    const models: OllamaModel[] = (data.models || []).map((m: any) => ({
-      name: m.name,
-      size: m.size,
-      modifiedAt: m.modified_at
-    }));
-
-    return { connected: true, models };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { connected: false, error: message };
-  }
-}
-
-/**
- * Verify Ollama can actually serve a generate request end-to-end.
- * A hung server can still answer light endpoints like /api/tags while generate
- * requests sit in its queue forever — this catches that before a job starts.
- * Also warms the model (keep_alive) so the first real chunk doesn't pay load time.
- */
-export async function verifyOllamaGenerate(model: string): Promise<{ ok: boolean; error?: string }> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      signal: controller.signal,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt: 'Reply with the word OK.',
-        stream: false,
-        options: { num_predict: 8, num_ctx: 2048 },
-        keep_alive: '5m'
-      })
-    });
-    if (!response.ok) {
-      return { ok: false, error: `HTTP ${response.status}` };
-    }
-    const data = await response.json();
-    if (typeof data.response !== 'string' || data.response.length === 0) {
-      return { ok: false, error: 'generate returned no response text' };
-    }
-    return { ok: true };
-  } catch (error) {
-    if (controller.signal.aborted) {
-      return { ok: false, error: `no response within ${TIMEOUT_MS / 1000}s — the server may be hung (check for stale ollama processes on port 11434)` };
-    }
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-/**
- * Get list of available models
- */
-export async function getModels(): Promise<OllamaModel[]> {
-  const result = await checkConnection();
-  return result.models || [];
-}
-
-/**
- * Check if a specific model is available
- */
-export async function hasModel(modelName: string): Promise<boolean> {
-  const models = await getModels();
-  return models.some(m => m.name === modelName || m.name.startsWith(modelName + ':'));
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Multi-Provider Connection Checks
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Check connection for any AI provider
+ * Check connection for an AI provider. Two of them exist.
+ *
+ * The `default` arm is not defensive padding: this is reached from IPC, so a
+ * renderer built before the cloud providers were deleted can still ask for
+ * `claude`, and what it must get back is a SENTENCE naming what it asked for
+ * — not a crash in the main process and not a silent "unavailable" that reads
+ * as an outage. TypeScript narrows `provider` to `never` there, which is the
+ * point: the only way to arrive is from outside the type system.
  */
 export async function checkProviderConnection(
   provider: AIProvider,
-  apiKey?: string,
   // Which REGISTERED Crucible server to test. Only the `crucible` provider has
   // one, and it has no default — the app's IPC handler never passes it, which is
   // exactly why asking for `crucible` without it is refused by name below rather
@@ -2054,18 +1956,19 @@ export async function checkProviderConnection(
   crucibleServer?: string,
 ): Promise<ProviderConnectionResult> {
   switch (provider) {
-    case 'ollama':
-      return checkOllamaConnection();
-    case 'claude':
-      return checkClaudeConnection(apiKey);
-    case 'openai':
-      return checkOpenAIConnection(apiKey);
     case 'local':
       return checkLocalConnection();
     case 'crucible':
       return checkCrucibleConnection(crucibleServer);
     default:
-      return { available: false, error: `Unknown provider: ${provider}` };
+      return {
+        available: false,
+        error: `unknown_ai_provider: "${String(provider)}" is not an AI provider this app has. `
+          + 'Ollama, Claude and OpenAI were removed on 2026-09-14 — BookForge sends commands to a '
+          + 'Crucible server and holds no cloud credentials of its own; the engine forwards to an '
+          + 'upstream on the operator\'s account. The two providers are "crucible" and the legacy '
+          + '"local" engine.',
+      };
   }
 }
 
@@ -2126,294 +2029,6 @@ async function checkLocalConnection(): Promise<ProviderConnectionResult> {
   }
 }
 
-/**
- * Check Ollama connection
- */
-async function checkOllamaConnection(): Promise<ProviderConnectionResult> {
-  const result = await checkConnection();
-  return {
-    available: result.connected,
-    error: result.error,
-    models: result.models?.map(m => m.name)
-  };
-}
-
-/**
- * Check Claude (Anthropic) API connection. A cloud key can only be validated by
- * making a request, so this is a real check ONLY when a key is supplied: it
- * routes to getClaudeModels (a lightweight GET /v1/models). With no key it
- * reports unavailable with an honest reason instead of a fixed placeholder.
- */
-async function checkClaudeConnection(apiKey?: string): Promise<ProviderConnectionResult> {
-  if (!apiKey) {
-    return { available: false, error: 'No Claude API key configured — add one in AI Setup.' };
-  }
-  const result = await getClaudeModels(apiKey);
-  return {
-    available: result.success,
-    error: result.error,
-    models: result.models?.map((m) => m.value),
-  };
-}
-
-/**
- * Get available Claude models by querying the Anthropic API
- * Uses the /v1/models endpoint to fetch the actual list of available models
- */
-export async function getClaudeModels(apiKey: string): Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }> {
-  if (!apiKey) {
-    return { success: false, error: 'No API key provided' };
-  }
-
-  // Verify the key format
-  if (!apiKey.startsWith('sk-ant-')) {
-    return { success: false, error: 'Invalid API key format (should start with sk-ant-)' };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch('https://api.anthropic.com/v1/models', {
-      method: 'GET',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData.error?.message || response.statusText;
-
-      if (response.status === 401) {
-        return { success: false, error: 'Invalid API key' };
-      }
-      if (response.status === 403) {
-        return { success: false, error: 'API key does not have access' };
-      }
-
-      return { success: false, error: `API error: ${errorMessage}` };
-    }
-
-    const data = await response.json();
-
-    // Filter to only include chat models (claude-*) and format them nicely
-    const models: { value: string; label: string }[] = [];
-
-    if (data.data && Array.isArray(data.data)) {
-      for (const model of data.data) {
-        const id = model.id;
-        // Skip non-Claude models and embedding models
-        if (!id.startsWith('claude-') || id.includes('embedding')) {
-          continue;
-        }
-
-        // Create a friendly label
-        // Check for 4.5 versions first (they contain 'opus-4-5' or 'sonnet-4-5')
-        let label = id;
-        if (id.includes('opus-4-5')) {
-          label = 'Claude Opus 4.5';
-        } else if (id.includes('sonnet-4-5')) {
-          label = 'Claude Sonnet 4.5';
-        } else if (id.includes('opus-4')) {
-          label = 'Claude Opus 4';
-        } else if (id.includes('sonnet-4')) {
-          label = 'Claude Sonnet 4';
-        } else if (id.includes('3-5-sonnet')) {
-          label = 'Claude 3.5 Sonnet';
-        } else if (id.includes('3-5-haiku')) {
-          label = 'Claude 3.5 Haiku';
-        } else if (id.includes('3-opus')) {
-          label = 'Claude 3 Opus';
-        } else if (id.includes('3-sonnet')) {
-          label = 'Claude 3 Sonnet';
-        } else if (id.includes('3-haiku')) {
-          label = 'Claude 3 Haiku';
-        }
-
-        models.push({ value: id, label });
-      }
-    }
-
-    // Sort models: Sonnet 4.5 first (recommended), then Opus 4.5, then older models
-    models.sort((a, b) => {
-      // Put sonnet-4-5 first as recommended (best balance of speed/quality)
-      if (a.value.includes('sonnet-4-5') && !b.value.includes('sonnet-4-5')) return -1;
-      if (!a.value.includes('sonnet-4-5') && b.value.includes('sonnet-4-5')) return 1;
-      // Then opus-4-5
-      if (a.value.includes('opus-4-5') && !b.value.includes('opus-4-5')) return -1;
-      if (!a.value.includes('opus-4-5') && b.value.includes('opus-4-5')) return 1;
-      // Then sonnet-4 (non-4.5)
-      if (a.value.includes('sonnet-4') && !b.value.includes('sonnet-4')) return -1;
-      if (!a.value.includes('sonnet-4') && b.value.includes('sonnet-4')) return 1;
-      // Then opus-4 (non-4.5)
-      if (a.value.includes('opus-4') && !b.value.includes('opus-4')) return -1;
-      if (!a.value.includes('opus-4') && b.value.includes('opus-4')) return 1;
-      // Then 3.5 models
-      if (a.value.includes('3-5') && !b.value.includes('3-5')) return -1;
-      if (!a.value.includes('3-5') && b.value.includes('3-5')) return 1;
-      return a.label.localeCompare(b.label);
-    });
-
-    // Mark the first one as recommended
-    if (models.length > 0 && !models[0].label.includes('Recommended')) {
-      models[0].label += ' (Recommended)';
-    }
-
-    return { success: true, models };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    if (message.includes('abort')) {
-      return { success: false, error: 'Request timed out' };
-    }
-    return { success: false, error: message };
-  }
-}
-
-/**
- * Check OpenAI API connection. Like Claude, this is a real check ONLY when a key
- * is supplied: it routes to getOpenAIModels (a lightweight GET /v1/models). With
- * no key it reports unavailable with an honest reason instead of a placeholder.
- */
-async function checkOpenAIConnection(apiKey?: string): Promise<ProviderConnectionResult> {
-  if (!apiKey) {
-    return { available: false, error: 'No OpenAI API key configured — add one in AI Setup.' };
-  }
-  const result = await getOpenAIModels(apiKey);
-  return {
-    available: result.success,
-    error: result.error,
-    models: result.models?.map((m) => m.value),
-  };
-}
-
-/**
- * Get available OpenAI models by querying the OpenAI API
- * Uses the /v1/models endpoint to fetch the actual list of available models
- */
-export async function getOpenAIModels(apiKey: string): Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }> {
-  if (!apiKey) {
-    return { success: false, error: 'No API key provided' };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch('https://api.openai.com/v1/models', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`
-      },
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData.error?.message || response.statusText;
-
-      if (response.status === 401) {
-        return { success: false, error: 'Invalid API key' };
-      }
-      if (response.status === 403) {
-        return { success: false, error: 'API key does not have access' };
-      }
-
-      return { success: false, error: `API error: ${errorMessage}` };
-    }
-
-    const data = await response.json();
-
-    // Filter to only include chat models (gpt-*) and format them nicely
-    const models: { value: string; label: string }[] = [];
-
-    if (data.data && Array.isArray(data.data)) {
-      for (const model of data.data) {
-        const id = model.id;
-        // Only include GPT chat models, skip embedding, whisper, tts, dall-e, etc.
-        if (!id.startsWith('gpt-')) {
-          continue;
-        }
-        // Skip instruct and embedding variants
-        if (id.includes('instruct') || id.includes('embedding')) {
-          continue;
-        }
-
-        // Create a friendly label
-        let label = id;
-        if (id === 'gpt-4o') {
-          label = 'GPT-4o';
-        } else if (id === 'gpt-4o-mini') {
-          label = 'GPT-4o Mini';
-        } else if (id.startsWith('gpt-4o-')) {
-          // Dated versions like gpt-4o-2024-11-20
-          const dateMatch = id.match(/gpt-4o-(\d{4}-\d{2}-\d{2})/);
-          if (dateMatch) {
-            label = `GPT-4o (${dateMatch[1]})`;
-          }
-        } else if (id === 'gpt-4-turbo') {
-          label = 'GPT-4 Turbo';
-        } else if (id.startsWith('gpt-4-turbo-')) {
-          const dateMatch = id.match(/gpt-4-turbo-(\d{4}-\d{2}-\d{2})/);
-          if (dateMatch) {
-            label = `GPT-4 Turbo (${dateMatch[1]})`;
-          }
-        } else if (id === 'gpt-4') {
-          label = 'GPT-4';
-        } else if (id.startsWith('gpt-4-')) {
-          // Other GPT-4 variants
-          label = id.replace('gpt-4-', 'GPT-4 ').replace(/-/g, ' ');
-        } else if (id === 'gpt-3.5-turbo') {
-          label = 'GPT-3.5 Turbo';
-        } else if (id.startsWith('gpt-3.5-turbo-')) {
-          label = `GPT-3.5 Turbo (${id.replace('gpt-3.5-turbo-', '')})`;
-        }
-
-        models.push({ value: id, label });
-      }
-    }
-
-    // Sort models: GPT-4o first (recommended), then GPT-4 Turbo, then GPT-4, then GPT-3.5
-    models.sort((a, b) => {
-      // gpt-4o (non-mini, non-dated) first
-      if (a.value === 'gpt-4o' && b.value !== 'gpt-4o') return -1;
-      if (a.value !== 'gpt-4o' && b.value === 'gpt-4o') return 1;
-      // gpt-4o-mini second
-      if (a.value === 'gpt-4o-mini' && b.value !== 'gpt-4o-mini') return -1;
-      if (a.value !== 'gpt-4o-mini' && b.value === 'gpt-4o-mini') return 1;
-      // Other gpt-4o variants
-      if (a.value.startsWith('gpt-4o') && !b.value.startsWith('gpt-4o')) return -1;
-      if (!a.value.startsWith('gpt-4o') && b.value.startsWith('gpt-4o')) return 1;
-      // gpt-4-turbo
-      if (a.value.includes('turbo') && !b.value.includes('turbo')) return -1;
-      if (!a.value.includes('turbo') && b.value.includes('turbo')) return 1;
-      // gpt-4 before gpt-3.5
-      if (a.value.startsWith('gpt-4') && b.value.startsWith('gpt-3')) return -1;
-      if (a.value.startsWith('gpt-3') && b.value.startsWith('gpt-4')) return 1;
-      return a.label.localeCompare(b.label);
-    });
-
-    // Mark the first one as recommended
-    if (models.length > 0 && !models[0].label.includes('Recommended')) {
-      models[0].label += ' (Recommended)';
-    }
-
-    return { success: true, models };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    if (message.includes('abort')) {
-      return { success: false, error: 'Request timed out' };
-    }
-    return { success: false, error: message };
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Job Cancellation Support
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2422,14 +2037,6 @@ export async function getOpenAIModels(apiKey: string): Promise<{ success: boolea
 interface ActiveCleanupJob {
   controller: AbortController;
   provider: AIProvider;
-  /**
-   * The Ollama model this job loaded, when provider is 'ollama' — recorded so
-   * the shutdown release (releaseActiveAiJobsForShutdown) can evict exactly the
-   * model this app put on the GPU, and no other. keep_alive holds a model for
-   * 5 minutes after its last use, which is 5 minutes of a dead app's model
-   * squatting in VRAM if quit doesn't evict it.
-   */
-  ollamaModel?: string;
 }
 const activeCleanupJobs = new Map<string, ActiveCleanupJob>();
 
@@ -2461,19 +2068,22 @@ export function cancelCleanupJob(jobId: string): boolean {
 }
 
 /**
- * The app is quitting: bring down every model an active AI job is holding.
+ * The app is quitting: bring down every model an active AI job is holding ON
+ * THIS MACHINE.
  *
- * A finished or cancelled job already releases its model (see
- * releaseOllamaModelAfterJob and cancelCleanupJob). What those can never cover
- * is the app dying MID-JOB: the in-flight generation is abandoned when our
- * socket drops, but Ollama then holds the model for its keep_alive (5 minutes)
- * — several GB of a dead app's model squatting in VRAM (Owen, 2026-08-12).
- * This is the quit-path counterpart: abort the requests, then evict each
- * job's model by name.
+ * Which, since the cloud and Ollama providers left, means exactly one thing —
+ * the bundled llama-server. A `crucible` job holds nothing here: the model is
+ * on somebody else's card and that server owns when it comes off, so abandoning
+ * the socket IS the whole of the release and there is nothing for this function
+ * to evict.
+ *
+ * What it covers that a finished or cancelled job cannot (cancelCleanupJob) is
+ * the app dying MID-JOB, with a local server resident and several GB of a dead
+ * app's model squatting in VRAM (Owen, 2026-08-12).
  *
  * Best-effort by design — every step is bounded and failure only means the
- * keep_alive timer is the backstop, exactly as it is for a hard SIGKILL, which
- * no in-process code can ever cover.
+ * server's own idle timer is the backstop, exactly as it is for a hard SIGKILL,
+ * which no in-process code can ever cover.
  */
 export async function releaseActiveAiJobsForShutdown(): Promise<void> {
   if (activeCleanupJobs.size === 0) return;
@@ -2489,14 +2099,6 @@ export async function releaseActiveAiJobsForShutdown(): Promise<void> {
         import('./llama-bridge.js')
           .then(({ llamaBridge }) => llamaBridge.stop())
           .catch((err) => console.warn(`[AI-BRIDGE] Shutdown: failed to stop local server: ${(err as Error).message}`))
-      );
-    } else if (job.provider === 'ollama' && job.ollamaModel) {
-      const model = job.ollamaModel;
-      releases.push(
-        import('./gpu-arbiter.js')
-          .then(({ unloadOllamaModel }) => unloadOllamaModel(model))
-          .then(() => console.log(`[AI-BRIDGE] Shutdown: released ${model} from VRAM`))
-          .catch((err) => console.warn(`[AI-BRIDGE] Shutdown: could not release ${model}: ${(err as Error).message}`))
       );
     }
   }
@@ -2547,165 +2149,6 @@ export type CleanupTask = 'cleanup' | 'simplify';
 export type CleanupStages = 'ocr' | 'tts' | 'both';
 export const CLEANUP_STAGES: readonly CleanupStages[] = ['ocr', 'tts', 'both'];
 
-/**
- * Clean up a chunk of text using Claude API
- */
-async function cleanChunkWithClaude(
-  text: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string = 'claude-3-5-sonnet-20241022',
-  abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta,
-  isRetry: boolean = false
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  // Chain abort signals - if parent aborts, abort this request too
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
-  }
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model,
-        // Claude 3.5 models have 8192 max output tokens, Claude 4+ models have higher limits
-        // Cap based on model version to avoid API errors while allowing full capacity
-        max_tokens: model.includes('claude-3')
-          ? Math.min(8192, Math.max(4096, text.length * 2))
-          : Math.max(4096, text.length * 2),  // Claude 4+ can handle more
-        system: systemPrompt,
-        messages: [
-          { role: 'user', content: text }
-        ]
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Claude API error: ${response.status} - ${errorData.error?.message || response.statusText}`);
-    }
-
-    const data = await response.json();
-    // Concatenate ALL text-type content blocks (a response may also contain
-    // non-text blocks, e.g. thinking).
-    const extracted: string = Array.isArray(data.content)
-      ? data.content
-          .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
-          .map((b: { text?: string }) => b.text)
-          .join('')
-      : '';
-    // CRITICAL: never `extracted || text`. An empty/refusal response (e.g. Claude
-    // declining copyrighted book text, stop_reason 'refusal') must go through the
-    // [SKIP] trapdoor below — split → retry → and if it still won't process, fall
-    // back to the original AND register a skipped chunk — NOT silently return the
-    // original as a clean "0 changes" success. (The old `|| text` did exactly that
-    // and made whole-book refusals invisible — see no-fallbacks rule.)
-    if (!extracted.trim()) {
-      console.warn(`[Claude] Empty/refusal response (stop_reason: ${data.stop_reason ?? 'none'}) for ${text.length}-char chunk — routing through [SKIP] handling`);
-    }
-    const cleaned: string = extracted.trim() ? extracted : '[SKIP]';
-
-    // The output was cut off (hit the token budget). Route through the unified
-    // [SKIP] split so smaller chunks regenerate in full instead of keeping
-    // truncated text.
-    if (data.stop_reason === 'max_tokens') {
-      console.warn(`[Claude] hit max_tokens for ${text.length}-char chunk — routing through unified [SKIP] split`);
-      return '[SKIP]';
-    }
-
-    // Separate the model's answer from any reasoning/answer-tag wrapper, exactly
-    // like the Ollama/local paths — so an answer-tag prompt (edit-list, simplify)
-    // never leaks its <answer>/<think> tags into the book, and an unclosed answer
-    // throws REASONING_OVERRUN. For the legacy no-tag rewrite prompt this is a
-    // no-op (plain text has no tags). ALL other quality safeguards (the [SKIP]
-    // trapdoor, truncation, copyright, splitting, registering skipped chunks) are
-    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider.
-    return extractAnswer(cleaned, model);
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
-/**
- * Clean up a chunk of text using OpenAI API
- */
-async function cleanChunkWithOpenAI(
-  text: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string = 'gpt-4o',
-  abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta,
-  isRetry: boolean = false
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  // Chain abort signals - if parent aborts, abort this request too
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
-  }
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: Math.max(4096, text.length * 2),
-        temperature: 0.1,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: text }
-        ]
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`OpenAI API error: ${response.status} - ${errorData.error?.message || response.statusText}`);
-    }
-
-    const data = await response.json();
-    // Never `content || text`. An empty/refusal response must go through the
-    // [SKIP] trapdoor (split → retry → register a skipped chunk), not silently
-    // return the original as a clean "0 changes" success. See no-fallbacks rule.
-    const extracted: string = data.choices?.[0]?.message?.content ?? '';
-    if (!extracted.trim()) {
-      const finish = data.choices?.[0]?.finish_reason ?? 'none';
-      console.warn(`[OpenAI] Empty/refusal response (finish_reason: ${finish}) for ${text.length}-char chunk — routing through [SKIP] handling`);
-    }
-    const cleaned = extracted.trim() ? extracted : '[SKIP]';
-
-    // Separate answer from any reasoning/answer-tag wrapper (see the Claude path):
-    // an answer-tag prompt (edit-list, simplify) must not leak its tags, and an
-    // unclosed answer throws REASONING_OVERRUN. No-op for the legacy rewrite prompt.
-    return extractAnswer(cleaned, model);
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Crucible — a cleanup pass on somebody else's GPU
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2720,10 +2163,17 @@ async function cleanChunkWithOpenAI(
 //   1. The model must ALREADY be resident. A cleanup run never loads one — that
 //      is the operator's job (`--crucible-load`), because a load evicts whatever
 //      else is resident and takes minutes, and neither belongs inside a book.
-//   2. Nothing is defaulted. `server` names a registry entry and `model` names a
-//      Crucible model id; a config missing either is refused by name.
+//   2. Nothing is defaulted. `server` names a registry entry and `act` names one
+//      of the four capability classes; a config missing either is refused by
+//      name.
 //
-// CLI-ONLY. Nothing in the app's UI, IPC or settings can select this provider.
+// And one thing that is NO LONGER the config's to say, since PHASE15 §5.3: the
+// MODEL. `crucible install` probes the card on each host and picks the largest
+// candidate that fits, so a 24 GB box serves `translate` with a 4-bit 27B and a
+// 12 GB box does not serve it at all — a per-HOST fact. An id chosen here would
+// be a second opinion about a decision that already has an owner, so the
+// preflight READS it from `GET /v1/capability` and stamps it onto the config for
+// reporting.
 
 // This client's name in the Crucible server's log and User-Agent used to be a
 // const here. It is `CRUCIBLE_CLIENT_NAME` in ./crucible/servers.ts now, because
@@ -2733,23 +2183,109 @@ async function cleanChunkWithOpenAI(
 /**
  * The `crucible` provider's config, or a refusal naming the missing half.
  *
- * Neither field is guessable — a server name is whatever this machine called the
- * entry, and a model id is whatever that host has manifests for — so neither is
- * defaulted. A caller that reaches here with one missing has a bug, and gets a
- * message that says which.
+ * Neither field is guessable — a server name is whatever this machine called
+ * the entry, and only the caller knows whether this run is a clean or a
+ * simplify — so neither is defaulted. A caller that reaches here with one
+ * missing has a bug, and gets a message that says which.
+ *
+ * The ACT is refused as hard as the server, and for a sharper reason than
+ * tidiness: Crucible rejects an act name it does not know (`400 unknown_act`),
+ * and the act travels into the server's own bench display, so a run that
+ * guessed would either be refused or be confidently mislabelled. Owen ruled
+ * that out by name — *"they can't lie to the user and say a translate job is
+ * running when it's actually a simplify job"*.
+ *
+ * `model` is NOT read here. It is the server's decision and an OUTPUT of the
+ * preflight — see the section header.
  */
-function crucibleConfigOf(config: AIProviderConfig): { server: string; model: string } {
+function crucibleConfigOf(config: AIProviderConfig): { server: string; act: CrucibleTextAct } {
   const server = config.crucible?.server;
-  const model = config.crucible?.model;
+  const act = config.crucible?.act;
   if (!server) {
     throw new Error('crucible_server_not_named: provider "crucible" needs crucible.server — the '
       + 'name of an entry in the server registry (bookforge-tts --crucible-list)');
   }
-  if (!model) {
-    throw new Error('crucible_model_not_named: provider "crucible" needs crucible.model — a '
-      + `Crucible model id (bookforge-tts --crucible-models --server ${server})`);
+  if (!isCrucibleTextAct(act)) {
+    throw new Error('crucible_act_not_named: provider "crucible" needs crucible.act — one of '
+      + `clean, translate, simplify, analysis (got ${act === undefined ? 'nothing' : JSON.stringify(act)}). `
+      + 'The act says which capability class this run is; the server refuses a name it does not '
+      + 'know and shows the one it is given, so it is never guessed.');
   }
-  return { server, model };
+  return { server, act };
+}
+
+/**
+ * The three things one chat needs, or a refusal naming what is missing.
+ *
+ * The model half is not read from the caller's intent — it is read from what
+ * {@link stampCrucibleModelForRun} wrote there, which is what the server's own
+ * capability record said. So a config that arrives here unstamped means the
+ * run reached a chat before it asked the server anything, and that is a bug in
+ * this app's order of operations rather than anything the operator can fix: it
+ * is named as such and never papered over with an id guessed here, which would
+ * be the second opinion §5.3 removed.
+ */
+function crucibleRunTargetOf(
+  config: AIProviderConfig,
+): { server: string; act: CrucibleTextAct; model: string } {
+  const { server, act } = crucibleConfigOf(config);
+  const model = config.crucible?.model;
+  if (model === undefined || model === '') {
+    throw new Error('crucible_model_not_stamped: the run reached a chat on crucible '
+      + `"${server}" before anything read that server's capability record, so nothing knows `
+      + `which model serves the "${act}" class there. The model is the SERVER's decision `
+      + '(GET /v1/capability), stamped onto the config once at the start of the run; a chat '
+      + 'never picks one.');
+  }
+  return { server, act, model };
+}
+
+/**
+ * THE MODEL THIS ACT RUNS ON, READ FROM THE SERVER THAT WILL RUN IT — once.
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3: *"The cleanup/OCR/translation/simplify/
+ * analysis doors send `capability.selected` as the model to the registry's
+ * server and nothing else."* `crucible install` probes that host's card and
+ * picks the largest candidate that fits, so the answer is a per-HOST fact and
+ * the app's only honest move is to ask. `modelFromCapability` is the pure half
+ * of that (it refuses three different ways, each naming what a person would do
+ * about it) and lives in `text-venue.ts` so a keeper can drive all three with
+ * no network; this is the READ plus the stamp.
+ *
+ * ── WHY IT IS HERE AND NOT IN THE PREFLIGHT ────────────────────────────────
+ *
+ * The preflight is inside {@link cleanupEpubRun}, and the LEASE that wraps that
+ * run needs the model id to say what it is holding. Resolving it in both places
+ * would be two reads of one record with nothing comparing them — the shape
+ * crucible `docs/ARCHITECTURE.md` R1 exists to stop. So the read happens once,
+ * at the outermost door, and the preflight reads back what it stamped (through
+ * {@link crucibleRunTargetOf}, which refuses by name if this never ran) and
+ * spends its own round trip on the question this one does not answer: whether
+ * that model is RESIDENT.
+ *
+ * The stamp is a read, not a decision — exactly what `config.crucible.model` is
+ * documented to be. Nothing branches on it; the reporting sites name it.
+ */
+async function stampCrucibleModelForRun(
+  config: AIProviderConfig,
+): Promise<{ server: string; act: CrucibleTextAct; model: string }> {
+  const { server, act } = crucibleConfigOf(config);
+  /*
+   * THE READ AND THE STAMP ARE `crucibleActModel`'S, not this file's.
+   *
+   * `text-ai.ts`'s `callCrucible` needs exactly the same answer, and two
+   * copies of "read the capability record, pick the row, write the id down"
+   * would be two chances to disagree about what a simplify runs on — the
+   * shape crucible `docs/ARCHITECTURE.md` R1 exists to stop. So it lives once,
+   * beside the pure `modelFromCapability` it wraps, and this function is the
+   * cleanup run's call to it plus the pair the lease and the preflight read
+   * back.
+   */
+  const { crucibleActModel } = await import('./crucible/text-venue.js');
+  const block = { server, act, ...(config.crucible?.model === undefined ? {} : { model: config.crucible.model }) };
+  const model = await crucibleActModel(block);
+  config.crucible = { server, act, model };
+  return { server, act, model };
 }
 
 /**
@@ -2772,9 +2308,9 @@ async function crucibleClient(server: string): Promise<CrucibleClient> {
  * carrying `network`/`socket`/`timeout`/`fetch`, and anything else is fatal for
  * the chunk. The SDK instead throws one TYPE per failure. This is the single
  * place those two vocabularies meet, so that the retry / timeout / abort
- * machinery applies to crucible EXACTLY as it applies to openai — where `fetch`
- * itself supplies "fetch failed" for the same transport failures
- * `CrucibleUnreachable` names.
+ * machinery keyed on those messages applies to a Crucible failure at all —
+ * `fetch` supplies "fetch failed" of its own accord for a transport failure,
+ * and `CrucibleUnreachable` is the same news wearing a type.
  *
  * An abort is deliberately NOT translated: the SDK throws the DOM `AbortError`
  * straight through, and that is the name the caller already checks for.
@@ -2785,7 +2321,7 @@ function translateCrucibleError(err: unknown, server: string): unknown {
   const at = `crucible "${server}"`;
   if (err instanceof CrucibleUnreachable) {
     // "network" is the token the retry machinery keys on, so a server that is
-    // down is retried exactly as a failed fetch to api.openai.com is.
+    // down is retried as any other transport failure is.
     return new Error(`${at} network failure: ${err.message}`);
   }
   if (err instanceof CrucibleRefused && err.code === 'model_not_resident') {
@@ -2866,27 +2402,24 @@ async function assertCrucibleModelResident(server: string, model: string): Promi
 /**
  * Clean up a chunk of text on a Crucible server.
  *
- * Deliberately the same shape as cleanChunkWithOpenAI — the same 3-minute
- * per-chunk timeout, the same chained abort, the same `max(4096, len*2)` token
- * budget, the same temperature, the same empty-answer → `[SKIP]` trapdoor and
- * the same extractAnswer tail — because it feeds the same safeguards. Two
- * differences, both required by what is on the other end:
+ * It feeds the same safeguards every chunk in this file feeds, so it keeps the
+ * same 3-minute per-chunk timeout, the same chained abort, the same
+ * `max(4096, len*2)` token budget, the same temperature, the same
+ * empty-answer → `[SKIP]` trapdoor and the same extractAnswer tail. Three
+ * things are its own, each required by what is on the other end:
  *
  *  - `thinking: false`. Qwen3.5 and its kind emit `reasoning` first and
  *    `content` after, so a bounded budget can be spent ENTIRELY on reasoning and
  *    return a message with no content at all. A cleanup pass wants the answer.
- *  - `finishReason === 'length'` routes through the unified `[SKIP]` split, as
- *    the Claude path does for `max_tokens`. The OpenAI path lacks that only
- *    because its finish_reason was never wired up; a truncated chunk is not text
- *    to ship, whoever generated it.
+ *  - `finishReason === 'length'` routes through the unified `[SKIP]` split: a
+ *    truncated chunk is not text to ship, whatever produced it.
  *  - `maxTokensOverride`. The rewrite-era `max(4096, len*2)` estimate is the
  *    DEFAULT, not the rule: an edit-list or observation call emits a small JSON
  *    answer whose size has nothing to do with the input's, and its caller has
- *    already sized the budget (EDITLIST_NUM_PREDICT). Ollama takes that number
- *    through `numPredictOverride`; this takes it the same way, and for the same
- *    reason. Measured 2026-09-12: without it, 2 of 9 edit-list chunks on a 19 KB
- *    EPUB hit the 4096 ceiling, and each cost 142 s in the resulting [SKIP]
- *    split — against 1.2-1.6 s for a chunk that fitted.
+ *    already sized the budget (EDITLIST_NUM_PREDICT). Measured 2026-09-12:
+ *    without it, 2 of 9 edit-list chunks on a 19 KB EPUB hit the 4096 ceiling,
+ *    and each cost 142 s in the resulting [SKIP] split — against 1.2-1.6 s for
+ *    a chunk that fitted.
  */
 /**
  * ONE COMPLETION AGAINST A CRUCIBLE SERVER — the transport, and nothing about
@@ -2925,9 +2458,9 @@ export async function crucibleChatOnce(options: {
   const controller = new AbortController();
   // Whose abort it was. The SDK throws the DOM AbortError for both, and the
   // caller reads an AbortError as "the job was cancelled" — true when the USER
-  // cancelled, a lie when this timer fired. The Ollama path keeps the same flag
-  // for the same reason (`timedOut`), and names its timeout in the message so it
-  // is retried like any other transport stall rather than ending the chunk.
+  // cancelled, a lie when this timer fired. So the timeout is named in the
+  // message instead, and retried like any other transport stall rather than
+  // ending the chunk.
   let timedOut = false;
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
 
@@ -2997,9 +2530,9 @@ async function cleanChunkWithCrucible(
     return '[SKIP]';
   }
 
-  // Separate answer from any reasoning/answer-tag wrapper (see the Claude and
-  // OpenAI paths): an answer-tag prompt (edit-list, simplify) must not leak its
-  // tags, and an unclosed answer throws REASONING_OVERRUN.
+  // Separate answer from any reasoning/answer-tag wrapper: an answer-tag prompt
+  // (edit-list, simplify) must not leak its tags, and an unclosed answer throws
+  // REASONING_OVERRUN.
   return extractAnswer(cleaned, model);
 }
 
@@ -3027,42 +2560,9 @@ async function cleanChunkWithLocal(
     // so don't let generate() throw a fatal error on empty content.
     allowEmpty: true,
   });
-  // Same contract as the Ollama path: an unterminated <think> is a failed
-  // generation, not text to ship. See extractAnswer().
+  // An unterminated <think> is a failed generation, not text to ship. See
+  // extractAnswer().
   return extractAnswer(raw, 'local');
-}
-
-/**
- * THE KEY AND THE MODEL FOR A CLOUD RUN, READ OUT OF FOUNDRY'S RECORD.
- *
- * Owen's ruling of 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
- * keys have ONE owner, Foundry's cloud card, and BookForge's OCR-cleanup AI
- * provider reads that record — exactly as `narration-clean-text.ts` already
- * reads `cleanTextModel` out of the same file.
- *
- * So `config.claude` and `config.openai` no longer carry a credential. They
- * were the renderer's `localStorage`, which meant this app kept a SECOND copy
- * of a key Foundry already stores properly, beside a compiled three-item model
- * list that contradicted the ruling the key is supposed to satisfy ("the key
- * picks the models: the app calls the provider's own listing").
- *
- * It refuses BY NAME and never falls back. A run asked for Claude on a machine
- * with no enabled Anthropic slot cannot happen, and quietly running it on some
- * other provider would put somebody's book through weights they did not
- * choose. The refusal names the file, the kind and the card.
- */
-async function cloudCredentialsFor(
-  provider: 'claude' | 'openai',
-): Promise<{ apiKey: string; model: string }> {
-  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
-  const kind = cloudKindForProvider(provider);
-  if (kind === null) {
-    // Unreachable through the two call sites; a throw rather than a cast so a
-    // third provider added to the union cannot arrive here as `undefined`.
-    throw new Error(`cloudCredentialsFor was given "${provider}", which is not a cloud provider`);
-  }
-  const slot = await requireCloudSlot(kind);
-  return { apiKey: slot.apiKey, model: slot.model };
 }
 
 export async function cleanChunkWithProvider(
@@ -3097,32 +2597,18 @@ export async function cleanChunkWithProvider(
       // anti-repetition note prepended.
       const callProvider = async (inputText: string): Promise<string> => {
         switch (config.provider) {
-          case 'ollama':
-            if (!config.ollama?.model) {
-              throw new Error('Ollama model not configured');
-            }
-            return cleanChunk(inputText, systemPrompt, config.ollama.model, jobNumCtx, jobTemperature, abortSignal, chunkMeta);
-          case 'claude': {
-            // The key and the model come from Foundry's cloud card, not from
-            // this config — see cloudCredentialsFor. Refuses by name.
-            const cloud = await cloudCredentialsFor('claude');
-            return cleanChunkWithClaude(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal, chunkMeta);
-          }
-          case 'openai': {
-            const cloud = await cloudCredentialsFor('openai');
-            return cleanChunkWithOpenAI(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal, chunkMeta);
-          }
           case 'crucible': {
-            // Residency was proven once, at job start (cleanupEpub's preflight).
-            // This only resolves the two required fields, which crucibleConfigOf
-            // refuses by name rather than defaulting.
-            const { server, model } = crucibleConfigOf(config);
+            // The model was read from the server's capability record and
+            // residency proven once, at job start (cleanupEpub's preflight).
+            // This only reads back what that stamped, refusing by name rather
+            // than defaulting.
+            const { server, model } = crucibleRunTargetOf(config);
             return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal);
           }
           case 'local':
             return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
           default:
-            throw new Error(`Unknown provider: ${config.provider}`);
+            throw new Error(`unknown_ai_provider: ${String(config.provider)}`);
         }
       };
 
@@ -3241,129 +2727,6 @@ export async function cleanChunkWithProvider(
 }
 
 /**
- * Clean up a single chunk of text using Ollama
- */
-async function cleanChunk(
-  text: string,
-  systemPrompt: string,
-  model: string,
-  jobNumCtx: number,
-  jobTemperature: number,
-  abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta,
-  isRetry: boolean = false,
-  // Edit-list / observation calls emit a tiny JSON answer regardless of input size,
-  // so they pin num_predict at a fixed budget instead of the rewrite-era
-  // text.length*2. Omit to keep the rewrite budget.
-  numPredictOverride?: number
-): Promise<string> {
-  console.log('[AI-BRIDGE] cleanChunk using model:', model);
-
-  // Use AbortController for cancellation support
-  const controller = new AbortController();
-
-  // Chain abort signals - if parent aborts, abort this request too
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
-  }
-
-  // Stream the response so a hung server surfaces as an inactivity timeout instead of
-  // hanging forever (a non-streaming request also dies at undici's 5-minute headers
-  // timeout for long generations, which read as a generic "fetch failed").
-  let timedOut = false;
-  let inactivityTimer: NodeJS.Timeout | undefined;
-  const resetInactivityTimer = () => {
-    if (inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, OLLAMA_INACTIVITY_TIMEOUT_MS);
-  };
-
-  let cleaned: string;
-  try {
-    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
-    // generation budget goes to the answer, not a discarded chain-of-thought.
-    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
-    resetInactivityTimer();
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      signal: controller.signal,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt: text,
-        system: systemPrompt,
-        stream: true,
-        ...thinkFields,
-        options: {
-          temperature: jobTemperature, // Job-level; default 0.1 (consistent), overridable via cleanupEpub options.temperature
-          num_predict: (typeof numPredictOverride === 'number' && numPredictOverride > 0) ? numPredictOverride : text.length * 2, // Allow enough tokens
-          // Job-level constant sized to the largest chunk (computed once in the
-          // caller). Ollama fully reloads the runner on ANY num_ctx change, so a
-          // per-chunk estimate churned the model in/out between chunks; a single
-          // pinned value loads it once and keeps it resident for the whole book.
-          num_ctx: jobNumCtx
-        },
-        keep_alive: '5m' // Keep model loaded for 5 minutes
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned HTTP ${response.status}`);
-    }
-    if (!response.body) {
-      throw new Error('Ollama returned no response body');
-    }
-
-    let result = '';
-    let buffer = '';
-    let sawDone = false;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      resetInactivityTimer();
-      buffer += decoder.decode(value, { stream: true });
-      let newlineIdx;
-      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, newlineIdx).trim();
-        buffer = buffer.slice(newlineIdx + 1);
-        if (!line) continue;
-        const data = JSON.parse(line);
-        if (data.error) {
-          throw new Error(`Ollama error: ${data.error}`);
-        }
-        if (typeof data.response === 'string') {
-          result += data.response;
-        }
-        if (data.done) sawDone = true;
-      }
-    }
-    if (!sawDone) {
-      throw new Error('Ollama stream ended without a completion message');
-    }
-    cleaned = result;
-  } catch (error) {
-    if (timedOut) {
-      throw new Error(`Ollama timeout: no data received for ${OLLAMA_INACTIVITY_TIMEOUT_MS / 1000}s — the server may be hung`);
-    }
-    throw error;
-  } finally {
-    if (inactivityTimer) clearTimeout(inactivityTimer);
-  }
-
-  // Separate the model's reasoning from its answer. ALL quality safeguards (the
-  // [SKIP] trapdoor, truncation, copyright, splitting, registering skipped
-  // chunks) are applied uniformly by applyOutputSafeguards in
-  // cleanChunkWithProvider — never per provider — so every backend behaves
-  // identically. An empty result here is treated as a skip there (never
-  // silently kept as the original).
-  return extractAnswer(cleaned, model);
-}
-
-/**
  * Pull the answer out of a hybrid-reasoning model's response.
  *
  * Two shapes are accepted, in order:
@@ -3380,8 +2743,14 @@ async function cleanChunk(
  * surviving `<think` is a FAILED GENERATION and must throw: cleanChunkWithProvider
  * catches it, retries, splits, and finally records a skipped chunk. Never a
  * silent fallback — the one thing we must not do is ship it.
+ *
+ * EXPORTED because the TTS number normalizer's runner reaches a Crucible
+ * directly now that the named Ollama edit-list door is gone, and an answer that
+ * arrived over that door has exactly the same two shapes and the same
+ * unterminated-`<think>` failure as one that arrived over this file's. A second
+ * copy of this reader is a second place the reasoning leak can come back.
  */
-function extractAnswer(raw: string, model: string): string {
+export function extractAnswer(raw: string, model: string): string {
   const answers = [...raw.matchAll(/<answer>([\s\S]*?)<\/answer>/gi)];
   let text: string;
   if (answers.length === 1) {
@@ -3481,50 +2850,11 @@ ${pairs.map(p => `- ${p}`).join('\n')}`;
  * Dispatch one call to the configured provider and return the extracted answer
  * text (post extractAnswer — think/answer tags removed, REASONING_OVERRUN thrown
  * on an overrun). Used by the pre-pass observation calls and the edit-list chunk
- * pass. num_predict/temperature are honored only by Ollama; cloud/local use their
- * own budgets — immaterial for these small-answer calls.
+ * pass. `numCtx` is honoured by nobody left — the Crucible engine's context is
+ * fixed at load and the bundled local engine's at startup — and it is kept on
+ * the signature because the callers that compute it are the same callers that
+ * compute `numPredict`, which IS honoured and matters. See the crucible arm.
  */
-/**
- * One Ollama edit-list request, for a caller that is not part of the cleanup job.
- *
- * The TTS number normalizer (electron/tts-number-normalizer.ts) asks the model
- * one question per passage and gets a JSON edit list back — the same shape, the
- * same answer extraction and the same failure modes as the cleanup pass, on a
- * pass that has no `CleanupJobState`, no chunk numbering and no provider choice.
- * So it gets a door of its own rather than a synthesized job: this is a thin,
- * NAMED wrapper over `callProviderExtracted`, so the request still goes through
- * `cleanChunk` — the `think:false` capability probe (qwen3.5 is a thinking model
- * and would otherwise spend its budget on reasoning we throw away), the
- * streaming inactivity timeout, and `extractAnswer`'s REASONING_OVERRUN.
- *
- * Ollama ONLY. The pass is a local-GPU pass by design (it runs between the
- * narration cut and the TTS spawn, on the machine's own model), so there is no
- * provider to choose and none is offered.
- *
- * `numCtx` is the caller's, sized with `estimateNumCtxForBudget`, because Ollama
- * reloads the runner on ANY num_ctx change and a per-passage estimate would
- * churn a 6-17 GB model in and out between paragraphs.
- */
-export async function generateEditListWithOllama(
-  model: string,
-  systemPrompt: string,
-  input: string,
-  options: { numCtx: number; numPredict: number; temperature: number; abortSignal?: AbortSignal },
-): Promise<string> {
-  return callProviderExtracted(
-    input,
-    systemPrompt,
-    // `baseUrl` is carried by the config shape and ignored by `cleanChunk`,
-    // which talks to the module-level OLLAMA_BASE_URL — stated here rather than
-    // invented so the two cannot come to mean different servers.
-    { provider: 'ollama', ollama: { baseUrl: OLLAMA_BASE_URL, model } },
-    options.numCtx,
-    options.temperature,
-    options.numPredict,
-    options.abortSignal,
-  );
-}
-
 async function callProviderExtracted(
   inputText: string,
   systemPrompt: string,
@@ -3535,17 +2865,6 @@ async function callProviderExtracted(
   abortSignal?: AbortSignal
 ): Promise<string> {
   switch (config.provider) {
-    case 'ollama':
-      if (!config.ollama?.model) throw new Error('Ollama model not configured');
-      return cleanChunk(inputText, systemPrompt, config.ollama.model, numCtx, temperature, abortSignal, undefined, false, numPredict);
-    case 'claude': {
-      const cloud = await cloudCredentialsFor('claude');
-      return cleanChunkWithClaude(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
-    }
-    case 'openai': {
-      const cloud = await cloudCredentialsFor('openai');
-      return cleanChunkWithOpenAI(inputText, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
-    }
     case 'crucible': {
       // `numCtx` IS ignored — the Crucible engine's context is the manifest's
       // `context_default`, fixed when the model was loaded, and nothing here can
@@ -3553,13 +2872,13 @@ async function callProviderExtracted(
       // observation passes, whose small JSON answer has nothing to do with the
       // input's size and whose budget they have already computed. Dropping it is
       // what made 2 of 9 chunks truncate at 4096 and cost 142 s apiece.
-      const { server, model } = crucibleConfigOf(config);
+      const { server, model } = crucibleRunTargetOf(config);
       return cleanChunkWithCrucible(inputText, systemPrompt, server, model, abortSignal, numPredict);
     }
     case 'local':
       return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
     default:
-      throw new Error(`Unknown provider: ${config.provider}`);
+      throw new Error(`unknown_ai_provider: ${String(config.provider)}`);
   }
 }
 
@@ -3654,8 +2973,10 @@ async function planFootnoteRemoval(
   // instead of emitting the JSON. Observe a bounded densest window instead; the
   // self-check below runs against the SAME window so the counts stay meaningful.
   const observedText = pickObservationWindow(chapterText);
-  const numCtx = estimateNumCtxForBudget(FOOTNOTE_OBSERVATION_PROMPT, observedText, 4096,
-    config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL);
+  // DEFAULT_MODEL is the SIZE the ceiling is derived from, not a model anything
+  // will run: `numCtx` reaches no provider that still exists (see
+  // callProviderExtracted). It is computed because the window it bounds is real.
+  const numCtx = estimateNumCtxForBudget(FOOTNOTE_OBSERVATION_PROMPT, observedText, 4096, DEFAULT_MODEL);
   let answer: string;
   try {
     answer = await callProviderExtracted(observedText, FOOTNOTE_OBSERVATION_PROMPT, config, numCtx, temperature, 4096, abortSignal);
@@ -3722,8 +3043,8 @@ async function planHyphenJoins(
     // items is not) so a full batch doesn't truncate into a REASONING_OVERRUN. A
     // truncated batch is still safe (its pairs stay unresolved → conservative).
     const numPredict = Math.max(4096, batch.length * 80);
-    const numCtx = estimateNumCtxForBudget(prompt, 'Adjudicate every item above.', numPredict,
-      config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL);
+    // DEFAULT_MODEL only sizes the ceiling — see the footnote observation pass.
+    const numCtx = estimateNumCtxForBudget(prompt, 'Adjudicate every item above.', numPredict, DEFAULT_MODEL);
     let answer: string;
     try {
       // The pairs live in the system prompt; the user turn just triggers the answer.
@@ -4152,176 +3473,6 @@ export async function simplifyChapterBlocks(opts: {
   return replaceBlockTextsExact(xhtml, texts);
 }
 
-/**
- * Clean up text with streaming progress updates
- */
-export async function cleanupText(
-  text: string,
-  options: AICleanupOptions,
-  chapterId: string,
-  chapterTitle: string,
-  model: string = DEFAULT_MODEL,
-  mainWindow?: BrowserWindow | null
-): Promise<CleanupResult> {
-  // Check connection first
-  const connection = await checkConnection();
-  if (!connection.connected) {
-    return { success: false, error: `Ollama not available: ${connection.error}` };
-  }
-
-  // Check if model is available
-  if (!(await hasModel(model))) {
-    return { success: false, error: `Model '${model}' not found. Run: ollama pull ${model}` };
-  }
-
-  // Reload prompt from disk so external changes (e.g., Syncthing pull) take effect
-  // without restarting the app
-  cachedPrompt = await loadPrompt();
-  const systemPrompt = buildCleanupPrompt(options);
-
-  // Split text into chunks at logical break points
-  const chunks: string[] = [];
-
-  // If text fits in one chunk, don't split
-  if (text.length <= CHUNK_SIZE) {
-    chunks.push(text);
-  } else {
-    let pos = 0;
-    while (pos < text.length) {
-      const targetEnd = Math.min(pos + CHUNK_SIZE, text.length);
-      const end = findBestBreakPoint(text, targetEnd, pos);
-      chunks.push(text.substring(pos, end));
-      pos = end;
-    }
-  }
-
-  const uniqueChunks = chunks;
-
-  // Pin num_ctx once for the whole call, sized to the largest chunk, so Ollama
-  // loads the model a single time instead of reloading on every chunk (any
-  // num_ctx change forces a full runner reload). Every smaller chunk fits.
-  const longestChunk = uniqueChunks.reduce((a, b) => (b.length > a.length ? b : a), '');
-  const jobNumCtx = estimateNumCtx(systemPrompt, longestChunk, 2, model);
-
-  // Process each chunk
-  const cleanedChunks: string[] = [];
-  for (let i = 0; i < uniqueChunks.length; i++) {
-    // Send progress update
-    if (mainWindow) {
-      const progress: CleanupProgress = {
-        chapterId,
-        chapterTitle,
-        currentChunk: i + 1,
-        totalChunks: uniqueChunks.length,
-        percentage: Math.round(((i + 1) / uniqueChunks.length) * 100)
-      };
-      mainWindow.webContents.send('ai:cleanup-progress', progress);
-    }
-
-    // Build chunk metadata for skipped chunk tracking
-    const chunkMeta: ChunkMeta = {
-      chapterTitle,
-      chunkIndex: i,
-      overallChunkNumber: i + 1,
-      totalChunks: uniqueChunks.length
-    };
-
-    try {
-      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, jobNumCtx, 0.1, undefined, chunkMeta);
-      cleanedChunks.push(cleaned);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, error: `Failed on chunk ${i + 1}: ${message}` };
-    }
-  }
-
-  return { success: true, cleanedText: cleanedChunks.join('') };
-}
-
-/**
- * Clean up a chapter with streaming response for real-time progress
- */
-export async function cleanupChapterStreaming(
-  text: string,
-  options: AICleanupOptions,
-  model: string = DEFAULT_MODEL,
-  onToken?: (token: string) => void
-): Promise<CleanupResult> {
-  const connection = await checkConnection();
-  if (!connection.connected) {
-    return { success: false, error: `Ollama not available: ${connection.error}` };
-  }
-
-  // Reload prompt from disk so external changes take effect without restart
-  cachedPrompt = await loadPrompt();
-  const systemPrompt = buildCleanupPrompt(options);
-
-  try {
-    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
-    // generation budget goes to the answer, not a discarded chain-of-thought.
-    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt: text,
-        system: systemPrompt,
-        stream: true,
-        ...thinkFields,
-        options: {
-          temperature: 0.1,
-          num_predict: text.length * 2,
-          // Pin to the model's ceiling (a constant per model) rather than a
-          // per-call estimate: this endpoint is invoked once per chapter, and a
-          // varying num_ctx would reload the runner between chapters. The ceiling
-          // is already sized to fit weights + KV on the GPU.
-          num_ctx: numCtxMaxForModel(model)
-        }
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned HTTP ${response.status}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('No response body');
-    }
-
-    const decoder = new TextDecoder();
-    let fullResponse = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n').filter(line => line.trim());
-
-      for (const line of lines) {
-        try {
-          const data = JSON.parse(line);
-          if (data.response) {
-            fullResponse += data.response;
-            if (onToken) {
-              onToken(data.response);
-            }
-          }
-        } catch {
-          // Ignore JSON parse errors for incomplete chunks
-        }
-      }
-    }
-
-    return { success: true, cleanedText: fullResponse };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { success: false, error: message };
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // EPUB OCR Cleanup (for queue processing)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4383,33 +3534,31 @@ export interface EpubCleanupResult {
 }
 
 /**
- * Free the cleanup model's VRAM at JOB end.
+ * Free the cleanup model's VRAM at JOB end — and since 2026-09-14 there is
+ * nothing here for this file to free.
  *
- * Every chunk request carries keep_alive:'5m', which is what keeps the model hot
- * BETWEEN chunks — without it Ollama would evict and fully reload the runner on
- * every chunk. But that same window means the model squats in VRAM for 5 minutes
- * AFTER the final chunk, which is pure waste: the job is over, and a following GPU
- * phase (TTS) would otherwise wait on VRAM that nothing is using. Unloading here
- * costs nothing — the next job reloads it anyway.
+ * It used to evict the Ollama model a finished job had left resident on THIS
+ * machine's card, so a following TTS phase did not wait out a 5-minute
+ * keep_alive on VRAM nothing was using. With the Ollama provider deleted, an
+ * Ollama the user runs here is no longer anything an AI cleanup put there, so
+ * evicting it is not this file's call to make. That eviction belongs to the
+ * LEGACY TTS SPAWN PATH, which already does it for its own reasons and by its
+ * own name — `parallel-tts-bridge.ts` calls `unloadOllamaModels()` before it
+ * takes the card — and it goes when that layer goes (PHASE15 §6).
  *
- * Best-effort by design: a failed unload must never fail a completed cleanup job.
- * The VRAM preflight in gpu-arbiter remains the backstop.
+ * Crucible is deliberately NOT unloaded either, and the symmetry is the point:
+ * a cleanup run does not load a model on someone else's server, so it does not
+ * unload one. Residency there is the operator's decision, and what keeps a
+ * model on the card for the duration of a run is the LEASE (see cleanupEpub),
+ * not anything this function could do. An unload behind the operator's back
+ * would evict the model their next run is about to use, on a machine this job
+ * does not own (`--crucible-unload` is the door).
+ *
+ * So the function is kept as the named place that answer lives, and it does
+ * nothing.
  */
-async function releaseCleanupModel(config: AIProviderConfig): Promise<void> {
-  // Crucible is deliberately NOT unloaded here, and the symmetry is the point: a
-  // cleanup run does not load a model on someone else's server, so it does not
-  // unload one either. Residency there is the operator's decision — an unload
-  // behind their back would evict the model their next run is about to use, on a
-  // machine this job does not own (`--crucible-unload` is the door).
-  if (config.provider !== 'ollama' || !config.ollama?.model) return;
-  const model = config.ollama.model;
-  try {
-    const { unloadOllamaModel } = await import('./gpu-arbiter.js');
-    await unloadOllamaModel(model);
-    console.log(`[AI-CLEANUP] Released ${model} from VRAM (job complete — not waiting out keep_alive)`);
-  } catch (err) {
-    console.warn(`[AI-CLEANUP] Could not release ${model} from VRAM: ${(err as Error).message}`);
-  }
+async function releaseCleanupModel(_config: AIProviderConfig): Promise<void> {
+  return;
 }
 
 /**
@@ -4443,9 +3592,9 @@ async function releaseCleanupModel(config: AIProviderConfig): Promise<void> {
  * body is unchanged and knows nothing about it.
  *
  * **Only the `crucible` provider leases, and only when a model will be called.**
- * Ollama and the local engine are this machine's own and keep their VRAM through
- * `keep_alive` + `releaseCleanupModel`; a cloud provider has no card. And a
- * TTS-prep run with structural footnote proof makes no model calls at all
+ * The bundled local engine is this machine's own and holds its own card until
+ * its idle timer or `cancelCleanupJob` stops it, so there is nobody to tell.
+ * And a TTS-prep run with structural footnote proof makes no model calls at all
  * (`noModelNeeded`), so leasing for it would hold somebody's card for a run that
  * never speaks to them — which is why that fact is decided HERE and handed down
  * rather than recomputed inside.
@@ -4468,8 +3617,8 @@ export async function cleanupEpub(
   // CLEANUP PROVIDER: pass 1 does not run, and the one provider call pass 2 used to
   // need (the footnote observation) is gone. Pass 2 may still load the bundled
   // markers it can prove from markup, and nothing else — no model at all. Validating a provider this job will
-  // never use turns an offline job into one that fails whenever Ollama is wedged —
-  // which is exactly what happened. Conditions mirror the edit-list path so a custom
+  // never use turns an offline job into one that fails whenever the engine is
+  // down — which is exactly what happened. Conditions mirror the edit-list path so a custom
   // prompt, detailed deletions or simplify still preflight normally.
   const noModelNeeded = archiveHasProof
     && options?.cleanupStages === 'tts'
@@ -4485,13 +3634,17 @@ export async function cleanupEpub(
 
   if (providerConfig.provider !== 'crucible' || noModelNeeded) return run();
 
-  // Both halves by name BEFORE the lease. `crucibleConfigOf` throws a refusal
-  // whose message carries its own code; the run's own preflight returns that same
-  // refusal as a result, and this door reports it the same way rather than
-  // throwing where every caller expects a result.
-  let named: { server: string; model: string };
+  // The server and the act by name, then the model READ from that server's
+  // capability record, all BEFORE the lease — a lease has to say which model it
+  // holds, and this app is not the thing that decides which one that is. Every
+  // refusal on this road (`crucible_server_not_named`, `crucible_act_not_named`,
+  // `crucible_capability_undecided`, `crucible_capability_disabled`,
+  // `crucible_capability_no_model`) throws a message carrying its own code, and
+  // this door reports it as a result rather than throwing where every caller
+  // expects one. See stampCrucibleModelForRun.
+  let named: { server: string; act: CrucibleTextAct; model: string };
   try {
-    named = crucibleConfigOf(providerConfig);
+    named = await stampCrucibleModelForRun(providerConfig);
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
@@ -4506,16 +3659,16 @@ export async function cleanupEpub(
         kind: 'model',
         id: named.model,
         /*
-         * `clean` — the act named truthfully, which is what goes on the bench
-         * beside the card. A simplify run is still a `clean` act to Crucible: the
-         * four act names are crucible's capability CLASSES (`clean`, `translate`,
-         * `simplify`, `analysis`) and this provider's simplify rewrites through
-         * the same cleanup door with a different prompt, so `simplify` here would
-         * name a class this code path is not. RULING OWED: whether a
-         * `simplifyForChildren` cleanup should lease and label itself `simplify`
-         * once BookForge's simplify has its own act on this path.
+         * The act the CALLER named, which is what goes on the bench beside the
+         * card and into `X-Crucible-Act`. It is no longer hardcoded `clean`:
+         * the act is a field on the config now, so a simplify run that says
+         * `simplify` leases and labels itself `simplify`, and the capability
+         * class the model was chosen from is the same one the lease records.
+         * One name, read from one place — the lie Owen ruled out ("they can't
+         * lie to the user and say a translate job is running when it's actually
+         * a simplify job") has nowhere left to enter.
          */
-        act: 'clean',
+        act: named.act,
         onLog: (line) => console.log(`[AI-CLEANUP] ${line}`),
       },
       run,
@@ -4622,10 +3775,9 @@ async function cleanupEpubRun(
   if (options?.temperature !== undefined) console.log(`[AI-BRIDGE] temperature override: ${jobTemperature}`);
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
-    ollamaModel: providerConfig.ollama?.model,
-    claudeModel: providerConfig.claude?.model,
-    openaiModel: providerConfig.openai?.model,
+    localModel: providerConfig.local?.model,
     crucibleServer: providerConfig.crucible?.server,
+    crucibleAct: providerConfig.crucible?.act,
     crucibleModel: providerConfig.crucible?.model,
     useDetailedCleanup: options?.useDetailedCleanup,
     exampleCount: options?.deletedBlockExamples?.length || 0,
@@ -4638,8 +3790,9 @@ async function cleanupEpubRun(
   startAIPowerBlock();
 
   // Per-job fallback/skip accounting — owned by THIS call so it can run
-  // concurrently with another cleanup job (e.g. a cloud job in the cloud lane
-  // alongside a GPU/Ollama job) without cross-contaminating counters or skips.
+  // concurrently with another cleanup job (e.g. one whose class the engine
+  // forwards to an upstream, in the `[cloud]` lane, beside one on a GPU slot)
+  // without cross-contaminating counters or skips.
   const jobState = newCleanupJobState();
 
   // providerConfig is required - no fallbacks
@@ -4652,65 +3805,18 @@ async function cleanupEpubRun(
   // Validate provider configuration
   if (noModelNeeded) {
     // nothing to validate — no provider will be contacted
-  } else if (config.provider === 'ollama') {
-    if (!config.ollama?.model) {
-      stopAIPowerBlock();
-      return { success: false, error: 'Ollama model not specified in config' };
-    }
-    const connection = await checkConnection();
-    if (!connection.connected) {
-      stopAIPowerBlock();
-      return { success: false, error: `Ollama not available: ${connection.error}` };
-    }
-    if (!(await hasModel(config.ollama.model))) {
-      stopAIPowerBlock();
-      return { success: false, error: `Model '${config.ollama.model}' not found. Run: ollama pull ${config.ollama.model}` };
-    }
-    console.log(`[AI-BRIDGE] Running Ollama generate preflight for ${config.ollama.model}...`);
-    const generateCheck = await verifyOllamaGenerate(config.ollama.model);
-    if (!generateCheck.ok) {
-      stopAIPowerBlock();
-      return { success: false, error: `Ollama is reachable but not serving generate requests: ${generateCheck.error}` };
-    }
-    console.log('[AI-BRIDGE] Ollama generate preflight passed');
-  } else if (config.provider === 'claude' || config.provider === 'openai') {
-    /*
-     * ONE PREFLIGHT FOR BOTH CLOUD DOORS, and it asks FOUNDRY'S RECORD.
-     *
-     * It fails here — before chunk 1 — for the reason every other provider's
-     * preflight does: a missing key found at chunk 47 costs an hour and names
-     * nothing. The refusal is `cloud_provider_not_configured` or
-     * `cloud_provider_incomplete`, each naming the file, the kind and the card
-     * where the fix is, and it is RETURNED rather than thrown because that is
-     * how this function reports.
-     */
-    try {
-      const cloud = await cloudCredentialsFor(config.provider);
-      // STAMPED ONCE, so every downstream report names the model this run used.
-      // A read, not a decision: the chunk doors ask Foundry's record again
-      // rather than trusting what is written here.
-      // The `apiKey` slot is carried through UNCHANGED rather than blanked:
-      // two call sites in files a concurrent build owns still populate it
-      // (see AIProviderConfig above), and emptying it here would break their
-      // path to fix a field this file already ignores.
-      if (config.provider === 'claude') {
-        config.claude = { apiKey: config.claude?.apiKey ?? '', model: cloud.model };
-      } else {
-        config.openai = { apiKey: config.openai?.apiKey ?? '', model: cloud.model };
-      }
-    } catch (err) {
-      stopAIPowerBlock();
-      return { success: false, error: (err as Error).message };
-    }
   } else if (config.provider === 'crucible') {
-    // Both halves by name, then the ONE residency round trip this job makes.
+    // The server, the act and the model the SERVER chose — read and stamped by
+    // `cleanupEpub` before it took the lease, because a lease has to name what
+    // it holds. This reads that back (refusing by name if it somehow did not
+    // happen) and then spends the ONE residency round trip this job makes.
     // Failing here costs a second and names the fix; failing at chunk 47 costs an
     // hour and names nothing. A refusal is returned, not thrown, because that is
-    // how every other provider's preflight reports — the message carries the
-    // machine-readable code (crucible_model_not_resident, …) at its head.
-    let crucible: { server: string; model: string };
+    // how this function reports — the message carries the machine-readable code
+    // (crucible_model_not_resident, …) at its head.
+    let crucible: { server: string; act: CrucibleTextAct; model: string };
     try {
-      crucible = crucibleConfigOf(config);
+      crucible = crucibleRunTargetOf(config);
     } catch (err) {
       stopAIPowerBlock();
       return { success: false, error: (err as Error).message };
@@ -4725,7 +3831,8 @@ async function cleanupEpubRun(
       if (!(err instanceof Error)) throw err;
       return { success: false, error: err.message };
     }
-    console.log(`[AI-BRIDGE] Crucible preflight passed — ${crucible.model} is resident on "${crucible.server}"`);
+    console.log(`[AI-BRIDGE] Crucible preflight passed — "${crucible.server}" serves the ${crucible.act} `
+      + `class with ${crucible.model}, and it is resident`);
   } else if (config.provider === 'local') {
     const { llamaBridge } = await import('./llama-bridge.js');
     const s = await llamaBridge.status();
@@ -4739,7 +3846,7 @@ async function cleanupEpubRun(
     }
   } else {
     stopAIPowerBlock();
-    return { success: false, error: `Unknown AI provider: ${config.provider}` };
+    return { success: false, error: `unknown_ai_provider: ${String(config.provider)}` };
   }
 
   // Create AbortController for this job - allows immediate cancellation
@@ -4758,9 +3865,6 @@ async function cleanupEpubRun(
   activeCleanupJobs.set(jobId, {
     controller: abortController,
     provider: config.provider,
-    // Recorded so the quit path can evict this exact model — see
-    // releaseActiveAiJobsForShutdown.
-    ...(config.provider === 'ollama' && config.ollama?.model ? { ollamaModel: config.ollama.model } : {}),
   });
   console.log(`[AI-BRIDGE] Job ${jobId} registered for cancellation support`);
 
@@ -5545,14 +4649,14 @@ async function cleanupEpubRun(
 
     console.log(`[AI-CLEANUP] Total ${simplifyBlockMode ? 'block groups' : 'chunks'} in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters`);
 
-    // Pin num_ctx for the ENTIRE job, sized to the largest chunk. Ollama fully
-    // reloads the model runner whenever num_ctx changes, so the old per-chunk
-    // estimate reloaded the model in/out repeatedly (down for a chapter's short
-    // tail chunk, back up for the next full chunk). One constant loads the model
-    // once and keeps it resident. Every smaller chunk fits inside it, and the
-    // value is already GPU-capped by estimateNumCtx (numCtxMaxForModel). For
-    // non-Ollama providers num_ctx is ignored, so the model here is immaterial.
-    const cleanupModel = config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL;
+    // Pin num_ctx for the ENTIRE job, sized to the largest chunk: one constant,
+    // computed once, every smaller chunk fitting inside it, GPU-capped by
+    // estimateNumCtx (numCtxMaxForModel). NEITHER remaining provider reads it —
+    // a Crucible engine's context is fixed in the manifest at load and the
+    // bundled local engine's at startup — so DEFAULT_MODEL here is a SIZE the
+    // ceiling is derived from and not a model anything runs. The number is still
+    // computed because the chunk layout that depends on it is real.
+    const cleanupModel = DEFAULT_MODEL;
     // Edit-list chunks generate a FIXED num_predict budget (EDITLIST_NUM_PREDICT,
     // mostly in-band thinking) on top of prompt+input — the rewrite-era input*2
     // estimate would pin a ~4k window and strangle the thinking into
@@ -5631,15 +4735,20 @@ async function cleanupEpubRun(
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Process all chunks (parallel or sequential)
     // ─────────────────────────────────────────────────────────────────────────
-    // Local (single llama-server), Ollama and Crucible are single-stream — never
-    // parallelize. Crucible serves ONE resident model from one engine process
-    // (PHASE2-LLM.md section 3), so N workers would not be N GPUs; they would be
-    // N requests queued at the same engine, with N times the peak KV.
-    // The block path is sequential-only: the parallel loop is built on prose chunks
-    // and finishes chapters with rebuildChapterPreservingHeadings, so letting a
-    // cloud-provider simplify job in there would quietly put it back on the chunk
+    // BOTH remaining providers are single-stream, so this gate is currently
+    // never open, and the test is written per-provider rather than collapsed to
+    // `false` because the reason is a property of each one and not of the loop.
+    // Local is a single llama-server. Crucible serves ONE resident model from one
+    // engine process (PHASE2-LLM.md section 3), so N workers would not be N GPUs;
+    // they would be N requests queued at the same engine, with N times the peak KV
+    // — and where its engine forwards the class to an upstream instead, the
+    // concurrency that would buy anything belongs to the ENGINE's own fan-out,
+    // not to N sockets opened from here.
+    // The block path is sequential-only regardless: the parallel loop is built on
+    // prose chunks and finishes chapters with rebuildChapterPreservingHeadings, so
+    // letting a simplify job in there would quietly put it back on the chunk
     // pipeline. Parallel block mode is future work, not a silent fallback.
-    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local' && config.provider !== 'crucible' && !simplifyBlockMode;
+    const useParallel = options?.useParallel && config.provider !== 'local' && config.provider !== 'crucible' && !simplifyBlockMode;
     const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
 
     if (useParallel && workerCount > 1) {
@@ -6416,15 +5525,12 @@ async function cleanupEpubRun(
       ? Math.round(totalCharactersProcessed / durationMinutes)
       : 0;
 
-    // Determine model name for analytics
+    // Determine model name for analytics. 'unknown' stands where nothing in this
+    // process can name the weights truthfully — the legacy local engine, whose
+    // active model llama-bridge resolves and whose `local.model` is
+    // informational — and it is left as that rather than filled with a guess.
     let modelName = 'unknown';
-    if (config.provider === 'ollama' && config.ollama?.model) {
-      modelName = `ollama/${config.ollama.model}`;
-    } else if (config.provider === 'claude' && config.claude?.model) {
-      modelName = `claude/${config.claude.model}`;
-    } else if (config.provider === 'openai' && config.openai?.model) {
-      modelName = `openai/${config.openai.model}`;
-    } else if (config.provider === 'crucible' && config.crucible?.model) {
+    if (config.provider === 'crucible' && config.crucible?.model) {
       // The SERVER is part of the identity: the same model id on the Mac and in
       // WSL2 is two different machines, and a chars/min figure that did not say
       // which one would be unreadable next to the other.
@@ -6505,8 +5611,10 @@ async function cleanupEpubRun(
         .then(({ llamaBridge }) => llamaBridge.stop())
         .catch((stopErr) => console.warn(`[AI-CLEANUP] Failed to stop local server on error: ${(stopErr as Error).message}`));
     }
-    // Same for Ollama: a cancelled/failed job should not leave the model pinned
-    // in VRAM for the rest of its keep_alive window.
+    // The job-end model release, on the failure path as on the success one.
+    // It does nothing now — see releaseCleanupModel for why the eviction it used
+    // to do is not this file's any more — and it is still called from both, so
+    // the day something IS owed at job end there is one place it goes.
     await releaseCleanupModel(config);
 
     const message = error instanceof Error ? error.message : 'Unknown error';
@@ -7176,12 +6284,7 @@ function escapeXmlLocal(text: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const aiBridge = {
-  checkConnection,
   checkProviderConnection,
-  getModels,
-  hasModel,
-  cleanupText,
-  cleanupChapterStreaming,
   cleanupEpub,
   cancelCleanupJob,
   getOcrCleanupSystemPrompt,

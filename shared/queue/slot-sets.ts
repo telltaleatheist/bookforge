@@ -14,9 +14,43 @@
  * So capacity is per MACHINE, and the sets are:
  *
  *     local        [ gpu ] [ cpu ] [ cpu ]     ← this machine's Crucible
+ *     local:cloud          [ cpu ] [ cpu ]     ← classes it ROUTES upstream
  *     mac          [ gpu ] [ cpu ] [ cpu ]     ← a registered remote
+ *     mac:cloud            [ cpu ] [ cpu ]     ← classes IT routes upstream
  *     legacy…      [ gpu ]                     ← the dated local-narrator spawn
  *     local-work           [ cpu ] [ cpu ]     ← what BookForge does ITSELF
+ *
+ * ── THE CLOUD LANE, AND WHY IT HANGS OFF A SERVER ──────────────────────────
+ *
+ * Phase 15 (crucible `docs/PHASE15-HOST.md` §5.3): an engine can be configured
+ * to forward one of the four llm classes to Anthropic, OpenAI or a remote
+ * Ollama on the operator's account — a ROUTE, set before any request, never a
+ * fallback. Such a run holds no card anywhere: it costs the engine a socket.
+ *
+ * Making it wait behind a nine-hour narration would be the queue punishing a
+ * job for the company it keeps — the same argument that used to give a
+ * `claude` pass a CPU pool, back when the provider was on the row. The fact
+ * moved: it is the SERVER's route now, so the lane hangs off the server
+ * ({@link cloudLaneOf}) rather than being one global cloud pool. Two books on
+ * two engines can route the same class differently, and one pool would let a
+ * Mac-routed translation block a PC-routed one for no reason.
+ *
+ * Its width is in the `cpu` counter and its `gpu` is 0, and both are literal:
+ * the work occupies no card and what it does occupy is this queue's own
+ * willingness to have two upstream requests outstanding per engine.
+ *
+ * ── WHERE THIS ENDS UP (Owen, 2026-09-14) ─────────────────────────────────
+ *
+ * *"there will never, ever be a local gpu configured. there simply wont be an
+ * outlet for it."* The end state is exactly:
+ *
+ *     <server>     [ gpu ] [ cpu ] [ cpu ]     one per REGISTERED Crucible
+ *     <server>:cloud       [ cpu ] [ cpu ]     its upstream-routed classes
+ *     local-work           [ cpu ] [ cpu ]     CPU slots stay local
+ *
+ * — and no more. The legacy set below, and its GPU slot, are DELETED with the
+ * legacy local spawn layer after Owen's in-app pass; that is one subtraction
+ * from this file, and nothing added here depends on the legacy set existing.
  *
  * ── The correction, and it is the whole of what makes this safe ─────────────
  *
@@ -79,6 +113,43 @@ export const SERVER_CPU_SLOTS = 0;
 export const LOCAL_WORK_CPU_SLOTS = 2;
 
 /**
+ * How many upstream-routed runs BookForge keeps outstanding on ONE engine.
+ *
+ * Two, which is the same number `local-work` gets and for the same reason: it
+ * is a latency lane, not a capacity model of somebody's API, and the queue's
+ * own appetite is the only thing it can honestly bound. The engine's `409
+ * server_busy` and the upstream's own `429` (passed through with `Retry-After`
+ * — crucible PHASE15 §3.4, the CALLER waits) remain the only authorities.
+ */
+export const CLOUD_LANE_SLOTS = 2;
+
+/**
+ * The separator between an engine's name and its cloud lane.
+ *
+ * A registry name cannot contain it: `servers.ts` refuses any name that does
+ * not match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, and the reserved `local` and the
+ * legacy set's id carry no colon either. That is what makes
+ * {@link serverOfCloudLane} the exact INVERSE of {@link cloudLaneOf} rather
+ * than a guess at where to split.
+ */
+const CLOUD_LANE_SUFFIX = ':cloud';
+
+/** One engine's cloud lane, by name. The one composer of that id. */
+export function cloudLaneOf(server: string): string {
+  return `${server}${CLOUD_LANE_SUFFIX}`;
+}
+
+/** Is this set id a cloud lane? */
+export function isCloudLane(id: string): boolean {
+  return id.endsWith(CLOUD_LANE_SUFFIX);
+}
+
+/** The engine a cloud lane belongs to, or `null` when the id is not one. */
+export function serverOfCloudLane(id: string): string | null {
+  return isCloudLane(id) ? id.slice(0, -CLOUD_LANE_SUFFIX.length) : null;
+}
+
+/**
  * A CAP RATHER THAN NO LIMIT, and it belongs to no machine.
  *
  * A `wait` step is not on any bench — its whole job is to sit until something
@@ -112,6 +183,8 @@ export interface SlotSet {
 function labelFor(id: string): string {
   if (id === LOCAL_WORK_SET) return 'BookForge itself';
   if (id === LEGACY_LOCAL_NARRATOR) return 'the local narrator (legacy)';
+  const cloud = serverOfCloudLane(id);
+  if (cloud !== null) return `${cloud} — routed elsewhere`;
   return id;
 }
 
@@ -139,8 +212,22 @@ function labelFor(id: string): string {
  */
 export function slotSetForStep(job: QueueJob, step: QueueStep): string | null {
   if (step.resource === 'wait') return null;
-  if (step.resource === 'cpu') return LOCAL_WORK_SET;
+  /*
+   * THE RECORD OUTRANKS THE KIND OF WORK, and that reordering is what lets a
+   * cloud lane exist at all.
+   *
+   * A step admitted to an engine that ROUTES its class upstream is written
+   * with that engine's cloud lane as its venue and `cpu` as its resource, both
+   * at the one moment both facts are known (the pump, `crucibleAdmission`) —
+   * the route belongs to the SERVER, so it is unknowable at enqueue, when the
+   * server has not been chosen. Asking `resource` first would have sent it to
+   * `local-work`, which is this machine, which is not where it ran.
+   *
+   * Nothing else moves: a plain `cpu` step is never given a venue, so it still
+   * falls to `local-work` on the very next line.
+   */
   if (step.venue !== undefined) return step.venue;
+  if (step.resource === 'cpu') return LOCAL_WORK_SET;
   if (step.travels !== true) return LEGACY_LOCAL_NARRATOR;
   return job.waitForResolved ?? null;
 }
@@ -214,6 +301,27 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       cpu: SERVER_CPU_SLOTS,
       retiring: false,
     });
+    /*
+     * ITS CLOUD LANE, ALWAYS, AND NOT CONDITIONAL ON A ROUTE BEING SET.
+     *
+     * Whether any class is routed upstream is the ENGINE's setting and can
+     * change between two pumps, from the engine's own page or from the other
+     * app. A lane that appeared and vanished with it would make the bench
+     * flicker and, worse, would make a row's placement depend on when the
+     * scheduler last happened to read. An empty lane on the bench costs
+     * nothing and says a true thing: this engine can route work elsewhere.
+     */
+    const lane = cloudLaneOf(name);
+    seen.add(lane);
+    sets.push({
+      id: lane,
+      label: labelFor(lane),
+      // No card. Not "a card we are not counting" — there is none: the engine
+      // forwards the request and settles nothing.
+      gpu: 0,
+      cpu: CLOUD_LANE_SLOTS,
+      retiring: false,
+    });
   }
 
   /*
@@ -248,11 +356,14 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   for (const id of facts.occupied) {
     if (id === LOCAL_WORK_SET || seen.has(id)) continue;
     seen.add(id);
+    const cloud = isCloudLane(id);
     sets.push({
       id,
       label: labelFor(id),
-      gpu: SERVER_GPU_SLOTS,
-      cpu: id === LEGACY_LOCAL_NARRATOR ? 0 : SERVER_CPU_SLOTS,
+      gpu: cloud ? 0 : SERVER_GPU_SLOTS,
+      cpu: cloud
+        ? CLOUD_LANE_SLOTS
+        : id === LEGACY_LOCAL_NARRATOR ? 0 : SERVER_CPU_SLOTS,
       retiring: true,
     });
   }
@@ -294,6 +405,12 @@ export function thisMachinesCardHeldBy(options: {
   readonly occupancy: ReadonlyMap<string, SetOccupancy>;
 }): string | null {
   const { venue, localServerName, occupancy } = options;
+  /*
+   * A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even `local`'s. The work runs
+   * on somebody's API; the engine forwarding it holds nothing. Answered first
+   * so `local:cloud` cannot be mistaken for `local`.
+   */
+  if (isCloudLane(venue)) return null;
   const here: string[] = [LEGACY_LOCAL_NARRATOR];
   if (localServerName !== null) here.push(localServerName);
   if (!here.includes(venue)) return null;

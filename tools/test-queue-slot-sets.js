@@ -117,15 +117,74 @@ test('a travelling GPU step with no assignment yet answers NULL, not a guess', (
     'nothing can say which card it wants, and admission says so in its own words');
 });
 
-test('every enabled server brings [gpu], the legacy spawn brings [gpu], local-work brings [cpu][cpu]', () => {
+test('every enabled server brings [gpu] AND its cloud lane; the legacy spawn [gpu]; local-work [cpu][cpu]', () => {
   const sets = slots.slotSets({ enabledServers: ['local', 'mac'], occupied: [] });
-  assert.deepStrictEqual(sets.map((s) => s.id), ['local', 'mac', LEGACY, slots.LOCAL_WORK_SET]);
+  assert.deepStrictEqual(sets.map((s) => s.id),
+    ['local', 'local:cloud', 'mac', 'mac:cloud', LEGACY, slots.LOCAL_WORK_SET]);
   assert.strictEqual(sets[0].gpu, 1);
   assert.strictEqual(sets[0].cpu, slots.SERVER_CPU_SLOTS,
     '§2.4: the design is two, the realised number is nought until a server takes CPU work');
-  assert.strictEqual(sets[2].gpu, 1, 'the legacy stopgap keeps exactly one card');
-  assert.strictEqual(sets[3].cpu, 2);
-  assert.strictEqual(sets[3].gpu, 0, 'there is no local GPU row — a GPU step goes to a server');
+  assert.strictEqual(sets[4].gpu, 1, 'the legacy stopgap keeps exactly one card');
+  assert.strictEqual(sets[5].cpu, 2);
+  assert.strictEqual(sets[5].gpu, 0, 'there is no local GPU row — a GPU step goes to a server');
+});
+
+test('a cloud lane hangs off its engine, holds no card, and is two wide', () => {
+  // crucible PHASE15 §5.3. A class the engine ROUTES upstream runs on
+  // somebody's API: the engine forwards it and settles nothing, so the lane
+  // has gpu 0 literally and not as an omission.
+  const sets = slots.slotSets({ enabledServers: ['mac'], occupied: [] });
+  const lane = sets.find((x) => x.id === slots.cloudLaneOf('mac'));
+  assert.ok(lane !== undefined, 'every engine gets one');
+  assert.strictEqual(lane.gpu, 0);
+  assert.strictEqual(lane.cpu, slots.CLOUD_LANE_SLOTS);
+  assert.strictEqual(lane.cpu, 2);
+  assert.strictEqual(slots.slotsOf(sets, 'mac:cloud', 'cpu'), 2);
+  assert.strictEqual(slots.slotsOf(sets, 'mac:cloud', 'gpu'), 0);
+  assert.strictEqual(lane.label, 'mac — routed elsewhere');
+});
+
+test('cloudLaneOf and serverOfCloudLane are exact inverses, and nothing else is a lane', () => {
+  for (const name of ['local', 'mac', 'droplet-1', 'a.b_c-d']) {
+    assert.strictEqual(slots.serverOfCloudLane(slots.cloudLaneOf(name)), name);
+    assert.strictEqual(slots.isCloudLane(slots.cloudLaneOf(name)), true);
+  }
+  for (const id of ['local', 'mac', LEGACY, slots.LOCAL_WORK_SET]) {
+    assert.strictEqual(slots.isCloudLane(id), false, id);
+    assert.strictEqual(slots.serverOfCloudLane(id), null, id);
+  }
+});
+
+test('a step placed on a cloud lane charges THAT lane, not local-work', () => {
+  // The whole reason `slotSetForStep` reads the venue before the resource: a
+  // cloud-routed step is written `resource: 'cpu'` at admission because it
+  // occupies no card, and the old order would have sent it to `local-work`,
+  // which is this machine, which is not where it ran.
+  const step = stepOf({ venue: 'mac:cloud', resource: 'cpu', travels: true });
+  const job = jobOfSteps([step], { waitForResolved: 'mac' });
+  assert.strictEqual(slots.slotSetForStep(job, step), 'mac:cloud');
+  const occupancy = slots.slotSetOccupancy({ jobs: [job] });
+  assert.strictEqual(occupancy.get('mac:cloud').cpu, 1);
+  assert.strictEqual(occupancy.get('mac:cloud').gpu, 0);
+  assert.strictEqual(occupancy.get(slots.LOCAL_WORK_SET), undefined,
+    "this machine did nothing; charging it would be the bench blaming the wrong lane");
+});
+
+test('a plain CPU step still goes to local-work — it carries no venue', () => {
+  const step = stepOf({ resource: 'cpu' });
+  assert.strictEqual(slots.slotSetForStep(jobOfSteps([step]), step), slots.LOCAL_WORK_SET);
+});
+
+test("a cloud lane is never THIS machine's card, even local's", () => {
+  // `local:cloud` is the local engine FORWARDING work. Nothing is on the 3090.
+  const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
+  assert.strictEqual(slots.thisMachinesCardHeldBy({
+    venue: slots.cloudLaneOf('local'), localServerName: 'local', occupancy,
+  }), null);
+  // …and the GPU venue beside it still is.
+  assert.strictEqual(slots.thisMachinesCardHeldBy({
+    venue: 'local', localServerName: 'local', occupancy,
+  }), LEGACY);
 });
 
 test('a DISABLED server contributes no set, so nothing new is claimed there', () => {
@@ -201,8 +260,21 @@ test('every machine gets its own lanes, and a lane says which machine it is', ()
   const gpus = lanes.filter((l) => l.resource === 'gpu');
   assert.deepStrictEqual(gpus.map((l) => l.setId), ['local', 'mac', LEGACY]);
   assert.strictEqual(gpus[1].setLabel, 'mac');
-  assert.strictEqual(lanes.filter((l) => l.resource === 'cpu').length, 2,
-    'the CPU lanes are BookForge\'s own; no server lane is drawn for work none can take');
+  /*
+   * SIX CPU LANES NOW, AND EVERY ONE OF THEM IS REAL WORK SOMEWHERE.
+   *
+   * Two are BookForge's own (`local-work`), and two per engine are its cloud
+   * lane (crucible PHASE15 §5.3) — a class that engine ROUTES upstream runs on
+   * somebody's API and holds no card. A server's OWN `[cpu]` lanes are still
+   * nought (`SERVER_CPU_SLOTS`), which is the thing this check was written to
+   * protect: no lane is drawn for work no server can take.
+   */
+  const cpus = lanes.filter((l) => l.resource === 'cpu');
+  assert.deepStrictEqual(cpus.map((l) => l.setId).filter((id, i, a) => a.indexOf(id) === i),
+    ['local:cloud', 'mac:cloud', slots.LOCAL_WORK_SET]);
+  assert.strictEqual(cpus.length, 6);
+  assert.strictEqual(slots.slotsOf(snap.slotSets, 'mac', 'cpu'), 0,
+    "a server's own CPU lanes are still nought — nothing sends it CPU work");
 });
 
 test('a step on the Mac occupies the MAC\'s lane and leaves this machine\'s free', () => {
@@ -500,6 +572,114 @@ test('a step records the venue it was admitted to, and the bench reads it', asyn
   assert.strictEqual(lanes.find((l) => l.setId === 'mac').occupant.title, 'Mistborn');
 });
 
+// ── The route decides the lane (crucible PHASE15 5.3) ──────────────────────
+
+const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+
+function translatePass(title, waitFor) {
+  return {
+    title,
+    ...(waitFor === undefined ? {} : { waitFor }),
+    steps: [{
+      type: 'translation', label: 'Translate', config: {},
+      sourceRef: { kind: 'epub', path: '/a.epub' },
+    }],
+  };
+}
+
+test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', async () => {
+  /*
+   * The end of the story that starts in `electron/crucible/routes.ts`: the
+   * engine says `translate` goes to Anthropic, so the run holds no card. It
+   * must not sit behind a narration waiting for one, and it must not occupy
+   * the Mac's GPU slot while it does not use it.
+   */
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('cloud-lane', [ai, gpu], host);
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('mac', { translate: 'upstream', clean: 'local' });
+
+  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+
+  const step = jobById(a.id).steps[0];
+  assert.strictEqual(step.venue, 'mac:cloud', 'it was placed on the engine\'s cloud lane');
+  assert.strictEqual(step.resource, 'cpu', 'it occupies no card, so it is not charged for one');
+  assert.strictEqual(ai.runs.length, 1);
+
+  // …and the Mac's GPU slot is untouched, so a render admits beside it.
+  const b = engine.enqueue(narrate('Wool', 'mac'));
+  await settle(40);
+  assert.strictEqual(gpu.runs.length, 1,
+    'a routed-upstream translation must not block a render on the same engine');
+  assert.strictEqual(jobById(b.id).steps[0].venue, 'mac');
+});
+
+test('a class the engine runs LOCALLY still takes its GPU slot', async () => {
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('local-route', [ai], host);
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('mac', { translate: 'local' });
+
+  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+  const step = jobById(a.id).steps[0];
+  assert.strictEqual(step.venue, 'mac');
+  assert.strictEqual(step.resource, 'gpu');
+});
+
+test('an engine whose routes nobody has read yet is a WAIT, never a guess', async () => {
+  /*
+   * Assuming `local` would park an upstream-routed class on a card nothing
+   * runs on, with a render waiting behind it and nothing saying why;
+   * assuming `upstream` would do the mirror. So the row waits with a sentence
+   * until coordination has read that engine — which is one connect away and
+   * never a poll.
+   */
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('unknown-route', [ai], host);
+  routes.forgetCrucibleRoutes();
+
+  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+
+  assert.strictEqual(ai.runs.length, 0, 'nothing ran on a lane nobody has chosen');
+  const step = jobById(a.id).steps[0];
+  assert.match(step.progress.admissionHold, /has not yet read where "mac" runs translate work/);
+
+  // The read lands, and the next pass places it — no restart, no poll.
+  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
+  engine.pump();
+  await settle(40);
+  assert.strictEqual(ai.runs.length, 1);
+  assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
+});
+
+test('a step with no capability class is untouched by any of this', async () => {
+  // A render is not a routable class, so it never asks and never waits: the
+  // record can be completely empty and it still takes the card.
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('no-class', [gpu], host);
+  routes.forgetCrucibleRoutes();
+
+  const a = engine.enqueue(narrate('Mistborn', 'mac'));
+  engine.start();
+  await settle(40);
+  assert.strictEqual(gpu.runs.length, 1);
+  assert.strictEqual(jobById(a.id).steps[0].venue, 'mac');
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {
@@ -514,6 +694,7 @@ test('a step records the venue it was admitted to, and the bench reads it', asyn
   }
   engine.clearStepModules();
   engine.setCrucibleRoutingHost(null);
+  routes.forgetCrucibleRoutes();
   try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* scratch */ }
   console.log(`\nqueue slot-sets: ${passed} test(s) passed, ${failures.length} failed`);
   process.exitCode = failures.length === 0 ? 0 : 1;

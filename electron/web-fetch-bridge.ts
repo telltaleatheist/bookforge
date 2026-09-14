@@ -71,8 +71,23 @@ export interface LanguageLearningJobConfig {
   targetLang: string;
   deletedSelectors: string[];
 
-  // AI settings
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  /*
+   * AI settings.
+   *
+   * `'crucible' | 'local'` (2026-09-14, Crucible phase 15). The old union named
+   * Ollama, Claude and OpenAI, all three of which left BookForge entirely when
+   * cloud keys moved INSIDE the Crucible engine — the engine forwards to the
+   * upstream on the operator's account, so a cloud run is now a server name in
+   * this row rather than a provider name, and the two survivors are the only
+   * providers anything in this build can actually run.
+   *
+   * Narrowed rather than deleted, which is the same call the 2026-09-14 audit
+   * made one field down for `ttsEngine`: nothing in the repo constructs or
+   * imports this interface today (the job it configured was the bilingual
+   * pipeline, removed 2026-09-05), but a type that survives is a type that must
+   * not name engines and providers this build cannot run.
+   */
+  aiProvider: 'crucible' | 'local';
   aiModel: string;
 
   // TTS settings (can use same voice for both, or different)

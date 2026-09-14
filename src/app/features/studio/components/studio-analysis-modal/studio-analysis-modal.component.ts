@@ -1,31 +1,31 @@
 import { Component, HostListener, computed, inject, input, output, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { QueueService } from '../../../queue/services/queue.service';
-import { AIProvider } from '../../../../core/models/ai-config.types';
+import { AIProvider, isAIProvider } from '../../../../core/models/ai-config.types';
+import { capabilityWords } from '../../../settings/components/crucible-words';
+import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
 import { StudioItem } from '../../models/studio.types';
 import { AnalysisCategory, DEFAULT_ANALYSIS_CATEGORIES } from '../../analysis-categories';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 
-/**
- * The providers this modal actually has a model list and a credential for,
- * named POSITIVELY.
+/*
+ * `AnalysisProvider` IS DELETED (2026-09-14).
  *
- * It was `Exclude<AIProvider, 'local'>`, which is a definition by subtraction:
- * every provider added to the app joined this modal silently, with no model
- * list, no credential and no branch in `selectProvider` — `crucible` was the
- * one that made that concrete. `Extract` keeps the tie to `AIProvider` (a
- * rename there still breaks here) and says what is supported rather than what
- * is not. `isAnalysisProvider` has always enumerated exactly these three.
+ * It named the three this modal had a model list and a credential for —
+ * Ollama, Claude and OpenAI — and all three left BookForge the same day. What
+ * is left is `AIProvider` itself: the modal supports both of the two, so a
+ * narrowing of it would only be a list to forget to update.
  */
-type AnalysisProvider = Extract<AIProvider, 'ollama' | 'claude' | 'openai'>;
 
+/**
+ * Which provider analysis last ran on. The MODEL is no longer remembered
+ * beside it: neither survivor's model is this modal's to name, so there is
+ * nothing per-provider left to carry.
+ */
 interface AnalysisAISelection {
-  provider: AnalysisProvider;
-  models: Partial<Record<AnalysisProvider, string>>;
+  provider: AIProvider;
 }
 
 const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
@@ -33,7 +33,7 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
 @Component({
   selector: 'app-studio-analysis-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopSelectComponent],
+  imports: [CommonModule],
   template: `
     <div class="backdrop" (click)="close.emit()">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="analysis-modal-title"
@@ -58,41 +58,24 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
           <div class="config-section">
             <label class="field-label">AI provider</label>
             <div class="provider-buttons">
-              <button class="provider-btn" [class.selected]="provider() === 'ollama'"
-                      [class.connected]="provider() === 'ollama' && ollamaConnected()"
-                      (click)="selectProvider('ollama')">
-                <span class="provider-icon">🦙</span>
-                <span class="provider-name">Ollama</span>
-                <span class="provider-status" [class.connected]="ollamaConnected()">
-                  {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
-                </span>
+              <button class="provider-btn" [class.selected]="provider() === 'crucible'"
+                      [class.disabled]="!crucibleServer()" (click)="selectProvider('crucible')">
+                <span class="provider-icon">📡</span>
+                <span class="provider-name">GPU engine (Crucible)</span>
+                <span class="provider-status">{{ crucibleServer() || 'No engine chosen' }}</span>
               </button>
-              <button class="provider-btn" [class.selected]="provider() === 'claude'"
-                      [class.disabled]="!hasClaudeKey()" (click)="selectProvider('claude')">
-                <span class="provider-icon">🧠</span>
-                <span class="provider-name">Claude</span>
-                @if (!hasClaudeKey()) { <span class="provider-status">No API key</span> }
-              </button>
-              <button class="provider-btn" [class.selected]="provider() === 'openai'"
-                      [class.disabled]="!hasOpenAIKey()" (click)="selectProvider('openai')">
-                <span class="provider-icon">🤖</span>
-                <span class="provider-name">OpenAI</span>
-                @if (!hasOpenAIKey()) { <span class="provider-status">No API key</span> }
+              <button class="provider-btn" [class.selected]="provider() === 'local'"
+                      (click)="selectProvider('local')">
+                <span class="provider-icon">💻</span>
+                <span class="provider-name">Bundled local</span>
+                <span class="provider-status">Runs on this machine</span>
               </button>
             </div>
           </div>
 
           <div class="config-section">
             <label class="field-label">Model</label>
-            @if (models().length > 0) {
-              <desktop-select class="select-input" [options]="modelOptions()"
-                              [ngModel]="model()" (ngModelChange)="selectModel($event)" />
-            } @else {
-              <div class="hint">
-                @if (provider() === 'ollama' && !ollamaConnected()) { Ollama is not running. }
-                @else { No models are available for this provider. }
-              </div>
-            }
+            <div class="hint">{{ modelLine() }}</div>
           </div>
 
           <div class="config-section">
@@ -167,7 +150,7 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
     .section-line { display: flex; align-items: baseline; justify-content: space-between; }
     .field-count { color: var(--text-tertiary); font-size: 0.7rem; }
     .hint { padding: 9px 10px; color: var(--text-secondary); font-size: 0.75rem; background: var(--bg-elevated); border-radius: 7px; }
-    .provider-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .provider-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .provider-btn { min-height: 76px; display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
       padding: 10px; border: 1px solid var(--border-default); border-radius: 9px; cursor: pointer;
       color: var(--text-primary); background: var(--bg-elevated); text-align: left; }
@@ -179,7 +162,6 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
     .provider-name { font-size: 0.78rem; font-weight: 650; }
     .provider-status { color: var(--text-tertiary); font-size: 0.64rem; }
     .provider-status.connected { color: var(--success, #22c55e); }
-    .select-input { width: 100%; }
     .category-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
     .category { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 8px 9px;
       border: 1px solid var(--border-default); border-radius: 7px; cursor: pointer;
@@ -214,7 +196,7 @@ export class StudioAnalysisModalComponent {
   private readonly settings = inject(SettingsService);
   private readonly electron = inject(ElectronService);
   private readonly queue = inject(QueueService);
-  private analysisSelection: AnalysisAISelection = { provider: 'ollama', models: {} };
+  private analysisSelection: AnalysisAISelection = { provider: 'local' };
 
   readonly target = input.required<StudioAnalysisTarget>();
   readonly projectDir = input.required<string>();
@@ -222,28 +204,37 @@ export class StudioAnalysisModalComponent {
   readonly close = output<void>();
   readonly queued = output<void>();
 
-  readonly provider = signal<AnalysisProvider>('ollama');
-  readonly model = signal('');
-  readonly ollamaConnected = signal(false);
-  readonly ollamaModels = signal<{ value: string; label: string }[]>([]);
-  readonly claudeModels = signal<{ value: string; label: string }[]>([]);
-  readonly openaiModels = signal<{ value: string; label: string }[]>([]);
+  readonly provider = signal<AIProvider>('local');
   readonly categories = signal<AnalysisCategory[]>(DEFAULT_ANALYSIS_CATEGORIES.map(category => ({ ...category })));
   readonly testMode = signal(false);
   readonly testChunks = signal(5);
   readonly queueing = signal(false);
   readonly error = signal<string | null>(null);
 
-  readonly hasClaudeKey = computed(() => !!this.settings.getAIConfig().claude.apiKey);
-  readonly hasOpenAIKey = computed(() => !!this.settings.getAIConfig().openai.apiKey);
-  readonly models = computed(() => this.provider() === 'ollama'
-    ? this.ollamaModels()
-    : this.provider() === 'claude' ? this.claudeModels() : this.openaiModels());
-  readonly modelOptions = computed<DesktopSelectItems>(() =>
-    this.models().map(entry => ({ value: entry.value, label: entry.label })));
+  /*
+   * `model`, `ollamaConnected`, `ollamaModels`, `claudeModels`,
+   * `openaiModels`, `hasClaudeKey`, `hasOpenAIKey`, `models`, `modelOptions`
+   * and `selectModel` ARE DELETED (2026-09-14) — with the two fetches that
+   * filled the cloud lists using keys this app no longer holds. Neither
+   * surviving provider has a model for this modal to pick.
+   */
+
+  /** The engine's capability record, or null before it has been asked for. */
+  readonly capability = signal<CrucibleCapabilityView | null>(null);
+
+  /** The engine this app is pointed at, or '' when none has been chosen. */
+  readonly crucibleServer = computed(() => this.settings.getAIConfig().crucible?.server ?? '');
+
+  /** THE MODEL, as its owner states it. Never a control. */
+  readonly modelLine = computed(() => {
+    if (this.provider() === 'local') return 'The bundled local model.';
+    if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
+    return capabilityWords(this.capability(), 'analysis');
+  });
+
   readonly enabledCount = computed(() => this.categories().filter(category => category.enabled).length);
-  readonly canRun = computed(() => !!this.target() && !!this.model() && this.enabledCount() > 0
-    && (this.provider() !== 'ollama' || this.ollamaConnected()));
+  readonly canRun = computed(() => !!this.target() && this.enabledCount() > 0
+    && (this.provider() === 'local' || !!this.crucibleServer()));
 
   constructor() {
     void this.initProviders();
@@ -254,89 +245,56 @@ export class StudioAnalysisModalComponent {
 
   private async initProviders(): Promise<void> {
     const config = this.settings.getAIConfig();
-    this.model.set(config.ollama.model || 'cogito:14b');
-    try {
-      const response = await fetch(`${config.ollama.baseUrl || 'http://localhost:11434'}/api/tags`).catch(() => null);
-      if (response?.ok) {
-        this.ollamaConnected.set(true);
-        const data = await response.json();
-        const models = (data.models || []).map((entry: { name: string }) => ({ value: entry.name, label: entry.name }));
-        this.ollamaModels.set(models);
-        if (models.length && !models.some((entry: { value: string }) => entry.value === this.model())) {
-          this.model.set(models[0].value);
-        }
-      }
-    } catch { /* status remains disconnected */ }
-    if (config.claude.apiKey) {
-      const result = await this.electron.getClaudeModels(config.claude.apiKey).catch(() => null);
-      this.claudeModels.set(result?.success && result.models?.length
-        ? result.models
-        : [{ value: config.claude.model, label: config.claude.model }]);
-    }
-    if (config.openai.apiKey) {
-      const result = await this.electron.getOpenAIModels(config.openai.apiKey).catch(() => null);
-      this.openaiModels.set(result?.success && result.models?.length
-        ? result.models
-        : [{ value: config.openai.model, label: config.openai.model }]);
-    }
     this.analysisSelection = this.loadAnalysisSelection()
       || this.selectionFromLatestAnalysisJob()
-      || {
-        provider: config.provider === 'claude' || config.provider === 'openai' ? config.provider : 'ollama',
-        models: {},
-      };
+      || { provider: config.provider };
     this.saveAnalysisSelection();
-    const preferred = this.analysisSelection.provider === 'claude' && config.claude.apiKey
-      ? 'claude'
-      : this.analysisSelection.provider === 'openai' && config.openai.apiKey ? 'openai' : 'ollama';
+    // An engine remembered from last time that nobody has chosen since is not
+    // a runnable choice, so the modal opens on the one that always runs.
+    const preferred: AIProvider =
+      this.analysisSelection.provider === 'crucible' && this.crucibleServer() ? 'crucible' : 'local';
     this.selectProvider(preferred, false);
+    await this.loadCapability();
   }
 
-  selectProvider(provider: AnalysisProvider, persist = true): void {
-    if (provider === 'claude' && !this.hasClaudeKey()) return;
-    if (provider === 'openai' && !this.hasOpenAIKey()) return;
+  private async loadCapability(): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) return;
+    const res = await this.electron.crucible.capability(server);
+    // Never an empty record on failure — an empty class list reads as "this
+    // engine serves nothing", which is a different and false claim.
+    if (res.success && res.data) this.capability.set(res.data);
+  }
+
+  selectProvider(provider: AIProvider, persist = true): void {
+    if (provider === 'crucible' && !this.crucibleServer()) return;
     this.provider.set(provider);
-    const config = this.settings.getAIConfig();
-    const configuredModel = this.analysisSelection.models[provider] || config[provider].model;
-    const models = provider === 'ollama' ? this.ollamaModels()
-      : provider === 'claude' ? this.claudeModels() : this.openaiModels();
-    const selectedModel = models.some(entry => entry.value === configuredModel)
-      ? configuredModel
-      : models[0]?.value || configuredModel || '';
-    this.model.set(selectedModel);
-    if (persist) this.persistAISelection(provider, selectedModel);
+    if (persist) this.persistAISelection(provider);
   }
 
-  selectModel(model: string): void {
-    if (!this.models().some(entry => entry.value === model)) return;
-    this.model.set(model);
-    this.persistAISelection(this.provider(), model);
-  }
-
-  /** Analysis remembers its own last provider and one model per provider, so a
-   * cleanup/translation choice elsewhere does not unexpectedly reset this modal. */
-  private persistAISelection(provider: AnalysisProvider, model: string): void {
-    this.analysisSelection = {
-      provider,
-      models: { ...this.analysisSelection.models, [provider]: model },
-    };
+  /** Analysis remembers its own last provider, so a cleanup/translation choice
+   * elsewhere does not unexpectedly reset this modal. */
+  private persistAISelection(provider: AIProvider): void {
+    this.analysisSelection = { provider };
     this.saveAnalysisSelection();
   }
 
+  /**
+   * The stored preference, or null when there is none to read.
+   *
+   * A blob written before 2026-09-14 names one of the three retired providers
+   * and carries a `models` map beside it. It is REFUSED rather than migrated:
+   * this is a modal's convenience preference, not a setting anybody typed, so
+   * the honest answer is that there is no remembered choice and the next one
+   * the user makes becomes it.
+   */
   private loadAnalysisSelection(): AnalysisAISelection | null {
     try {
       const raw = localStorage.getItem(ANALYSIS_AI_SELECTION_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Partial<AnalysisAISelection>;
-      if (!this.isAnalysisProvider(parsed.provider) || !parsed.models || typeof parsed.models !== 'object') {
-        return null;
-      }
-      const models: Partial<Record<AnalysisProvider, string>> = {};
-      for (const provider of ['ollama', 'claude', 'openai'] as const) {
-        const value = parsed.models[provider];
-        if (typeof value === 'string' && value.trim()) models[provider] = value;
-      }
-      return { provider: parsed.provider, models };
+      if (!isAIProvider(parsed.provider)) return null;
+      return { provider: parsed.provider };
     } catch {
       return null;
     }
@@ -346,21 +304,15 @@ export class StudioAnalysisModalComponent {
    * is chronological, so the final analysis item is the user's last real choice. */
   private selectionFromLatestAnalysisJob(): AnalysisAISelection | null {
     const latest = [...this.queue.jobs()].reverse().find(job => job.type === 'book-analysis');
-    const config = latest?.config as { aiProvider?: AIProvider; aiModel?: string } | undefined;
-    if (!this.isAnalysisProvider(config?.aiProvider) || typeof config?.aiModel !== 'string' || !config.aiModel.trim()) {
-      return null;
-    }
-    return { provider: config.aiProvider, models: { [config.aiProvider]: config.aiModel } };
+    const config = latest?.config as { aiProvider?: AIProvider } | undefined;
+    if (!isAIProvider(config?.aiProvider)) return null;
+    return { provider: config.aiProvider };
   }
 
   private saveAnalysisSelection(): void {
     try {
       localStorage.setItem(ANALYSIS_AI_SELECTION_KEY, JSON.stringify(this.analysisSelection));
     } catch { /* preference persistence is non-critical */ }
-  }
-
-  private isAnalysisProvider(value: unknown): value is AnalysisProvider {
-    return value === 'ollama' || value === 'claude' || value === 'openai';
   }
 
   toggleCategory(id: string): void {
@@ -379,7 +331,6 @@ export class StudioAnalysisModalComponent {
     this.queueing.set(true);
     this.error.set(null);
     try {
-      const aiConfig = this.settings.getAIConfig();
       const source = target.kind === 'audiobook'
         ? { kind: 'audiobook' as const, projectId: target.projectId, variantId: target.variantId }
         : { kind: 'document' as const, epubPath: target.path };
@@ -393,10 +344,10 @@ export class StudioAnalysisModalComponent {
           projectDir: this.projectDir(),
           source,
           aiProvider: this.provider(),
-          aiModel: this.model(),
-          ollamaBaseUrl: aiConfig.ollama.baseUrl,
-          claudeApiKey: aiConfig.claude.apiKey,
-          openaiApiKey: aiConfig.openai.apiKey,
+          // Empty because neither provider's model is this modal's to name:
+          // the engine's is its capability record and the bundled one is the
+          // active local model.
+          aiModel: '',
           categories: this.categories().filter(category => category.enabled),
           testMode: target.kind === 'document' && this.testMode(),
           testModeChunks: target.kind === 'document' && this.testMode() ? this.testChunks() : undefined,

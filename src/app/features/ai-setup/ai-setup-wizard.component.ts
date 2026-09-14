@@ -13,6 +13,7 @@ import {
   type CrucibleCapabilityView,
   type CrucibleTextActName,
 } from '@shared/crucible/settings-wire';
+import { capabilityWords } from '../settings/components/crucible-words';
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
@@ -23,13 +24,16 @@ import {
 } from '@shared/vlm/conversion';
 
 /**
- * AI Setup wizard (WS2). One page, four sources of AI for OCR cleanup:
+ * AI Setup wizard (WS2). One page, two sources of AI for OCR cleanup:
  *   • Bundled local AI (llama.cpp) — download a Cogito model, hardware-recommended.
- *   • Ollama — detected if running; configured in Settings → AI.
  *   • Crucible — a server from Settings → Crucible Servers, and a model that is
  *     already RESIDENT on it. The provider has existed in `ai-bridge.ts` since
  *     phase 2 with no way to select it; this card is that way.
- *   • API key (Claude / OpenAI) — entered inline, saved to settings.
+ *
+ * IT OFFERED FOUR UNTIL 2026-09-14. The Ollama card and the cloud-keys card
+ * are gone: Anthropic, OpenAI and Ollama are UPSTREAMS the engine forwards to
+ * on the operator's account, configured on the engine, and this app holds no
+ * key and talks to no daemon.
  *
  * Reachable from the nav rail (/ai-setup) and surfaced on first run by
  * onboarding. AI is optional — cleanup can always be skipped.
@@ -73,8 +77,8 @@ import {
 
         @if (localStatus()?.binaryPresent === false) {
           <p class="muted">
-            The local AI engine isn't included in this build. Use Ollama or an API
-            key below, or install a build that bundles the engine.
+            The local AI engine isn't included in this build. Use a GPU engine (Crucible)
+            below, or install a build that bundles the engine.
           </p>
         } @else {
           @if (sysInfo(); as info) {
@@ -150,36 +154,6 @@ import {
         }
       </section>
 
-      <!-- ── Ollama ── -->
-      <section class="card">
-        <div class="card-head">
-          <h2>&#129422; Ollama</h2>
-          <span class="tag">Bring your own local models</span>
-        </div>
-        @if (ai.ollamaConnected()) {
-          <p class="muted">
-            Ollama is running@if (ai.ollamaHasModels()) {  with models installed}@else {, but no models are pulled yet}.
-            Its models appear in the model picker on the cleanup/translate steps.
-          </p>
-        } @else {
-          <p class="muted">Ollama isn't running. Install it, then pull a model (e.g. <code>ollama pull cogito</code>).</p>
-        }
-        <div class="ollama-url-row">
-          <label class="ollama-url-label">Server URL</label>
-          <input
-            class="key-input"
-            type="text"
-            [value]="ollamaUrl()"
-            (change)="setOllamaUrl($any($event.target).value)"
-            placeholder="http://localhost:11434"
-          />
-          <desktop-button variant="ghost" size="sm" (click)="testOllama()">Test</desktop-button>
-        </div>
-        <div class="card-actions">
-          <desktop-button variant="ghost" size="sm" (click)="openExternal('https://ollama.com/download')">Get Ollama</desktop-button>
-        </div>
-      </section>
-
       <!-- ── Crucible ── -->
       <section class="card">
         <div class="card-head">
@@ -200,8 +174,8 @@ import {
             Settings &rarr; Crucible Servers.
           </p>
 
-          <div class="ollama-url-row">
-            <label class="ollama-url-label">Server</label>
+          <div class="setting-row">
+            <label class="setting-label">Server</label>
             <select class="key-input" [value]="crucibleServer()" (change)="setCrucibleServer($any($event.target).value)">
               <option value="">Choose a server…</option>
               @for (name of crucibleServers(); track name) {
@@ -214,8 +188,8 @@ import {
           </div>
 
           @if (crucibleServer()) {
-            <div class="ollama-url-row">
-              <label class="ollama-url-label">Model</label>
+            <div class="setting-row">
+              <label class="setting-label">Model</label>
               <select class="key-input" [value]="crucibleModel()" (change)="setCrucibleModel($any($event.target).value)">
                 <option value="">Choose a model…</option>
                 @for (m of crucibleModels(); track m.id) {
@@ -246,8 +220,8 @@ import {
               own page.
             </p>
             @for (act of textActs; track act) {
-              <div class="ollama-url-row">
-                <label class="ollama-url-label">{{ act }}</label>
+              <div class="setting-row">
+                <label class="setting-label">{{ act }}</label>
                 <span class="act-model">{{ capabilityLineFor(act) }}</span>
               </div>
             }
@@ -300,8 +274,8 @@ import {
           }
         }
 
-        <div class="ollama-url-row">
-          <label class="ollama-url-label">Server URL</label>
+        <div class="setting-row">
+          <label class="setting-label">Server URL</label>
           <input
             class="key-input"
             type="text"
@@ -315,8 +289,8 @@ import {
         </div>
 
         @if (vlmUrl().trim()) {
-          <div class="ollama-url-row">
-            <label class="ollama-url-label">Model name</label>
+          <div class="setting-row">
+            <label class="setting-label">Model name</label>
             <input
               class="key-input"
               type="text"
@@ -325,8 +299,8 @@ import {
               placeholder="the name the server was started with"
             />
           </div>
-          <div class="ollama-url-row">
-            <label class="ollama-url-label">Pages at once</label>
+          <div class="setting-row">
+            <label class="setting-label">Pages at once</label>
             <input
               class="key-input narrow"
               type="number"
@@ -344,18 +318,18 @@ import {
         }
       </section>
 
-      <!-- ── Cloud keys live in Foundry, and this is the whole of what we say ── -->
+      <!-- ── Cloud keys live in the ENGINE, and this is the whole of what we say ── -->
       <section class="card">
         <div class="card-head">
           <h2>&#128273; Cloud keys</h2>
-          <span class="tag">Foundry owns them</span>
+          <span class="tag">The engine holds them</span>
         </div>
         <p class="card-note">
-          Claude and OpenAI keys are entered once, in Foundry’s <strong>Backend</strong> settings
-          — the gear beside a book — under <strong>Cloud providers</strong>. The key is what
-          lists the models, so that card is also where the model is chosen, and its Test button
-          asks the provider what this key can actually reach. BookForge reads that record and
-          keeps no second copy of a credential.
+          Anthropic, OpenAI and Ollama keys and addresses live on the engine, and are set in
+          this section. The engine forwards a text act to whichever one its operator routed
+          that act to, on the operator's account, and the routing is chosen before anything
+          runs rather than reached for when something fails. BookForge stores no credential
+          anywhere — not in its settings, not on a job.
         </p>
       </section>
 
@@ -369,10 +343,10 @@ import {
   styles: [`
     .wizard { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem 3rem; overflow-y: auto; height: 100%; }
     .wizard.embedded { padding: 0; max-width: none; height: auto; overflow: visible; }
-    .ollama-url-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
+    .setting-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
     /* The server's own answer for one class: read, never a control. */
     .act-model { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45; }
-    .ollama-url-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; min-width: 6.5rem; }
+    .setting-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; min-width: 6.5rem; }
     .key-input.narrow { max-width: 7rem; }
     .inline-note { font-size: 0.8rem; margin: 0; }
     .warn-note { color: var(--warning, #d08b1e); }
@@ -429,18 +403,13 @@ import {
     .progress-meta { font-size: 0.72rem; color: var(--text-secondary); margin-top: 0.2rem; }
 
     .use-row { margin-top: 1rem; }
-    .card-actions { display: flex; gap: 0.5rem; }
 
-    .key-item { display: flex; gap: 0.5rem; align-items: center; padding: 0.4rem 0; }
-    .key-item + .key-item { border-top: 1px solid var(--border-subtle, var(--border-default)); }
-    .key-provider { flex: none; min-width: 9.5rem; color: var(--text-primary); font-size: 0.875rem; font-weight: 500; }
+    /* .card-actions, .key-item, .key-provider, .key-mask and .key-saved-tag
+       went with the Ollama card and the key rows. */
     .key-input {
       flex: 1; padding: 0.5rem 0.6rem; border: 1px solid var(--border-default); border-radius: 6px;
       background: var(--bg-base); color: var(--text-primary); font-size: 0.85rem;
     }
-    .key-mask { flex: 1; color: var(--text-secondary); letter-spacing: 2px; font-size: 0.9rem; }
-    .key-saved-tag { flex: none; color: var(--success); font-size: 0.75rem; font-weight: 600; }
-
     .wizard-foot { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
 
     .danger-row { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
@@ -492,20 +461,20 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly activeSummary = computed(() => {
     const parts: string[] = [];
     if (this.ai.localUsable()) parts.push('local model');
-    if (this.ai.ollamaHasModels()) parts.push('Ollama');
     const cfg = this.settings.getAIConfig();
-    // No cloud line: this page no longer holds a key and must not claim to
-    // know whether Foundry does. Its own card says where they live.
+    // No cloud line and no Ollama line: this page holds no key and talks to no
+    // daemon. Whether an upstream is configured is the engine's own answer,
+    // shown where the engine's settings are.
     if (this.ai.crucibleConfigured()) parts.push(`Crucible ${cfg.crucible?.server}/${cfg.crucible?.model}`);
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
 
   // ── "Delete all" actions (per the bare-bones reset model) ──
-  /** Downloaded local models a "delete all" would remove (Ollama is untouched). */
+  /** Downloaded local models a "delete all" would remove. */
   readonly downloadedModels = computed(() => this.models().filter((m) => m.downloaded));
   readonly confirmDeleteModels = signal(false);
 
-  /** Remove every downloaded local LLM. Leaves Ollama config alone. */
+  /** Remove every downloaded local LLM. Touches nothing on an engine. */
   async deleteAllModels(): Promise<void> {
     for (const m of this.downloadedModels()) {
       await this.ai.deleteModel(m.id);
@@ -735,29 +704,13 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   /**
    * One line per act: what the server decided, in its own words.
    *
-   * THREE DIFFERENT ANSWERS AND THREE DIFFERENT SENTENCES. A class this
-   * server has never measured is "undecided", which is deliberately not the
-   * same news as "off"; a class that is off carries the server's reason and
-   * the shortfall that turned it off, which is a fact about the card and not
-   * something this screen argues with; an enabled class names the model. The
-   * rule is the record's own: branch on `enabled`, never on the emptiness of
-   * `selected`.
+   * The sentence itself is {@link capabilityWords}, in the renderer's one
+   * wording file — Settings → Pipeline Defaults asks the same question about
+   * the same record, and two screens composing that answer separately is the
+   * one-fact-two-owners shape the audit exists to prevent.
    */
   capabilityLineFor(act: CrucibleTextActName): string {
-    const record = this.capability();
-    if (record === null) return 'asking the server…';
-    const row = record.classes.find((c) => c.capability === act);
-    if (row === undefined) {
-      return 'not measured yet — install a job type from the server\'s page to write its '
-        + 'capability record';
-    }
-    if (!row.enabled) {
-      const short = row.shortfallBytes > 0
-        ? ` (short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB)`
-        : '';
-      return `not served here — ${row.reason}${short}`;
-    }
-    return row.selected === '' ? `enabled, and names no model — ${row.reason}` : row.selected;
+    return capabilityWords(this.capability(), act);
   }
 
   private async loadCapability(): Promise<void> {
@@ -787,7 +740,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     if (!server) return;
     this.crucibleTesting.set(true);
     try {
-      const answer = await this.electron.checkAIConnection('crucible', undefined, server);
+      const answer = await this.electron.checkAIConnection('crucible', server);
       this.crucibleStatus.set({
         ok: answer.available,
         message: answer.available
@@ -811,24 +764,19 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     void this.ai.refresh();
   }
 
-  // ── Ollama server URL (config used by cleanup/translate jobs at runtime) ──
-  ollamaUrl(): string {
-    return this.settings.getAIConfig().ollama?.baseUrl || 'http://localhost:11434';
-  }
-  setOllamaUrl(url: string): void {
-    const cfg = this.settings.getAIConfig();
-    this.settings.updateAIConfig({ ollama: { ...cfg.ollama, baseUrl: url.trim() } });
-    void this.ai.refresh();
-  }
-  testOllama(): void {
-    void this.ai.refresh();
-  }
+  /*
+   * `ollamaUrl`, `setOllamaUrl` and `testOllama` ARE DELETED (2026-09-14),
+   * with the card that used them. An Ollama server is an UPSTREAM the engine
+   * is configured with, not a provider this app talks to, so its address is
+   * the engine's setting and the reachability question is the engine's to
+   * answer.
+   */
 
   // ── Reading pages: MLX here, or a server somewhere else ───────────────────
   //
   // The setting the Convert to EPUB action carries to main on every run
   // (shared/vlm/conversion.ts). Written straight through to settings on change,
-  // like the Ollama URL above it: there is no Save button on this card and a
+  // there is no Save button on this card and a
   // draft that looked saved but was not would be discovered ninety minutes into
   // a conversion.
 
@@ -962,10 +910,8 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
 
 
-  openExternal(url: string): void {
-    (window as unknown as { electron?: { shell?: { openExternal: (u: string) => void } } })
-      .electron?.shell?.openExternal(url);
-  }
+  // `openExternal` went with the Ollama card's "Get Ollama" button — the only
+  // thing on this page that ever sent somebody to a download.
 
   goSettings(): void {
     void this.router.navigate(['/settings']);

@@ -1,48 +1,81 @@
 /**
  * AI Configuration Types
  *
- * Supports multiple AI providers for OCR cleanup:
- * - Ollama (local, free)
- * - Claude (Anthropic API)
- * - OpenAI (ChatGPT API)
+ * Two providers, and that is the whole list (Owen, 2026-09-14): *"bookforge/
+ * foundry gain a simple contract: send commands to the crucible server.
+ * period. they dont have ollama fallbacks or cloud anything at all."*
+ * Anthropic, OpenAI and Ollama did not become unavailable — they moved. They
+ * are UPSTREAMS a Crucible forwards to on the operator's account
+ * (`CRUCIBLE_UPSTREAM_NAMES` in `@shared/crucible/settings-wire`), chosen on
+ * that server before any request is made, and this app stores no key for any
+ * of them anywhere.
  */
 
 /**
  * Who runs an AI pass.
  *
- * `crucible` matches `AIProvider` in `electron/ai-bridge.ts`, which has had the
- * provider since phase 2 while this enum did not — so the bridge could run a
- * cleanup on a Crucible and Settings could not select one. The two lists are
- * one fact with two spellings (crucible `docs/ARCHITECTURE.md`, R1), and this
- * is the side that was wrong.
+ * This is the renderer's copy of `AIProvider` in `electron/ai-bridge.ts` — one
+ * fact with two spellings (crucible `docs/ARCHITECTURE.md`, R1), re-declared
+ * here only because the bridge's own module reaches for `electron` at load and
+ * a renderer cannot import it. The two lists must stay identical.
+ *
+ * `local` is the bundled llama.cpp of the legacy local spawn layer, which is
+ * deleted separately after Owen's in-app pass; until then it is the only
+ * provider that works with nothing configured.
  */
-export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
+export type AIProvider = 'crucible' | 'local';
 
-export interface OllamaConfig {
-  baseUrl: string;
-  model: string;
+/** Is this string one of the two providers this build has? */
+export function isAIProvider(value: unknown): value is AIProvider {
+  return value === 'crucible' || value === 'local';
 }
 
 /**
- * A cloud provider, as this app's persisted `aiConfig` still shapes it.
- *
- * **NEITHER FIELD IS WRITTEN OR READ BY THIS APP ANY MORE** (2026-09-14). The
- * key and the model both come from FOUNDRY'S cloud card, read in the main
- * process by `electron/cloud-credentials.ts`; the Settings rows that used to
- * fill these are deleted, and `electron/ai-bridge.ts` ignores whatever a
- * record still carries. They stay on the type so a config persisted before
- * this change still PARSES — a settings blob that threw would take every other
- * preference with it — and they are emptied by nobody, because rewriting
- * somebody's stored key on upgrade is not this change's business.
+ * The three providers that LEFT on 2026-09-14, kept only so a stored value can
+ * be NAMED when it is repaired. Nothing offers them and nothing runs them.
  */
-export interface ClaudeConfig {
-  apiKey: string;
-  model: string;
+export const RETIRED_AI_PROVIDERS = ['ollama', 'claude', 'openai'] as const;
+
+export type RetiredAIProvider = (typeof RETIRED_AI_PROVIDERS)[number];
+
+export interface SavedAIProviderResolution {
+  provider: AIProvider;
+  /** Absent when the stored value was already a provider this build has. */
+  migratedFrom?: RetiredAIProvider;
+  /** Why it was repaired, in full. Present exactly when `migratedFrom` is. */
+  note?: string;
 }
 
-export interface OpenAIConfig {
-  apiKey: string;
-  model: string;
+/**
+ * A provider read back out of a settings blob, resolved.
+ *
+ * The same shape `resolveSavedTtsEngine` uses for a retired narration engine,
+ * and for the same reason: a stored DEFAULT is the seed for the next run, shown
+ * in a picker before anything is rendered, so repairing it loudly is safe in
+ * the way repairing a queued run would not be. Without the repair a machine
+ * that had chosen Ollama would open Settings with NOTHING selected in the
+ * provider picker and no way to see why.
+ *
+ * It is not a fallback: the repair names what it changed and the caller is
+ * expected to print the note. A string this build has never had throws.
+ */
+export function resolveSavedAIProvider(value: string): SavedAIProviderResolution {
+  if (isAIProvider(value)) return { provider: value };
+  if ((RETIRED_AI_PROVIDERS as readonly string[]).includes(value)) {
+    return {
+      provider: DEFAULT_AI_CONFIG.provider,
+      migratedFrom: value as RetiredAIProvider,
+      note:
+        `Saved AI provider "${value}" left BookForge on 2026-09-14 — Anthropic, OpenAI and `
+        + 'Ollama are now upstreams a GPU engine (Crucible) forwards to, configured on the '
+        + `engine. Migrating the saved default to "${DEFAULT_AI_CONFIG.provider}", and `
+        + 'resetting the model that was paired with it.',
+    };
+  }
+  throw new Error(
+    `Saved settings name an AI provider this build has never had: "${value}". `
+    + 'This build runs: crucible, local.',
+  );
 }
 
 export interface LocalConfig {
@@ -67,9 +100,6 @@ export interface CrucibleConfig {
 
 export interface AIConfig {
   provider: AIProvider;
-  ollama: OllamaConfig;
-  claude: ClaudeConfig;
-  openai: OpenAIConfig;
   // Bundled llama.cpp. Optional so configs persisted before WS2 still parse.
   local?: LocalConfig;
   // A Crucible server. Optional and NOT defaulted: neither half is guessable,
@@ -77,41 +107,14 @@ export interface AIConfig {
   crucible?: CrucibleConfig;
 }
 
-export const DEFAULT_AI_CONFIG: AIConfig = {
-  provider: 'ollama',
-  ollama: {
-    baseUrl: 'http://localhost:11434',
-    model: 'cogito:14b'
-  },
-  claude: {
-    apiKey: '',
-    model: 'claude-3-5-sonnet-20241022'
-  },
-  openai: {
-    apiKey: '',
-    model: 'gpt-4o'
-  }
-};
-
-/*
- * `CLAUDE_MODELS` AND `OPENAI_MODELS` ARE DELETED (2026-09-14).
- *
- * The comment that stood here already contained the argument against them, and
- * applied it only to Ollama: *"There is deliberately NO Ollama list here:
- * Ollama's models are whatever the user has pulled, so every picker asks the
- * daemon. A hardcoded list drifts the moment someone pulls a model — it hid
- * cogito:32b and cogito:70b from Settings → Pipeline defaults until Aug
- * 2026."* The two cloud lists below it were doing exactly that, with three
- * stale Claude ids and three stale OpenAI ids shipped as the only choices, and
- * they directly contradicted Owen's ruling (docs/CRUCIBLE_ROLLOUT_PLAN.md
- * §2a.2): **the key picks the models — the app calls the provider's own
- * listing with it, and the dropdown is what came back.**
- *
- * That listing already exists, done properly, in FOUNDRY'S cloud card: kind,
- * model, address, key, and a Test that asks the provider. BookForge's job is
- * to offer the door, not a second key store or a second catalog. Its main
- * process reads that record through `electron/cloud-credentials.ts`.
+/**
+ * `provider: 'local'` because it is the only one that works with nothing
+ * configured — a Crucible needs a server name, and a server name is whatever
+ * this machine called that machine, which nobody can guess on a fresh install.
  */
+export const DEFAULT_AI_CONFIG: AIConfig = {
+  provider: 'local',
+};
 
 // Provider availability check results
 export interface ProviderStatus {

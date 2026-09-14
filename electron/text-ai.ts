@@ -22,8 +22,9 @@
  * here, that is the sign these two should be separate modules.
  */
 
-import { crucibleChatOnce, estimateNumCtx, type AIProviderConfig } from './ai-bridge';
-import { getOllamaThinkFields } from './ollama-capabilities';
+import { crucibleChatOnce, type AIProviderConfig } from './ai-bridge';
+import { crucibleActModel } from './crucible/text-venue';
+import type { CrucibleTextAct } from './crucible/text-acts';
 
 
 // Language name mapping for prompts
@@ -49,176 +50,19 @@ export const LANGUAGE_NAMES: Record<string, string> = {
 // AI Provider Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Call Ollama API
+/*
+ * `callOllama`, `callClaude`, `callOpenAI` and the `fetchWithTimeout` they
+ * shared ARE DELETED (2026-09-14, crucible `docs/PHASE15-HOST.md` §5.3).
+ *
+ * Owen: *"they dont have ollama fallbacks or cloud anything at all."* An
+ * Ollama server, an Anthropic key and an OpenAI key are now UPSTREAMS on the
+ * ENGINE, and a class reaches one by being ROUTED there — a choice the
+ * operator makes once, on the server, for every app. So a translation against
+ * Anthropic still happens; it happens through {@link callCrucible}, because
+ * from this side there is one transport and one set of named refusals rather
+ * than three hand-written HTTP doors with three vocabularies for "the model
+ * returned nothing".
  */
-async function callOllama(
-  prompt: string,
-  model: string,
-  baseUrl: string = 'http://localhost:11434',
-  systemPrompt?: string
-): Promise<string> {
-  // Capability-gated: thinking models (e.g. qwen3) get think:false so the
-  // generation budget goes to the answer, not a discarded chain-of-thought.
-  const thinkFields = await getOllamaThinkFields(baseUrl, model);
-  const body: Record<string, unknown> = {
-    model,
-    prompt,
-    stream: false,
-    ...thinkFields,
-    // Keep the model resident between chunks, matching the heavy engine
-    // (ai-bridge cleanChunk) so back-to-back chunks never pay a reload.
-    keep_alive: '5m',
-    options: {
-      temperature: 0.3,
-      // Explicit output budget, input-proportional like the heavy engine. ×3
-      // matches this call's estimateNumCtx output multiplier (a translation can
-      // legitimately expand the text); floor of 4096 covers tiny prompts.
-      num_predict: Math.max(4096, prompt.length * 3),
-      num_ctx: estimateNumCtx(systemPrompt || '', prompt, 3, model),
-    }
-  };
-
-  if (systemPrompt) {
-    body.system = systemPrompt;
-  }
-
-  const response = await fetch(`${baseUrl}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Ollama request failed: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data.response.trim();
-}
-
-// Hosted-API calls used by TRANSLATION get a hard timeout so a hung connection
-// fails loudly instead of stalling the job forever. (Cleanup/simplify no longer
-// call these — they route through ai-bridge's cleanChunkWithProvider, which has
-// its own timeout and safeguards.)
-const HOSTED_API_TIMEOUT_MS = 180000; // 3 minutes
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs = HOSTED_API_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-/**
- * Call Claude API (used by translation). Cleanup/simplify use the hardened
- * cleanChunkWithProvider instead.
- */
-async function callClaude(
-  prompt: string,
-  model: string,
-  apiKey: string,
-  systemPrompt?: string
-): Promise<string> {
-  const messages: Array<{ role: string; content: string }> = [];
-
-  if (systemPrompt) {
-    messages.push({ role: 'user', content: systemPrompt + '\n\n' + prompt });
-  } else {
-    messages.push({ role: 'user', content: prompt });
-  }
-
-  const response = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Claude request failed: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  // Concatenate all text content blocks — robust to non-text blocks (e.g.
-  // thinking) or an empty/refusal response (the old data.content[0].text threw).
-  const text: string = Array.isArray(data.content)
-    ? data.content
-        .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
-        .map((b: { text?: string }) => b.text)
-        .join('')
-    : '';
-  if (!text.trim()) {
-    // Don't coerce an empty/refusal response to '' — that discards stop_reason
-    // and lets callers silently treat a refusal as a result. Fail loudly so the
-    // translation failure tracking can account for it.
-    const why = data.stop_reason === 'refusal'
-      ? 'the model refused (commonly copyright/content policy — use a local model for copyrighted books)'
-      : `the model returned no text (stop_reason: ${data.stop_reason ?? 'unknown'})`;
-    throw new Error(`Claude returned an empty response: ${why}`);
-  }
-  return text.trim();
-}
-
-/**
- * Call OpenAI API
- */
-async function callOpenAI(
-  prompt: string,
-  model: string,
-  apiKey: string,
-  systemPrompt?: string
-): Promise<string> {
-  const messages: Array<{ role: string; content: string }> = [];
-
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-  messages.push({ role: 'user', content: prompt });
-
-  const response = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.3,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI request failed: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  const text: string = data.choices?.[0]?.message?.content ?? '';
-  if (!text.trim()) {
-    // Don't coerce an empty response to '' — that discards finish_reason and
-    // lets callers silently treat a refusal/filter as a result. Fail loudly so
-    // the translation failure tracking can account for it.
-    throw new Error(`OpenAI returned an empty response (finish_reason: ${data.choices?.[0]?.finish_reason ?? 'unknown'})`);
-  }
-  return text.trim();
-}
 
 /**
  * Call the bundled local llama.cpp model (serves the active model). Cogito is a
@@ -253,12 +97,22 @@ async function callLocal(prompt: string, systemPrompt?: string): Promise<string>
  */
 async function callCrucible(
   prompt: string,
-  where: { server: string; model: string },
+  where: { server: string; act: CrucibleTextAct; model?: string },
   systemPrompt?: string,
 ): Promise<string> {
+  /*
+   * THE MODEL IS THE SERVER'S ANSWER, ASKED ONCE PER RUN.
+   *
+   * PHASE15 §5.3: a text door sends `capability.selected` for its class and
+   * nothing else. `crucibleActModel` is the one owner of that read and of the
+   * stamp that memoises it onto this run's block, so a translation making
+   * three hundred batch calls asks the server once — and every later report
+   * names the model the run actually used.
+   */
+  const model = await crucibleActModel(where);
   const answer = await crucibleChatOnce({
     server: where.server,
-    model: where.model,
+    model,
     system: systemPrompt ?? '',
     user: prompt,
     temperature: 0.3,
@@ -267,7 +121,7 @@ async function callCrucible(
   });
   if (answer.finishReason === 'length') {
     throw new Error(
-      `crucible_answer_truncated: crucible "${where.server}" stopped "${where.model}" at the token `
+      `crucible_answer_truncated: crucible "${where.server}" stopped "${model}" at the token `
       + `budget for a ${prompt.length}-char batch, so the answer ends mid-text. It is refused `
       + 'rather than written into the book.',
     );
@@ -308,26 +162,22 @@ export async function callAI(
     return named;
   };
   switch (config.provider) {
-    case 'ollama': {
-      // NOT defaulted here. `providerConfigOf` is the one place a missing base
-      // URL becomes localhost, and a second default would be a second answer.
-      const o = arm(config.ollama);
-      return await callOllama(prompt, o.model, o.baseUrl, systemPrompt);
-    }
-    case 'claude': {
-      const c = arm(config.claude);
-      return await callClaude(prompt, c.model, c.apiKey, systemPrompt);
-    }
-    case 'openai': {
-      const o = arm(config.openai);
-      return await callOpenAI(prompt, o.model, o.apiKey, systemPrompt);
-    }
     case 'local':
       return await callLocal(prompt, systemPrompt);
     case 'crucible':
       return await callCrucible(prompt, arm(config.crucible), systemPrompt);
     default:
-      throw new Error(`Unsupported AI provider: ${config.provider}`);
+      /*
+       * A JOB PERSISTED BEFORE PHASE 15 CAN STILL NAME `ollama`, `claude` or
+       * `openai`, and it is told so by name. Re-pointing it at a survivor
+       * would move somebody's book onto a different engine without asking.
+       */
+      throw new Error(
+        `ai_provider_removed: this job names "${config.provider}", which BookForge no longer has. `
+        + 'Ollama, Claude and OpenAI are UPSTREAMS on the GPU engine now: set the key or the '
+        + 'address in Settings → AI, route the class to it there, and queue this against the '
+        + 'engine.',
+      );
   }
 }
 
@@ -341,19 +191,19 @@ export async function callAI(
  */
 export function aiCallModel(config: AIProviderConfig): string | null {
   switch (config.provider) {
-    case 'ollama': return config.ollama?.model ?? null;
-    case 'claude': return config.claude?.model ?? null;
-    case 'openai': return config.openai?.model ?? null;
+    /*
+     * `null` UNTIL THE RUN HAS ASKED. A crucible block carries no model until
+     * `crucibleActModel` has read the server's capability record and stamped
+     * one, so before the first call there is genuinely no name to report —
+     * and writing a guessed id into a book's provenance record is the thing
+     * this function's header forbids.
+     */
     case 'crucible': return config.crucible?.model ?? null;
     /*
-     * TWO FIELDS, ONE CHOICE. `providerConfigOf` puts a `local` job's chosen
-     * model in the OLLAMA arm — the two providers share a branch there, because
-     * the bundled llama speaks that shape — while `local.model` is the
-     * informational field `AIProviderConfig` declares. Whichever is present
-     * names the same model; `callLocal` reads neither, because llama-bridge
-     * resolves the active model itself.
+     * Informational only: `callLocal` reads it for nothing, because
+     * llama-bridge resolves the active model itself.
      */
-    case 'local': return config.local?.model ?? config.ollama?.model ?? null;
+    case 'local': return config.local?.model ?? null;
     default: return null;
   }
 }

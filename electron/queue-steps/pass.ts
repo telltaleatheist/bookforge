@@ -23,7 +23,7 @@ import type { JobType } from '../../shared/queue/engine-types';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider } from './runtime';
-import { crucibleModelForAiStep, machinesForAiStep, type AiJobConfig } from './ai-provider';
+import { machinesForAiStep, type AiJobConfig } from './ai-provider';
 
 /**
  * THE AI BLOCK OF A PASS ROW, or null where the pass asks no provider.
@@ -114,6 +114,29 @@ function passModule(type: JobType): StepModule {
       return ai === null ? 'local' : machinesForAiStep(ai as unknown as Record<string, unknown>);
     },
     /**
+     * THE CAPABILITY CLASS EACH PASS KIND IS (crucible PHASE15 §5.3).
+     *
+     * Read by the pump at the one moment both facts exist — the class, which
+     * is this step's, and the engine, which is the row's — to ask whether that
+     * engine ROUTES this class to an upstream. If it does, the run holds no
+     * card and takes the engine's `[cloud]` lane instead of its GPU slot.
+     *
+     * `narration-text` is the `clean` act, which is the whole reason it
+     * travels unconditionally: it is one of Crucible's four classes and not a
+     * provider somebody picked on the row. `footnote-refs` is a string
+     * replace over a zip — no model, no class, and `null` says exactly that
+     * rather than naming a class it would never ask for.
+     */
+    crucibleClass: (config: Record<string, unknown>): string | null => {
+      const pass = config as unknown as PassJobConfig;
+      switch (pass?.kind) {
+        case 'narration-text': return 'clean';
+        case 'simplify': return 'simplify';
+        case 'translate': return 'translate';
+        default: return null;
+      }
+    },
+    /**
      * IT LEASES ITS MODEL when its act reaches a Crucible as a run of chat
      * completions — which every one of these is: a simplify asks the model
      * about every block group, a translation about every paragraph batch, and
@@ -181,23 +204,23 @@ function passModule(type: JobType): StepModule {
      * is a question about a lease, asked before the step starts, and it must
      * not be the thing that fails the row.
      */
-    leasedModel: (config: Record<string, unknown>): string | null => {
-      const pass = config as unknown as PassJobConfig;
-      if (pass?.kind === 'narration-text') {
-        // NULL BY CONSTRUCTION since the capability record took ownership of
-        // the per-act model: the id is the SERVER's answer, asked at run time
-        // by `resolveCrucibleTextEngine`, and nothing synchronous here can
-        // know it. Null never equals an open lease's subject, so the lease is
-        // given back at the seam — which is exactly the behaviour before one
-        // lease per row existed. OWED: a `clean` row could keep its lease
-        // across a chain if `leasedModel` were allowed to be async and given
-        // the run's venue.
-        return null;
-      }
-      const ai = aiBlockOfPass(pass);
-      return ai === null
-        ? null
-        : crucibleModelForAiStep(ai as unknown as Record<string, unknown>);
+    leasedModel: (): string | null => {
+      /*
+       * NULL BY CONSTRUCTION, FOR EVERY PASS NOW.
+       *
+       * `narration-text` reached this answer first, when the capability record
+       * took ownership of the per-act model: the id is the SERVER's answer,
+       * asked at run time, and nothing synchronous here can know it. Phase 15
+       * made that true of `simplify` and `translate-pass` too — a text door
+       * sends `capability.selected` for its class and nothing else (crucible
+       * PHASE15 §5.3), so the row's `aiModel` is no longer the id either.
+       *
+       * Null never equals an open lease's subject, so the lease is given back
+       * at the seam — exactly the behaviour before one lease per row existed.
+       * OWED: an async `leasedModel` given the run's venue would let a row
+       * keep its lease across a chain of acts on one model.
+       */
+      return null;
     },
 
     async run(ctx: StepRunContext): Promise<ArtifactRef> {

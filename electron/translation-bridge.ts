@@ -1,8 +1,8 @@
 /**
  * Translation Bridge - Multi-provider AI translation for EPUBs
  *
- * Translates EPUBs from German, French, or Spanish to English using
- * Ollama, Claude, or OpenAI.
+ * Translates EPUBs from German, French, or Spanish to English on a Crucible
+ * server, or on the bundled local model.
  *
  * Recommended workflow: Translate -> AI Cleanup -> TTS
  */
@@ -13,8 +13,6 @@ import { promises as fsPromises } from 'fs';
 
 // Import types and helpers from ai-bridge
 import type { AIProviderConfig, SkippedChunk } from './ai-bridge';
-import { estimateNumCtx } from './ai-bridge';
-import { getOllamaThinkFields } from './ollama-capabilities';
 import {
   startDiffCache,
   addChapterDiff,
@@ -84,11 +82,11 @@ export interface TranslationResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_CHUNK_SIZE = 2500;
-const TIMEOUT_MS = 180000; // 3 minutes per chunk
 // Mirrors ai-bridge's MAX_FALLBACK_COUNT: abort the job once this many chunks
 // have failed translation and kept their original (untranslated) text. Without
-// this, a provider that refuses/errors on many chunks (e.g. a Claude content
-// refusal) produced a partially untranslated book that reported full success.
+// this, a provider that refuses/errors on many chunks (a model that keeps
+// declining the passage, a server that keeps timing out) produced a partially
+// untranslated book that reported full success.
 const MAX_FAILED_CHUNK_COUNT = 10;
 // Failed-chunk artifact written next to the translated output. Same shape as
 // cleanup's skipped-chunks.json (SkippedChunk[]), but a DISTINCT name: the
@@ -96,7 +94,6 @@ const MAX_FAILED_CHUNK_COUNT = 10;
 // cleanup both deletes and rewrites 'skipped-chunks.json' as its own artifact —
 // sharing the literal name would clobber one job's record with the other's.
 const TRANSLATION_SKIPPED_CHUNKS_FILENAME = 'translation-skipped-chunks.json';
-const OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // Universal translation prompt - model auto-detects source language
 const TRANSLATION_PROMPT = `You are translating a book to English.
@@ -219,187 +216,6 @@ function splitIntoChunks(text: string, chunkSize: number): string[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Translate a chunk using Ollama
- */
-async function translateWithOllama(
-  text: string,
-  systemPrompt: string,
-  model: string,
-  abortSignal?: AbortSignal
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
-  }
-
-  try {
-    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
-    // generation budget goes to the answer, not a discarded chain-of-thought.
-    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt: text,
-        system: systemPrompt,
-        stream: false,
-        ...thinkFields,
-        options: {
-          temperature: 0.3, // Slightly higher than cleanup for natural translation
-          num_predict: Math.max(4096, text.length * 3), // Allow expansion for translation
-          num_ctx: estimateNumCtx(systemPrompt, text, 3, model)
-        },
-        keep_alive: '10m'
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    // Never `data.response || text` — that silently returns the original
-    // UNTRANSLATED text as if translation succeeded. Fail loudly on empty.
-    const out: string = typeof data.response === 'string' ? data.response : '';
-    if (!out.trim()) {
-      throw new Error('Ollama returned an empty translation (no text produced)');
-    }
-    return out;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
-/**
- * Translate a chunk using Claude API
- */
-async function translateWithClaude(
-  text: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string,
-  abortSignal?: AbortSignal
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
-  }
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: Math.max(4096, text.length * 3),
-        system: systemPrompt,
-        messages: [
-          { role: 'user', content: text }
-        ]
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Claude API error: ${response.status} - ${errorData.error?.message || response.statusText}`);
-    }
-
-    const data = await response.json();
-    // Concatenate text-type content blocks; never `|| text` (that would silently
-    // return the original UNTRANSLATED text). A refusal / empty response fails loudly.
-    const out: string = Array.isArray(data.content)
-      ? data.content
-          .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
-          .map((b: { text?: string }) => b.text)
-          .join('')
-      : '';
-    if (!out.trim()) {
-      const why = data.stop_reason === 'refusal'
-        ? 'the model refused (commonly copyright/content policy — use a local model for copyrighted books)'
-        : `the model returned no text (stop_reason: ${data.stop_reason ?? 'unknown'})`;
-      throw new Error(`Claude produced no translation: ${why}`);
-    }
-    return out;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
-/**
- * Translate a chunk using OpenAI API
- */
-async function translateWithOpenAI(
-  text: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string,
-  abortSignal?: AbortSignal
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
-  }
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: Math.max(4096, text.length * 3),
-        temperature: 0.3,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: text }
-        ]
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`OpenAI API error: ${response.status} - ${errorData.error?.message || response.statusText}`);
-    }
-
-    const data = await response.json();
-    // Never `content || text` — that silently returns the original UNTRANSLATED
-    // text. Fail loudly on an empty/refusal response.
-    const out: string = data.choices?.[0]?.message?.content ?? '';
-    if (!out.trim()) {
-      throw new Error(`OpenAI produced no translation (finish_reason: ${data.choices?.[0]?.finish_reason ?? 'unknown'})`);
-    }
-    return out;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
-/**
  * Translate a chunk using the bundled local llama.cpp model (active model).
  * Cogito is a reasoning model — strip any <think>…</think> block.
  */
@@ -417,7 +233,7 @@ async function translateWithLocal(
   });
   // Never `|| text` — that silently returns the original UNTRANSLATED text as
   // if translation succeeded (and short-circuits the retry loop). Fail loudly
-  // on empty, matching the Ollama/Claude/OpenAI providers above.
+  // on empty, the same way the Crucible arm below refuses an empty answer.
   const cleaned = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (!cleaned) {
     throw new Error('Local model returned an empty translation (no text produced)');
@@ -426,24 +242,70 @@ async function translateWithLocal(
 }
 
 /**
- * The key and the model for a cloud run, out of FOUNDRY'S cloud card.
+ * The one sentence a provider that cannot translate here gets told.
  *
- * Owen's ruling, 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
- * keys have ONE owner, and BookForge keeps no second key store.
- * `electron/cloud-credentials.ts` is the reader; it refuses BY cloudCredentialsForTranslation —
- * `cloud_provider_not_configured`, naming the file and the card — rather than
- * defaulting this act onto some other provider's weights.
+ * Two places ask and must not drift: the dispatch below, and the check
+ * translateEpub runs before it touches the output file. A job config persisted
+ * last week can still name a provider this build no longer has, so both are
+ * reached in normal operation and both owe the operator a sentence.
+ *
+ * Ollama, Claude and OpenAI left BookForge entirely in Crucible phase 15.
+ * Cloud keys now live inside the Crucible engine, which forwards to the
+ * upstream on the operator's account, so "translate with Claude" has not
+ * become impossible — it has become a Crucible server that happens to reach
+ * Anthropic, which is a server name in this row rather than a provider name.
  */
-async function cloudCredentialsForTranslation(
-  provider: 'claude' | 'openai',
-): Promise<{ apiKey: string; model: string }> {
-  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
-  const kind = cloudKindForProvider(provider);
-  if (kind === null) throw new Error(`"${provider}" is not a cloud provider`);
-  const slot = await requireCloudSlot(kind);
-  return { apiKey: slot.apiKey, model: slot.model };
+function translationProviderRefusal(provider: string): Error {
+  return new Error(
+    `translation_provider_unsupported: "${provider}" cannot run a translation. Ollama, Claude `
+    + 'and OpenAI were removed from BookForge in Crucible phase 15 — cloud keys now live inside '
+    + 'the Crucible engine, which forwards to the upstream on the operator\'s account. Re-point '
+    + 'this row at a Crucible server (provider "crucible") or at the bundled local model '
+    + '(provider "local") and run it again.',
+  );
 }
 
+/**
+ * Refuse an impossible run BEFORE the first chunk.
+ *
+ * The per-chunk catch below treats an unrecognised failure as recoverable: it
+ * keeps the chunk's original text and carries on, aborting only at
+ * MAX_FAILED_CHUNK_COUNT. That is right for a model that declined one passage
+ * and wrong for a provider this build does not have, which will decline every
+ * passage — without this check a stale row would write ten untranslated
+ * chunks into a half-built `_translated.epub` before failing with a
+ * threshold message instead of the reason.
+ */
+function assertTranslationProviderSupported(config: AIProviderConfig): void {
+  if (config.provider !== 'crucible' && config.provider !== 'local') {
+    throw translationProviderRefusal(config.provider);
+  }
+}
+
+/**
+ * The model this run is LABELLED with, in the start log and in the analytics
+ * record. Nothing decides anything from it.
+ *
+ * Deliberately not a chain across every provider's slot: each provider names
+ * its model in exactly one place, and reading the others is how a run gets
+ * filed under a model that never saw the text. There is no default arm, so if
+ * `AIProvider` ever grows a third member the missing return is a compile
+ * error here rather than a mislabelled row.
+ */
+function translationModelName(config: AIProviderConfig): string {
+  switch (config.provider) {
+    case 'crucible':
+      // 'unknown' is unreachable for a run that produces an analytics record:
+      // the dispatch refuses an unstamped `crucible.model` by name at the very
+      // first chunk. It is here because this is a label, not a guard.
+      return config.crucible?.model ?? 'unknown';
+    case 'local':
+      // The bundled llama.cpp layer runs whatever its ACTIVE model is and
+      // takes no model argument, so there is usually nothing here to name —
+      // 'unknown' is this record's existing idiom for exactly that.
+      return config.local?.model ?? 'unknown';
+  }
+}
 
 /**
  * Translate a chunk using the configured provider with retry logic
@@ -464,21 +326,6 @@ async function translateChunkWithProvider(
 
     try {
       switch (config.provider) {
-        case 'ollama':
-          if (!config.ollama?.model) {
-            throw new Error('Ollama model not configured');
-          }
-          return await translateWithOllama(text, systemPrompt, config.ollama.model, abortSignal);
-        // Foundry's cloud card owns the key and the model (Owen's ruling,
-        // 2026-09-14). Refused by name when there is no enabled slot.
-        case 'claude': {
-          const cloud = await cloudCredentialsForTranslation('claude');
-          return await translateWithClaude(text, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
-        }
-        case 'openai': {
-          const cloud = await cloudCredentialsForTranslation('openai');
-          return await translateWithOpenAI(text, systemPrompt, cloud.apiKey, cloud.model, abortSignal);
-        }
         case 'local':
           return await translateWithLocal(text, systemPrompt, abortSignal);
         case 'crucible': {
@@ -532,7 +379,11 @@ async function translateChunkWithProvider(
           return answer.content;
         }
         default:
-          throw new Error(`Unknown provider: ${config.provider}`);
+          // Reached from a persisted row naming a provider this build removed.
+          // translateEpub refuses the same config earlier and for the same
+          // reason; this arm is what keeps the dispatch itself honest for any
+          // other caller. See translationProviderRefusal.
+          throw translationProviderRefusal(config.provider);
       }
     } catch (error) {
       if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
@@ -578,7 +429,7 @@ export async function translateEpub(
     epubPath,
     jobId,
     provider: providerConfig.provider,
-    model: providerConfig.ollama?.model || providerConfig.claude?.model || providerConfig.openai?.model
+    model: translationModelName(providerConfig)
   });
 
   const tStartMs = Date.now();  // wall-clock start for the translation analytics record
@@ -618,6 +469,11 @@ export async function translateEpub(
   let failedChunkCount = 0;
 
   try {
+    // Before the EPUB is opened and long before the output file exists, so a
+    // row naming a removed provider fails with the reason instead of a
+    // half-written `_translated.epub`.
+    assertTranslationProviderSupported(providerConfig);
+
     const { EpubProcessor } = await import('./epub-processor.js');
 
     // Load EPUB
@@ -766,9 +622,10 @@ export async function translateEpub(
           }
 
           // For recoverable errors, keep the original text — but RECORD the
-          // failure and count it toward the abort threshold, so a provider that
-          // refuses/errors on many chunks (e.g. a Claude content refusal) fails
-          // the job loudly instead of silently shipping an untranslated book.
+          // failure and count it toward the abort threshold, so a model that
+          // refuses/errors on many chunks (a passage it keeps declining, a
+          // server that keeps dropping the request) fails the job loudly
+          // instead of silently shipping an untranslated book.
           console.warn(`[TRANSLATION] Chunk ${currentChunkInJob}/${totalChunksInJob} failed - keeping original (untranslated) text: ${errorMessage}`);
           failedChunkCount++;
           skippedChunks.push({
@@ -874,7 +731,7 @@ export async function translateEpub(
         totalSentences: totalChunksInJob,
         sentencesPerMinute: tMinutes > 0 ? Math.round((totalChunksInJob / tMinutes) * 10) / 10 : 0,
         provider: providerConfig.provider,
-        model: providerConfig.ollama?.model || providerConfig.claude?.model || providerConfig.openai?.model || 'unknown',
+        model: translationModelName(providerConfig),
         targetLang: 'en',
         mode: 'mono',
         success: true,

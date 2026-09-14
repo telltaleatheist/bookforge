@@ -57,28 +57,40 @@ export type PassJobType =
  * default AI, and the only one that works with nothing configured — so a pass
  * that could not name it could not express what most runs actually use.
  *
- * `crucible` joined them 2026-09-14 (rollout §3, "the PASS steps do not travel
- * yet"). It is the one provider that TRAVELS: the others are this machine's
- * processes or somebody's API, and a Crucible is another machine's card. A pass
- * against it names no URL and no key — `crucible.server` is a registry NAME and
- * the model must already be resident there — so the five fields below stay
- * exactly what they were and the row's assigned venue supplies the rest
+ * `crucible` joined it 2026-09-14 (rollout §3, "the PASS steps do not travel
+ * yet"). It is the one provider that TRAVELS: the other is this machine's own
+ * process, and a Crucible is another machine's card. A pass against it names no
+ * URL and no key — `crucible.server` is a registry NAME and the model must
+ * already be resident there — so the row's assigned venue supplies the rest
  * (`electron/queue-steps/ai-provider.ts`, `providerConfigOf`).
+ *
+ * `ollama`, `claude` and `openai` LEFT THE SAME DAY, later that evening. They
+ * are upstreams a Crucible forwards to on the operator's account, routed on
+ * that server before any request is made, so a pass cannot name one and never
+ * needs to.
  *
  * THIS LIST IS A SUBSET OF `AIProvider` AND NOT A SECOND ONE. Every value here
  * is spelled the same and means the same; `providerConfigOf` is the single
  * mapping from one of these to the block a bridge takes.
  */
-export type PassAiProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
+export type PassAiProvider = 'crucible' | 'local';
+
+/*
+ * `claudeApiKey` AND `openaiApiKey` ARE GONE from both param records
+ * (2026-09-14). A key never reaches a pass again: the engine holds it and
+ * forwards on the operator's account, and this app stores none anywhere.
+ *
+ * A PASS PARAMS RECORD IS PERSISTED — it is written into queue.json and into a
+ * book's ledger — so records written before this build still carry the two
+ * keys on disk. Nothing reads them, nothing strips them, and a queue restored
+ * from before the change simply has two fields no code knows about.
+ */
 
 export interface SimplifyPassParams {
   /** de-jargon | de-stiffen | language-learner. Validated by ai-bridge. */
   mode: 'dejargon' | 'destiffen' | 'learner';
   aiProvider: PassAiProvider;
   aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
   customInstructions?: string;
   testMode?: boolean;
   testModeChunks?: number;
@@ -89,9 +101,6 @@ export interface TranslatePassParams {
   targetLang: string;
   aiProvider: PassAiProvider;
   aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
   translationPrompt?: string;
   customInstructions?: string;
 }

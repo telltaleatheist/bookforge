@@ -240,7 +240,7 @@ import { QueueService } from '../../services/queue.service';
         <!-- Warnings the job raised while it ran -->
         @if (selectedJob.copyrightIssuesDetected) {
           <div class="warning">
-            &#9888; Copyright issues: {{ selectedJob.copyrightChunksAffected }} chunks used original text. Try Ollama.
+            &#9888; Copyright issues: {{ selectedJob.copyrightChunksAffected }} chunks used original text. Try another model on the engine.
           </div>
         }
         @if (selectedJob.contentSkipsDetected) {
@@ -248,7 +248,7 @@ import { QueueService } from '../../services/queue.service';
             @if (selectedJob.type === 'book-analysis') {
               &#9888; Analysis gaps: {{ selectedJob.contentSkipsAffected }} transcript ranges could not be analyzed.
             } @else {
-              &#9888; Content skips: {{ selectedJob.contentSkipsAffected }} chunks refused by AI. Try Ollama.
+              &#9888; Content skips: {{ selectedJob.contentSkipsAffected }} chunks refused by AI. Try another model on the engine.
             }
           </div>
         }
@@ -463,11 +463,21 @@ export class JobDetailsComponent {
     return engineDisplayName(engine);
   }
 
+  /**
+   * A stored provider id, as a label. HISTORY IS PART OF THE LIST.
+   *
+   * The argument is a `string` and not `AIProvider` on purpose: it comes off a
+   * persisted job, and a job queued before 2026-09-14 names one of the three
+   * providers that left BookForge that day. A details panel says what RAN, so
+   * those three keep their labels; nothing offers them.
+   */
   formatProvider(provider: string): string {
     switch (provider) {
-      case 'ollama': return 'Ollama (Local)';
-      case 'claude': return 'Claude';
-      case 'openai': return 'OpenAI';
+      case 'crucible': return 'GPU engine (Crucible)';
+      case 'local': return 'Bundled local';
+      case 'ollama': return 'Ollama (retired)';
+      case 'claude': return 'Claude (retired)';
+      case 'openai': return 'OpenAI (retired)';
       default: return provider;
     }
   }

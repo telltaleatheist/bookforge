@@ -30,7 +30,7 @@
  * ── Nothing here decides anything main also decides ─────────────────────────
  *
  * The endpoint config is read from settings and handed over per run, exactly as
- * `ollamaBaseUrl` travels on a job config; main resolves it again and refuses the
+ * the provider block travels on a job config; main resolves it again and refuses the
  * same things. `resolveVlmRoute` is called here only to say WHICH GPU is about to
  * be busy before the first page lands, and it is given the same facts main gives
  * it — including `vlm:reader-status`, which only main can answer. A card that

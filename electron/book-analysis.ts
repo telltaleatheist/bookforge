@@ -15,8 +15,7 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import { extractChaptersFromEpub, type ChapterData } from './epub-processor.js';
-import { findBestBreakPoint, estimateNumCtx } from './ai-bridge.js';
-import { getOllamaThinkFields } from './ollama-capabilities.js';
+import { findBestBreakPoint } from './ai-bridge.js';
 import type { AIProviderConfig } from './ai-bridge.js';
 import {
   commitAudiobookAnalysisReport,
@@ -298,91 +297,91 @@ function chunkText(text: string): string[] {
 // AI Provider Communication (analysis-specific — no truncation detection)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const OLLAMA_BASE_URL = 'http://localhost:11434';
-const TIMEOUT_MS = 180000; // 3 minutes per chunk
-const CLAUDE_RESPONSE_LOG_LIMIT = 1200;
+/**
+ * How much of an unusable provider answer reaches the log.
+ *
+ * A cap rather than the whole string, because what names a bad answer is
+ * almost always its FIRST few hundred characters — a refusal sentence, a
+ * chatty preamble before the array, a JSON object where an array was asked
+ * for — while the remainder is the same failure continuing at length. 1200 is
+ * the figure the deleted Claude-specific diagnostic used, kept because it has
+ * been enough to identify every malformed answer this path has seen.
+ */
+const PROVIDER_RESPONSE_LOG_LIMIT = 1200;
 
-interface AnalysisRequestContext {
-  jobId: string;
-  sourceKind: 'document' | 'audiobook';
-  currentChunk: number;
-  totalChunks: number;
-  /** Populated only after Anthropic returns HTTP success. Kept in memory until
-   * strict parsing succeeds, then discarded with the per-chunk context. */
-  claudeResponse?: Record<string, any>;
-  responseLogged?: boolean;
+/**
+ * The token budget one analysis chunk's answer is allowed.
+ *
+ * A number rather than a function of the input, because the answer is a small
+ * JSON array of findings and its size is set by how many things are IN the
+ * chunk, not by how long the chunk is. Sizing it from the prompt — which the
+ * translate act legitimately does, because a translation echoes the whole
+ * chunk back — would spend an entire chunk's budget on a document the model
+ * was never going to repeat. 4096 is the same floor the cleanup pass found
+ * sufficient for its edit-list JSON, and a chunk that overruns it is refused
+ * by name rather than silently returning half an array.
+ */
+const ANALYSIS_CRUCIBLE_MAX_TOKENS = 4096;
+
+/**
+ * The one sentence a provider that cannot run an analysis gets told.
+ *
+ * It lives in a function rather than at the throw site because TWO places ask
+ * the same question and must not drift: the dispatch below, and the model-name
+ * resolver that runs before the first chunk. A job config persisted last week
+ * can still name a provider this build no longer has, so both are reached in
+ * normal operation and both owe the operator a sentence rather than a crash or
+ * a quietly skipped chunk — a skipped chunk yields a report that is SHORT,
+ * which reads exactly like a book with nothing to flag in it.
+ *
+ * Two histories arrive here and the answer is the same for both. Ollama,
+ * Claude and OpenAI left BookForge entirely in Crucible phase 15 (cloud keys
+ * now live inside the Crucible engine, which forwards to the upstream on the
+ * operator's account), and the bundled local model never had an analysis arm
+ * to begin with — this act has only ever run on Crucible.
+ */
+function analysisProviderRefusal(provider: string): Error {
+  return new Error(
+    `analysis_provider_unsupported: "${provider}" cannot run a book analysis. `
+    + 'Ollama, Claude and OpenAI were removed from BookForge in Crucible phase 15, and the '
+    + 'bundled local model has no analysis arm. Re-point this row at a Crucible server '
+    + '(provider "crucible") and run it again.',
+  );
 }
 
-interface ClaudeContentBlock {
-  type?: string;
-  text?: string;
-  refusal?: string;
-  reason?: string;
-  message?: string;
-  thinking?: string;
-  signature?: string;
-  [key: string]: unknown;
-}
-
-/** Keep the provider response needed to diagnose refusals, but never include
- * the request/transcript, API key, or private thinking/signature contents. */
-function sanitizeClaudeResponse(data: Record<string, any>): Record<string, unknown> {
-  const content = Array.isArray(data.content) ? data.content as ClaudeContentBlock[] : [];
-  return {
-    id: data.id ?? null,
-    type: data.type ?? null,
-    role: data.role ?? null,
-    model: data.model ?? null,
-    stop_reason: data.stop_reason ?? null,
-    stop_sequence: data.stop_sequence ?? null,
-    usage: data.usage ?? null,
-    content: content.map(block => {
-      const sanitized: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(block)) {
-        if (key === 'thinking') {
-          sanitized.thinking_length = typeof value === 'string' ? value.length : 0;
-        } else if (key === 'signature') {
-          sanitized.signature_present = typeof value === 'string' && value.length > 0;
-        } else {
-          sanitized[key] = value;
-        }
-      }
-      return sanitized;
-    }),
-  };
-}
-
-function logClaudeResponseDiagnostic(
-  data: Record<string, any>,
-  model: string,
-  context?: AnalysisRequestContext,
-): void {
-  const sanitized = sanitizeClaudeResponse(data);
-  const metadata = {
-    provider: 'claude',
-    requestedModel: model,
-    request: context ? {
-      jobId: context.jobId,
-      sourceKind: context.sourceKind,
-      currentChunk: context.currentChunk,
-      totalChunks: context.totalChunks,
-    } : undefined,
-    responseId: sanitized['id'],
-    responseModel: sanitized['model'],
-    stopReason: sanitized['stop_reason'],
-    stopSequence: sanitized['stop_sequence'],
-    usage: sanitized['usage'],
-    blockTypes: Array.isArray(sanitized['content'])
-      ? (sanitized['content'] as Array<Record<string, unknown>>).map(block => block['type'] ?? 'unknown')
-      : [],
-  };
-  const contentJson = JSON.stringify(sanitized['content'] ?? []);
-  const preview = contentJson.length > CLAUDE_RESPONSE_LOG_LIMIT
-    ? `${contentJson.slice(0, CLAUDE_RESPONSE_LOG_LIMIT)}… [truncated; ${contentJson.length} chars total]`
-    : contentJson;
-  console.error('[ClaudeAnalysis] Non-usable response metadata:', JSON.stringify(metadata));
-  console.error(`[ClaudeAnalysis] Response content preview (max ${CLAUDE_RESPONSE_LOG_LIMIT} chars):`, preview);
-  if (context) context.responseLogged = true;
+/**
+ * THE MODEL THIS ANALYSIS RUNS ON, asked of the server that will run it.
+ *
+ * The name is not cosmetic: `loadCheckpoint` compares it to decide whether a
+ * resume may continue, so a wrong or vague one is how one model's flags get
+ * grafted onto another model's run.
+ *
+ * ── IT ASKS THE SERVER, THROUGH THE ONE OWNER ─────────────────────────────
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3: an analysis sends `capability.selected`
+ * for the `analysis` class on the server the row was placed on, and nothing
+ * else. `crucibleActModel` is the one owner of that read and of the stamp that
+ * memoises it onto this run's provider block, so the checkpoint's name, every
+ * chat's model and the analytics row are one id, asked for once. It refuses
+ * three ways (`crucible_capability_undecided`, `…_disabled`, `…_no_model`),
+ * each naming what a person would do about it.
+ *
+ * Refusing here, at the top of the run, is worth failing the whole job over:
+ * `analyzeBook`'s per-chunk catch swallows errors and would otherwise turn a
+ * server that cannot analyse into an empty report.
+ */
+async function analysisModelName(config: AIProviderConfig): Promise<string> {
+  if (config.provider !== 'crucible') throw analysisProviderRefusal(config.provider);
+  const block = config.crucible;
+  if (block === undefined) {
+    throw new Error(
+      'crucible_server_not_named: this analysis names the Crucible provider and carries no '
+      + "server or act, so there is nothing to ask. The row's assigned venue is what fills "
+      + 'them (electron/queue-steps/ai-provider.ts).',
+    );
+  }
+  const { crucibleActModel } = await import('./crucible/text-venue.js');
+  return crucibleActModel(block);
 }
 
 /**
@@ -391,62 +390,13 @@ function logClaudeResponseDiagnostic(
  * or "use original text" fallbacks — analysis returns a small JSON array, not
  * the full input text back.
  */
-/**
- * The token budget one analysis chunk's answer is allowed.
- *
- * A number rather than a function of the input, because the answer is a small
- * JSON array of findings and its size is set by how many things are IN the
- * chunk, not by how long the chunk is. The Ollama path has no cap at all (the
- * server's own), so this is the first place the question has had to be
- * answered; 4096 is the same floor the cleanup pass found sufficient for its
- * edit-list JSON, and a chunk that overruns it is refused by name rather than
- * silently returning half an array.
- */
-const ANALYSIS_CRUCIBLE_MAX_TOKENS = 4096;
-
-/**
- * The key and the model for a cloud run, out of FOUNDRY'S cloud card.
- *
- * Owen's ruling, 2026-09-14 (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3): cloud
- * keys have ONE owner, and BookForge keeps no second key store.
- * `electron/cloud-credentials.ts` is the reader; it refuses BY cloudCredentialsForAnalysis —
- * `cloud_provider_not_configured`, naming the file and the card — rather than
- * defaulting this act onto some other provider's weights.
- */
-async function cloudCredentialsForAnalysis(
-  provider: 'claude' | 'openai',
-): Promise<{ apiKey: string; model: string }> {
-  const { cloudKindForProvider, requireCloudSlot } = await import('./cloud-credentials.js');
-  const kind = cloudKindForProvider(provider);
-  if (kind === null) throw new Error(`"${provider}" is not a cloud provider`);
-  const slot = await requireCloudSlot(kind);
-  return { apiKey: slot.apiKey, model: slot.model };
-}
-
-
 async function analyzeChunkWithProvider(
   prompt: string,
   systemPrompt: string,
   config: AIProviderConfig,
   abortSignal?: AbortSignal,
-  strictResponse = false,
-  context?: AnalysisRequestContext,
 ): Promise<string> {
   switch (config.provider) {
-    case 'ollama':
-      if (!config.ollama?.model) throw new Error('Ollama model not configured');
-      return analyzeChunkOllama(prompt, systemPrompt, config.ollama.model, config.ollama.baseUrl, abortSignal, strictResponse);
-    // THE KEY AND THE MODEL COME FROM FOUNDRY'S CLOUD CARD (Owen's ruling,
-    // 2026-09-14 — cloud keys have one owner). Refused by name when no enabled
-    // slot of that kind exists; never defaulted to another provider.
-    case 'claude': {
-      const cloud = await cloudCredentialsForAnalysis('claude');
-      return analyzeChunkClaude(prompt, systemPrompt, cloud.apiKey, cloud.model, abortSignal, strictResponse, context);
-    }
-    case 'openai': {
-      const cloud = await cloudCredentialsForAnalysis('openai');
-      return analyzeChunkOpenAI(prompt, systemPrompt, cloud.apiKey, cloud.model, abortSignal, strictResponse);
-    }
     case 'crucible': {
       /*
        * THE ANALYSIS ACT ON A CRUCIBLE SERVER (crucible
@@ -488,192 +438,9 @@ async function analyzeChunkWithProvider(
       return answer.content;
     }
     default:
-      throw new Error(`Unknown provider: ${config.provider}`);
-  }
-}
-
-async function analyzeChunkOllama(
-  prompt: string,
-  systemPrompt: string,
-  model: string,
-  baseUrl?: string,
-  abortSignal?: AbortSignal,
-  strictResponse = false,
-): Promise<string> {
-  const controller = new AbortController();
-  const unlinkAbort = linkAbortSignal(abortSignal, controller);
-
-  try {
-    const resolvedBaseUrl = baseUrl || OLLAMA_BASE_URL;
-    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
-    // generation budget goes to the answer, not a discarded chain-of-thought.
-    const thinkFields = await getOllamaThinkFields(resolvedBaseUrl, model);
-    const response = await fetch(`${resolvedBaseUrl}/api/generate`, {
-      signal: controller.signal,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        system: systemPrompt,
-        stream: false,
-        ...thinkFields,
-        options: {
-          temperature: 0.1,
-          // Analysis response is small JSON — allow generous output but don't need input*2
-          num_predict: 4096,
-          num_ctx: estimateNumCtx(systemPrompt, prompt, 0.5, model),
-        },
-        keep_alive: '5m',
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const content = data.response;
-    if (strictResponse && (typeof content !== 'string' || !content.trim())) {
-      throw new Error('Ollama returned an empty audiobook analysis response');
-    }
-    return content || '[]';
-  } finally {
-    unlinkAbort();
-  }
-}
-
-/** Forward job cancellation to a per-request controller and always detach the
- * listener when the request finishes. `{ once: true }` alone only detaches when
- * cancellation actually fires, which leaked one listener per successful call. */
-function linkAbortSignal(source: AbortSignal | undefined, target: AbortController): () => void {
-  if (!source) return () => {};
-  const forwardAbort = () => target.abort();
-  if (source.aborted) target.abort();
-  else source.addEventListener('abort', forwardAbort, { once: true });
-  return () => source.removeEventListener('abort', forwardAbort);
-}
-
-async function analyzeChunkClaude(
-  prompt: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string,
-  abortSignal?: AbortSignal,
-  strictResponse = false,
-  context?: AnalysisRequestContext,
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  const unlinkAbort = linkAbortSignal(abortSignal, controller);
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Claude API error: ${response.status} - ${(errorData as any).error?.message || response.statusText}`);
-    }
-
-    const data = await response.json() as Record<string, any>;
-    if (context) context.claudeResponse = data;
-    const blocks = Array.isArray(data.content) ? data.content as ClaudeContentBlock[] : [];
-    const content = blocks
-      .filter(block => block?.type === 'text' && typeof block.text === 'string')
-      .map(block => block.text as string)
-      .join('')
-      .trim();
-    const blockTypes = blocks.map(block => block?.type || 'unknown');
-    const refusalDetails = blocks
-      .flatMap(block => [block.refusal, block.reason, block.message])
-      .filter((value): value is string => typeof value === 'string' && !!value.trim());
-    const refused = data.stop_reason === 'refusal' || blockTypes.includes('refusal');
-
-    if (strictResponse && (refused || data.stop_reason === 'max_tokens' || !content)) {
-      logClaudeResponseDiagnostic(data, model, context);
-      const responseId = typeof data.id === 'string' ? data.id : 'unknown';
-      if (refused) {
-        const detail = refusalDetails[0] ? `: ${refusalDetails[0]}` : '';
-        throw new Error(`Claude refused the audiobook analysis request${detail} (response ${responseId}).`);
-      }
-      if (data.stop_reason === 'max_tokens') {
-        throw new Error(`Claude audiobook analysis hit its output limit (response ${responseId}).`);
-      }
-      throw new Error(
-        `Claude returned no text for audiobook analysis (response ${responseId}; `
-        + `stop_reason: ${data.stop_reason ?? 'unknown'}; blocks: ${blockTypes.join(', ') || 'none'}).`,
-      );
-    }
-    return content || '[]';
-  } finally {
-    clearTimeout(timeoutId);
-    unlinkAbort();
-  }
-}
-
-async function analyzeChunkOpenAI(
-  prompt: string,
-  systemPrompt: string,
-  apiKey: string,
-  model: string,
-  abortSignal?: AbortSignal,
-  strictResponse = false,
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  const unlinkAbort = linkAbortSignal(abortSignal, controller);
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        temperature: 0.1,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: prompt },
-        ],
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`OpenAI API error: ${response.status} - ${(errorData as any).error?.message || response.statusText}`);
-    }
-
-    const data = await response.json();
-    const content = (data as any).choices?.[0]?.message?.content;
-    if (strictResponse && (typeof content !== 'string' || !content.trim())) {
-      throw new Error('OpenAI returned an empty audiobook analysis response');
-    }
-    return content || '[]';
-  } finally {
-    clearTimeout(timeoutId);
-    unlinkAbort();
+      // Reached from a persisted row naming a provider this build removed, and
+      // from `local`, which this act never implemented. See the refusal itself.
+      throw analysisProviderRefusal(config.provider);
   }
 }
 
@@ -771,12 +538,6 @@ export async function analyzeBook(
   // Prevent system sleep
   const powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
 
-  // Get model name for logging
-  const model = providerConfig.ollama?.model
-    || providerConfig.claude?.model
-    || providerConfig.openai?.model
-    || 'unknown';
-
   const sendProgress = (data: {
     phase: string;
     progress: number;
@@ -797,6 +558,12 @@ export async function analyzeBook(
   };
 
   try {
+    // Inside the try, not above it: resolving the model can refuse the whole
+    // job by name (an unsupported provider, an unstamped Crucible model), and
+    // out here that refusal would escape past the power-save blocker and the
+    // active-job registration instead of returning the usual failed result.
+    const model = await analysisModelName(providerConfig);
+
     // Load prompt template
     sendProgress({ phase: 'loading', progress: 0, message: 'Loading analysis prompt...' });
     const promptTemplate = await loadAnalysisPrompt();
@@ -1394,8 +1161,8 @@ function logInvalidAudiobookAnalysisResponse(
   chunk: RecoverableAudiobookChunk<AudiobookCue>,
   attempt: number,
 ): void {
-  const preview = response.length > CLAUDE_RESPONSE_LOG_LIMIT
-    ? `${response.slice(0, CLAUDE_RESPONSE_LOG_LIMIT)}… [truncated; ${response.length} chars total]`
+  const preview = response.length > PROVIDER_RESPONSE_LOG_LIMIT
+    ? `${response.slice(0, PROVIDER_RESPONSE_LOG_LIMIT)}… [truncated; ${response.length} chars total]`
     : response;
   console.error('[AudiobookAnalysis] Invalid provider response:', JSON.stringify({
     provider,
@@ -1404,7 +1171,7 @@ function logInvalidAudiobookAnalysisResponse(
     cueEndIndex: chunk.cues[chunk.cues.length - 1].index,
     validationError: error.message,
   }));
-  console.error(`[AudiobookAnalysis] Response preview (max ${CLAUDE_RESPONSE_LOG_LIMIT} chars):`, preview);
+  console.error(`[AudiobookAnalysis] Response preview (max ${PROVIDER_RESPONSE_LOG_LIMIT} chars):`, preview);
 }
 
 /**
@@ -1431,10 +1198,6 @@ export async function analyzeAudiobook(
   const abortController = new AbortController();
   activeAnalysisJobs.set(jobId, abortController);
   const powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
-  const model = providerConfig.ollama?.model
-    || providerConfig.claude?.model
-    || providerConfig.openai?.model
-    || 'unknown';
 
   const sendProgress = (data: {
     phase: string;
@@ -1454,6 +1217,11 @@ export async function analyzeAudiobook(
   };
 
   try {
+    // Inside the try for the same reason as analyzeBook's: resolving the model
+    // can refuse the job by name, and this function's `finally` is what stops
+    // the power-save blocker and deregisters the job.
+    const model = await analysisModelName(providerConfig);
+
     if (options.testMode) {
       throw new Error('Test mode is not available for audiobook analysis');
     }
@@ -1538,7 +1306,6 @@ export async function analyzeAudiobook(
         totalChunks: chunks.length,
       });
 
-      let latestRequestContext: AnalysisRequestContext | undefined;
       try {
         const recovered = await recoverAudiobookAnalysisChunk({
           chunk,
@@ -1549,20 +1316,12 @@ export async function analyzeAudiobook(
           signal: abortController.signal,
           makeChunk: makeAudiobookCueChunk,
           analyze: async recoveryChunk => {
-            latestRequestContext = {
-              jobId,
-              sourceKind: 'audiobook',
-              currentChunk,
-              totalChunks: chunks.length,
-            };
             const fullPrompt = buildPromptForChunk(promptTemplate, enabledCategories, recoveryChunk.promptText);
             return analyzeChunkWithProvider(
               fullPrompt,
               'You are a selective audiobook transcript analyst. Return only sparse, passage-level findings as a valid JSON array with exact integer cue ids. Most ordinary cues require no finding.',
               providerConfig,
               abortController.signal,
-              true,
-              latestRequestContext,
             );
           },
           parse: (response, recoveryChunk) =>
@@ -1581,18 +1340,20 @@ export async function analyzeAudiobook(
               : { ...contentFailure, retrySameChunk: false };
           },
           onInvalidResponse: (response, error, recoveryChunk, attempt) => {
-            if (latestRequestContext?.claudeResponse && !latestRequestContext.responseLogged) {
-              logClaudeResponseDiagnostic(latestRequestContext.claudeResponse, model, latestRequestContext);
-            }
-            if (providerConfig.provider !== 'claude') {
-              logInvalidAudiobookAnalysisResponse(
-                providerConfig.provider,
-                response,
-                error,
-                recoveryChunk,
-                attempt,
-              );
-            }
+            // Unconditional now. The guard this replaces was `provider !==
+            // 'claude'`, and it was never about the generic log being wrong for
+            // Claude — it was about Claude having already been logged, in
+            // richer form, by an Anthropic-shaped diagnostic two lines above
+            // that read stop_reason and refusal blocks off the raw response.
+            // With Claude gone from BookForge there is no second logger and no
+            // provider that should be silent about an unusable answer.
+            logInvalidAudiobookAnalysisResponse(
+              providerConfig.provider,
+              response,
+              error,
+              recoveryChunk,
+              attempt,
+            );
           },
           onEvent: event => {
             const action = event.action === 'retrying' ? 'Retrying'
@@ -1612,15 +1373,6 @@ export async function analyzeAudiobook(
         skippedChunks.push(...recovered.skippedChunks);
         requestAttempts += recovered.requestAttempts;
       } catch (err) {
-        // A refusal can arrive as ordinary text. Preserve Claude metadata even
-        // when the provider call succeeded but strict parsing failed afterward.
-        if (latestRequestContext?.claudeResponse && !latestRequestContext.responseLogged) {
-          logClaudeResponseDiagnostic(
-            latestRequestContext.claudeResponse,
-            model,
-            latestRequestContext,
-          );
-        }
         if (err instanceof TooManyAudiobookAnalysisSkipsError) {
           skippedChunks.push(...err.skippedChunks);
           await saveAudiobookSkippedChunks(progressPaths.skippedChunks, expectedBinding, skippedChunks);

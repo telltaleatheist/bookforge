@@ -188,7 +188,7 @@ export interface VlmConvertRequest {
    * Which machine reads the pages. Absent, or carrying an empty `url`, means
    * MLX on THIS machine — see {@link VlmEndpointConfig}. The renderer owns the
    * setting (it lives in the same localStorage bundle as the Ollama URL) and
-   * hands it over per run, exactly as `ollamaBaseUrl` travels on a job config.
+   * hands it over per run, the way a job config carries its provider block.
    */
   endpoint?: VlmEndpointConfig;
   /**

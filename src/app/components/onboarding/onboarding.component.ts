@@ -153,7 +153,7 @@ const STEP_ORDER: OnboardingStep[] = ['welcome', 'library', 'ready'];
                 <span class="feature-icon">&#129302;</span>
                 <div>
                   <strong>AI cleanup (optional)</strong>
-                  <p>Tidy OCR text before narration with a bundled local model, Ollama, or an API key. The AI Setup wizard walks you through it — or skip it entirely.</p>
+                  <p>Tidy OCR text before narration with the bundled local model or a GPU engine (Crucible). The AI Setup wizard walks you through it — or skip it entirely.</p>
                 </div>
               </div>
             </div>

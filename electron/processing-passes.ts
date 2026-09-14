@@ -583,7 +583,7 @@ async function runSimplifyPass(
    * a refusal must cost no work — the same rule the clean act's venue decision
    * follows (`narration-clean-text.ts`).
    */
-  const provider = providerConfigOf(params, assignedVenue);
+  const provider = providerConfigOf(params, 'simplify', assignedVenue);
 
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
@@ -669,7 +669,7 @@ async function runTranslatePass(
   // reason — see the note there. The five flat fields this replaced were the
   // mono translator's own private expansion of the same mapping, and they had
   // no room for a machine.
-  const provider = providerConfigOf(params, assignedVenue);
+  const provider = providerConfigOf(params, 'translate', assignedVenue);
 
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);

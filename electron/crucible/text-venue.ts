@@ -65,10 +65,13 @@
  * `foundry-host-queue.ts`, and it is pinned against the subtree by
  * `tools/test-foundry-hosted-crucible-seam.js` rather than remembered.
  */
-import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
+import type {
+  CrucibleCapabilityView, RankedServerRow, RoutingView,
+} from '../../shared/crucible/settings-wire';
 import type { CapabilityRecord, ModelInfo } from '@crucible/client';
 import { rankedServers, readRouting } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
+import { crucibleCapabilityWithRoutes } from './settings-wire';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
 import {
   crucibleChatBase,
@@ -170,8 +173,16 @@ export interface TextVenueHost {
    * DECISION is pure (`modelFromCapability`) and only the READ touches the
    * network, which is what lets a keeper drive all three refusals with no
    * registry and no server.
+   *
+   * IT ANSWERS WITH `route` (crucible PHASE15 §3.3), which is why it goes
+   * through `settings-wire.ts` rather than `CrucibleClient.capability()`: the
+   * SDK's parser builds a row from five named fields and DROPS `route`, so a
+   * client reading through it does not merely miss the field, it discards it.
+   * Two readers of one document would be two answers to "where does a class
+   * run" — this is the one read, and the scheduler's cloud lane and this
+   * file's model both come out of it.
    */
-  capability(server: string): Promise<CapabilityRecord>;
+  capability(server: string): Promise<CrucibleCapabilityView>;
 }
 
 /** The real one: the app's records, the real registry and real HTTP. */
@@ -194,9 +205,7 @@ export function processTextVenueHost(): TextVenueHost {
         }
       }
     },
-    async capability(name: string): Promise<CapabilityRecord> {
-      return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).capability();
-    },
+    capability: crucibleCapabilityWithRoutes,
   };
 }
 
@@ -260,6 +269,49 @@ export function modelFromCapability(
     );
   }
   return row.selected;
+}
+
+/**
+ * THE MODEL AN ACT WILL RUN ON, ASKED ONCE PER RUN AND STAMPED.
+ *
+ * ── The one owner of "which model does this class use on that server" ──────
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3: *"The cleanup/OCR/translation/simplify/
+ * analysis doors send `capability.selected` as the model to the registry's
+ * server and nothing else."* Three call sites need that answer — the cleanup
+ * preflight in `ai-bridge.ts`, `callCrucible` in `text-ai.ts`, and the engine
+ * door below — and three copies of the read would be three chances to disagree
+ * about what a `simplify` runs on (crucible ARCHITECTURE.md R1).
+ *
+ * ── WHY IT STAMPS, AND WHY THAT IS NOT A CACHE ────────────────────────────
+ *
+ * A translation makes three hundred batch calls and each one goes through
+ * `callAI`. Asking the server three hundred times for an answer it settled at
+ * install time would be three hundred round trips for one fact. So the answer
+ * is written onto THIS RUN's provider block — the same "stamped once, for
+ * reporting" the deleted cloud preflight used — which means it lives exactly
+ * as long as the run and cannot go stale behind anybody: a new run asks again,
+ * and a settings write that re-routes a class is picked up by the next run
+ * rather than mid-book, which is the only sane moment to change a book's
+ * model.
+ *
+ * It is NOT a module-level cache and there must never be one here. A cache
+ * across runs would answer with a model a settings write had already replaced,
+ * and `crucible_model_not_resident` at chunk 47 is what that looks like.
+ *
+ * `route` is deliberately not consulted: `selected` is already the upstream
+ * model id when the class routes upstream (§3.3), so one field answers both
+ * cases and this door does not need to know which it got. The SCHEDULER needs
+ * to know, and reads `route` for its own reason — a lane, not a model.
+ */
+export async function crucibleActModel(
+  where: { server: string; act: CrucibleTextAct; model?: string },
+  host: TextVenueHost = processTextVenueHost(),
+): Promise<string> {
+  if (where.model !== undefined && where.model !== '') return where.model;
+  const model = modelFromCapability(await host.capability(where.server), where.act, where.server);
+  where.model = model;
+  return model;
 }
 
 /**

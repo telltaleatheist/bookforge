@@ -447,7 +447,15 @@ export interface CrucibleRouteRow {
  */
 export interface CrucibleUpstreamRow {
   configured: boolean;
-  /** The last four characters of the key, or `null`. `anthropic`/`openai` only. */
+  /**
+   * The server's own hint at which key is there, or `null`.
+   *
+   * It arrives WITH its leading ellipsis — `…k3A9` — and is rendered
+   * VERBATIM (crucible `c5482ff`). A screen that stripped it and re-added its
+   * own would be the second author of one string, and the day the server
+   * lengthens the hint the two would disagree about what a person is looking
+   * at. `anthropic` and `openai` only; `ollama` is reached by address.
+   */
   keyHint: string | null;
   /** Where the Ollama server is. `null` for the two that are reached by key. */
   url: string | null;
@@ -501,10 +509,21 @@ export interface CrucibleUpstreamModels {
   models: string[];
 }
 
-/** A named refusal from the settings door, for a screen that shows the fix. */
+/**
+ * A named refusal from the settings door, for a screen that shows the fix.
+ *
+ * `field` is the server's `details.field` where it sent one: a DOTTED PATH
+ * (`upstreams.anthropic.key`, `routes.translate`) naming exactly which control
+ * the refusal is about, so a panel can put the sentence beside that control
+ * instead of at the top of the page. `classes` comes with `upstream_in_use`
+ * and lists the classes still routed to the upstream somebody tried to remove.
+ * Both are `null` when the server sent neither — never invented.
+ */
 export interface CrucibleEngineSettingsRefusal {
   code: string;
   message: string;
+  field?: string | null;
+  classes?: string[] | null;
 }
 
 /** A read or a write, or the reason there is neither. Never a half-document. */
@@ -512,7 +531,17 @@ export type CrucibleEngineSettingsResult =
   | { ok: true; settings: CrucibleEngineSettings }
   | { ok: false; refusal: CrucibleEngineSettingsRefusal };
 
-/** A test's answer, or the reason there is none. */
+/**
+ * What Test answered.
+ *
+ * A RESULT and not an exception, matching the SDK's `testUpstream()` (crucible
+ * PHASE15 §3.8, pinned by `c5482ff`) so the vendored method is a drop-in. And
+ * right on its own terms: "that key was rejected" is the ordinary outcome of
+ * pressing Test, it belongs beside the field, and a caller that had to catch
+ * it would be using the exception channel for the expected answer. The three
+ * codes are `upstream_unreachable`, `upstream_rejected`,
+ * `upstream_unconfigured`.
+ */
 export type CrucibleUpstreamTestResult =
   | { ok: true; models: string[] }
   | { ok: false; refusal: CrucibleEngineSettingsRefusal };

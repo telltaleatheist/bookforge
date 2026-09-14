@@ -30,6 +30,10 @@ import type {
   CrucibleCoordinationState,
   CrucibleMissingEntry,
 } from '@shared/crucible/coordinate-wire';
+import type {
+  CrucibleCapabilityView,
+  CrucibleTextActName,
+} from '@shared/crucible/settings-wire';
 
 /** The product name, for the one place per panel that earns a first mention. */
 export const ENGINE_FIRST = 'GPU engine (Crucible)';
@@ -112,6 +116,134 @@ export function joinWords(parts: readonly string[]): string {
   if (parts.length === 0) return '';
   if (parts.length === 1) return parts[0];
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * WHICH MODEL RUNS ONE TEXT ACT, in the server's own words.
+ *
+ * THREE DIFFERENT ANSWERS AND THREE DIFFERENT SENTENCES. A class this server
+ * has never measured is "undecided", which is deliberately not the same news
+ * as "off"; a class that is off carries the server's reason and the shortfall
+ * that turned it off, which is a fact about the card and not something a
+ * screen argues with; an enabled class names the model. The rule is the
+ * record's own: branch on `enabled`, never on the emptiness of `selected`.
+ *
+ * `null` for the record means it has not been asked for yet, which is a real
+ * state and not an absent one — a screen that rendered "not served here"
+ * before the answer arrived would be accusing a working server.
+ *
+ * Every screen that shows a per-act model calls THIS (Settings → AI, Pipeline
+ * Defaults, the translation panel, the analysis modal). Three of them grew
+ * their own sentence for it first; this is the one that survived.
+ */
+export function capabilityWords(
+  record: CrucibleCapabilityView | null,
+  act: CrucibleTextActName,
+): string {
+  if (record === null) return 'asking the engine…';
+  const row = record.classes.find((c) => c.capability === act);
+  if (row === undefined) {
+    return 'not measured yet — install a job type from the engine\'s own page to write its '
+      + 'capability record';
+  }
+  if (!row.enabled) {
+    const short = row.shortfallBytes > 0
+      ? ` (short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB)`
+      : '';
+    return `not served here — ${row.reason}${short}`;
+  }
+  return row.selected === '' ? `enabled, and names no model — ${row.reason}` : row.selected;
+}
+
+/**
+ * WHERE A CLASS ACTUALLY RUNS, when it is not on the engine's own card.
+ *
+ * crucible `docs/PHASE15-HOST.md` §3.3: an engine can be configured to forward
+ * one of the four text classes to Anthropic, OpenAI or a remote Ollama on the
+ * operator's account, and `selected` is then the upstream model id
+ * (`anthropic/claude-sonnet-5`). A screen that printed that id raw would be
+ * showing somebody a slash and a vendor name where every other row shows a
+ * model; this says the thing in a sentence, and keeps the id.
+ *
+ * `null` for a class that runs on the engine itself — there is nothing extra
+ * to say about the ordinary case, and a row reading "runs here" beside every
+ * local class would be a screen announcing the absence of news.
+ */
+export function routeWords(record: CrucibleCapabilityView | null, act: CrucibleTextActName): string | null {
+  if (record === null) return null;
+  const row = record.classes.find((c) => c.capability === act);
+  if (row === undefined || row.route !== 'upstream') return null;
+  const slash = row.selected.indexOf('/');
+  if (slash <= 0) return `sent elsewhere — ${row.selected}`;
+  const upstream = row.selected.slice(0, slash);
+  return `sent to ${UPSTREAM_WORDS[upstream] ?? upstream} — ${row.selected.slice(slash + 1)}`;
+}
+
+/** The three upstreams, as a person writes them rather than as a config key. */
+const UPSTREAM_WORDS: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  ollama: 'an Ollama server',
+};
+
+/**
+ * CLASSES THIS ENGINE CANNOT SERVE FOR ONE AND THE SAME REASON, grouped.
+ *
+ * ── Why grouping is the contract's, not a nicety ──────────────────────────
+ *
+ * crucible `docs/PHASE15-HOST.md` §3.3, amended 2026-09-14 (`56cfe37`):
+ * Windows IS a backend — `llama-windows`, llama.cpp children over GGUF — and
+ * it serves the text classes and page reading. What it does not serve is the
+ * five Python job types, and every one of those answers with **the same
+ * sentence**: *"this job type needs the WSL2 engine (vLLM/SGLang); install it
+ * from the console."* The contract says why it is the same sentence in all
+ * five: *"so an app shows it once."*
+ *
+ * So this is what a panel calls instead of iterating rows: identical reasons
+ * collapse into one entry carrying the classes it covers, and five copies of
+ * one line become one line with five names beside it. A reason that really is
+ * particular to one class — a shortfall on the card — comes back as a group of
+ * one, which is the honest shape and needs no branch at the call site.
+ *
+ * Order is the record's, which is the server's report order, so the list does
+ * not reshuffle between reads.
+ */
+export function unavailableGroups(
+  record: CrucibleCapabilityView | null,
+): { reason: string; capabilities: string[] }[] {
+  if (record === null) return [];
+  const groups: { reason: string; capabilities: string[] }[] = [];
+  for (const row of record.classes) {
+    if (row.enabled) continue;
+    const existing = groups.find((g) => g.reason === row.reason);
+    if (existing === undefined) groups.push({ reason: row.reason, capabilities: [row.capability] });
+    else existing.capabilities.push(row.capability);
+  }
+  return groups;
+}
+
+/**
+ * What BookForge uses a CAPABILITY CLASS for, in a person's words.
+ *
+ * Beside {@link missingWords}, which does the same for a job type, and for the
+ * same reason: `rvc` and `asr` are the contract's names and nobody else's.
+ * Used by {@link unavailableGroups}' callers to name the five classes a
+ * Windows engine cannot serve without saying "denoise" at anybody.
+ */
+export function capabilityClassWords(capability: string): string {
+  const known: Readonly<Record<string, string>> = {
+    clean: 'cleaning up text',
+    translate: 'translating',
+    simplify: 'simplifying',
+    analysis: 'analysing a book',
+    pages: 'reading pages',
+    tts: 'narration',
+    asr: 'transcription',
+    align: 'alignment',
+    rvc: 'voice matching',
+    denoise: 'noise removal',
+  };
+  return known[capability] ?? capability;
 }
 
 /**

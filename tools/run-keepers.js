@@ -92,6 +92,17 @@ const SUITES = [
   'test-serve-spawn-env',
   'test-narrator-log-strings',
   'test-no-e2a-doors',
+  // PHASE 15's deletion, pinned the same way. Ollama, Claude and OpenAI left
+  // BookForge entirely (Owen: "they dont have ollama fallbacks or cloud anything
+  // at all") — an Ollama server, an Anthropic key and an OpenAI key are UPSTREAMS
+  // configured on the ENGINE, and a class reaches one by being ROUTED there. A
+  // deletion that size comes back one helper at a time, so every door is named:
+  // the two transports, the model lists, the key stores, the provider pickers,
+  // the IPC channels, and the property that no BookForge-owned file ever holds
+  // a key. It also names the two files of the legacy spawn layer that still
+  // dial an Ollama for VRAM eviction and the number pass — they go with that
+  // layer, and the list going empty is how you know it went.
+  'test-no-cloud-doors',
   // The coverage policy is declared in two languages — narrator's
   // engine_profiles.py and shared/queue/coverage-policy.ts. It stopped deciding
   // whether a run aligns on 2026-09-07 (that is a stage of the run now), and

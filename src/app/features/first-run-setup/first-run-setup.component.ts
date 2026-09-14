@@ -184,15 +184,17 @@ interface SetupStep {
             @case ('ai') {
               <!--
                 THE ONE SENTENCE THIS STEP OWNS ABOUT CLOUD, AND NOTHING ELSE.
-                Cloud keys have ONE owner (rollout §3, 2026-09-14): Foundry's
-                cloud card, hosted too. BookForge deleted its own Claude/OpenAI
-                key rows and its hardcoded model lists, so what belongs here is
-                the door, not a second key store.
+                Cloud keys have ONE owner (Owen's evening ruling of 2026-09-14,
+                which overruled that morning's): the ENGINE holds them and
+                forwards on the operator's account. BookForge deleted its own
+                Claude/OpenAI key rows and its hardcoded model lists, so what
+                belongs here is the door, not a second key store.
               -->
               <p class="step-note">
-                Cloud keys live in Foundry’s Backend settings — the gear beside a book — and the
-                key is what lists the models, so there is nothing to choose here until one is
-                saved. This step is which Crucible does the reading and writing.
+                This step is which engine does the reading and writing. Anthropic, OpenAI and
+                Ollama keys and addresses are the engine’s, set on the engine — BookForge
+                stores none of them, and a route to one is chosen before anything runs rather
+                than reached for when something fails.
               </p>
               <app-ai-setup-wizard [embedded]="true" />
             }
@@ -756,12 +758,15 @@ export class FirstRunSetupComponent {
         'Pick where BookForge keeps your books, projects, and finished audiobooks. You can use the default folder or choose your own — these are your files and stay put if you ever uninstall.'
     },
     {
+      // It was titled "AI and cloud keys" until 2026-09-14. There are no cloud
+      // keys in this app any more — they are the engine's, set on the engine —
+      // so a step that promised them was a door onto a room that had moved.
       id: 'ai',
-      title: 'AI and cloud keys',
+      title: 'AI',
       subtitle:
-        'Which model does the reading and writing, and whose credits pay for it. Pick the '
-        + 'Crucible that runs the text work; cloud keys are Foundry’s, in its Backend settings. '
-        + 'Skippable — a machine with no text model still narrates.'
+        'Which engine does the reading and writing. Pick the GPU engine (Crucible) that runs '
+        + 'the text work, or use the model BookForge ships. Skippable — a machine with no text '
+        + 'model still narrates.'
     },
     {
       // WHERE THE GPU WORK HAPPENS. Not an optional aside any more: once the

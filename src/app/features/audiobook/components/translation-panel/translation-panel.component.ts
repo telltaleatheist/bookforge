@@ -7,18 +7,19 @@
 
 import { Component, input, output, signal, computed, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import { capabilityWords } from '../../../settings/components/crucible-words';
+import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
 
 @Component({
   selector: 'app-translation-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
+  imports: [CommonModule, DesktopButtonComponent],
   template: `
     <div class="translation-panel">
       <div class="panel-header">
@@ -40,82 +41,39 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         <div class="provider-buttons">
           <button
             class="provider-btn"
-            [class.selected]="selectedProvider() === 'ollama'"
-            [class.connected]="selectedProvider() === 'ollama' && ollamaConnected()"
-            (click)="selectProvider('ollama')"
+            [class.selected]="selectedProvider() === 'crucible'"
+            [class.disabled]="!crucibleServer()"
+            (click)="selectProvider('crucible')"
           >
-            <span class="provider-icon">&#129433;</span>
-            <span class="provider-name">Ollama</span>
-            @if (selectedProvider() === 'ollama') {
-              <span class="provider-status" [class.connected]="ollamaConnected()">
-                {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
-              </span>
+            <span class="provider-icon">&#128225;</span>
+            <span class="provider-name">GPU engine (Crucible)</span>
+            @if (crucibleServer(); as server) {
+              <span class="provider-status">{{ server }}</span>
+            } @else {
+              <span class="provider-status">No engine chosen</span>
             }
           </button>
           <button
             class="provider-btn"
-            [class.selected]="selectedProvider() === 'claude'"
-            [class.disabled]="!hasClaudeKey()"
-            (click)="selectProvider('claude')"
+            [class.selected]="selectedProvider() === 'local'"
+            (click)="selectProvider('local')"
           >
-            <span class="provider-icon">&#129504;</span>
-            <span class="provider-name">Claude</span>
-            @if (!hasClaudeKey()) {
-              <span class="provider-status">No API key</span>
-            }
-          </button>
-          <button
-            class="provider-btn"
-            [class.selected]="selectedProvider() === 'openai'"
-            [class.disabled]="!hasOpenAIKey()"
-            (click)="selectProvider('openai')"
-          >
-            <span class="provider-icon">&#129302;</span>
-            <span class="provider-name">OpenAI</span>
-            @if (!hasOpenAIKey()) {
-              <span class="provider-status">No API key</span>
-            }
+            <span class="provider-icon">&#128187;</span>
+            <span class="provider-name">Bundled local</span>
+            <span class="provider-status">Runs on this machine</span>
           </button>
         </div>
-        @if (selectedProvider() !== 'ollama' && !hasApiKeyForProvider()) {
+        @if (selectedProvider() === 'crucible' && !crucibleServer()) {
           <div class="api-key-warning">
-            API key not configured. <a (click)="goToSettings()">Add in Settings</a>
+            No engine is chosen yet. <a (click)="goToSettings()">Pick one in Settings</a>
           </div>
         }
       </div>
 
-      <!-- Model Selection -->
+      <!-- The model, as its owner states it -->
       <div class="model-section">
         <label class="field-label">Model</label>
-        @if (availableModels().length > 0) {
-          <desktop-select
-            class="model-select"
-            [options]="modelOptions()"
-            [ngModel]="selectedModel()"
-            (ngModelChange)="selectModel($event)"
-            [disabled]="loadingClaudeModels()"
-          />
-          @if (loadingClaudeModels()) {
-            <div class="loading-indicator">Fetching available models...</div>
-          }
-        } @else {
-          <div class="no-models">
-            @if (selectedProvider() === 'ollama') {
-              @if (checkingConnection()) {
-                Checking connection...
-              } @else if (!ollamaConnected()) {
-                <span class="error-text">Ollama not running.</span>
-                <a href="https://ollama.ai" target="_blank">Install Ollama</a> and run <code>ollama pull cogito:14b</code>
-              } @else {
-                No models found. Run <code>ollama pull cogito:14b</code>
-              }
-            } @else if (selectedProvider() === 'claude' && loadingClaudeModels()) {
-              Fetching available models...
-            } @else {
-              Configure API key in Settings
-            }
-          </div>
-        }
+        <div class="no-models">{{ modelLine() }}</div>
       </div>
 
       <!-- Actions -->
@@ -293,25 +251,9 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       margin-bottom: 0.25rem;
     }
 
-    .model-select {
-      width: 100%;
-      padding: 0.625rem 0.75rem;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-size: 0.875rem;
-
-      &:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
-
-      option {
-        background: var(--bg-surface);
-      }
-    }
-
+    /* .model-select and .loading-indicator went with the model picker and the
+       Claude model fetch it waited on. .no-models stayed: it is now the one
+       line that states the model rather than offering one. */
     .no-models {
       padding: 0.75rem;
       font-size: 0.8125rem;
@@ -319,27 +261,6 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       background: var(--bg-subtle);
       border-radius: 6px;
       line-height: 1.5;
-
-      .error-text {
-        color: var(--error);
-      }
-
-      a {
-        color: var(--accent);
-      }
-
-      code {
-        background: var(--bg-elevated);
-        padding: 0.125rem 0.375rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-      }
-    }
-
-    .loading-indicator {
-      margin-top: 0.375rem;
-      font-size: 0.75rem;
-      color: var(--text-tertiary);
     }
 
     .actions {
@@ -362,173 +283,66 @@ export class TranslationPanelComponent implements OnInit {
   readonly translationQueued = output<void>();
 
   // State
-  readonly ollamaConnected = signal(false);
-  readonly checkingConnection = signal(true);
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
 
+  /*
+   * WHAT THIS PANEL STOPPED ASKING (2026-09-14).
+   *
+   * `ollamaConnected`, `checkingConnection`, `ollamaModels`, `claudeModels`,
+   * `loadingClaudeModels`, `hasClaudeKey`, `hasOpenAIKey`,
+   * `hasApiKeyForProvider`, `availableModels`, `modelOptions`, `selectModel`,
+   * `checkConnection` and `fetchClaudeModels` are all deleted, and with them a
+   * hardcoded `claude-sonnet-4-20250514` and a three-item GPT list that had
+   * been the only choices this panel ever offered for those two.
+   *
+   * Nothing here picks a model any more, because nothing here owns one: the
+   * bundled model is whichever was activated in Settings → AI, and the
+   * engine's is its own capability record, measured against its own card.
+   * What this panel still owns is WHO runs the translation.
+   */
+
   // AI Provider state
-  readonly selectedProvider = signal<AIProvider>('ollama');
-  readonly selectedModel = signal<string>('');
-  readonly ollamaModels = signal<{ value: string; label: string }[]>([]);
-  readonly claudeModels = signal<{ value: string; label: string }[]>([]);
-  readonly loadingClaudeModels = signal(false);
+  readonly selectedProvider = signal<AIProvider>('local');
 
-  // Computed: check if API keys are configured
-  readonly hasClaudeKey = computed(() => {
-    const config = this.settingsService.getAIConfig();
-    return !!config.claude.apiKey;
+  /** The engine's capability record, or null before it has been asked for. */
+  readonly capability = signal<CrucibleCapabilityView | null>(null);
+
+  /** The engine this app is pointed at, or '' when none has been chosen. */
+  readonly crucibleServer = computed(() => this.settingsService.getAIConfig().crucible?.server ?? '');
+
+  /** THE MODEL, as its owner states it. Never a control. */
+  readonly modelLine = computed(() => {
+    if (this.selectedProvider() === 'local') return 'The bundled local model.';
+    if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
+    return capabilityWords(this.capability(), 'translate');
   });
-
-  readonly hasOpenAIKey = computed(() => {
-    const config = this.settingsService.getAIConfig();
-    return !!config.openai.apiKey;
-  });
-
-  readonly hasApiKeyForProvider = computed(() => {
-    const provider = this.selectedProvider();
-    if (provider === 'ollama') return true;
-    if (provider === 'claude') return this.hasClaudeKey();
-    if (provider === 'openai') return this.hasOpenAIKey();
-    return false;
-  });
-
-  // Computed: available models based on provider
-  readonly availableModels = computed(() => {
-    const provider = this.selectedProvider();
-
-    if (provider === 'ollama') {
-      return this.ollamaModels();
-    } else if (provider === 'claude' && this.hasClaudeKey()) {
-      const models = this.claudeModels();
-      if (models.length > 0) {
-        return models;
-      }
-      return [
-        { value: 'claude-sonnet-4-20250514', label: 'Loading models...' }
-      ];
-    } else if (provider === 'openai' && this.hasOpenAIKey()) {
-      return [
-        { value: 'gpt-4o', label: 'GPT-4o' },
-        { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-        { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' }
-      ];
-    }
-    return [];
-  });
-
-  // desktop-select options derived from the available models.
-  readonly modelOptions = computed<DesktopSelectItems>(() =>
-    this.availableModels().map(model => ({ value: model.value, label: model.label })),
-  );
 
   // Computed: can add to queue
   readonly canAddToQueue = computed(() => {
-    const provider = this.selectedProvider();
-    const model = this.selectedModel();
-    const path = this.epubPath();
-    if (!model || !path) return false;
-    if (provider === 'ollama') return this.ollamaConnected();
-    return this.hasApiKeyForProvider();
+    if (!this.epubPath()) return false;
+    // The bundled model is always there to be asked; an engine has to have
+    // been named, because a run cannot ask a machine nobody picked.
+    return this.selectedProvider() === 'local' || !!this.crucibleServer();
   });
 
   ngOnInit(): void {
-    this.checkConnection();
-    this.initializeFromSettings();
+    this.selectedProvider.set(this.settingsService.getAIConfig().provider);
+    void this.loadCapability();
   }
 
-  private initializeFromSettings(): void {
-    const config = this.settingsService.getAIConfig();
-    this.selectedProvider.set(config.provider);
-
-    if (config.provider === 'ollama') {
-      this.selectedModel.set(config.ollama.model);
-    } else if (config.provider === 'claude') {
-      this.selectedModel.set(config.claude.model);
-      if (config.claude.apiKey) {
-        this.fetchClaudeModels(config.claude.apiKey);
-      }
-    } else if (config.provider === 'openai') {
-      this.selectedModel.set(config.openai.model);
-    }
-  }
-
-  async checkConnection(): Promise<void> {
-    this.checkingConnection.set(true);
-    try {
-      const response = await fetch('http://localhost:11434/api/tags').catch(() => null);
-      if (response?.ok) {
-        this.ollamaConnected.set(true);
-        const data = await response.json();
-        const models = (data.models || []).map((m: { name: string }) => ({
-          value: m.name,
-          label: m.name
-        }));
-        this.ollamaModels.set(models);
-
-        const currentModel = this.selectedModel();
-        const modelExists = models.some((m: { value: string }) => m.value === currentModel);
-        if ((!currentModel || !modelExists) && models.length > 0) {
-          const preferred = models.find((m: { value: string }) => m.value === 'cogito:14b')?.value ?? models[0].value;
-          this.selectedModel.set(preferred);
-        }
-      } else {
-        this.ollamaConnected.set(false);
-      }
-    } catch {
-      this.ollamaConnected.set(false);
-    } finally {
-      this.checkingConnection.set(false);
-    }
+  private async loadCapability(): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) return;
+    const res = await this.electronService.crucible.capability(server);
+    // Never an empty record on failure — an empty class list reads as "this
+    // engine serves nothing", which is a different and false claim.
+    if (res.success && res.data) this.capability.set(res.data);
   }
 
   selectProvider(provider: AIProvider): void {
-    if (provider === 'claude' && !this.hasClaudeKey()) return;
-    if (provider === 'openai' && !this.hasOpenAIKey()) return;
-
+    if (provider === 'crucible' && !this.crucibleServer()) return;
     this.selectedProvider.set(provider);
-
-    const config = this.settingsService.getAIConfig();
-    if (provider === 'ollama') {
-      const models = this.ollamaModels();
-      const preferred = models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? config.ollama.model;
-      this.selectedModel.set(preferred);
-    } else if (provider === 'claude') {
-      this.fetchClaudeModels(config.claude.apiKey);
-      const currentModels = this.claudeModels();
-      if (currentModels.length > 0) {
-        this.selectedModel.set(currentModels[0].value);
-      } else {
-        this.selectedModel.set(config.claude.model || 'claude-sonnet-4-20250514');
-      }
-    } else if (provider === 'openai') {
-      this.selectedModel.set(config.openai.model || 'gpt-4o');
-    }
-  }
-
-  async fetchClaudeModels(apiKey: string): Promise<void> {
-    if (!apiKey) return;
-
-    this.loadingClaudeModels.set(true);
-    try {
-      const result = await this.electronService.getClaudeModels(apiKey);
-      if (result.success && result.models) {
-        this.claudeModels.set(result.models);
-        const currentModel = this.selectedModel();
-        const modelExists = result.models.some(m => m.value === currentModel);
-        if (!modelExists && result.models.length > 0) {
-          this.selectedModel.set(result.models[0].value);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch Claude models:', err);
-    } finally {
-      this.loadingClaudeModels.set(false);
-    }
-  }
-
-  selectModel(model: string): void {
-    this.selectedModel.set(model);
   }
 
   goToSettings(): void {
@@ -537,17 +351,13 @@ export class TranslationPanelComponent implements OnInit {
 
   async addToQueue(): Promise<void> {
     const path = this.epubPath();
-    if (!path) return;
+    if (!path || !this.canAddToQueue()) return;
 
     const provider = this.selectedProvider();
-    const model = this.selectedModel();
-    if (!model) return;
 
     this.addingToQueue.set(true);
 
     try {
-      const config = this.settingsService.getAIConfig();
-
       await this.queueService.addJob({
         type: 'translation',
         epubPath: path,
@@ -555,10 +365,10 @@ export class TranslationPanelComponent implements OnInit {
         config: {
           type: 'translation',
           aiProvider: provider,
-          aiModel: model,
-          ollamaBaseUrl: provider === 'ollama' ? config.ollama.baseUrl : undefined,
-          claudeApiKey: provider === 'claude' ? config.claude.apiKey : undefined,
-          openaiApiKey: provider === 'openai' ? config.openai.apiKey : undefined
+          // Empty because neither provider's model is this panel's to name:
+          // the engine's is its capability record and the bundled one is the
+          // active local model. A string typed here would be a second opinion.
+          aiModel: ''
         }
       });
       this.addedToQueue.set(true);

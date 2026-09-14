@@ -15,13 +15,14 @@ export type PassOptionsKind = 'simplify' | 'translate';
  * preference, and asking for it again on every book would be asking the same
  * question forever. It is SHOWN, so nobody discovers after an hour which model
  * did the work.
+ *
+ * It carried `claudeApiKey` and `openaiApiKey` until 2026-09-14. A credential
+ * never travels with a pass again: the engine holds one and forwards on the
+ * operator's account, so there is nothing for this dialog to pass along.
  */
 export interface PassAiChoice {
   readonly provider: SimplifyPassParams['aiProvider'];
   readonly model: string;
-  readonly ollamaBaseUrl?: string;
-  readonly claudeApiKey?: string;
-  readonly openaiApiKey?: string;
 }
 
 export type PassOptionsResult =
@@ -317,9 +318,6 @@ export class PassOptionsModalComponent {
           mode,
           aiProvider: ai.provider,
           aiModel: ai.model,
-          ...(ai.ollamaBaseUrl ? { ollamaBaseUrl: ai.ollamaBaseUrl } : {}),
-          ...(ai.claudeApiKey ? { claudeApiKey: ai.claudeApiKey } : {}),
-          ...(ai.openaiApiKey ? { openaiApiKey: ai.openaiApiKey } : {}),
         },
       });
       return;
@@ -331,9 +329,6 @@ export class PassOptionsModalComponent {
         targetLang: this.targetLang().trim(),
         aiProvider: ai.provider,
         aiModel: ai.model,
-        ...(ai.ollamaBaseUrl ? { ollamaBaseUrl: ai.ollamaBaseUrl } : {}),
-        ...(ai.claudeApiKey ? { claudeApiKey: ai.claudeApiKey } : {}),
-        ...(ai.openaiApiKey ? { openaiApiKey: ai.openaiApiKey } : {}),
       },
     });
   }

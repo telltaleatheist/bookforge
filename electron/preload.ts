@@ -420,31 +420,17 @@ export interface LocalAiModelProgress {
   message?: string;
 }
 
-export interface OllamaModel {
-  name: string;
-  size: number;
-  modifiedAt: string;
-}
-
-export interface AICleanupOptions {
-  fixHyphenation: boolean;
-  fixOcrArtifacts: boolean;
-  expandAbbreviations: boolean;
-}
-
-export interface CleanupProgress {
-  chapterId: string;
-  chapterTitle: string;
-  currentChunk: number;
-  totalChunks: number;
-  percentage: number;
-}
-
-export interface CleanupResult {
-  success: boolean;
-  cleanedText?: string;
-  error?: string;
-}
+/*
+ * `AICleanupOptions`, `CleanupProgress` and `CleanupResult` ARE DELETED
+ * (2026-09-14, crucible PHASE15 §5.3), along with `ai.cleanupChapter` and
+ * `ai.onCleanupProgress`.
+ *
+ * They belonged to the ONE-CHAPTER cleanup, which was Ollama end to end: a
+ * model tag, `localhost:11434`, a stream, and a progress channel only that
+ * stream emitted on. Nothing in the renderer reached it — the cleanup a person
+ * runs is the EPUB pass, which goes through the queue, the provider block and
+ * the engine's `capability.selected`.
+ */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TTS Types (ebook2audiobook)
@@ -1189,27 +1175,22 @@ export interface ElectronAPI {
     saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
   ai: {
-    checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
     /**
      * `crucibleServer` NAMES a registered server (or the reserved `local`) and
      * is read only by the `crucible` provider, which has no default one —
      * asking for it without a name is refused by name.
+     *
+     * THERE IS NO `apiKey` ARGUMENT, and there is no `checkConnection`,
+     * `getModels`, `getClaudeModels` or `getOpenAIModels` beside it (deleted
+     * 2026-09-14, crucible PHASE15 §5.3). A key belongs to the ENGINE, and
+     * what an engine can serve is `crucible.capability` — so nothing a
+     * renderer could send across this seam is a credential, and no model list
+     * is composed on this side.
      */
-    checkProviderConnection: (provider: AIProvider, apiKey?: string, crucibleServer?: string) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
-    getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
-    getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
-    getOpenAIModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
+    checkProviderConnection: (provider: AIProvider, crucibleServer?: string) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     loadSkippedChunks: (jsonPath: string) => Promise<{ success: boolean; chunks?: SkippedChunk[]; error?: string }>;
     replaceTextInEpub: (epubPath: string, oldText: string, newText: string) => Promise<{ success: boolean; chapterFound?: string; error?: string }>;
     updateSkippedChunk: (jsonPath: string, index: number, newText: string) => Promise<{ success: boolean; error?: string }>;
-    cleanupChapter: (
-      text: string,
-      options: AICleanupOptions,
-      chapterId: string,
-      chapterTitle: string,
-      model?: string
-    ) => Promise<{ success: boolean; data?: CleanupResult; error?: string }>;
-    onCleanupProgress: (callback: (progress: CleanupProgress) => void) => () => void;
     getPrompt: () => Promise<{ success: boolean; data?: { prompt: string; filePath: string }; error?: string }>;
     savePrompt: (prompt: string) => Promise<{ success: boolean; error?: string }>;
     // Bundled local AI (llama.cpp) — AI Setup wizard
@@ -2715,39 +2696,14 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:save-as-dialog', epubData, defaultName),
   },
   ai: {
-    checkConnection: () =>
-      ipcRenderer.invoke('ai:check-connection'),
-    checkProviderConnection: (provider: AIProvider, apiKey?: string, crucibleServer?: string) =>
-      ipcRenderer.invoke('ai:check-provider-connection', provider, apiKey, crucibleServer),
-    getModels: () =>
-      ipcRenderer.invoke('ai:get-models'),
-    getClaudeModels: (apiKey: string) =>
-      ipcRenderer.invoke('ai:get-claude-models', apiKey),
-    getOpenAIModels: (apiKey: string) =>
-      ipcRenderer.invoke('ai:get-openai-models', apiKey),
+    checkProviderConnection: (provider: AIProvider, crucibleServer?: string) =>
+      ipcRenderer.invoke('ai:check-provider-connection', provider, crucibleServer),
     loadSkippedChunks: (jsonPath: string) =>
       ipcRenderer.invoke('ai:load-skipped-chunks', jsonPath),
     replaceTextInEpub: (epubPath: string, oldText: string, newText: string) =>
       ipcRenderer.invoke('ai:replace-text-in-epub', epubPath, oldText, newText),
     updateSkippedChunk: (jsonPath: string, index: number, newText: string) =>
       ipcRenderer.invoke('ai:update-skipped-chunk', jsonPath, index, newText),
-    cleanupChapter: (
-      text: string,
-      options: AICleanupOptions,
-      chapterId: string,
-      chapterTitle: string,
-      model?: string
-    ) =>
-      ipcRenderer.invoke('ai:cleanup-chapter', text, options, chapterId, chapterTitle, model),
-    onCleanupProgress: (callback: (progress: CleanupProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: CleanupProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('ai:cleanup-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('ai:cleanup-progress', listener);
-      };
-    },
     getPrompt: () =>
       ipcRenderer.invoke('ai:get-prompt'),
     savePrompt: (prompt: string) =>

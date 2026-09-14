@@ -225,7 +225,8 @@ async function withFake(behaviour, fn) {
     await check('a key never crosses — only `configured` and four characters', async () => {
       const doc = await seam.crucibleEngineSettings(name);
       assert.strictEqual(doc.upstreams.anthropic.configured, true);
-      assert.strictEqual(doc.upstreams.anthropic.keyHint, 'k3A9');
+      assert.strictEqual(doc.upstreams.anthropic.keyHint, '\u2026k3A9',
+        'the hint is rendered verbatim, leading ellipsis and all');
       assert.strictEqual(doc.upstreams.openai.configured, false);
       assert.strictEqual(doc.upstreams.openai.keyHint, null);
       assert.strictEqual(doc.upstreams.ollama.configured, true);
@@ -255,14 +256,17 @@ async function withFake(behaviour, fn) {
       assert.strictEqual(after.routes.translate.route, 'upstream');
       assert.strictEqual(after.routes.simplify.model, 'anthropic/claude-sonnet-5');
       assert.strictEqual(after.routes.clean.route, 'local');
-      assert.strictEqual(after.upstreams.anthropic.keyHint, 'wxyz');
+      assert.strictEqual(after.upstreams.anthropic.keyHint, '\u2026wxyz');
     });
 
     await check('routing to an upstream with no key is refused BY NAME with the field', async () => {
       const err = await refuses(
         () => seam.putCrucibleEngineSettings(name, { routes: { clean: 'openai/gpt-5' } }),
         'route_upstream_unconfigured');
-      assert.deepStrictEqual(err.details, { field: 'routes.clean' });
+      // A DOTTED PATH naming the control the refusal is about (crucible
+      // c5482ff), so a panel can put the sentence beside the field rather
+      // than at the top of the page.
+      assert.deepStrictEqual(err.details, { field: 'upstreams.openai.key' });
     });
 
     await check('a route that is not an upstream model id, and a class that cannot route', async () => {
@@ -289,6 +293,7 @@ async function withFake(behaviour, fn) {
   await withFake({}, async ({ name, door }) => {
     await check('a key is TESTED without being stored — the list is the upstream\'s own', async () => {
       const got = await seam.testCrucibleUpstream(name, 'anthropic', { key: 'sk-ant-try-this' });
+      assert.strictEqual(got.ok, true);
       assert.deepStrictEqual(got.models, ['model-a', 'model-b', 'model-c']);
       assert.deepStrictEqual(door.settings.tests[0], { name: 'anthropic', body: { key: 'sk-ant-try-this' } });
       const doc = await seam.crucibleEngineSettings(name);
@@ -296,8 +301,13 @@ async function withFake(behaviour, fn) {
         'a TEST stored the key — then Test-before-Save is a wording, not a fact');
     });
 
-    await check('testing an unconfigured upstream with no probe is refused by name', async () => {
-      await refuses(() => seam.testCrucibleUpstream(name, 'openai', {}), 'upstream_unconfigured');
+    await check('a test ANSWERS its refusal rather than throwing it', async () => {
+      // §3.8's shape, matched so the vendored `testUpstream()` is a drop-in:
+      // "that key was rejected" is the ordinary outcome of pressing Test and
+      // belongs beside the field, not in a catch block.
+      const got = await seam.testCrucibleUpstream(name, 'openai', {});
+      assert.strictEqual(got.ok, false);
+      assert.strictEqual(got.refusal.code, 'upstream_unconfigured');
     });
   });
 
@@ -305,8 +315,10 @@ async function withFake(behaviour, fn) {
     refuseTest: () => ({ status: 401, code: 'upstream_rejected', message: 'that key was rejected', details: null }),
   }, async ({ name }) => {
     await check('the upstream\'s own refusal reaches the caller with its own code', async () => {
-      const err = await refuses(() => seam.testCrucibleUpstream(name, 'anthropic', { key: 'nope' }), 'upstream_rejected');
-      assert.ok(err.message.includes('that key was rejected'), err.message);
+      const got = await seam.testCrucibleUpstream(name, 'anthropic', { key: 'nope' });
+      assert.strictEqual(got.ok, false);
+      assert.strictEqual(got.refusal.code, 'upstream_rejected');
+      assert.ok(got.refusal.message.includes('that key was rejected'), got.refusal.message);
     });
   });
 
@@ -329,11 +341,58 @@ async function withFake(behaviour, fn) {
     });
 
   await withFake({ omitRoute: true }, async ({ name }) => {
-    await check('a row with NO route is refused, never assumed local', async () => {
-      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'settings_document_unreadable');
-      assert.ok(err.message.includes('route'), err.message);
+    await check('a document where NO row has a route is a PRE-PHASE-15 server: every class is local', async () => {
+      // crucible eb59f7b. Owen's live WSL server answers this way until the
+      // phase-15 branch is deployed onto it, and for such a server every class
+      // IS local — it has no upstreams table to route to. A stated fact about
+      // that server, not a default filled in for a missing field, which is
+      // exactly why the next two checks refuse instead.
+      const record = await seam.crucibleCapabilityWithRoutes(name);
+      assert.ok(record.classes.length > 0);
+      for (const row of record.classes) {
+        assert.strictEqual(row.route, 'local', `${row.capability} read as ${row.route}`);
+      }
     });
   });
+
+  await withFake({ routeMissingFor: 'simplify' }, async ({ name }) => {
+    await check('SOME rows with a route and one without is refused, naming the row', async () => {
+      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'capability_route_missing');
+      assert.ok(err.message.includes('simplify'), err.message);
+    });
+  });
+
+  await withFake({ badRouteFor: 'translate' }, async ({ name }) => {
+    await check('a route that is neither local nor upstream is refused, naming the row', async () => {
+      const err = await refuses(() => seam.crucibleCapabilityWithRoutes(name), 'capability_route_unknown');
+      assert.ok(err.message.includes('translate'), err.message);
+      assert.ok(err.message.includes('somewhere-else'), err.message);
+    });
+  });
+
+  await withFake({ routes: { clean: 'anthropic/claude-x' }, upstreams: { anthropic: { key: 'sk-1234' } } },
+    async ({ name }) => {
+      await check('the route record is filled by the READ, so the scheduler can ask synchronously', async () => {
+        const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+        routes.forgetCrucibleRoutes(name);
+        assert.strictEqual(routes.crucibleRouteOf(name, 'clean'), 'unknown',
+          'an engine nobody has read is `unknown`, never assumed local');
+        await seam.crucibleCapabilityWithRoutes(name);
+        assert.strictEqual(routes.crucibleRouteOf(name, 'clean'), 'upstream');
+        assert.strictEqual(routes.crucibleRouteOf(name, 'translate'), 'local');
+        assert.strictEqual(routes.crucibleRouteOf(name, 'nonsense'), 'unknown',
+          'a class the engine did not mention is unknown, not local');
+      });
+
+      await check('a settings WRITE records the routes out of its own answer, with no second read', async () => {
+        const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+        await seam.crucibleCapabilityWithRoutes(name);
+        assert.strictEqual(routes.crucibleRouteOf(name, 'clean'), 'upstream');
+        await seam.putCrucibleEngineSettings(name, { routes: { clean: 'local' } });
+        assert.strictEqual(routes.crucibleRouteOf(name, 'clean'), 'local',
+          'the write-through path is what invalidates the record — a caller cannot forget');
+      });
+    });
 
   // ───────────────────────────────────────────────────────────────────────────
   // 7. llama-windows: Windows IS a backend (AMENDED 2026-09-14, crucible 56cfe37)

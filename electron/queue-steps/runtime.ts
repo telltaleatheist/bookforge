@@ -29,14 +29,29 @@ export function queueMainWindow(): BrowserWindow | null {
 /**
  * Which pool a step contends for, given whose model it is about to use.
  *
- * A pass against a HOSTED api (Claude, OpenAI) is network latency: it holds no
- * card, no bundled llama, no Ollama runner, and making it wait behind a
- * nine-hour narration was the queue punishing a job for the company it kept. An
- * `ollama` or `local` provider is the GPU, and belongs in the exclusive pool.
+ * ── THE CLOUD ARM MOVED, IT DID NOT GO (2026-09-14, crucible PHASE15 §5.3) ──
+ *
+ * This used to answer `cpu` for the `claude` and `openai` providers, on the
+ * true observation that a pass against a hosted API is network latency: it
+ * holds no card, and making it wait behind a nine-hour narration was the queue
+ * punishing a job for the company it kept.
+ *
+ * Both providers are gone. The same WORK still happens — the engine forwards
+ * an `upstream`-routed class to Anthropic or OpenAI on the operator's account
+ * — but the fact that says so is no longer on the row. It is the ROUTE, which
+ * belongs to the server and is read from `GET /v1/capability`, and a row that
+ * routes upstream takes that server's `[cloud]` lane instead of its GPU slot
+ * (`shared/queue/slot-sets.ts`). A config field here could not answer it: two
+ * books on two servers with the same provider can route differently, and the
+ * row's own config knows nothing about either server.
+ *
+ * So what is left is the honest remainder: both surviving providers are a
+ * model on a card, and both belong in the exclusive pool. The function stays
+ * rather than collapsing into a literal at four call sites, because "which
+ * pool does an AI step contend for" is still one question with one owner.
  */
-export function resourceForProvider(config: Record<string, unknown>): StepResource {
-  const provider = config['aiProvider'];
-  return provider === 'claude' || provider === 'openai' ? 'cpu' : 'gpu';
+export function resourceForProvider(_config: Record<string, unknown>): StepResource {
+  return 'gpu';
 }
 
 /** Percentage, message and stage bars from a bridge that reports all three. */

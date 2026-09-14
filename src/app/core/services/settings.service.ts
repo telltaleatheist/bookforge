@@ -3,7 +3,8 @@ import { ElectronService } from './electron.service';
 import {
   AIConfig,
   AIProvider,
-  DEFAULT_AI_CONFIG
+  DEFAULT_AI_CONFIG,
+  resolveSavedAIProvider
 } from '../models/ai-config.types';
 import {
   DEFAULT_VLM_ENDPOINT_CONFIG,
@@ -13,9 +14,9 @@ import { resolveSavedTtsEngine, type TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
- * user who always wants e.g. Claude for cleanup + a particular voice
- * doesn't re-pick every time. Edited in Settings → Pipeline Defaults; the wizard
- * applies them on open (a restored in-progress session still overrides them).
+ * user who always wants e.g. a particular engine for cleanup + a particular
+ * voice doesn't re-pick every time. Edited in Settings → Pipeline Defaults; the
+ * wizard applies them on open (a restored in-progress session still overrides them).
  */
 export interface PipelineDefaults {
   cleanupProvider: AIProvider; cleanupModel: string;
@@ -82,9 +83,14 @@ export interface PipelineDefaults {
 }
 
 export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
-  cleanupProvider: 'ollama', cleanupModel: '',
-  simplifyProvider: 'ollama', simplifyModel: '',
-  translateProvider: 'ollama', translateModel: '',
+  // Was 'ollama' for all three. Ollama left BookForge on 2026-09-14 — it is an
+  // upstream a GPU engine (Crucible) forwards to now, not a provider this app
+  // talks to — and the default moved to the only provider that works with
+  // nothing configured. A Crucible needs a server NAME, and no shipped default
+  // can know what this machine called that machine.
+  cleanupProvider: 'local', cleanupModel: '',
+  simplifyProvider: 'local', simplifyModel: '',
+  translateProvider: 'local', translateModel: '',
   // Was 'xtts' with voice 'ScarlettJohansson'. XTTS is retired (2026-09-04) and a
   // DEFAULT that names a retired engine is the one place the refusal would fire on
   // a user who never chose anything — so the default moved to the engine every
@@ -355,6 +361,9 @@ export class SettingsService {
   readonly hasUnsavedChanges = computed(() => {
     return Object.keys(this.pendingValues()).length > 0;
   });
+
+  /** Retired AI providers already named in the console, so each is said once. */
+  private readonly reportedProviderRepairs = new Set<string>();
 
   constructor() {
     this.initializeBuiltinSections();
@@ -757,21 +766,45 @@ export class SettingsService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Get AI configuration
+   * The app's AI configuration, REBUILT FIELD BY FIELD rather than spread.
+   *
+   * A blob written before 2026-09-14 carries `aiConfig.claude.apiKey` and
+   * `aiConfig.openai.apiKey` — this app's own cloud key store, which is gone
+   * (the keys live in the engine now and this app holds none). Spreading the
+   * stored object would carry those keys straight back out, and the next
+   * `setAIConfig` would write them down again. Naming the three surviving
+   * fields instead means nothing rebuilds them, and the first time anything
+   * touches the AI config they leave the blob for good. That is this build's
+   * shape doing its job, not a migration: no key is read, printed or sent
+   * anywhere on the way past.
+   *
+   * A STORED PROVIDER THAT NAMES A RETIRED ONE IS REPAIRED HERE, loudly and by
+   * name — the same treatment `getPipelineDefaults` gives a retired narration
+   * engine, and for the same reason: it is a standing selection shown in a
+   * picker, not a queued run. Left alone it would render as nothing selected.
    */
   getAIConfig(): AIConfig {
-    const config = this.values()['aiConfig'] as AIConfig | undefined;
-    if (!config) {
+    const stored = this.values()['aiConfig'] as Partial<AIConfig> | undefined;
+    if (!stored) {
       return { ...DEFAULT_AI_CONFIG };
     }
-    // Merge with defaults to ensure all fields exist
-    return {
-      ...DEFAULT_AI_CONFIG,
-      ...config,
-      ollama: { ...DEFAULT_AI_CONFIG.ollama, ...config.ollama },
-      claude: { ...DEFAULT_AI_CONFIG.claude, ...config.claude },
-      openai: { ...DEFAULT_AI_CONFIG.openai, ...config.openai }
-    };
+    const config: AIConfig = { ...DEFAULT_AI_CONFIG };
+    if (stored.provider !== undefined) {
+      const resolved = resolveSavedAIProvider(stored.provider);
+      // Reported, not rewritten. This runs inside computed signals, and a
+      // write from a computed is an Angular error — so unlike the narration
+      // engine's repair the stale string stays on disk until something saves
+      // the AI config for its own reasons. Said once per value, because the
+      // same read happens on every change detection pass.
+      if (resolved.migratedFrom && !this.reportedProviderRepairs.has(resolved.migratedFrom)) {
+        this.reportedProviderRepairs.add(resolved.migratedFrom);
+        console.error(`[SETTINGS] ${resolved.note}`);
+      }
+      config.provider = resolved.provider;
+    }
+    if (stored.local !== undefined) config.local = stored.local;
+    if (stored.crucible !== undefined) config.crucible = stored.crucible;
+    return config;
   }
 
   /**
@@ -797,9 +830,8 @@ export class SettingsService {
   /**
    * Which machine reads the pages, merged with the default (which is: this one).
    *
-   * Lives beside the Ollama URL and travels the same way — the renderer owns the
-   * setting and hands it to main per run, because main has no copy of this
-   * bundle. Empty `url` means MLX here, and that is the default on Apple
+   * The renderer owns the setting and hands it to main per run, because main
+   * has no copy of this bundle. Empty `url` means MLX here, and that is the default on Apple
    * Silicon; every other machine has no local reader and the conversion refuses
    * by name until an endpoint is set (shared/vlm/conversion.ts).
    */
@@ -867,21 +899,47 @@ export class SettingsService {
    * reference clip; carrying it onto Orpheus would produce exactly the
    * unrenderable pair this repair exists to prevent, so it resets to the default
    * voice too.
+   *
+   * A STORED RETIRED AI PROVIDER IS REPAIRED THE SAME WAY (2026-09-14). A
+   * machine that chose Ollama, Claude or OpenAI for a role has that string on
+   * disk, and those three left BookForge entirely — so the role's picker would
+   * show nothing selected and no way to see why. THE MODEL GOES WITH THE
+   * PROVIDER, exactly as the voice goes with the engine: `cogito:14b` saved
+   * beside `ollama` is an Ollama tag, and carrying it onto the bundled local
+   * model would be the unrunnable pair over again.
    */
   getPipelineDefaults(): PipelineDefaults {
     const stored = this.values()['pipelineDefaults'] as Partial<PipelineDefaults> | undefined;
-    const merged = { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
-    if (stored?.ttsEngine === undefined) return merged;
+    let repaired: PipelineDefaults = { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+    let anyRepair = false;
 
-    const resolved = resolveSavedTtsEngine(merged.ttsEngine);
-    if (!resolved.migratedFrom) return merged;
+    for (const role of ['cleanup', 'simplify', 'translate'] as const) {
+      if (stored?.[`${role}Provider`] === undefined) continue;
+      const answer = resolveSavedAIProvider(repaired[`${role}Provider`]);
+      if (!answer.migratedFrom) continue;
+      console.error(`[SETTINGS] ${role}: ${answer.note}`);
+      repaired = {
+        ...repaired,
+        [`${role}Provider`]: answer.provider,
+        [`${role}Model`]: DEFAULT_PIPELINE_DEFAULTS[`${role}Model`],
+      } as PipelineDefaults;
+      anyRepair = true;
+    }
 
-    console.error(`[SETTINGS] ${resolved.note}`);
-    const repaired: PipelineDefaults = {
-      ...merged,
-      ttsEngine: resolved.engine,
-      ttsVoice: DEFAULT_PIPELINE_DEFAULTS.ttsVoice,
-    };
+    if (stored?.ttsEngine !== undefined) {
+      const resolved = resolveSavedTtsEngine(repaired.ttsEngine);
+      if (resolved.migratedFrom) {
+        console.error(`[SETTINGS] ${resolved.note}`);
+        repaired = {
+          ...repaired,
+          ttsEngine: resolved.engine,
+          ttsVoice: DEFAULT_PIPELINE_DEFAULTS.ttsVoice,
+        };
+        anyRepair = true;
+      }
+    }
+
+    if (!anyRepair) return repaired;
     this.setPipelineDefaults(repaired);
     return repaired;
   }

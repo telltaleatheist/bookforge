@@ -543,11 +543,21 @@ export class JobStepComponent {
     }
   }
 
+  /**
+   * A stored provider id, as a label. HISTORY IS PART OF THE LIST.
+   *
+   * The argument is a `string` and not `AIProvider` on purpose: it comes off a
+   * persisted row, and a row queued before 2026-09-14 names one of the three
+   * providers that left BookForge that day. A step says what RAN, so those
+   * three keep their labels; nothing offers them.
+   */
   private shortProvider(provider: string): string {
     switch (provider) {
-      case 'ollama': return 'Ollama';
-      case 'claude': return 'Claude';
-      case 'openai': return 'OpenAI';
+      case 'crucible': return 'GPU engine';
+      case 'local': return 'Bundled local';
+      case 'ollama': return 'Ollama (retired)';
+      case 'claude': return 'Claude (retired)';
+      case 'openai': return 'OpenAI (retired)';
       default: return provider;
     }
   }

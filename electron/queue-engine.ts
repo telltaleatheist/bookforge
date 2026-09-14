@@ -103,6 +103,7 @@ import {
  * and never of a server's capacity.
  */
 import {
+  cloudLaneOf,
   slotSetForStep,
   slotSetOccupancy,
   slotSets,
@@ -113,6 +114,7 @@ import {
   type SetOccupancy,
   type SlotSet,
 } from '../shared/queue/slot-sets';
+import { crucibleRouteOf } from './crucible/routes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -276,6 +278,28 @@ export interface StepModule {
    * where an operator can act on it.
    */
   leasedModel?(config: Record<string, unknown>): string | null;
+  /**
+   * WHICH CRUCIBLE CAPABILITY CLASS THIS STEP IS, or `null` when it is none.
+   *
+   * crucible `docs/PHASE15-HOST.md` §5.3: an engine can be configured to
+   * forward one of the four llm classes — `clean translate simplify analysis`
+   * — to Anthropic, OpenAI or a remote Ollama on the operator's account. A run
+   * that goes that way holds no card anywhere, so it takes the engine's
+   * `[cloud]` lane instead of its GPU slot (`shared/queue/slot-sets.ts`).
+   *
+   * To ask "is this row's class routed upstream on the machine it was just
+   * placed on" the pump needs the CLASS, and only the step module knows it: a
+   * `translation` step is `translate`, a `pass` step is its kind's act, a
+   * render is none of them. Declared here rather than derived from the step
+   * TYPE in the engine, which would be a fifth private copy of an
+   * act-to-step mapping (crucible ARCHITECTURE.md R1) and would be wrong the
+   * first time a pass kind moved.
+   *
+   * `null` — the default, by absence — means "not a routable class", and every
+   * such step keeps the venue's GPU slot exactly as before. MUST NOT THROW and
+   * must not reach the network: it is called synchronously inside the pump.
+   */
+  crucibleClass?(config: Record<string, unknown>): string | null;
   /**
    * Whether stopping this step leaves work that can be picked up. TTS does — the
    * rendered sentences are on disk and a resume skips them — so a stop leaves the
@@ -2117,10 +2141,64 @@ export function pump(): void {
          * cannot say WHICH card a row is waiting for until the row says.
          */
         if (step.travels === true) job.waitForResolved = routed.venue;
+
+        /*
+         * ── DOES THIS ENGINE RUN THIS CLASS, OR FORWARD IT? ─────────────────
+         *
+         * crucible `docs/PHASE15-HOST.md` §5.3. The engine the row was just
+         * placed on may be configured to route this step's capability class to
+         * an upstream — Anthropic, OpenAI, a remote Ollama — on the operator's
+         * account. Such a run holds no card: it costs the engine a socket. So
+         * it takes that engine's `[cloud]` lane rather than its GPU slot, which
+         * is what stops a translation on somebody's API waiting behind a
+         * nine-hour narration for a card it will never touch.
+         *
+         * THIS IS THE ONE MOMENT BOTH FACTS EXIST. The route belongs to the
+         * SERVER, so it is unknowable when the step is enqueued and the server
+         * has not been chosen; the class belongs to the step module. They meet
+         * here, once, and the answer is written onto the step — venue and
+         * resource together — for `slotSetForStep` to read.
+         *
+         * `unknown` is a WAIT and never a guess (`crucible/routes.ts`): the row
+         * is held with a sentence until coordination has read that engine's
+         * capability document, which is one connect away and never a poll.
+         * Assuming `local` would park an upstream-routed class on a card
+         * nothing runs on; assuming `upstream` would do the mirror.
+         */
+        const routableClass = step.travels === true
+          ? (moduleFor(step.type).crucibleClass?.(step.config ?? {}) ?? null)
+          : null;
+        let venue = routed.venue;
+        if (routableClass !== null && routed.venue !== LEGACY_LOCAL_NARRATOR) {
+          const route = crucibleRouteOf(routed.venue, routableClass);
+          if (route === 'unknown') {
+            const reason = `Waiting: BookForge has not yet read where "${routed.venue}" runs `
+              + `${routableClass} work. It asks that engine on every connect; this clears as soon `
+              + 'as it answers.';
+            admissionBlocked = true;
+            if (step.progress.admissionHold !== reason) {
+              step.progress = { ...step.progress, message: reason, admissionHold: reason };
+              touchProgress();
+            }
+            continue;
+          }
+          if (route === 'upstream') {
+            venue = cloudLaneOf(routed.venue);
+            /*
+             * The RESOURCE changes with the venue, and both are written here
+             * for the same reason: the step was enqueued as `gpu` because that
+             * is what an AI step is on the machine that runs it, and this run
+             * is not going to run on a machine. `slotSetForStep` reads the
+             * venue FIRST precisely so this pair lands in the cloud lane.
+             */
+            step.resource = 'cpu';
+          }
+        }
+
         // WHERE THIS STEP ITSELF WENT, written once — it is the slot set the
         // step occupies while it runs, and a run can hold two steps at two
         // venues while the migration is half done.
-        step.venue = routed.venue;
+        step.venue = venue;
 
         /*
          * THE VENUE'S OWN SLOT, enforced in ONE place for every venue — a

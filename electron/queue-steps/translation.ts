@@ -12,7 +12,7 @@ import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider } from './runtime';
 import {
-  crucibleModelForAiStep, machinesForAiStep, providerConfigOf, type AiJobConfig,
+  machinesForAiStep, providerConfigOf, type AiJobConfig,
 } from './ai-provider';
 
 interface TranslationStepConfig extends AiJobConfig {
@@ -36,6 +36,19 @@ export const translationStep: StepModule = {
    */
   machines: machinesForAiStep,
   /**
+   * THE CAPABILITY CLASS THIS STEP IS (crucible PHASE15 §5.3).
+   *
+   * Read by the pump at the one moment both facts exist — the class, which is
+   * the step's, and the engine, which is the row's — to ask whether that
+   * engine ROUTES this class to an upstream. If it does, the run holds no card
+   * and takes the engine's `[cloud]` lane instead of its GPU slot.
+   *
+   * It is the same name `providerConfigOf` is handed below, which is not a
+   * coincidence: the act the engine is told (`X-Crucible-Act`) and the class
+   * the queue reasons about are one fact.
+   */
+  crucibleClass: (): string => 'translate',
+  /**
    * IT LEASES ITS MODEL when its provider is a Crucible.
    *
    * A translation against `crucible` is a run of chat completions against one
@@ -53,15 +66,26 @@ export const translationStep: StepModule = {
     config['aiProvider'] === 'crucible',
 
   /**
-   * WHICH model it leases — the row's own `aiModel`, through the one owner.
+   * WHICH model it leases — and the answer is NULL BY CONSTRUCTION now.
    *
    * `leasesModel` above says a lease MAY be held; this says on what, and the
    * scheduler keeps the run's lease across the seam only when the two acts
    * name the same id. A lease is per model and a server holds one, so keeping
    * the 9B's lease into a step that must load the 27B is a `leased` refusal
    * this app hands itself (Foundry, 2026-09-14).
+   *
+   * The id used to be the row's own `aiModel`. Since phase 15 a text door
+   * sends `capability.selected` for its class (crucible PHASE15 §5.3), which
+   * is the SERVER's answer and needs a server name and a round trip — and this
+   * hook is synchronous and asked before the step is placed. `pass.ts` had
+   * already reached exactly this answer for `narration-text`; it is now true
+   * of every act, and the argument lives once, in `ai-provider.ts`.
+   *
+   * Null never equals an open lease's subject, so the lease is given back at
+   * the seam: the behaviour before one-lease-per-row existed. Nothing is
+   * swallowed — the act raises its own named refusal when it runs.
    */
-  leasedModel: crucibleModelForAiStep,
+  leasedModel: (): string | null => null,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as TranslationStepConfig;
@@ -94,7 +118,7 @@ export const translationStep: StepModule = {
       // THE RUN'S VENUE, NOT A NEW DECISION — the machine the queue assigned
       // this book. Only the `crucible` provider reads it, and it REFUSES by
       // name rather than guessing when the row was never assigned one.
-      providerConfigOf(config, ctx.job.waitForResolved),
+      providerConfigOf(config, 'translate', ctx.job.waitForResolved),
       { chunkSize: config.chunkSize },
     );
 

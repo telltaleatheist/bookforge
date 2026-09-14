@@ -7044,45 +7044,21 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // AI Bridge handlers (Ollama integration)
+  // AI Bridge handlers
   // ─────────────────────────────────────────────────────────────────────────────
+  //
+  // `ai:check-connection` and `ai:get-models` ARE DELETED (2026-09-14, crucible
+  // PHASE15 §5.3). Both asked an Ollama on this machine what it had. BookForge
+  // does not talk to an Ollama any more: an Ollama server is an UPSTREAM the
+  // ENGINE is configured with, reached by routing a capability class to it, and
+  // what a server can serve is `crucible:capability` — one question with one
+  // owner instead of a second model list per vendor.
 
-  ipcMain.handle('ai:check-connection', async () => {
-    try {
-      const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.checkConnection();
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ai:get-models', async () => {
-    try {
-      const { aiBridge } = await import('./ai-bridge.js');
-      const models = await aiBridge.getModels();
-      return { success: true, data: models };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ai:cleanup-chapter', async (
-    _event,
-    text: string,
-    options: { fixHyphenation: boolean; fixOcrArtifacts: boolean; expandAbbreviations: boolean },
-    chapterId: string,
-    chapterTitle: string,
-    model?: string
-  ) => {
-    try {
-      const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.cleanupText(text, options, chapterId, chapterTitle, model, mainWindow);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // `ai:cleanup-chapter` IS DELETED with it. It was the one-chapter cleanup and
+  // it was Ollama end to end — `aiBridge.cleanupText` took a model tag, dialled
+  // `localhost:11434` and streamed. Nothing in the renderer reached it: the
+  // cleanup a person actually runs is the EPUB pass, which goes through the
+  // queue, the provider block and `capability.selected`.
 
   // `crucibleServer` is the parameter this handler deliberately never passed
   // while the CLI was phase 2's only consumer (crucible docs/PHASE5-APPS.md
@@ -7090,15 +7066,19 @@ function setupIpcHandlers(): void {
   // registered server, or the reserved `local`; asking for the `crucible`
   // provider without it is refused BY NAME rather than answered about some other
   // machine, which is why there is no default here either.
+  //
+  // NO `apiKey` ARGUMENT, since 2026-09-14. A key is the ENGINE's (crucible
+  // PHASE15 §0: *"settings live in the engine and nowhere else"*), so there is
+  // no credential for a renderer to hand across this seam and no field on it
+  // that one could travel in.
   ipcMain.handle('ai:check-provider-connection', async (
     _event,
-    provider: 'ollama' | 'claude' | 'openai' | 'local' | 'crucible',
-    apiKey?: string,
+    provider: 'local' | 'crucible',
     crucibleServer?: string
   ) => {
     try {
       const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.checkProviderConnection(provider, apiKey, crucibleServer);
+      const result = await aiBridge.checkProviderConnection(provider, crucibleServer);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7126,23 +7106,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('ai:get-claude-models', async (_event, apiKey: string) => {
-    try {
-      const { getClaudeModels } = await import('./ai-bridge.js');
-      return await getClaudeModels(apiKey);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ai:get-openai-models', async (_event, apiKey: string) => {
-    try {
-      const { getOpenAIModels } = await import('./ai-bridge.js');
-      return await getOpenAIModels(apiKey);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // `ai:get-claude-models` and `ai:get-openai-models` ARE DELETED. BookForge
+  // ships no cloud model list and asks no cloud vendor what it sells: the ids
+  // an operator picks from come from `crucible:upstream-test`, which is the
+  // ENGINE asking the upstream with the operator's own key.
 
   ipcMain.handle('ai:load-skipped-chunks', async (_event, jsonPath: string) => {
     try {

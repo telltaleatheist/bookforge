@@ -4,15 +4,16 @@ import { FormsModule } from '@angular/forms';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
+import { ElectronService } from '../../../core/services/electron.service';
 import { NarrationVoicesService } from '../../queue/jobs/narration-voices.service';
 import { selectableEngines, type TtsEngineCaps } from '../../../core/models/tts-engine-registry';
-import {
-  AIProvider,
-  DEFAULT_AI_CONFIG,
-} from '../../../core/models/ai-config.types';
+import { AIProvider } from '../../../core/models/ai-config.types';
+import { capabilityWords } from './crucible-words';
+import type {
+  CrucibleCapabilityView,
+  CrucibleTextActName,
+} from '@shared/crucible/settings-wire';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../creamsicle-desktop';
-
-interface Opt { value: string; label: string; }
 
 /**
  * Settings → Pipeline Defaults. Edits the default selections the processing
@@ -41,18 +42,16 @@ interface Opt { value: string; label: string; }
             <div class="pd-controls">
               <desktop-select class="pd-select" [options]="providerOptions"
                 [ngModel]="providerOf(role.key)" (ngModelChange)="setProvider(role.key, $event)"></desktop-select>
-              <desktop-select class="pd-select" [options]="modelOptionsFor(role.key)"
-                [ngModel]="modelOf(role.key)" (ngModelChange)="setModel(role.key, $event)"
-                [disabled]="!providerPicksItsOwnModel(role.key) || modelOptionsFor(role.key).length === 0"></desktop-select>
+              <span class="pd-model">{{ modelLineFor(role.key) }}</span>
             </div>
           </div>
         }
-        @if (usesOllama() && ollamaProbe() === 'unreachable') {
-          <span class="pd-hint">
-            Can’t reach Ollama at {{ ollamaBaseUrl }} — start it (or fix the address in
-            Settings → AI) to pick from the models you’ve pulled.
-          </span>
-        }
+        <span class="pd-hint">
+          Neither model is BookForge's to pick. The bundled one is whichever you activated in
+          Settings &rarr; AI; the GPU engine (Crucible) measured its own card and chose a model
+          per act, so an id set here would be a second opinion about a decision the engine has
+          already made. Change it on the engine, from its own page.
+        </span>
       </section>
 
       <!-- TTS -->
@@ -168,6 +167,8 @@ interface Opt { value: string; label: string; }
       color: var(--text-primary); font-size: 13px;
     }
     .pd-select:disabled { opacity: 0.5; }
+    /* The model, as its owner states it: read, never a control. */
+    .pd-model { flex: 1; min-width: 0; align-self: center; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
     .pd-device { flex-direction: column; align-items: flex-start; gap: 6px; }
     .pd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
     .pd-btns { display: flex; gap: 8px; }
@@ -187,6 +188,7 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
   private readonly components = inject(ComponentService);
+  private readonly electron = inject(ElectronService);
   private readonly voices = inject(NarrationVoicesService);
 
   /** TTS engines selectable as a default — bundled ones always, optional-env ones
@@ -234,85 +236,63 @@ export class PipelineDefaultsPanelComponent {
 
   constructor() {
     void this.voices.load();
-    void this.loadOllamaModels();
+    void this.loadCapability();
     void this.components.ensureLoaded();
   }
 
-  /** Where this machine's Ollama lives — the same address the passes will use. */
-  readonly ollamaBaseUrl =
-    this.settings.getAIConfig().ollama.baseUrl || DEFAULT_AI_CONFIG.ollama.baseUrl;
-
-  /** Models Ollama is actually serving. Never a hardcoded list — see ai-config.types. */
-  readonly ollamaModels = signal<Opt[]>([]);
-  readonly ollamaProbe = signal<'loading' | 'ok' | 'unreachable'>('loading');
-
-  /** Any role pointed at Ollama, so the unreachable hint is worth showing. */
-  readonly usesOllama = computed(() =>
-    this.aiRoles.some((r) => this.d()[`${r.key}Provider`] === 'ollama'),
-  );
-
-  /** Ask Ollama what it has pulled; sorted so a long list stays findable. */
-  private async loadOllamaModels(): Promise<void> {
-    try {
-      const res = await fetch(`${this.ollamaBaseUrl.replace(/\/+$/, '')}/api/tags`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const models: Opt[] = (data?.models ?? [])
-        .map((m: { name: string }) => ({ value: m.name, label: m.name }))
-        .sort((a: Opt, b: Opt) => a.label.localeCompare(b.label));
-      this.ollamaModels.set(models);
-      this.ollamaProbe.set('ok');
-    } catch {
-      this.ollamaModels.set([]);
-      this.ollamaProbe.set('unreachable');
-    }
-  }
-
   /**
-   * WHO RUNS A TEXT ACT — and `crucible` is on this list since 2026-09-14.
+   * WHO RUNS A TEXT ACT, and the whole list is two (2026-09-14).
    *
-   * It was the omission the audit calls the one-fact-two-spellings defect
-   * (§3.14): `AIProvider` has carried `crucible` since phase 2 and this list
-   * did not, so a per-book DEFAULT could never name a Crucible while the
-   * Settings → AI picker beside it could. Same defect, same fix as §2.3 made
-   * for that picker.
+   * `ollama`, `claude` and `openai` left with the rest of the app's cloud and
+   * daemon plumbing — they are upstreams a GPU engine (Crucible) forwards to
+   * on the operator's account, routed on that engine before any request is
+   * made. What is left is a choice between the engine and the model this app
+   * ships, which is the same list `AIProvider` now holds.
    */
   readonly providers: { value: AIProvider; label: string }[] = [
-    { value: 'crucible', label: 'Crucible' },
-    { value: 'ollama', label: 'Ollama' },
-    { value: 'claude', label: 'Claude' },
-    { value: 'openai', label: 'OpenAI' },
+    { value: 'crucible', label: 'GPU engine (Crucible)' },
     { value: 'local', label: 'Bundled local' },
   ];
 
   /** Provider options for the desktop-select (same source as the old <option>s). */
   readonly providerOptions: DesktopSelectItems = this.providers.map((p) => ({ value: p.value, label: p.label }));
 
-  /** Model options for a role's current provider; the bundled-local model has no picker. */
-  modelOptionsFor(role: 'cleanup' | 'simplify' | 'translate'): DesktopSelectItems {
-    const provider = this.providerOf(role);
-    if (provider === 'local') return [{ value: '', label: 'Bundled local model' }];
-    // The three providers that OWN their own model choice elsewhere. Each says
-    // where, on the control, rather than showing an empty picker somebody
-    // would read as "not loaded yet".
-    if (provider === 'claude' || provider === 'openai') {
-      return [{ value: '', label: 'Chosen on Foundry’s cloud card' }];
-    }
-    if (provider === 'crucible') {
-      return [{ value: '', label: 'Chosen by the server’s capability record' }];
-    }
+  /**
+   * The engine's own answer for the chosen server, or null before it is asked.
+   *
+   * A per-HOST fact: `crucible install` measured that card and picked the
+   * largest candidate each class fits on, so a 24 GB box and a 12 GB box
+   * answer differently and neither answer is this app's to hold.
+   */
+  readonly capability = signal<CrucibleCapabilityView | null>(null);
 
-    const models = this.modelsFor(provider);
-    const current = this.modelOf(role);
-    const opts = models.map((m) => ({ value: m.value, label: m.label }));
+  private async loadCapability(): Promise<void> {
+    const server = this.settings.getAIConfig().crucible?.server;
+    if (!server) return;
+    const res = await this.electron.crucible.capability(server);
+    // Never an empty record on failure: an empty class list reads as "this
+    // engine serves nothing", which is a different and false claim. Null keeps
+    // the line saying it is still asking.
+    if (res.success && res.data) this.capability.set(res.data);
+  }
 
-    // Never drop the saved choice. If Ollama is down, or the model was removed,
-    // the default still has to show itself — otherwise opening this panel would
-    // quietly rewrite a default the user never touched.
-    if (current && !models.some((m) => m.value === current)) {
-      opts.unshift({ value: current, label: `${current} (not installed)` });
-    }
-    return opts;
+  /** THE MODEL, as its owner states it — never as something to pick here. */
+  modelLineFor(role: 'cleanup' | 'simplify' | 'translate'): string {
+    if (this.providerOf(role) === 'local') return 'the bundled local model';
+    const server = this.settings.getAIConfig().crucible?.server;
+    if (!server) return 'no engine chosen yet — pick one in Settings → AI';
+    return capabilityWords(this.capability(), this.actFor(role));
+  }
+
+  /**
+   * Which capability class a role's work is, in the engine's spelling.
+   *
+   * `cleanup` is `clean` on the wire — Owen's ruling of 2026-09-13 is that the
+   * act's own name travels on every request, so the engine's bench says which
+   * act is running rather than filing them all under one.
+   */
+  private actFor(role: 'cleanup' | 'simplify' | 'translate'): CrucibleTextActName {
+    return role === 'cleanup' ? 'clean' : role;
   }
 
   readonly aiRoles: { key: 'cleanup' | 'simplify' | 'translate'; label: string }[] = [
@@ -341,64 +321,24 @@ export class PipelineDefaultsPanelComponent {
     this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
 
-  /**
-   * The models a provider can be asked for, and the two that answer NONE.
-   *
-   * Ollama is live from the daemon, which is the pattern the whole of this
-   * panel is measured against. `claude` and `openai` used to return compiled
-   * three-item lists; both are DELETED (2026-09-14, audit §3.4). Owen's ruling
-   * is that the KEY picks the models — the app calls the provider's own
-   * listing — and the place that does it is FOUNDRY'S cloud card, which holds
-   * the kind, the key, the model and a Test that lists what the key reaches.
-   * A cloud row here therefore carries no model of its own: the slot's model
-   * is the model, and `modelOptionsFor` says so on the control.
-   *
-   * `crucible` answers none for a different reason and it is not a gap: the
-   * SERVER decides which model serves a capability class (`GET /v1/capability`
-   * probes the card and selects), so a model chosen here would be a second
-   * opinion about a decision that has an owner.
+  /*
+   * `modelsFor`, `providerPicksItsOwnModel` and `setModel` ARE DELETED
+   * (2026-09-14). Only Ollama's model was ever BookForge's to pick, and Ollama
+   * is no longer a provider this app talks to. Neither survivor has a list for
+   * this panel to offer — the bundled model is activated in Settings → AI and
+   * the engine's is its own capability record — so the control became a
+   * sentence, drawn by {@link modelLineFor}.
    */
-  modelsFor(provider: AIProvider): Opt[] {
-    switch (provider) {
-      case 'ollama': return this.ollamaModels();  // live from the daemon
-      default: return [];
-    }
-  }
-
-  /**
-   * Whether this provider's model is BookForge's to pick.
-   *
-   * Only Ollama's is. The bundled local model has no picker, a cloud slot's
-   * model is typed on Foundry's cloud card beside its key, and a Crucible's is
-   * the server's own capability record. The control is drawn for all four and
-   * disabled for three, each wearing the sentence that says where the choice
-   * actually lives — a hidden control teaches nobody where to go.
-   */
-  providerPicksItsOwnModel(role: 'cleanup' | 'simplify' | 'translate'): boolean {
-    return this.providerOf(role) === 'ollama';
-  }
 
   providerOf(role: 'cleanup' | 'simplify' | 'translate'): AIProvider {
     return this.d()[`${role}Provider`];
   }
 
-  modelOf(role: 'cleanup' | 'simplify' | 'translate'): string {
-    return this.d()[`${role}Model`];
-  }
-
   setProvider(role: 'cleanup' | 'simplify' | 'translate', provider: AIProvider): void {
-    // Reset the model to the provider's preferred one (or '' for local).
-    const models = this.modelsFor(provider);
-    const preferred =
-      provider === 'ollama'
-        ? models.find((m) => m.value === DEFAULT_AI_CONFIG.ollama.model)?.value
-        : undefined;
-    const model = preferred ?? models[0]?.value ?? '';
-    this.d.update((v) => ({ ...v, [`${role}Provider`]: provider, [`${role}Model`]: model }) as PipelineDefaults);
-  }
-
-  setModel(role: 'cleanup' | 'simplify' | 'translate', model: string): void {
-    this.d.update((v) => ({ ...v, [`${role}Model`]: model }) as PipelineDefaults);
+    // The model goes with the provider, and neither of the two carries one
+    // this panel names: an empty string is what "whatever its owner decided"
+    // is spelled as on a persisted default.
+    this.d.update((v) => ({ ...v, [`${role}Provider`]: provider, [`${role}Model`]: '' }) as PipelineDefaults);
   }
 
   /** Update the DRAFT only — nothing persists until Save. */

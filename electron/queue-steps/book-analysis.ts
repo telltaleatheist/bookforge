@@ -12,7 +12,7 @@ import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider } from './runtime';
 import {
-  crucibleModelForAiStep, machinesForAiStep, providerConfigOf, type AiJobConfig,
+  machinesForAiStep, providerConfigOf, type AiJobConfig,
 } from './ai-provider';
 
 interface AnalysisProgressEvent {
@@ -57,6 +57,19 @@ export const bookAnalysisStep: StepModule = {
    */
   machines: machinesForAiStep,
   /**
+   * THE CAPABILITY CLASS THIS STEP IS (crucible PHASE15 §5.3).
+   *
+   * Read by the pump at the one moment both facts exist — the class, which is
+   * the step's, and the engine, which is the row's — to ask whether that
+   * engine ROUTES this class to an upstream. If it does, the run holds no card
+   * and takes the engine's `[cloud]` lane instead of its GPU slot.
+   *
+   * It is the same name `providerConfigOf` is handed below, which is not a
+   * coincidence: the act the engine is told (`X-Crucible-Act`) and the class
+   * the queue reasons about are one fact.
+   */
+  crucibleClass: (): string => 'analysis',
+  /**
    * IT LEASES ITS MODEL when its provider is a Crucible.
    *
    * A analysis against `crucible` is a run of chat completions against one
@@ -82,7 +95,7 @@ export const bookAnalysisStep: StepModule = {
    * the 9B's lease into a step that must load the 27B is a `leased` refusal
    * this app hands itself (Foundry, 2026-09-14).
    */
-  leasedModel: crucibleModelForAiStep,
+  leasedModel: (): string | null => null,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as AnalysisStepConfig;
@@ -95,7 +108,7 @@ export const bookAnalysisStep: StepModule = {
     // THE RUN'S VENUE, NOT A NEW DECISION — the machine the queue assigned
     // this book. Only the `crucible` provider reads it, and it refuses by name
     // rather than guessing when the row was never assigned one.
-    const provider = providerConfigOf(config, ctx.job.waitForResolved);
+    const provider = providerConfigOf(config, 'analysis', ctx.job.waitForResolved);
 
     const unsubscribe = onBridgeEvent<AnalysisProgressEvent>('queue:progress', (event) => {
       if (event.jobId !== ctx.stepId) return;

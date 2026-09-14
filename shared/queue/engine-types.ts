@@ -153,8 +153,8 @@ export const TERMINAL_STEP_STATUSES: ReadonlySet<StepStatus> =
  * Which pool a step contends for.
  *
  * `gpu` is the exclusive local resource — one at a time, whatever it is. e2a
- * workers, RVC, whisper, the document vision model and an Ollama-backed pass all
- * belong to it, because they all end up on the same card.
+ * workers, RVC, whisper, the document vision model and a pass on the bundled
+ * local model all belong to it, because they all end up on the same card.
  *
  * `cpu` is the small pool for work that contends for nothing local: a pass whose
  * provider is a hosted API is network latency and nothing else, and making it
@@ -475,7 +475,7 @@ export interface QueueStep {
    *
    * True exactly when the step's module says it can run on a Crucible server —
    * today only `tts-conversion`. Everything else keeps behaving as it does now:
-   * a VLM page read, an RVC pass and an Ollama-backed pass all spawn something
+   * a VLM page read, an RVC pass and a bundled-local pass all spawn something
    * on THIS machine, and handing one of them a remote server would either fail
    * on a path that does not exist or, far worse, run locally while occupying a
    * remote slot.

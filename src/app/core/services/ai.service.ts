@@ -5,14 +5,19 @@ import { SettingsService } from './settings.service';
 /**
  * AI availability + local-model management (WS2).
  *
- * "Is AI available?" spans three independent sources — any one suffices:
- *   1. An API key (Claude or OpenAI), read from renderer settings.
- *   2. A local model served by Ollama (running AND has at least one model).
- *   3. The bundled llama.cpp engine with a downloaded model.
+ * "Is AI available?" spans the two providers this app has — either suffices:
+ *   1. A GPU engine (Crucible): a server and a model chosen in Settings → AI.
+ *   2. The bundled llama.cpp engine with a downloaded model.
+ *
+ * IT ASKED A THIRD QUESTION UNTIL 2026-09-14 — whether a Claude or OpenAI key
+ * was saved, and whether Ollama was running with a model pulled. Both are
+ * gone: this app holds no key, and Ollama is an upstream the ENGINE forwards
+ * to, so whether a daemon answers on this machine is not BookForge's fact to
+ * report (`@shared/crucible/settings-wire`, CRUCIBLE_UPSTREAM_NAMES).
  *
  * The cleanup/simplify pages gate on `available()`; the AI Setup wizard uses the
- * local-model methods. Key presence is reactive (it reads the settings signal);
- * the Ollama + local checks are async IPC and are cached until refresh().
+ * local-model methods. The Crucible half is reactive (it reads the settings
+ * signal); the local check is async IPC and is cached until refresh().
  */
 
 export interface LocalModel {
@@ -62,7 +67,6 @@ export interface LocalModelProgress {
 }
 
 interface AiBridge {
-  checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: { name: string }[]; error?: string }; error?: string }>;
   localStatus: () => Promise<{ success: boolean; data?: LocalStatus; error?: string }>;
   localSystemInfo: () => Promise<{ success: boolean; data?: LocalSystemInfo; error?: string }>;
   localListModels: () => Promise<{ success: boolean; data?: LocalModel[]; error?: string }>;
@@ -82,20 +86,11 @@ export class AiService {
   private readonly settings = inject(SettingsService);
 
   // Async-checked sources (refreshed on demand).
-  private readonly _ollamaHasModels = signal(false);
-  private readonly _ollamaConnected = signal(false);
   private readonly _localUsable = signal(false);
   private readonly _localStatus = signal<LocalStatus | null>(null);
   private readonly _checking = signal(false);
   private readonly _checkedOnce = signal(false);
 
-  /** True when Claude or OpenAI has a non-empty API key. Reactive on settings. */
-  readonly hasApiKey = computed(() => {
-    const cfg = this.settings.getAIConfig();
-    return !!cfg.claude?.apiKey?.trim() || !!cfg.openai?.apiKey?.trim();
-  });
-  readonly ollamaHasModels = this._ollamaHasModels.asReadonly();
-  readonly ollamaConnected = this._ollamaConnected.asReadonly();
   readonly localUsable = this._localUsable.asReadonly();
   readonly localStatus = this._localStatus.asReadonly();
   readonly checking = this._checking.asReadonly();
@@ -115,33 +110,33 @@ export class AiService {
     return !!cfg.crucible?.server?.trim() && !!cfg.crucible?.model?.trim();
   });
 
-  /** AI is available if ANY source is configured. */
-  readonly available = computed(() =>
-    this.hasApiKey() || this._ollamaHasModels() || this._localUsable() || this.crucibleConfigured()
-  );
+  /**
+   * A text act has somewhere to run — an engine has been chosen, or the
+   * bundled model is downloaded and its binary is present.
+   *
+   * Composed from {@link crucibleConfigured}, deliberately: that computed
+   * already decides what "an engine is chosen" means and says why it stops
+   * short of "reachable". A second answer to the same question here would be
+   * the one-fact-two-owners shape the audit exists to prevent.
+   */
+  readonly available = computed(() => this.crucibleConfigured() || this._localUsable());
 
   constructor() {
     void this.refresh();
   }
 
-  /** Re-run the async (Ollama + local) checks. Key presence updates reactively. */
+  /** Re-run the async local check. The engine's half updates reactively. */
   async refresh(): Promise<void> {
     const api = bridge();
     if (!api) {
-      // Web preview — nothing to probe; treat keys as the only signal.
+      // Web preview — nothing to probe; the chosen engine is the only signal.
       this._checkedOnce.set(true);
       return;
     }
     this._checking.set(true);
     try {
-      const [ollama, local] = await Promise.all([
-        api.checkConnection().catch(() => ({ success: false } as Awaited<ReturnType<AiBridge['checkConnection']>>)),
-        api.localStatus().catch(() => ({ success: false } as Awaited<ReturnType<AiBridge['localStatus']>>)),
-      ]);
-
-      const connected = !!ollama?.data?.connected;
-      this._ollamaConnected.set(connected);
-      this._ollamaHasModels.set(connected && (ollama?.data?.models?.length ?? 0) > 0);
+      const local = await api.localStatus()
+        .catch(() => ({ success: false } as Awaited<ReturnType<AiBridge['localStatus']>>));
 
       const ls = local?.data ?? null;
       this._localStatus.set(ls);

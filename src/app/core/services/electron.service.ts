@@ -2078,10 +2078,14 @@ export class ElectronService {
    * refused by name rather than answered about some other machine. For the
    * Crucible provider the `models` that come back are the RESIDENT ones —
    * anything else would be a promise a cleanup run then refuses to keep.
+   *
+   * THE `apiKey` ARGUMENT IS GONE (2026-09-14). It existed for the three cloud
+   * and daemon providers this app no longer has; a key is the engine's now, so
+   * there is nothing for a caller here to hand over and no provider that would
+   * take one.
    */
   async checkAIConnection(
-    provider: 'ollama' | 'claude' | 'openai' | 'local' | 'crucible',
-    apiKey?: string,
+    provider: 'crucible' | 'local',
     crucibleServer?: string,
   ): Promise<{
     available: boolean;
@@ -2089,7 +2093,7 @@ export class ElectronService {
     models?: string[];
   }> {
     if (this.isElectron) {
-      const result = await (window as any).electron.ai.checkProviderConnection(provider, apiKey, crucibleServer);
+      const result = await (window as any).electron.ai.checkProviderConnection(provider, crucibleServer);
       if (result.success && result.data) {
         return result.data;
       }
@@ -2116,27 +2120,12 @@ export class ElectronService {
     return false;
   }
 
-  async getClaudeModels(apiKey: string): Promise<{
-    success: boolean;
-    models?: { value: string; label: string }[];
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return await (window as any).electron.ai.getClaudeModels(apiKey);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async getOpenAIModels(apiKey: string): Promise<{
-    success: boolean;
-    models?: { value: string; label: string }[];
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return await (window as any).electron.ai.getOpenAIModels(apiKey);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
+  // `getClaudeModels` and `getOpenAIModels` ARE DELETED (2026-09-14), along
+  // with the `ai:get-claude-models` / `ai:get-openai-models` channels behind
+  // them. They listed a cloud provider's catalog using a key this app held.
+  // It holds none: an engine forwards to Anthropic and OpenAI on the
+  // operator's account, and what it will serve is `GET /v1/capability`, drawn
+  // as the engine's own answer rather than a list this app went and fetched.
 
   async loadSkippedChunks(jsonPath: string): Promise<{
     success: boolean;

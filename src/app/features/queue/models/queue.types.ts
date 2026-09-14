@@ -3,6 +3,18 @@
  */
 
 import { AIProvider } from '../../../core/models/ai-config.types';
+
+/*
+ * `claudeApiKey` AND `openaiApiKey` ARE GONE from every job config that had
+ * them — translation, bilingual cleanup, bilingual translation and book
+ * analysis (2026-09-14). This app stores no credential: Anthropic, OpenAI and
+ * Ollama are upstreams a GPU engine (Crucible) forwards to on the operator's
+ * account, chosen on that engine before any request is made.
+ *
+ * A JOB CONFIG IS PERSISTED, in queue.json. A row written before this build
+ * still carries the two fields on disk; nothing reads them and nothing strips
+ * them. `aiProvider` narrows on its own, because `AIProvider` did.
+ */
 import type { PassJobConfig } from '@shared/processing/pass-types';
 import type {
   ArtifactRef, FoundryJobLineage, JobType as EngineJobType,
@@ -400,9 +412,6 @@ export interface TranslationJobConfig {
   aiProvider: AIProvider;
   aiModel: string;
   // Provider-specific settings
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
 }
 
 // Reassembly job configuration - reassembles incomplete e2a sessions
@@ -578,9 +587,6 @@ export interface BilingualCleanupJobConfig {
   // AI settings
   aiProvider: AIProvider;
   aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
   cleanupPrompt?: string;      // Custom cleanup prompt template
 
   // Test mode - only process first N chunks
@@ -612,9 +618,6 @@ export interface BilingualTranslationJobConfig {
   // AI settings
   aiProvider: AIProvider;
   aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
   translationPrompt?: string;  // Custom translation prompt template
   customInstructions?: string;  // Additional instructions appended to the translation prompt
 
@@ -718,9 +721,6 @@ export interface BookAnalysisConfig {
   aiProvider: AIProvider;
   aiModel: string;
   // Provider-specific settings (only the relevant one is used)
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
   // Analysis categories
   categories: Array<{
     id: string;

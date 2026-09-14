@@ -242,7 +242,10 @@ export interface TranslationJobAnalytics {
   sentencesPerMinute: number;
 
   // Settings
-  provider: string;             // e.g. 'ollama', 'openai'
+  // A recorded run's provider, so history keeps whatever it actually used —
+  // 'crucible' or 'local' now; 'ollama', 'claude' or 'openai' on a row written
+  // before 2026-09-14, when those three left BookForge.
+  provider: string;
   model: string;
   sourceLang?: string;
   targetLang: string;

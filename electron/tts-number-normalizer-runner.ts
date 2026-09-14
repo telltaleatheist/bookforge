@@ -7,16 +7,105 @@
  * This file is the one place that dials a model, so the test never loads it and
  * never risks a request going out.
  *
- * It is a THIN binding, not a second implementation: the request goes through
- * `generateEditListWithOllama`, which goes through `callProviderExtracted` and
- * `cleanChunk` — the same `think:false` capability probe, the same streaming
- * inactivity timeout and the same `<answer>` extraction as every other edit-list
- * call in the app.
+ * ── IT OWNS ITS OWN OLLAMA DOOR NOW, AND THAT IS THE POINT ────────────────
+ *
+ * It used to borrow `generateEditListWithOllama` from `ai-bridge.ts`. Phase 15
+ * (crucible `docs/PHASE15-HOST.md` §5.3) took Ollama out of BookForge as a
+ * PROVIDER: an Ollama server is an upstream the ENGINE is configured with, and
+ * no text door in this app dials one any more.
+ *
+ * This pass is the exception, and it is an exception because of WHO IT SERVES,
+ * not because of what it talks to. It runs between the narration cut and the
+ * LEGACY narrator spawn (`parallel-tts-bridge.ts`, its only caller), on this
+ * machine's own model, with the GPU arbiter evicting it before e2a takes the
+ * card. It belongs to the legacy local spawn layer, which is deleted whole
+ * after Owen's in-app pass (crucible PHASE15 §6, `docs/CRUCIBLE_ROLLOUT_PLAN.md`
+ * A2) — and the request it makes therefore MOVED here rather than being kept
+ * alive in a bridge that no longer has providers. One owner, and it dies with
+ * the layer that needs it.
+ *
+ * What moved is the minimum: one non-streaming `/api/generate`, the
+ * `think:false` capability probe (qwen3.5 is a thinking model and would
+ * otherwise spend the whole budget on reasoning this pass throws away), and
+ * `extractAnswer`, which is not an Ollama thing and stays where it is.
  */
-import { estimateNumCtxForBudget, generateEditListWithOllama } from './ai-bridge.js';
+import { estimateNumCtxForBudget, extractAnswer } from './ai-bridge.js';
 import { getConfig } from './tool-paths.js';
 import { DEFAULT_NORMALIZER_MODEL } from './tts-number-normalizer.js';
 import type { NumberNormalizerRunner } from './tts-number-normalizer.js';
+
+/**
+ * The Ollama this pass dials. Not configurable, and deliberately so: the pass
+ * is a local-GPU pass by design and there is no provider to choose.
+ */
+const LEGACY_OLLAMA_BASE_URL = 'http://localhost:11434';
+
+/**
+ * Does this model know `think`?
+ *
+ * A thinking model handed no `think:false` spends a 2048-token budget on a
+ * chain of thought this pass discards, and answers nothing. A model that does
+ * NOT know the field refuses the request outright if it is sent. So it is
+ * ASKED — `/api/show`'s capabilities — rather than guessed from the tag, and
+ * an unreadable answer sends nothing, which is the behaviour a model without
+ * the field needs.
+ */
+async function thinkFieldsFor(model: string): Promise<{ think?: false }> {
+  const response = await fetch(`${LEGACY_OLLAMA_BASE_URL}/api/show`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  });
+  if (!response.ok) return {};
+  const data = await response.json() as { capabilities?: unknown };
+  const capabilities = data.capabilities;
+  return Array.isArray(capabilities) && capabilities.includes('thinking') ? { think: false } : {};
+}
+
+/**
+ * One edit-list request: a JSON answer, extracted.
+ *
+ * `numCtx` is the caller's, sized once with `estimateNumCtxForBudget`, because
+ * Ollama reloads the runner on ANY num_ctx change and a per-passage estimate
+ * would churn a 6-17 GB model in and out between paragraphs.
+ */
+async function askLegacyOllama(
+  model: string,
+  systemPrompt: string,
+  input: string,
+  options: { numCtx: number; numPredict: number; temperature: number; abortSignal?: AbortSignal },
+): Promise<string> {
+  const response = await fetch(`${LEGACY_OLLAMA_BASE_URL}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      system: systemPrompt,
+      prompt: input,
+      stream: false,
+      ...(await thinkFieldsFor(model)),
+      keep_alive: '5m',
+      options: {
+        temperature: options.temperature,
+        num_ctx: options.numCtx,
+        num_predict: options.numPredict,
+      },
+    }),
+    ...(options.abortSignal ? { signal: options.abortSignal } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `The number-normalization model refused the request (${response.status} `
+      + `${response.statusText}). ${model} is asked on ${LEGACY_OLLAMA_BASE_URL}, which is this `
+      + 'machine\'s own Ollama.',
+    );
+  }
+  const data = await response.json() as { response?: unknown };
+  if (typeof data.response !== 'string') {
+    throw new Error('The number-normalization model answered without a `response` field.');
+  }
+  return extractAnswer(data.response, model);
+}
 
 /**
  * num_predict for one passage.
@@ -74,7 +163,7 @@ export function createOllamaNormalizerRunner(
           + 'window. This is a bug in the pass, not something you did.'
         );
       }
-      return generateEditListWithOllama(model, systemPrompt, input, {
+      return askLegacyOllama(model, systemPrompt, input, {
         numCtx, numPredict: NUMBER_NUM_PREDICT, temperature: NUMBER_TEMPERATURE, abortSignal,
       });
     },

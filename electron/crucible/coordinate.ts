@@ -77,6 +77,7 @@ import {
 } from '@crucible/client';
 
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal } from './servers';
+import { crucibleCapabilityWithRoutes } from './settings-wire';
 import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
 import { LOCAL_SERVER_NAME } from './local';
 import { rankedServers } from './routing';
@@ -261,7 +262,27 @@ async function runCoordination(
   let catalog: readonly CatalogRow[];
   try {
     const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-    const [info, rows] = await Promise.all([client.info(), client.catalog()]);
+    /*
+     * THREE READS, AND THE THIRD IS THE SCHEDULER'S.
+     *
+     * `GET /v1/capability` is read here because this is already the moment
+     * BookForge connects to a server and asks what it has, and because the one
+     * thing the QUEUE needs from a server — where each class runs, `local` or
+     * `upstream` (crucible PHASE15 §3.3) — has to be answerable inside a
+     * synchronous pump. Reading it here is what means nothing POLLS for it:
+     * coordination runs on every connect to every enabled server (PHASE14
+     * §4a), and `settings-wire.ts` records the routes again out of every
+     * settings write's own answer. The record itself is `crucible/routes.ts`.
+     *
+     * It does not change coordination's verdict. A capability read that fails
+     * is the same `unreachable` as the other two: a server that cannot answer
+     * one of these three is not answering.
+     */
+    const [info, rows] = await Promise.all([
+      client.info(),
+      client.catalog(),
+      crucibleCapabilityWithRoutes(server),
+    ]);
     installedJobTypes = info.capabilities.map((capability) => capability.jobType);
     catalog = rows;
   } catch (err) {

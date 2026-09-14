@@ -52,14 +52,15 @@ import type {
   CrucibleRouteKind,
   CrucibleRouteRow,
   CrucibleTextActName,
-  CrucibleUpstreamModels,
   CrucibleUpstreamName,
   CrucibleUpstreamProbe,
   CrucibleUpstreamRow,
+  CrucibleUpstreamTestResult,
 } from '../../shared/crucible/settings-wire';
 import { CRUCIBLE_UPSTREAM_NAMES } from '../../shared/crucible/settings-wire';
 import { CRUCIBLE_TEXT_ACTS } from './text-acts';
 import { getServer } from './servers';
+import { noteCrucibleRoutes, routesFromCapability, routesFromSettings } from './routes';
 
 /**
  * THE NAMES THIS SEAM STANDS IN FOR.
@@ -74,6 +75,19 @@ export const SDK_SETTINGS_NAMES_AWAITED = [
   'testUpstream',
   'readPairingFile',
 ] as const;
+
+/**
+ * The three refusals a TEST answers with rather than throws (§3.8).
+ *
+ * They are facts about the UPSTREAM, which is what the button asked about, so
+ * they come back as the answer. Every other failure — no server, no door, a
+ * body that is not the contract's — is about the ENGINE and still throws.
+ */
+const UPSTREAM_TEST_CODES: readonly string[] = [
+  'upstream_unreachable',
+  'upstream_rejected',
+  'upstream_unconfigured',
+];
 
 /** The API version header every authenticated Crucible route requires. */
 const API_VERSION_HEADER = 'X-Crucible-Api';
@@ -111,6 +125,10 @@ export type CrucibleEngineSettingsErrorCode =
   | 'upstream_unconfigured'
   /** This server has no settings door — it predates PHASE15. */
   | 'settings_door_absent'
+  /** Some capability rows say where they run and one does not (§3.3, eb59f7b). */
+  | 'capability_route_missing'
+  /** A capability row's route is neither `local` nor `upstream`. */
+  | 'capability_route_unknown'
   /** The server answered, and the body is not the document the contract describes. */
   | 'settings_document_unreadable'
   /** Nothing answered at that address, or the request could not be made. */
@@ -357,10 +375,20 @@ export async function putCrucibleEngineSettings(
         + 'be holding.',
     );
   }
-  return readSettingsDocument(
+  const after = readSettingsDocument(
     await request(server, { method: 'PUT', route: '/v1/settings', body }),
     server,
   );
+  /*
+   * THE WRITE-THROUGH PATH IS WHAT INVALIDATES THE ROUTE RECORD, and it costs
+   * no round trip: the answer to a PUT is the whole document after the write
+   * (§3.2), so the new routes are already in hand. Recorded HERE rather than
+   * at the call sites because a caller that forgot would leave the scheduler
+   * placing rows on the lane the operator just changed — and this is the one
+   * function through which a route can change from inside this app.
+   */
+  noteCrucibleRoutes(server, routesFromSettings(after.routes));
+  return after;
 }
 
 /**
@@ -374,12 +402,36 @@ export async function testCrucibleUpstream(
   server: string,
   name: CrucibleUpstreamName,
   probe: CrucibleUpstreamProbe,
-): Promise<CrucibleUpstreamModels> {
-  const body = await request(server, {
-    method: 'POST',
-    route: `/v1/settings/upstreams/${encodeURIComponent(name)}/test`,
-    body: probe,
-  });
+): Promise<CrucibleUpstreamTestResult> {
+  /*
+   * IT ANSWERS, IT DOES NOT THROW — and that is the SDK's shape (§3.8, pinned
+   * by crucible `c5482ff`), matched here so the vendored method is a drop-in
+   * when it lands.
+   *
+   * The shape is right on its own terms too. "That key was rejected" is not an
+   * exceptional condition in a settings panel; it is the ordinary result of
+   * pressing Test, it belongs beside the field, and a caller that had to
+   * `try`/`catch` to draw it would be using the exception channel for the
+   * expected answer. The three codes are the upstream's own
+   * (`upstream_unreachable`, `upstream_rejected`, `upstream_unconfigured`).
+   *
+   * Everything else still throws: a server that is not there, a 404 on the
+   * door, a body that is not the contract's. Those are not answers about the
+   * upstream at all.
+   */
+  let body: unknown;
+  try {
+    body = await request(server, {
+      method: 'POST',
+      route: `/v1/settings/upstreams/${encodeURIComponent(name)}/test`,
+      body: probe,
+    });
+  } catch (err) {
+    if (err instanceof CrucibleEngineSettingsError && UPSTREAM_TEST_CODES.includes(err.code)) {
+      return { ok: false, refusal: { code: err.code, message: err.message } };
+    }
+    throw err;
+  }
   const doc = asObject(body, `the ${name} test result`, server);
   const models = doc['models'];
   if (!Array.isArray(models) || models.some((id) => typeof id !== 'string')) {
@@ -389,7 +441,7 @@ export async function testCrucibleUpstream(
         + 'point of the test: BookForge ships no cloud model list and shows what the upstream said.',
     );
   }
-  return { models: models as string[] };
+  return { ok: true, models: models as string[] };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -404,9 +456,28 @@ export async function testCrucibleUpstream(
  * away, silently, which is worse. Until `CapabilityRow.route` lands this is the
  * read, and it is the read the scheduler's `[cloud]` lane depends on.
  *
- * A row with no `route` is refused rather than assumed `local`: assuming would
- * put an upstream-routed class on a GPU slot it will never use, and the whole
- * of §5.3's lane change turns on this one field being true.
+ * ── HOW AN ABSENT `route` IS READ, settled by crucible `eb59f7b` ──────────
+ *
+ * Three cases, and they are three different things. Foundry reads the same
+ * document, and the two apps were diverging on this, which is precisely the
+ * fact-with-two-owners the contract exists to prevent:
+ *
+ *  1. **NO row carries `route`.** That is a server built before phase 15, and
+ *     for such a server every class IS local — it has no upstreams, no routes
+ *     table and nothing to forward to. Read as `local`. This is a STATED FACT
+ *     about that server, not a default filled in for a missing field, and the
+ *     distinction is the whole reason case 2 exists. (Owen's live WSL server
+ *     answers this way until the phase-15 branch is deployed onto it.)
+ *  2. **Some rows carry it and one does not.** That is a document this client
+ *     cannot read: the server knows the field, so a row without one is not a
+ *     server predating it. Refused `capability_route_missing`, naming the row.
+ *  3. **Present and not `local` or `upstream`.** Refused
+ *     `capability_route_unknown` — a value from a newer contract, and guessing
+ *     which half of it to believe would put work on the wrong lane.
+ *
+ * Nothing here ever fills a route to keep going. Assuming `local` where the
+ * server knows better would put an upstream-routed class on a GPU slot it will
+ * never use, with a real render waiting behind it and nothing saying why.
  */
 export async function crucibleCapabilityWithRoutes(server: string): Promise<CrucibleCapabilityView> {
   const body = asObject(
@@ -421,22 +492,46 @@ export async function crucibleCapabilityWithRoutes(server: string): Promise<Cruc
       `"${server}" sent a capability record with no classes array.`,
     );
   }
-  const classes: CrucibleCapabilityRow[] = rawClasses.map((raw, index) => {
-    const row = asObject(raw, `classes[${index}]`, server);
+  const rows = rawClasses.map((raw, index) => asObject(raw, `classes[${index}]`, server));
+  /*
+   * Which of the three cases this document is, decided ONCE for the whole
+   * document and not per row — because "does this server know the field" is a
+   * property of the server, and asking it per row is what would turn case 1
+   * into four silent defaults.
+   */
+  const knowsRoute = rows.some((row) => row['route'] !== undefined);
+
+  const classes: CrucibleCapabilityRow[] = rows.map((row, index) => {
     const capability = row['capability'];
-    const route = row['route'];
+    const raw = row['route'];
     if (typeof capability !== 'string' || capability === '') {
       throw new CrucibleEngineSettingsError(
         'settings_document_unreadable',
         `"${server}" sent a capability row with no class name at index ${index}.`,
       );
     }
-    if (route !== 'local' && route !== 'upstream') {
+    let route: CrucibleRouteKind;
+    if (raw === undefined) {
+      if (knowsRoute) {
+        throw new CrucibleEngineSettingsError(
+          'capability_route_missing',
+          `"${server}" sent a capability document where some classes say where they run and `
+            + `"${capability}" does not. A server that knows the field and omits it for one class `
+            + 'is not a server that predates the field, so the omission is read as nothing rather '
+            + 'than as "local" (crucible PHASE15 §3.3).',
+        );
+      }
+      // CASE 1: a server from before phase 15. Every class is local because
+      // that server has no upstreams to route to — a fact about it, stated.
+      route = 'local';
+    } else if (raw === 'local' || raw === 'upstream') {
+      route = raw;
+    } else {
       throw new CrucibleEngineSettingsError(
-        'settings_document_unreadable',
-        `"${server}" sent the "${capability}" capability row without a route (PHASE15 §3.3). The `
-          + 'queue decides between a GPU slot and a cloud lane on that field, so a row without one '
-          + 'is read as nothing rather than as "local" — upgrade that engine.',
+        'capability_route_unknown',
+        `"${server}" says the "${capability}" class runs ${JSON.stringify(raw)}, which is neither `
+          + '"local" nor "upstream". That is a value from a contract newer than this build; the '
+          + 'queue would have to guess which lane it means, and it will not.',
       );
     }
     return {
@@ -447,9 +542,15 @@ export async function crucibleCapabilityWithRoutes(server: string): Promise<Cruc
       shortfallBytes: typeof row['shortfallBytes'] === 'number'
         ? (row['shortfallBytes'] as number)
         : typeof row['shortfall_bytes'] === 'number' ? (row['shortfall_bytes'] as number) : 0,
-      route: route as CrucibleRouteKind,
+      route,
     };
   });
+  /*
+   * A READ OF CAPABILITY IS A READ OF THE ROUTES, so it is recorded. This is
+   * the read coordination makes on every connect (PHASE14 §4a), which is what
+   * fills the scheduler's record without anything polling.
+   */
+  noteCrucibleRoutes(server, routesFromCapability(classes));
   const totalBytes = body['totalBytes'] ?? body['total_bytes'];
   const allowance = body['desktopAllowanceBytes'] ?? body['desktop_allowance_bytes'];
   const backendKind = body['backendKind'] ?? body['backend_kind'];
