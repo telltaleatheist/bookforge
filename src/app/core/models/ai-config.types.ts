@@ -7,7 +7,16 @@
  * - OpenAI (ChatGPT API)
  */
 
-export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local';
+/**
+ * Who runs an AI pass.
+ *
+ * `crucible` matches `AIProvider` in `electron/ai-bridge.ts`, which has had the
+ * provider since phase 2 while this enum did not — so the bridge could run a
+ * cleanup on a Crucible and Settings could not select one. The two lists are
+ * one fact with two spellings (crucible `docs/ARCHITECTURE.md`, R1), and this
+ * is the side that was wrong.
+ */
+export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local' | 'crucible';
 
 export interface OllamaConfig {
   baseUrl: string;
@@ -29,6 +38,21 @@ export interface LocalConfig {
   model?: string;
 }
 
+/**
+ * A Crucible inference server, chosen in Settings → AI.
+ *
+ * `server` NAMES an entry in the registry (or the reserved `local`) — it is not
+ * a URL, and there is no default: a server name is whatever this machine called
+ * that machine. `model` is a Crucible model id, and it must ALREADY BE RESIDENT
+ * when the run starts — a cleanup never loads a model on somebody's card, so a
+ * model that is merely installed is refused by name (`crucible_model_not_resident`).
+ * Making one resident is an operator's act, in Settings → Crucible Servers.
+ */
+export interface CrucibleConfig {
+  server: string;
+  model: string;
+}
+
 export interface AIConfig {
   provider: AIProvider;
   ollama: OllamaConfig;
@@ -36,6 +60,9 @@ export interface AIConfig {
   openai: OpenAIConfig;
   // Bundled llama.cpp. Optional so configs persisted before WS2 still parse.
   local?: LocalConfig;
+  // A Crucible server. Optional and NOT defaulted: neither half is guessable,
+  // so a config that has never chosen one has no entry rather than an empty one.
+  crucible?: CrucibleConfig;
 }
 
 export const DEFAULT_AI_CONFIG: AIConfig = {

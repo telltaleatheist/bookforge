@@ -358,26 +358,12 @@ export interface EpubStructure {
 // AI Types (Multi-provider)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local';
-
-export interface AIProviderConfig {
-  provider: AIProvider;
-  ollama?: {
-    baseUrl: string;
-    model: string;
-  };
-  claude?: {
-    apiKey: string;
-    model: string;
-  };
-  openai?: {
-    apiKey: string;
-    model: string;
-  };
-  local?: {
-    model?: string;
-  };
-}
+// The provider list and its config block are ai-bridge.ts's, imported rather
+// than re-declared: this module compiles to nothing at runtime, so a second
+// spelling here could only ever be a spelling that drifts — and it had already
+// drifted, missing `crucible` for the whole of phase 2.
+import type { AIProvider, AIProviderConfig } from './ai-bridge';
+export type { AIProvider, AIProviderConfig };
 
 // Bundled local AI (llama.cpp) — mirrors electron/llama-bridge.ts shapes.
 export interface LocalAiModel {
@@ -1193,7 +1179,12 @@ export interface ElectronAPI {
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
-    checkProviderConnection: (provider: AIProvider, apiKey?: string) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
+    /**
+     * `crucibleServer` NAMES a registered server (or the reserved `local`) and
+     * is read only by the `crucible` provider, which has no default one —
+     * asking for it without a name is refused by name.
+     */
+    checkProviderConnection: (provider: AIProvider, apiKey?: string, crucibleServer?: string) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
     getOpenAIModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
@@ -2600,8 +2591,8 @@ const electronAPI: ElectronAPI = {
   ai: {
     checkConnection: () =>
       ipcRenderer.invoke('ai:check-connection'),
-    checkProviderConnection: (provider: AIProvider, apiKey?: string) =>
-      ipcRenderer.invoke('ai:check-provider-connection', provider, apiKey),
+    checkProviderConnection: (provider: AIProvider, apiKey?: string, crucibleServer?: string) =>
+      ipcRenderer.invoke('ai:check-provider-connection', provider, apiKey, crucibleServer),
     getModels: () =>
       ipcRenderer.invoke('ai:get-models'),
     getClaudeModels: (apiKey: string) =>

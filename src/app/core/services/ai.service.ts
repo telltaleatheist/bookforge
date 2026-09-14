@@ -101,9 +101,23 @@ export class AiService {
   readonly checking = this._checking.asReadonly();
   readonly checkedOnce = this._checkedOnce.asReadonly();
 
+  /**
+   * A Crucible server AND a model have been chosen (Settings → AI).
+   *
+   * Configured is not the same as reachable, and this says the weaker thing on
+   * purpose: whether that model is still resident is the server's answer at run
+   * time, asked then and refused by name then — a banner that polled a machine
+   * across the room to decide whether to say "ready" would be stale by the time
+   * anyone read it.
+   */
+  readonly crucibleConfigured = computed(() => {
+    const cfg = this.settings.getAIConfig();
+    return !!cfg.crucible?.server?.trim() && !!cfg.crucible?.model?.trim();
+  });
+
   /** AI is available if ANY source is configured. */
   readonly available = computed(() =>
-    this.hasApiKey() || this._ollamaHasModels() || this._localUsable()
+    this.hasApiKey() || this._ollamaHasModels() || this._localUsable() || this.crucibleConfigured()
   );
 
   constructor() {

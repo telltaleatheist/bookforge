@@ -10,7 +10,18 @@ import { StudioItem } from '../../models/studio.types';
 import { AnalysisCategory, DEFAULT_ANALYSIS_CATEGORIES } from '../../analysis-categories';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 
-type AnalysisProvider = Exclude<AIProvider, 'local'>;
+/**
+ * The providers this modal actually has a model list and a credential for,
+ * named POSITIVELY.
+ *
+ * It was `Exclude<AIProvider, 'local'>`, which is a definition by subtraction:
+ * every provider added to the app joined this modal silently, with no model
+ * list, no credential and no branch in `selectProvider` — `crucible` was the
+ * one that made that concrete. `Extract` keeps the tie to `AIProvider` (a
+ * rename there still breaks here) and says what is supported rather than what
+ * is not. `isAnalysisProvider` has always enumerated exactly these three.
+ */
+type AnalysisProvider = Extract<AIProvider, 'ollama' | 'claude' | 'openai'>;
 
 interface AnalysisAISelection {
   provider: AnalysisProvider;
@@ -211,7 +222,7 @@ export class StudioAnalysisModalComponent {
   readonly close = output<void>();
   readonly queued = output<void>();
 
-  readonly provider = signal<Exclude<AIProvider, 'local'>>('ollama');
+  readonly provider = signal<AnalysisProvider>('ollama');
   readonly model = signal('');
   readonly ollamaConnected = signal(false);
   readonly ollamaModels = signal<{ value: string; label: string }[]>([]);

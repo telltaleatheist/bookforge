@@ -2057,13 +2057,27 @@ export class ElectronService {
   // window can enqueue into the same queue — so there is nothing left to hand off.
 
   // AI operations
-  async checkAIConnection(provider: 'ollama' | 'claude' | 'openai', apiKey?: string): Promise<{
+  /**
+   * Ask one provider whether it can be used, and what models it would offer.
+   *
+   * `crucibleServer` names a registered Crucible (or the reserved `local`). It
+   * is the parameter the IPC handler deliberately never passed while the CLI
+   * was the only consumer of that provider; a `crucible` check without it is
+   * refused by name rather than answered about some other machine. For the
+   * Crucible provider the `models` that come back are the RESIDENT ones —
+   * anything else would be a promise a cleanup run then refuses to keep.
+   */
+  async checkAIConnection(
+    provider: 'ollama' | 'claude' | 'openai' | 'local' | 'crucible',
+    apiKey?: string,
+    crucibleServer?: string,
+  ): Promise<{
     available: boolean;
     error?: string;
     models?: string[];
   }> {
     if (this.isElectron) {
-      const result = await (window as any).electron.ai.checkProviderConnection(provider, apiKey);
+      const result = await (window as any).electron.ai.checkProviderConnection(provider, apiKey, crucibleServer);
       if (result.success && result.data) {
         return result.data;
       }

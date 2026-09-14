@@ -7050,14 +7050,21 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // `crucibleServer` is the parameter this handler deliberately never passed
+  // while the CLI was phase 2's only consumer (crucible docs/PHASE5-APPS.md
+  // section 2 calls passing it "the smallest possible first step"). It names a
+  // registered server, or the reserved `local`; asking for the `crucible`
+  // provider without it is refused BY NAME rather than answered about some other
+  // machine, which is why there is no default here either.
   ipcMain.handle('ai:check-provider-connection', async (
     _event,
-    provider: 'ollama' | 'claude' | 'openai',
-    apiKey?: string
+    provider: 'ollama' | 'claude' | 'openai' | 'local' | 'crucible',
+    apiKey?: string,
+    crucibleServer?: string
   ) => {
     try {
       const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.checkProviderConnection(provider, apiKey);
+      const result = await aiBridge.checkProviderConnection(provider, apiKey, crucibleServer);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };

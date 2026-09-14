@@ -7,6 +7,7 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AiService, LocalModel, LocalSystemInfo, LocalModelProgress } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
+import type { CrucibleModelRow } from '@shared/crucible/settings-wire';
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
@@ -14,9 +15,12 @@ import {
 } from '@shared/vlm/conversion';
 
 /**
- * AI Setup wizard (WS2). One page, three sources of AI for OCR cleanup:
+ * AI Setup wizard (WS2). One page, four sources of AI for OCR cleanup:
  *   • Bundled local AI (llama.cpp) — download a Cogito model, hardware-recommended.
  *   • Ollama — detected if running; configured in Settings → AI.
+ *   • Crucible — a server from Settings → Crucible Servers, and a model that is
+ *     already RESIDENT on it. The provider has existed in `ai-bridge.ts` since
+ *     phase 2 with no way to select it; this card is that way.
  *   • API key (Claude / OpenAI) — entered inline, saved to settings.
  *
  * Reachable from the nav rail (/ai-setup) and surfaced on first run by
@@ -166,6 +170,72 @@ import {
         <div class="card-actions">
           <desktop-button variant="ghost" size="sm" (click)="openExternal('https://ollama.com/download')">Get Ollama</desktop-button>
         </div>
+      </section>
+
+      <!-- ── Crucible ── -->
+      <section class="card">
+        <div class="card-head">
+          <h2>&#128225; Crucible</h2>
+          <span class="tag">One inference server, this machine's or another's</span>
+        </div>
+
+        @if (crucibleServers().length === 0) {
+          <p class="muted">
+            No Crucible server is enabled for this machine. Add one — or enable one — in
+            Settings &rarr; Crucible Servers. This app never starts a server and never loads a
+            model on one: both are the operator's, on purpose.
+          </p>
+        } @else {
+          <p class="muted">
+            A cleanup runs on the model that is ALREADY resident on the server you pick. Nothing
+            here loads one: a load takes that machine's card, so it is done deliberately in
+            Settings &rarr; Crucible Servers.
+          </p>
+
+          <div class="ollama-url-row">
+            <label class="ollama-url-label">Server</label>
+            <select class="key-input" [value]="crucibleServer()" (change)="setCrucibleServer($any($event.target).value)">
+              <option value="">Choose a server…</option>
+              @for (name of crucibleServers(); track name) {
+                <option [value]="name">{{ name }}</option>
+              }
+            </select>
+            <desktop-button variant="ghost" size="sm" [disabled]="!crucibleServer() || crucibleTesting()" (click)="testCrucible()">
+              {{ crucibleTesting() ? 'Testing…' : 'Test' }}
+            </desktop-button>
+          </div>
+
+          @if (crucibleServer()) {
+            <div class="ollama-url-row">
+              <label class="ollama-url-label">Model</label>
+              <select class="key-input" [value]="crucibleModel()" (change)="setCrucibleModel($any($event.target).value)">
+                <option value="">Choose a model…</option>
+                @for (m of crucibleModels(); track m.id) {
+                  <option [value]="m.id">{{ m.id }} — {{ modelState(m) }}</option>
+                }
+              </select>
+            </div>
+            @if (chosenModel(); as m) {
+              @if (!m.resident) {
+                <p class="vlm-status bad">
+                  {{ m.id }} is not resident on {{ crucibleServer() }}, so a cleanup run will refuse
+                  by name. @if (!m.loadable) { The server says: {{ m.reason }} } @else { Load it in
+                  Settings &rarr; Crucible Servers. }
+                </p>
+              }
+            }
+          }
+
+          @if (crucibleStatus(); as status) {
+            <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
+          }
+
+          @if (crucibleServer() && crucibleModel() && !usingCrucible()) {
+            <div class="use-row">
+              <desktop-button variant="primary" (click)="useCrucible()">Use this Crucible for cleanup</desktop-button>
+            </div>
+          }
+        }
       </section>
 
       <!-- ── Reading pages (Convert to EPUB) ── -->
@@ -396,6 +466,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const cfg = this.settings.getAIConfig();
     if (cfg.claude?.apiKey?.trim()) parts.push('Claude key');
     if (cfg.openai?.apiKey?.trim()) parts.push('OpenAI key');
+    if (this.ai.crucibleConfigured()) parts.push(`Crucible ${cfg.crucible?.server}/${cfg.crucible?.model}`);
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
 
@@ -452,6 +523,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       }
     });
     await this.reload();
+    await this.loadCrucibleServers();
     this.sysInfo.set(await this.ai.systemInfo());
   }
 
@@ -512,6 +584,134 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
   setProvider(provider: 'local'): void {
     this.settings.updateAIConfig({ provider });
+  }
+
+  // ── Crucible: a server from the registry, and a model that is RESIDENT ────
+  //
+  // The two pickers are separate facts with separate owners: the server list is
+  // Settings → Crucible Servers' (enabled entries only — a disabled server is
+  // one the queue may not use, and offering it here would be offering work to a
+  // machine the operator switched off), and the model list is the SERVER's, with
+  // its own four facts per row. Neither is defaulted: a server name is whatever
+  // this machine called that machine, and a model id is whatever that host has
+  // manifests for.
+  //
+  // RULING OWED: a queue ROW does not carry a Crucible server yet — the job
+  // configs still carry provider + model + credentials and nothing else, so a
+  // queued cleanup cannot yet name one. That field is 2.5's (`waitFor` per row,
+  // crucible docs/PHASE7-LANES.md §4.2.1), and until it lands this choice is the
+  // app's standing AI selection, honoured by the doors that take an
+  // AIProviderConfig directly.
+
+  /** Enabled servers, in rank order. Disabled ones are not offered. */
+  readonly crucibleServers = signal<string[]>([]);
+  readonly crucibleModels = signal<CrucibleModelRow[]>([]);
+  readonly crucibleStatus = signal<{ ok: boolean; message: string } | null>(null);
+  readonly crucibleTesting = signal(false);
+
+  readonly usingCrucible = computed(() => this.settings.getAIConfig().provider === 'crucible');
+
+  crucibleServer(): string { return this.settings.getAIConfig().crucible?.server ?? ''; }
+  crucibleModel(): string { return this.settings.getAIConfig().crucible?.model ?? ''; }
+
+  /** The chosen model's row, so the card can say what is wrong with it. */
+  readonly chosenModel = computed<CrucibleModelRow | null>(() => {
+    const id = this.settings.getAIConfig().crucible?.model;
+    if (!id) return null;
+    return this.crucibleModels().find((m) => m.id === id) ?? null;
+  });
+
+  /** The four facts, as one phrase. Never collapsed into "available". */
+  modelState(m: CrucibleModelRow): string {
+    if (m.resident) return 'resident';
+    if (!m.backendSupported) return `not supported on this backend — ${m.reason ?? 'no reason given'}`;
+    if (!m.installed) return `not installed — ${m.reason ?? 'no reason given'}`;
+    if (!m.loadable) return `installed, not loadable — ${m.reason ?? 'no reason given'}`;
+    return 'installed, loadable — not resident';
+  }
+
+  /** The enabled servers, from the same record the Servers row edits. */
+  private async loadCrucibleServers(): Promise<void> {
+    const res = await this.electron.crucible.servers();
+    if (!res.success || !res.data) {
+      // Not "no servers": that is a different sentence with a different fix.
+      this.crucibleStatus.set({
+        ok: false,
+        message: res.error ?? 'The Crucible server list could not be read, and nothing said why.',
+      });
+      return;
+    }
+    this.crucibleServers.set(res.data.routing.ranked.filter((row) => row.enabled).map((row) => row.name));
+    const chosen = this.settings.getAIConfig().crucible?.server;
+    if (chosen) await this.loadCrucibleModels(chosen);
+  }
+
+  private async loadCrucibleModels(server: string): Promise<void> {
+    const res = await this.electron.crucible.models(server);
+    if (!res.success || !res.data) {
+      this.crucibleModels.set([]);
+      this.crucibleStatus.set({
+        ok: false,
+        message: res.error ?? `Asking "${server}" for its models failed and said nothing about why.`,
+      });
+      return;
+    }
+    if (res.data.outcome !== 'ok') {
+      this.crucibleModels.set([]);
+      this.crucibleStatus.set({ ok: false, message: res.data.message });
+      return;
+    }
+    this.crucibleModels.set(res.data.models);
+  }
+
+  setCrucibleServer(server: string): void {
+    const current = this.settings.getAIConfig().crucible;
+    // The model belongs to the server it was listed from, so changing the server
+    // clears it rather than carrying an id the new machine may not have.
+    this.settings.updateAIConfig({ crucible: { server, model: server === current?.server ? (current?.model ?? '') : '' } });
+    this.crucibleStatus.set(null);
+    this.crucibleModels.set([]);
+    if (server) void this.loadCrucibleModels(server);
+  }
+
+  setCrucibleModel(model: string): void {
+    const server = this.settings.getAIConfig().crucible?.server ?? '';
+    this.settings.updateAIConfig({ crucible: { server, model } });
+    this.crucibleStatus.set(null);
+  }
+
+  /**
+   * The connection check, through the provider itself — ping, then the model
+   * list over the bearer token, which is what tells "wrong address" from "wrong
+   * token" and reports only what is RESIDENT.
+   */
+  async testCrucible(): Promise<void> {
+    const server = this.crucibleServer();
+    if (!server) return;
+    this.crucibleTesting.set(true);
+    try {
+      const answer = await this.electron.checkAIConnection('crucible', undefined, server);
+      this.crucibleStatus.set({
+        ok: answer.available,
+        message: answer.available
+          ? (answer.models && answer.models.length > 0
+            ? `"${server}" is serving ${answer.models.join(', ')}.`
+            : `"${server}" answered, and nothing is resident on it — a cleanup would be refused until a model is loaded.`)
+          : (answer.error ?? 'The check failed and said nothing about why.'),
+      });
+      await this.loadCrucibleModels(server);
+    } finally {
+      this.crucibleTesting.set(false);
+    }
+  }
+
+  /** Make this the app's AI. The model must be resident when a run starts. */
+  useCrucible(): void {
+    const server = this.crucibleServer();
+    const model = this.crucibleModel();
+    if (!server || !model) return;
+    this.settings.updateAIConfig({ provider: 'crucible', crucible: { server, model } });
+    void this.ai.refresh();
   }
 
   /** True when a non-empty key is saved for the provider. Reads the settings
