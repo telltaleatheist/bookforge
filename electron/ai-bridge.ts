@@ -2384,6 +2384,20 @@ async function crucibleModelRows(server: string): Promise<ModelInfo[]> {
  * it. Never loads it — see the section header.
  */
 async function assertCrucibleModelResident(server: string, model: string): Promise<void> {
+  /*
+   * AN UPSTREAM MODEL IS NEVER RESIDENT, and that is not a failure to check.
+   *
+   * crucible `docs/PHASE15-HOST.md` §3.4 says it in the server's own refusal:
+   * *"an upstream model is never resident; send the chat."* `GET /v1/models`
+   * lists what this host has MANIFESTS for, so `anthropic/claude-sonnet-5` is
+   * not in it and never will be — asking would refuse `crucible_unknown_model`
+   * and tell somebody to `--crucible-load` a thing that cannot be loaded.
+   *
+   * Same discriminator as the lease guard, through the same function, for the
+   * same reason: two readings of "what does an upstream model id look like"
+   * would be two chances to disagree.
+   */
+  if (isUpstreamModelId(model)) return;
   const rows = await crucibleModelRows(server);
   const row = rows.find((m) => m.id === model);
   if (!row) {

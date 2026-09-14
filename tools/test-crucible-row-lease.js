@@ -712,5 +712,28 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
       'the guard must come BEFORE the lease is taken; after it, the refusal has already happened');
   });
 
+  await check('an UPSTREAM-routed act is not asked to be RESIDENT either', async () => {
+    /*
+     * The other half of the same sentence (§3.4): *"an upstream model is never
+     * resident; send the chat."* `GET /v1/models` lists what a host has
+     * manifests for, so `anthropic/claude-sonnet-5` is not in it and never
+     * will be — and the preflight would have refused `crucible_unknown_model`
+     * and told somebody to `--crucible-load` a thing that cannot be loaded.
+     *
+     * Source-read at the guard, and the ORDER matters here too: the early
+     * return has to precede the `/v1/models` read, or the round trip is made
+     * and its answer thrown away.
+     */
+    const bridge = fs.readFileSync(path.join(REPO, 'electron', 'ai-bridge.ts'), 'utf-8');
+    const fn = bridge.indexOf('async function assertCrucibleModelResident');
+    assert.ok(fn > 0, 'the residency preflight is gone — read why before deleting this check');
+    const end = bridge.indexOf(String.fromCharCode(10) + '}', fn);
+    const body = bridge.slice(fn, end);
+    const skip = body.indexOf('isUpstreamModelId(model)');
+    const read = body.indexOf('crucibleModelRows(');
+    assert.ok(skip > 0, 'the residency preflight asks an upstream model to be resident');
+    assert.ok(skip < read, 'the skip must precede the /v1/models read, not follow it');
+  });
+
     summary('crucible row lease');
 })();
