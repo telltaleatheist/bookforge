@@ -76,6 +76,7 @@ import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow } from './runtime';
+import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 interface AlignProgressEvent {
   jobId: string;
@@ -224,12 +225,26 @@ export const alignStep: StepModule = {
     });
 
     try {
+      /*
+       * THE RUN'S VENUE, NOT A NEW DECISION. `waitForResolved` is the server the
+       * queue admitted this run to — the one its render went to — or the legacy
+       * marker; a step follows it (PHASE7-LANES.md §4.4, one book = one GPU).
+       * Absent (a standalone row, or a job whose steps do not travel), the job
+       * reads the session's own record and only then decides.
+       */
+      const resolved = ctx.job.waitForResolved;
+      const runVenue = resolved === undefined || resolved === WAIT_FOR_ANY
+        ? undefined
+        : resolved === LEGACY_LOCAL_NARRATOR
+          ? { where: 'legacy-local-narrator' as const }
+          : { where: 'crucible' as const, server: resolved };
       const result = await runCoverageAlign(
         ctx.stepId,
         {
           processDir,
           language,
           device,
+          ...(runVenue === undefined ? {} : { runVenue }),
           // The assembly's ruler, passed through rather than defaulted here —
           // see the field's own note. Absent resolves to the house gap inside
           // the job, which is what the assembly behind this row will use.
@@ -294,6 +309,7 @@ export const alignStep: StepModule = {
           // WHICH MACHINE measured the book — recorded on the row the way a
           // render's saved state records its server.
           alignVenue: result.venue?.where === 'crucible' ? `crucible:${result.venue.server}` : result.venue?.where,
+          alignVenueOrigin: result.venue?.origin,
           chunksAligned: result.chunksAligned,
           chunksFailedCoverage: result.chunksFailed,
           chunksNotPlaced: result.chunksErrored,

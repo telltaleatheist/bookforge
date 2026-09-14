@@ -51,8 +51,12 @@ const coverage = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job
 const registerFake = fakeNamer(servers);
 const { check, summary } = makeChecker();
 
-/** A session: four chunks over two chapters; 1 is marker-only, 2 has no FLAC. */
-function freshSession() {
+/**
+ * A session: four chunks over two chapters; 1 is marker-only, 2 has no FLAC.
+ * `renderedOn` writes the render's venue into `session_state.json` the way
+ * `parallel-tts-bridge.decideAndRememberVenue` persists it.
+ */
+function freshSession(renderedOn) {
   const dir = path.join(work, `session-${Math.random().toString(36).slice(2)}`);
   const sentences = path.join(dir, 'chapters', 'sentences');
   fs.mkdirSync(sentences, { recursive: true });
@@ -63,6 +67,12 @@ function freshSession() {
     ],
   }));
   for (const index of [0, 1, 3]) fs.writeFileSync(path.join(sentences, `${index}.flac`), `fLaC-${index}`);
+  if (renderedOn !== undefined) {
+    fs.writeFileSync(path.join(dir, 'session_state.json'), JSON.stringify({
+      sessionId: 'abc', processDir: dir, runs: [],
+      settings: { ttsEngine: 'higgs', fineTuned: 'mistborn', crucible: { server: renderedOn } },
+    }));
+  }
   return dir;
 }
 
@@ -71,11 +81,32 @@ const ITEMS = {
   3: [{ text: 'The road', start: 0.2, end: 0.9 }, { text: 'turned', start: 1.0, end: 1.4 }, { text: 'north.', start: 1.5, end: 1.9 }],
 };
 
-/** The fake align server. `behaviour`: 'run' | 'busy'. Chunk 3 is reported failed. */
+/**
+ * The fake align server. `behaviour`: 'run' | 'busy' | 'no-align' (a Mac: the
+ * capability is off, `qwen3-aligner` has no mlx-darwin block). Chunk 3 is
+ * reported failed.
+ */
 function startFake(behaviour) {
   return startFakeCrucible(async (req, res, ctx) => {
     const { state, send, sseWriter, url } = ctx;
     const route = url.pathname;
+
+    if (route === '/v1/info' && req.method === 'GET') {
+      state.infoAsked = (state.infoAsked || 0) + 1;
+      const capabilities = behaviour === 'no-align'
+        ? [{ job_type: 'echo', models: [] }, { job_type: 'tts', models: [] }]
+        : [{ job_type: 'echo', models: [] }, { job_type: 'align', models: [
+          { id: 'qwen3-aligner', revision: 'c7cbfc20', source: 'Qwen/Qwen3-ForcedAligner-0.6B', resident: false, vram_bytes: 1 },
+        ] }];
+      send(res, 200, {
+        server: { name: 'fake-crucible', version: '0.5.0', api_version: 1 },
+        host: { platform: behaviour === 'no-align' ? 'darwin' : 'linux', arch: 'arm64',
+          backend: behaviour === 'no-align' ? 'mlx-darwin' : 'cuda-linux', gpu: { vendor: 'x', name: 'fake', vram_bytes: 1 } },
+        job_types: ['echo'],
+        capabilities,
+      });
+      return true;
+    }
 
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
@@ -199,6 +230,7 @@ async function happyPath() {
     await fake.close();
   }
   await check('one job for the session: every FLAC under <index>.flac, chunks as {index, text}, the model, the language', () => {
+    assert.strictEqual(fake.state.infoAsked, 1, 'the server was asked whether it offers align BEFORE the uploads');
     assert.deepStrictEqual(fake.state.uploads.map((u) => u.filename).sort(), ['0.flac', '3.flac']);
     assert.strictEqual(fake.state.uploads.find((u) => u.filename === '3.flac').bytes.toString(), 'fLaC-3');
     assert.strictEqual(fake.state.submitted.length, 1);
@@ -248,7 +280,8 @@ async function venueDoor() {
     await check('the legacy switch runs the local spawn and the result says so', () => {
       assert.strictEqual(localCalls, 1);
       assert.strictEqual(result.success, true);
-      assert.deepStrictEqual(result.venue, { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' });
+      assert.deepStrictEqual(result.venue,
+        { where: 'legacy-local-narrator', origin: 'decided here', because: 'the legacy local-render switch is on' });
     });
   }
   {
@@ -272,8 +305,152 @@ async function venueDoor() {
         result.error);
       assert.ok(/narrator align --alignment/.test(result.error), 'the owed build is named');
       assert.strictEqual(result.alignmentPath, path.join(dir, 'alignment.json'));
-      assert.deepStrictEqual(result.venue, { where: 'crucible', server, because: 'the top-ranked server' });
+      assert.deepStrictEqual(result.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
       assert.strictEqual(result.busyLine, undefined);
+    });
+  }
+  {
+    // THE LIVE FINDING (2026-09-14): a run rendered on `mac` had its alignment
+    // decide its own venue and land on `local`. Here the session's record says
+    // the render went to one fake; the routing record ranks a DIFFERENT fake
+    // first; the alignment must follow the run and never touch the other.
+    const mac = await startFake('run');
+    const local = await startFake('run');
+    const macName = registerFake(mac.url);
+    const localName = registerFake(local.url);
+    const dir = freshSession(macName);
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-follows-run', config(dir), null, {
+        venueHost: crucibleHost(localName),
+        legacyLocal: async () => { throw new Error('must not spawn locally'); },
+      });
+    } finally {
+      await mac.close();
+      await local.close();
+    }
+    await check('a run whose render resolved to "mac" aligns on "mac" — never on the top-ranked "local"', () => {
+      assert.strictEqual(mac.state.submitted.length, 1, 'the job went where the render went');
+      assert.strictEqual(local.state.submitted.length, 0, 'the top-ranked server was never asked');
+      assert.strictEqual(local.state.uploads.length, 0);
+      assert.deepStrictEqual(result.venue,
+        { where: 'crucible', server: macName, origin: 'the run', because: "the run's venue (session_state.json)" });
+    });
+  }
+  {
+    // The queue row says one server, the session's record another: refused by
+    // name, nothing submitted anywhere.
+    const a = await startFake('run');
+    const b = await startFake('run');
+    const aName = registerFake(a.url);
+    const bName = registerFake(b.url);
+    const dir = freshSession(aName);
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-disagree', config(dir, { runVenue: { where: 'crucible', server: bName } }), null, {
+        venueHost: crucibleHost(bName),
+      });
+    } finally {
+      await a.close();
+      await b.close();
+    }
+    await check('a row whose venue disagrees with the session\'s record is refused by name — two answers for one run', () => {
+      assert.strictEqual(result.success, false);
+      assert.ok(/crucible_align_venue_disagrees/.test(result.error), result.error);
+      assert.strictEqual(a.state.submitted.length + b.state.submitted.length, 0);
+      assert.strictEqual(result.venue, undefined);
+    });
+  }
+  {
+    // A caller naming a server the run did not go to is the same refusal, from the decision.
+    const a = await startFake('run');
+    const aName = registerFake(a.url);
+    const dir = freshSession(aName);
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-named-disagree', config(dir, { crucible: { server: 'somewhere-else' } }), null, {
+        venueHost: crucibleHost(aName),
+      });
+    } finally {
+      await a.close();
+    }
+    await check('a caller naming a server the run did not go to is refused by name (run_venue_disagrees)', () => {
+      assert.strictEqual(result.success, false);
+      assert.ok(/run_venue_disagrees/.test(result.error), result.error);
+      assert.strictEqual(a.state.submitted.length, 0);
+    });
+  }
+  {
+    // The row carries the run's venue (a narration job's waitForResolved) and the
+    // session has no record (rendered before venues were recorded): the row's answer is followed.
+    const a = await startFake('run');
+    const other = await startFake('run');
+    const aName = registerFake(a.url);
+    const otherName = registerFake(other.url);
+    const dir = freshSession();
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-row-venue', config(dir, { runVenue: { where: 'crucible', server: aName } }), null, {
+        venueHost: crucibleHost(otherName),
+      });
+    } finally {
+      await a.close();
+      await other.close();
+    }
+    await check('a row carrying the run\'s venue follows it, and the log says it was the run\'s', () => {
+      assert.strictEqual(a.state.submitted.length, 1);
+      assert.strictEqual(other.state.submitted.length, 0);
+      assert.deepStrictEqual(result.venue,
+        { where: 'crucible', server: aName, origin: 'the run', because: "the run's venue (the queue row)" });
+    });
+  }
+  {
+    // A row whose run was rendered by the legacy narrator aligns locally without re-deciding —
+    // even with the routing record now pointing at a server.
+    const a = await startFake('run');
+    const aName = registerFake(a.url);
+    const dir = freshSession();
+    let localCalls = 0;
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-row-legacy', config(dir, { runVenue: { where: 'legacy-local-narrator' } }), null, {
+        venueHost: crucibleHost(aName),
+        legacyLocal: async () => { localCalls += 1; return { success: true }; },
+      });
+    } finally {
+      await a.close();
+    }
+    await check('a run the legacy narrator rendered aligns with the legacy narrator — the run\'s venue, not the record\'s', () => {
+      assert.strictEqual(localCalls, 1);
+      assert.strictEqual(a.state.submitted.length, 0);
+      assert.deepStrictEqual(result.venue,
+        { where: 'legacy-local-narrator', origin: 'the run', because: "the run's venue (the queue row)" });
+    });
+  }
+  {
+    // The Mac: the run went there, and `align` is off there. Refused BEFORE any
+    // upload, and the refusal says the proportional transcript ships.
+    const mac = await startFake('no-align');
+    const macName = registerFake(mac.url);
+    const dir = freshSession(macName);
+    let result;
+    try {
+      result = await coverage.runCoverageAlign('step-mac', config(dir), null, { venueHost: crucibleHost(macName) });
+    } finally {
+      await mac.close();
+    }
+    await check('a Mac-bound run\'s alignment is refused by name before any upload, and reads as "the proportional transcript ships"', () => {
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(mac.state.infoAsked, 1);
+      assert.strictEqual(mac.state.uploads.length, 0, 'nothing crossed the wire');
+      assert.strictEqual(mac.state.submitted.length, 0);
+      assert.ok(/crucible_align_not_offered/.test(result.error), result.error);
+      assert.ok(/does not offer align/.test(result.error), result.error);
+      assert.ok(/proportional sentence transcript/.test(result.error), 'says what the book carries instead');
+      assert.ok(/rendered audio is intact/.test(result.error));
+      assert.ok(!fs.existsSync(path.join(dir, 'alignment.json')));
+      assert.deepStrictEqual(result.venue,
+        { where: 'crucible', server: macName, origin: 'the run', because: "the run's venue (session_state.json)" });
     });
   }
   {
@@ -340,8 +517,8 @@ async function venueDoor() {
     } finally {
       await fake.close();
     }
-    await check('the caller\'s own server name wins over the legacy switch', () => {
-      assert.deepStrictEqual(result.venue, { where: 'crucible', server: named, because: 'the caller named it' });
+    await check('the caller\'s own server name wins over the legacy switch when the run has no venue yet', () => {
+      assert.deepStrictEqual(result.venue, { where: 'crucible', server: named, origin: 'decided here', because: 'the caller named it' });
       assert.strictEqual(fake.state.submitted.length, 1);
     });
   }

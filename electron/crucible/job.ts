@@ -75,6 +75,7 @@ import type {
   DoneData,
   JobEvent,
   JobInput,
+  ServerInfo,
   WrittenArtifact,
 } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
@@ -225,6 +226,64 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
     );
   }
   return err;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Does this server offer that job type, and that model?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One `GET /v1/info` before anything crosses the wire. The submit would refuse
+ * `job_type_disabled` / `unknown_model` anyway; what this buys is the refusal
+ * BEFORE a 900 MB m4b or 1,400 chunk FLACs go up, with the server's own list
+ * in the message — and, for a host where the type is off (the Mac has no
+ * `align`: no mlx-darwin block for qwen3-aligner), a sentence that says so
+ * rather than a failed job after the uploads.
+ *
+ * It cannot say whether the weights are PULLED: `ModelDescriptor` has no
+ * `installed` field yet (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3 lists it as owed
+ * to Crucible), so that refusal is the submit's `model_not_installed`, by name.
+ *
+ * Codes: `crucible_<type>_not_offered`, `crucible_<type>_model_not_offered`.
+ */
+export async function assertCrucibleModelOffered(
+  client: { info(): Promise<ServerInfo> },
+  server: string,
+  jobType: string,
+  model: string,
+): Promise<void> {
+  let capabilities: ServerInfo['capabilities'];
+  try {
+    ({ capabilities } = await client.info());
+  } catch (err) {
+    throw describeCrucibleJobRefusal(err, server, 'reading /v1/info');
+  }
+  const offered = capabilities.find((c) => c.jobType === jobType);
+  if (offered === undefined) {
+    throw new CrucibleJobRefused(
+      `crucible_${jobType}_not_offered`, server,
+      `crucible "${server}" does not offer ${jobType} (it offers: `
+      + `${capabilities.map((c) => c.jobType).join(', ') || 'nothing'}). Either [jobs] enable_${jobType} `
+      + 'is off there or this host\'s backend has no recipe for it (`crucible doctor` on that host says which).',
+    );
+  }
+  // Rows other than llm/tts are descriptors (`JobCapability`); a capability the
+  // SDK could not read arrives as `RawCapability` with no `id` on its rows, and
+  // that is a protocol disagreement, not "not offered".
+  const ids = offered.models.map((row) => (row as { id?: unknown }).id);
+  if (!ids.every((id): id is string => typeof id === 'string')) {
+    throw new CrucibleJobRefused(
+      'crucible_protocol', server,
+      `crucible "${server}"'s ${jobType} capability rows carry no string id`
+      + `${'unreadable' in offered ? ` (${String((offered as { unreadable: string }).unreadable)})` : ''}.`,
+    );
+  }
+  if (!ids.includes(model)) {
+    throw new CrucibleJobRefused(
+      `crucible_${jobType}_model_not_offered`, server,
+      `crucible "${server}" has no ${jobType} manifest "${model}" (it offers: ${ids.join(', ') || 'none'}).`,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

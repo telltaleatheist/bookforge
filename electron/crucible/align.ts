@@ -76,8 +76,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { JobEvent } from '@crucible/client';
+import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
   CrucibleJobRefused,
+  assertCrucibleModelOffered,
   runCrucibleJob,
   type CrucibleJobProgress,
 } from './job';
@@ -372,6 +374,12 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
     );
   }
   const model = crucibleAlignerFor(options.backend);
+
+  // BEFORE the uploads: a host with no `align` — the Mac, where qwen3-aligner
+  // has no mlx-darwin block and the capability is off — says so now
+  // (`crucible_align_not_offered`), not after a book's worth of FLACs went up.
+  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  await assertCrucibleModelOffered(client, server, 'align', model);
 
   const inputs: Record<string, string> = {};
   for (const chunk of options.chunks) {

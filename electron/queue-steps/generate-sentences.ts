@@ -12,6 +12,7 @@ import { cancelGenerateSentences, startGenerateSentences } from '../generate-sen
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow } from './runtime';
+import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 interface GsProgressEvent {
   jobId: string;
@@ -78,6 +79,15 @@ export const generateSentencesStep: StepModule = {
       'generate-sentences:complete', (e) => e.jobId === ctx.stepId,
     );
 
+    // THE RUN'S VENUE, NOT A NEW DECISION: the server the queue admitted this
+    // run to, or the legacy marker (PHASE7-LANES.md §4.4). Absent — a standalone
+    // press — the bridge decides through the routing record.
+    const resolved = ctx.job.waitForResolved;
+    const runVenue = resolved === undefined || resolved === WAIT_FOR_ANY
+      ? undefined
+      : resolved === LEGACY_LOCAL_NARRATOR
+        ? { where: 'legacy-local-narrator' as const }
+        : { where: 'crucible' as const, server: resolved };
     try {
       await startGenerateSentences(ctx.stepId, win, {
         projectId: config.projectId,
@@ -88,6 +98,7 @@ export const generateSentencesStep: StepModule = {
         method: config.method,
         epubVariantId: config.epubVariantId,
         ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
+        ...(runVenue === undefined ? {} : { runVenue }),
       } as never);
 
       const result = await finished;

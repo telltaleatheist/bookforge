@@ -340,9 +340,10 @@ async function venueDoor() {
     await check('the legacy switch routes to the local spawn and says so', () => {
       assert.strictEqual(localCalls, 1);
       assert.strictEqual(outcome.venue.where, 'legacy-local-narrator');
+      assert.strictEqual(outcome.venue.origin, 'decided here');
       assert.strictEqual(outcome.cues, 7);
       assert.strictEqual(outcome.crucible, undefined);
-      assert.ok(log.some((l) => /local whisper spawn/.test(l) && /legacy/.test(l)), log.join('\n'));
+      assert.ok(log.some((l) => /local whisper spawn/.test(l) && /decided here/.test(l) && /legacy/.test(l)), log.join('\n'));
     });
   }
   {
@@ -363,7 +364,7 @@ async function venueDoor() {
     }
     await check('a routed server routes to the Crucible, never the local spawn, and records the venue', () => {
       assert.strictEqual(localCalls, 0);
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, because: 'the top-ranked server' });
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
       assert.strictEqual(outcome.crucible.jobId, 'job-1');
       assert.ok(fs.existsSync(outVtt));
     });
@@ -383,9 +384,62 @@ async function venueDoor() {
     } finally {
       await fake.close();
     }
-    await check('the caller\'s own server name wins over the legacy switch', () => {
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: named, because: 'the caller named it' });
+    await check('the caller\'s own server name wins over the legacy switch when the run has no venue yet', () => {
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: named, origin: 'decided here', because: 'the caller named it' });
     });
+  }
+  {
+    // THE RUN'S VENUE WINS OVER THE ROUTING RECORD: the row was admitted to one
+    // server; the record now ranks another first; the transcription follows the row.
+    const mine = await startFake('run');
+    const other = await startFake('run');
+    const mineName = registerFake(mine.url);
+    const otherName = registerFake(other.url);
+    const audio = freshAudio('book.m4b');
+    const log = [];
+    let outcome;
+    try {
+      outcome = await asr.transcribeAtVenue({
+        runVenue: { where: 'crucible', server: mineName }, runVenueSource: 'the queue row',
+        host: crucibleHost(otherName),
+        audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
+        legacyLocal: async () => { throw new Error('must not run locally'); },
+        onLog: (l) => log.push(l),
+      });
+    } finally {
+      await mine.close();
+      await other.close();
+    }
+    await check('a run already resolved to one server never transcribes on the top-ranked other, and the log says it was the run\'s', () => {
+      assert.strictEqual(mine.state.submitted.length, 1);
+      assert.strictEqual(other.state.submitted.length, 0);
+      assert.deepStrictEqual(outcome.venue,
+        { where: 'crucible', server: mineName, origin: 'the run', because: "the run's venue (the queue row)" });
+      assert.ok(log.some((l) => /the run: the run's venue \(the queue row\)/.test(l)), log.join('\n'));
+    });
+  }
+  {
+    let localCalls = 0;
+    const outcome = await asr.transcribeAtVenue({
+      runVenue: { where: 'legacy-local-narrator' }, runVenueSource: 'the queue row',
+      host: crucibleHost('never-asked'),
+      audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never.vtt'),
+      legacyLocal: async () => { localCalls += 1; return { cues: 1 }; },
+    });
+    await check('a run the legacy narrator rendered transcribes locally without re-deciding', () => {
+      assert.strictEqual(localCalls, 1);
+      assert.strictEqual(outcome.venue.origin, 'the run');
+    });
+    await assert.rejects(
+      asr.transcribeAtVenue({
+        runVenue: { where: 'crucible', server: 'mac' }, crucible: { server: 'local' },
+        host: crucibleHost('local'),
+        audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never2.vtt'),
+        legacyLocal: async () => { throw new Error('no'); },
+      }),
+      (err) => err.code === 'run_venue_disagrees',
+    );
+    await check('a caller naming a server the run did not go to is refused by name', () => {});
   }
 }
 

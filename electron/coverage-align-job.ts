@@ -109,7 +109,8 @@ import { systemProbe } from './components/system-probe';
 // The venue decision's SHAPES only. The modules themselves are imported lazily
 // inside `runCoverageAlign`, so `coverageAlignArgs` stays loadable by the argv
 // keepers without the routing record, the registry or the network behind it.
-import type { GenerationVenue, VenueHost } from './crucible/generation-venue';
+import type { VenueHost } from './crucible/generation-venue';
+import type { RunVenue, StepVenue } from './crucible/step-venue';
 
 export interface CoverageAlignConfig {
   /**
@@ -157,10 +158,19 @@ export interface CoverageAlignConfig {
    */
   chapterGap?: number;
   /**
-   * THE CALLER'S OWN VENUE: the NAME of a Crucible server (or `local`), when
-   * the caller chose one. Absent, the routing record decides
-   * (`decideWhereGenerationRuns`: the legacy switch, then rank) — the same
-   * decision, in the same order, that places a render.
+   * THE RUN'S ALREADY-RESOLVED VENUE, when the caller has it — a queue row's
+   * `waitForResolved`. The session's own record (`session_state.json`,
+   * `settings.crucible.server`, what the render bridge persists) is read here
+   * regardless; the two must agree. A later step FOLLOWS its run and decides
+   * only when the run has no venue yet — see `venueForRunStep`.
+   */
+  runVenue?: RunVenue;
+  /**
+   * THE CALLER'S OWN INSTRUCTION: the NAME of a Crucible server (or `local`),
+   * when the caller chose one (the CLI's `--crucible-server`). Must agree with
+   * the run's venue when there is one. Absent, and with no run venue, the
+   * routing record decides (`decideWhereGenerationRuns`: the legacy switch,
+   * then rank) — the same decision, in the same order, that places a render.
    */
   crucible?: { server: string };
 }
@@ -200,12 +210,12 @@ export interface CoverageAlignResult {
   error?: string;
   wasStopped?: boolean;
   /**
-   * WHERE the alignment ran, recorded on the run the way a render's venue is
-   * written onto its saved state: `crucible` with the server's name and the
-   * reason it was chosen, or the legacy local narrator. Absent only when the
-   * run failed before the decision (no session on disk, no authorship).
+   * WHERE the alignment ran and WHY — `origin: 'the run'` when it followed the
+   * venue the render already had, `'decided here'` when the run had none.
+   * Absent only when the run failed before the decision (no session on disk,
+   * no authorship, two venues that disagree).
    */
-  venue?: GenerationVenue;
+  venue?: StepVenue;
   /**
    * Present exactly on a Crucible `server_busy`: the SDK's holder line
    * ("GPU busy: foundry, tts 62% done"), so the queue step can HOLD the row
@@ -548,24 +558,58 @@ export async function runCoverageAlign(
     }
   }
 
-  const { decideWhereGenerationRuns, processVenueHost } = await import('./crucible/generation-venue.js');
-  const host = deps.venueHost ?? processVenueHost();
-  let venue: GenerationVenue;
+  /*
+   * THE RUN'S VENUE FIRST, THEN A DECISION — never the other way round.
+   *
+   * Found live, 2026-09-14: a render sent to `mac` was followed by this step
+   * deciding its own venue (top-ranked → `local`) and loading the aligner on
+   * the PC's card, which somebody else owned. A later step FOLLOWS its run
+   * (PHASE7-LANES.md §4.4, one book = one GPU). Two sources of the run's
+   * venue: the session's own record — what the render bridge persisted, and
+   * the one the post-render phase (which passes no venue) reaches — and the
+   * caller's `runVenue` (a queue row's `waitForResolved`). They must agree.
+   */
+  let sessionVenue: RunVenue | undefined;
   try {
-    venue = await decideWhereGenerationRuns(
-      config.crucible === undefined ? undefined : { crucible: config.crucible },
-      host,
-    );
+    sessionVenue = readSessionRunVenue(config.processDir);
   } catch (err) {
-    // `no_enabled_server` / `no_reachable_server` / `crucible_server_not_named`,
-    // in the decision's own words. This job never throws (the post-render
-    // phase's contract), so the refusal is a RESULT.
-    const error = `This alignment has nowhere to run: ${err instanceof Error ? err.message : String(err)}`;
+    const error = `${err instanceof Error ? err.message : String(err)} The rendered audio is intact.`;
+    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error };
+  }
+  if (sessionVenue !== undefined && config.runVenue !== undefined && !sameRunVenue(sessionVenue, config.runVenue)) {
+    const error = 'crucible_align_venue_disagrees: this alignment\'s row says its run went to '
+      + `${describeRunVenue(config.runVenue)}, but the session's own record (session_state.json) says `
+      + `${describeRunVenue(sessionVenue)}. One book, one GPU: two answers for one run are refused, not `
+      + 'ranked. The rendered audio is intact.';
+    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error };
+  }
+  const runVenue = sessionVenue ?? config.runVenue;
+  const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
+
+  const { processVenueHost } = await import('./crucible/generation-venue.js');
+  const { venueForRunStep } = await import('./crucible/step-venue.js');
+  const host = deps.venueHost ?? processVenueHost();
+  let venue: StepVenue;
+  try {
+    venue = await venueForRunStep({
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource }),
+      ...(config.crucible === undefined ? {} : { callerNamed: config.crucible }),
+      host,
+    });
+  } catch (err) {
+    // `run_venue_disagrees` / `no_enabled_server` / `no_reachable_server` /
+    // `crucible_server_not_named`, in the decision's own words. This job never
+    // throws (the post-render phase's contract), so the refusal is a RESULT.
+    const code = err instanceof Error && typeof (err as { code?: unknown }).code === 'string'
+      ? ` (${(err as unknown as { code: string }).code})` : '';
+    const error = `This alignment has nowhere to run${code}: ${err instanceof Error ? err.message : String(err)}`;
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
   console.log(`[COVERAGE-ALIGN] venue: ${
-    venue.where === 'crucible' ? `crucible "${venue.server}"` : 'the legacy local narrator'} (${venue.because})`);
+    venue.where === 'crucible' ? `crucible "${venue.server}"` : 'the legacy local narrator'} — ${venue.origin}: ${venue.because}`);
 
   if (venue.where === 'legacy-local-narrator') {
     const local = deps.legacyLocal ?? runCoverageAlignLocally;
@@ -574,6 +618,46 @@ export async function runCoverageAlign(
   }
   const result = await runCoverageAlignOnCrucible(stepId, config, mainWindow, venue.server);
   return { ...result, venue };
+}
+
+/**
+ * The venue this session's render was given, out of the session's own record —
+ * `<processDir>/session_state.json` → `settings.crucible.server`, which
+ * `parallel-tts-bridge.decideAndRememberVenue` writes for a Crucible render and
+ * leaves absent for a legacy one. Absent file or absent field is "the run has
+ * no recorded venue" (a session rendered before venues were recorded, or by
+ * the local narrator); a present-but-malformed field is refused by name.
+ *
+ * This is the source the POST-RENDER phase reaches: it calls `runCoverageAlign`
+ * with no venue of its own, and the session is the run.
+ */
+export function readSessionRunVenue(processDir: string): RunVenue | undefined {
+  const file = path.join(processDir, 'session_state.json');
+  if (!fs.existsSync(file)) return undefined;
+  let state: { settings?: { crucible?: unknown } };
+  try {
+    state = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch (err) {
+    throw new Error(`${file} is not valid JSON, so this run's venue cannot be read: ${
+      err instanceof Error ? err.message : String(err)}`);
+  }
+  const crucible = state?.settings?.crucible;
+  if (crucible === undefined) return undefined;
+  const server = (crucible as { server?: unknown })?.server;
+  if (typeof server !== 'string' || server.trim() === '') {
+    throw new Error(`${file} carries settings.crucible without a server name (${JSON.stringify(crucible)}); `
+      + 'the run\'s venue is unreadable and is not guessed.');
+  }
+  return { where: 'crucible', server: server.trim() };
+}
+
+function sameRunVenue(a: RunVenue, b: RunVenue): boolean {
+  if (a.where !== b.where) return false;
+  return a.where === 'crucible' && b.where === 'crucible' ? a.server === b.server : true;
+}
+
+function describeRunVenue(v: RunVenue): string {
+  return v.where === 'crucible' ? `crucible "${v.server}"` : 'the legacy local narrator';
 }
 
 /**
@@ -680,7 +764,15 @@ async function runCoverageAlignOnCrucible(
       return { success: false, error, wasStopped: true };
     }
     if (err instanceof CrucibleJobRefused) {
-      return fail(`${err.message} The rendered audio is intact.`,
+      // A refusal READS AS A REFUSAL, and says what it costs: no measurement, so
+      // the audiobook carries the proportional sentence transcript exactly as a
+      // session with no coverage report always has (`sentence_vtt.proportional_cues`).
+      // The Mac is the live case — `align` is off there (qwen3-aligner has no
+      // mlx-darwin block), so a Mac-bound run's alignment lands here by name.
+      return fail(
+        `${err.message} The rendered audio is intact; no coverage report was written, and the `
+        + 'audiobook is assembled with the proportional sentence transcript, as it is for any session '
+        + 'without one.',
         err.busyLine === undefined ? {} : { busyLine: err.busyLine });
     }
     if (err instanceof CrucibleAlignRefused) {

@@ -60,19 +60,14 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ServerInfo } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
-  CrucibleJobRefused,
-  describeCrucibleJobRefusal,
+  assertCrucibleModelOffered,
   runCrucibleJob,
   type CrucibleJobProgress,
 } from './job';
-import {
-  decideWhereGenerationRuns,
-  type GenerationVenue,
-  type VenueHost,
-} from './generation-venue';
+import type { VenueHost } from './generation-venue';
+import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The model id table
@@ -353,58 +348,6 @@ export function transcriptToVtt(parsed: unknown): { vtt: string; cues: number; t
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The check half of the table: does this server offer that model?
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * One `GET /v1/info` before the audiobook crosses the wire. The submit would
- * refuse `unknown_model` / `job_type_disabled` anyway; what this buys is the
- * refusal BEFORE a 900 MB upload, with the server's own list in the message.
- *
- * It cannot say whether the weights are PULLED: `ModelDescriptor` has no
- * `installed` field yet (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3 lists it as owed
- * to Crucible), so that refusal is the submit's `model_not_installed`, by name.
- */
-export async function assertCrucibleAsrModelOffered(
-  client: { info(): Promise<ServerInfo> },
-  server: string,
-  model: string,
-): Promise<void> {
-  let capabilities: ServerInfo['capabilities'];
-  try {
-    ({ capabilities } = await client.info());
-  } catch (err) {
-    throw describeCrucibleJobRefusal(err, server, 'reading /v1/info');
-  }
-  const asr = capabilities.find((c) => c.jobType === 'asr');
-  if (asr === undefined) {
-    throw new CrucibleJobRefused(
-      'crucible_asr_not_offered', server,
-      `crucible "${server}" offers no asr capability (it offers: `
-      + `${capabilities.map((c) => c.jobType).join(', ') || 'nothing'}). Enable [jobs] enable_asr and `
-      + '`crucible install asr` on that host, or transcribe locally.',
-    );
-  }
-  // `asr` rows are descriptors (`JobCapability`). The SDK carries a capability
-  // whose rows it could not read as `RawCapability`; an asr row with no string
-  // id is that case, and it is a protocol disagreement, not "not offered".
-  const ids = asr.models.map((row) => (row as { id?: unknown }).id);
-  if (!ids.every((id): id is string => typeof id === 'string')) {
-    throw new CrucibleJobRefused(
-      'crucible_protocol', server,
-      `crucible "${server}"'s asr capability rows carry no string id`
-      + `${'unreadable' in asr ? ` (${String((asr as { unreadable: string }).unreadable)})` : ''}.`,
-    );
-  }
-  if (!ids.includes(model)) {
-    throw new CrucibleJobRefused(
-      'crucible_asr_model_not_offered', server,
-      `crucible "${server}" has no asr manifest "${model}" (it offers: ${ids.join(', ') || 'none'}).`,
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // The job
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -477,8 +420,11 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
   // ffmpeg reads the container from (`AsrOptions.filename`).
   const filename = path.basename(audioPath);
 
+  // BEFORE the upload: a server with no asr, or without this manifest, says so
+  // now rather than after 900 MB have crossed (`crucible_asr_not_offered`,
+  // `crucible_asr_model_not_offered`).
   const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-  await assertCrucibleAsrModelOffered(client, server, model);
+  await assertCrucibleModelOffered(client, server, 'asr', model);
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-crucible-asr-'));
   try {
@@ -566,7 +512,15 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface TranscribeAtVenueOptions {
-  /** The caller's own server name, when it named one (the CLI's `--crucible-server`, a resumed row). */
+  /**
+   * THE RUN'S ALREADY-RESOLVED VENUE, when the caller has one — the queue row's
+   * `waitForResolved`. A later step FOLLOWS its run (PHASE7-LANES.md §4.4, one
+   * book = one GPU) and decides only when the run has no venue yet.
+   */
+  readonly runVenue?: RunVenue;
+  /** Where `runVenue` was read from, for the log. */
+  readonly runVenueSource?: string;
+  /** The caller's own server name, when it named one (the CLI's `--crucible-server`). Must agree with `runVenue`. */
   readonly crucible?: { readonly server: string };
   /** The routing record and the network — `processVenueHost()` in the app, a fixture in a keeper. */
   readonly host: VenueHost;
@@ -586,34 +540,38 @@ export interface TranscribeAtVenueOptions {
 }
 
 export interface TranscribeAtVenueOutcome {
-  readonly venue: GenerationVenue;
+  /** Where it ran, and whether that was the run's answer or one decided here. */
+  readonly venue: StepVenue;
   readonly cues: number;
   /** Present when a Crucible did the work. */
   readonly crucible?: CrucibleAsrOutcome;
 }
 
 /**
- * Decide where this transcription runs and run it there.
+ * Where this transcription runs, and run it there.
  *
- * ONE decision, the same one the render and the Listen path make
- * (`decideWhereGenerationRuns`: the caller named it → the legacy switch →
- * the routing record), so the machine that transcribes a book is chosen the way
- * the machine that renders one is. There is no second switch and no fallback:
- * with the legacy switch off and no server reachable, this THROWS with the
- * reason, and the row fails saying which server it could not reach.
+ * The run's venue when it has one (`venueForRunStep`), else ONE decision, the
+ * same one the render and the Listen path make (`decideWhereGenerationRuns`:
+ * the caller named it → the legacy switch → the routing record), so the
+ * machine that transcribes a book is chosen the way the machine that renders
+ * one is. There is no second switch and no fallback: with the legacy switch off
+ * and no server reachable, this THROWS with the reason, and the row fails
+ * saying which server it could not reach.
  */
 export async function transcribeAtVenue(options: TranscribeAtVenueOptions): Promise<TranscribeAtVenueOutcome> {
   const log = options.onLog ?? (() => undefined);
-  const venue = await decideWhereGenerationRuns(
-    options.crucible === undefined ? undefined : { crucible: options.crucible },
-    options.host,
-  );
+  const venue = await venueForRunStep({
+    ...(options.runVenue === undefined ? {} : { runVenue: options.runVenue }),
+    ...(options.runVenueSource === undefined ? {} : { runVenueSource: options.runVenueSource }),
+    ...(options.crucible === undefined ? {} : { callerNamed: options.crucible }),
+    host: options.host,
+  });
   if (venue.where === 'legacy-local-narrator') {
-    log(`transcription runs on the local whisper spawn (${venue.because})`);
+    log(`transcription runs on the local whisper spawn — ${venue.origin}: ${venue.because}`);
     const local = await options.legacyLocal();
     return { venue, cues: local.cues };
   }
-  log(`transcription runs on crucible "${venue.server}" (${venue.because})`);
+  log(`transcription runs on crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
   const crucible = await runCrucibleAsr({
     server: venue.server,
     audioPath: options.audioPath,

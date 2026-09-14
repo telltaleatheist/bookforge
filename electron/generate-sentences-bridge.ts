@@ -68,6 +68,12 @@ export interface GenerateSentencesConfig {
    * `electron/crucible/align.ts`'s header for why it is not ported).
    */
   crucible?: { server: string };
+  /**
+   * THE RUN'S ALREADY-RESOLVED VENUE (a queue row's `waitForResolved`), when
+   * the caller has one. A later step follows its run and decides only when the
+   * run has no venue yet (`venueForRunStep`); `crucible` must agree with it.
+   */
+  runVenue?: { where: 'crucible'; server: string } | { where: 'legacy-local-narrator' };
 }
 
 interface ActiveJob {
@@ -397,6 +403,7 @@ export async function startGenerateSentences(
     try {
       const outcome = await transcribeAtVenue({
         ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
+        ...(config.runVenue === undefined ? {} : { runVenue: config.runVenue, runVenueSource: 'the queue row' }),
         host: processVenueHost(),
         audioPath: m4bPath,
         whisperModelId: config.modelId,
@@ -426,7 +433,7 @@ export async function startGenerateSentences(
         },
       });
       venue = venueLabel(outcome.venue);
-      glog(`[generate-sentences] transcribed at ${venue}: ${outcome.cues} cue(s)`
+      glog(`[generate-sentences] transcribed at ${venue} (${outcome.venue.origin}: ${outcome.venue.because}): ${outcome.cues} cue(s)`
         + (outcome.crucible ? ` (crucible job ${outcome.crucible.jobId}, ${outcome.crucible.model}@${outcome.crucible.revision})` : ''));
     } catch (err) {
       // A cancel that reached the server comes back as the job's `cancelled`

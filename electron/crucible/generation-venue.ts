@@ -75,7 +75,9 @@ export type CrucibleVenueErrorCode =
   /** `settings.crucible` is present and names no server. */
   | 'crucible_server_not_named'
   /** `any`, and not one enabled server answered. Names each one tried. */
-  | 'no_reachable_server';
+  | 'no_reachable_server'
+  /** A later step was named a server its run did not go to. See {@link venueForRunStep}. */
+  | 'run_venue_disagrees';
 
 export class CrucibleVenueError extends Error {
   readonly code: CrucibleVenueErrorCode;
