@@ -6,7 +6,7 @@ import { FormsModule } from '@angular/forms';
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
-import type { CrucibleProbeResult } from '@shared/crucible/settings-wire';
+import type { CrucibleProbeResult, LocalServerVia } from '@shared/crucible/settings-wire';
 import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
 import { coordinationWords } from './crucible-words';
 import type {
@@ -85,9 +85,10 @@ const LOCAL_ENGINE = 'local';
                   <strong>{{ p.host.local.serverName }}</strong> at {{ p.host.local.url }}
                 </p>
                 <p class="hint">
-                  Read from <code>{{ p.host.local.configPath }}</code>{{ p.host.local.via === 'wsl' ? ' inside WSL' : '' }}
-                  every time this app asks, so no copy of its key is kept here. It is the engine
-                  BookForge will use, and BookForge has already made sure it has what it needs.
+                  {{ localSourceWords(p.host.local.via) }}
+                  <code>{{ p.host.local.configPath }}</code> every time this app asks, so no copy
+                  of its key is kept here. It is the engine BookForge will use, and BookForge has
+                  already made sure it has what it needs.
                 </p>
                 <!--
                   NOTHING TO PRESS. A local engine is not a decision (the brief
@@ -266,27 +267,53 @@ const LOCAL_ENGINE = 'local';
         <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="readPairing()">
           {{ busy() === 'paste' ? 'Reading…' : 'Read it' }}
         </desktop-button>
-        <span class="hint">
-          One connect code from that machine's engine console fills all three below. Nothing is
-          saved until you press Add.
-        </span>
+        <span class="hint">{{ pasteHintWords() }}</span>
       </div>
       @if (pairingRefusal(); as r) {
         <p class="bad"><span class="code">{{ r.code }}</span> {{ r.detail }}</p>
       }
 
-      <label class="field">
-        <span class="flabel">Name</span>
-        <input type="text" placeholder="mac" [(ngModel)]="draftName" name="cruDoorName" />
-      </label>
-      <label class="field">
-        <span class="flabel">Address</span>
-        <input type="text" placeholder="http://192.168.68.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
-      </label>
-      <label class="field">
-        <span class="flabel">Access key</span>
-        <input type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" name="cruDoorToken" />
-      </label>
+      <!--
+        THE TYPED TRIPLE IS THE OPERATOR'S DOOR, AND ONLY THAT.
+
+        crucible docs/PHASE15-HOST.md section 5.1 gives connecting exactly
+        three ways, and none of them is a person transcribing a 43-character
+        secret: the pairing file on this machine, a PASTED connect code for one
+        elsewhere, or "get one on this machine". So the SETUP STEP offers the
+        paste box and nothing else - a wizard that puts an "Access key" field
+        in front of somebody meeting the app for the first time has asked them
+        for a thing they have no way to know.
+
+        In SETTINGS the three fields stay, and that is not an inconsistency:
+        somebody there is an operator repairing an entry, working from an
+        address and a token they already have, possibly for a server whose
+        page they cannot reach to copy a line from. The audit's section 3.13
+        row keeps them fillable by hand for exactly that reason.
+      -->
+      @if (mode() === 'doors') {
+        <label class="field">
+          <span class="flabel">Name</span>
+          <input type="text" placeholder="mac" [(ngModel)]="draftName" name="cruDoorName" />
+        </label>
+        <label class="field">
+          <span class="flabel">Address</span>
+          <input type="text" placeholder="http://192.168.68.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
+        </label>
+        <label class="field">
+          <span class="flabel">Access key</span>
+          <input type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" name="cruDoorToken" />
+        </label>
+      } @else if (draftUrl && draftName) {
+        <!--
+          WHAT THE CODE SAID, so Add is not blind. The fields are not drawn on
+          this step, so without this a person would be pressing Add on
+          something they never saw - and a connect code carries a NAME, which
+          is how this machine will refer to that engine for ever after.
+        -->
+        <p class="hint">
+          That code is for <strong>{{ draftName }}</strong> at <code>{{ draftUrl }}</code>.
+        </p>
+      }
       <div class="actions">
         <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="test()">
           {{ busy() === 'test' ? 'Testing…' : 'Test' }}
@@ -755,6 +782,35 @@ export class CrucibleDoorsComponent {
   }
 
   /** The one sentence about coordination. Every word of it is in one file. */
+  /**
+   * WHICH OF THE TWO DOORS "the engine on this machine" CAME THROUGH.
+   *
+   * Since phase 15 there are two (crucible docs/PHASE15-HOST.md section 3.6):
+   * the connect code the engine, or the Windows host, wrote beside its config,
+   * and the config.toml itself - read directly on macOS and Linux, and through
+   * wsl.exe on Windows. They are different artefacts written by different
+   * parts of the system, so the row says which one answered rather than
+   * calling both "read from".
+   */
+  localSourceWords(via: LocalServerVia): string {
+    if (via === 'pairing') return 'Found the connect code this engine left at';
+    if (via === 'wsl') return 'Read, inside WSL, from';
+    return 'Read from';
+  }
+
+  /**
+   * What "Read it" promises, which differs by where this component is mounted.
+   *
+   * On the setup step the three fields are not drawn at all (see the template),
+   * so promising that a code "fills all three below" would name controls that
+   * are not there.
+   */
+  pasteHintWords(): string {
+    return this.mode() === 'doors'
+      ? 'One connect code from that engine console fills all three below. Nothing is saved until you press Add.'
+      : 'Open the engine console on that machine and copy its connect code. Nothing is saved until you press Add.';
+  }
+
   words(state: CrucibleCoordinationState): string {
     return coordinationWords(state);
   }
