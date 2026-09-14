@@ -229,6 +229,10 @@ const STATE = path.join(TMP, 'state');
       // Nothing in flight → the countdown runs out and the descriptor goes.
       await until(() => !sessions.get(token).handle, 3000, 'the idle descriptor to be released');
       assert.strictEqual(sessions.get(token).snapshotPath, undefined);
+      // The flag clears before the close and the rm finish (so a returning player
+      // re-pins at once); the release itself is what says the directory is gone.
+      // Asserting on the flag alone was a race that lost under keeper-suite load.
+      await sessions.get(token).releasing;
       assert.ok(!fs.existsSync(snapshotDir), 'the snapshot outlived the descriptor that held it');
       assert.ok(sessions.get(token), 'the TOKEN must survive its descriptor');
 

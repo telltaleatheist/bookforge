@@ -164,6 +164,12 @@ interface AnalysisStreamSession {
   lastUsedAt: number;
   // Armed whenever activeStreams falls to zero; disarmed when one comes back.
   idleTimer?: ReturnType<typeof setTimeout>;
+  // The release in flight, from the moment `handle`/`snapshotPath` are cleared
+  // until the descriptor is closed AND the snapshot directory is gone. The fields
+  // are cleared first so a returning player re-pins at once instead of reading a
+  // descriptor mid-close; this is how anything that needs the resources actually
+  // gone (server stop, a keeper) waits for that rather than for the flag.
+  releasing?: Promise<void>;
 }
 
 /** One ebook variant of a project (edition/language/format), for the ebooks picker. */
@@ -855,16 +861,29 @@ export class BookshelfServer {
       clearTimeout(session.idleTimer);
       session.idleTimer = undefined;
     }
-    if (!session.handle && !session.snapshotPath) return;
+    if (!session.handle && !session.snapshotPath) {
+      // Nothing held — but a release may still be finishing; wait for it, so a
+      // second caller (server stop after an idle fire) sees the directory gone.
+      await session.releasing;
+      return;
+    }
     const handle = session.handle;
     const snapshotPath = session.snapshotPath;
     session.handle = undefined;
     session.snapshotPath = undefined;
     session.verifiedStat = undefined;
     console.log(`[BookshelfServer] Analysis stream descriptor released (${reason}): ${session.filePath}`);
-    await handle?.close().catch(() => {});
-    if (snapshotPath) {
-      await fs.rm(path.dirname(snapshotPath), { recursive: true, force: true }).catch(() => {});
+    const done = (async () => {
+      await handle?.close().catch(() => {});
+      if (snapshotPath) {
+        await fs.rm(path.dirname(snapshotPath), { recursive: true, force: true }).catch(() => {});
+      }
+    })();
+    session.releasing = done;
+    try {
+      await done;
+    } finally {
+      if (session.releasing === done) session.releasing = undefined;
     }
   }
 
