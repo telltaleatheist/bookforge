@@ -261,6 +261,23 @@ const SUITES = [
   // operator's progress bar. Skips the byte comparison BY NAME on a machine
   // with no crucible checkout.
   'test-crucible-module-file',
+  // COORDINATION, and the button that is not there (crucible
+  // docs/PHASE14-ENVPACKS.md section 4a, 2026-09-14). "Set up for BookForge"
+  // is deleted: presence of the app is the request, so every connect makes
+  // sure that engine has what BookForge needs. The defect this guards is the
+  // obvious implementation — posting the idempotent module on every connect —
+  // which is CORRECT and still wrong, because a Crucible runs one task at a
+  // time: two apps starting together collide on `task_busy`, and a book
+  // rendering refuses its own app with `server_busy` over a task whose every
+  // entry would have come back `skipped`. So the read comes first and is
+  // pinned here at ZERO posts, beside the three answers a post can get that
+  // are each a different act — `task_busy` FOLLOWED rather than re-posted,
+  // `server_busy` waited out with the holder verbatim and a settle read off
+  // the server's own `accepts_work`, and a refusal about the REQUEST failing
+  // ONCE by name and remembered. Plus the surface: the button's label is gone
+  // from every renderer source, the wizard's connected face offers nothing to
+  // press, and every job type the module asks for has words a person can read.
+  'test-crucible-coordinate',
   // The FIFTH act, and the one that is not a text act (rollout tier 3,
   // 2026-09-14). Page reading moves onto Crucible as an ENDPOINT rather than as
   // a job, because `pages` is a capability class whose `job_type` is `llm` —
