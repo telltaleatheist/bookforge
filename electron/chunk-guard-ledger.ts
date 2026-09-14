@@ -76,7 +76,12 @@ export type ChunkGuardSource =
   | 'narrator-stdout'
   /** A Crucible `tts` job's `chunk` event, whose `guard` is narrator's own
    *  verdict object forwarded verbatim by the server. */
-  | 'crucible-chunk';
+  | 'crucible-chunk'
+  /** A Crucible STREAMING session's `done` frame — the Listen path (Play tab,
+   *  the browser extension, the Bookshelf Reader) through
+   *  `electron/crucible/stream.ts`. That door carries NO verdict, by ruling; see
+   *  {@link recordCrucibleStreamRow}. */
+  | 'crucible-stream';
 
 /**
  * Why a chunk's verdict is `null`. Three genuinely different pieces of news, and
@@ -114,7 +119,20 @@ export type ChunkGuardUnknownReason =
    * `@crucible/client` containing crucible commit b232e3a and a pin bump — no
    * BookForge code change.
    */
-  | 'sdk-drops-the-field';
+  | 'sdk-drops-the-field'
+  /**
+   * The row came down the Crucible STREAMING door, which is unguarded BY RULING
+   * and carries no verdict at all — not null, not absent: the frame has no
+   * field for one. Owen, 2026-09-13 (crucible/ttsstream.py's header, verbatim):
+   * *"streaming can stay unguarded. it needs speed over all else. i believe
+   * it's been unguarded this whole time."* And docs/CRUCIBLE_ROLLOUT_PLAN.md
+   * ruling 3: *Listen never re-rolls — the verdict is recorded, not acted on.*
+   *
+   * Its own reason rather than `narrator-did-not-say`, because that one means
+   * the engine LOOKED and the pin could not carry the answer; here nothing
+   * looked, and a Listen summary must not read as a render whose pin is stale.
+   */
+  | 'stream-unguarded';
 
 /** What the ledger knows about one chunk. ONE shape, whichever path rendered it. */
 export interface ChunkGuardRecord {
@@ -343,6 +361,59 @@ export function recordGuardEvent(
     band: null,
     takes: existing ? [...existing.takes, event] : [event],
     source: 'narrator-stdout',
+  });
+}
+
+/**
+ * THE STREAMING FEED. One `done` frame off a Crucible streaming session
+ * (`crucible/ttsstream.py`, PHASE3-TTS.md section 7).
+ *
+ * **There is no verdict on this door, and this writer does not invent one.**
+ * The frame is `{id, seconds, chars, chars_per_sec, capped, cancelled}` — the
+ * server's own measurements of the row, and nothing the engine judged, because
+ * the streaming door renders every row unguarded by Owen's ruling (see
+ * `stream-unguarded` above). So the record is: verdict UNKNOWN for that named
+ * reason, and the frame kept VERBATIM in `takes` as the only evidence the door
+ * emits. `capped` in particular is worth keeping — `null` there means "narrator
+ * did not say" and is never to be read as `false` (the SDK's own doctrine) — and
+ * it is kept exactly as the server sent it, never summarised into a word.
+ *
+ * `index` is NOT a book chunk index. A Listen session has no book: rows are
+ * ordinals within the Crucible session (the caller's own counter), unique for
+ * the life of that session, because two read-ahead blocks would otherwise both
+ * have a "sentence 0" and one would overwrite the other.
+ *
+ * RULING OWED (docs/CRUCIBLE_ROLLOUT_PLAN.md section 3, "what a Listen verdict
+ * is for, beyond the record"): today the session's ledger is summarised to the
+ * log and dropped when the session closes (`electron/crucible/stream.ts`);
+ * nothing persists it, because no analytics entry exists for a Listen the way
+ * `job-analytics.json` exists for a render.
+ */
+export function recordCrucibleStreamRow(
+  renderId: string,
+  row: {
+    readonly index: number;
+    readonly seconds: number;
+    readonly chars: number;
+    readonly charsPerSec: number | null;
+    readonly capped: boolean | null;
+    readonly cancelled: boolean;
+  },
+): void {
+  const where = `crucible stream done frame for session ${renderId}`;
+  const index = requireIndex(row.index, where);
+  if (typeof row.capped !== 'boolean' && row.capped !== null) {
+    throw new ChunkGuardShapeError(`${where} row ${index}`,
+      `"capped" is ${JSON.stringify(row.capped)}, neither a boolean nor null`);
+  }
+  ledgerFor(renderId).set(index, {
+    index, verdict: null, unknownReason: 'stream-unguarded',
+    clean: null, parts: null, band: null,
+    takes: [{
+      index, seconds: row.seconds, chars: row.chars, chars_per_sec: row.charsPerSec,
+      capped: row.capped, cancelled: row.cancelled,
+    }],
+    source: 'crucible-stream',
   });
 }
 

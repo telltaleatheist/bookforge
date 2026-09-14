@@ -42,6 +42,10 @@ import { higgsMlxBackendPresent, narratorNativePython } from './narrator-spawn';
 import { listRenderableHiggsModels } from './higgs-models';
 import { shouldUseWsl2ForHiggs } from './tool-paths';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
+import { CrucibleStreamingEngine, venueRoutedStreamingEngine } from './crucible/stream';
+import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
+import { processVenueHost } from './crucible/generation-venue';
+import { Routing, routingPath } from './crucible/routing';
 
 export type StreamEngineName = 'orpheus' | 'higgs';
 
@@ -305,8 +309,43 @@ const OBSERVABLE: Record<StreamEngineName, StreamingEngine> = {
   higgs: observable(ENGINES.higgs),
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The venue: local narrator, or a Crucible streaming session (2026-09-14)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The Crucible Listen backend — one instance for the process, because a
+ * Crucible holds ONE streaming session and this is the object that holds it.
+ * Exported for the quit path (main.ts closes it beside the local pool) and for
+ * nothing else: every other caller goes through {@link getActiveEngine}, which
+ * is what decides whether this backend or the local pool is answering.
+ */
+export const crucibleListenEngine = new CrucibleStreamingEngine({
+  selectedEngine: getSelectedEngineName,
+  clientFor: (server) => crucibleClientFor(server, CRUCIBLE_CLIENT_NAME),
+});
+
+/**
+ * What every caller reaches: a facade over the two backends, decided at cold
+ * start by `decideWhereGenerationRuns` (crucible/generation-venue.ts — the
+ * SAME decision the audiobook render makes, the ONE legacy switch included).
+ * See crucible/stream.ts for the rules. The three streaming surfaces and the
+ * scheduler call this and cannot tell which backend answered.
+ *
+ * The pre-start default reads the routing FILE only — never `readRouting()`,
+ * whose resolved view reads the local server's config through `wsl.exe` and
+ * is far too slow for a status payload.
+ */
+const VENUE_ROUTED: StreamingEngine = venueRoutedStreamingEngine({
+  local: () => OBSERVABLE[getSelectedEngineName()],
+  crucible: observable(crucibleListenEngine),
+  crucibleEngine: crucibleListenEngine,
+  venue: processVenueHost(),
+  legacySwitchIsOn: () => new Routing(routingPath()).read().legacyLocalRender,
+});
+
 export function getActiveEngine(): StreamingEngine {
-  return OBSERVABLE[getSelectedEngineName()];
+  return VENUE_ROUTED;
 }
 
 /**
@@ -631,8 +670,6 @@ export async function setStreamConfig(updates: {
 export function onActiveEngineState(
   listener: (state: EngineState, isServiceMode: boolean) => void
 ): () => void {
-  return orpheusWorkerPool.onEngineState(() => {
-    const engine = getActiveEngine();
-    listener(engine.getEngineState(), engine.isServiceMode());
-  });
+  // The facade subscribes to BOTH backends and reports the active one's state.
+  return getActiveEngine().onEngineState(listener);
 }

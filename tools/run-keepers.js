@@ -120,6 +120,18 @@ const SUITES = [
   // the local naming, and a 409 server_busy that FAILS the render naming the
   // holder instead of quietly taking this machine's GPU.
   'test-crucible-render',
+  // The Listen path on somebody else's card (rollout tier 3): the three
+  // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
+  // session now stands beside the local narrator, chosen by the SAME venue
+  // decision the render makes (the one legacy switch included). Against a
+  // fake Crucible speaking the stream routes. It pins: open/say/close in
+  // order and on the wire, audio to the consumer in order byte for byte,
+  // every row in the ledger as crucible-stream / stream-unguarded with a
+  // capped row delivered as is (Listen never re-rolls — ruling 3), and the
+  // refusals — stream_session_open, server_busy with the SDK's busyLine,
+  // voice_not_resident, engine_in_use, unreachable — by name, with the local
+  // pool never started instead.
+  'test-crucible-stream',
   // Which servers exist, and which one a render goes to — the two records the
   // Crucible Servers settings row writes (rollout items 2.1, 2.2). Both are
   // credential-adjacent and both are the kind of state whose defects are

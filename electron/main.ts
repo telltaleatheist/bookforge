@@ -13074,6 +13074,18 @@ app.on('before-quit', async (event) => {
     } catch (err) {
       console.error('[MAIN] Failed to end stream TTS session:', err);
     }
+    // The other Listen backend: a Crucible streaming session holds that
+    // server's resident voice until it is closed, and a session abandoned by a
+    // quitting app is 15 s of grace window and then a cancel on the server's
+    // side. One DELETE closes it here instead (crucible/stream.ts).
+    try {
+      const { crucibleListenEngine } = await import('./streaming-engine.js');
+      if (crucibleListenEngine.isSessionActive()) {
+        await crucibleListenEngine.endSession();
+      }
+    } catch (err) {
+      console.error('[MAIN] Failed to close the Crucible Listen session:', err);
+    }
   });
 
   // An AI job (cleanup/simplify) killed mid-flight leaves its model in VRAM for
