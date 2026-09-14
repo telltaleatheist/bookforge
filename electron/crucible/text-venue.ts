@@ -102,7 +102,15 @@ export type CrucibleTextActErrorCode =
   /** It has one, and nothing is serving it. The operator's job, never ours. */
   | 'crucible_model_not_resident'
   /** 409 from the server: the lane, or narrator's wire, is held. */
-  | 'crucible_server_busy';
+  | 'crucible_server_busy'
+  /**
+   * 409 `model_leased`: another client has said it is mid-run on that model, so
+   * nothing may move it off the card — including this act's own lease. A WAIT
+   * with the holder's name, act and since, carried the same way `server_busy` is
+   * (`busyLine` → the queue's `noteStepBusy`), because it is the same question
+   * with a longer clock: a lane frees in minutes, a lease may hold for an hour.
+   */
+  | 'crucible_model_leased';
 
 export class CrucibleTextActError extends Error {
   readonly code: CrucibleTextActErrorCode;
@@ -358,6 +366,56 @@ export async function resolveCrucibleTextEngine(
 }
 
 /**
+ * ── A TEXT ACT IS A RUN, SO IT TAKES A LEASE ───────────────────────────────
+ *
+ * Owen ruled on 2026-09-14 that a Crucible unloads the resident model the moment
+ * nothing holds it. A text act holds nothing the server can see: the engine's
+ * work reaches it as hundreds of ORDINARY CHAT COMPLETIONS through the OpenAI
+ * door, and a chat takes no lane and holds no claim (`crucible/inflight.py`,
+ * deliberately — serialising chats to fix a reporting gap would destroy the
+ * batching a vLLM engine exists for). So between any two blocks of a book this
+ * server is idle by every measure it publishes, and it would unload a 19 GB model
+ * and reload it for the next block.
+ *
+ * ONE LEASE FOR THE WHOLE ACT, not one per request — one per request would BE the
+ * reload, wearing a different hat. It is taken here, around the engine spawn,
+ * because that spawn is exactly the span in which this app intends more requests:
+ * before it there is nothing to protect, and after it there is nothing left to
+ * send.
+ *
+ * The act name is the one {@link resolveCrucibleTextEngine} composed and the
+ * engine sends in `X-Crucible-Act`. One name, two places it must agree, taken
+ * from the same field — a lease that recorded `translate` while the engine sent
+ * `simplify` would put the lie Owen ruled out on a bench beside the card.
+ *
+ * `409 model_leased` on the take is a WAIT and never a retry loop: it arrives as
+ * {@link CrucibleTextActError} `crucible_model_leased` carrying the holder's line,
+ * which is the road the queue's busy hold already travels.
+ */
+export async function withCrucibleTextActLease<T>(
+  engine: CrucibleTextEngine,
+  run: () => Promise<T>,
+): Promise<T> {
+  const { withCrucibleLease } = await import('./lease.js');
+  // Only the TAKE is translated. Once `run` has begun, whatever it throws is the
+  // ACT's own failure and travels with its own stack — dressing an engine crash
+  // as a Crucible refusal would name the wrong thing to fix.
+  let started = false;
+  try {
+    return await withCrucibleLease(
+      { server: engine.server, kind: 'model', id: engine.model, act: engine.act },
+      async () => {
+        started = true;
+        return run();
+      },
+    );
+  } catch (err) {
+    if (started) throw err;
+    throw describeTextActRefusal(err, engine.server, engine.act);
+  }
+}
+
+/**
  * One SDK failure, as a named refusal.
  *
  * `render.ts`'s `describeCrucibleRefusal` is the same job for a render and this
@@ -375,6 +433,21 @@ export function describeTextActRefusal(
   // client does, and this module is loadable from a CLI harness.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleBusy, CrucibleRefused } = require('@crucible/client') as typeof import('@crucible/client');
+  // Required the same way and for the same reason, and by NAME rather than by
+  // code: `model_leased` is a CrucibleRefused subclass, so it must be asked about
+  // before the generic branch below or it would lose the holder's line.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { CrucibleLeased } = require('./lease.js') as typeof import('./lease');
+  if (err instanceof CrucibleLeased) {
+    return new CrucibleTextActError(
+      'crucible_model_leased',
+      `crucible "${server}"'s resident model is leased by another run, so the ${act} act was not `
+        + `started: ${err.leasedLine} (until at least ${err.expiresAt}). A lease is that client `
+        + 'saying it intends more work on this model; nothing here waits it out or loads a model '
+        + 'somewhere else. This book waits for that server.',
+      err.leasedLine,
+    );
+  }
   if (err instanceof CrucibleBusy) {
     return new CrucibleTextActError(
       'crucible_server_busy',

@@ -495,10 +495,20 @@ async function main() {
      * withProcessEndpointHeaders). Legitimate HERE and nowhere in the app: a
      * CLI run is the act, so there is no other child to strip it from.
      */
+    /*
+     * AND ONE LEASE AROUND THE WHOLE ACT (Owen, 2026-09-14: *"Models should
+     * always be unloaded when we're done with them. Every time."*). The engine's
+     * work reaches the server as hundreds of ordinary chat completions, each of
+     * which holds nothing there — so without this the resident model would be
+     * unloaded and reloaded between blocks of one book. `withCrucibleTextActLease`
+     * heartbeats it for the life of the spawn and releases it on success, failure
+     * and Ctrl+C alike. The app's door does exactly this around its own spawn.
+     */
     row = crucible === null
       ? await run()
-      : await require(path.join(BF_DIST, 'crucible', 'text-acts.js'))
-        .withProcessEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run);
+      : await textVenue.withCrucibleTextActLease(crucible, () =>
+        require(path.join(BF_DIST, 'crucible', 'text-acts.js'))
+          .withProcessEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run));
   } finally {
     // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
     // stay.

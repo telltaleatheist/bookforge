@@ -4320,13 +4320,135 @@ async function releaseCleanupModel(config: AIProviderConfig): Promise<void> {
  * @param options.deletedBlockExamples User-marked deletions to use as few-shot examples
  * @param options.useDetailedCleanup Whether to enable detailed cleanup mode
  */
+/**
+ * ── ONE LEASE FOR A CLEANUP RUN ON A CRUCIBLE ──────────────────────────────
+ *
+ * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+ * them. Every time."* A Crucible now unloads the resident model the moment
+ * nothing holds it — no job on the lane, no lease, no streaming session, no chat
+ * in flight (crucible `docs/PHASE7-LANES.md` §5.3).
+ *
+ * A cleanup run is the shape that ruling is dangerous for. It reaches the server
+ * as HUNDREDS OF CHAT COMPLETIONS, one per chunk, and a chat deliberately holds
+ * nothing there: between chunk 46 and chunk 47 the server is idle by every
+ * measure it publishes, so it would unload a 19 GB model and reload it for the
+ * next chunk. The lease is this app saying the one fact only it has — *I intend
+ * more requests on this model* — and it is taken ONCE for the whole run, because
+ * one per chunk would be the reload wearing a different hat.
+ *
+ * It is taken here, outside {@link cleanupEpubRun}, so that the release is in a
+ * `finally` that every one of that function's exits passes through: the four
+ * success returns, the refusals, the cancel, and the failure path. The run's own
+ * body is unchanged and knows nothing about it.
+ *
+ * **Only the `crucible` provider leases, and only when a model will be called.**
+ * Ollama and the local engine are this machine's own and keep their VRAM through
+ * `keep_alive` + `releaseCleanupModel`; a cloud provider has no card. And a
+ * TTS-prep run with structural footnote proof makes no model calls at all
+ * (`noModelNeeded`), so leasing for it would hold somebody's card for a run that
+ * never speaks to them — which is why that fact is decided HERE and handed down
+ * rather than recomputed inside.
+ */
 export async function cleanupEpub(
   epubPath: string,
   jobId: string,
   mainWindow: BrowserWindow | null | undefined,
   onProgress: ((progress: EpubCleanupProgress) => void) | undefined,
   providerConfig: AIProviderConfig,
-  options?: {
+  options?: CleanupEpubOptions,
+): Promise<EpubCleanupResult> {
+  // Does the archived original carry <sup> footnote markup we can delete from
+  // directly? Asked before anything is validated or leased, because the answer
+  // decides whether this job needs a model AT ALL.
+  const archiveHasProof = !!options?.structuralSourceEpub
+    && await archiveHasStructuralMarkers(options.structuralSourceEpub);
+
+  // A TTS-prep-only run over a book with structural proof never contacts the
+  // CLEANUP PROVIDER: pass 1 does not run, and the one provider call pass 2 used to
+  // need (the footnote observation) is gone. Pass 2 may still load the bundled
+  // markers it can prove from markup, and nothing else — no model at all. Validating a provider this job will
+  // never use turns an offline job into one that fails whenever Ollama is wedged —
+  // which is exactly what happened. Conditions mirror the edit-list path so a custom
+  // prompt, detailed deletions or simplify still preflight normally.
+  const noModelNeeded = archiveHasProof
+    && options?.cleanupStages === 'tts'
+    && !options?.simplifyForChildren
+    && !options?.cleanupPrompt
+    && !(options?.useDetailedCleanup && options?.deletedBlockExamples && options.deletedBlockExamples.length > 0);
+  if (noModelNeeded) {
+    console.log('[AI-BRIDGE] TTS prep with structural footnote proof — no model calls in this job, skipping provider preflight');
+  }
+
+  const run = (): Promise<EpubCleanupResult> =>
+    cleanupEpubRun(epubPath, jobId, mainWindow, onProgress, providerConfig, options, noModelNeeded);
+
+  if (providerConfig.provider !== 'crucible' || noModelNeeded) return run();
+
+  // Both halves by name BEFORE the lease. `crucibleConfigOf` throws a refusal
+  // whose message carries its own code; the run's own preflight returns that same
+  // refusal as a result, and this door reports it the same way rather than
+  // throwing where every caller expects a result.
+  let named: { server: string; model: string };
+  try {
+    named = crucibleConfigOf(providerConfig);
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+  const { withCrucibleLease, CrucibleLeased } = await import('./crucible/lease.js');
+  try {
+    return await withCrucibleLease(
+      {
+        server: named.server,
+        // `model` — a cleanup run's resident thing is the LLM on the card. The
+        // kind is stated rather than assumed because a voice and an aligner
+        // become leasable next (see CrucibleLeaseKind).
+        kind: 'model',
+        id: named.model,
+        /*
+         * `clean` — the act named truthfully, which is what goes on the bench
+         * beside the card. A simplify run is still a `clean` act to Crucible: the
+         * four act names are crucible's capability CLASSES (`clean`, `translate`,
+         * `simplify`, `analysis`) and this provider's simplify rewrites through
+         * the same cleanup door with a different prompt, so `simplify` here would
+         * name a class this code path is not. RULING OWED: whether a
+         * `simplifyForChildren` cleanup should lease and label itself `simplify`
+         * once BookForge's simplify has its own act on this path.
+         */
+        act: 'clean',
+        onLog: (line) => console.log(`[AI-CLEANUP] ${line}`),
+      },
+      run,
+    );
+  } catch (err) {
+    // A 409 `model_leased` is a WAIT, not a crash: another client has said it is
+    // mid-run on that model. Reported with the holder's own line, the way every
+    // other refusal on this path is — the message carries a machine-readable code
+    // at its head.
+    if (err instanceof CrucibleLeased) {
+      return {
+        success: false,
+        error: `crucible_model_leased: crucible "${named.server}" holds "${named.model}" for another `
+          + `run — ${err.leasedLine}, until at least ${err.expiresAt}. Nothing here waits it out or `
+          + 'cleans the book somewhere else; run it again when that run is done, or point this job '
+          + 'at another server.',
+      };
+    }
+    /*
+     * Every other failure of the TAKE — unreachable, wrong token, a model that
+     * went between the preflight and the lease — is REPORTED, not thrown, because
+     * that is how this function reports and `cleanupEpubRun` itself never throws
+     * past its own catch. A throw here would reach callers that have only ever
+     * had to read a result. `translateCrucibleError` keeps the server's own code
+     * at the head of the sentence.
+     */
+    const translated = translateCrucibleError(err, named.server);
+    if (translated instanceof Error) return { success: false, error: translated.message };
+    throw translated;
+  }
+}
+
+/** Everything {@link cleanupEpub} takes beyond the five it must have. */
+type CleanupEpubOptions = {
     deletedBlockExamples?: DeletedBlockExample[];
     useDetailedCleanup?: boolean;
     useParallel?: boolean;
@@ -4357,7 +4479,24 @@ export async function cleanupEpub(
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
     chunkSize?: number;  // Override prose chunk size (chars). Default: CHUNK_SIZE (8000).
     temperature?: number;  // Override model sampling temperature. Default: 0.1 (consistent output).
-  }
+};
+
+/**
+ * The cleanup run itself, unchanged. Called only by {@link cleanupEpub}, which
+ * is the door that holds the Crucible lease around it.
+ *
+ * `noModelNeeded` arrives rather than being worked out here: it is the fact that
+ * decides whether this run speaks to a model at all, and the lease has to know it
+ * BEFORE the run starts. One owner, one answer.
+ */
+async function cleanupEpubRun(
+  epubPath: string,
+  jobId: string,
+  mainWindow: BrowserWindow | null | undefined,
+  onProgress: ((progress: EpubCleanupProgress) => void) | undefined,
+  providerConfig: AIProviderConfig,
+  options: CleanupEpubOptions | undefined,
+  noModelNeeded: boolean,
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
   const testMode = options?.testMode || false;
@@ -4405,27 +4544,9 @@ export async function cleanupEpub(
   // providerConfig is required - no fallbacks
   const config = providerConfig;
 
-  // Does the archived original carry <sup> footnote markup we can delete from
-  // directly? Checked here, before the provider is validated, because the answer
-  // decides whether this job needs a model AT ALL.
-  const archiveHasProof = !!options?.structuralSourceEpub
-    && await archiveHasStructuralMarkers(options.structuralSourceEpub);
-
-  // A TTS-prep-only run over a book with structural proof never contacts the
-  // CLEANUP PROVIDER: pass 1 does not run, and the one provider call pass 2 used to
-  // need (the footnote observation) is gone. Pass 2 may still load the bundled
-  // markers it can prove from markup, and nothing else — no model at all. Validating a provider this job will
-  // never use turns an offline job into one that fails whenever Ollama is wedged —
-  // which is exactly what happened. Conditions mirror the edit-list path so a custom
-  // prompt, detailed deletions or simplify still preflight normally.
-  const noModelNeeded = archiveHasProof
-    && options?.cleanupStages === 'tts'
-    && !options?.simplifyForChildren
-    && !options?.cleanupPrompt
-    && !(options?.useDetailedCleanup && options?.deletedBlockExamples && options.deletedBlockExamples.length > 0);
-  if (noModelNeeded) {
-    console.log('[AI-BRIDGE] TTS prep with structural footnote proof — no model calls in this job, skipping provider preflight');
-  }
+  // `noModelNeeded` — whether this job speaks to a model at all — is decided by
+  // `cleanupEpub` above and handed down, because the Crucible lease has to know
+  // it before this run begins. See that function's header.
 
   // Validate provider configuration
   if (noModelNeeded) {

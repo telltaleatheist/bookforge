@@ -279,7 +279,13 @@ export type CruciblePagesErrorCode =
   /** The manifest is served here and does not take pictures. */
   | 'crucible_pages_model_not_image_capable'
   /** Nothing is serving it. The operator's job, never a page read's. */
-  | 'crucible_pages_model_not_resident';
+  | 'crucible_pages_model_not_resident'
+  /**
+   * 409 `model_leased`: another client has said it is mid-run on that server's
+   * resident model, so nothing may move it off the card — including this read's
+   * own lease. A WAIT with the holder's name, act and since, never a retry loop.
+   */
+  | 'crucible_pages_model_leased';
 
 export class CruciblePagesError extends Error {
   readonly code: CruciblePagesErrorCode;
@@ -478,4 +484,61 @@ export async function resolveCruciblePageReader(
     maskedHeaders: maskEndpointHeaders(pagesEndpointHeaderMap(entry.token)),
     fingerprint: row.fingerprint,
   };
+}
+
+/**
+ * ── A PAGE READ IS A RUN, SO IT TAKES A LEASE ──────────────────────────────
+ *
+ * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+ * them. Every time."* A Crucible unloads the resident model the moment no job,
+ * no lease, no streaming session and no chat hold it (crucible
+ * `docs/PHASE7-LANES.md` §5.3).
+ *
+ * A page read holds none of those. §1 of this file's header is the reason: there
+ * is no `vlm-pages` JOB — every page crosses as an ordinary chat completion with
+ * a data-URI PNG in it, twelve in flight, and a chat takes no lane and holds no
+ * claim. A 317-page PDF is 317 requests against one resident `dots-ocr`, and
+ * between any two of them that server is idle by every measure it publishes.
+ * Without this, the model would be unloaded and reloaded around the whole book.
+ *
+ * ONE LEASE FOR THE WHOLE CONVERSION, taken around the spawn — that spawn is
+ * exactly the span in which this app intends more requests. The act is
+ * {@link CRUCIBLE_PAGES_ACT}, the same word the engine sends in
+ * `X-Crucible-Act`: one name from one field, so a bench beside the card cannot
+ * be told one thing while the requests say another.
+ *
+ * `409 model_leased` on the take is a WAIT rendered with the holder's line, and
+ * nothing here waits it out — that decision belongs to whoever pressed the
+ * button, never to a sleep loop in a library (ARCHITECTURE.md R5).
+ */
+export async function withCruciblePagesLease<T>(
+  reader: CruciblePageReader,
+  run: () => Promise<T>,
+): Promise<T> {
+  const { withCrucibleLease, CrucibleLeased } = await import('./lease.js');
+  // Only the TAKE is translated: once `run` has begun, what it throws is the
+  // conversion's own failure and keeps its stack.
+  let started = false;
+  try {
+    return await withCrucibleLease(
+      { server: reader.server, kind: 'model', id: reader.model, act: reader.act },
+      async () => {
+        started = true;
+        return run();
+      },
+    );
+  } catch (err) {
+    if (started) throw err;
+    if (err instanceof CrucibleLeased) {
+      throw new CruciblePagesError(
+        'crucible_pages_model_leased',
+        `crucible "${reader.server}"'s resident model is leased by another run, so the pages were `
+        + `not read there: ${err.leasedLine} (until at least ${err.expiresAt}). A lease is that `
+        + 'client saying it intends more work on this model; nothing here waits it out, loads a '
+        + 'model, or quietly reads the pages on this machine instead. Try again when that run is '
+        + 'done, or pick another server.',
+      );
+    }
+    throw err;
+  }
 }

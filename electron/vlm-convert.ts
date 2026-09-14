@@ -93,6 +93,7 @@ import {
   foundryTooOldForCruciblePages,
   processPagesVenueHost,
   resolveCruciblePageReader,
+  withCruciblePagesLease,
   type CruciblePageReader,
   type PagesVenueHost,
 } from './crucible/pages';
@@ -894,10 +895,28 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     // The ROUTE is the single authority on where the pages go. `route.endpoint`
     // is a typed endpoint or the Crucible base the plan composed; `wsl-server`
     // is the only case whose URL is not known until the server is up.
-    return await convertWith(
-      reader !== null ? { url: reader.url, model: reader.model, concurrency: 0 }
-        : route.kind === 'endpoint' ? route.endpoint
-          : null);
+    const endpoint = reader !== null
+      ? { url: reader.url, model: reader.model, concurrency: 0 }
+      : route.kind === 'endpoint' ? route.endpoint
+        : null;
+    /*
+     * ── ONE LEASE FOR THE WHOLE CONVERSION, AND ONLY ON A CRUCIBLE ───────────
+     *
+     * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+     * them. Every time."* A page read holds nothing a Crucible can see — there is
+     * no `vlm-pages` job, every page crosses as an ordinary chat completion, and a
+     * chat takes no lane and holds no claim. So between page 40 and page 41 that
+     * server would see an idle card and unload `dots-ocr`, then reload it. The
+     * lease is this app saying the one fact only it has: it intends more requests
+     * on this model. See `electron/crucible/pages.ts`.
+     *
+     * A typed endpoint and the legacy WSL server lease nothing: neither is a
+     * Crucible, and the WSL reader's own `release()` below is what hands that card
+     * back.
+     */
+    return crucible === null
+      ? await convertWith(endpoint)
+      : await withCruciblePagesLease(crucible, () => convertWith(endpoint));
   } finally {
     // On success, on failure and on cancellation alike — this is what takes the
     // server down and hands the 20 GB and the GPU arbiter to whatever the queue

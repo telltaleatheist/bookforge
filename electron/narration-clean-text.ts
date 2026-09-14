@@ -638,8 +638,9 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
    * exactly what it was: Foundry's settings endpoint, and BookForge's own text
    * server bracketed around the run when that endpoint is ours.
    */
-  const { decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost } =
-    await import('./crucible/text-venue.js');
+  const {
+    decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost, withCrucibleTextActLease,
+  } = await import('./crucible/text-venue.js');
   const venueHost = processTextVenueHost();
   const venue = await decideWhereTextActRuns(opts.crucibleServer, venueHost);
   const crucible = venue.where === 'crucible'
@@ -748,7 +749,21 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
 
   let result;
   try {
-    result = await runFoundry(args, {
+    /*
+     * ── ONE LEASE FOR THE WHOLE CLEAN, AND ONLY ON A CRUCIBLE ────────────────
+     *
+     * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+     * them. Every time."* A Crucible now unloads the resident model the moment no
+     * job, no lease, no streaming session and no chat hold it — and this engine's
+     * work arrives there as hundreds of ordinary chat completions, each of which
+     * holds nothing. Without the lease the model would be unloaded and reloaded
+     * between blocks of one book. It is taken around THIS spawn because this spawn
+     * is exactly the span in which this app intends more requests.
+     *
+     * A local run leases nothing: there is no server to tell, and the text-server
+     * bracket above is what holds that card.
+     */
+    const spawnEngine = (): ReturnType<typeof runFoundry> => runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       /*
        * THE CREDENTIAL, ON THIS CHILD AND NO OTHER. `runFoundry` merges this
@@ -770,6 +785,9 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
         console.log(`[NARRATION-TEXT] ${line}`);
       },
     });
+    result = crucible === null
+      ? await spawnEngine()
+      : await withCrucibleTextActLease(crucible, spawnEngine);
   } finally {
     if (bracketed) noteTextQueueIdle(settings.keepWarmMinutes);
   }

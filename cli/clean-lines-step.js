@@ -321,7 +321,15 @@ async function runCleanLines(opts, deps) {
   const t0 = Date.now();
   let result;
   try {
-    result = await d.runFoundry(args, {
+    /*
+     * ONE LEASE FOR THE WHOLE ACT, and only on a Crucible (Owen, 2026-09-14:
+     * *"Models should always be unloaded when we're done with them. Every
+     * time."*). The engine's blocks arrive there as ordinary chat completions,
+     * which hold nothing, so between any two of them the server would see an idle
+     * card and unload the model this run is using. The lease is what says
+     * otherwise; it is released on success and failure alike.
+     */
+    const spawnEngine = () => d.runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       // The credential, on THIS child and no other: `runFoundry` merges an
       // overlay for one spawn (crucible docs/PHASE7-LANES.md section 7.1(B)).
@@ -336,6 +344,9 @@ async function runCleanLines(opts, deps) {
         if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
       },
     });
+    result = crucible === null
+      ? await spawnEngine()
+      : await d.withCrucibleTextActLease(crucible, spawnEngine);
   } finally {
     // Success or failure alike: a failed run must hand the card back exactly as a
     // finished one does.
@@ -408,6 +419,9 @@ function defaultDeps() {
     processTextVenueHost: textVenue.processTextVenueHost,
     decideWhereTextActRuns: textVenue.decideWhereTextActRuns,
     resolveCrucibleTextEngine: textVenue.resolveCrucibleTextEngine,
+    // One lease for the whole act. Only reached when the venue IS a Crucible —
+    // a local run has no server to tell it intends more requests.
+    withCrucibleTextActLease: textVenue.withCrucibleTextActLease,
     profileForKind: textServer.profileForKind,
     ensureTextServer: textServer.ensureTextServer,
     noteTextQueueBusy: textServer.noteTextQueueBusy,

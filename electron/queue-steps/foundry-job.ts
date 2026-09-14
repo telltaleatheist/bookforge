@@ -307,6 +307,16 @@ export const foundryJobStep: StepModule = {
           }
           throw named2;
         }
+        /*
+         * NO LEASE HERE, AND IT IS NOT AN OMISSION. Every Crucible venue on this
+         * path has just been refused `hosted_engine_takes_no_per_run_env` — the
+         * hosted step cannot give the engine an environment, so it never runs a
+         * text act against a Crucible at all, and a lease taken for a run that
+         * cannot happen would hold somebody's card for nothing. The day Foundry's
+         * `runEngine` takes an overlay and that refusal goes, the spawn below is
+         * what must be wrapped in `withCrucibleTextActLease` — one lease for the
+         * whole act, exactly as `narration-clean-text.ts` does it.
+         */
         const line = `[foundry-job] ${act} runs on crucible "${crucible.server}" `
           + `(${venue.because}) at ${crucible.endpoint}, model ${crucible.model}, `
           + `headers ${crucible.maskedHeaders}`;
