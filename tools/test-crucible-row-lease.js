@@ -735,5 +735,46 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
     assert.ok(skip < read, 'the skip must precede the /v1/models read, not follow it');
   });
 
+  await check('the ENGINE door skips the same machinery, and refuses a load that cannot happen', async () => {
+    /*
+     * `resolveCrucibleTextEngine` composes what a Foundry engine spawn needs,
+     * and it proved the model RESIDENT before handing it over. For an upstream
+     * model there is nothing on a card to prove — it is the same §3.4 sentence
+     * a third time — so it returns the endpoint and the header map without the
+     * two round trips.
+     *
+     * `loadFirst` is REFUSED rather than skipped: a caller that asked for a
+     * model to be warmed asked for a thing that cannot happen, and silently
+     * not doing it is how a person concludes the warm-up is slow.
+     */
+    const venue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-venue.js'));
+    const asked = { models: 0, loads: 0 };
+    const host = {
+      view: () => ({ ranked: [{ name: 'mac', enabled: true }], newJobsWaitFor: 'any', legacyLocalRender: false, unknown: [] }),
+      enabled: () => [{ name: 'mac', enabled: true }],
+      ping: async () => ({ reachable: true }),
+      server: () => ({ name: 'mac', url: 'http://mac:7100', token: 'test-token-abcd', source: 'registry' }),
+      models: async () => { asked.models += 1; return []; },
+      loadModel: async () => { asked.loads += 1; },
+      capability: async () => ({
+        backendKind: 'cuda-linux', totalBytes: 1, desktopAllowanceBytes: 1,
+        classes: [{ capability: 'translate', enabled: true, selected: 'anthropic/claude-sonnet-5', reason: 'routed', shortfallBytes: 0, route: 'upstream' }],
+      }),
+    };
+    const engine = await venue.resolveCrucibleTextEngine('translate', 'mac', host, { reach: 'spawn' });
+    assert.strictEqual(engine.model, 'anthropic/claude-sonnet-5');
+    assert.strictEqual(engine.endpoint, 'http://mac:7100/openai');
+    assert.strictEqual(asked.models, 0, 'it asked /v1/models about a model that is never in it');
+    assert.ok(engine.maskedHeaders.includes('****abcd'), 'the act still travels, masked in logs');
+
+    let caught = null;
+    try {
+      await venue.resolveCrucibleTextEngine('translate', 'mac', host, { reach: 'spawn', loadFirst: true });
+    } catch (err) { caught = err; }
+    assert.ok(caught !== null, 'loadFirst on an upstream model was silently ignored');
+    assert.strictEqual(caught.code, 'crucible_upstream_not_loadable');
+    assert.strictEqual(asked.loads, 0);
+  });
+
     summary('crucible row lease');
 })();

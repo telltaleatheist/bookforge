@@ -77,6 +77,7 @@ import {
   crucibleChatBase,
   endpointHeadersEnv,
   endpointHeaderMap,
+  isUpstreamModelId,
   maskEndpointHeaders,
   type CrucibleTextAct,
 } from './text-acts';
@@ -101,6 +102,13 @@ export type CrucibleTextActErrorCode =
   | 'crucible_capability_disabled'
   /** The row says enabled and names no model — a record contradicting itself. */
   | 'crucible_capability_no_model'
+  /**
+   * A caller asked to LOAD a model the engine forwards to an upstream. There
+   * is nothing on that card to load (crucible PHASE15 §3.4: "an upstream model
+   * is never resident; send the chat"), so the ask is refused rather than
+   * quietly ignored — somebody wanted a model warmed and it will not be.
+   */
+  | 'crucible_upstream_not_loadable'
   /** A caller named `crucible` and no server. */
   | 'crucible_server_not_named'
   /** `any`, and not one enabled server answered. Names each one tried. */
@@ -414,7 +422,14 @@ export interface CrucibleTextEngine {
   server: string;
   /** `--endpoint`: `<url>/v1/openai`. */
   endpoint: string;
-  /** `--model`: the Crucible id chosen for this act, proved resident. */
+  /**
+   * `--model`: the id chosen for this act by the SERVER's capability record.
+   *
+   * Proved RESIDENT when it is a local model. An upstream model id
+   * (`<upstream>/<model>`) is returned without that proof and deliberately so:
+   * it is never resident, the engine forwards the request, and there is
+   * nothing on a card to have proved (crucible PHASE15 §3.4).
+   */
   model: string;
   /** The act, named truthfully. Goes in `X-Crucible-Act`. */
   act: CrucibleTextAct;
@@ -458,6 +473,47 @@ export async function resolveCrucibleTextEngine(
    * naming what a person would do about it, and never invents an id.
    */
   const model = modelFromCapability(await host.capability(server), act, server);
+
+  /*
+   * AN UPSTREAM-ROUTED CLASS SKIPS ALL OF THE RESIDENCY MACHINERY BELOW.
+   *
+   * crucible `docs/PHASE15-HOST.md` §3.4: a chat whose model is
+   * `<upstream>/<model>` is forwarded on the operator's account, with *"no
+   * lease, no lane, the settlement untouched (nothing was on the card)"*, and
+   * a lease or a load naming one is refused `lease_not_needed` — *"an upstream
+   * model is never resident; send the chat."*
+   *
+   * `GET /v1/models` lists what this HOST has manifests for, so the id is not
+   * in it and never will be; asking would refuse `crucible_unknown_model` and
+   * tell somebody their capability record and their model list disagree, which
+   * they do not. `loadFirst` is refused rather than skipped, because a caller
+   * that asked to load something asked for a thing that cannot happen and
+   * should hear so.
+   *
+   * The discriminator is the contract's own — a local model id never contains
+   * a slash (§1), checked where ids are minted — and it is read through the
+   * one function `isUpstreamModelId`, so this decision and the queue's lane
+   * decision cannot come to disagree.
+   */
+  if (isUpstreamModelId(model)) {
+    if (opts.loadFirst === true) {
+      throw new CrucibleTextActError(
+        'crucible_upstream_not_loadable',
+        `crucible "${server}" forwards the ${act} class to "${model}", so there is nothing on `
+          + 'its card to load. An upstream model is never resident; send the chat.',
+      );
+    }
+    const entry = host.server(server);
+    const upstreamMap = endpointHeaderMap(entry.token, act);
+    return {
+      server,
+      endpoint: crucibleChatBase(entry.url),
+      model,
+      act,
+      env: endpointHeadersEnv(entry.token, act),
+      maskedHeaders: maskEndpointHeaders(upstreamMap),
+    };
+  }
 
   if (opts.loadFirst === true) {
     // The explicit door. Wired, and deliberately not on any default path: see
