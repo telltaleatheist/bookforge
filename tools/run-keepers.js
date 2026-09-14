@@ -150,6 +150,23 @@ const SUITES = [
   'test-crucible-job',
   'test-crucible-asr',
   'test-crucible-align',
+  // The LEASE (Owen, 2026-09-14: "Models should always be unloaded when we're
+  // done with them. Every time."). A Crucible now clears the card the moment no
+  // job, no lease, no session and no chat hold it — and a chat holds NOTHING, so
+  // every chat-shaped run this app makes is a sequence of requests the server
+  // sees as idle between. The chat door also never loads, so without a lease the
+  // next chunk is not slow, it is refused `model_not_resident` and the book dies
+  // at chunk 2 of 600. This suite is therefore about the ways the lease could
+  // quietly not be held: taken once for a whole act rather than per request,
+  // heartbeated at a third of its ttl, released on success, throw, cancel and
+  // quit alike, a 404 on release read as the no-op it is, a 404 on a heartbeat
+  // read as a server that RESTARTED and answered with a new lease rather than a
+  // log line, and `409 model_leased` reaching the reader with the holder's name
+  // so a queue row holds instead of failing. It also pins the negative: the
+  // one-job doors and the streaming door do NOT lease, because a job holds the
+  // lane and a session holds the claim already — and for `tts`/`align` a lease
+  // would make the server refuse the very job that took it.
+  'test-crucible-lease',
   // The voice conversion on that same helper and that same fake (tier 3,
   // 2026-09-14). Its centre is an identity and a knob, each of which could be
   // lost with nothing failing: a voice has THREE spellings — BookForge's asset
@@ -223,6 +240,22 @@ const SUITES = [
   // true. Plus the credential in the spawn's environment and nowhere printable,
   // no load door at all, and the ONE legacy switch keeping today's WSL vLLM.
   'test-crucible-pages',
+  // THE INSTALL STORY (2026-09-14): the setup wizard and Settings offer to
+  // install a Crucible here or point at one elsewhere. Its centre is a SEAM —
+  // `@crucible/bootstrap` 0.5.0 is written and ships as an asset of a Crucible
+  // release nobody has cut, so the package is deliberately not a dependency and
+  // `electron/crucible/install.ts` is typed against its real `.d.ts` instead.
+  // The failure this guards is that seam quietly becoming a placeholder: the
+  // loader must refuse by the package's OWN code (`bootstrap_not_installed`)
+  // carrying the command that clears it, the driven door must refuse as well as
+  // the button being disabled, and both must wear ONE sentence. Beside it the
+  // plan is checked as a DOCUMENT somebody pastes into a shell — one
+  // `--enable-<type>` per job type, `install tts` naming its narrator engine,
+  // no `install denoise` (it shares the rvc env), one id per `models pull`, and
+  // the two commands needing elevation listed APART because this app cannot
+  // obtain it. Plus the three doors' states, and the card that must name the
+  // Crucible a run is going to rather than "this machine's GPU (WSL)".
+  'test-crucible-install-seam',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

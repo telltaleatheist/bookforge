@@ -16,7 +16,13 @@ import type {
   VlmConvertResult,
   VlmEndpointCheck,
   VlmEndpointConfig,
+  VlmVenue,
 } from '@shared/vlm/conversion';
+import type {
+  CrucibleHostFacts,
+  CrucibleHostRefusal,
+  CrucibleInstallPlan,
+} from '@shared/crucible/install-wire';
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
@@ -2559,7 +2565,15 @@ export class ElectronService {
    * that is not broken.
    */
   async vlmReaderStatus(): Promise<
-    | { success: true; wslRefusal: string | null; server: { running: boolean; url: string; model: string | null } }
+    | {
+        success: true;
+        wslRefusal: string | null;
+        server: { running: boolean; url: string; model: string | null };
+        /** Which machine a conversion would go to, as main decided it. */
+        venue: VlmVenue | null;
+        /** The venue decision's own refusal, when it could not decide. */
+        venueRefusal: string | null;
+      }
     | { success: false; error: string }
   > {
     if (!this.isElectron) {
@@ -2581,7 +2595,24 @@ export class ElectronService {
           + `read (wslRefusal was ${JSON.stringify(raw.wslRefusal)}).`,
       };
     }
-    return { success: true, wslRefusal: raw.wslRefusal, server: raw.server };
+    /*
+     * THE VENUE IS OPTIONAL ON THE WIRE AND NOT OPTIONAL IN MEANING.
+     *
+     * An older main process answers no `venue` key at all, and `undefined` there
+     * must NOT read as "no Crucible venue" — that is a missing fact reported as
+     * the more convenient of its possible values, which is exactly what the
+     * `wslRefusal` check above refuses to do. So an absent key becomes a null
+     * venue WITH a refusal sentence, and the card draws the refusal instead of
+     * naming a machine on no evidence.
+     */
+    const venue = (raw.venue ?? null) as VlmVenue | null;
+    const venueRefusal = raw.venueRefusal !== undefined && raw.venueRefusal !== null
+      ? String(raw.venueRefusal)
+      : (venue === null && !('venue' in raw)
+        ? 'BookForge asked which machine reads the pages and this build of the main process does '
+          + 'not answer that question.'
+        : null);
+    return { success: true, wslRefusal: raw.wslRefusal, server: raw.server, venue, venueRefusal };
   }
 
   /**
@@ -4208,6 +4239,33 @@ export class ElectronService {
     setTextModel: (act: CrucibleTextActName, model: string): Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.setTextModel(act, model)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /*
+     * ── THE INSTALL STORY'S THIRD DOOR ─────────────────────────────────────
+     *
+     * Doors 1 and 2 are `testAddress` + `add` and `servers().local` above.
+     * These three are "install one here": what this machine has, the sequence
+     * that would follow from it, and the driven install that refuses by name
+     * until `@crucible/bootstrap` ships in a Crucible release.
+     */
+
+    /** `detectHost()`-shaped facts, measured without the package. */
+    hostFacts: (): Promise<{ success: boolean; data?: CrucibleHostFacts; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.hostFacts()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** The hand sequence for this platform, composed in main. A read. */
+    installPlan: (): Promise<{ success: boolean; data?: CrucibleInstallPlan; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.installPlan()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** The driven install. Refuses today, by name, with the button's own sentence. */
+    install: (): Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.install()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
   };
 }

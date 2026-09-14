@@ -7800,6 +7800,77 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── THE INSTALL STORY: three doors, and the plan that makes one honest ────
+  //
+  // "Offer to install a Crucible, or point at one elsewhere." Door 1 (connect
+  // to one elsewhere) and door 2 (use the one on this machine) are already
+  // answered by `crucible:test-address`/`crucible:add-server` and
+  // `crucible:servers` above — the registry and `local.ts`, unchanged. These
+  // three are door 3.
+  //
+  // THE CHANNEL NAMES ARE NOT FOUNDRY'S, AND THAT IS DELIBERATE. The vendored
+  // Foundry (e6d5424) registers `crucible:install-plan` and `crucible:install`
+  // for its own version of this screen, and two `ipcMain.handle` calls of one
+  // name in one Electron process throw at registration — the app would not
+  // start with the Foundry window mounted. So ours are `crucible:host-*`,
+  // checked against `foundry-app/IPC-CHANNELS.md` before they were written and
+  // pinned by `tools/test-ipc-collision.js` after.
+
+  /**
+   * `detectHost()`-shaped facts, measured WITHOUT `@crucible/bootstrap`: the
+   * WSL2 distros, whether the guest sees an NVIDIA card, whether a config.toml
+   * is already there. Every null carries a named refusal with the command that
+   * clears it. Answered here because every one of those questions needs a
+   * process that may spawn `wsl.exe`.
+   */
+  ipcMain.handle('crucible:host-facts', async () => {
+    try {
+      const { crucibleHostFacts } = await import('./crucible/install.js');
+      return { success: true, data: crucibleHostFacts() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * The hand sequence for installing a Crucible on this machine, composed for
+   * this platform from those facts. A READ: the only processes it spawns are
+   * `wsl.exe -l -v` and an `nvidia-smi` query. Everything in the answer is a
+   * string for a person to read and run.
+   */
+  ipcMain.handle('crucible:host-install-plan', async () => {
+    try {
+      const { crucibleInstallPlan } = await import('./crucible/install.js');
+      return { success: true, data: crucibleInstallPlan() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * The driven install. REFUSES on every machine today, by name
+   * (`bootstrap_not_installed`), with the same sentence the disabled button
+   * wears — the door refuses AS WELL AS the button, because a disabled control
+   * over an open door is a decoration.
+   */
+  ipcMain.handle('crucible:host-install', async () => {
+    try {
+      const { bookforgeInstallOptions, driveCrucibleInstall } = await import('./crucible/install.js');
+      // The line callback is required by the package and is wired to the
+      // renderer's own progress the day this runs; until then nothing calls it.
+      const options = bookforgeInstallOptions((line, _stream, step) => {
+        console.log(`[crucible install] ${step}: ${line}`);
+      });
+      return { success: true, data: await driveCrucibleInstall(options) };
+    } catch (err) {
+      const { CrucibleInstallError } = await import('./crucible/install.js');
+      if (err instanceof CrucibleInstallError) {
+        return { success: false, error: err.message, refusal: err.toRefusal() };
+      }
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // The five `tts:*` channels that stood here are GONE (2026-09-05).
   //
   // They were the last live door onto ebook2audiobook: `tts:start-conversion`
@@ -10318,10 +10389,46 @@ ipcMain.handle('narration:text-readiness', async (
    * `resolveVlmRoute` the run uses, which is what stops a card promising a route
    * the run then denies.
    */
+  /*
+   * AND WHICH MACHINE THE RUN WOULD ACTUALLY GO TO.
+   *
+   * Until 2026-09-14 this handler answered `wslRefusal` and nothing else, so
+   * every card that drew a route drew one of the three LOCAL routes — and on
+   * this machine that is "this machine's GPU (WSL)" for a conversion that
+   * `planVlmConversion` was about to send to a Crucible. A card promising the
+   * wrong GPU is worse than a card promising none: this is the line that tells
+   * somebody which card is unavailable for the next ninety minutes.
+   *
+   * The venue is READ THE WAY THE RUN READS IT — `decideWherePagesRun` from
+   * `electron/crucible/pages.ts`, imported, never re-derived — so the card and
+   * the run cannot disagree. A refusal (no enabled server, the switch off with
+   * nothing reachable) is REPORTED, not swallowed: the run would refuse the
+   * same way, and the card that said so is the one that saved the ninety
+   * minutes.
+   */
   ipcMain.handle('vlm:reader-status', async () => {
     try {
       const { wslVlmRefusal, vlmPageServerStatus } = await import('./vlm-page-server.js');
-      return { success: true, wslRefusal: wslVlmRefusal(), server: vlmPageServerStatus() };
+      const { decideWherePagesRun, processPagesVenueHost } = await import('./crucible/pages.js');
+      let venue: { where: 'crucible'; server: string; because: string }
+        | { where: 'legacy-local-narrator'; because: string }
+        | null = null;
+      let venueRefusal: string | null = null;
+      try {
+        const decided = await decideWherePagesRun(processPagesVenueHost());
+        venue = decided.where === 'crucible'
+          ? { where: 'crucible', server: decided.server, because: decided.because }
+          : { where: 'legacy-local-narrator', because: decided.because };
+      } catch (err) {
+        venueRefusal = (err as Error).message;
+      }
+      return {
+        success: true,
+        wslRefusal: wslVlmRefusal(),
+        server: vlmPageServerStatus(),
+        venue,
+        venueRefusal,
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

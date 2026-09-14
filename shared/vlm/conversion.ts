@@ -498,6 +498,11 @@ export function vlmRouteLabel(route: VlmRoute): string {
     case 'endpoint': return route.endpoint.url;
     case 'mlx-local': return 'this machine (MLX)';
     case 'wsl-server': return "this machine's GPU (WSL)";
+    // The server by NAME, never its URL: the name is what the person ranked in
+    // Settings → Crucible Servers and what the queue row says it waits for, and
+    // a card that printed `http://192.168.68.x:7100` would be telling them
+    // about a machine under a label they never chose.
+    case 'crucible': return `crucible "${route.server}"`;
     // Nothing reads the pages, so nothing is about to be busy. Callers refuse
     // before they get here; naming it keeps the switch total.
     case 'refused': return 'nothing — no reader is available';
@@ -530,7 +535,29 @@ export type VlmRoute =
   | { kind: 'endpoint'; endpoint: VlmEndpointConfig }
   | { kind: 'mlx-local' }
   | { kind: 'wsl-server' }
+  /**
+   * A Crucible server, by NAME. The fourth route, added 2026-09-14 for a card
+   * rather than for a run: `planVlmConversion` has sent pages to a Crucible
+   * since `1e63e971` and composes its own `endpoint` route to do it, but every
+   * CARD called `resolveVlmRoute` with three local facts and therefore drew
+   * "this machine's GPU (WSL)" for a conversion that was about to happen on
+   * another machine entirely. See {@link resolveVlmRouteWithVenue}.
+   */
+  | { kind: 'crucible'; server: string }
   | { kind: 'refused'; reason: string };
+
+/**
+ * Where the app has decided this conversion's pages are read, as
+ * `electron/crucible/pages.ts`'s `decideWherePagesRun` answers it — the caller's
+ * name, then the ONE legacy switch, then the routing record.
+ *
+ * `null` is "the decision itself refused" (no enabled server and the switch
+ * off), which is a real answer with its own sentence and NOT the same as "the
+ * legacy local reader". A renderer passes through what main told it.
+ */
+export type VlmVenue =
+  | { where: 'crucible'; server: string; because: string }
+  | { where: 'legacy-local-narrator'; because: string };
 
 export function resolveVlmRoute(facts: {
   platform: string;
@@ -560,6 +587,66 @@ export function resolveVlmRoute(facts: {
       + 'You can also point BookForge at any OpenAI-compatible server that already serves the '
       + 'document vision model: Settings → AI → Reading pages.',
   };
+}
+
+/**
+ * THE ROUTE A CARD MUST DRAW: `resolveVlmRoute`, plus the machine the app has
+ * actually routed this work to.
+ *
+ * It is the SAME THREE QUESTIONS `planVlmConversion` asks, in the same order,
+ * and that is the whole point — a card that asked a different question would go
+ * back to promising a route the run then denies, which is the defect
+ * `resolveVlmRoute`'s own header set out to fix and which reopened the day the
+ * pages door moved to Crucible.
+ *
+ *   1. A TYPED ENDPOINT WINS and the venue is not even consulted. Settings →
+ *      AI → Reading pages is a page-reading-specific instruction; the routing
+ *      record is an app-wide default; a specific instruction beats a general
+ *      one. (`electron/vlm-convert.ts` argues this at length and records the
+ *      ruling owed against it.)
+ *   2. A CRUCIBLE VENUE names the server.
+ *   3. OTHERWISE the three local facts, exactly as before — which is what the
+ *      legacy switch selects and what a machine with no Crucible gets.
+ *
+ * `venue` is null when the venue decision REFUSED. That is not "local": it is a
+ * refusal the run would make too, so it is carried through as one, with the
+ * decision's own sentence.
+ *
+ * PURE, and given every fact rather than reading any of them — the property
+ * `resolveVlmRoute` already had, kept for the same reason: the sentence a
+ * Windows user sees can be tested on a Mac.
+ */
+export function resolveVlmRouteWithVenue(facts: {
+  platform: string;
+  arch: string;
+  endpoint: VlmEndpointConfig | null;
+  wslReaderRefusal: string | null;
+  /** What main decided, or null when the decision refused. */
+  venue: VlmVenue | null;
+  /** The refusal's own sentence, when `venue` is null. */
+  venueRefusal: string | null;
+}): VlmRoute {
+  if (facts.endpoint !== null) {
+    return { kind: 'endpoint', endpoint: facts.endpoint };
+  }
+  if (facts.venue !== null && facts.venue.where === 'crucible') {
+    return { kind: 'crucible', server: facts.venue.server };
+  }
+  if (facts.venue === null && facts.venueRefusal !== null) {
+    return {
+      kind: 'refused',
+      reason:
+        `BookForge could not decide which machine reads these pages: ${facts.venueRefusal} `
+        + 'Either enable a Crucible server in Settings → Crucible Servers, or turn on "Run renders '
+        + 'and text passes with the local engines instead" there.',
+    };
+  }
+  return resolveVlmRoute({
+    platform: facts.platform,
+    arch: facts.arch,
+    endpoint: null,
+    wslReaderRefusal: facts.wslReaderRefusal,
+  });
 }
 
 /**

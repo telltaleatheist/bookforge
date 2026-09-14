@@ -47,7 +47,7 @@ import {
   VLM_CONVERT_STAGE,
   conversionInFlightFor,
   resolveVlmEndpoint,
-  resolveVlmRoute,
+  resolveVlmRouteWithVenue,
   vlmRouteLabel,
   type VlmConvertDestination,
   type VlmConvertResult,
@@ -235,11 +235,20 @@ export class BookConversionService {
     if (!status.success) {
       return { error: `BookForge could not check the WSL page reader: ${status.error}` };
     }
-    return resolveVlmRoute({
+    /*
+     * THE VENUE, not just the WSL refusal. Until 2026-09-14 this asked
+     * `resolveVlmRoute` with three LOCAL facts, so on this PC the card said
+     * "this machine's GPU (WSL)" for a conversion `planVlmConversion` was about
+     * to send to a Crucible. Same three questions as the run now, in the same
+     * order, from the same main-process decision.
+     */
+    return resolveVlmRouteWithVenue({
       platform: this.electron.platform,
       arch: this.electron.arch,
       endpoint,
       wslReaderRefusal: status.wslRefusal,
+      venue: status.venue,
+      venueRefusal: status.venueRefusal,
     });
   }
 

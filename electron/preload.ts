@@ -67,6 +67,11 @@ import type {
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
 } from '../shared/crucible/settings-wire';
+import type {
+  CrucibleHostFacts,
+  CrucibleHostRefusal,
+  CrucibleInstallPlan,
+} from '../shared/crucible/install-wire';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type {
@@ -1374,6 +1379,26 @@ export interface ElectronAPI {
     textModels: () => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
     /** Point one act at a Crucible model id, or clear it with an empty string. */
     setTextModel: (act: CrucibleTextActName, model: string) => Promise<{ success: boolean; data?: CrucibleTextActModels; error?: string }>;
+
+    /*
+     * ── THE INSTALL STORY'S THIRD DOOR ──────────────────────────────────────
+     *
+     * Doors 1 and 2 are already up there: `testAddress` + `add` is "connect to
+     * one elsewhere", and `servers().local` is "use the one on this machine".
+     * These three are "install one here".
+     */
+
+    /** What this machine can run a Crucible with, measured — `detectHost()`'s shape. */
+    hostFacts: () => Promise<{ success: boolean; data?: CrucibleHostFacts; error?: string }>;
+    /** The hand sequence for this platform, every command copyable. A read. */
+    installPlan: () => Promise<{ success: boolean; data?: CrucibleInstallPlan; error?: string }>;
+    /**
+     * The DRIVEN install. Refuses on every machine today with
+     * `bootstrap_not_installed` — the same sentence the disabled button wears,
+     * because a disabled control over an open door is a decoration. The refusal
+     * comes back shaped like `@crucible/bootstrap`'s own, `command` included.
+     */
+    install: () => Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }>;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -1569,6 +1594,17 @@ export interface ElectronAPI {
       success: boolean;
       wslRefusal?: string | null;
       server?: { running: boolean; url: string; model: string | null };
+      /**
+       * WHICH MACHINE THE RUN WOULD GO TO, read the way the run reads it
+       * (`decideWherePagesRun`). Null when the decision itself refused, in which
+       * case `venueRefusal` says so — a card that drew a local GPU for a run
+       * about to go to a Crucible was the defect this field closes.
+       */
+      venue?: { where: 'crucible'; server: string; because: string }
+        | { where: 'legacy-local-narrator'; because: string }
+        | null;
+      /** The venue decision's own refusal, verbatim. The run refuses the same way. */
+      venueRefusal?: string | null;
       error?: string;
     }>;
   };
@@ -2832,6 +2868,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('crucible:load-model', name, model),
     unloadModel: (name: string, model: string) =>
       ipcRenderer.invoke('crucible:unload-model', name, model),
+    // The install story's third door. The channel names are `crucible:host-*`
+    // and NOT `crucible:install-plan` / `crucible:install`, which the vendored
+    // Foundry (e6d5424) registers for its own copy of this screen — a duplicate
+    // `ipcMain.handle` name throws at registration and the app would not boot.
+    hostFacts: () => ipcRenderer.invoke('crucible:host-facts'),
+    installPlan: () => ipcRenderer.invoke('crucible:host-install-plan'),
+    install: () => ipcRenderer.invoke('crucible:host-install'),
     textModels: () => ipcRenderer.invoke('crucible:text-models'),
     setTextModel: (act: string, model: string) =>
       ipcRenderer.invoke('crucible:set-text-model', act, model),

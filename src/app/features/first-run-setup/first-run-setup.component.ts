@@ -4,6 +4,7 @@ import { Router } from '@angular/router';
 
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
+import { CrucibleDoorsComponent } from '../settings/components/crucible-doors.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
 import { HiggsVoicesPanelComponent } from '../settings/components/higgs-voices-panel.component';
@@ -17,7 +18,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'crucible' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -35,6 +36,7 @@ interface SetupStep {
     CommonModule,
     AiSetupWizardComponent,
     AddOnsPanelComponent,
+    CrucibleDoorsComponent,
     RvcEnhancementPanelComponent,
     OrpheusVoicesPanelComponent,
     HiggsVoicesPanelComponent,
@@ -158,6 +160,13 @@ interface SetupStep {
             }
             @case ('ai') {
               <app-ai-setup-wizard [embedded]="true" />
+            }
+            @case ('crucible') {
+              <!-- The SAME three doors Settings → Crucible Servers mounts. One
+                   component, two hosts: a wizard that offered a "Connect" the
+                   settings row spelled differently would be two screens
+                   teaching two different things about one registry. -->
+              <app-crucible-doors />
             }
             @case ('orpheus') {
               <app-orpheus-voices-panel />
@@ -672,6 +681,21 @@ export class FirstRunSetupComponent {
       title: 'Set up AI',
       subtitle:
         'Optional — AI cleans up OCR text before narration. Add a bundled local model, connect Ollama, or save a Claude/OpenAI key.'
+    },
+    {
+      // WHERE THE GPU WORK HAPPENS, offered once and skippable like every other
+      // step. A Crucible is one inference server per machine that every app
+      // talks to over HTTP — so this step is not "set up BookForge's GPU", it
+      // is "does this machine have a server, or does another one". Nothing here
+      // is a step anybody has to take: a laptop that renders nowhere yet is not
+      // broken, and the engines below still install locally.
+      id: 'crucible',
+      title: 'Where the GPU work happens (optional)',
+      subtitle:
+        'A Crucible is one inference server a machine runs for every app on it — narration, '
+        + 'transcription, alignment, text cleanup. Connect to one somewhere else, use the one on '
+        + 'this machine, or see what installing one here would take. Skip it and BookForge keeps '
+        + 'using this machine’s own engines.'
     },
     {
       id: 'orpheus',

@@ -16,7 +16,10 @@ import {
 import {
   DEFAULT_VLM_CONCURRENCY,
   describeVlmEndpointCheck,
-  resolveVlmRoute,
+  resolveVlmRouteWithVenue,
+  vlmRouteLabel,
+  type VlmRoute,
+  type VlmVenue,
 } from '@shared/vlm/conversion';
 
 /**
@@ -285,6 +288,17 @@ import {
             at an OpenAI-compatible server (vLLM) instead when that machine has the faster GPU;
             nothing switches by itself, and the conversion says which one it used.
           </p>
+          <!--
+            THE MACHINE, NAMED. Read from the same decision the run makes, so
+            this line cannot say "this machine's GPU (WSL)" for a conversion
+            about to go to a Crucible somewhere else.
+          -->
+          @if (pagesRouteLabel(); as where) {
+            <p class="muted">
+              Pages would be read on <strong>{{ where }}</strong> — that is the card this app will
+              take for the length of a conversion. Change it in Settings &#8594; Crucible Servers.
+            </p>
+          }
         }
 
         <div class="ollama-url-row">
@@ -537,6 +551,11 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
           ? s.wslRefusal
           : `BookForge could not check the WSL page reader: ${s.error}`
       );
+      // And WHICH MACHINE a conversion would go to. Without it this card drew a
+      // route from three local facts and would say "this machine's GPU (WSL)"
+      // for a run about to happen on a Crucible somewhere else.
+      this.pagesVenue.set(s.success ? s.venue : null);
+      this.pagesVenueRefusal.set(s.success ? s.venueRefusal : null);
     });
 
     this.unsub = this.ai.onModelProgress((p) => {
@@ -861,18 +880,42 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
    * null as soon as ANY route is open, including the WSL one, which is why this
    * no longer says "needs an Apple Silicon Mac" on a correctly configured PC.
    */
-  readonly localReadingRefusal = computed(() => {
+  /** Which machine main has routed page reading to, and its refusal if it could not decide. */
+  readonly pagesVenue = signal<VlmVenue | null>(null);
+  readonly pagesVenueRefusal = signal<string | null>(null);
+
+  /** The route this card describes — the same three questions the run asks. */
+  readonly pagesRoute = computed<VlmRoute | null>(() => {
     const wsl = this.wslReaderRefusal();
     if (wsl === undefined) return null;
-    const route = resolveVlmRoute({
+    return resolveVlmRouteWithVenue({
       platform: this.electron.platform,
       arch: this.electron.arch,
       endpoint: this.settings.getVlmEndpointConfig().url.trim().length > 0
         ? this.settings.getVlmEndpointConfig()
         : null,
       wslReaderRefusal: wsl,
+      venue: this.pagesVenue(),
+      venueRefusal: this.pagesVenueRefusal(),
     });
-    return route.kind === 'refused' ? route.reason : null;
+  });
+
+  readonly localReadingRefusal = computed(() => {
+    const route = this.pagesRoute();
+    return route !== null && route.kind === 'refused' ? route.reason : null;
+  });
+
+  /**
+   * WHICH GPU READS THE PAGES, in the card's own words — the line that tells
+   * somebody which machine is unavailable for the next ninety minutes.
+   *
+   * Null while the answer has not arrived; a card that guessed would be naming
+   * a machine on no evidence.
+   */
+  readonly pagesRouteLabel = computed<string | null>(() => {
+    const route = this.pagesRoute();
+    if (route === null || route.kind === 'refused') return null;
+    return vlmRouteLabel(route);
   });
 
   vlmUrl(): string { return this.settings.getVlmEndpointConfig().url; }

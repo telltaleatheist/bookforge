@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
+import { CrucibleDoorsComponent } from './crucible-doors.component';
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
@@ -58,7 +59,7 @@ const LOCAL = 'local';
 @Component({
   selector: 'app-crucible-servers-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleDoorsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="cru">
@@ -349,7 +350,17 @@ const LOCAL = 'local';
         </p>
       </div>
 
-      <!-- ── Add ────────────────────────────────────────────────────────── -->
+      <!-- ── Get a Crucible: the three doors ────────────────────────────── -->
+      <!--
+        THE SAME COMPONENT THE FIRST-RUN WIZARD MOUNTS, and that is the point:
+        a wizard offering a "Connect" this page spelled differently would be two
+        screens teaching two different things about one registry. Connect to one
+        elsewhere · use the one on this machine · install one here.
+      -->
+      <h4 class="cru-group">Get a Crucible</h4>
+      <app-crucible-doors (changed)="recheck()"></app-crucible-doors>
+
+      <!-- ── Add (the quick form, for a server whose details are to hand) ── -->
       <h4 class="cru-group">Add a Crucible server</h4>
       <p class="cru-sub">
         Only servers on OTHER machines are added here. The one on this machine is read from its own
