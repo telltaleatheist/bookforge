@@ -52,6 +52,25 @@
  * the same shape `denoise-job.ts` uses, for the same reason, with the same
  * `.partial` + manifest-last commit making the extra hop free. The durable set
  * still lives inside the session; only the transient path moved.
+ *
+ * ── …AND THE CONVERSION ITSELF MAY RUN ON ANOTHER MACHINE ───────────────────
+ *
+ * The urvc spawn is one of two venues now (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3):
+ * `electron/crucible/rvc.ts` sends the same files through a Crucible `rvc` job
+ * with the same knobs, and `convertSentencesAtVenue` decides which — the RUN's
+ * already-resolved venue first (the session's own `settings.crucible.server`,
+ * PHASE7-LANES.md §4.4: one book, one GPU), else the one decision every GPU
+ * door makes. The legacy switch is what keeps the local spawn, and it says so
+ * by name. Everything around it — the gap pass, the staging budget, the
+ * `.partial`, the manifest — is unchanged and venue-blind: a converted set is a
+ * converted set.
+ *
+ * RULING OWED: this job takes the local GPU arbiter lease around its whole pass,
+ * and still does when the conversion runs on a REMOTE Crucible, where it bounds
+ * nothing and blocks local work for the duration. Left alone here on purpose —
+ * `electron/crucible/asr.ts` records the same question for its door, and the
+ * answer has to be one answer for every door at once: does a job on a remote
+ * Crucible hold this machine's lease at all?
  */
 
 import { publishBridgeEvent } from './bridge-events';
@@ -128,6 +147,16 @@ export interface RvcEnhancementConfig {
    * ordering ruling is refused BY NAME. See the header and `runRvcEnhancement`.
    */
   finalDenoise?: boolean;
+  /**
+   * RUN THIS CONVERSION ON A NAMED CRUCIBLE SERVER.
+   *
+   * The caller's own instruction — the queue row's resolved `waitFor`, or an
+   * operator naming a machine. It may only AGREE with the run's venue (the
+   * session's own record): two answers for one run are refused by name
+   * (`run_venue_disagrees`), never ranked. Absent means the run's venue decides,
+   * and failing that the routing record.
+   */
+  crucible?: { server: string };
 }
 
 export interface RvcProgress {
@@ -194,9 +223,48 @@ export async function runRvcEnhancement(
   if (!voice) {
     return { success: false, error: `RVC enhancement: unknown voice "${config.voiceId}".` };
   }
-  const ready = rvcEnhancementReady();
-  if (!ready.ok) {
-    return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
+
+  /*
+   * WHERE THIS CONVERSION RUNS, DECIDED FIRST — because the next check is about
+   * an engine only one of the two venues uses.
+   *
+   * `rvcEnhancementReady()` asks whether the rvc-env, its python and the base
+   * models are on THIS machine. That is a precondition of the local spawn and
+   * has nothing to say about a Crucible, so asking it before the venue is known
+   * would let a missing local engine refuse a job that was never going to run
+   * here. The decision is made once and handed to the door below, rather than
+   * asked again there: two calls could answer differently (an `any` ping that
+   * flaps), and the readiness check and the conversion would then be about two
+   * different machines.
+   */
+  const { venueForRunStep } = await import('./crucible/step-venue.js');
+  const { processVenueHost } = await import('./crucible/generation-venue.js');
+  const { readSessionRunVenue } = await import('./coverage-align-job.js');
+  let venue: import('./crucible/step-venue').StepVenue;
+  try {
+    const runVenue = readSessionRunVenue(config.processDir);
+    venue = await venueForRunStep({
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      ...(config.crucible === undefined ? {} : { callerNamed: config.crucible }),
+      host: processVenueHost(),
+    });
+  } catch (err) {
+    // `run_venue_disagrees` / `no_enabled_server` / `no_reachable_server` /
+    // `crucible_server_not_named`, in the decision's own words. No fallback to
+    // this card: a conversion nobody placed does not quietly happen here.
+    const code = err instanceof Error && typeof (err as { code?: unknown }).code === 'string'
+      ? ` (${(err as unknown as { code: string }).code})` : '';
+    return {
+      success: false,
+      error: `This voice conversion has nowhere to run${code}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (venue.where === 'legacy-local-narrator') {
+    const ready = rvcEnhancementReady();
+    if (!ready.ok) {
+      return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
+    }
   }
   const source = config.sentencesDir ?? rawSentencesDir(config.processDir);
   if (!fs.existsSync(source)) {
@@ -358,25 +426,56 @@ export async function runRvcEnhancement(
     // goes into a set that could not be published.
     const partial = beginDerivedSentences(outputDir);
     try {
-      await enhanceSentences({
+      // The venue was decided at the top (see there for why it has to be).
+      const { convertSentencesAtVenue } = await import('./crucible/rvc.js');
+      const at = await convertSentencesAtVenue({
+        decided: venue,
+        host: processVenueHost(),
         sentencesDir: enhanceSource,
         outputDir: stageDir,
-        modelName: voice.modelName,
-        indexRate,
-        protectRate,
-        nSemitones,
-        // Absent stays absent — that is what leaves urvc on its own default.
-        f0Method: config.f0Method,
-        hopLength: config.hopLength,
+        voiceId: config.voiceId,
+        knobs: {
+          indexRate,
+          protectRate,
+          nSemitones,
+          // Absent stays absent — that is what leaves urvc on its own default.
+          f0Method: config.f0Method,
+          hopLength: config.hopLength,
+        },
         signal: abort.signal,
-        onProgress: (done, total) => sendProgress(mainWindow, jobId, {
+        onLog: log,
+        onProgress: (p) => sendProgress(mainWindow, jobId, {
           phase: 'enhancing',
-          percentage: total ? Math.round((done / total) * 100) : 0,
-          processed: done,
-          total,
-          message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
+          percentage: p.total ? Math.round((p.announced / p.total) * 100) : 0,
+          processed: p.announced,
+          total: p.total,
+          message: `Enhancing voice with ${voice.label}… (${p.announced}/${p.total})`,
         }),
+        legacyLocal: async () => {
+          await enhanceSentences({
+            sentencesDir: enhanceSource,
+            outputDir: stageDir,
+            modelName: voice.modelName,
+            indexRate,
+            protectRate,
+            nSemitones,
+            // Absent stays absent — that is what leaves urvc on its own default.
+            f0Method: config.f0Method,
+            hopLength: config.hopLength,
+            signal: abort.signal,
+            onProgress: (done, total) => sendProgress(mainWindow, jobId, {
+              phase: 'enhancing',
+              percentage: total ? Math.round((done / total) * 100) : 0,
+              processed: done,
+              total,
+              message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
+            }),
+          });
+          return { outputDir: stageDir };
+        },
       });
+      log(`voice conversion ran on ${at.venue.where === 'crucible'
+        ? `crucible "${at.venue.server}"` : 'the local urvc spawn'} (${at.venue.origin}: ${at.venue.because}).`);
 
       // The conversion has read the gap set for the last time; drop it before the
       // copy so the two full sets never coexist with a third on the way out.

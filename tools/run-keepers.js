@@ -144,6 +144,17 @@ const SUITES = [
   'test-crucible-job',
   'test-crucible-asr',
   'test-crucible-align',
+  // The voice conversion on that same helper and that same fake (tier 3,
+  // 2026-09-14). Its centre is an identity and a knob, each of which could be
+  // lost with nothing failing: a voice has THREE spellings — BookForge's asset
+  // id, the urvc folder name, Crucible's manifest id — none derivable from the
+  // others, so the table is checked against the shipped catalog rather than
+  // trusted; the per-conversion knobs arrive under the wire's own names with
+  // ABSENCE preserved (an absent f0_method is what leaves urvc on its tuned
+  // default); `batchSize` is refused by name because recycling is the server's
+  // memory bound; and a job that ends `done` having converted fewer files than
+  // it was given fails rather than handing assembly a gapped set.
+  'test-crucible-rvc',
   // The Listen path on somebody else's card (rollout tier 3): the three
   // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
   // session now stands beside the local narrator, chosen by the SAME venue
