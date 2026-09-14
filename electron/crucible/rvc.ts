@@ -65,6 +65,10 @@
  *
  * **No gap pass, no staging, no manifest.** Those are `rvc-job.ts`'s and stay
  * there. This door converts a directory into a directory.
+ *
+ * **NO LEASE HERE.** This is ONE job on the lane, and a job already holds
+ * everything a Crucible lease would hold — see `job.ts`'s header for the whole
+ * argument, and `lease.ts` for the chat-shaped doors that do lease.
  */
 
 import * as fs from 'fs';

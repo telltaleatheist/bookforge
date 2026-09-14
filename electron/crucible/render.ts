@@ -18,6 +18,15 @@
  * cannot tell which machine wrote them. That is the whole design: the bytes
  * move, the shape does not.
  *
+ * ── NO LEASE, FOR THE REASON `job.ts` SPELLS OUT ───────────────────────────
+ *
+ * A render is ONE `tts` job on the lane, so it already holds everything a lease
+ * would hold — and `tts` is in crucible's `EVICTS_THE_RESIDENT_MODEL`, so a lease
+ * taken around one would have the server refuse `409 model_leased` to the very
+ * run that took it (a lease has no exemption for its own holder). The doors that
+ * lease are the chat-shaped ones — the four text acts, a cleanup run, a page
+ * read; see `electron/crucible/lease.ts`.
+ *
  * ── What is NOT here, deliberately ─────────────────────────────────────────
  *
  * **No fallback to the local spawn, ever.** A Crucible server that is busy,

@@ -269,7 +269,158 @@ function legacyHost() {
   };
 }
 
+/**
+ * ── THE THREE LEASE ROUTES ──────────────────────────────────────────────────
+ *
+ * `POST /v1/models/{id}/lease`, `POST /v1/leases/{id}/heartbeat` and
+ * `DELETE /v1/leases/{id}` — crucible `docs/PHASE7-LANES.md` §5.2, built there on
+ * 2026-09-14. Added here as a HANDLER a keeper's own `route` delegates to,
+ * rather than wired into {@link startFakeCrucible}, because this file is shared
+ * by six suites and none of them should grow a route they never asked for.
+ *
+ * It speaks the real shapes: `201` with the six-field receipt, `200 {expires_at}`
+ * on a heartbeat, a bare `204` on a release (no body at all — which is what
+ * proves the client does not try to parse one), and the refusal envelope
+ * `{"error": {"code", "message", "details"}}` for every no.
+ *
+ * `behaviour` is how a keeper makes the server say the awkward things:
+ *
+ *   refuseLease(attempt, n)     → null, or {status, code, message, details}
+ *   refuseHeartbeat(leaseId, n) → the same, e.g. 404 unknown_lease (a restart)
+ *   refuseRelease(leaseId, n)   → the same, e.g. 404 unknown_lease (expired)
+ *
+ * `n` is 1-based: "the FIRST heartbeat fails, later ones do not" is the shape a
+ * re-lease check needs and a flag could not express.
+ *
+ * Everything that crossed is recorded on the returned `lease` object, including
+ * the `User-Agent`, because the server records it as the holder's name and a
+ * client that did not send one is a bench that cannot say whose run is on the
+ * card.
+ */
+function leaseRoutes(behaviour = {}) {
+  const lease = {
+    /** {model, act, ttlSeconds, userAgent, leaseId} per granted lease. */
+    taken: [],
+    /** {leaseId} per heartbeat that reached the server, refused or not. */
+    heartbeats: [],
+    /** {leaseId} per release that reached the server, refused or not. */
+    released: [],
+    /** The refusals this fake answered, for a check that wants to count them. */
+    refusals: [],
+  };
+  let nextId = 1;
+  let leaseAttempts = 0;
+  let heartbeatAttempts = 0;
+  let releaseAttempts = 0;
+
+  // Every branch answers `true` — `startFakeCrucible`'s dispatcher reads a falsy
+  // return as "not handled" and sends its own 404 on top, which is a thrown
+  // ERR_HTTP_HEADERS_SENT rather than a test failure.
+  const refuse = (res, refusal) => {
+    lease.refusals.push(refusal);
+    send(res, refusal.status, {
+      error: {
+        code: refusal.code,
+        message: refusal.message,
+        details: refusal.details === undefined ? null : refusal.details,
+      },
+    });
+    return true;
+  };
+
+  return {
+    lease,
+    async handler(req, res, ctx) {
+      const take = /^\/v1\/models\/([^/]+)\/lease$/.exec(ctx.url.pathname);
+      if (take && req.method === 'POST') {
+        leaseAttempts += 1;
+        const model = decodeURIComponent(take[1]);
+        const body = JSON.parse((await ctx.readBody(req)).toString('utf-8') || '{}');
+        const attempt = {
+          model,
+          act: body.act,
+          ttlSeconds: body.ttl_seconds,
+          userAgent: req.headers['user-agent'] || null,
+        };
+        const refusal = behaviour.refuseLease ? behaviour.refuseLease(attempt, leaseAttempts) : null;
+        if (refusal) return refuse(res, refusal);
+        const leaseId = `lease-${nextId++}`;
+        lease.taken.push({ ...attempt, leaseId });
+        send(res, 201, {
+          lease_id: leaseId,
+          model,
+          client: attempt.userAgent,
+          act: attempt.act,
+          since: '2026-09-14T02:00:00+00:00',
+          expires_at: '2026-09-14T02:02:00+00:00',
+        });
+        return true;
+      }
+
+      const beat = /^\/v1\/leases\/([^/]+)\/heartbeat$/.exec(ctx.url.pathname);
+      if (beat && req.method === 'POST') {
+        heartbeatAttempts += 1;
+        const leaseId = decodeURIComponent(beat[1]);
+        lease.heartbeats.push({ leaseId });
+        const refusal = behaviour.refuseHeartbeat
+          ? behaviour.refuseHeartbeat(leaseId, heartbeatAttempts)
+          : null;
+        if (refusal) return refuse(res, refusal);
+        send(res, 200, { expires_at: '2026-09-14T02:04:00+00:00' });
+        return true;
+      }
+
+      const give = /^\/v1\/leases\/([^/]+)$/.exec(ctx.url.pathname);
+      if (give && req.method === 'DELETE') {
+        releaseAttempts += 1;
+        const leaseId = decodeURIComponent(give[1]);
+        lease.released.push({ leaseId });
+        const refusal = behaviour.refuseRelease
+          ? behaviour.refuseRelease(leaseId, releaseAttempts)
+          : null;
+        if (refusal) return refuse(res, refusal);
+        // A BARE 204: no body, no Content-Type. A client that tried to parse one
+        // would throw here rather than on a real server at 3 a.m.
+        res.writeHead(204);
+        res.end();
+        return true;
+      }
+
+      return false;
+    },
+  };
+}
+
+/** `409 model_leased`, with the five details the server actually sends. */
+function modelLeasedRefusal(held) {
+  return {
+    status: 409,
+    code: 'model_leased',
+    message: `'${held.model}' is leased by '${held.client}' for '${held.act}' since ${held.since}, `
+      + `until at least ${held.expiresAt} — so leasing it is refused rather than taking the model `
+      + 'off the card underneath a run in progress.',
+    details: {
+      lease_id: held.leaseId,
+      client: held.client,
+      act: held.act,
+      since: held.since,
+      expires_at: held.expiresAt,
+    },
+  };
+}
+
+/** `404 unknown_lease` — the shape a heartbeat after a restart, or a late release, gets. */
+function unknownLeaseRefusal(leaseId, why) {
+  return {
+    status: 404,
+    code: 'unknown_lease',
+    message: `lease ${leaseId} is no longer open: ${why}.`,
+    details: { lease_id: leaseId, reason: why },
+  };
+}
+
 module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, legacyHost, send,
+  leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
 };

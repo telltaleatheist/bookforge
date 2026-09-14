@@ -71,6 +71,10 @@
  * consumer — narrator compares the model's items against its own `spoken()` on
  * the letters alone, so a drift here (a sixth marker, say) is refused by name
  * on the first chunk rather than shipped as a slid transcript.
+ *
+ * **NO LEASE HERE.** This is ONE job on the lane, and a job already holds
+ * everything a Crucible lease would hold — see `job.ts`'s header for the whole
+ * argument, and `lease.ts` for the chat-shaped doors that do lease.
  */
 
 import * as fs from 'fs';

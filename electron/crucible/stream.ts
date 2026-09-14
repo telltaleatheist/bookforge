@@ -59,6 +59,18 @@
  *    far along. Unreachable, wrong token, wrong API version, not a Crucible — all
  *    by name, none retried, none downgraded to the local card.
  *
+ * ── AND IT DOES NOT LEASE, BECAUSE IT ALREADY HOLDS THE CLAIM ──────────────
+ *
+ * Owen ruled on 2026-09-14 that a Crucible unloads the resident thing the moment
+ * nothing holds it, and `electron/crucible/lease.ts` is how this app's
+ * chat-shaped runs say they still do. A streaming session is not one of them: it
+ * is fact THREE of the four (`docs/PHASE7-LANES.md` §5.3, `Residency.claimed_by`)
+ * — the session holds the resident engine's exclusive claim for its whole life,
+ * which is exactly what a lease would buy and for exactly as long. Leasing beside
+ * it would be the same claim twice, with two ways to get it wrong
+ * (ARCHITECTURE.md R1). The gap a lease closes is a chat holding NOTHING; a
+ * session holds the card outright.
+ *
  * ── Listen never re-rolls ──────────────────────────────────────────────────
  *
  * docs/CRUCIBLE_ROLLOUT_PLAN.md ruling 3. And the streaming door is UNGUARDED by

@@ -54,6 +54,10 @@
  * `denoise-bridge` on the file that lands, because those are ITS invariants:
  * the offsets it is about to slice at are only safe if the block came back the
  * length it went up.
+ *
+ * **NO LEASE HERE.** This is ONE job on the lane, and a job already holds
+ * everything a Crucible lease would hold — see `job.ts`'s header for the whole
+ * argument, and `lease.ts` for the chat-shaped doors that do lease.
  */
 
 import * as fs from 'fs';

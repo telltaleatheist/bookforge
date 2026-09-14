@@ -61,6 +61,10 @@
  * transcodes every candidate to the book's own `sample_fmt` before it can enter
  * the cache (a mixed-bit-depth `-c:a flac` concat SILENTLY DROPS the sentence).
  * That is the bridge's step, after this one, unchanged.
+ *
+ * **NO LEASE HERE.** This is ONE job on the lane, and a job already holds
+ * everything a Crucible lease would hold — see `job.ts`'s header for the whole
+ * argument, and `lease.ts` for the chat-shaped doors that do lease.
  */
 
 import * as fs from 'fs';

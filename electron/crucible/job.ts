@@ -55,6 +55,30 @@
  * the file (`fs.openAsBlob`, Node 19.8+; Electron 33 carries Node 20.18), so a
  * 900 MB m4b never sits in the main process's heap. A runtime without it is
  * refused by name rather than read whole into memory.
+ *
+ * ── NO LEASE HERE, AND THAT IS THE RULING RATHER THAN AN OVERSIGHT ─────────
+ *
+ * Owen ruled on 2026-09-14 that a Crucible unloads the resident model the moment
+ * nothing holds it, and `electron/crucible/lease.ts` is how BookForge's
+ * chat-shaped runs say they are still holding. **A job is not one of them.**
+ *
+ * "Done" is four facts (crucible `docs/PHASE7-LANES.md` §5.3) and the FIRST of
+ * them is *no job is running or queued on the lane*. Everything that comes
+ * through this helper — `asr`, `align`, `rvc`, `denoise`, a reroll's renders —
+ * is exactly that: one submission, one lane, one row in `/v1/activity` reading
+ * `running`, and a second submission refused `server_busy` naming it. The job
+ * already holds what a lease would hold, for precisely as long, and a lease
+ * around one would be a second owner of one fact (ARCHITECTURE.md R1).
+ *
+ * It would also be self-defeating, which is the part worth stating plainly:
+ * `tts` and `align` are in crucible's `EVICTS_THE_RESIDENT_MODEL`, so a lease
+ * taken around one of those jobs would make the server refuse `409 model_leased`
+ * — **to its own holder**, since a lease has no exemption for the client that
+ * took it. The run would refuse itself.
+ *
+ * A lease is for a SEQUENCE of requests with nothing else holding the card
+ * between them: the four text acts, a cleanup run, a page read. Those lease,
+ * once each, and `tools/test-crucible-lease.js` pins that these doors do not.
  */
 
 import * as fs from 'fs';
