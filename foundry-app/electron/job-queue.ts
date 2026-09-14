@@ -2516,29 +2516,25 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
 }
 
 /**
- * `--model` AND `--server`, composed together because they are one decision.
+ * `--model`, and only when there is one.
  *
  * ── Why the model can be missing ────────────────────────────────────────────
  *
- * Under Ollama it never is: the dialogs fall back to a declared default and the
- * server holds a library, so a run must say which model it means. Under vLLM a
- * blank field is the ANSWER — a vLLM process serves exactly one model, and an
- * empty `--model` tells the engine to ask the server, use what it is serving and
- * record that name (src/translate/vllm.ts). Passing `--model ""` would be this
- * file inventing an empty name; leaving the flag off says what is meant.
+ * A blank field is the ANSWER: the server holds exactly one resident model, and
+ * an empty `--model` tells the engine to ask the server, use what it is serving
+ * and record that name (src/translate/vllm.ts). Passing `--model ""` would be
+ * this file inventing an empty name; leaving the flag off says what is meant.
  *
- * ── And `--server` only when it is not the default ──────────────────────────
+ * ── No `--server` any more ──────────────────────────────────────────────────
  *
- * `ollama` is the engine's default and every job in this app's history has run
- * under it. Writing the flag out for it would put a new word on thousands of
- * command lines to say what they already said.
+ * The engine speaks one dialect since Owen's ruling of 2026-09-13 and the flag
+ * is gone with the second one. The `server` field on a request is still read by
+ * the settings screen to pick WHICH URL to hand over (`ipc.ts`), which is the
+ * app's own half of the same retirement and lands with the picker rework.
  */
 function modelArgs(request: { model: string; server?: LlmServerKind }): string[] {
   const model = request.model.trim();
-  return [
-    ...(model.length > 0 ? ['--model', model] : []),
-    ...(request.server === 'vllm' ? ['--server', 'vllm'] : []),
-  ];
+  return model.length > 0 ? ['--model', model] : [];
 }
 
 /**
@@ -2565,14 +2561,14 @@ export function argsFor(
      * ── READING THE BOOK AGAINST THE CATEGORIES ───────────────────────────────
      *
      * `foundry analyze --book X --out Y [--categories C] [--model M]
-     * [--ollama U]`. It writes a report and no document at all — a header, one
+     * [--endpoint U]`. It writes a report and no document at all — a header, one
      * row per candidate passage, and its own question-keyed cache of every rank
      * score and every verdict it paid for (docs/ANALYSIS.md §6).
      *
-     * `--ollama` IS PASSED, for the translate line's reason: the reading backend
-     * is owned by the settings screen and the engine reads it for itself, but
-     * Ollama is a server this app never starts, stops or configures, so there is
-     * nothing here to contradict.
+     * `--endpoint` IS PASSED, for the translate line's reason: the URL is the
+     * request's own (`request.ollama`, a field named in an older world and
+     * renamed with the picker rework), and the engine's own settings fallback
+     * must not be what decides which machine a job runs on.
      *
      * NO `--nli-python`, AND IT IS AN OMISSION THIS APP CHOSE. The interpreter
      * the entailment worker runs under is resolved by the engine from its own
@@ -2598,7 +2594,7 @@ export function argsFor(
       '--book', request.bookPath,
       '--out', request.outputPath,
       ...modelArgs(request),
-      '--ollama', request.ollama,
+      '--endpoint', request.ollama,
     ];
     /*
      * THE CHECKLIST, AS A FILE BESIDE THE REPORT — written by `spawnOf` at the
@@ -2703,9 +2699,9 @@ export function argsFor(
      * bank, and the engine refuses an `--out` beside `--records` by name because
      * the EPUB it would write is a book nobody would ever open.
      *
-     * `--ollama` IS passed — unlike the reading backend, which the settings
-     * screen owns and which the engine reads for itself. Ollama has no settings
-     * screen here because it is not a server this app manages.
+     * `--endpoint` IS passed — the URL is the request's own (`request.ollama`, a
+     * field named in an older world and renamed with the picker rework), and
+     * the engine's settings fallback must not decide which machine a job runs on.
      *
      * `--records` IS THE CACHE AS WELL AS THE PRODUCT, which is why there is no
      * `--bank` on this line any more and why the engine refuses the pair. It was
@@ -2738,7 +2734,7 @@ export function argsFor(
       '--records', request.recordsPath,
       '--to', languageOf(request),
       ...modelArgs(request),
-      '--ollama', request.ollama,
+      '--endpoint', request.ollama,
     ];
     /*
      * ── THE CHAIN, WHICH IS NOW ONE FLAG AND NO MACHINERY AT ALL ──────────────

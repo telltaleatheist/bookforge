@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **3b13392** — *fix(queue): the pump picks a row once — the picker reads the slot, and a start marks running before its first await* |
-| Copied on | 2026-09-11 |
-| Copied by | `git -C <foundry> archive 3b13392 app | tar -x --strip-components=1` |
+| Source sha | **83d7b66** — *chore(release): 1.3.0 — the engine's CLI lost --server, --ollama and --keep-model with the Ollama dialect* (`app/` identical to `646e8a1`, tag `engine-one-door`) |
+| Copied on | 2026-09-13 |
+| Copied by | `git -C <foundry> archive 83d7b66 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1211,3 +1211,82 @@ slot, and a start marks the row running synchronously before its first await. Te
 `test/cpu-lane-pump.test.ts`. Behavioural note for this side's mirror: a deferred row now reads `running`
 while its request is being materialised, where it read `queued` until the engine spawned. Tree
 diff-verified against foundry/app at 3b13392; no dep movement; IPC-CHANNELS.md unchanged.
+
+**83d7b66 (copied 2026-09-13) — ONE INFERENCE DOOR. The engine's second dialect is gone, the
+act says its own name, and a pass never loads a model.** Owen's ruling, in his words:
+*"everything compute intensive must go through crucible. if theres no crucible server, theres no
+foundry. it's a necessary service… we should adapt it to using the models through crucible
+instead."* The whole of it is Foundry's `646e8a1` (tag `engine-one-door`); `83d7b66` is the 1.3.0
+version bump on top, and `git diff 646e8a1 83d7b66` is **two root files** — `package.json` and
+`package-lock.json` — with `app/` byte-identical at both, verified here rather than taken. The copy
+names the RELEASE commit because that is what the released binary reports and what this repo's
+`test-foundry-clean-text-vendor` keeper therefore asks about.
+
+**The app half of the rework is TWO FILES and it is all this subtree carries.** `646e8a1` touches 25
+files; 23 of them are `src/`, `test/` and `docs/`, outside `app/`. What arrived here:
+
+- `electron/engine.ts` — `parseProgressLine` accepts **`simplify: block n/m`** beside
+  `translate: block n/m`. Owen: *"they can't lie to the user and say a translate job is running when
+  it's actually a simplify job."* The engine now prefixes every line of a `--rewrite` run with the
+  act it is actually running (`src/translate/act.ts`, new). The `phase` token stays `translate`
+  deliberately — it names the SHAPE of the progress (blocks of a text act) and the row's own kind
+  names the act.
+- `electron/job-queue.ts` — `modelArgs` no longer composes `--server vllm`, and the analyze and
+  translate lines spell **`--endpoint`** where they spelled `--ollama`. The request FIELD is still
+  called `ollama` on the app side and is renamed with Foundry's picker rework, so a reader of
+  `'--endpoint', request.ollama` is looking at a rename in flight rather than a mistake.
+
+**ONE THING THE HANDOFF NOTE DID NOT SAY, found by grepping the copy rather than reading the
+message: `electron/job-queue.ts:2683` STILL SPELLS `--keep-model`.** `if (request.keepModel ===
+true) args.push('--keep-model')`, on the clean-text line, with a docblock above it describing a
+release semantics the engine no longer has. The flag was retired from the engine by this very
+commit and is now refused by name (`foundry: unknown option --keep-model`), so any `CleanRequest`
+crossing the seam with `keepModel: true` produces a run that dies at argument parsing. It is
+UNREACHABLE today — `CleanRequest.keepModel` (shared/types.ts:1023) is Foundry's `4d62293`, added
+for BookForge's headless door, and nothing in the vendored app sets it; BookForge's own clean-text
+CLI does not go through `job-queue.ts`. So it is dead code and not a live defect, and per the
+SEALED SUBTREE rule it is NOT fixed here. Reported to the Foundry side; the fix is theirs, in the
+same commit that renames the `ollama` field.
+
+**What the engine now refuses, which is why BookForge's own spawn lines moved in the commit after
+this one.** `--server`, `--ollama` and `--keep-model` are gone from `translate`, `simplify`,
+`clean-text` and `analyze`; `--endpoint <url>` replaces them on every text act and, absent, the
+engine reads `backend.endpointUrl` from its own settings — the READING door's setting, because it
+is the same server. `--model` absent is the served model, always, and the listing's `id` is what
+the bank key, the records key and the stamp carry. The engine never loads and never unloads: a
+server holding a different model refuses by name, and `release()` on the clean runner is a stated
+no-op whose member survives only because `NumberNormalizerRunner` is the vendored interface.
+`clean-text` measures its longest request against `max_model_len` (`fitsWindow`) before request one
+instead of sending a 128-token cap no edit list fits and counting the truncation as a parse
+failure. `--concurrency` defaults to 12 (`DEFAULT_TEXT_CONCURRENCY`); the vendored driver's own
+`DEFAULT_CLEAN_CONCURRENCY` (4) is not read by the engine and was deliberately left alone so this
+repo's sha pin would hold. `chat_template_kwargs: {enable_thinking: false}` is still on the wire.
+
+**The text pass itself did not move, and that is now ASSERTED rather than believed.**
+`tools/test-foundry-clean-text-vendor.js` gains a TIER 3: the three `tts-*` leaves are checked
+byte-identical between `969dd96` (the last commit that touched the pass's rules) and whatever
+commit the binary reports. Tier 1 asks about the handover and tier 2 asks whether bytes equal a
+pin — neither can check the claim a 1,296-insertion/1,802-deletion rework makes when it says it
+left three files alone. Over the whole `cd89ee7..83d7b66` range, twelve of the thirteen mapped
+files have an EMPTY log and no pin was regenerated; the thirteenth is `tts-spoken-forms.ts`, moved
+by `7fbe763` (covid) and `969dd96` (wwi/wwii), both conformance fixes to this side's
+`caps_acronyms.json`, both caught by the VALUE check that exists for exactly them.
+
+Verification: **145/145 blobs** hash-verified against `83d7b66:app/` with `git hash-object` vs
+`git rev-parse` (index shas both sides, so `autocrlf` cannot lie), and the only files in the
+subtree that are not in `app/` are this note and `IPC-CHANNELS.md`. `IPC-CHANNELS.md` refreshed
+from `83d7b66:docs/` and **byte-identical to the copy already here** — no channel moved, and the
+collision keeper is 6/6 against it. `package.json`, `package-lock.json`, `angular.json` and all
+three `tsconfig*.json` are unmoved from `3b13392`, so the existing `node_modules` stands and no
+install was run (per the `npm ci`-not-`npm install` rule above, which only fires when the refresh
+moves a dep file). `npm run build` clean, ng 957.01 kB with the standing budget WARNING only; all
+foundry keepers green.
+
+**THE MANAGED ENGINE DOES NOT MATCH THIS COPY YET, and for once the gap is one release away rather
+than one hand-copy.** Foundry v1.3.0 is committed and its release tarballs are built, but
+`gh release create` is deliberately left for Owen — so `api.github.com/.../releases/latest` still
+answers **v1.2.0**, whose engine still speaks `--server`. `electron/foundry-cli-components.ts`
+pins nothing and installs the newest release, which is the right behaviour and is NOT changed here.
+The dev checkout's `dist/foundry-windows-x64.exe` already answers `foundry 1.3.0 (83d7b66)`, so a
+dev run matches; a managed install does not until the release is cut. Tracked as a Tier 3 line in
+`docs/CRUCIBLE_ROLLOUT_PLAN.md`.

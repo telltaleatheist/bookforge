@@ -15,7 +15,7 @@
  * That ownership is worth nothing unless the handover can be PROVED, and a pair
  * of commit messages on the other side is not a proof this side can run.
  *
- * ── TWO ASSERTIONS, because there are two different questions ───────────────
+ * ── THREE ASSERTIONS, because there are three different questions ───────────
  *
  * **1. THE HANDOVER.** At Foundry's vendor commits — `f2e3c2d` for the pass's
  * own ten files, `770480d` for the three leaves it imports — every file is
@@ -32,10 +32,54 @@
  * only distinction that matters, and the one a plain "are they identical" check
  * cannot draw.
  *
+ * **3. THE ONE-DOOR FREEZE** (`checkFrozenSinceOneDoor`, added 2026-09-13 with
+ * the `83d7b66` re-vendor). Foundry's Wave 60 rewrote how a text act TALKS to a
+ * server — `src/translate/ollama.ts` deleted, `transport.ts` in its place, the
+ * runner rewritten — and claimed in `#foundrynotes` that the three `tts-*`
+ * leaves came through it *"byte-identical to 969dd96"*. Tiers 1 and 2 cannot
+ * check that claim: tier 1 asks about a commit eight days older, and tier 2
+ * asks whether bytes equal a pin, which a rewrite that happened to reproduce
+ * the pinned bytes would also satisfy. Tier 3 asks the claim itself — no
+ * change to those three files across the rework — so the freeze is asserted
+ * rather than believed.
+ *
  * A REGENERATED PIN IS A DECISION, not a chore. If this keeper fails on a file
  * in tier 2, the answer is to read Foundry's commit and decide whether the
  * change is a port or a rule move; a rule move means the corpora and the renders
  * normalize differently and `NORMALIZER_VERSION` should have moved with it.
+ *
+ * ── THE DECISION OF 2026-09-13, cd89ee7 → 83d7b66 (foundry v1.3.0) ──────────
+ *
+ * The re-vendor to `83d7b66` moved the shipped anchor across 21 Foundry
+ * commits. All thirteen files in the map below were read over that range
+ * (`git log cd89ee7..83d7b66 -- <path>`, one path at a time — a single log over
+ * `src/clean/` would have lumped the driver's commits in with the leaves').
+ * TWELVE OF THE THIRTEEN HAVE AN EMPTY LOG. Not one pin was regenerated, and
+ * that is the finding rather than the absence of one: `646e8a1` is the biggest
+ * engine commit since the handover and it left the rules alone.
+ *
+ * The thirteenth is `src/clean/tts-spoken-forms.ts`, moved by exactly two
+ * commits, and NEITHER is a rule move:
+ *
+ *   - `7fbe763` — `covid` added to `SPOKEN_AS_WORD`.
+ *   - `969dd96` — `wwi` and `wwii` added.
+ *
+ * Both are CONFORMANCE FIXES: they close divergences from
+ * `python/narrator/text/caps_acronyms.json`, which is this side's authority for
+ * that list and had each word FIRST. The two copies now agree, which is why
+ * this file has no sha pin at all and is checked by value — see
+ * `checkSpokenAsWordAgreement`, which is the thing that caught both.
+ *
+ * RULING OWED (recorded rather than decided, because it is Owen's and he is
+ * asleep): a word entering the acronym list DOES change what the validator
+ * accepts, and `NORMALIZER_VERSION` stayed at `n6` through both. The argument
+ * for leaving it is that the list is data this side owns and Foundry mirrors,
+ * so the version names the TRANSFORM and not the vocabulary — and re-keying
+ * every cached record and re-vendoring every corpus for one acronym would be a
+ * very expensive way to say "COVID". The argument against is that two books
+ * cleaned either side of `7fbe763` stamp `n6` and are not the same text. Left
+ * as it stands; both copies agreeing is what this keeper can enforce, and it
+ * does.
  *
  * ── What is compared, and why by name ───────────────────────────────────────
  *
@@ -178,10 +222,38 @@ function foundryShipped(repo) {
  * then the component registry. The registry needs electron, which this script
  * does not have, so the env var and the conventional build output are what is
  * reachable here; a machine using a managed install must name it explicitly.
+ *
+ * THE VARIABLE IS `FOUNDRY_CLI_PATH`. This function read `FOUNDRY_CLI` until
+ * 2026-09-13 and nothing in the app has ever read that name — the bridge's
+ * docblock, `primeFoundryDevCliPath` and the packaged path all spell
+ * `FOUNDRY_CLI_PATH`. So a developer who pointed the app at a specific binary
+ * pointed this keeper at nothing, and it silently answered about the checkout's
+ * `dist/` instead: the same class of defect as the fixed anchor above, one
+ * layer down. Both names are accepted so that a machine already exporting the
+ * wrong one is not left unable to run it, and the two disagreeing is a REFUSAL
+ * rather than a precedence rule — two people have named the binary and this
+ * cannot tell which of them meant it.
  */
 function foundryBinary(repo) {
-  const fromEnv = process.env['FOUNDRY_CLI']?.trim();
-  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+  const canonical = process.env['FOUNDRY_CLI_PATH']?.trim();
+  const legacy = process.env['FOUNDRY_CLI']?.trim();
+  if (canonical && legacy && path.resolve(canonical) !== path.resolve(legacy)) {
+    throw new Error(
+      `FOUNDRY_CLI_PATH (${canonical}) and FOUNDRY_CLI (${legacy}) name different binaries. `
+      + 'FOUNDRY_CLI_PATH is the one the app reads (electron/foundry-bridge.ts); FOUNDRY_CLI is '
+      + 'accepted here only for machines that exported it before 2026-09-13. Unset one.',
+    );
+  }
+  const fromEnv = canonical ?? legacy;
+  if (fromEnv) {
+    if (!fs.existsSync(fromEnv)) {
+      throw new Error(
+        `the environment names ${fromEnv} as the foundry binary and there is nothing there. `
+        + 'Falling through to the checkout would answer about a build nobody asked for.',
+      );
+    }
+    return fromEnv;
+  }
   const built = path.join(
     repo ?? foundryRepo(),
     'dist',
@@ -193,6 +265,42 @@ function foundryBinary(repo) {
 /** Foundry's two verbatim-copy commits. Tier 1 is asserted at these. */
 const VENDOR_PASS = 'f2e3c2d';
 const VENDOR_LEAVES = '770480d';
+
+/**
+ * TIER 3 — the last commit that touched the text pass's own rules, and the
+ * three files that must not have moved since.
+ *
+ * `969dd96` is `fix(clean): SPOKEN_AS_WORD gains wwi/wwii` (2026-09-13 17:51),
+ * the second of the two conformance fixes the VALUE check below narrates. It is
+ * the baseline because the very next engine commit, `646e8a1`, is the ONE
+ * INFERENCE DOOR rework: 1,296 insertions and 1,802 deletions across 25 files,
+ * `src/translate/ollama.ts` deleted outright, `src/clean/runner.ts` rewritten.
+ * A rework that size is exactly the event that carries an unnoticed edit into a
+ * rule table, and Foundry's own handoff note makes the negative claim in as
+ * many words: *"`tts-number-normalizer.ts`, `tts-spoken-forms.ts`,
+ * `tts-punctuation.ts` are byte-identical to 969dd96."*
+ *
+ * NOTE WHAT IS **NOT** ASSERTED HERE, because the obvious phrasing is wrong:
+ * "the three tts-* leaves are byte-identical to BookForge's anchor". Only
+ * `tts-punctuation.ts` is (it is `carried` in the map above).
+ * `tts-number-normalizer.ts` was PORTED by `215294a` and again by `cd89ee7` and
+ * can never be byte-identical to `0f962d5f` again; `tts-spoken-forms.ts` is
+ * deliberately checked by VALUE and not by bytes at all. Asserting byte
+ * identity against our anchor would therefore either fail on a documented port
+ * or have to be weakened until it asserted nothing. The freeze against
+ * Foundry's OWN last rule commit is the assertion that survives contact with
+ * both of those facts.
+ *
+ * The baseline moves the next time Foundry legitimately changes one of these —
+ * and moving it is a DECISION, on the same terms as a regenerated pin: read the
+ * commit, and if a rule moved, `NORMALIZER_VERSION` must move with it.
+ */
+const ONE_DOOR_BASELINE = '969dd96';
+const FROZEN_SINCE_BASELINE = [
+  'src/clean/tts-number-normalizer.ts',
+  'src/clean/tts-spoken-forms.ts',
+  'src/clean/tts-punctuation.ts',
+];
 
 /**
  * THE MAP, one entry per file, BookForge's path → Foundry's.
@@ -244,7 +352,11 @@ const FILES = [
         + 'of `askAboutEach`, which is the DRIVER. No rule table, no validator, no '
         + '`ruleRewrites`/`settleByRules`/`validateNumberEdits` logic is in the diff. '
         + 'Temperature stays 0 and the retry rules re-ask at the same settings, so the requests '
-        + 'overlap and the text does not. No validator and no disposition moved.',
+        + 'overlap and the text does not. No validator and no disposition moved. '
+        + 'STILL GOOD at 83d7b66 (the v1.3.0 release commit) — the pin was NOT regenerated for '
+        + 'it, because `git log cd89ee7..83d7b66 -- src/clean/tts-number-normalizer.ts` is empty: '
+        + 'the one-door rework (646e8a1) changed how the runner TALKS to a server, never what '
+        + 'this file decides. Asserted rather than read off that log by tier 3 below.',
     },
   },
   {
@@ -449,6 +561,70 @@ function checkSpokenAsWordAgreement(atShip) {
     + 'the list, not this keeper.';
 }
 
+/**
+ * TIER 3, run against whatever commit the binary names. Returns a list of
+ * problems, which is empty when the freeze holds.
+ *
+ * IT IS SKIPPED BY NAME WHEN THE BASELINE IS NOT AN ANCESTOR of the shipped
+ * commit, and never silently. A binary older than `969dd96` — a machine that
+ * has not upgraded, a deliberate `FOUNDRY_HEAD_OVERRIDE` bisect — is being
+ * asked a question about a future it cannot have reached, and answering
+ * "changed" there would name the wrong defect. Tiers 1 and 2 still run on it.
+ */
+function checkFrozenSinceOneDoor(foundry, shippedRev) {
+  let descends = false;
+  try {
+    execFileSync('git', [
+      '-C', foundry, 'merge-base', '--is-ancestor', ONE_DOOR_BASELINE, shippedRev,
+    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+    descends = true;
+  } catch {
+    descends = false;
+  }
+  if (!descends) {
+    return {
+      problems: [],
+      note: `TIER 3 skipped — ${shippedRev} does not descend from ${ONE_DOOR_BASELINE}`,
+      frozen: 0,
+    };
+  }
+
+  const problems = [];
+  let frozen = 0;
+  for (const file of FROZEN_SINCE_BASELINE) {
+    const before = blob(foundry, ONE_DOOR_BASELINE, file);
+    const after = blob(foundry, shippedRev, file);
+    if (before === null) {
+      problems.push(
+        `TIER 3 ${file}: absent at the baseline ${ONE_DOOR_BASELINE}. The baseline names a path `
+        + 'that was not there, so this check is describing a freeze of nothing.',
+      );
+      continue;
+    }
+    if (after === null) {
+      problems.push(
+        `TIER 3 ${file} @${shippedRev}: gone. Tier 2 will have said so too; this line says it was `
+        + `still present at ${ONE_DOOR_BASELINE}, so it was removed by the range in between.`,
+      );
+      continue;
+    }
+    if (before.equals(after)) {
+      frozen += 1;
+    } else {
+      problems.push(
+        `TIER 3 ${file}: changed between ${ONE_DOOR_BASELINE} and ${shippedRev} `
+        + `(${before.length} bytes then, ${after.length} now). Foundry's handoff note claims these `
+        + 'three came through the one-door rework untouched. Read the commits in '
+        + `\`git -C <foundry> log ${ONE_DOOR_BASELINE}..${shippedRev} -- ${file}\` and DECIDE: a `
+        + 'port keeps the transform and gets recorded beside the pin above; a rule move means '
+        + 'NORMALIZER_VERSION or PUNCTUATION_SPEC_VERSION should have moved with it and every '
+        + 'stamped book, cached record and training corpus keyed off the old one is now lying.',
+      );
+    }
+  }
+  return { problems, note: null, frozen };
+}
+
 function requireCommit(repo, rev, what) {
   try {
     execFileSync('git', ['-C', repo, 'rev-parse', '--verify', `${rev}^{commit}`], {
@@ -480,7 +656,7 @@ function main() {
   requireCommit(bookforge, BOOKFORGE_ANCHOR, 'BookForge');
   const shipped = foundryShipped(foundry);
   const FOUNDRY_SHIPPED = shipped.rev;
-  for (const rev of [VENDOR_PASS, VENDOR_LEAVES, FOUNDRY_SHIPPED]) {
+  for (const rev of [VENDOR_PASS, VENDOR_LEAVES, ONE_DOOR_BASELINE, FOUNDRY_SHIPPED]) {
     requireCommit(foundry, rev, 'Foundry');
   }
 
@@ -594,6 +770,10 @@ function main() {
     }
   }
 
+  // ── Tier 3: the one-door freeze ───────────────────────────────────────────
+  const freeze = checkFrozenSinceOneDoor(foundry, FOUNDRY_SHIPPED);
+  problems.push(...freeze.problems);
+
   assert.deepStrictEqual(
     problems, [],
     'The Foundry engine\'s copy of the narration text pass does not match this repository:\n  '
@@ -607,7 +787,10 @@ function main() {
     + `bookforge ${BOOKFORGE_ANCHOR} at foundry ${VENDOR_PASS}/${VENDOR_LEAVES}. `
     + `Shipped (${FOUNDRY_SHIPPED}): ${carried} carried verbatim, ${pinned} ported and pinned, `
     + `${replaced} replaced by the engine's own driver, ${agreed} checked by VALUE. `
-    + `n6/s1 agree on both sides. (${foundry})`,
+    + `n6/s1 agree on both sides. `
+    + (freeze.note ?? `${freeze.frozen}/${FROZEN_SINCE_BASELINE.length} frozen since `
+      + `${ONE_DOOR_BASELINE}. `)
+    + `(${foundry})`,
   );
 }
 

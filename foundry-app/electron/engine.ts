@@ -221,7 +221,8 @@ function killTree(child: ChildProcess | null): void {
  *   `vlm-convert: … page 5/317`   the local route.
  *
  * Two more commands have their own prefixes and their own nouns since —
- * `translate: block n/m` and `analyze: rank|verify n/m` — and both are
+ * `translate: block n/m` (or `simplify: block n/m`, the same command under its
+ * other name) and `analyze: rank|verify n/m` — and both are
  * matched above the prefix gate, with the reason written at each of them.
  */
 export function parseProgressLine(line: string): JobProgress | null {
@@ -233,16 +234,19 @@ export function parseProgressLine(line: string): JobProgress | null {
   }
 
   /*
-   * `translate: block 412/2081 (EPUB/text/c0003.xhtml)`.
+   * `translate: block 412/2081 (EPUB/text/c0003.xhtml)` — or `simplify: block …`,
+   * because the engine names the act it is running (Owen, 2026-09-13: a
+   * simplify may not say "translate"), and both acts count blocks the same way.
    *
    * Matched before the `vlm-convert:` gate because it is a different command
    * with its own prefix, and matched on `block` specifically so the engine's
-   * OTHER translate lines — the rejected-answer notices, which also carry a
-   * fraction (`attempt 2/3`) — cannot be read as progress. A bar that jumped to
-   * 67% because an answer was retried would be a bar reporting the wrong
-   * quantity entirely.
+   * OTHER lines — the rejected-answer notices, which also carry a fraction
+   * (`attempt 2/3`) — cannot be read as progress. A bar that jumped to 67%
+   * because an answer was retried would be a bar reporting the wrong quantity
+   * entirely. The phase token stays `translate`: it names the SHAPE of the
+   * progress (blocks of a text act), and the row's own kind names the act.
    */
-  const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  const block = /^(?:translate|simplify):\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (block) {
     return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
   }
