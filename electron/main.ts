@@ -106,6 +106,13 @@ import {
   foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
   type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions,
 } from './foundry-host-queue';
+// This machine's Crucible servers, as the hosted window receives them — Owen's
+// ruling of 2026-09-14 that there is ONE registry and it is BookForge's. The
+// TYPE only: the module itself is loaded where every other `crucible/` module
+// in this file is, through a dynamic import, so the SDK it pulls in is not on
+// the startup path. The mount captures it once, because the seam Foundry reads
+// is synchronous and cannot await one.
+import type { HostCrucibleServer } from './crucible/host-registry';
 import {
   resolveNarrationTarget, stepPressTranslationCheck, type LedgerStepLite,
 } from './foundry-narrate-target';
@@ -429,6 +436,33 @@ interface FoundryHostRecord {
    * host object is simply never called.
    */
   mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
+  /**
+   * THIS MACHINE'S CRUCIBLE SERVERS — Owen's ruling of 2026-09-14, *"hosted
+   * Foundry reads BookForge's server registry"*, and the seam Foundry landed
+   * for it at `e096734` (`FoundryHost.servers?()`).
+   *
+   * ONE REGISTRY, because the window runs in this process against this
+   * machine's cards: a second list over there would be a second set of tokens
+   * and a second ranking dispatching against GPUs our own scheduler is
+   * rationing. Their dispatcher DERIVES its slots from what comes back, so a
+   * name it places work on is always a name it can look a credential up for —
+   * which is the defect this replaced (`slots?()` handed over the list and
+   * kept the credentials, and hosted the lookup read a settings file that is
+   * always empty).
+   *
+   * SYNCHRONOUS AND READ AT EVERY USE, because their `computeSlots()` runs
+   * while the queue page paints. Ours answers from a snapshot taken at named
+   * moments (`electron/crucible/host-registry.ts`) rather than resolving
+   * `local` through a `wsl.exe` spawn per paint; a call before the first
+   * reading REFUSES by name rather than answering with an empty list, which
+   * their reader logs.
+   *
+   * WE NEVER OFFERED `slots?()`, which is why nothing is being removed here:
+   * the vendored subtree at `e6d5424` still calls it and gets `undefined`, so
+   * hosted placement is inert until the re-vendor that carries their new
+   * reader. See `hostedCrucibleTextActNotVendored` in foundry-host-queue.ts.
+   */
+  servers?(): readonly HostCrucibleServer[];
   /**
    * A PERSON PRESSED RETRY OR DISMISS on one of our rows that failed.
    *
@@ -7615,10 +7649,41 @@ function setupIpcHandlers(): void {
   // only doors here that touch an accelerator.
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * RE-READ THE REGISTRY FOR THE HOSTED FOUNDRY WINDOW — one of the named
+   * moments the snapshot exists for (electron/crucible/host-registry.ts).
+   *
+   * Called after every door below that can change the list, and on the panel's
+   * own read, which is where a person presses Re-check on `local`. It is NOT a
+   * refresh on a timer and not one per use: the window's reader is synchronous
+   * and resolving `local` is a `wsl.exe` spawn.
+   *
+   * A FAILED RE-READ DOES NOT FAIL THE WRITE THAT JUST SUCCEEDED. The entry was
+   * added, the rank was saved; what failed is this app telling the hosted
+   * window about it, which is said in the log by name, and the previous
+   * snapshot stands rather than being wiped by a read that did not work.
+   */
+  const refreshHostedFoundryRegistry = async (after: string): Promise<void> => {
+    try {
+      const registry = await import('./crucible/host-registry.js');
+      getMainLogger().info(
+        registry.describeHostCrucibleRegistry(registry.refreshHostCrucibleRegistry()));
+    } catch (err) {
+      getMainLogger().warn(
+        `Could not re-read the Crucible registry for the hosted Foundry window ${after}`,
+        { error: (err as Error).message });
+    }
+  };
+
   ipcMain.handle('crucible:servers', async () => {
     try {
       const { serversView } = await import('./crucible/probe.js');
-      return { success: true, data: serversView() };
+      const view = serversView();
+      // The panel's read IS the Re-check of `local`: it resolves the local
+      // server's config on the way through, so this is the moment the hosted
+      // window's copy of the list is cheapest to bring level with it.
+      await refreshHostedFoundryRegistry('after the Servers panel read');
+      return { success: true, data: view };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7637,7 +7702,9 @@ function setupIpcHandlers(): void {
       // is this machine (which is read from its config, never registered), a
       // duplicate name is not a silent repoint. The row shows the message.
       const { addServer } = await import('./crucible/servers.js');
-      return { success: true, data: addServer(server) };
+      const added = addServer(server);
+      await refreshHostedFoundryRegistry('after a server was added');
+      return { success: true, data: added };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7646,7 +7713,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('crucible:remove', async (_event, name: string) => {
     try {
       const { removeServer } = await import('./crucible/servers.js');
-      return { success: true, data: removeServer(name) };
+      const removed = removeServer(name);
+      await refreshHostedFoundryRegistry('after a server was removed');
+      return { success: true, data: removed };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7701,7 +7770,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('crucible:set-order', async (_event, order: string[]) => {
     try {
       const { setRoutingOrder } = await import('./crucible/routing.js');
-      return { success: true, data: setRoutingOrder(order) };
+      const ranked = setRoutingOrder(order);
+      await refreshHostedFoundryRegistry('after the servers were re-ranked');
+      return { success: true, data: ranked };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7710,7 +7781,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('crucible:set-enabled', async (_event, name: string, enabled: boolean) => {
     try {
       const { setServerEnabled } = await import('./crucible/routing.js');
-      return { success: true, data: setServerEnabled(name, enabled) };
+      const switched = setServerEnabled(name, enabled);
+      await refreshHostedFoundryRegistry(`after "${name}" was switched ${enabled ? 'on' : 'off'}`);
+      return { success: true, data: switched };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7743,7 +7816,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('crucible:forget', async (_event, name: string) => {
     try {
       const { forgetRoutingName } = await import('./crucible/routing.js');
-      return { success: true, data: forgetRoutingName(name) };
+      const forgotten = forgetRoutingName(name);
+      await refreshHostedFoundryRegistry(`after "${name}" was forgotten`);
+      return { success: true, data: forgotten };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -12585,6 +12660,31 @@ app.whenReady().then(async () => {
     }
   }
 
+  /*
+   * ── THE FIRST READING OF THE REGISTRY, BEFORE THE WINDOW CAN ASK ─────────
+   *
+   * Owen's ruling of 2026-09-14: hosted Foundry reads BookForge's server
+   * registry. Their reader is synchronous (`computeSlots()` runs while the
+   * queue page paints), so the seam below answers from a snapshot, and this is
+   * where the first one is taken — captured in a local because a dynamic
+   * import cannot be awaited inside a synchronous callback.
+   *
+   * A FAILED READING IS LOGGED AND NOT FATAL, and the seam is still offered:
+   * the refusal a window then hears from `hostCrucibleServers()` names the
+   * snapshot that was never taken, which is a sentence about THIS app's
+   * startup — strictly better than mounting without the seam, which would tell
+   * the window "your host does not implement it" about a host that does.
+   */
+  const hostRegistry = await import('./crucible/host-registry.js');
+  try {
+    logger.info(hostRegistry.describeHostCrucibleRegistry(
+      hostRegistry.refreshHostCrucibleRegistry()));
+  } catch (err) {
+    logger.warn('Could not read this machine\'s Crucible registry for the hosted Foundry window', {
+      error: (err as Error).message,
+    });
+  }
+
   foundryMount.mountFoundry({
     // A GETTER, not a captured string. Foundry answers `readAppSettings()` from
     // this property on every read (`hostedLibraryDir()`), so a live one means
@@ -12607,6 +12707,15 @@ app.whenReady().then(async () => {
     // seeds the fields Foundry's stored block does not cover. Null means "no
     // answer" and the modal behaves as it did before the callback existed.
     mintMetaFor: (projectDir: string) => foundryMintMetaFor(projectDir),
+    /*
+     * THE ONE REGISTRY (Owen, 2026-09-14). Synchronous by their contract, so
+     * it reads the snapshot and never the file: resolving `local` means a
+     * `wsl.exe` spawn, and one of those per paint is a stuttering window.
+     * A call before the first reading refuses BY NAME — their reader logs it
+     * as an empty registry, which is the right end of the rule for a function
+     * called while a page is drawn, and the sentence says whose bug it is.
+     */
+    servers: (): readonly HostCrucibleServer[] => hostRegistry.hostCrucibleServers(),
     // Retry / Dismiss on a row of ours that failed. Registering it is what makes
     // Foundry DRAW the pair — it probes for the callback first — and it is NOT
     // wrapped for the same reason the operations are not: a rejection is a
