@@ -72,6 +72,18 @@ export interface RoutingView {
   ranked: RankedServerRow[];
   newJobsWaitFor: WaitForDefault;
   /**
+   * Render audiobooks by spawning narrator on this machine instead of sending
+   * the generation step to a Crucible server.
+   *
+   * **A dated stopgap with one owner** (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling
+   * 4): the local spawn layer stays until Owen's in-app pass and is then
+   * deleted in a commit he approves. It is a switch rather than a fallback —
+   * nothing flips it, a render says on the log when it is on, and when it is
+   * off a render that cannot reach a server FAILS BY NAME rather than quietly
+   * taking the local card.
+   */
+  legacyLocalRender: boolean;
+  /**
    * Names the record mentions that no server answers to any more. Reported with
    * the name, never pruned behind the operator's back.
    */

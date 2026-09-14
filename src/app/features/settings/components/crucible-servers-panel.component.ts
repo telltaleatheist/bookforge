@@ -310,6 +310,20 @@ const LOCAL = 'local';
         will have it, preferring this order. Rows already queued are never re-routed.
       </p>
 
+      <!-- The dated stopgap, reachable on purpose and exactly once. -->
+      <div class="cru-legacy">
+        <label class="cru-toggle">
+          <input type="checkbox" [checked]="legacyLocalRender()" (change)="setLegacyLocalRender($any($event.target).checked)" />
+          <span>Render audiobooks with the local narrator instead (legacy — removed after the in-app pass)</span>
+        </label>
+        <p class="cru-sub">
+          Off, an audiobook's generation step runs on the server above and a render that cannot
+          reach one fails saying which — it never quietly takes this machine's card. On, every
+          render spawns narrator here, and says so on its log. This is the only switch for it;
+          there is no per-render version.
+        </p>
+      </div>
+
       <!-- ── Add ────────────────────────────────────────────────────────── -->
       <h4 class="cru-group">Add a Crucible server</h4>
       <p class="cru-sub">
@@ -379,6 +393,11 @@ const LOCAL = 'local';
     .cru-fill { display: block; height: 100%; background: var(--accent, var(--accent-primary)); }
     .cru-pct { min-width: 34px; text-align: right; }
     .cru-waitfor { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+    .cru-legacy {
+      display: flex; flex-direction: column; gap: 4px; margin-top: 6px;
+      padding: 10px 12px; border: 1px dashed var(--border-subtle, var(--border-default));
+      border-radius: 8px;
+    }
     .cru-waitfor-label { font-size: 13px; color: var(--text-primary); font-weight: 600; }
     .cru-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .cru-input {
@@ -401,6 +420,8 @@ export class CrucibleServersPanelComponent {
   readonly ranked = computed<RankedServerRow[]>(() => this.view()?.routing.ranked ?? []);
   readonly unknown = computed<string[]>(() => this.view()?.routing.unknown ?? []);
   readonly waitFor = computed<WaitForDefault | null>(() => this.view()?.routing.newJobsWaitFor ?? null);
+  /** The legacy local-narrator switch. False until the record says otherwise. */
+  readonly legacyLocalRender = computed(() => this.view()?.routing.legacyLocalRender === true);
 
   /** Per-server probe / activity / model answers, each asked for on demand. */
   readonly probe = signal<Record<string, CrucibleProbeResult>>({});
@@ -550,6 +571,20 @@ export class CrucibleServersPanelComponent {
     const res = await this.electron.crucible.setWaitFor(value);
     if (!res.success || !res.data) {
       this.loadError.set(res.error ?? 'That setting could not be saved, and nothing said why.');
+      return;
+    }
+    this.applyRouting(res.data);
+  }
+
+  /**
+   * Turn the legacy local narrator on or off. The ONE place that says it — the
+   * bridge reads this record and nothing else, and no render carries its own
+   * version of the answer.
+   */
+  async setLegacyLocalRender(value: boolean): Promise<void> {
+    const res = await this.electron.crucible.setLegacyLocalRender(value);
+    if (!res.success || !res.data) {
+      this.loadError.set(res.error ?? 'That switch could not be saved, and nothing said why.');
       return;
     }
     this.applyRouting(res.data);

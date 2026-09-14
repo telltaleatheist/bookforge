@@ -59,6 +59,18 @@ import { crucibleClientFor, describeLocal, listServers, CRUCIBLE_CLIENT_NAME } f
 import { readRouting } from './routing';
 
 /**
+ * What one unauthenticated `ping` answered.
+ *
+ * Its own type rather than a {@link CrucibleProbeResult}: `ping` learns the
+ * server's name and its api version and NOTHING else — no backend, no GPU, no
+ * job types, nothing about the token — and filling a facts block with empty
+ * strings to reuse a shape would be inventing four answers this call never got.
+ */
+export type CruciblePingResult =
+  | { outcome: 'ok'; serverName: string; apiVersion: number }
+  | Exclude<CrucibleProbeResult, { outcome: 'ok' }>;
+
+/**
  * Everything the row draws before it probes anything: the local server (or the
  * named reason there is none), the registered remotes, and the rank/enable
  * record resolved against both.
@@ -174,6 +186,34 @@ export async function probeAddress(url: string, token: string): Promise<Crucible
     return { outcome: 'ok', facts: await factsOf(client) };
   } catch (err) {
     return failureOutcome(err, at);
+  }
+}
+
+/**
+ * IS THERE A CRUCIBLE AT THIS SERVER'S ADDRESS — one unauthenticated call.
+ *
+ * The candidacy question, and deliberately the cheapest one that answers it:
+ * `waitFor: any` asks it of each enabled server in rank order before it sends a
+ * book (crucible `docs/PHASE7-LANES.md` §4.2.1 — "unreachable servers are simply
+ * not candidates"), so it must not cost three round trips per machine.
+ *
+ * **An `ok` here is not permission to submit.** It says the address answers;
+ * whether the lane is free is settled at the door by `POST /v1/jobs`, which
+ * admits one client and refuses the other by name. A client is built to be
+ * refused after reading this.
+ */
+export async function pingServer(name: string): Promise<CruciblePingResult> {
+  let client: CrucibleClient;
+  try {
+    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const pong = await client.ping();
+    return { outcome: 'ok', serverName: pong.name, apiVersion: pong.apiVersion };
+  } catch (err) {
+    return failureOutcome(err, `"${name}" (${client.url})`);
   }
 }
 

@@ -4130,6 +4130,16 @@ export class ElectronService {
         ? (window as any).electron.crucible.setWaitFor(value)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
+    /**
+     * The ONE switch for the legacy local narrator (docs/CRUCIBLE_ROLLOUT_PLAN.md
+     * §2 ruling 4). There is no per-render version of it: a second place to say
+     * "not this one" would be a second owner of the same fact.
+     */
+    setLegacyLocalRender: (value: boolean): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.setLegacyLocalRender(value)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
     forget: (name: string): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.forget(name)

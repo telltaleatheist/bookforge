@@ -80,6 +80,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - `orpheus-memory.ts` tier table deletion; narrator's verdict channel for the local driver.
 - `@crucible/bootstrap` (install Crucible from BookForge's setup wizard; client mints the token and passes `crucible init --token`).
 - Foundry: its four items, Ollama retirement, and consuming `local`/registry the same way (Bun parses TOML natively).
+- Foundry v1.3.0 (`83d7b66`) — tarballs built, `gh release create` needs Owen; the dev checkout's `dist/` already runs `83d7b66`, and until the release is cut the managed `foundry-cli` component stays on v1.2.0 (`eb69b7a`), whose engine still speaks `--server`. `foundry-cli-components.ts` pins nothing and takes the newest release, so cutting it is the whole fix.
 - Merging `feat/narrator-guarded-serve` and `feat/phase6-remote-render` — after the pass.
 
 ## 2. Rulings taken tonight (defaults Owen can overturn in the morning)

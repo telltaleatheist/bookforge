@@ -120,6 +120,16 @@ const SUITES = [
   // the local naming, and a 409 server_busy that FAILS the render naming the
   // holder instead of quietly taking this machine's GPU.
   'test-crucible-render',
+  // Which servers exist, and which one a render goes to — the two records the
+  // Crucible Servers settings row writes (rollout items 2.1, 2.2). Both are
+  // credential-adjacent and both are the kind of state whose defects are
+  // silent: a registry that quietly replaced a corrupt file would lose every
+  // token at once, a rank record that quietly pruned a name would lose a
+  // machine's place, and a venue decision that quietly fell back to the local
+  // narrator would take a GPU somebody else is using and finish the book in a
+  // voice nobody chose. Neither suite needs a server, a card or the network.
+  'test-crucible-servers',
+  'test-crucible-routing',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',

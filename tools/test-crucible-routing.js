@@ -15,6 +15,9 @@
  *   • an order naming a server that no longer exists is REPORTED, never pruned
  *   • "New jobs wait for: top-ranked | any" is one setting with two values
  *   • rankedServers / topRankedServer / defaultWaitFor refuse when nothing is enabled
+ *   • the LEGACY local-narrator switch: one owner, absent = off, never a fallback
+ *   • WHERE a render's generation step runs (electron/crucible/generation-venue.ts),
+ *     driven over a scripted host — no record on disk, no registry, no network
  *
  * Run:  node tools/test-crucible-routing.js
  */
@@ -28,6 +31,7 @@ const path = require('path');
 
 const DIST = path.resolve(__dirname, '..', 'dist', 'electron', 'crucible');
 const routing = require(path.join(DIST, 'routing.js'));
+const venue = require(path.join(DIST, 'generation-venue.js'));
 
 let ran = 0;
 function check(name, fn) {
@@ -78,7 +82,9 @@ check('no file yet is the DEFAULT record, not a refusal: every server ranked in 
 
 check('with no servers at all the view is empty and says so by having nothing, not by inventing one', () => {
   const { store } = fresh();
-  assert.deepStrictEqual(store.view([]), { ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] });
+  assert.deepStrictEqual(store.view([]), {
+    ranked: [], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: false,
+  });
 });
 
 // ── Rank is the order ────────────────────────────────────────────────────────
@@ -90,7 +96,7 @@ check('setOrder writes the whole list and the view reads it back in that order',
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepStrictEqual(onDisk.order, ['mac', 'local', 'droplet']);
   // The list IS the rank: the record holds names in an order and nothing else.
-  assert.deepStrictEqual(Object.keys(onDisk).sort(), ['disabled', 'newJobsWaitFor', 'order']);
+  assert.deepStrictEqual(Object.keys(onDisk).sort(), ['disabled', 'legacyLocalRender', 'newJobsWaitFor', 'order']);
   assert.ok(onDisk.order.every((entry) => typeof entry === 'string'), 'an order entry is a name, not a {name, rank}');
 });
 
@@ -240,16 +246,163 @@ check('the record round-trips through a second store over the same file', () => 
   store.setEnabled('droplet', false, KNOWN);
   store.setNewJobsWaitFor('any', KNOWN);
   const reopened = new routing.Routing(file);
-  assert.deepStrictEqual(reopened.read(), { order: ['mac', 'droplet', 'local'], disabled: ['droplet'], newJobsWaitFor: 'any' });
+  assert.deepStrictEqual(reopened.read(), {
+    order: ['mac', 'droplet', 'local'], disabled: ['droplet'], newJobsWaitFor: 'any', legacyLocalRender: false,
+  });
   assert.deepStrictEqual(enabled(reopened.view(KNOWN)), ['mac', 'local']);
 });
 
 check('the module-level doors exist for the queue that will use them', () => {
   for (const door of ['readRouting', 'setRoutingOrder', 'setServerEnabled', 'setNewJobsWaitFor',
-    'forgetRoutingName', 'rankedServers', 'topRankedServer', 'defaultWaitFor', 'knownServers', 'routingPath']) {
+    'setLegacyLocalRender', 'forgetRoutingName', 'rankedServers', 'topRankedServer', 'defaultWaitFor',
+    'knownServers', 'routingPath']) {
     assert.strictEqual(typeof routing[door], 'function', `${door} is missing`);
   }
 });
 
-fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${ran} checks, ${process.exitCode ? 'FAILING' : 'all passing'}`);
+// ── The legacy local narrator: one switch, and absent means off ──────────────
+
+check('the legacy local-render switch defaults OFF, persists, and is one boolean', () => {
+  const { store, file } = fresh();
+  assert.strictEqual(store.view(KNOWN).legacyLocalRender, false, 'no record = the server path');
+  assert.strictEqual(store.setLegacyLocalRender(true, KNOWN).legacyLocalRender, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).legacyLocalRender, true);
+  assert.strictEqual(store.setLegacyLocalRender(false, KNOWN).legacyLocalRender, false);
+  refuses(() => store.setLegacyLocalRender('yes', KNOWN), 'invalid_legacy_local_render');
+});
+
+check('a record written before the switch existed reads as OFF; a non-boolean is corrupt', () => {
+  // Absent is a MIGRATION, not a fallback: every record on disk today has no
+  // such key, and `false` is the behaviour those records described.
+  const before = fresh({ order: ['mac'], disabled: [], newJobsWaitFor: 'any' });
+  assert.strictEqual(before.store.view(KNOWN).legacyLocalRender, false);
+  const bad = fresh({ order: [], disabled: [], newJobsWaitFor: 'any', legacyLocalRender: 'true' });
+  refuses(() => bad.store.view(KNOWN), 'corrupt_routing');
+});
+
+// ── WHERE a render's generation step runs ────────────────────────────────────
+//
+// electron/crucible/generation-venue.ts, driven over a scripted host: no record
+// on disk, no registry, no network. Its four answers are PHASE7-LANES.md
+// §4.2.1's, and its two refusals are why nothing renders on this machine by
+// accident.
+
+const RANKED = [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }];
+
+/** A VenueHost with the defaults every check starts from, overridable per check. */
+function venueHost(over) {
+  const view = {
+    ranked: RANKED,
+    unknown: [],
+    newJobsWaitFor: 'top-ranked',
+    legacyLocalRender: false,
+    ...(over && over.view ? over.view : {}),
+  };
+  return {
+    view: () => view,
+    enabled: () => {
+      const on = view.ranked.filter((row) => row.enabled);
+      if (on.length === 0) {
+        // routing's OWN refusal, which is what the real host throws.
+        throw new routing.CrucibleRoutingError('no_enabled_server', 'every Crucible server is disabled');
+      }
+      return on;
+    },
+    ping: (over && over.ping) || (async () => ({ outcome: 'ok', serverName: 'x', apiVersion: 1 })),
+  };
+}
+
+async function acheck(name, fn) {
+  ran += 1;
+  try {
+    await fn();
+    console.log(`ok   ${name}`);
+  } catch (err) {
+    console.log(`FAIL ${name}\n     ${err && err.stack ? err.stack.split('\n').slice(0, 3).join('\n     ') : err}`);
+    process.exitCode = 1;
+  }
+}
+
+async function rejects(fn, ErrorType, code) {
+  let caught = null;
+  try { await fn(); } catch (err) { caught = err; }
+  assert.ok(caught, 'expected a refusal, got none');
+  assert.ok(caught instanceof ErrorType, `expected ${ErrorType.name}, got ${caught.name}: ${caught.message}`);
+  assert.strictEqual(caught.code, code, `expected code ${code}, got ${caught.code}: ${caught.message}`);
+  return caught;
+}
+
+const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, host);
+
+(async () => {
+  await acheck('the CALLER\'s server wins over everything, including the legacy switch', async () => {
+    const host = venueHost({ view: { legacyLocalRender: true, newJobsWaitFor: 'any' } });
+    assert.deepStrictEqual(await decide({ crucible: { server: ' mac ' } }, host),
+      { where: 'crucible', server: 'mac', because: 'the caller named it' });
+  });
+
+  await acheck('settings.crucible present and empty is refused by name — never a local render', async () => {
+    for (const bad of [{ server: '' }, { server: '   ' }]) {
+      await rejects(() => decide({ crucible: bad }, venueHost()),
+        venue.CrucibleVenueError, 'crucible_server_not_named');
+    }
+  });
+
+  await acheck('no caller, switch off, top-ranked: the top of the ENABLED list, unpinged', async () => {
+    let pinged = 0;
+    const host = venueHost({ ping: async () => { pinged += 1; return { outcome: 'unreachable', message: 'no' }; } });
+    assert.deepStrictEqual(await decide(undefined, host),
+      { where: 'crucible', server: 'local', because: 'the top-ranked server' });
+    assert.strictEqual(pinged, 0, 'naming a machine is an instruction: it is waited for, not probed');
+  });
+
+  await acheck('top-ranked skips a DISABLED server rather than sending work to it', async () => {
+    const host = venueHost({ view: { ranked: [{ name: 'local', enabled: false }, { name: 'mac', enabled: true }] } });
+    assert.strictEqual((await decide(undefined, host)).server, 'mac');
+  });
+
+  await acheck('any: the first enabled server whose ping answers, in RANK order', async () => {
+    const tried = [];
+    const host = venueHost({
+      view: { newJobsWaitFor: 'any' },
+      ping: async (name) => {
+        tried.push(name);
+        return name === 'mac'
+          ? { outcome: 'ok', serverName: 'm', apiVersion: 1 }
+          : { outcome: 'unreachable', message: 'nothing answered' };
+      },
+    });
+    assert.deepStrictEqual(await decide(undefined, host),
+      { where: 'crucible', server: 'mac', because: 'any: the first that answered' });
+    assert.deepStrictEqual(tried, ['local', 'mac'], 'rank order, and it stops at the first that answers');
+  });
+
+  await acheck('any with nothing reachable REFUSES, naming every server it tried and what each said', async () => {
+    const host = venueHost({
+      view: { newJobsWaitFor: 'any' },
+      ping: async (name) => ({ outcome: 'unreachable', message: `nothing answered at ${name}` }),
+    });
+    const err = await rejects(() => decide(undefined, host), venue.CrucibleVenueError, 'no_reachable_server');
+    assert.ok(/local \(unreachable/.test(err.message) && /mac \(unreachable/.test(err.message), err.message);
+    assert.ok(/local narrator/.test(err.message), 'the refusal names the switch that would run it here');
+  });
+
+  await acheck('nothing enabled: routing\'s OWN refusal, by code, in both wait-for modes', async () => {
+    for (const waitFor of ['top-ranked', 'any']) {
+      const host = venueHost({ view: { newJobsWaitFor: waitFor, ranked: [{ name: 'mac', enabled: false }] } });
+      await rejects(() => decide(undefined, host), routing.CrucibleRoutingError, 'no_enabled_server');
+    }
+  });
+
+  await acheck('the legacy switch is the ONLY way a render reaches the local narrator', async () => {
+    const on = venueHost({ view: { legacyLocalRender: true } });
+    assert.deepStrictEqual(await decide(undefined, on),
+      { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' });
+    // …and with it off, an unplaceable render throws instead of going local.
+    const off = venueHost({ view: { newJobsWaitFor: 'any' }, ping: async () => ({ outcome: 'refused', message: 'no' }) });
+    await rejects(() => decide(undefined, off), venue.CrucibleVenueError, 'no_reachable_server');
+  });
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(`\n${ran} checks, ${process.exitCode ? 'FAILING' : 'all passing'}`);
+})();

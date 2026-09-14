@@ -30,6 +30,10 @@ import type { JobStageProgress } from './job-stages';
 import type { NumberNormalizerRunner } from './tts-number-normalizer';
 import type { NarrationTextGate } from './narration-clean-text';
 import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
+// The venue decision's shape. The module itself is imported lazily where it is
+// used, like every other crucible door here: a render that never asks must not
+// pull the registry (and its bearer tokens) into the process.
+import type { GenerationVenue } from './crucible/generation-venue';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -5087,19 +5091,38 @@ function postRenderAlignProgress(session: ConversionSession, message: string): A
 // section 6.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `true` when this job's generation step belongs to a Crucible server. */
-function crucibleServerForJob(settings: ParallelTtsSettings | undefined): string | null {
-  const name = settings?.crucible?.server;
-  if (name === undefined) return null;
-  if (typeof name !== 'string' || name.trim() === '') {
-    // Present and empty is a caller that meant to name a server and did not.
-    // Rendering locally instead would be the silent downgrade this whole seam
-    // exists to refuse.
-    throw new Error('settings.crucible is set but names no server. It takes the NAME of an entry '
-      + 'in <userData>/crucible-servers.json (bookforge-tts --crucible-list); there is no default '
-      + 'server and no local fallback.');
+/**
+ * WHERE THIS RENDER'S GENERATION STEP RUNS — the caller's server, the routing
+ * record's, or the legacy local narrator.
+ *
+ * The decision itself is `electron/crucible/generation-venue.ts` (four answers,
+ * in order: the caller named one; the legacy switch is on; the top-ranked
+ * enabled server; with `any`, the first enabled one whose ping answers). This
+ * is the bridge's half: ASK once, and REMEMBER the answer on the session's
+ * settings so that a Continue, a retake or a resume goes back to the same
+ * machine rather than re-deciding — crucible `docs/PHASE7-LANES.md` §4.3, a job
+ * that started on a machine finishes on that machine, and §4.4.2, which is why:
+ * two backends do not produce the same audio, so half a book in each is an
+ * audible seam no test asserts.
+ *
+ * There is no local fallback. When the legacy switch is off and no server can
+ * be chosen, this THROWS with the reason, the caller releases the GPU lease and
+ * the job fails saying which server it could not reach.
+ */
+async function decideAndRememberVenue(session: ConversionSession): Promise<GenerationVenue> {
+  const settings = session.config.settings;
+  const { decideWhereGenerationRuns, processVenueHost } = await import('./crucible/generation-venue.js');
+  const venue = await decideWhereGenerationRuns(settings, processVenueHost());
+  if (venue.where === 'crucible' && settings.crucible === undefined) {
+    // Written onto the LIVE settings object (which `savePersistentState`
+    // spreads into session_state.json) and onto the state already saved for
+    // this run, because the initial save happens before generation starts —
+    // miss the second and a Continue after a crash re-decides.
+    settings.crucible = { server: venue.server };
+    const persisted = session.persistentState?.settings;
+    if (persisted && persisted.crucible === undefined) persisted.crucible = { server: venue.server };
   }
-  return name.trim();
+  return venue;
 }
 
 /**
@@ -8816,18 +8839,21 @@ export async function startParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    // Inside the try so a malformed `settings.crucible` releases the GPU lease
-    // rather than leaking it — the same reason the worker loop is in here.
-    const crucibleServer = crucibleServerForJob(config.settings);
-    if (crucibleServer !== null) {
+    // Inside the try so an unplaceable render releases the GPU lease rather than
+    // leaking it — the same reason the worker loop is in here.
+    const venue = await decideAndRememberVenue(session);
+    if (venue.where === 'crucible') {
       // THE SEAM (item 2.4). One remote job instead of N local workers. No
       // watchdog and no rendered-file poller: both exist to notice a CHILD
       // PROCESS that has gone quiet, and there is no child here — the server's
       // own progress frames are the heartbeat, and the download is what puts
       // files on this disk.
-      startCrucibleGeneration(session, crucibleServer);
-      await logger.log('INFO', jobId, `Generation runs on crucible "${crucibleServer}"`);
+      startCrucibleGeneration(session, venue.server);
+      await logger.log('INFO', jobId, `Generation runs on crucible "${venue.server}" (${venue.because})`);
     } else {
+      await logger.log('INFO', jobId,
+        'Generation spawns the LEGACY local narrator: the legacy local-render switch is on '
+        + '(Settings → Crucible Servers). That path is removed after the in-app pass.');
       for (let i = 0; i < workers.length; i++) {
         const worker = workers[i];
         const range: WorkerRange = isChapterMode
@@ -9047,12 +9073,15 @@ export async function renderRangeHeadless(
   // Spawn the worker (WSL-safe for Orpheus) + the stuck-worker watchdog. The worker's
   // close handler drives checkAllWorkersComplete → skipAssembly branch → session delete.
   try {
-    // The same seam as the app's path (item 2.4), so the CLI mirrors the app's
-    // code path rather than acquiring a second way to reach a Crucible.
-    const crucibleServer = crucibleServerForJob(settings);
-    if (crucibleServer !== null) {
-      startCrucibleGeneration(session, crucibleServer);
+    // The same seam AND the same decision as the app's path (items 2.4, 2.2),
+    // so the CLI mirrors the app's code path rather than acquiring a second way
+    // to reach a Crucible — or a second answer to where a render runs.
+    const venue = await decideAndRememberVenue(session);
+    if (venue.where === 'crucible') {
+      startCrucibleGeneration(session, venue.server);
     } else {
+      console.log('[renderRangeHeadless] LEGACY local narrator: the legacy local-render switch '
+        + 'is on (Settings → Crucible Servers)');
       startWorker(session, 0, {
         sentenceStart: workers[0].sentenceStart,
         sentenceEnd: workers[0].sentenceEnd
@@ -10896,14 +10925,18 @@ export async function resumeParallelConversion(
   maybeStartChapterCloser(session);
 
   try {
-    // A resume of a remote render goes back to the SAME server (item 2.4).
+    // A resume of a remote render goes back to the SAME server (item 2.4): the
+    // first run wrote its choice into the settings session_state.json persists,
+    // so this reads a name rather than deciding again (§4.3).
     // `crucibleChunksForSession` reads the workers' `assignedIndices`, so the
     // scattered missing set is exactly what is submitted — one job for the
     // gaps, not a re-render of the book.
-    const crucibleServer = crucibleServerForJob(config.settings);
-    if (crucibleServer !== null) {
-      startCrucibleGeneration(session, crucibleServer);
+    const venue = await decideAndRememberVenue(session);
+    if (venue.where === 'crucible') {
+      startCrucibleGeneration(session, venue.server);
     } else {
+      console.log('[PARALLEL-TTS] Resume spawns the LEGACY local narrator: the legacy '
+        + 'local-render switch is on (Settings → Crucible Servers)');
       for (let i = 0; i < workers.length; i++) {
         const worker = workers[i];
         const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };

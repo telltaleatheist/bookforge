@@ -744,17 +744,40 @@ async function bridgeSeamChecks() {
   const bridge = fs.readFileSync(
     path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
 
-  await check('every generation launch point asks whether this job is a Crucible job', () => {
+  await check('every generation launch point asks WHERE this render runs', () => {
     // startParallelConversion (the app), renderRangeHeadless (the CLI) and
     // resumeParallelConversion (Continue). A fourth that forgot would spawn
     // narrator for a job the operator sent to another machine.
-    const asked = bridge.match(/crucibleServerForJob\(/g) || [];
+    //
+    // The question used to be `crucibleServerForJob(settings)` — "did the
+    // caller name a server". Item 2.2's routing record answers it for the app,
+    // which never named one, so the ask is now `decideAndRememberVenue`.
+    const asked = bridge.match(/decideAndRememberVenue\(/g) || [];
     assert.strictEqual(asked.length, 4,
-      `crucibleServerForJob is called ${asked.length} time(s): its own definition plus the three `
+      `decideAndRememberVenue is called ${asked.length} time(s): its own definition plus the three `
       + 'generation launch points (startParallelConversion, renderRangeHeadless, '
       + 'resumeParallelConversion). A new launch point must ask too.');
-    const takes = bridge.match(/startCrucibleGeneration\(session, crucibleServer\)/g) || [];
+    const takes = bridge.match(/startCrucibleGeneration\(session, venue\.server\)/g) || [];
     assert.strictEqual(takes.length, 3, 'each launch point takes the seam');
+    assert.strictEqual((bridge.match(/crucibleServerForJob/g) || []).length, 0,
+      'the old caller-only question is gone: two ways to decide where a render runs is two answers');
+  });
+
+  await check('the local narrator is reachable ONLY through the legacy switch', () => {
+    // The venue decision is the only thing that can send a render to narrator,
+    // and `legacy-local-narrator` is the only venue that does. A branch that
+    // fell back to the local path on a failure would be the silent downgrade
+    // crucible/render.ts refuses in its header.
+    assert.ok(/venue\.where === 'crucible'/.test(bridge),
+      'the seam branches on the venue, not on a nullable server name');
+    assert.ok(/LEGACY local narrator/.test(bridge),
+      'a legacy render must say so on its log: it is a dated stopgap, not the normal path');
+    const venueFile = fs.readFileSync(
+      path.join(REPO, 'electron', 'crucible', 'generation-venue.ts'), 'utf8');
+    const venues = venueFile.match(/where: 'legacy-local-narrator'/g) || [];
+    assert.strictEqual(venues.length, 2,
+      'legacy-local-narrator appears twice in generation-venue.ts: the type and the ONE branch '
+      + 'that returns it (the legacy switch). A second producer would be a second fallback.');
   });
 
   await check('a Crucible failure is never retried by spawning narrator locally', () => {

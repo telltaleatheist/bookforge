@@ -1351,6 +1351,12 @@ export interface ElectronAPI {
     setEnabled: (name: string, enabled: boolean) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** What a NEW queue row waits for: the top-ranked server, or any. */
     setWaitFor: (value: CrucibleWaitForDefault) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /**
+     * The ONE switch for the legacy local narrator: render audiobooks by
+     * spawning narrator here instead of on a Crucible server. A dated stopgap
+     * (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), never set by a failure.
+     */
+    setLegacyLocalRender: (value: boolean) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** Drop a name the rank record mentions that no server answers to. */
     forget: (name: string) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** OPERATOR VERB: submits a `load-model` job, which takes that machine's card. */
@@ -2777,6 +2783,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('crucible:set-enabled', name, enabled),
     setWaitFor: (value: CrucibleWaitForDefault) =>
       ipcRenderer.invoke('crucible:set-wait-for', value),
+    setLegacyLocalRender: (value: boolean) =>
+      ipcRenderer.invoke('crucible:set-legacy-local-render', value),
     forget: (name: string) => ipcRenderer.invoke('crucible:forget', name),
     // The two operator verbs. They reach a card; nothing calls them but a button.
     loadModel: (name: string, model: string) =>

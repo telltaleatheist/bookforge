@@ -7713,6 +7713,20 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // The ONE switch for the legacy local narrator (docs/CRUCIBLE_ROLLOUT_PLAN.md
+  // §2 ruling 4). It is a dated stopgap with one owner: nothing sets it but
+  // this handler, no render has its own version of it, and a render says on the
+  // log when it is on. The spawn layer it reaches is deleted after Owen's
+  // in-app pass.
+  ipcMain.handle('crucible:set-legacy-local-render', async (_event, value: boolean) => {
+    try {
+      const { setLegacyLocalRender } = await import('./crucible/routing.js');
+      return { success: true, data: setLegacyLocalRender(value) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Drop a name the rank record mentions that no server answers to any more.
   ipcMain.handle('crucible:forget', async (_event, name: string) => {
     try {
