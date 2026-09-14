@@ -51,10 +51,24 @@ const CHANNELS_DOC = path.join(REPO, 'foundry-app', 'IPC-CHANNELS.md');
 const ELECTRON_DIR = path.join(REPO, 'electron');
 
 /**
- * The doc holds 62 handles + 11 pushes at the sha this subtree was vendored
- * from. The floor is set below that, not at it: Foundry may retire a channel
- * without this test having an opinion, but a parse that suddenly returns a
- * handful of names has stopped reading the tables and must say so.
+ * A FLOOR, NEVER A COUNT — and the distinction is not pedantry, it is the
+ * defect Foundry's own doc has now suffered three times.
+ *
+ * At `e6d5424` the doc's tables parse to **148** names (130 `ipcMain.handle`
+ * call sites, 130 distinct, zero `ipcMain.on`, plus 18 pushes), MEASURED HERE
+ * over the vendored `foundry-app/electron/ipc.ts` and the vendored doc rather
+ * than read off the doc's header. That header had claimed **119** while the
+ * source held **127** — eight doors added under a stale figure — which is the
+ * third time a hand-maintained number in the file whose entire job is to be
+ * counted went stale (2026-08-22, 2026-08-23, 2026-09-14). Their commit fixed
+ * it, and this comment records the measurement rather than inheriting the claim.
+ *
+ * So nothing in this test reads a stated total from anywhere. `foundryChannels`
+ * parses the TABLE ROWS, and the floor below is set far under the measured size
+ * on purpose: Foundry may retire a channel without this test having an opinion,
+ * but a parse that suddenly returns a handful of names has stopped reading the
+ * tables and must say so. Raising the floor to the current count would make this
+ * file the fourth hand-maintained number.
  */
 const MIN_FOUNDRY_CHANNELS = 60;
 

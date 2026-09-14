@@ -2805,12 +2805,18 @@ const electronAPI: ElectronAPI = {
   },
   crucible: {
     servers: () => ipcRenderer.invoke('crucible:servers'),
+    // THE CHANNEL NAMES `add-server` AND `test-server` ARE RENAMES, and the
+    // METHOD names either side of them deliberately are not. Foundry e6d5424
+    // claims `crucible:add` and `crucible:test`; the subtree is sealed, so ours
+    // moved (see electron/main.ts). Because the renderer only ever spells the
+    // method, the rename stops at this file — `tools/test-ipc-collision.js` is
+    // what guards the pair, and it reads BOTH sides' channel strings.
     add: (server: { name: string; url: string; token: string }) =>
-      ipcRenderer.invoke('crucible:add', server),
+      ipcRenderer.invoke('crucible:add-server', server),
     remove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
     testAddress: (url: string, token: string) =>
       ipcRenderer.invoke('crucible:test-address', url, token),
-    test: (name: string) => ipcRenderer.invoke('crucible:test', name),
+    test: (name: string) => ipcRenderer.invoke('crucible:test-server', name),
     activity: (name: string) => ipcRenderer.invoke('crucible:activity', name),
     models: (name: string) => ipcRenderer.invoke('crucible:models', name),
     setOrder: (order: string[]) => ipcRenderer.invoke('crucible:set-order', order),

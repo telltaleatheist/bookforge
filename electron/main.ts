@@ -7624,7 +7624,14 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('crucible:add', async (_event, server: { name: string; url: string; token: string }) => {
+  // RENAMED 2026-09-14, and the name that moved is OURS by ruling. Foundry
+  // e6d5424 registers `crucible:add` (its Settings → Servers card, package E)
+  // and the vendored subtree is SEALED — two `ipcMain.handle` calls of one name
+  // in one Electron main process throw at registration, so BookForge would not
+  // start with the Foundry window mounted. `crucible:add-server` says the same
+  // thing and pairs with `crucible:test-server` below; the preload's method name
+  // (`crucible.add`) is unchanged, so no renderer call site moved.
+  ipcMain.handle('crucible:add-server', async (_event, server: { name: string; url: string; token: string }) => {
     try {
       // The registry's own refusals, verbatim: `local` is reserved, a loopback URL
       // is this machine (which is read from its config, never registered), a
@@ -7657,7 +7664,12 @@ function setupIpcHandlers(): void {
   });
 
   // The same test for a server this machine already knows — `local` included.
-  ipcMain.handle('crucible:test', async (_event, name: string) => {
+  //
+  // RENAMED 2026-09-14 for the same reason as `crucible:add-server` above:
+  // Foundry e6d5424 claims `crucible:test` (package C). Note that their
+  // `crucible:test-at` is the near-miss and NOT the collision — it is their
+  // probe-an-unsaved-address door, the twin of our `crucible:test-address`.
+  ipcMain.handle('crucible:test-server', async (_event, name: string) => {
     try {
       const { probeServer } = await import('./crucible/probe.js');
       return { success: true, data: await probeServer(name) };
