@@ -12,7 +12,7 @@ import { cancelGenerateSentences, startGenerateSentences } from '../generate-sen
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow } from './runtime';
-import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import { runVenueOfRow } from '../crucible/step-venue';
 
 interface GsProgressEvent {
   jobId: string;
@@ -52,6 +52,23 @@ export const generateSentencesStep: StepModule = {
   consumes: null,
   produces: 'vtt',
   resource: () => 'gpu',
+  /**
+   * THE WHISPER METHOD TRAVELS; `epub-align` DOES NOT (crucible
+   * `docs/PHASE7-LANES.md` §4).
+   *
+   * Transcription is a Crucible `asr` job — `electron/crucible/asr.ts`, taken
+   * through `transcribeAtVenue` below — so a book assigned to the Mac has its
+   * transcript made on the Mac. `epub-align` is a different act entirely: it
+   * reads the project's EPUB off this machine's disk and aligns against it with
+   * a local aligner, and Crucible has no job type for it. Declaring `any` for
+   * that method would hand it a machine that cannot see the book.
+   *
+   * Asked of the CONFIG rather than answered unconditionally because the two
+   * methods are one row type, and §4's safety default is per step: a step that
+   * has not been taught to travel does not travel.
+   */
+  machines: (config: Record<string, unknown>): 'local' | 'any' =>
+    (config as unknown as GsStepConfig).method === 'epub-align' ? 'local' : 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as GsStepConfig;
@@ -82,12 +99,7 @@ export const generateSentencesStep: StepModule = {
     // THE RUN'S VENUE, NOT A NEW DECISION: the server the queue admitted this
     // run to, or the legacy marker (PHASE7-LANES.md §4.4). Absent — a standalone
     // press — the bridge decides through the routing record.
-    const resolved = ctx.job.waitForResolved;
-    const runVenue = resolved === undefined || resolved === WAIT_FOR_ANY
-      ? undefined
-      : resolved === LEGACY_LOCAL_NARRATOR
-        ? { where: 'legacy-local-narrator' as const }
-        : { where: 'crucible' as const, server: resolved };
+    const runVenue = runVenueOfRow(ctx.job.waitForResolved);
     try {
       await startGenerateSentences(ctx.stepId, win, {
         projectId: config.projectId,

@@ -461,6 +461,56 @@ async function translateChunkWithProvider(
           return await translateWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
         case 'local':
           return await translateWithLocal(text, systemPrompt, abortSignal);
+        case 'crucible': {
+          /*
+           * THE TRANSLATE ACT ON A CRUCIBLE SERVER (crucible
+           * `docs/PHASE7-LANES.md`; `translate` is one of the four capability
+           * classes, `electron/crucible/text-acts.ts`).
+           *
+           * Both halves refused by name rather than defaulted: the server is
+           * the row's assigned venue (`queue-steps/ai-provider.ts`), and the
+           * model must already be RESIDENT — a translation never loads one,
+           * because a load evicts whatever is on that card.
+           *
+           * The budget is `max(4096, len*2)` — the cleanup pass's, and for the
+           * cleanup pass's reason: a translation ECHOES THE WHOLE CHUNK BACK,
+           * in another language, so the answer really is the size of the
+           * input. That is the one act where the input's length is the right
+           * estimate.
+           */
+          if (!config.crucible?.server) {
+            throw new Error('crucible_server_not_named: this translation names no Crucible server');
+          }
+          if (!config.crucible?.model) {
+            throw new Error('crucible_model_not_named: this translation names no Crucible model');
+          }
+          const { crucibleChatOnce } = await import('./ai-bridge.js');
+          const answer = await crucibleChatOnce({
+            server: config.crucible.server,
+            model: config.crucible.model,
+            system: systemPrompt,
+            user: text,
+            temperature: 0.1,
+            maxTokens: Math.max(4096, text.length * 2),
+            sizeChars: text.length,
+            ...(abortSignal === undefined ? {} : { signal: abortSignal }),
+          });
+          if (answer.finishReason === 'length') {
+            // Never the truncated translation: half a chunk in the target
+            // language reads as a finished paragraph that simply stops.
+            throw new Error(
+              `crucible_translation_truncated: crucible "${config.crucible.server}" hit the token `
+              + `budget on a ${text.length}-char chunk, so its translation is cut off.`,
+            );
+          }
+          if (!answer.content.trim()) {
+            throw new Error(
+              `crucible_translation_empty: crucible "${config.crucible.server}" returned nothing `
+              + `for a ${text.length}-char chunk (finish reason: ${answer.finishReason}).`,
+            );
+          }
+          return answer.content;
+        }
         default:
           throw new Error(`Unknown provider: ${config.provider}`);
       }

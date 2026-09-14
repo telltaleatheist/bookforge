@@ -84,6 +84,23 @@ export const vlmConvertStep: StepModule = {
   consumes: null,
   produces: 'epub',
   resource: () => 'gpu',
+  /**
+   * IT TRAVELS (crucible `docs/PHASE7-LANES.md` §4, §4.4).
+   *
+   * Page reading moves to a server as an ENDPOINT rather than as a job —
+   * `electron/crucible/pages.ts`, `pages` is a capability CLASS whose job type
+   * is `llm` — but from the scheduler's side that is the same fact: the work
+   * happens on another machine's card and must count against that machine's
+   * slot, not this one's.
+   *
+   * It is also the only one of the travelling GPU steps whose job had NO
+   * venue-following path at all: `decideWherePagesRun` re-decided from the
+   * routing record on every conversion, so a chain that converts and then
+   * narrates could read its pages on one machine and read the book on another
+   * (item A3, `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b). The run's venue is passed
+   * below and that door now takes it.
+   */
+  machines: (): 'local' | 'any' => 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as VlmConvertStepConfig;
@@ -151,6 +168,11 @@ export const vlmConvertStep: StepModule = {
         // two attempts at one job.
         ...(config.readings ? { readings: config.readings } : {}),
         ...(config.destination ? { destination: config.destination } : {}),
+        // THE RUN'S VENUE, NOT A NEW DECISION. Absent when nothing assigned
+        // this run — a conversion queued on its own decides as it always did.
+        ...(ctx.job.waitForResolved === undefined
+          ? {}
+          : { runVenue: ctx.job.waitForResolved }),
       } as never);
 
       const epubPath = (result as { epubPath?: string })?.epubPath;

@@ -2859,14 +2859,40 @@ async function assertCrucibleModelResident(server: string, model: string): Promi
  *    EPUB hit the 4096 ceiling, and each cost 142 s in the resulting [SKIP]
  *    split — against 1.2-1.6 s for a chunk that fitted.
  */
-async function cleanChunkWithCrucible(
-  text: string,
-  systemPrompt: string,
-  server: string,
-  model: string,
-  abortSignal?: AbortSignal,
-  maxTokensOverride?: number
-): Promise<string> {
+/**
+ * ONE COMPLETION AGAINST A CRUCIBLE SERVER — the transport, and nothing about
+ * what the answer is for.
+ *
+ * Extracted from `cleanChunkWithCrucible` when the SECOND and THIRD acts needed
+ * it (translation and analysis, 2026-09-14, rollout item A3). Three copies of a
+ * timeout, an abort chain and an error translation is three places for a
+ * refusal to stop naming itself (crucible `docs/ARCHITECTURE.md` R1), and the
+ * error translation in particular is load-bearing: `translateCrucibleError`
+ * turns the SDK's exceptions into the named codes every surface reads
+ * (`crucible_model_not_resident`, `crucible_model_leased`, …).
+ *
+ * What it does NOT decide: the temperature, the budget, what an empty answer
+ * means, or whether a `length` finish is a retry — those belong to the act, and
+ * a shared default for them would be the shared default that made the cleanup
+ * pass truncate. Every field is the caller's.
+ *
+ * `thinking: false` IS here, because it is a fact about the SERVER's models
+ * rather than about any act: Qwen3.5 and its kind emit `reasoning` first and
+ * `content` after, so a bounded budget can be spent entirely on reasoning and
+ * return a message with no content at all. No BookForge act wants that.
+ */
+export async function crucibleChatOnce(options: {
+  server: string;
+  model: string;
+  system: string;
+  user: string;
+  temperature: number;
+  maxTokens: number;
+  /** For the timeout sentence — "for a 4,812-char chunk". */
+  sizeChars: number;
+  signal?: AbortSignal;
+}): Promise<{ content: string; finishReason?: string }> {
+  const { server, model } = options;
   const controller = new AbortController();
   // Whose abort it was. The SDK throws the DOM AbortError for both, and the
   // caller reads an AbortError as "the job was cancelled" — true when the USER
@@ -2877,58 +2903,75 @@ async function cleanChunkWithCrucible(
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
 
   // Chain abort signals - if parent aborts, abort this request too
-  if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
   try {
     const client = await crucibleClient(server);
-    let answer;
     try {
-      answer = await client.chat({
+      const answer = await client.chat({
         model,
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: text },
+          { role: 'system', content: options.system },
+          { role: 'user', content: options.user },
         ],
-        temperature: 0.1,
-        maxTokens: maxTokensOverride ?? Math.max(4096, text.length * 2),
+        temperature: options.temperature,
+        maxTokens: options.maxTokens,
         thinking: false,
         signal: controller.signal,
       });
+      return { content: answer.content, finishReason: answer.finishReason };
     } catch (err) {
       if (timedOut) {
         throw new Error(`Crucible timeout: no answer from "${server}" within ${TIMEOUT_MS / 1000}s `
-          + `for a ${text.length}-char chunk. The model may be running away on this chunk — its `
-          + `engine log on that host says how many tokens it produced.`);
+          + `for a ${options.sizeChars}-char chunk. The model may be running away on this chunk — `
+          + 'its engine log on that host says how many tokens it produced.');
       }
       throw translateCrucibleError(err, server);
     }
-
+  } finally {
     clearTimeout(timeoutId);
-
-    // Never `content || text`. An empty/refusal answer must go through the
-    // [SKIP] trapdoor (split → retry → register a skipped chunk), not silently
-    // return the original as a clean "0 changes" success. See no-fallbacks rule.
-    const extracted: string = answer.content;
-    if (!extracted.trim()) {
-      console.warn(`[Crucible] Empty response (finish_reason: ${answer.finishReason}) for ${text.length}-char chunk — routing through [SKIP] handling`);
-    }
-    const cleaned = extracted.trim() ? extracted : '[SKIP]';
-
-    if (answer.finishReason === 'length') {
-      console.warn(`[Crucible] hit the token budget (finish_reason: length) for ${text.length}-char chunk — routing through unified [SKIP] split`);
-      return '[SKIP]';
-    }
-
-    // Separate answer from any reasoning/answer-tag wrapper (see the Claude and
-    // OpenAI paths): an answer-tag prompt (edit-list, simplify) must not leak its
-    // tags, and an unclosed answer throws REASONING_OVERRUN.
-    return extractAnswer(cleaned, model);
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
   }
+}
+
+async function cleanChunkWithCrucible(
+  text: string,
+  systemPrompt: string,
+  server: string,
+  model: string,
+  abortSignal?: AbortSignal,
+  maxTokensOverride?: number
+): Promise<string> {
+  const answer = await crucibleChatOnce({
+    server,
+    model,
+    system: systemPrompt,
+    user: text,
+    temperature: 0.1,
+    maxTokens: maxTokensOverride ?? Math.max(4096, text.length * 2),
+    sizeChars: text.length,
+    ...(abortSignal === undefined ? {} : { signal: abortSignal }),
+  });
+
+  // Never `content || text`. An empty/refusal answer must go through the
+  // [SKIP] trapdoor (split → retry → register a skipped chunk), not silently
+  // return the original as a clean "0 changes" success. See no-fallbacks rule.
+  const extracted: string = answer.content;
+  if (!extracted.trim()) {
+    console.warn(`[Crucible] Empty response (finish_reason: ${answer.finishReason}) for ${text.length}-char chunk — routing through [SKIP] handling`);
+  }
+  const cleaned = extracted.trim() ? extracted : '[SKIP]';
+
+  if (answer.finishReason === 'length') {
+    console.warn(`[Crucible] hit the token budget (finish_reason: length) for ${text.length}-char chunk — routing through unified [SKIP] split`);
+    return '[SKIP]';
+  }
+
+  // Separate answer from any reasoning/answer-tag wrapper (see the Claude and
+  // OpenAI paths): an answer-tag prompt (edit-list, simplify) must not leak its
+  // tags, and an unclosed answer throws REASONING_OVERRUN.
+  return extractAnswer(cleaned, model);
 }
 
 /**

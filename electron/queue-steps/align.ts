@@ -77,6 +77,11 @@ import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow } from './runtime';
 import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import {
+  CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED,
+  narratorDoorOwedBeforeSubmit,
+} from '../crucible/align';
+import { runVenueOfRow } from '../crucible/step-venue';
 
 interface AlignProgressEvent {
   jobId: string;
@@ -146,9 +151,49 @@ export const alignStep: StepModule = {
    * `device` at all) the CPU row it has always been.
    */
   resource: (config: Record<string, unknown>) => (config['device'] === 'gpu' ? 'gpu' : 'cpu'),
+  /**
+   * IT TRAVELS, AND IT REFUSES WHEN IT GETS THERE (crucible
+   * `docs/PHASE7-LANES.md` §4, §4.4).
+   *
+   * Alignment is a Crucible `align` job and `electron/crucible/align.ts` is
+   * built to its seam, so this row must FOLLOW its book: the incident this
+   * exists to prevent is the one at 00:50 on 2026-09-14, when a post-render
+   * alignment decided its own venue, read the top-ranked server, and loaded the
+   * aligner on a card a fine-tune owned. Declaring `local` would leave that
+   * re-decision in place; declaring `any` puts the row under the run's venue
+   * and under `local`'s slot set.
+   *
+   * It then refuses by name, because a remote alignment CANNOT FINISH: narrator
+   * has no items-in door (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b B5), so the
+   * server would make the model's items and nothing could turn them into
+   * coverage.json and the VTT. The refusal is in `run`, before anything is
+   * submitted, and it names the legacy switch as what aligns today. A "maybe"
+   * — quietly aligning here while the book is on the Mac — is the thing §4.4
+   * and R3 both forbid.
+   */
+  machines: (): 'local' | 'any' => 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as AlignStepConfig;
+
+    /*
+     * THE RUN'S VENUE DECIDES WHETHER THIS ROW CAN RUN AT ALL, and it is asked
+     * FIRST — before the session is resolved, before the language is checked,
+     * and long before a card is touched. See `machines()` above and
+     * `narratorDoorOwedBeforeSubmit`.
+     *
+     * `any` is not a server: it means the queue had no assignment to make
+     * because nothing travelled, and the local path below is what a standalone
+     * CLI align has always taken.
+     */
+    const assigned = ctx.job.waitForResolved;
+    if (assigned !== undefined
+      && assigned !== WAIT_FOR_ANY
+      && assigned !== LEGACY_LOCAL_NARRATOR) {
+      throw new Error(
+        `${CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED}: ${narratorDoorOwedBeforeSubmit(assigned)}`,
+      );
+    }
 
     let sessionId = config.sessionId || ctx.input.sessionId;
     let sessionDir = config.sessionDir || ctx.input.sessionDir;
@@ -232,12 +277,7 @@ export const alignStep: StepModule = {
        * Absent (a standalone row, or a job whose steps do not travel), the job
        * reads the session's own record and only then decides.
        */
-      const resolved = ctx.job.waitForResolved;
-      const runVenue = resolved === undefined || resolved === WAIT_FOR_ANY
-        ? undefined
-        : resolved === LEGACY_LOCAL_NARRATOR
-          ? { where: 'legacy-local-narrator' as const }
-          : { where: 'crucible' as const, server: resolved };
+      const runVenue = runVenueOfRow(ctx.job.waitForResolved);
       const result = await runCoverageAlign(
         ctx.stepId,
         {

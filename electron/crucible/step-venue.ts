@@ -13,6 +13,7 @@ import {
   decideWhereGenerationRuns,
   type VenueHost,
 } from './generation-venue';
+import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 /**
  * The venue a run has ALREADY been given: the server its render went to
@@ -33,6 +34,48 @@ export type RunVenue =
 export type StepVenue =
   | { where: 'crucible'; server: string; origin: 'the run' | 'decided here'; because: string }
   | { where: 'legacy-local-narrator'; origin: 'the run' | 'decided here'; because: string };
+
+/**
+ * DO TWO RECORDS OF ONE RUN'S VENUE AGREE?
+ *
+ * A step behind a render can learn its machine twice — from the session's own
+ * `session_state.json` (where the render went) and from the queue row's
+ * `waitForResolved` (where the queue assigned the run). They are the same fact
+ * with two owners, and the rule for that is R1's: compare, never rank. Every
+ * caller refuses by name on a disagreement rather than picking one.
+ */
+export function sameRunVenue(a: RunVenue, b: RunVenue): boolean {
+  if (a.where !== b.where) return false;
+  return a.where === 'crucible' && b.where === 'crucible' ? a.server === b.server : true;
+}
+
+/** How a venue reads in a refusal. One spelling, so two jobs cannot differ. */
+export function describeRunVenue(v: RunVenue): string {
+  return v.where === 'crucible' ? `crucible "${v.server}"` : 'the legacy local narrator';
+}
+
+/**
+ * THE ROW'S ANSWER AS A `RunVenue` — one owner for a conversion five step
+ * modules were each doing inline.
+ *
+ * `QueueJob.waitForResolved` is a string with three shapes and each means
+ * something different, which is exactly the kind of fact that drifts when it is
+ * spelled in five files (crucible `docs/ARCHITECTURE.md` R1):
+ *
+ *  - a SERVER's name — the machine the queue admitted this run to;
+ *  - {@link LEGACY_LOCAL_NARRATOR} — the dated local spawn;
+ *  - `any`, or absent — the run was never assigned, because nothing in it
+ *    travelled or it has not been admitted yet. `undefined` then, so
+ *    {@link venueForRunStep} decides rather than being handed a non-answer.
+ *
+ * `any` is NOT a venue and must never reach `venueForRunStep` as one: it is the
+ * row saying it does not mind, and the decision is still to be made.
+ */
+export function runVenueOfRow(waitForResolved: string | undefined): RunVenue | undefined {
+  if (waitForResolved === undefined || waitForResolved === WAIT_FOR_ANY) return undefined;
+  if (waitForResolved === LEGACY_LOCAL_NARRATOR) return { where: 'legacy-local-narrator' };
+  return { where: 'crucible', server: waitForResolved };
+}
 
 /**
  * The venue for a step that comes AFTER a run's generation — align, asr, and

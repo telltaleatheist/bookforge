@@ -111,6 +111,7 @@ import { systemProbe } from './components/system-probe';
 // keepers without the routing record, the registry or the network behind it.
 import type { VenueHost } from './crucible/generation-venue';
 import type { RunVenue, StepVenue } from './crucible/step-venue';
+import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
 
 export interface CoverageAlignConfig {
   /**
@@ -651,14 +652,13 @@ export function readSessionRunVenue(processDir: string): RunVenue | undefined {
   return { where: 'crucible', server: server.trim() };
 }
 
-function sameRunVenue(a: RunVenue, b: RunVenue): boolean {
-  if (a.where !== b.where) return false;
-  return a.where === 'crucible' && b.where === 'crucible' ? a.server === b.server : true;
-}
-
-function describeRunVenue(v: RunVenue): string {
-  return v.where === 'crucible' ? `crucible "${v.server}"` : 'the legacy local narrator';
-}
+/*
+ * `sameRunVenue` and `describeRunVenue` LIVED HERE and are now
+ * `electron/crucible/step-venue.ts`'s — the second job that had to compare two
+ * records of one venue (the RVC pass, 2026-09-14) would have been a second
+ * copy of both, and one of them spelling a refusal differently is exactly the
+ * drift R1 is about.
+ */
 
 /**
  * THE CRUCIBLE HALF: upload the session's chunk audio, align it on `server`,

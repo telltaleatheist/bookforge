@@ -30,6 +30,7 @@ import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow } from './runtime';
+import { runVenueOfRow } from '../crucible/step-venue';
 
 interface DenoiseProgressEvent {
   jobId: string;
@@ -76,6 +77,22 @@ export const finalDenoiseStep: StepModule = {
   // in front of it is CPU, but it is minutes against the denoise's hour and
   // cannot be moved — it must see the RAW sentences, before the roformer does.
   resource: () => 'gpu',
+  /**
+   * IT TRAVELS WITH ITS BOOK (crucible `docs/PHASE7-LANES.md` §4, §4.4).
+   *
+   * The roformer pass is a Crucible `denoise` job — `electron/crucible/
+   * denoise.ts`, reached through `denoiseAtVenue` inside the job below — so a
+   * book rendered on the Mac has its hiss taken off on the Mac. Until this
+   * declaration the row did not travel and the job read only the SESSION's
+   * record, so a session with no recorded venue re-decided from the routing
+   * record and took this machine's card (item A3,
+   * `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b).
+   *
+   * Unconditional on the config: whether a given pass actually goes to a server
+   * is the ROUTING RECORD's answer, and re-deciding it here would be a second
+   * owner of that question.
+   */
+  machines: (): 'local' | 'any' => 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as FinalDenoiseStepConfig;
@@ -133,10 +150,14 @@ export const finalDenoiseStep: StepModule = {
     });
 
     try {
+      const runVenue = runVenueOfRow(ctx.job.waitForResolved);
       const result = await runFinalDenoise(ctx.stepId, {
         processDir,
         ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
         ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
+        // THE RUN'S VENUE, NOT A NEW DECISION. The job cross-checks it against
+        // the session's own record and refuses a disagreement by name.
+        ...(runVenue === undefined ? {} : { runVenue }),
       }, queueMainWindow());
 
       if (!result.success || !result.outputDir) {

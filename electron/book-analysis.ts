@@ -391,6 +391,19 @@ function logClaudeResponseDiagnostic(
  * or "use original text" fallbacks — analysis returns a small JSON array, not
  * the full input text back.
  */
+/**
+ * The token budget one analysis chunk's answer is allowed.
+ *
+ * A number rather than a function of the input, because the answer is a small
+ * JSON array of findings and its size is set by how many things are IN the
+ * chunk, not by how long the chunk is. The Ollama path has no cap at all (the
+ * server's own), so this is the first place the question has had to be
+ * answered; 4096 is the same floor the cleanup pass found sufficient for its
+ * edit-list JSON, and a chunk that overruns it is refused by name rather than
+ * silently returning half an array.
+ */
+const ANALYSIS_CRUCIBLE_MAX_TOKENS = 4096;
+
 async function analyzeChunkWithProvider(
   prompt: string,
   systemPrompt: string,
@@ -411,6 +424,46 @@ async function analyzeChunkWithProvider(
       if (!config.openai?.apiKey) throw new Error('OpenAI API key not configured');
       if (!config.openai?.model) throw new Error('OpenAI model not configured');
       return analyzeChunkOpenAI(prompt, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, strictResponse);
+    case 'crucible': {
+      /*
+       * THE ANALYSIS ACT ON A CRUCIBLE SERVER (crucible
+       * `docs/PHASE7-LANES.md`; `analysis` is one of the four capability
+       * classes, `electron/crucible/text-acts.ts`).
+       *
+       * Both halves refused by name rather than defaulted: the server comes
+       * from the row's assigned venue (`queue-steps/ai-provider.ts`) and the
+       * model must already be RESIDENT — an analysis never loads one, because
+       * a load evicts whatever is on that card.
+       *
+       * The budget is this act's own and not the cleanup's `max(4096, len*2)`:
+       * an analysis returns a SMALL JSON array whose size has nothing to do
+       * with the input's, and sizing it from the prompt would spend a chunk's
+       * whole budget on a document it was never going to echo back.
+       */
+      if (!config.crucible?.server) throw new Error('crucible_server_not_named: this analysis names no Crucible server');
+      if (!config.crucible?.model) throw new Error('crucible_model_not_named: this analysis names no Crucible model');
+      const { crucibleChatOnce } = await import('./ai-bridge.js');
+      const answer = await crucibleChatOnce({
+        server: config.crucible.server,
+        model: config.crucible.model,
+        system: systemPrompt,
+        user: prompt,
+        temperature: 0.1,
+        maxTokens: ANALYSIS_CRUCIBLE_MAX_TOKENS,
+        sizeChars: prompt.length,
+        ...(abortSignal === undefined ? {} : { signal: abortSignal }),
+      });
+      if (answer.finishReason === 'length') {
+        // Never the truncated JSON. A half-written array parses as a shorter
+        // list of findings, which is a WRONG analysis rather than a failed one.
+        throw new Error(
+          `crucible_analysis_truncated: crucible "${config.crucible.server}" hit the `
+          + `${ANALYSIS_CRUCIBLE_MAX_TOKENS}-token budget on a ${prompt.length}-char chunk, so its `
+          + 'JSON answer is incomplete. A truncated finding list is not a shorter one.',
+        );
+      }
+      return answer.content;
+    }
     default:
       throw new Error(`Unknown provider: ${config.provider}`);
   }

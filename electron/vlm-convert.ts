@@ -97,6 +97,7 @@ import {
   type CruciblePageReader,
   type PagesVenueHost,
 } from './crucible/pages';
+import { runVenueOfRow } from './crucible/step-venue';
 import { getActiveToolsEnvPath, relocatablePythonPath } from './tools-env-bootstrap';
 import { toolsEnvPathIfInstalled } from './narrator-paths';
 import { resolveDocumentProject } from './document-project';
@@ -633,7 +634,11 @@ export async function planVlmConversion(
       `Reading the pages at ${configured.url} — the endpoint set in Settings → AI → Reading pages. `
       + 'A typed endpoint is a deliberate choice of GPU and wins over Crucible routing.';
   } else {
-    const venue = await decideWherePagesRun(pagesHost);
+    // THE RUN'S VENUE, NOT A NEW DECISION — when this conversion is a step of a
+    // chain that then narrates (§4.4, one book one GPU). Absent for a
+    // conversion pressed on the versions page, which decides as it always did.
+    const venue = await decideWherePagesRun(
+      pagesHost, undefined, runVenueOfRow(request.runVenue));
     if (venue.where === 'legacy-local-narrator') {
       route = resolveVlmRoute({
         platform: process.platform,

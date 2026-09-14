@@ -102,6 +102,8 @@ import {
   NO_SENTENCE_GAP,
   type SentenceGapPlan,
 } from './sentence-gap';
+import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
+import type { RunVenue } from './crucible/step-venue';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -157,6 +159,22 @@ export interface RvcEnhancementConfig {
    * and failing that the routing record.
    */
   crucible?: { server: string };
+  /**
+   * THE VENUE THE QUEUE ASSIGNED THIS RUN — the row's `waitForResolved`, as a
+   * `RunVenue` (`electron/crucible/step-venue.ts`, `runVenueOfRow`).
+   *
+   * Different in kind from `crucible` above: that is an INSTRUCTION somebody
+   * typed, this is a RECORD of where the book already went. The session's own
+   * `session_state.json` records the same fact from the render's side, and when
+   * both exist they must AGREE — two answers for one run are refused by name
+   * (`crucible_rvc_venue_disagrees`), never ranked (§4.4, one book one GPU).
+   *
+   * Until 2026-09-14 this job read only the session record, so a conversion for
+   * a book rendered on the Mac against a session with no recorded venue
+   * re-decided from the routing record and took THIS card. That is the A3
+   * defect (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b).
+   */
+  runVenue?: RunVenue;
 }
 
 export interface RvcProgress {
@@ -242,9 +260,29 @@ export async function runRvcEnhancement(
   const { readSessionRunVenue } = await import('./coverage-align-job.js');
   let venue: import('./crucible/step-venue').StepVenue;
   try {
-    const runVenue = readSessionRunVenue(config.processDir);
+    /*
+     * TWO RECORDS OF ONE FACT, AND THEY MUST AGREE. The session says where the
+     * RENDER went; the row says where the QUEUE assigned this run. Ranking them
+     * would be inventing a precedence nobody stated, so a disagreement is
+     * refused by name — the same rule and the same shape
+     * `coverage-align-job.ts` uses (`crucible_align_venue_disagrees`).
+     */
+    const sessionVenue = readSessionRunVenue(config.processDir);
+    if (sessionVenue !== undefined
+      && config.runVenue !== undefined
+      && !sameRunVenue(sessionVenue, config.runVenue)) {
+      return {
+        success: false,
+        error: 'crucible_rvc_venue_disagrees: this conversion\'s row says its run went to '
+          + `${describeRunVenue(config.runVenue)}, but the session's own record `
+          + `(session_state.json) says ${describeRunVenue(sessionVenue)}. One book, one GPU: two `
+          + 'answers for one run are refused, not ranked. The rendered audio is intact.',
+      };
+    }
+    const runVenue = sessionVenue ?? config.runVenue;
+    const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
     venue = await venueForRunStep({
-      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource }),
       ...(config.crucible === undefined ? {} : { callerNamed: config.crucible }),
       host: processVenueHost(),
     });

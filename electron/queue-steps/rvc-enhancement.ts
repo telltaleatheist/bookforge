@@ -32,6 +32,7 @@ import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow } from './runtime';
+import { runVenueOfRow } from '../crucible/step-venue';
 
 interface RvcProgressEvent {
   jobId: string;
@@ -87,6 +88,23 @@ export const rvcEnhancementStep: StepModule = {
   consumes: ['audio-session', 'sentences'],
   produces: 'sentences',
   resource: () => 'gpu',
+  /**
+   * IT TRAVELS WITH ITS BOOK (crucible `docs/PHASE7-LANES.md` §4, §4.4).
+   *
+   * A conversion is a Crucible `rvc` job — `electron/crucible/rvc.ts`, reached
+   * through `convertSentencesAtVenue` inside the job below — so a book rendered
+   * on the Mac is converted on the Mac. Until this declaration the row did not
+   * travel, which is item A3 of `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b: the job
+   * read only the SESSION's record of where the render went, so a session with
+   * no recorded venue re-decided from the routing record and took whatever card
+   * the top-ranked server had — literally *"book on the Mac, RVC here"*.
+   *
+   * Unconditional on the config for `tts-conversion`'s reason: whether a given
+   * conversion actually goes to a server is the ROUTING RECORD's answer (the
+   * legacy switch, the enable flags), and re-deciding it from the config here
+   * would be a second owner of that question.
+   */
+  machines: (): 'local' | 'any' => 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as RvcConfig;
@@ -142,6 +160,7 @@ export const rvcEnhancementStep: StepModule = {
       });
     });
 
+    const runVenue = runVenueOfRow(ctx.job.waitForResolved);
     try {
       const result = await runRvcEnhancement(ctx.stepId, {
         processDir,
@@ -155,6 +174,10 @@ export const rvcEnhancementStep: StepModule = {
         finalDenoise: config.finalDenoise,
         ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
         ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
+        // THE RUN'S VENUE, NOT A NEW DECISION. The job cross-checks it against
+        // the session's own record and refuses a disagreement by name — §4.4,
+        // one book, one GPU.
+        ...(runVenue === undefined ? {} : { runVenue }),
       }, queueMainWindow());
 
       if (!result.success || !result.scratchDir) {

@@ -11,7 +11,7 @@ import { broadcastToAllWindows } from '../document-stage-run';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider } from './runtime';
-import { providerConfigOf, type AiJobConfig } from './ai-provider';
+import { machinesForAiStep, providerConfigOf, type AiJobConfig } from './ai-provider';
 
 interface AnalysisProgressEvent {
   jobId: string;
@@ -47,6 +47,29 @@ export const bookAnalysisStep: StepModule = {
   consumes: null,
   produces: 'report',
   resource: resourceForProvider,
+  /**
+   * IT TRAVELS WHEN ITS PROVIDER IS A CRUCIBLE (crucible
+   * `docs/PHASE7-LANES.md` §4, §4.4) — an analysis is a run of chat
+   * completions, and against `crucible` they happen on another machine's card.
+   * `machinesForAiStep` owns the rule for both AI steps; see `translation.ts`.
+   */
+  machines: machinesForAiStep,
+  /**
+   * IT LEASES ITS MODEL when its provider is a Crucible.
+   *
+   * A analysis against `crucible` is a run of chat completions against one
+   * resident model, and between any two of them the card is unprotected — the
+   * server unloads the moment nothing holds it. The scheduler reads this to
+   * decide whether the RUN's lease survives the step in front of it, so a row
+   * that analyses and then does another act against the same model holds one
+   * lease across both (`electron/crucible/lease.ts`, ONE LEASE PER ROW).
+   *
+   * False for every other provider, and that is the truth rather than caution:
+   * Ollama and the bundled llama keep their own VRAM through `keep_alive`, and
+   * a cloud provider has no card to hold.
+   */
+  leasesModel: (config: Record<string, unknown>): boolean =>
+    config['aiProvider'] === 'crucible',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as AnalysisStepConfig;
@@ -56,7 +79,10 @@ export const bookAnalysisStep: StepModule = {
     if (!Array.isArray(config.categories) || config.categories.length === 0) {
       throw new Error('This analysis row has no categories, so it would flag nothing.');
     }
-    const provider = providerConfigOf(config);
+    // THE RUN'S VENUE, NOT A NEW DECISION — the machine the queue assigned
+    // this book. Only the `crucible` provider reads it, and it refuses by name
+    // rather than guessing when the row was never assigned one.
+    const provider = providerConfigOf(config, ctx.job.waitForResolved);
 
     const unsubscribe = onBridgeEvent<AnalysisProgressEvent>('queue:progress', (event) => {
       if (event.jobId !== ctx.stepId) return;

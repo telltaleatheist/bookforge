@@ -242,6 +242,22 @@ export interface VlmConvertRequest {
    * one does and what each one deliberately does NOT touch.
    */
   destination?: VlmConvertDestination;
+  /**
+   * THE VENUE THE QUEUE ASSIGNED THE RUN THIS CONVERSION BELONGS TO — a
+   * registered Crucible server's name, or `legacy-local-narrator`.
+   *
+   * Absent is the ordinary case and means there is no run to follow: a
+   * conversion pressed on the versions page, or the headless CLI. The routing
+   * record then decides, exactly as it always did.
+   *
+   * Present when the conversion is a STEP of a chain — convert, then narrate —
+   * and it is then an instruction the run already made: every step of one book
+   * runs on the machine the book was assigned (crucible
+   * `docs/PHASE7-LANES.md` §4.4). A STRING rather than a `RunVenue` because
+   * this type crosses the IPC seam into the renderer and `RunVenue` lives in
+   * main; `runVenueOfRow` is the one place that reads its three shapes.
+   */
+  runVenue?: string;
 }
 
 /**

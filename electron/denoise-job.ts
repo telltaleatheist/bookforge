@@ -87,6 +87,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
+import type { RunVenue } from './crucible/step-venue';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import {
@@ -155,6 +157,20 @@ export interface FinalDenoiseConfig {
    * and failing that the routing record.
    */
   crucible?: { server: string };
+  /**
+   * THE VENUE THE QUEUE ASSIGNED THIS RUN — the row's `waitForResolved`, as a
+   * `RunVenue` (`electron/crucible/step-venue.ts`, `runVenueOfRow`).
+   *
+   * Different in kind from `crucible` above: that is an INSTRUCTION somebody
+   * typed, this is a RECORD of where the book already went. The session's own
+   * `session_state.json` records the same fact from the render's side; when
+   * both exist they must AGREE, and a disagreement is refused by name
+   * (`crucible_denoise_venue_disagrees`) rather than ranked (§4.4, one book one
+   * GPU). Until 2026-09-14 only the session record was read, so a book rendered
+   * on the Mac had its hiss pass re-decided here — item A3 of
+   * `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b.
+   */
+  runVenue?: RunVenue;
 }
 
 export interface FinalDenoiseProgress {
@@ -455,9 +471,27 @@ export async function runFinalDenoise(
     const { denoiseAtVenue } = await import('./crucible/denoise.js');
     const { processVenueHost } = await import('./crucible/generation-venue.js');
     const { readSessionRunVenue } = await import('./coverage-align-job.js');
-    const runVenue = readSessionRunVenue(config.processDir);
+    /*
+     * TWO RECORDS OF ONE FACT, AND THEY MUST AGREE — the session says where the
+     * RENDER went, the row says where the QUEUE assigned this run. Ranking them
+     * would invent a precedence nobody stated, so a disagreement is refused by
+     * name, the same shape `coverage-align-job.ts` and `rvc-job.ts` use.
+     */
+    const sessionVenue = readSessionRunVenue(config.processDir);
+    if (sessionVenue !== undefined
+      && config.runVenue !== undefined
+      && !sameRunVenue(sessionVenue, config.runVenue)) {
+      throw new Error(
+        'crucible_denoise_venue_disagrees: this hiss pass\'s row says its run went to '
+        + `${describeRunVenue(config.runVenue)}, but the session's own record `
+        + `(session_state.json) says ${describeRunVenue(sessionVenue)}. One book, one GPU: two `
+        + 'answers for one run are refused, not ranked. The rendered audio is intact.',
+      );
+    }
+    const runVenue = sessionVenue ?? config.runVenue;
+    const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
     const at = await denoiseAtVenue<DerivedSet>({
-      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource }),
       ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
       host: processVenueHost(),
       onLog: log,

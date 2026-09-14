@@ -469,6 +469,33 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
  */
 export const CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED = 'crucible_align_narrator_door_owed';
 
+/**
+ * THE SAME GAP, SAID BEFORE ANY CARD IS TOUCHED.
+ *
+ * `narratorDoorOwedMessage` is what the run says once the model's items have
+ * landed; this is what the QUEUE STEP says the moment it sees its run was
+ * assigned to a Crucible server. Submitting first would load a 3 GB aligner on
+ * somebody's card, run it, and then refuse — GPU minutes spent on an artifact
+ * nothing can read, which is a worse answer than the honest one (crucible
+ * `docs/ARCHITECTURE.md` R3: nothing is ever told "maybe"). It is not a
+ * fallback either: the row FAILS by name, and the legacy switch is named as
+ * what runs it today.
+ *
+ * One code, two moments, one owner — so the queue card, the CLI and the job log
+ * cannot describe the same gap in two vocabularies.
+ */
+export function narratorDoorOwedBeforeSubmit(server: string): string {
+  return (
+    `This alignment was assigned to crucible "${server}", and a remote alignment cannot finish: `
+    + 'narrator has no items-in door, so the server would produce the model\'s items and nothing '
+    + 'could turn them into coverage.json and the sentence VTT. BUILD OWED: '
+    + '`narrator align --alignment <alignment.json>` (electron/crucible/align.ts header, shape (a); '
+    + 'docs/CRUCIBLE_ROLLOUT_PLAN.md §0b B5). Nothing was submitted and no card was taken. To align '
+    + 'now, turn on "Render audiobooks with the local narrator instead" in Settings → Crucible '
+    + 'Servers, which runs it here exactly as before.'
+  );
+}
+
 export function narratorDoorOwedMessage(alignmentPath: string): string {
   return (
     `The Crucible alignment landed at ${alignmentPath} (the model's items per chunk, with its `

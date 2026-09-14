@@ -218,6 +218,25 @@ export interface StepModule {
    */
   machines?(config: Record<string, unknown>): 'local' | 'any';
   /**
+   * DOES THIS STEP'S WORK REACH A CRUCIBLE AS A RUN OF CHAT COMPLETIONS against
+   * one resident model?
+   *
+   * Read by the scheduler for exactly ONE decision: when the step in front of
+   * this one finishes, may the run's Crucible lease be KEPT OPEN for it, or must
+   * it be given back? A row that cleans and then simplifies holds one lease
+   * across both; a row that cleans and then assembles gives the card back the
+   * moment the cleaning is done, because an hour of ffmpeg has no business
+   * holding somebody's model (`electron/crucible/lease.ts`, ONE LEASE PER ROW).
+   *
+   * Default FALSE, and that is the safe direction: an undeclared step ends the
+   * run of acts, which is exactly today's behaviour â€” a lease per act. Declaring
+   * it wrongly true would hold a card across work that does not use it.
+   *
+   * Asked of the CONFIG because a step's provider is a config field: the same
+   * translation row leases against `crucible` and leases nothing against Claude.
+   */
+  leasesModel?(config: Record<string, unknown>): boolean;
+  /**
    * Whether stopping this step leaves work that can be picked up. TTS does — the
    * rendered sentences are on disk and a resume skips them — so a stop leaves the
    * step HELD and interrupted rather than cancelled.

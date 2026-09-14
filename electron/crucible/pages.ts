@@ -106,7 +106,7 @@ import type { RankedServerRow, RoutingView } from '../../shared/crucible/setting
 import { processVenueHost, type VenueHost } from './generation-venue';
 import type { CruciblePingResult } from './probe';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
-import { venueForRunStep, type StepVenue } from './step-venue';
+import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
 import {
   CRUCIBLE_ACT_HEADER,
   CRUCIBLE_API_VERSION,
@@ -356,13 +356,18 @@ export function processPagesVenueHost(): PagesVenueHost {
  * Where this conversion's pages are read, from the ONE decision every travelling
  * step makes.
  *
- * A conversion is not a step of a render, so it never has a run venue to follow
- * — `venueForRunStep` with no `runVenue` asks `decideWhereGenerationRuns`, which
- * is the caller's name → the ONE legacy switch → the routing record, in that
- * order. It is called through `venueForRunStep` anyway rather than reaching past
- * it, so that the day a conversion IS part of a run (a queue chain that converts
- * and then narrates) it already follows that run's machine instead of deciding
- * again — which is the defect `step-venue.ts` was written for.
+ * THAT DAY CAME (2026-09-14, item A3): `vlm-convert` declares `machines()`, so
+ * a conversion queued in a chain that then narrates IS a step of a run, and it
+ * follows the run's machine instead of deciding again. `runVenue` is that
+ * answer when the caller has one — the row's `waitForResolved`, through
+ * `runVenueOfRow` — and with none, `venueForRunStep` asks
+ * `decideWhereGenerationRuns`, which is the caller's name → the ONE legacy
+ * switch → the routing record, in that order. A standalone conversion from the
+ * library has no run and takes exactly the path it always did.
+ *
+ * A `callerNamed` that DISAGREES with the run's venue is refused by name
+ * (`run_venue_disagrees`), not ranked — the rule belongs to `venueForRunStep`
+ * and is not restated here.
  *
  * `legacy-local-narrator` here means the local page readers, unchanged: MLX on
  * Apple silicon, the WSL vLLM server on Windows. It is one switch for renders,
@@ -371,9 +376,11 @@ export function processPagesVenueHost(): PagesVenueHost {
 export async function decideWherePagesRun(
   host: PagesVenueHost,
   callerNamed?: { server: string },
+  runVenue?: RunVenue,
 ): Promise<StepVenue> {
   return venueForRunStep({
     ...(callerNamed === undefined ? {} : { callerNamed }),
+    ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'the queue row' }),
     host,
   });
 }
