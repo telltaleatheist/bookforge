@@ -205,7 +205,7 @@ here and not in 0f.
   `local` is no longer one anything here uses; see 0h. The offender is `the local narrator (legacy)`,
   which has THREE tenants,
   not one: `epub-align` (a local WhisperX spawn that auto-selects CUDA; Crucible has no long-form align
-  job — the `align-longform` spec is in §B7 and UNRULED), `video-assembly` (declares `resource: 'gpu'`
+  job — the `align-longform` spec is in §B7, RULED 2026-09-15 and awaiting its build), `video-assembly` (declares `resource: 'gpu'`
   with no justification and no `machines()`), and any render while the legacy switch is on. Agent is
   making the row appear ONLY when something in the snapshot charges it, and classifying
   `video-assembly` honestly. Also fixing: `upstreamsByServer` is an IN-MEMORY Map, so every server reads
@@ -223,8 +223,7 @@ here and not in 0f.
   start menu, an Edge WebView, the NVIDIA overlay — BookForge's own Electron window is part of it).
 
 **OWED FROM OWEN**
-push the crucible branch (the workflow fix is inert until then) · `align-longform`: build it or leave
-epub-align local · does `video-assembly` need the card · the HF storage wall (two Orpheus voices still
+push the crucible branch (the workflow fix is inert until then) · does `video-assembly` need the card · the HF storage wall (two Orpheus voices still
 only on WSL disk) · the linger ruling (a voice does not survive its render; ~30 s reload per standalone
 render on the Mac, ~138-145 s per render on the PC) · regenerate the WSL unit from HIS login shell
 (the on-disk one still has the unquoted PATH) · the in-app pass continues.
@@ -963,8 +962,35 @@ apps' doors.
 - **B5. Narrator's items-in door** — a remote ALIGN cannot finish without it. **BUILD (narrator).**
 - **B6. Narrator into its own repo** — a friend cannot `crucible install tts` against a
   private BookForge sha. **RULING.**
-- **B7. `align-longform` — the job type that would empty the bench's last in-app GPU row.
-  RULING (do not build on a guess).** Raised 2026-09-15 when Owen read the bench: *"without a
+- **B7. `align-longform` — the job type that empties the bench's last in-app GPU row.
+  RULED 2026-09-15: BUILD IT.** Owen, asked which act this was: *"align longform, is that the
+  generate-sentences logic? that should be a gpu job."* It is — and the identification is
+  more precise than the question, because only ONE of that row's two methods is the subject.
+  `method: 'whisper'` already travels (it is a Crucible `asr` job, taken through
+  `transcribeAtVenue`); `method: 'epub-align'` is the one that spawns here, and
+  `generate-sentences.ts`'s `machines()` is already asked of the CONFIG rather than answered
+  unconditionally, so the build flips one ternary and deletes nothing else.
+
+  **The whole step travels, CPU stages included** — the same ruling Owen made for TTS
+  (*"the entire tts step goes to the other system. That includes anything the step needs to
+  do even if it's cpu"*). `transcribe` and `coarse-align` are CPU and are most of the wall
+  clock; they go with the job, and the job charges ONE slot, its venue's, for its whole
+  duration. Slicing locally to send only the GPU stage is the thing this ruling forbids.
+
+  **What it costs on the wire, since one input crosses.** The m4b as-is, not a wav: a 16 h
+  audiobook is roughly 460 MB at 64 kbps, where the 16 kHz mono wav the script makes
+  internally would be ~1.84 GB. Let the server do that conversion. One transfer per book,
+  over LAN, against a stage that takes ~40 minutes — the ratio is not close.
+
+  **What it empties.** Once both methods travel, `LONGFORM_ALIGN_SET` has no tenant left:
+  `video-assembly` stopped being one when it was measured as CPU (below), and the legacy
+  render venue is deleted (A2). The bench then draws NO GPU row that is not a registered
+  Crucible server, ever — which is Owen's *"without a crucible server, there is no gpu
+  slot"* reached completely rather than conditionally. The set and its migration must stay
+  readable for queues written before the switch, which is what
+  `tools/test-queue-slot-sets.js` pins.
+
+  Raised 2026-09-15 when Owen read the bench: *"without a
   crucible server, there is no gpu slot, because bookforge shouldnt know how to drive gpu work
   in-app."* One step still does, and it is not the legacy narrator: `generate-sentences` with
   `method: 'epub-align'` (`electron/whisperx-align-bridge.ts` → `electron/scripts/align_audiobook.py`).
@@ -983,7 +1009,8 @@ apps' doors.
   header already rules the same way from the other side: *"that bridge keeps its local CPU spawn
   until it is deleted, not moved."*
 
-  **What the job would take, if Owen says build it.**
+  **What the job takes** (written before the ruling, unchanged by it — the ruling says build
+  this, not build something else):
   - `type: "align-longform"`, `model: "qwen3-aligner"` (the same weights; the difference is the
     orchestration, not the model).
   - `inputs`: ONE — the audiobook, `audio.m4b` (or a 16 kHz mono wav the client already has to
