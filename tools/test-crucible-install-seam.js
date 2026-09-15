@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * test-crucible-install-seam.js — the install story: a seam that refuses by
- * name, a plan that is the real sequence, and three doors with honest states.
+ * test-crucible-install-seam.js — the install story: the installer is really
+ * there, the plan is the sequence it will walk, and four doors say honest
+ * things about this machine.
  *
  * Drives the COMPILED `dist/electron/crucible/install.js` (build first:
  * `npx tsc -p tsconfig.electron.json`) over a SCRIPTED host, so nothing here
@@ -10,39 +11,36 @@
  *
  * ── WHAT IT PINS, AND WHY EACH ONE IS WORTH A TEST ──────────────────────────
  *
- * **THE SEAM REFUSES BY NAME WHEN THE PACKAGE IS ABSENT.** `@crucible/bootstrap`
- * 0.5.0 is written and is published as an asset of a Crucible release that has
- * not been cut, so it is deliberately not a dependency. The failure mode this
- * guards is the seam quietly becoming a placeholder: a loader that returned
- * `undefined`, a driven install that resolved with nothing, a button that went
- * live because somebody flipped a constant without writing the import. So the
- * refusal must carry the package's own code (`bootstrap_not_installed`), the
- * command that clears it, and the SAME sentence the disabled button wears —
- * a button saying "not yet" over a door that threw something else is a bug
- * report about a different app.
+ * **THE PACKAGE IS REALLY IMPORTED, AND THE TYPES ARE REALLY ITS OWN.** The
+ * seam this file used to guard — a hand-transcribed surface behind a
+ * `DRIVEN_INSTALL_AVAILABLE = false` — is GONE (2026-09-15):
+ * `vendor/crucible-bootstrap-0.6.0.tgz` is pinned in package.json and
+ * `loadBootstrap()` does the real `await import`. What is guarded now is the
+ * opposite failure: a button that goes live over an installer that is not
+ * installed. So `loadBootstrap()` must RESOLVE, with a real `install`, and the
+ * package's own `install.ps1` line must be the one the Windows door hands over.
  *
- * **THE PLAN'S COMMANDS ARE WHAT CRUCIBLE'S CLI ACTUALLY TAKES.** A step list
- * is a document somebody pastes into a shell, so a wrong flag costs them the
- * time it takes to find out. Checked against the CLI's own rules as
- * `crucible/cli.py` and `sdk/bootstrap/src/install.ts` state them: one
- * `--enable-<type>` per job type; `crucible install tts` must name its narrator
- * engine (there is one env per engine); `denoise` has NO installer of its own
- * because it shares the rvc env; and `crucible models pull` takes ONE positional
- * id, so four weights are four lines and not one line with four words.
+ * **WINDOWS INSTALLS ONE WAY AND IT IS THE HOST'S (PHASE15-HOST.md 4.3).** No
+ * `%LOCALAPPDATA%\Crucible\host\` -> `host_not_installed` carrying
+ * `hostInstallCommand()`; a host that IS there -> `POST /install` on 127.0.0.1:7101
+ * and its events relayed. Driven here over a SCRIPTED runner and a SCRIPTED
+ * host door, so nothing spawns, downloads, elevates or opens a socket. The
+ * regression this catches is BookForge growing a second install sequence of
+ * its own — PHASE14 4a: two descriptions of one install "cannot differ".
  *
- * **THE HOST-RUN COMMANDS ARE LISTED APART AND ARE THE TWO THE DOCS NAME.**
- * `wsl --install -d Ubuntu` (elevated PowerShell, then a reboot) and
- * `sudo loginctl enable-linger "$USER"`. The package's whole division of labour
- * is that it refuses by name and hands those over rather than attempting them,
- * so an app that buried them in the sequence would be promising something it
- * cannot do. macOS gets NEITHER: its service is a launchd agent.
+ * **NO WHEEL, NO CONDA, NO COPYABLE SHELL SEQUENCE.** All three were correct
+ * about a pre-PHASE14 install and are now wrong: the server arrives as an env
+ * pack with its own interpreter. The plan's steps carry NO commands at all,
+ * and the ONE line a person still types is Windows's install.ps1, which comes
+ * from the package rather than from a string in this app.
  *
- * **THE THREE DOORS' STATES.** Door 1 is the registry and is
- * `test-crucible-servers`'s. Doors 2 and 3 are this file's: "there is a config
- * here" vs the NAMED state when there is not, and "install one here" with the
- * button disabled and a stated reason. `no_local_config` must NOT be reported
- * as a refusal — a machine that only renders on the Mac is not broken — while
- * an unreadable config must.
+ * **THE FOUR DOORS' STATES.** Door 1 is the registry and is
+ * `test-crucible-servers`'s. Doors 2, 3 and 4 are this file's: "there is a
+ * config here" vs the NAMED state when there is not, "install one here" with a
+ * verdict that always says why, and — new — "remove it from this computer",
+ * which is `tools/test-crucible-uninstall.js`'s. `no_local_config` must NOT be
+ * reported as a refusal — a machine that only renders on the Mac is not
+ * broken — while an unreadable config must.
  *
  * **AND THE CARD NAMES THE MACHINE.** The small gap the page-reader work left:
  * `vlm:reader-status` answered only `wslRefusal`, so every card drew a local
@@ -74,6 +72,17 @@ const install = require(MODULE);
 const conversion = require(CONVERSION);
 
 let ran = 0;
+
+/**
+ * The package itself, for the checks that compare this app's answer to its.
+ *
+ * Imported through the SAME dynamic import the main process uses, so a
+ * packaging change that breaks one breaks both rather than only the app.
+ */
+function import_bootstrap() {
+  return import('@crucible/bootstrap');
+}
+
 function check(name, fn) {
   ran += 1;
   try {
@@ -127,65 +136,71 @@ function host(overrides) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. The seam
+// 1. The installer is really there
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('the driven install is OFF, and one constant says so', () => {
+checkAsync('loadBootstrap RESOLVES — the package is vendored, not a seam', async () => {
+  const bootstrap = await install.loadBootstrap();
   assert.strictEqual(
-    install.DRIVEN_INSTALL_AVAILABLE, false,
-    'DRIVEN_INSTALL_AVAILABLE is true — if @crucible/bootstrap really is installable now, the '
-    + 'import in loadBootstrap() must be written first (see the module header) and this check '
-    + 'updated deliberately, not flipped past.',
+    typeof bootstrap.install, 'function',
+    'loadBootstrap did not hand back an installer. @crucible/bootstrap is pinned in '
+    + 'package.json to vendor/crucible-bootstrap-0.6.0.tgz; if that pin is gone this is a '
+    + 'build that cannot install anything and the button must not be live over it.',
   );
 });
 
-checkAsync('loadBootstrap refuses by NAME, with the package\'s own code', async () => {
-  let caught = null;
-  try { await install.loadBootstrap(); } catch (err) { caught = err; }
-  assert.ok(caught, 'loadBootstrap resolved — the seam has quietly become a placeholder');
-  assert.strictEqual(caught.name, 'CrucibleInstallError');
-  assert.strictEqual(caught.code, 'bootstrap_not_installed');
-  // The rule every Crucible door in this app follows: a CLI and a settings row
-  // show `err.message` and nothing else, so "refused by name" is only true
-  // where the name is IN the sentence.
+check('the package is PINNED, and to a vendored tarball rather than a directory', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf-8'));
+  const pin = pkg.dependencies[install.BOOTSTRAP_PACKAGE];
+  assert.ok(pin, `${install.BOOTSTRAP_PACKAGE} is not a dependency, and driveCrucibleInstall imports it`);
+  // A `file:` DIRECTORY dependency makes node_modules/@crucible/bootstrap a
+  // junction into the crucible checkout, and a later recursive delete of
+  // node_modules follows it and deletes that repo's SDK source. The same rule
+  // package.json already states for the client tarball.
+  assert.match(pin, /^file:vendor\/crucible-bootstrap-.*\.tgz$/, `the pin is not a vendored tarball: ${pin}`);
+  assert.ok(pin.includes(install.CRUCIBLE_RELEASE), `the pin is not the release this build names: ${pin}`);
   assert.ok(
-    caught.message.startsWith('bootstrap_not_installed: '),
-    `the code is not in the message: ${caught.message}`,
+    fs.existsSync(path.join(REPO, pin.slice('file:'.length))),
+    'the pinned tarball is not in vendor/ — this build cannot be installed from',
   );
 });
 
-checkAsync('the refusal carries the command that clears it, and names the package', async () => {
-  let caught = null;
-  try { await install.loadBootstrap(); } catch (err) { caught = err; }
-  assert.ok(caught.command, 'no command — the package\'s whole rule is that a refusal hands one over');
-  assert.ok(
-    caught.command.includes(install.BOOTSTRAP_PACKAGE),
-    `the command does not name ${install.BOOTSTRAP_PACKAGE}: ${caught.command}`,
-  );
-  assert.ok(
-    caught.command.includes(install.CRUCIBLE_BOOTSTRAP_TARBALL),
-    'the command does not name the release tarball, so nobody can act on it',
-  );
-  assert.ok(caught.detail && caught.detail.length > 0, 'no detail explaining why it is absent');
+check('the driven install is available on the three platforms with a backend, and nowhere else', () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    assert.strictEqual(install.drivenInstallAvailable(platform), true, platform);
+  }
+  assert.strictEqual(install.drivenInstallAvailable('freebsd'), false);
+  // And the reason is a SENTENCE, not a shrug: it names the platform and the
+  // three backends, and says what to do instead.
+  const why = install.drivenInstallUnavailableWhy('freebsd');
+  assert.ok(why.includes('freebsd'), why);
+  assert.ok(why.includes('cuda-linux') && why.includes('mlx-darwin') && why.includes('llama-windows'), why);
 });
 
-checkAsync('driveCrucibleInstall refuses the same way — the DOOR, not only the button', async () => {
-  let caught = null;
-  try {
-    await install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}, 'win32', 'Ubuntu'));
-  } catch (err) { caught = err; }
-  assert.ok(caught, 'driveCrucibleInstall resolved with no bootstrap package present');
-  assert.strictEqual(caught.code, 'bootstrap_not_installed');
+checkAsync('the button is live and carries NO reason; an unsupported box is the mirror', async () => {
+  const plan = await install.crucibleInstallPlan(host());
+  assert.strictEqual(plan.driven, true, 'the install button is dead on a machine that can install');
+  assert.strictEqual(
+    plan.drivenWhy, null,
+    'a reason beside a live button is a sentence that contradicts what it sits on',
+  );
+  const other = await install.crucibleInstallPlan(host({
+    platform: 'freebsd', arch: 'x64', wslDistro: undefined,
+    listWsl: () => { throw new Error('not asked'); },
+    queryGpu: () => { throw new Error('not asked'); },
+  }));
+  assert.strictEqual(other.driven, false);
+  assert.ok(other.drivenWhy && other.drivenWhy.length > 40, 'the disabled button wears no explanation');
 });
 
-check('the button\'s sentence and the door\'s refusal are ONE string', () => {
-  const plan = install.crucibleInstallPlan(host());
-  assert.strictEqual(plan.driven, false);
-  assert.strictEqual(plan.drivenWhy, install.DRIVEN_INSTALL_UNAVAILABLE);
-  assert.ok(
-    plan.drivenWhy.includes(install.BOOTSTRAP_PACKAGE),
-    'the disabled button does not say which package it is waiting for',
-  );
+check('the wheel constants are GONE — a Crucible is not installed from a .whl', () => {
+  // PHASE14: the server arrives as an env pack with its own interpreter. A
+  // constant naming a wheel was a second, wrong answer to "what gets
+  // installed", and the plan's `wheel` field went with it.
+  assert.strictEqual(install.CRUCIBLE_WHEEL, undefined);
+  assert.strictEqual(install.CRUCIBLE_BOOTSTRAP_TARBALL, undefined);
+  assert.strictEqual(install.MAC_CONDA_ROOTS, undefined, 'a server pack brings its own interpreter');
+  assert.strictEqual(install.DRIVEN_INSTALL_AVAILABLE, undefined, 'the build-time switch is gone');
 });
 
 check('the refusal shape is the package\'s: {code, message, command, detail}', () => {
@@ -200,25 +215,56 @@ check('the refusal shape is the package\'s: {code, message, command, detail}', (
 });
 
 /*
+ * NOTHING IS RENAMED ON THE WAY OUT. `installRefusalOf` is the one projector
+ * between the installer and the screen, and the phase's whole argument is that
+ * renaming another owner's refusal is the defect. So a BootstrapRefusal keeps
+ * its code, its command and its evidence, and only a thing that is NOT a
+ * refusal gets a name of this app's own.
+ */
+checkAsync('a package refusal crosses the wire verbatim, command included', async () => {
+  const bootstrap = await import_bootstrap();
+  const refused = new bootstrap.BootstrapRefusal('host_not_installed', 'there is no host here', {
+    command: 'irm https://example/install.ps1 | iex',
+    detail: 'looked in C:\\x\\host',
+  });
+  const out = install.installRefusalOf(refused);
+  assert.strictEqual(out.code, 'host_not_installed');
+  assert.strictEqual(out.command, 'irm https://example/install.ps1 | iex');
+  assert.strictEqual(out.detail, 'looked in C:\\x\\host');
+  assert.ok(out.message.includes('host_not_installed'), `the code is not in the sentence: ${out.message}`);
+});
+
+check('something that is NOT a refusal is install_failed, in its own words', () => {
+  const out = install.installRefusalOf(new TypeError('cannot read properties of undefined'));
+  assert.strictEqual(out.code, 'install_failed');
+  assert.ok(out.message.startsWith('install_failed: '), out.message);
+  assert.ok(out.message.includes('cannot read properties'), 'the error\'s own words were thrown away');
+  assert.strictEqual(out.command, null);
+});
+
+/*
  * `BOOKFORGE_JOB_TYPES` AND `BOOKFORGE_NARRATOR_ENGINE` ARE DELETED, and the
- * check that pinned them is replaced by one that asks the file that owns them
- * now (2026-09-14, PHASE13-OPERATOR.md section 5.4).
- *
- * They were a hand-kept restatement of ids the crucible manifests own, and
- * `shared/crucible/bookforge.module.json` — GENERATED in that repo and
- * vendored here byte for byte — is the single place BookForge says what it
- * needs from a server. `tools/test-crucible-module-file.js` is what compares
- * the copy to its source; this checks the one thing THIS seam cares about:
- * the driven install asks for exactly what the module asks for, so a person
- * who pressed the button and a person who pressed "Set up for BookForge" get
- * the same server.
+ * check that pinned them asks the file that owns them now (2026-09-14,
+ * PHASE13-OPERATOR.md section 5.4): `shared/crucible/bookforge.module.json`,
+ * GENERATED in the crucible repo and vendored here byte for byte.
+ * `tools/test-crucible-module-file.js` compares the copy to its source; this
+ * checks the one thing the INSTALL cares about — the driven install asks for
+ * exactly what the module asks for, so a person who pressed the button and a
+ * person whose app coordinated get the same server.
  */
 check('the driven install asks for exactly what the vendored module asks for', () => {
   const module_ = JSON.parse(fs.readFileSync(
     path.join(REPO, 'shared', 'crucible', 'bookforge.module.json'), 'utf-8'));
-  const options = install.bookforgeInstallOptions(() => {}, 'win32', 'Ubuntu');
-  assert.strictEqual(options.distro, 'Ubuntu');
-  assert.strictEqual(options.wheel, install.CRUCIBLE_WHEEL);
+  const options = install.bookforgeInstallOptions(() => {});
+
+  // The release is PASSED, never defaulted: the package would default to its
+  // own version, which is the same number today and is not the same fact.
+  assert.strictEqual(options.release, install.CRUCIBLE_RELEASE);
+  assert.strictEqual(typeof options.onLine, 'function');
+  // The three fields that went with the wheel and the host's distro ownership.
+  assert.strictEqual(options.wheel, undefined);
+  assert.strictEqual(options.condaRoots, undefined);
+  assert.strictEqual(options.distro, undefined, 'the HOST owns the distro on Windows (PHASE15 4.3)');
 
   const asked = options.jobTypes.map((t) => (typeof t === 'string' ? t : t.type));
   assert.deepStrictEqual(
@@ -238,178 +284,270 @@ check('the driven install asks for exactly what the vendored module asks for', (
   );
 });
 
-check('the Mac\'s Homebrew conda root travels with a darwin install, and only there', () => {
-  // PHASE12 §4, measured: that Mac\'s crucible env is under the Caskroom, which
-  // is none of the package\'s three default roots — so detectHost() there would
-  // answer `no_python` and hand over a line that built a SECOND interpreter.
-  const mac = install.bookforgeInstallOptions(() => {}, 'darwin', undefined);
-  assert.deepStrictEqual([...mac.condaRoots], ['/opt/homebrew/Caskroom/miniconda/base']);
-  const pc = install.bookforgeInstallOptions(() => {}, 'win32', 'Ubuntu');
-  assert.strictEqual(pc.condaRoots, undefined, 'the cask root is a fact about that Mac, not a default');
+checkAsync('the job list the package would accept — checked by the package, not by us', async () => {
+  const bootstrap = await import_bootstrap();
+  // `planJobTypes` is the package's own validator and it refuses by name:
+  // a bare `tts`, a `denoise` with no `rvc`, an unknown type. Running the real
+  // module list through it is how this app finds out its module is wrong
+  // BEFORE somebody presses a button that downloads six gigabytes.
+  const plan = bootstrap.planJobTypes(install.bookforgeJobTypes());
+  assert.ok(plan.enableFlags.length > 0, 'a Crucible with no job types serves nothing');
+  assert.ok(plan.enableFlags.every((f) => f.startsWith('--enable-')), plan.enableFlags.join(' '));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. The plan's commands, against crucible's own CLI rules
+// 2. Windows installs ONE way, and it is the host's (PHASE15-HOST.md 4.3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Driven over a SCRIPTED runner: a fake filesystem, a fake `fetch` for the
+// host's loopback door, and no process spawned anywhere. Nothing here
+// downloads, elevates, imports a distro or opens a socket.
+
+function winRunner(overrides) {
+  const files = (overrides && overrides.files) || {};
+  return Object.assign({
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\Users\\t\\AppData\\Local' },
+    homedir: 'C:\\Users\\t',
+    run: async () => ({ code: 0, stdout: '', stderr: '', failure: null }),
+    stream: async () => ({ code: 0, stdout: '', stderr: '', failure: null }),
+    fileExists: (file) => Object.prototype.hasOwnProperty.call(files, file),
+    readFile: (file) => {
+      if (!Object.prototype.hasOwnProperty.call(files, file)) throw new Error(`ENOENT ${file}`);
+      return files[file];
+    },
+    realpathNative: (file) => file,
+  }, (overrides && overrides.runner) || {});
+}
+
+const HOST_CLI = 'C:\\Users\\t\\AppData\\Local\\Crucible\\host\\crucible.cmd';
+const HOST_CONFIG = 'C:\\Users\\t\\AppData\\Local\\Crucible\\config.toml';
+
+checkAsync('no host on this Windows box: host_not_installed, carrying install.ps1', async () => {
+  let caught = null;
+  try {
+    await install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), winRunner());
+  } catch (err) { caught = err; }
+  assert.ok(caught, 'the install resolved on a machine with no host — it installed nothing');
+  const refusal = install.installRefusalOf(caught);
+  assert.strictEqual(
+    refusal.code, 'host_not_installed',
+    `Windows has ONE install sequence and it is the host's: ${refusal.code} — ${refusal.message}`,
+  );
+  assert.ok(refusal.command, 'a refusal with nothing to type leaves a person with nowhere to go');
+  assert.match(refusal.command, /install\.ps1/, `the line is not install.ps1: ${refusal.command}`);
+  assert.ok(
+    refusal.command.includes(install.CRUCIBLE_RELEASE),
+    `the line does not name the release this build speaks: ${refusal.command}`,
+  );
+});
+
+checkAsync('the install.ps1 line comes from the PACKAGE, not from a string in this app', async () => {
+  const bootstrap = await import_bootstrap();
+  let caught = null;
+  try {
+    await install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), winRunner());
+  } catch (err) { caught = err; }
+  assert.strictEqual(
+    install.installRefusalOf(caught).command,
+    bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE),
+    'the app composed its own install line. One machine, one installer, one line — a second '
+    + 'spelling here is the drift PHASE14 4a forbids.',
+  );
+});
+
+checkAsync('a host that IS there is asked over its loopback door, and its events relayed', async () => {
+  const bootstrap = await import_bootstrap();
+  const events = [
+    { id: 1, event: 'state', data: { code: 'wsl_missing', sentence: 'WSL is not installed.', action: 'run-elevated' } },
+    { id: 2, event: 'step', data: { name: 'server-pack', index: 2, total: 7 } },
+    { id: 3, event: 'progress', data: { bytes_done: 1024, bytes_total: 4096, file: 'pack.part0' } },
+    { id: 4, event: 'line', data: { text: 'unpacking', stream: 'stdout' } },
+    {
+      id: 5,
+      event: 'done',
+      data: {
+        server: { name: 'crucible@pc', url: 'http://127.0.0.1:7100', config_path: '/home/t/.crucible/config.toml' },
+        release: install.CRUCIBLE_RELEASE,
+        backend: 'cuda-linux',
+        crucible: '/home/t/.crucible/server/bin/crucible',
+        steps: [{ name: 'server-pack', argv: [], status: 'ok', detail: '' }],
+      },
+    },
+  ];
+  let posted = null;
+  const fetchImpl = async (url, init) => {
+    posted = { url: String(url), init };
+    const body = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    return new Response(body, { status: 200, headers: { 'content-type': 'application/x-ndjson' } });
+  };
+
+  const seenSteps = [];
+  const seenHost = [];
+  const options = install.bookforgeInstallOptions(
+    () => {},
+    { onStep: (step) => seenSteps.push(step.name), onHostEvent: (e) => seenHost.push(e.event) },
+  );
+  const result = await install.driveCrucibleInstall(
+    Object.assign({}, options, { fetchImpl }),
+    winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
+  );
+
+  assert.ok(posted, 'the host door was never asked');
+  assert.strictEqual(posted.url, `${bootstrap.HOST_DOOR_URL}${bootstrap.HOST_INSTALL_PATH}`);
+  // THE TOKEN IS THE ENGINE'S, read from the host's own config — there is no
+  // second token and none is minted (PHASE15 3.5).
+  assert.strictEqual(posted.init.headers.authorization, 'Bearer abc');
+  const sent = JSON.parse(posted.init.body);
+  assert.strictEqual(sent.target, 'wsl');
+  assert.strictEqual(sent.release, install.CRUCIBLE_RELEASE);
+  assert.ok(Array.isArray(sent.job_types) && sent.job_types.length > 0);
+
+  // EVERY KIND REACHES THE APP. `state` and `progress` have no place in
+  // onLine/onStep, and dropping either is how a 6 GB download becomes a screen
+  // that says nothing for ten minutes.
+  assert.deepStrictEqual(seenHost, ['state', 'step', 'progress', 'line', 'done']);
+  assert.ok(seenSteps.includes('server-pack'), 'the step callback saw nothing');
+  assert.strictEqual(result.backend, 'cuda-linux');
+  assert.strictEqual(result.server.name, 'crucible@pc');
+});
+
+checkAsync('a stream that ends without `done` is a FAILURE, named, not a success', async () => {
+  const fetchImpl = async () => new Response(
+    JSON.stringify({ id: 1, event: 'step', data: { name: 'init', index: 1, total: 7 } }) + '\n',
+    { status: 200 },
+  );
+  let caught = null;
+  try {
+    await install.driveCrucibleInstall(
+      Object.assign({}, install.bookforgeInstallOptions(() => {}), { fetchImpl }),
+      winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
+    );
+  } catch (err) { caught = err; }
+  assert.ok(caught, 'a truncated install stream was read as a finished install');
+  assert.strictEqual(install.installRefusalOf(caught).code, 'host_install_failed');
+});
+
+checkAsync('a second install while one is in flight is refused by NAME', async () => {
+  // The host's own word for it (409 host_install_running), which main.ts
+  // repeats for the machines that have no door to refuse it — one install per
+  // machine, and the second caller waits rather than starting a second walk
+  // over the same distro.
+  const fetchImpl = async () => new Response(
+    JSON.stringify({ code: 'host_install_running', message: 'one already running' }),
+    { status: 409, headers: { 'content-type': 'application/json' } },
+  );
+  let caught = null;
+  try {
+    await install.driveCrucibleInstall(
+      Object.assign({}, install.bookforgeInstallOptions(() => {}), { fetchImpl }),
+      winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
+    );
+  } catch (err) { caught = err; }
+  assert.ok(caught);
+  assert.strictEqual(install.installRefusalOf(caught).code, 'host_install_running');
+});
+
+check('main.ts refuses a concurrent install itself, with the host\'s own name', () => {
+  const main = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
+  assert.ok(
+    main.includes("'host_install_running'"),
+    'main.ts lets two installs start at once on macOS and Linux, where there is no host door '
+    + 'to refuse the second',
+  );
+  assert.ok(
+    main.includes("event.sender.send('crucible:install-progress'"),
+    'main.ts does not stream the install — an await with nothing in between is a spinner for '
+    + 'twenty minutes over a multi-gigabyte download',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b. The plan describes that sequence, and prints no shell to paste
 // ─────────────────────────────────────────────────────────────────────────────
 
 function commandsOf(plan) {
   return plan.steps.flatMap((s) => s.commands);
 }
 
-/*
- * ── WHAT THE PLAN NO LONGER CONTAINS, AND WHY THESE CHECKS INVERTED ───────
- *
- * Six checks stood here: `--enable-<type>` on `init`, `crucible install tts
- * --narrator-engine`, the absence of `install denoise`, one id per `pull`
- * command, the four weights by name, and `capability --write` after `service
- * install`. Every one was correct about a hand sequence that has been DELETED
- * (2026-09-14, PHASE13-OPERATOR.md section 0 and 5.2).
- *
- * The argument is theirs turned around: those eleven commands were a second
- * copy of what `shared/crucible/bookforge.module.json` states and what
- * Crucible's own page installs with a button and a progress bar. Keeping them
- * in step by hand is exactly R1's shape, in the one file whose job is to be
- * correct about ids.
- *
- * So the checks below assert the ABSENCE, by name and with the reason — which
- * is the honest successor to a pin: this is a list that must stay short, and a
- * pull list creeping back into the app is the regression.
- */
-check('`crucible init` carries no --enable flags — the module turns job types on', () => {
-  const plan = install.crucibleInstallPlan(host());
-  const init = commandsOf(plan).filter((c) => c.includes('crucible init'));
-  assert.strictEqual(init.length, 1, 'init is one command or the token would be minted twice');
-  assert.ok(
-    !/--enable-/.test(init[0]),
-    '`crucible install <type>` MERGES the flag into config.toml and reloads the registry '
-    + '(PHASE13 section 3.4), so the job types are decided by "Set up for BookForge" and not '
-    + `guessed at here: ${init[0]}`,
-  );
-});
-
-check('the plan installs NO job environments — that is the module task', () => {
-  const commands = commandsOf(install.crucibleInstallPlan(host()));
-  const installs = commands.filter((c) => /crucible install /.test(c));
-  assert.deepStrictEqual(
-    installs, [],
-    'the env installs came back into the app. They are several gigabytes each, they are what '
-    + 'the vendored module asks a server for, and they are watched on the server\'s own page.',
-  );
-});
-
-check('the plan pulls NO weights — the pull list is deleted', () => {
-  const commands = commandsOf(install.crucibleInstallPlan(host()));
-  const pulls = commands.filter((c) => /crucible (models|voices|rvc|denoise) pull/.test(c));
-  assert.deepStrictEqual(
-    pulls, [],
-    'the printed pull list came back. Those six ids belong to the crucible manifests, are '
-    + 'restated in shared/crucible/bookforge.module.json by a GENERATOR, and are pulled by the '
-    + 'module task — a copy here is the thing that goes stale when a manifest is renamed.',
-  );
-});
-
-check('the plan does not measure the card either — `crucible install` writes that record', () => {
-  const commands = commandsOf(install.crucibleInstallPlan(host()));
-  assert.ok(
-    !commands.some((c) => /crucible capability --write/.test(c)),
-    'capability --write is what `crucible install <type>` does as it goes (PHASE13 section 3.4), '
-    + 'so a separate step for it is one more thing to forget',
-  );
-});
-
-check('the service IS still installed here — it is the pre-server minute', () => {
-  // The one thing above that stayed, and the reason is the phase doc's own:
-  // a local Crucible is a SERVICE and no app owns it. This is the chicken-and-
-  // egg a page cannot do for itself, because until `crucible init` has run
-  // there is no page.
-  const commands = commandsOf(install.crucibleInstallPlan(host()));
-  assert.ok(
-    commands.some((c) => /crucible service install/.test(c)),
-    'the server is never made a service — PHASE5-APPS section 6.0 ruled it is one',
-  );
-});
-
-check('the last step is Open Crucible, and it has nothing to type', () => {
-  const steps = install.crucibleInstallPlan(host()).steps;
-  const last = steps[steps.length - 1];
-  assert.match(last.title, /Open Crucible/, `the sequence does not end at the page: ${last.title}`);
-  assert.deepStrictEqual(last.commands, [], 'the last step is a button, not a command');
-});
-
-check('the wheel and the tarball name the SAME Crucible release', () => {
-  assert.ok(install.CRUCIBLE_WHEEL.includes(`v${install.CRUCIBLE_RELEASE}`));
-  assert.ok(install.CRUCIBLE_BOOTSTRAP_TARBALL.includes(`v${install.CRUCIBLE_RELEASE}`));
-  assert.ok(
-    commandsOf(install.crucibleInstallPlan(host())).some((c) => c.includes(install.CRUCIBLE_WHEEL)),
-    'the plan installs a wheel it does not name',
-  );
-});
-
-check('on Windows every line runs INSIDE the guest, through --exec-shaped wsl.exe', () => {
-  const plan = install.crucibleInstallPlan(host());
-  for (const command of commandsOf(plan)) {
-    assert.ok(
-      command.startsWith('wsl.exe -d Ubuntu '),
-      `a Windows step runs on the host instead of in the guest: ${command}`,
+checkAsync('the plan carries NO commands — those were a second copy of the installer', () => install
+  .crucibleInstallPlan(host()).then((plan) => {
+    assert.deepStrictEqual(
+      commandsOf(plan), [],
+      'a copyable shell sequence came back into the plan. It was eight lines describing a conda '
+      + 'and a wheel install that PHASE14 replaced with env packs, and nothing compared the two.',
     );
-  }
-});
-
-check('on macOS the lines are bare — there is no guest', () => {
-  const plan = install.crucibleInstallPlan(host({
-    platform: 'darwin', arch: 'arm64', wslDistro: undefined,
-    listWsl: () => { throw new Error('wsl.exe must not be asked on a Mac'); },
-    queryGpu: () => { throw new Error('nvidia-smi must not be asked on a Mac'); },
+    assert.ok(plan.steps.length > 0, 'the plan describes nothing at all');
+    for (const step of plan.steps) {
+      assert.ok(step.title && step.detail, `a step with no words: ${JSON.stringify(step)}`);
+    }
   }));
-  assert.strictEqual(plan.host.wsl, null);
-  for (const command of commandsOf(plan)) {
-    assert.ok(!command.includes('wsl.exe'), `a Mac step goes through wsl.exe: ${command}`);
+
+checkAsync('the plan names no wheel and no conda, on any platform', async () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const plan = await install.crucibleInstallPlan(host({
+      platform,
+      arch: platform === 'darwin' ? 'arm64' : 'x64',
+      wslDistro: platform === 'win32' ? 'Ubuntu' : undefined,
+      listWsl: platform === 'win32'
+        ? () => ({ status: 0, stdout: WSL_TABLE, stderr: '' })
+        : () => { throw new Error('wsl.exe must not be asked off Windows'); },
+      queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
+    }));
+    assert.strictEqual(plan.wheel, undefined, `${platform}: the plan still carries a wheel field`);
+    const words = JSON.stringify(plan.steps) + JSON.stringify(plan.elevated);
+    assert.ok(!/\.whl/.test(words), `${platform}: the plan still names a wheel`);
+    assert.ok(!/conda/.test(words), `${platform}: the plan still names conda`);
   }
 });
 
-// ── The commands the HOST must run, listed apart ────────────────────────────
-
-check('Windows lists the two commands BookForge cannot run, and no others', () => {
-  const plan = install.crucibleInstallPlan(host());
+checkAsync('on Windows the ONE line a person types is install.ps1, and nothing else', async () => {
+  const plan = await install.crucibleInstallPlan(host());
+  const bootstrap = await import_bootstrap();
   const elevated = plan.elevated.flatMap((s) => s.commands);
-  assert.deepStrictEqual(elevated, ['wsl --install -d Ubuntu', 'sudo loginctl enable-linger "$USER"']);
-  // And they are NOT in the sequence: a step somebody cannot run would stop the
-  // list dead, and the whole division of labour is that these are handed over.
-  const sequence = commandsOf(plan).join('\n');
-  assert.ok(!sequence.includes('wsl --install'), 'an elevated command is buried in the sequence');
-  assert.ok(!sequence.includes('enable-linger'), 'an elevated command is buried in the sequence');
+  assert.deepStrictEqual(
+    elevated, [bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE)],
+    '`wsl --install` and `enable-linger` are the HOST\'s to raise now (PHASE15 4.3): it walks '
+    + 'the state table, prompts for elevation by name and survives the reboot. A second copy '
+    + 'in this list is a person running a command the host was about to run.',
+  );
 });
 
-check('a machine that already has WSL2 is TOLD so rather than sent to an elevated shell', () => {
-  const plan = install.crucibleInstallPlan(host());
-  const wslStep = plan.elevated.find((s) => s.commands.includes('wsl --install -d Ubuntu'));
-  assert.strictEqual(wslStep.done, true, 'Ubuntu v2 is present and the step is not marked done');
-  const first = plan.steps[0];
-  assert.strictEqual(first.done, true);
-  assert.ok(first.detail.includes('Ubuntu'), 'the step does not say which distro it found');
-});
-
-check('macOS needs NEITHER elevated command — its service is a launchd agent', () => {
-  const plan = install.crucibleInstallPlan(host({
+checkAsync('macOS needs no typed line at all — its service is a launchd agent', async () => {
+  const plan = await install.crucibleInstallPlan(host({
     platform: 'darwin', arch: 'arm64', wslDistro: undefined,
     listWsl: () => { throw new Error('not asked'); },
     queryGpu: () => { throw new Error('not asked'); },
   }));
   assert.deepStrictEqual(plan.elevated, []);
-  assert.ok(
-    plan.steps.some((s) => /launchd agent/.test(s.detail)),
-    'the service step does not say what it installs on a Mac',
-  );
+  assert.strictEqual(plan.host.wsl, null);
 });
 
-check('linger is a Linux fact, and Linux gets it too', () => {
-  const plan = install.crucibleInstallPlan(host({
+checkAsync('linger is a Linux fact, and Linux still gets it', async () => {
+  const plan = await install.crucibleInstallPlan(host({
     platform: 'linux', arch: 'x64', wslDistro: undefined,
     listWsl: () => { throw new Error('not asked'); },
   }));
   assert.deepStrictEqual(
     plan.elevated.flatMap((s) => s.commands),
     ['sudo loginctl enable-linger "$USER"'],
+  );
+});
+
+checkAsync('the non-Windows steps are the PACKAGE\'s step list, in its order', async () => {
+  const bootstrap = await import_bootstrap();
+  const plan = await install.crucibleInstallPlan(host({
+    platform: 'linux', arch: 'x64', wslDistro: undefined,
+    listWsl: () => { throw new Error('not asked'); },
+  }));
+  const jobs = bootstrap.planJobTypes(install.bookforgeJobTypes());
+  const theirs = bootstrap
+    .installSteps({ enableFlags: jobs.enableFlags, installs: jobs.installs, bind: [], linger: false })
+    .map((step) => step.name);
+  assert.deepStrictEqual(
+    plan.steps.map((s) => s.title), theirs,
+    'the plan invented its own sequence again. The installer owns the order; a screen that '
+    + 'describes a different one is describing a different install.',
   );
 });
 
@@ -485,7 +623,7 @@ check('an Intel Mac is not_apple_silicon — mlx-darwin is Apple Silicon only', 
   assert.ok(facts.refusals.some((r) => r.code === 'not_apple_silicon'));
 });
 
-check('a platform Crucible has no backend for says so, and draws no sequence', () => {
+checkAsync('a platform Crucible has no backend for says so, and draws no sequence', async () => {
   const facts = install.crucibleHostFacts(host({
     platform: 'freebsd', arch: 'x64', wslDistro: undefined,
     listWsl: () => { throw new Error('not asked'); },
@@ -493,17 +631,18 @@ check('a platform Crucible has no backend for says so, and draws no sequence', (
   }));
   assert.strictEqual(facts.platform, 'other');
   assert.ok(facts.refusals.some((r) => r.code === 'unsupported_platform'));
-  const plan = install.crucibleInstallPlan(host({
+  return install.crucibleInstallPlan(host({
     platform: 'freebsd', arch: 'x64', wslDistro: undefined,
     listWsl: () => { throw new Error('not asked'); },
     queryGpu: () => { throw new Error('not asked'); },
-  }));
-  assert.strictEqual(plan.steps.length, 1, 'a FreeBSD box was handed a Linux sequence');
-  assert.deepStrictEqual(plan.steps[0].commands, []);
+  })).then((plan) => {
+    assert.strictEqual(plan.steps.length, 1, 'a FreeBSD box was handed a Linux sequence');
+    assert.deepStrictEqual(plan.steps[0].commands, []);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. The three doors' states
+// 4. The four doors' states
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CONFIG_PRESENT = {
@@ -514,16 +653,27 @@ const CONFIG_PRESENT = {
   via: 'wsl',
 };
 
-check('DOOR 2 open: the config is here, and the plan says the init step is done', () => {
-  const plan = install.crucibleInstallPlan(host({ localConfig: () => CONFIG_PRESENT }));
+checkAsync('DOOR 2 open: the config is here, and the plan says so', async () => {
+  const plan = await install.crucibleInstallPlan(host({ localConfig: () => CONFIG_PRESENT }));
   assert.strictEqual(plan.host.local.present, true);
   assert.strictEqual(plan.host.local.serverName, 'crucible@owens-pc-wsl');
-  const init = plan.steps.find((s) => s.commands.some((c) => c.includes('crucible init')));
-  assert.strictEqual(init.done, true, 'a machine with a config was told to initialise again');
   assert.ok(
     plan.machine.includes('crucible@owens-pc-wsl'),
     'the one-line description does not mention the server that is already here',
   );
+  // The step this app can actually verify is `init`: local.ts has already read
+  // whether a config is there. On a MAC or a Linux box that step is in the
+  // list by the package's own name, so a machine with a config is not told to
+  // initialise again.
+  const mac = await install.crucibleInstallPlan(host({
+    platform: 'darwin', arch: 'arm64', wslDistro: undefined,
+    listWsl: () => { throw new Error('not asked'); },
+    queryGpu: () => { throw new Error('not asked'); },
+    localConfig: () => CONFIG_PRESENT,
+  }));
+  const init = mac.steps.find((step) => step.title === 'init');
+  assert.ok(init, 'the installer\'s step list has no `init` step any more');
+  assert.strictEqual(init.done, true, 'a machine with a config was told to initialise again');
 });
 
 check('DOOR 2 closed: `no_local_config` is a STATE and is not reported as a refusal', () => {
@@ -546,10 +696,8 @@ check('DOOR 2 broken: an unreadable config IS a refusal — that one has a fix',
   assert.ok(facts.refusals.some((r) => r.code === 'config_unreadable'));
 });
 
-check('DOOR 3: the button is disabled and the plan states the reason', () => {
-  const plan = install.crucibleInstallPlan(host());
-  assert.strictEqual(plan.driven, false, 'a driven install is offered with no installer behind it');
-  assert.ok(plan.drivenWhy.length > 40, 'the disabled button wears no explanation');
+checkAsync('DOOR 3: the verdict always says why, whichever way it went', async () => {
+  const plan = await install.crucibleInstallPlan(host());
   assert.ok(plan.readme.startsWith('https://'), 'no link to the argument behind the sequence');
   // `plan.jobTypes` is GONE from the wire with the constant behind it: a
   // screen that wants to name what this app asks a server for reads the
@@ -561,12 +709,40 @@ check('DOOR 3: the button is disabled and the plan states the reason', () => {
   assert.ok(plan.hostableWhy.length > 20, 'a hostability verdict with no reason is a bug');
 });
 
-check('DOOR 3: no step claims `done` that this app has not actually checked', () => {
-  const plan = install.crucibleInstallPlan(host());
-  for (const step of plan.steps) {
-    if (!step.done) continue;
-    const checkable = /WSL2 distribution/.test(step.title) || /Initialise/.test(step.title);
-    assert.ok(checkable, `"${step.title}" is ticked and nothing here verified it`);
+checkAsync('DOOR 3: no step claims `done` that this app has not actually checked', async () => {
+  // Two facts, and only two: whether a WSL2 distro is there (the listing said
+  // so) and whether a config is there (local.ts said so). A checkbox that
+  // guessed anything else would be worse than no checkbox.
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const plan = await install.crucibleInstallPlan(host({
+      platform,
+      arch: platform === 'darwin' ? 'arm64' : 'x64',
+      wslDistro: platform === 'win32' ? 'Ubuntu' : undefined,
+      listWsl: platform === 'win32'
+        ? () => ({ status: 0, stdout: WSL_TABLE, stderr: '' })
+        : () => { throw new Error('not asked'); },
+      queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
+      localConfig: () => CONFIG_PRESENT,
+    }));
+    for (const step of plan.steps) {
+      if (!step.done) continue;
+      const checkable = step.title === 'init' || /WSL2/.test(step.title);
+      assert.ok(checkable, `${platform}: "${step.title}" is ticked and nothing here verified it`);
+    }
+  }
+});
+
+checkAsync('DOOR 4 is there: the uninstall channels are registered and refuse remotes', async () => {
+  // The door itself is `tools/test-crucible-uninstall.js`'s. What THIS file
+  // pins is that the pair exists at all and is not named what Foundry names
+  // its own — a duplicate ipcMain.handle throws at registration and the app
+  // does not start with the Foundry window mounted.
+  const main = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
+  for (const ours of ['crucible:host-uninstall-plan', 'crucible:host-uninstall']) {
+    assert.ok(main.includes(`ipcMain.handle('${ours}'`), `main.ts does not register ${ours}`);
+  }
+  for (const theirs of ["'crucible:uninstall'", "'crucible:uninstall-plan'"]) {
+    assert.ok(!main.includes(`ipcMain.handle(${theirs}`), `main.ts registers the short name ${theirs}`);
   }
 });
 

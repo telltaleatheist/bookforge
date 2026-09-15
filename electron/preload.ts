@@ -81,7 +81,12 @@ import type {
   CrucibleHostFacts,
   CrucibleHostRefusal,
   CrucibleInstallPlan,
+  CrucibleInstallProgress,
 } from '../shared/crucible/install-wire';
+import type {
+  CrucibleUninstallPlan,
+  CrucibleUninstallRefusalCode,
+} from '../shared/crucible/uninstall-wire';
 import type { VlmReadingsBank } from '../shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '../shared/vlm/narration-deletions';
 import type {
@@ -1430,15 +1435,46 @@ export interface ElectronAPI {
 
     /** What this machine can run a Crucible with, measured — `detectHost()`'s shape. */
     hostFacts: () => Promise<{ success: boolean; data?: CrucibleHostFacts; error?: string }>;
-    /** The hand sequence for this platform, every command copyable. A read. */
+    /** What installing one here would do, for this platform. A read. */
     installPlan: () => Promise<{ success: boolean; data?: CrucibleInstallPlan; error?: string }>;
     /**
-     * The DRIVEN install. Refuses on every machine today with
-     * `bootstrap_not_installed` — the same sentence the disabled button wears,
-     * because a disabled control over an open door is a decoration. The refusal
-     * comes back shaped like `@crucible/bootstrap`'s own, `command` included.
+     * THE DRIVEN INSTALL, through `@crucible/bootstrap`. On Windows that is
+     * the HOST's door and nothing else (PHASE15 §4.3): a machine with no host
+     * refuses `host_not_installed` carrying the one `install.ps1` line. Every
+     * refusal is the refusing owner's own, `command` included — nothing is
+     * renamed on the way through. Watch `onInstallProgress` while it runs.
      */
     install: () => Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }>;
+    /** Every step, line, byte count and WSL state of the install above, as it happens. */
+    onInstallProgress: (callback: (progress: CrucibleInstallProgress) => void) => () => void;
+    /**
+     * WHAT UNINSTALLING WOULD DO — `crucible uninstall --dry-run --json`,
+     * which touches nothing. The same plan object the real run performs, so
+     * the two cannot describe different things.
+     *
+     * LOCAL ONLY: anything but this machine's own engine is
+     * `uninstall_not_local`, and a Crucible whose CLI predates the verb is
+     * `uninstall_not_available`.
+     */
+    uninstallPlan: (
+      name: string,
+      options: { purgeWeights: boolean; wslToo: boolean },
+    ) => Promise<{
+      success: boolean; data?: CrucibleUninstallPlan; error?: string;
+      refusal?: { code: CrucibleUninstallRefusalCode; message: string; command: string | null; detail: string | null };
+    }>;
+    /** The real run. Weights are KEPT unless `purgeWeights`. Streams on `onUninstallProgress`. */
+    uninstall: (
+      name: string,
+      options: { purgeWeights: boolean; wslToo: boolean },
+    ) => Promise<{
+      success: boolean; data?: CrucibleUninstallPlan; error?: string;
+      refusal?: { code: CrucibleUninstallRefusalCode; message: string; command: string | null; detail: string | null };
+    }>;
+    /** Every line the uninstall printed, as it printed it. */
+    onUninstallProgress: (
+      callback: (line: { stream: 'stdout' | 'stderr'; text: string }) => void,
+    ) => () => void;
 
     /*
      * ── THE OPERATOR DOOR (PHASE13-OPERATOR.md section 5) ───────────────────
@@ -2919,6 +2955,29 @@ const electronAPI: ElectronAPI = {
     hostFacts: () => ipcRenderer.invoke('crucible:host-facts'),
     installPlan: () => ipcRenderer.invoke('crucible:host-install-plan'),
     install: () => ipcRenderer.invoke('crucible:host-install'),
+    // Every step, line, byte count and WSL state of a RUNNING install. The
+    // install itself downloads gigabytes and, on Windows, crosses a UAC prompt
+    // and possibly a reboot — an `await` with nothing in between would be a
+    // spinner for twenty minutes.
+    onInstallProgress: (callback: (progress: CrucibleInstallProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: CrucibleInstallProgress) =>
+        callback(progress);
+      ipcRenderer.on('crucible:install-progress', listener);
+      return () => { ipcRenderer.removeListener('crucible:install-progress', listener); };
+    },
+    // Taking it off again. The dry run touches nothing; the real one deletes a
+    // service, a home directory and — only with `purgeWeights` — the weights.
+    // Both refuse `uninstall_not_local` for anything but this machine's engine.
+    uninstallPlan: (name: string, options: { purgeWeights: boolean; wslToo: boolean }) =>
+      ipcRenderer.invoke('crucible:host-uninstall-plan', name, options),
+    uninstall: (name: string, options: { purgeWeights: boolean; wslToo: boolean }) =>
+      ipcRenderer.invoke('crucible:host-uninstall', name, options),
+    onUninstallProgress: (callback: (line: { stream: 'stdout' | 'stderr'; text: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, line: { stream: 'stdout' | 'stderr'; text: string }) =>
+        callback(line);
+      ipcRenderer.on('crucible:uninstall-progress', listener);
+      return () => { ipcRenderer.removeListener('crucible:uninstall-progress', listener); };
+    },
     capability: (name: string) => ipcRenderer.invoke('crucible:capability', name),
     // The engine's own settings. The channel names are `crucible:engine-*` and
     // NOT `crucible:settings`, which the vendored Foundry (e6d5424) registers

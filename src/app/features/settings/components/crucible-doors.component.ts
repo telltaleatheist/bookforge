@@ -8,11 +8,12 @@ import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
 import type { CrucibleProbeResult, LocalServerVia } from '@shared/crucible/settings-wire';
 import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
-import { coordinationWords } from './crucible-words';
+import { bytesWords, coordinationWords, sizeWords } from './crucible-words';
 import type {
   CrucibleHostRefusal,
   CrucibleInstallPlan,
 } from '@shared/crucible/install-wire';
+import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
 
 /** The reserved name of the engine on this machine. Never a registry entry. */
 const LOCAL_ENGINE = 'local';
@@ -117,18 +118,21 @@ const LOCAL_ENGINE = 'local';
                 <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
                   {{ busy() === 'install' ? 'Installing…' : 'Set one up on this machine' }}
                 </desktop-button>
-                @if (!p.driven) {
-                  <span class="driven-why">
-                    BookForge can set one up for you here, and that installer arrives with the next
-                    Crucible release. Until then, connect to an engine on another machine below —
-                    or follow the manual steps in Settings → Crucible Servers.
-                  </span>
-                }
+                <!--
+                  THE REASON COMES FROM MAIN, NOT FROM HERE. A sentence written
+                  into the template is a second owner of "can this machine have
+                  one", and the two said different things for a day: this one
+                  claimed the installer had not shipped while the plan already
+                  knew whether the platform had a backend at all.
+                -->
+                @if (!p.driven && p.drivenWhy) { <span class="driven-why">{{ p.drivenWhy }}</span> }
               </div>
               @if (installRefusal(); as r) {
                 <p class="bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
                 @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
+                @if (r.detail) { <p class="detail">{{ r.detail }}</p> }
               }
+              <ng-container [ngTemplateOutlet]="installProgress" />
               <ng-container [ngTemplateOutlet]="coordinationState" />
               <ng-container [ngTemplateOutlet]="connectForm" />
             </div>
@@ -241,6 +245,109 @@ const LOCAL_ENGINE = 'local';
               <p class="hint">Measuring this machine…</p>
             }
           </div>
+        }
+
+        <!-- ── 4. Take it off again ────────────────────────────────────── -->
+        <!--
+          THE DOOR IS DRAWN ONLY WHEN THERE IS SOMETHING TO REMOVE, and only
+          for THIS MACHINE's engine (ruling 2026-09-15, taken with Foundry so
+          both apps draw the same door). A remote row never grows this button:
+          crucible uninstall deletes a service, a home directory and possibly
+          tens of gigabytes, and a door that could reach the Mac Studio from a
+          laptop is a door that will. Main refuses uninstall_not_local as
+          well, because a disabled control over an open door is a decoration.
+        -->
+        @if (localFacts()?.present) {
+          <button class="door" type="button" (click)="toggle('uninstall')">
+            <span class="door-name">Remove the engine from this computer</span>
+            <span class="door-note">
+              Uninstall Crucible. Your books are never touched, and the models it downloaded are
+              kept unless you say otherwise.
+            </span>
+          </button>
+          @if (open() === 'uninstall') {
+            <div class="panel">
+              <!--
+                THE DRY RUN IS SHOWN FIRST AND IS NOT OPTIONAL. It is the SAME
+                plan object the real run performs — Crucible's own rule, which
+                is the only definition of "dry run" that cannot drift — so what
+                is on the screen is what will happen, step by step, with the
+                size of every path.
+              -->
+              <label class="check">
+                <input type="checkbox" [(ngModel)]="purgeWeights" name="cruPurge" (change)="uninstallPlan.set(null)" />
+                <span>
+                  Also delete the downloaded models — tens of gigabytes, and a reinstall downloads
+                  every byte again. Off, they are kept and the next install finds them.
+                </span>
+              </label>
+              @if (canWslToo()) {
+                <label class="check">
+                  <input type="checkbox" [(ngModel)]="wslToo" name="cruWslToo" (change)="uninstallPlan.set(null)" />
+                  <span>
+                    Also remove the WSL2 engine inside the guest. The distro itself is never
+                    unregistered — every other distro on this machine is yours, and so is that
+                    decision.
+                  </span>
+                </label>
+              }
+              <div class="actions">
+                <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="loadUninstallPlan()">
+                  {{ busy() === 'uninstall-plan' ? 'Checking…' : 'Show me what would go' }}
+                </desktop-button>
+                @if (uninstallPlan(); as u) {
+                  @if (u.dryRun) {
+                    <desktop-button variant="danger" size="sm" [disabled]="busy() !== null" (click)="runUninstall()">
+                      {{ busy() === 'uninstall' ? 'Removing…' : 'Remove it' }}
+                    </desktop-button>
+                  }
+                }
+              </div>
+              @if (uninstallRefusal(); as r) {
+                <p class="bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
+                @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
+                @if (r.detail) { <p class="detail">{{ r.detail }}</p> }
+              }
+              @if (uninstallPlan(); as u) {
+                <p class="hint">
+                  Through <code>{{ u.ranThrough }}</code> — {{ u.mechanism }}, home
+                  <code>{{ u.home }}</code>{{ u.backendKind ? ', backend ' + u.backendKind : '' }}.
+                </p>
+                <ol class="steps">
+                  @for (st of u.steps; track st.name) {
+                    <li class="step" [class.done]="st.done">
+                      <div class="step-head">
+                        <span class="code">{{ st.action }}</span>
+                        <span class="step-title">{{ st.what }}</span>
+                        @if (st.bytes !== null) { <span class="tick">{{ sizeOf(st.bytes) }}</span> }
+                        @if (st.done) { <span class="tick">&#10003; done</span> }
+                      </div>
+                      <p class="detail"><code>{{ st.target }}</code></p>
+                      @if (st.refused; as ref) {
+                        <p class="bad"><span class="code">{{ ref.code }}</span> {{ ref.message }}</p>
+                      }
+                    </li>
+                  }
+                </ol>
+                <p class="hint">
+                  @if (u.dryRun) {
+                    Nothing has been touched. Kept: {{ sizeOf(u.keptWeightsBytes) }} of models
+                    @if (u.keptPaths.length > 0) { <span>in {{ u.keptPaths.length }} folder(s)</span> }.
+                  } @else {
+                    Freed {{ sizeOf(u.removedBytes) }}. Kept {{ sizeOf(u.keptWeightsBytes) }} of
+                    models @if (u.keptPaths.length > 0) { <span>in {{ u.keptPaths.length }} folder(s)</span> }.
+                  }
+                </p>
+                @if (!u.ok) {
+                  <p class="bad">
+                    A step refused, above, by name. Everything that DID finish is gone; nothing is
+                    half-removed silently.
+                  </p>
+                }
+              }
+              @if (uninstallLine(); as l) { <pre class="cmd">{{ l }}</pre> }
+            </div>
+          }
         }
       </div>
     }
@@ -363,12 +470,14 @@ const LOCAL_ENGINE = 'local';
         <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
           {{ busy() === 'install' ? 'Installing…' : 'Set one up for me' }}
         </desktop-button>
-        @if (!p.driven) { <span class="driven-why">{{ p.drivenWhy }}</span> }
+        @if (!p.driven && p.drivenWhy) { <span class="driven-why">{{ p.drivenWhy }}</span> }
       </div>
       @if (installRefusal(); as r) {
         <p class="bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
         @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
+        @if (r.detail) { <p class="detail">{{ r.detail }}</p> }
       }
+      <ng-container [ngTemplateOutlet]="installProgress" />
       <ng-container [ngTemplateOutlet]="coordinationState" />
 
       <!--
@@ -379,20 +488,27 @@ const LOCAL_ENGINE = 'local';
         answer to “where should the work happen”.
       -->
       <button class="door manual" type="button" (click)="manual.set(!manual())">
-        <span class="door-name">{{ manual() ? 'Hide the manual steps' : 'Show the manual steps' }}</span>
+        <span class="door-name">{{ manual() ? 'Hide what it does' : 'Show what it does' }}</span>
         <span class="door-note">
-          For setting one up in a terminal yourself. Not needed if you use the button above, or
-          connect to an engine on another machine.
+          Every step the button above walks, in order, before you press it.
         </span>
       </button>
       @if (manual()) {
-      <h5 class="group">Run these, in order</h5>
+      <h5 class="group">What the button will do, in order</h5>
+      <!--
+        THESE ARE NOT LINES TO TYPE ANY MORE, and the copy changed with the
+        code. This list used to be eight shell commands — conda, a wheel,
+        crucible init — which was a SECOND description of an install
+        @crucible/bootstrap already owns, and the two had drifted: the wheel
+        became an env pack and conda stopped being involved at all. The steps
+        below are read from the installer's own step list.
+      -->
       <p class="hint">
         {{ p.platform === 'win32'
-          ? 'Each line runs inside the WSL guest. Crucible’s backend is Linux — Windows is never one.'
-          : 'Each line runs in a terminal on this machine.' }}
-        This is only the first minute — a guest, a Python, the wheel, the service. Nothing that
-        an engine RUNS is here: BookForge installs what it needs the moment it connects to one.
+          ? 'On Windows there is one install sequence and it belongs to the Crucible host — it walks the WSL state table, raises the elevation prompts and survives the reboot. BookForge runs none of it.'
+          : 'Each step runs on this machine. The server arrives as one pack with its own interpreter inside it; nothing is built from source and there is no conda to find.' }}
+        Nothing that an engine RUNS is here: BookForge installs what it needs the moment it
+        connects to one.
       </p>
       <ol class="steps">
         @for (s of p.steps; track s.title) {
@@ -430,6 +546,41 @@ const LOCAL_ENGINE = 'local';
 
       <p class="hint">The argument behind all of it: <code>{{ p.readme }}</code></p>
       }
+    </ng-template>
+
+    <!--
+      A RUNNING INSTALL, AS IT HAPPENS (crucible PHASE15-HOST.md §4.3).
+      
+      THREE ROWS AND NOT ONE, because the three facts are different kinds of
+      thing and a screen that flattened them would be a log. state is the WSL
+      table's answer for THIS machine — wsl_missing, virtualization_disabled,
+      wsl1_only — shown BY NAME with the sentence its owner wrote, because a
+      machine that needs its firmware changed must not be told "installing…".
+      step is where in the sequence it is. line is the last thing a process
+      printed, and only the last: a scrolling console in a settings panel is a
+      thing people watch instead of a thing they read.
+    -->
+    <ng-template #installProgress>
+      @if (installState(); as st) {
+        <div class="module">
+          <p class="hint"><span class="code">{{ st.code }}</span> {{ st.sentence }}</p>
+          @if (st.action === 'run-elevated') {
+            <p class="detail">
+              This one needs Administrator. The Crucible host raises that prompt itself — BookForge
+              cannot obtain elevation on anybody's behalf and does not try.
+            </p>
+          } @else if (st.action === 'instruct') {
+            <p class="detail">Only a person can do this one. Nothing is waiting on the app.</p>
+          }
+        </div>
+      }
+      @if (installStep(); as st) {
+        <p class="hint">
+          <strong>{{ st.step }}</strong>{{ st.index !== null && st.total !== null ? ' — step ' + st.index + ' of ' + st.total : '' }}
+          @if (installBytes(); as b) { <span> · {{ b }}</span> }
+        </p>
+      }
+      @if (installLine(); as l) { <pre class="cmd">{{ l }}</pre> }
     </ng-template>
 
     <!--
@@ -541,8 +692,10 @@ export class CrucibleDoorsComponent {
   /** Something landed that changes what the host's own list would say. */
   readonly changed = output<void>();
 
-  readonly open = signal<'connect' | 'local' | 'install' | null>(null);
-  readonly busy = signal<'test' | 'add' | 'local' | 'install' | 'paste' | null>(null);
+  readonly open = signal<'connect' | 'local' | 'install' | 'uninstall' | null>(null);
+  readonly busy = signal<
+    'test' | 'add' | 'local' | 'install' | 'paste' | 'uninstall-plan' | 'uninstall' | null
+  >(null);
   readonly error = signal<string | null>(null);
   /**
    * Is the printed command sequence unfolded? Settings only, and folded by
@@ -561,6 +714,27 @@ export class CrucibleDoorsComponent {
 
   readonly plan = signal<CrucibleInstallPlan | null>(null);
   readonly installRefusal = signal<CrucibleHostRefusal | null>(null);
+
+  /*
+   * ── A RUNNING INSTALL, IN THREE SIGNALS AND NOT A TRANSCRIPT ────────────
+   *
+   * The install streams every step, every line, every byte count and every
+   * WSL state. What is KEPT is the latest of each, because that is what a
+   * person reads: a machine sitting on `virtualization_disabled` needs that
+   * sentence on screen, not scrolled past. The full transcript goes to main's
+   * console, which is where a bug report gets it from.
+   *
+   * They are cleared when a run STARTS rather than when it ends: a failed
+   * install's last state is the most useful thing on the screen, and wiping it
+   * on the way out would leave a refusal with no context beside it.
+   */
+  readonly installState = signal<
+    { code: string; sentence: string; action: 'run' | 'run-elevated' | 'instruct' | 'link' } | null
+  >(null);
+  readonly installStep = signal<{ step: string; index: number | null; total: number | null } | null>(null);
+  readonly installLine = signal<string | null>(null);
+  /** The current download, as `3.4 of 6.1 GB`, or null when nothing is downloading. */
+  readonly installBytes = signal<string | null>(null);
 
   /**
    * WHERE COORDINATION WITH THIS MACHINE'S ENGINE STANDS.
@@ -623,6 +797,37 @@ export class CrucibleDoorsComponent {
       if (state.server === LOCAL_ENGINE) this.coordination.set(state);
     });
     this.destroyRef.onDestroy(stop);
+
+    /*
+     * SUBSCRIBED FOR THE WHOLE MOUNT, not just while the button is pressed.
+     * An install started from the wizard and a settings panel opened halfway
+     * through are the same install — there is one per machine — and a panel
+     * that only listened while IT was the presser would show nothing.
+     */
+    const stopInstall = this.electron.crucible.onInstallProgress((progress) => {
+      if (progress.kind === 'state') {
+        this.installState.set({
+          code: progress.code, sentence: progress.sentence, action: progress.action,
+        });
+      } else if (progress.kind === 'step') {
+        this.installStep.set({ step: progress.step, index: progress.index, total: progress.total });
+        // A new step is not the old step's download.
+        this.installBytes.set(null);
+      } else if (progress.kind === 'progress') {
+        this.installBytes.set(bytesWords(progress.done, progress.total));
+      } else if (progress.kind === 'line') {
+        this.installLine.set(progress.text);
+      } else if (progress.kind === 'done' || progress.kind === 'failed') {
+        this.installBytes.set(null);
+        this.installLine.set(null);
+      }
+    });
+    this.destroyRef.onDestroy(stopInstall);
+
+    const stopUninstall = this.electron.crucible.onUninstallProgress((line) => {
+      this.uninstallLine.set(line.text);
+    });
+    this.destroyRef.onDestroy(stopUninstall);
   }
 
   /**
@@ -634,11 +839,22 @@ export class CrucibleDoorsComponent {
    * somebody's time to answer a question they did not ask. Door 2 needs the
    * same read, so both load it.
    */
-  toggle(door: 'connect' | 'local' | 'install'): void {
+  toggle(door: 'connect' | 'local' | 'install' | 'uninstall'): void {
     this.error.set(null);
     const next = this.open() === door ? null : door;
     this.open.set(next);
     if ((next === 'install' || next === 'local') && this.plan() === null) void this.loadPlan();
+    /*
+     * CLOSING THE UNINSTALL DOOR FORGETS ITS PLAN. A dry run is a measurement
+     * of a machine at one moment; reopening the door half an hour later and
+     * seeing yesterday's sizes over a live "Remove it" button is the one thing
+     * this door must not do.
+     */
+    if (next !== 'uninstall') {
+      this.uninstallPlan.set(null);
+      this.uninstallRefusal.set(null);
+      this.uninstallLine.set(null);
+    }
   }
 
   private async loadPlan(): Promise<void> {
@@ -867,6 +1083,10 @@ export class CrucibleDoorsComponent {
     this.busy.set('install');
     this.error.set(null);
     this.installRefusal.set(null);
+    this.installState.set(null);
+    this.installStep.set(null);
+    this.installLine.set(null);
+    this.installBytes.set(null);
     try {
       const res = await this.electron.crucible.install();
       if (res.success) {
@@ -887,6 +1107,104 @@ export class CrucibleDoorsComponent {
       this.error.set(res.error ?? 'The install refused and said nothing about why.');
     } finally {
       if (this.busy() === 'install') this.busy.set(null);
+    }
+  }
+
+  // ── Door 4: take it off again ────────────────────────────────────────────
+
+  /**
+   * THE TWO CHOICES, AND BOTH DEFAULT TO THE SAFE ANSWER.
+   *
+   * Weights are KEPT unless somebody says otherwise — that is Crucible's own
+   * default and this door does not quietly hold a different one. A reinstall
+   * that finds 40 GB of models already there is minutes; one that re-downloads
+   * them is an evening.
+   */
+  purgeWeights = false;
+  wslToo = false;
+
+  readonly uninstallPlan = signal<CrucibleUninstallPlan | null>(null);
+  readonly uninstallRefusal = signal<
+    { code: string; message: string; command: string | null; detail: string | null } | null
+  >(null);
+  /** The last line the uninstall printed. The transcript goes to main's console. */
+  readonly uninstallLine = signal<string | null>(null);
+
+  /**
+   * Is "also remove the WSL2 engine" a thing on this machine?
+   *
+   * Only on Windows, and only where the plan actually saw a WSL2 distro. It is
+   * a flag of the Windows HOST's CLI — it runs the guest's own uninstall first
+   * — and offering it anywhere else would be offering a choice that main
+   * refuses by name (`uninstall_wsl_too_needs_host`).
+   */
+  readonly canWslToo = computed(() => {
+    const plan = this.plan();
+    if (plan === null || plan.platform !== 'win32') return false;
+    return (plan.host.wsl?.distros ?? []).some((d) => d.version === 2);
+  });
+
+  sizeOf(bytes: number): string {
+    return sizeWords(bytes);
+  }
+
+  /** The dry run. Touches nothing, and is the same plan the real run performs. */
+  async loadUninstallPlan(): Promise<void> {
+    this.busy.set('uninstall-plan');
+    this.uninstallRefusal.set(null);
+    this.uninstallLine.set(null);
+    try {
+      const res = await this.electron.crucible.uninstallPlan(LOCAL_ENGINE, {
+        purgeWeights: this.purgeWeights,
+        wslToo: this.wslToo,
+      });
+      if (res.success && res.data) {
+        this.uninstallPlan.set(res.data);
+        return;
+      }
+      // NEVER AN EMPTY PLAN ON FAILURE: an empty step list reads as "nothing
+      // to remove", which is a different sentence from "this could not be
+      // measured" and would sit under a live Remove button.
+      this.uninstallPlan.set(null);
+      if (res.refusal) {
+        this.uninstallRefusal.set(res.refusal);
+        return;
+      }
+      this.error.set(res.error ?? 'Checking what would go refused and said nothing about why.');
+    } finally {
+      if (this.busy() === 'uninstall-plan') this.busy.set(null);
+    }
+  }
+
+  /**
+   * The real run, and the ONE thing that happens after it: the plan is
+   * re-read.
+   *
+   * `loadPlan()` is what closes the door — with the engine gone,
+   * `localFacts().present` is false and the door is not drawn at all. Nothing
+   * here decides that; it is the same measurement every other face reads.
+   */
+  async runUninstall(): Promise<void> {
+    this.busy.set('uninstall');
+    this.uninstallRefusal.set(null);
+    try {
+      const res = await this.electron.crucible.uninstall(LOCAL_ENGINE, {
+        purgeWeights: this.purgeWeights,
+        wslToo: this.wslToo,
+      });
+      if (res.success && res.data) {
+        this.uninstallPlan.set(res.data);
+        this.changed.emit();
+        await this.loadPlan();
+        return;
+      }
+      if (res.refusal) {
+        this.uninstallRefusal.set(res.refusal);
+        return;
+      }
+      this.error.set(res.error ?? 'Removing it refused and said nothing about why.');
+    } finally {
+      if (this.busy() === 'uninstall') this.busy.set(null);
     }
   }
 }

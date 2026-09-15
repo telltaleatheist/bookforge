@@ -62,6 +62,9 @@ import type {
   CrucibleUpstreamName,
   CrucibleUpstreamProbe,
 } from '../shared/crucible/settings-wire';
+// One event of a running install, pushed on `crucible:install-progress`. Same
+// rule as the line above: a `shared/` shape, a relative path, types only.
+import type { CrucibleInstallProgress } from '../shared/crucible/install-wire';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
@@ -8049,41 +8052,219 @@ function setupIpcHandlers(): void {
   });
 
   /**
-   * The hand sequence for installing a Crucible on this machine, composed for
-   * this platform from those facts. A READ: the only processes it spawns are
-   * `wsl.exe -l -v` and an `nvidia-smi` query. Everything in the answer is a
-   * string for a person to read and run.
+   * What installing a Crucible here would do, composed for this platform from
+   * those facts. A READ: the only processes it spawns are `wsl.exe -l -v` and
+   * an `nvidia-smi` query.
    */
   ipcMain.handle('crucible:host-install-plan', async () => {
     try {
       const { crucibleInstallPlan } = await import('./crucible/install.js');
-      return { success: true, data: crucibleInstallPlan() };
+      return { success: true, data: await crucibleInstallPlan() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
   /**
-   * The driven install. REFUSES on every machine today, by name
-   * (`bootstrap_not_installed`), with the same sentence the disabled button
-   * wears — the door refuses AS WELL AS the button, because a disabled control
-   * over an open door is a decoration.
+   * THE DRIVEN INSTALL, and the only place in this app that installs anything
+   * onto a machine (crucible PHASE15-HOST.md §4.3).
+   *
+   * ── WHY IT STREAMS ────────────────────────────────────────────────────────
+   *
+   * This downloads gigabytes, imports a distro and, on Windows, hands the
+   * whole sequence to the host — which raises UAC prompts and may cross a
+   * reboot. An `await` with nothing in between would be a spinner for twenty
+   * minutes. So every step, every line, every byte count and every WSL state
+   * the package reports is pushed to the window on
+   * `crucible:install-progress`, in the package's own shapes, and the awaited
+   * answer carries only the ending.
+   *
+   * ── ONE AT A TIME, REFUSED BY NAME ────────────────────────────────────────
+   *
+   * A second press while one runs is `host_install_running` — the SAME name
+   * the host's own door uses for the same fact, so a person who pressed twice
+   * and a person whose other app pressed first read one word. It is refused
+   * here as well as there because on macOS and Linux there is no door to
+   * refuse it, and because a second walk over the same distro is not something
+   * to find out about by watching two progress streams interleave.
+   *
+   * ── NOTHING IS RENAMED ON THE WAY OUT ─────────────────────────────────────
+   *
+   * `installRefusalOf` carries the refusing owner's own code, message, command
+   * and evidence. A `host_not_installed` arrives here with the `install.ps1`
+   * line the package composed, and that is what the screen shows.
    */
-  ipcMain.handle('crucible:host-install', async () => {
+  let crucibleInstallInFlight = false;
+  ipcMain.handle('crucible:host-install', async (event) => {
+    const { installRefusalOf } = await import('./crucible/install.js');
+    if (crucibleInstallInFlight) {
+      return {
+        success: false,
+        error: 'host_install_running: an install is already running on this machine.',
+        refusal: {
+          code: 'host_install_running' as const,
+          message:
+            'host_install_running: an install is already running on this machine. There is one '
+            + 'install per machine; the second caller waits rather than starting a second walk '
+            + 'over the same distro.',
+          command: null,
+          detail: null,
+        },
+      };
+    }
+    crucibleInstallInFlight = true;
+    const send = (progress: CrucibleInstallProgress): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('crucible:install-progress', progress);
+    };
     try {
       const { bookforgeInstallOptions, driveCrucibleInstall } = await import('./crucible/install.js');
-      // The line callback is required by the package and is wired to the
-      // renderer's own progress the day this runs; until then nothing calls it.
-      const options = bookforgeInstallOptions((line, _stream, step) => {
-        console.log(`[crucible install] ${step}: ${line}`);
+      const options = bookforgeInstallOptions(
+        (text, stream, step) => {
+          console.log(`[crucible install] ${step}: ${text}`);
+          send({ kind: 'line', step, stream, text });
+        },
+        {
+          onStep: (step) => send({
+            kind: 'step',
+            step: step.name,
+            index: null,
+            total: null,
+            status: step.status,
+            detail: step.detail,
+          }),
+          /*
+           * THE HOST'S EVENTS ARE FORWARDED WHOLE, not folded into the two
+           * callbacks above. `state` is the 4c table's answer for THIS machine
+           * and has no place in `onLine`/`onStep` — it is a fact about the
+           * machine, not something a process printed — and `progress` is where
+           * the bytes are. Dropping either is how a 6 GB download becomes a
+           * screen that says nothing for ten minutes.
+           */
+          onHostEvent: (hostEvent) => {
+            if (hostEvent.event === 'state') {
+              send({
+                kind: 'state',
+                code: hostEvent.data.code,
+                sentence: hostEvent.data.sentence,
+                action: hostEvent.data.action,
+              });
+            } else if (hostEvent.event === 'progress') {
+              send({
+                kind: 'progress',
+                file: hostEvent.data.file,
+                done: hostEvent.data.bytes_done,
+                total: hostEvent.data.bytes_total,
+              });
+            } else if (hostEvent.event === 'step') {
+              send({
+                kind: 'step',
+                step: hostEvent.data.name,
+                index: hostEvent.data.index,
+                total: hostEvent.data.total,
+                status: 'running',
+                detail: '',
+              });
+            }
+          },
+        },
+      );
+      const result = await driveCrucibleInstall(options);
+      send({
+        kind: 'done',
+        server: result.server,
+        release: result.release,
+        backend: result.backend,
       });
-      return { success: true, data: await driveCrucibleInstall(options) };
+      return { success: true, data: result };
     } catch (err) {
-      const { CrucibleInstallError } = await import('./crucible/install.js');
-      if (err instanceof CrucibleInstallError) {
-        return { success: false, error: err.message, refusal: err.toRefusal() };
-      }
-      return { success: false, error: (err as Error).message };
+      const refusal = installRefusalOf(err);
+      send({ kind: 'failed', refusal });
+      return { success: false, error: refusal.message, refusal };
+    } finally {
+      crucibleInstallInFlight = false;
+    }
+  });
+
+  /**
+   * TAKING THE CRUCIBLE OFF THIS MACHINE — the dry run, and the real one.
+   *
+   * `crucible uninstall` is the ENGINE's verb; `electron/crucible/uninstall.ts`
+   * finds the CLI that owns the local server and runs it. Two channels for one
+   * command, because the two acts are not the same act: the first is a read
+   * that touches nothing and the second deletes a service, a home and possibly
+   * tens of gigabytes. A single channel with a `dryRun` flag would put both
+   * behind one name in the collision doc and in the log.
+   *
+   * LOCAL ONLY. The door refuses `uninstall_not_local` for anything but this
+   * machine's own engine (ruling 2026-09-15, taken with Foundry so both apps
+   * draw the same door) — an engine somewhere else is uninstalled on the
+   * machine it is on.
+   *
+   * Channel names are `crucible:host-*` for the reason the install pair is:
+   * the vendored Foundry claims the short `crucible:` spellings.
+   */
+  ipcMain.handle('crucible:host-uninstall-plan', async (
+    _event,
+    server: string,
+    options: { purgeWeights: boolean; wslToo: boolean },
+  ) => {
+    try {
+      const { crucibleUninstall } = await import('./crucible/uninstall.js');
+      const { processRunner } = await import('@crucible/bootstrap');
+      const plan = await crucibleUninstall(
+        server,
+        { dryRun: true, purgeWeights: options.purgeWeights, wslToo: options.wslToo },
+        processRunner(),
+      );
+      return { success: true, data: plan };
+    } catch (err) {
+      const { uninstallRefusalOf } = await import('./crucible/uninstall.js');
+      const refusal = uninstallRefusalOf(err);
+      return { success: false, error: refusal.message, refusal };
+    }
+  });
+
+  /**
+   * THE REAL RUN. Streams its lines on `crucible:uninstall-progress` for the
+   * same reason the install does: twelve gigabytes take a while, and a person
+   * watching them go wants to see it happening rather than a spinner.
+   *
+   * The answer is the CLI's own plan document with every step's `done` filled
+   * in — including the `keep` steps, which is how the screen can say what was
+   * left behind rather than implying everything went.
+   */
+  ipcMain.handle('crucible:host-uninstall', async (
+    event,
+    server: string,
+    options: { purgeWeights: boolean; wslToo: boolean },
+  ) => {
+    try {
+      const { crucibleUninstall } = await import('./crucible/uninstall.js');
+      const { processRunner } = await import('@crucible/bootstrap');
+      const plan = await crucibleUninstall(
+        server,
+        { dryRun: false, purgeWeights: options.purgeWeights, wslToo: options.wslToo },
+        processRunner(),
+        (line, stream) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('crucible:uninstall-progress', { stream, text: line });
+          }
+        },
+      );
+      /*
+       * THE REGISTRY'S ROW GOES WITH THE ENGINE. `local` is read from the
+       * pairing file / config.toml rather than stored, so nothing is deleted
+       * there — but the ROUTE record this app keeps about that server names an
+       * engine that no longer exists, and a route record outliving its server
+       * is a bug this app already fixed once (crucible rollout plan, 28ad983f).
+       */
+      const { forgetCrucibleRoutes } = await import('./crucible/routes.js');
+      forgetCrucibleRoutes(server);
+      return { success: true, data: plan };
+    } catch (err) {
+      const { uninstallRefusalOf } = await import('./crucible/uninstall.js');
+      const refusal = uninstallRefusalOf(err);
+      return { success: false, error: refusal.message, refusal };
     }
   });
 

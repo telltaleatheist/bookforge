@@ -22,7 +22,12 @@ import type {
   CrucibleHostFacts,
   CrucibleHostRefusal,
   CrucibleInstallPlan,
+  CrucibleInstallProgress,
 } from '@shared/crucible/install-wire';
+import type {
+  CrucibleUninstallPlan,
+  CrucibleUninstallRefusalCode,
+} from '@shared/crucible/uninstall-wire';
 import type {
   CrucibleCoordinationMap,
   CrucibleCoordinationState,
@@ -4087,17 +4092,68 @@ export class ElectronService {
         ? (window as any).electron.crucible.hostFacts()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    /** The hand sequence for this platform, composed in main. A read. */
+    /** What installing one here would do, composed in main. A read. */
     installPlan: (): Promise<{ success: boolean; data?: CrucibleInstallPlan; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.installPlan()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    /** The driven install. Refuses today, by name, with the button's own sentence. */
+    /**
+     * The driven install, through `@crucible/bootstrap`. On Windows it is the
+     * HOST's door: no host here refuses `host_not_installed` and carries the
+     * one `install.ps1` line. Watch `onInstallProgress` while it runs.
+     */
     install: (): Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }> =>
       this.isElectron
         ? (window as any).electron.crucible.install()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * Every step, line, byte count and WSL state of a running install.
+     *
+     * Returns the unsubscribe. OUTSIDE Electron it returns a no-op rather than
+     * throwing: a component that subscribes in its constructor must not be the
+     * thing that breaks a browser-served build.
+     */
+    onInstallProgress: (callback: (progress: CrucibleInstallProgress) => void): (() => void) =>
+      (this.isElectron
+        ? (window as any).electron.crucible.onInstallProgress(callback)
+        : () => { /* no Electron, no installs */ }),
+
+    /**
+     * WHAT UNINSTALLING WOULD DO — the dry run, which touches nothing. LOCAL
+     * ONLY: anything but this machine's own engine is `uninstall_not_local`.
+     */
+    uninstallPlan: (
+      name: string,
+      options: { purgeWeights: boolean; wslToo: boolean },
+    ): Promise<{
+      success: boolean; data?: CrucibleUninstallPlan; error?: string;
+      refusal?: { code: CrucibleUninstallRefusalCode; message: string; command: string | null; detail: string | null };
+    }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.uninstallPlan(name, options)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** The real run. Weights are KEPT unless `purgeWeights`. */
+    uninstall: (
+      name: string,
+      options: { purgeWeights: boolean; wslToo: boolean },
+    ): Promise<{
+      success: boolean; data?: CrucibleUninstallPlan; error?: string;
+      refusal?: { code: CrucibleUninstallRefusalCode; message: string; command: string | null; detail: string | null };
+    }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.uninstall(name, options)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Every line the uninstall printed, as it printed it. Returns the unsubscribe. */
+    onUninstallProgress: (
+      callback: (line: { stream: 'stdout' | 'stderr'; text: string }) => void,
+    ): (() => void) =>
+      (this.isElectron
+        ? (window as any).electron.crucible.onUninstallProgress(callback)
+        : () => { /* no Electron, no uninstalls */ }),
 
     /*
      * ── THE OPERATOR DOOR (crucible docs/PHASE13-OPERATOR.md section 5) ────

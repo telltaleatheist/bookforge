@@ -1,47 +1,44 @@
 /**
- * THE INSTALL STORY'S MAIN-PROCESS HALF — a document, a measured machine, and
- * one function that will one day run the sequence.
+ * THE INSTALL STORY'S MAIN-PROCESS HALF — a measured machine, the driven
+ * install, and the one line a Windows box runs before either is possible.
  *
- * ── WHAT THIS IS TODAY, STATED PLAINLY ─────────────────────────────────────
+ * ── WHAT THIS IS, STATED PLAINLY ───────────────────────────────────────────
  *
- * Nothing in this file installs anything. It does three things:
+ *   1. MEASURES what this app can measure on its own — the WSL2 distros,
+ *      whether the guest sees an NVIDIA card, whether a `config.toml` or a
+ *      pairing file is already there ({@link crucibleHostFacts}).
+ *   2. COMPOSES the plan the setup page and the settings door both draw
+ *      ({@link crucibleInstallPlan}): the machine, the verdict, the sequence
+ *      that will run, and the commands this app cannot run for anybody.
+ *   3. RUNS IT ({@link driveCrucibleInstall}) through `@crucible/bootstrap`,
+ *      streaming every step, every line and every WSL state to the caller.
  *
- *   1. MEASURES what this app can measure without the package — the WSL2
- *      distros, whether the guest sees an NVIDIA card, whether a `config.toml`
- *      is already there ({@link crucibleHostFacts}).
- *   2. COMPOSES the exact sequence a person runs by hand, every command
- *      complete and copyable, with the ones that need elevation listed apart
- *      because BookForge cannot obtain elevation on anybody's behalf
- *      ({@link crucibleInstallPlan}).
- *   3. EXPOSES {@link driveCrucibleInstall}, the driven install, which refuses
- *      by name.
+ * ── THE SEAM IS GONE (2026-09-15) ──────────────────────────────────────────
  *
- * ── WHY IT IS NOT WIRED, AND WHAT WIRING IT COSTS ──────────────────────────
+ * This file used to transcribe `@crucible/bootstrap`'s surface by hand and
+ * refuse `bootstrap_not_installed` from a `DRIVEN_INSTALL_AVAILABLE = false`
+ * that no machine could flip, because no Crucible release carried the package.
+ * `vendor/crucible-bootstrap-0.6.0.tgz` — `npm pack` of the crucible checkout's
+ * `sdk/bootstrap` at the commit the v0.6.0 release will be cut from, exactly as
+ * `vendor/crucible-client-0.6.0.tgz` already is — ends that. The types below
+ * are now IMPORTED, so a shape that changes in the package is a compile error
+ * here rather than a transcription that drifted.
  *
- * `@crucible/bootstrap` 0.5.0 is written (crucible `sdk/bootstrap`, docs/
- * PHASE12-BOOTSTRAP.md) and is released as the FOURTH ASSET of every Crucible
- * release, beside the client tarball this app already pins. **No release
- * carries it.** Crucible's tags stop at `v0.4.0` while its `pyproject.toml`
- * says `0.5.0`, so neither `crucible-bootstrap-0.5.0.tgz` nor the wheel below
- * exists to install. A dependency on a tarball that does not exist is a build
- * that does not run, so it is deliberately NOT in `package.json`.
+ * ── WHO ACTUALLY INSTALLS, PER PLATFORM (crucible PHASE15-HOST.md §4.3) ────
  *
- * The seam is therefore typed against the package's REAL surface, transcribed
- * below from `sdk/bootstrap/dist/esm/*.d.ts` rather than invented, and turning
- * it on is four steps and no redesign:
+ * **Windows installs one way and it is not this app.** `install()` on win32 is
+ * two branches and no third: no `%LOCALAPPDATA%\Crucible\host\` → refuse
+ * `host_not_installed` and hand over the one `install.ps1` line, because a
+ * library that downloads and elevates an installer from a background call is a
+ * dialog nobody asked for; a host that IS there → `POST /install` on its
+ * loopback door and relay its events. The HOST walks the WSL state table,
+ * raises the UAC prompts, survives the reboot and imports the distro. BookForge
+ * runs none of that and must never grow a second copy of it (PHASE14 §4a: two
+ * descriptions of one install "cannot differ").
  *
- *   1. `npm i @crucible/bootstrap@<release tarball URL>` beside the client (its
- *      peer dependency is `@crucible/client` 0.5.0 EXACTLY);
- *   2. replace this file's local `Bootstrap*` types with
- *      `import type { … } from '@crucible/bootstrap'` — the names and the
- *      shapes are already right;
- *   3. replace {@link loadBootstrap}'s one `throw` with the `await import`
- *      written directly underneath it, in a comment, in full;
- *   4. flip {@link DRIVEN_INSTALL_AVAILABLE} — which is what the disabled
- *      button and the refusing door BOTH read, so neither can be forgotten.
- *
- * Nothing above `loadBootstrap` changes, and no caller changes. That is what
- * makes it a seam rather than a placeholder.
+ * **macOS and Linux** are the machine itself, and the package walks the step
+ * list there directly — a server pack with its own interpreter, `crucible
+ * init`, `crucible service install`, linger.
  *
  * ── THE DIVISION OF LABOUR, WHICH IS THE PACKAGE'S OWN RULE ────────────────
  *
@@ -78,6 +75,15 @@
 
 import { spawnSync } from 'child_process';
 
+import type {
+  HostEvent,
+  InstallOptions,
+  InstallResult,
+  InstallStep,
+  JobTypeRequest,
+  Runner,
+} from '@crucible/bootstrap';
+
 import {
   CrucibleLocalError,
   processHost as processLocalHost,
@@ -113,49 +119,56 @@ import type {
  */
 export const CRUCIBLE_RELEASE = '0.6.0';
 
-/**
- * THE RELEASE WHEEL. It does not exist yet — see the header — and that is not a
- * reason to print a different version: the sequence installs the Crucible this
- * app was built against, and a plan naming `v0.4.0` would stand somebody up a
- * server whose wire this build does not speak.
- */
-export const CRUCIBLE_WHEEL =
-  `https://github.com/telltaleatheist/crucible/releases/download/v${CRUCIBLE_RELEASE}`
-  + `/crucible-${CRUCIBLE_RELEASE}-py3-none-any.whl`;
-
-/** The bootstrapper tarball, the fourth asset of the same release. */
-export const CRUCIBLE_BOOTSTRAP_TARBALL =
-  `https://github.com/telltaleatheist/crucible/releases/download/v${CRUCIBLE_RELEASE}`
-  + `/crucible-bootstrap-${CRUCIBLE_RELEASE}.tgz`;
-
-/** The package name, spelled once so the refusal and the install line agree. */
+/** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
 
 /** Crucible's own README — the argument behind the sequence. */
 export const CRUCIBLE_README = 'https://github.com/telltaleatheist/crucible';
 
-/**
- * WHETHER THE DRIVEN INSTALL CAN RUN. One boolean, read by the door that
- * refuses AND by the button that is disabled, so the two can never disagree.
+/*
+ * `CRUCIBLE_WHEEL` AND `CRUCIBLE_BOOTSTRAP_TARBALL` ARE GONE (2026-09-15).
  *
- * Flipping this without doing steps 1-3 of the header would make the button
- * live over a loader that still throws — which is why `loadBootstrap` reads it
- * too and says so.
+ * The wheel is not how a Crucible is installed any more and has not been since
+ * PHASE14: the server arrives as an ENV PACK with its own interpreter inside
+ * it (`crucible-env-server-<backend>-<version>.tar.zst`), which is what
+ * `@crucible/bootstrap`'s `server-pack` step fetches and verifies. A constant
+ * naming a `.whl` was a second, wrong answer to "what gets installed", and the
+ * plan's `wheel` field went with it.
+ *
+ * The bootstrap tarball URL was the `command` of a refusal this app can no
+ * longer reach: the package IS installed (`vendor/crucible-bootstrap-0.6.0.tgz`,
+ * pinned in package.json). The one line a person still types is Windows's
+ * `install.ps1`, and that line has exactly one owner — the package's own
+ * `hostInstallCommand()`, carried on the `host_not_installed` refusal — so this
+ * file does not compose a second copy of it.
  */
-export const DRIVEN_INSTALL_AVAILABLE = false;
 
 /**
- * THE ONE SENTENCE the disabled button wears and the door refuses with. Spelled
- * once: a button saying "not yet" over a door that threw something else would
- * be a bug report about a different app.
+ * WHETHER THE DRIVEN INSTALL CAN RUN ON THIS MACHINE.
+ *
+ * Not a build-time switch any more: `@crucible/bootstrap` is vendored, so the
+ * only thing that can make the button wrong is the MACHINE. Crucible has a
+ * `cuda-linux` backend, an `mlx-darwin` one and a `llama-windows` one, and a
+ * platform that is none of those three has nothing to install — the package
+ * refuses `unsupported_platform` and the button must not be live over it.
+ *
+ * One function, read by the door that refuses AND by the button that is
+ * disabled, so the two can never disagree.
  */
-export const DRIVEN_INSTALL_UNAVAILABLE =
-  `The guided install ships as an asset of Crucible v${CRUCIBLE_RELEASE}, which is written and `
-  + `not yet published — ${BOOTSTRAP_PACKAGE} ${CRUCIBLE_RELEASE} exists in the crucible tree `
-  + '(sdk/bootstrap) and there is no release to install it from. Until then the steps below are '
-  + 'run by hand: they are the same steps, in the same order, and this app will read the server '
-  + 'back out of its own config.toml when you are done. Everything after that — the job '
-  + 'environments and the weights — is one press of "Set up for BookForge" beside its row.';
+export function drivenInstallAvailable(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' || platform === 'darwin' || platform === 'linux';
+}
+
+/**
+ * WHY NOT, when {@link drivenInstallAvailable} says no. Never shown otherwise:
+ * a reason beside a live button is a sentence that contradicts what it sits on.
+ */
+export function drivenInstallUnavailableWhy(platform: NodeJS.Platform = process.platform): string {
+  return `Crucible has a cuda-linux backend, an mlx-darwin one and a llama-windows one, and `
+    + `${platform} is none of them. There is nothing this app could install here. Connect to an `
+    + 'engine on another machine instead — it is the same code path, because the client speaks '
+    + 'HTTP either way.';
+}
 
 /*
  * `BOOKFORGE_JOB_TYPES` AND `BOOKFORGE_NARRATOR_ENGINE` ARE GONE (2026-09-14).
@@ -180,71 +193,53 @@ export const DRIVEN_INSTALL_UNAVAILABLE =
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The surface of `@crucible/bootstrap`, transcribed — see the header, step 2
+// The surface of `@crucible/bootstrap`, IMPORTED (2026-09-15)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * One job type to enable, as the package types it.
+/*
+ * THE TRANSCRIPTION IS GONE, AND THAT IS THE POINT.
  *
- * NOT a plain string union: `tts` must say which narrator engine, because
- * cuda-linux has one env per engine and a bare `'tts'` is refused by name
- * (`planJobTypes`). Transcribed rather than narrowed, because BookForge DOES
- * meet that arm.
+ * `BootstrapJobTypeRequest`, `BootstrapInstallOptions`, `BootstrapInstallStep`
+ * and `BootstrapInstallResult` were hand-copies of the package's `.d.ts`, kept
+ * in step by reading. They are re-exported aliases of the real types now, so a
+ * field the package adds, renames or drops is a COMPILE ERROR here instead of a
+ * copy that quietly says something else. Two of them had already drifted:
+ * `install()` grew `release`, `home`, `bind`, `onHostEvent` and `fetchImpl`,
+ * and LOST `wheel` and `condaRoots` when PHASE14 replaced the wheel with env
+ * packs — so the options this app composed would not have compiled against the
+ * package it was written for.
+ *
+ * `MAC_CONDA_ROOTS` went with `condaRoots`. A server pack carries its own
+ * interpreter (PHASE14 §2), so there is no conda to find on a Mac and no
+ * ruling left owed about where Homebrew put one.
  */
-export type BootstrapJobTypeRequest =
-  | 'echo' | 'llm' | 'asr' | 'align' | 'rvc' | 'denoise'
-  | { type: 'tts'; narratorEngine: string };
 
-/** `install()`'s options. Only the fields BookForge passes are named. */
-export interface BootstrapInstallOptions {
-  /** Required on win32, and there is no default distro — see `local.ts`. */
-  distro?: string;
-  jobTypes: readonly BootstrapJobTypeRequest[];
-  /** An absolute path on this machine, or an `http(s)://` URL to the release wheel. */
-  wheel: string;
-  /** Every line every step prints, as it prints it. REQUIRED by the package. */
-  onLine: (line: string, stream: 'stdout' | 'stderr', step: string) => void;
-  /** Optional: a step beginning, finishing, or being skipped. */
-  onStep?: (step: BootstrapInstallStep) => void;
-  /** Where conda is looked for, in order. See {@link MAC_CONDA_ROOTS}. */
-  condaRoots?: readonly string[];
-}
+/** One job type to enable. `tts` must name its narrator engine (one env each). */
+export type BootstrapJobTypeRequest = JobTypeRequest;
+
+/** `install()`'s options, in full — including the two win32-only callbacks. */
+export type BootstrapInstallOptions = InstallOptions;
 
 /** One step of the driven install, as the package reports it. */
-export interface BootstrapInstallStep {
-  name: string;
-  /** What ran, with the token spelled `<redacted>`. Empty for a skipped step. */
-  argv: readonly string[];
-  status: 'running' | 'ok' | 'skipped';
-  detail: string;
-}
+export type BootstrapInstallStep = InstallStep;
 
 /** What `install()` answers with. The token is NOT in it — `readLocalConfig()` is. */
-export interface BootstrapInstallResult {
-  steps: BootstrapInstallStep[];
-  server: { name: string; url: string; configPath: string };
-}
+export type BootstrapInstallResult = InstallResult;
 
-/** The module surface this app would import. Nothing else of the package is used. */
-export interface BootstrapModule {
-  install(options: BootstrapInstallOptions): Promise<BootstrapInstallResult>;
-}
+/** One event off the Windows host's door, verbatim (PHASE15 §4.3). */
+export type BootstrapHostEvent = HostEvent;
 
 /**
- * WHERE CONDA LIVES ON A MAC THAT INSTALLED IT THROUGH HOMEBREW.
+ * The module surface this app imports. Nothing else of the package is used.
  *
- * The package's `DEFAULT_CONDA_ROOTS` is `~/anaconda3`, `~/miniconda3`,
- * `~/miniforge3` — the three the official installers produce. Owen's Mac Studio
- * has it from the Homebrew cask, which is none of those three, and PHASE12 §4
- * measured exactly that: `detectHost()` there would answer `no_python` and hand
- * over a `conda create` line that built a SECOND server interpreter beside the
- * one the launchd agent already runs.
- *
- * RULING OWED (PHASE12 §6 ruling 1): either the cask root joins the darwin
- * defaults, or that env moves. Until then an app on that Mac passes this, which
- * is a fact about how the machine was set up rather than about conda.
+ * `runner` is second and optional because that is the package's own signature,
+ * and because it is the ONLY way a keeper drives the win32 branch without a
+ * `%LOCALAPPDATA%\Crucible\host\` and a socket on 7101.
  */
-export const MAC_CONDA_ROOTS: readonly string[] = ['/opt/homebrew/Caskroom/miniconda/base'];
+export interface BootstrapModule {
+  install(options: BootstrapInstallOptions, runner?: Runner): Promise<BootstrapInstallResult>;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Refusals
@@ -284,65 +279,91 @@ export class CrucibleInstallError extends Error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The seam
+// The package, loaded
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * LOAD `@crucible/bootstrap`, or refuse by name.
+ * LOAD `@crucible/bootstrap`.
  *
- * The body that replaces the throw is written out here rather than described,
- * because a seam whose replacement has to be reinvented is a seam that gets
- * reinvented differently:
+ * THE DYNAMIC IMPORT IS DELIBERATE: the package publishes an ESM build and a
+ * CJS one behind an exports map, and `await import` is the spelling that works
+ * from this app's CommonJS main process either way. It is also why this is a
+ * function rather than a top-level import — loading an installer at app start
+ * to draw a settings row nobody opened is work for nothing.
  *
- * ```ts
- * // THE DYNAMIC IMPORT IS DELIBERATE: the package is ESM-only with a CJS build
- * // beside it, and `await import` is the spelling that works from this app's
- * // CommonJS main process either way.
- * const bootstrap = await import('@crucible/bootstrap');
- * return { install: (options) => bootstrap.install(options, bootstrap.processRunner()) };
- * ```
- *
- * It refuses rather than probing `require.resolve` on purpose. A resolve that
- * happened to succeed — a stray copy hoisted in by something else, a version
- * that is not 0.5.0 — would turn a disabled button into a live one against a
- * package nobody chose, and the peer pin (`@crucible/client` 0.5.0 EXACTLY) is
- * not something a resolve can check. {@link DRIVEN_INSTALL_AVAILABLE} is the
- * one switch, and it is a build-time fact by design.
+ * There is no `require.resolve` probe and no try/catch around the import. A
+ * missing package is a BUILD that is wrong, not a state to report at runtime:
+ * `package.json` pins `vendor/crucible-bootstrap-0.6.0.tgz` and
+ * `tools/test-crucible-install-seam.js` fails the day it is not there.
  */
 export async function loadBootstrap(): Promise<BootstrapModule> {
-  if (!DRIVEN_INSTALL_AVAILABLE) {
-    throw new CrucibleInstallError('bootstrap_not_installed', DRIVEN_INSTALL_UNAVAILABLE, {
-      command: `npm i ${BOOTSTRAP_PACKAGE}@${CRUCIBLE_BOOTSTRAP_TARBALL}`,
-      detail:
-        `${BOOTSTRAP_PACKAGE} ${CRUCIBLE_RELEASE} is written (crucible sdk/bootstrap, `
-        + 'docs/PHASE12-BOOTSTRAP.md) and is published as the fourth asset of a Crucible release. '
-        + `The newest tag is v0.4.0 and the tree says ${CRUCIBLE_RELEASE}, so the asset does not `
-        + 'exist and this app pins no dependency on it.',
-    });
-  }
-  // Unreachable until step 3 of the module header. Kept as a throw rather than
-  // a cast: a seam that silently answered `undefined` would be worse than one
-  // that says the switch was flipped without the import being written.
-  throw new CrucibleInstallError(
-    'bootstrap_not_installed',
-    `DRIVEN_INSTALL_AVAILABLE is true and the ${BOOTSTRAP_PACKAGE} import in loadBootstrap() has `
-    + 'not been written. See the four steps in electron/crucible/install.ts\'s header.',
-  );
+  const bootstrap = await import('@crucible/bootstrap');
+  return {
+    install: (options, runner) => (runner === undefined
+      ? bootstrap.install(options)
+      : bootstrap.install(options, runner)),
+  };
 }
 
 /**
- * RUN THE SEQUENCE. Refuses today, through {@link loadBootstrap}.
+ * RUN THE SEQUENCE.
  *
- * A `BootstrapStepFailed` — once this is live — carries `step`, `exitCode`,
- * `tail` and `stepsDone`, and the renderer should print all four: partial work
- * survives a failure (ARCHITECTURE.md R6), and telling somebody which of seven
- * steps did not finish is the difference between resuming and starting again.
+ * On win32 this is the host's door and nothing else (PHASE15 §4.3): a machine
+ * with no host refuses `host_not_installed` and carries the one `install.ps1`
+ * line to type. On darwin and linux the package walks the step list here.
+ *
+ * `runner` is passed through for ONE caller — the keeper, which scripts a
+ * Windows machine and a fake host door without touching either. An app never
+ * passes it; the package's own `processRunner()` is the default.
+ *
+ * A `BootstrapStepFailed` carries `step`, `exitCode`, `tail` and `stepsDone`,
+ * and {@link installRefusalOf} puts all four on the wire: partial work survives
+ * a failure (crucible ARCHITECTURE.md R6), and telling somebody WHICH step did
+ * not finish is the difference between resuming and starting again.
  */
 export async function driveCrucibleInstall(
   options: BootstrapInstallOptions,
+  runner?: Runner,
 ): Promise<BootstrapInstallResult> {
   const bootstrap = await loadBootstrap();
-  return bootstrap.install(options);
+  return bootstrap.install(options, runner);
+}
+
+/**
+ * ANY failure of the driven install, as the renderer's one refusal shape.
+ *
+ * The package's `BootstrapRefusal` already carries `{code, message, command,
+ * detail}` and this app's `CrucibleHostRefusal` is the same four fields, so a
+ * refusal crosses the wire VERBATIM — the code the package chose, the command
+ * it handed over, its own evidence. Nothing is renamed on the way through:
+ * renaming another owner's refusal is the defect this whole phase is against.
+ *
+ * `BootstrapStepFailed` extends `BootstrapRefusal` with `step`, `exitCode` and
+ * `tail`, so it arrives here as `step_failed` with the tail as its detail —
+ * which is what the package already puts there.
+ *
+ * Something that is NOT a refusal is not given a name it did not earn: it
+ * becomes `install_failed`, whose message is the error's own, so a reader sees
+ * the words the thing that broke actually said.
+ */
+export function installRefusalOf(err: unknown): CrucibleHostRefusal {
+  if (err instanceof CrucibleInstallError) return err.toRefusal();
+  const carried = err as { code?: unknown; message?: unknown; command?: unknown; detail?: unknown };
+  if (typeof carried?.code === 'string' && typeof carried.message === 'string') {
+    return {
+      code: carried.code as CrucibleHostRefusalCode,
+      message: `${carried.code}: ${carried.message}`,
+      command: typeof carried.command === 'string' ? carried.command : null,
+      detail: typeof carried.detail === 'string' ? carried.detail : null,
+    };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return {
+    code: 'install_failed',
+    message: `install_failed: ${message}`,
+    command: null,
+    detail: null,
+  };
 }
 
 /**
@@ -366,34 +387,47 @@ function requireNarratorEngine(entry: { type: string; narrator_engine?: string }
 }
 
 /**
- * The options BookForge would hand the package on THIS machine.
+ * THE JOB TYPES BOOKFORGE ASKS AN ENGINE FOR, from the vendored module.
  *
- * Composed here, beside the hand sequence, so the two say the same thing: the
- * same job types, the same narrator engine, the same wheel. The day the driven
- * install turns on, a person who read the plan and a person who pressed the
- * button get the same server.
+ * `shared/crucible/bookforge.module.json` is the one place this app states
+ * what it needs (PHASE13-OPERATOR.md §5.4), so the driven install and the
+ * coordination that follows it ask for exactly the same things — one file,
+ * generated from the crucible manifests, read by both.
  */
-export function bookforgeInstallOptions(
-  onLine: BootstrapInstallOptions['onLine'],
-  platform: NodeJS.Platform = process.platform,
-  distro: string | undefined = getWslDistro(),
-): BootstrapInstallOptions {
-  /*
-   * THE JOB TYPES COME FROM THE VENDORED MODULE, which is the one place this
-   * app states what it needs. The driven install and the **Set up for
-   * BookForge** button therefore ask for exactly the same things: one file,
-   * generated from the manifests, read by both.
-   */
-  const jobTypes: BootstrapJobTypeRequest[] = BOOKFORGE_MODULE.job_types.map((entry) =>
+export function bookforgeJobTypes(): BootstrapJobTypeRequest[] {
+  return BOOKFORGE_MODULE.job_types.map((entry) =>
     (entry.type === 'tts'
       ? { type: 'tts' as const, narratorEngine: requireNarratorEngine(entry) }
       : entry.type as Exclude<BootstrapJobTypeRequest, { type: 'tts' }>));
+}
+
+/**
+ * The options BookForge hands the package on THIS machine.
+ *
+ * SHORTER THAN IT WAS, AND EVERY FIELD THAT WENT WAS A DECISION THIS APP DOES
+ * NOT OWN. `distro` went because the HOST owns the distro on Windows and
+ * imports `crucible` itself; `wheel` and `condaRoots` went with the wheel, in
+ * PHASE14, when the server started arriving as an env pack with its own
+ * interpreter. What is left is what an app genuinely says: which job types it
+ * needs, which release, and where to send the output.
+ *
+ * `release` is passed rather than defaulted so the install, the client pin and
+ * the plan all name ONE Crucible. The package would default to its own
+ * version, which is the same number today and is not the same FACT.
+ */
+export function bookforgeInstallOptions(
+  onLine: BootstrapInstallOptions['onLine'],
+  handlers: {
+    onStep?: BootstrapInstallOptions['onStep'];
+    onHostEvent?: BootstrapInstallOptions['onHostEvent'];
+  } = {},
+): BootstrapInstallOptions {
   return {
-    ...(platform === 'win32' && distro !== undefined ? { distro } : {}),
-    jobTypes,
-    wheel: CRUCIBLE_WHEEL,
+    jobTypes: bookforgeJobTypes(),
+    release: CRUCIBLE_RELEASE,
     onLine,
-    ...(platform === 'darwin' ? { condaRoots: MAC_CONDA_ROOTS } : {}),
+    ...(handlers.onStep === undefined ? {} : { onStep: handlers.onStep }),
+    ...(handlers.onHostEvent === undefined ? {} : { onHostEvent: handlers.onHostEvent }),
   };
 }
 
@@ -774,21 +808,23 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
  * string for a person to read and run; the only processes this spawns are the
  * two probes above, which list and query.
  */
-export function crucibleInstallPlan(host: InstallHost = processInstallHost()): CrucibleInstallPlan {
+export async function crucibleInstallPlan(
+  host: InstallHost = processInstallHost(),
+): Promise<CrucibleInstallPlan> {
   const facts = crucibleHostFacts(host);
   const verdict = hostabilityOf(facts);
+  const driven = drivenInstallAvailable(host.platform);
   return {
     platform: facts.platform,
     host: facts,
     machine: describeMachine(facts),
     hostable: verdict.hostable,
     hostableWhy: verdict.why,
-    steps: stepsFor(facts),
-    elevated: elevatedFor(facts),
+    steps: await stepsFor(facts),
+    elevated: await elevatedFor(facts),
     readme: CRUCIBLE_README,
-    wheel: CRUCIBLE_WHEEL,
-    driven: DRIVEN_INSTALL_AVAILABLE,
-    drivenWhy: DRIVEN_INSTALL_UNAVAILABLE,
+    driven,
+    drivenWhy: driven ? null : drivenInstallUnavailableWhy(host.platform),
   };
 }
 
@@ -899,156 +935,120 @@ export function describeMachine(facts: CrucibleHostFacts): string {
 }
 
 /**
- * The numbered sequence. Windows runs it inside the guest; macOS and Linux in a
- * terminal on the machine itself.
+ * WHAT THE BUTTON WILL DO, IN ORDER — the package's own step list, rendered.
  *
- * EVERY COMMAND IS COMPLETE AND COPYABLE. A step reading "install the wheel"
- * would send somebody to a README to find the line; the line is here, and the
- * README link is there for the argument behind it.
+ * THESE ARE NOT LINES TO TYPE ANY MORE, and that is the correction. This
+ * function used to compose eleven copyable commands — `conda create`, `pip
+ * install <wheel>`, `crucible init` — which was a SECOND description of an
+ * install that `@crucible/bootstrap` already owns. PHASE14 §4a: two
+ * descriptions of one install "cannot differ", and these two had: the wheel
+ * became an env pack, and conda stopped being involved at all, and nothing
+ * here noticed.
  *
- * The conda-run prefix is how each line is made runnable from a shell that has
- * not activated anything — `conda run -n crucible <cmd>` — which is the form
- * that works whether or not the person's shell was initialised for conda. The
- * package does it differently and deliberately so: it runs the console script
- * BESIDE the interpreter it found (`consoleScriptBeside`), which needs no conda
- * on PATH at all. Two spellings of one sequence, each right for its caller.
+ * So the sequence is read from `installSteps()` — the same data the installer
+ * walks — and shown with NO commands. The one line a person still types is
+ * Windows's, and it is in {@link elevatedFor}, from the package's own
+ * `hostInstallCommand()`.
  */
-function stepsFor(facts: CrucibleHostFacts): CrucibleInstallStep[] {
-  const guest = facts.platform === 'win32';
-  const distro = facts.wsl?.probed ?? facts.wsl?.distros.find((d) => d.version === 2)?.name ?? null;
-  const prefix = guest
-    ? `wsl.exe -d ${distro ?? '<distro>'} --exec bash -lc `
-    : '';
-  const line = (command: string): string => (guest ? `${prefix}${JSON.stringify(command)}` : command);
-  const run = (command: string): string => line(`conda run -n crucible ${command}`);
-  const steps: CrucibleInstallStep[] = [];
-
+async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]> {
   if (facts.platform === 'other') {
     return [{
       title: 'There is no Crucible for this machine',
       detail:
-        `Crucible has a cuda-linux backend and an mlx-darwin one, and ${facts.platformName} is `
-        + 'neither. Point BookForge at a Crucible on another machine instead — the first door '
-        + 'above — which is the same code path: the client speaks HTTP either way.',
+        `Crucible has a cuda-linux backend, an mlx-darwin one and a llama-windows one, and `
+        + `${facts.platformName} is none of them. Point BookForge at a Crucible on another `
+        + 'machine instead — the first door above — which is the same code path: the client '
+        + 'speaks HTTP either way.',
       commands: [],
       done: false,
     }];
   }
 
-  if (guest) {
-    const two = facts.wsl?.distros.filter((d) => d.version === 2) ?? [];
-    steps.push({
-      title: 'A WSL2 distribution',
-      /*
-       * ANSWERED, NOT ASKED. This is the one step of the sequence this app can
-       * check for itself, and checking it is most of what makes the list worth
-       * reading on Windows: somebody who already has Ubuntu should be told so
-       * rather than sent to an elevated PowerShell for nothing.
-       */
-      detail: two.length === 0
-        ? 'There is no WSL2 distribution on this machine. Crucible\'s backend is Linux — Windows '
-          + 'is never one — so this comes first, and it needs elevation and a reboot (below).'
-        : `Present: ${two.map((d) => d.name).join(', ')}`
-          + `${distro === null ? '. Set which one in Settings → Add-ons → WSL distro' : ''}. `
-          + 'Everything below runs inside it.',
-      commands: [],
-      done: two.length > 0,
-    });
+  const bootstrap = await import('@crucible/bootstrap');
+
+  /*
+   * ON WINDOWS THE SEQUENCE IS THE HOST'S, NOT THIS LIST'S (PHASE15 §4.3).
+   *
+   * A Windows machine gets a host, the host starts the `llama-windows` server
+   * within seconds, and the WSL2 engine is then a TASK on the engine's own
+   * page (§4.7) — the state table, the UAC prompts, the distro import, the
+   * reboot. None of that is a step BookForge walks, so none of it is listed
+   * as one. What IS listed is what the host will do once it is there.
+   */
+  if (facts.platform === 'win32') {
+    return [
+      {
+        title: 'Install the Crucible host',
+        detail:
+          'One line in PowerShell, listed below. It downloads the host, writes a Startup item so '
+          + 'the engine comes back after a reboot, and starts it. BookForge does not run it: a '
+          + 'library that downloads and elevates an installer from a background call is a dialog '
+          + 'nobody asked for.',
+        commands: [],
+        done: false,
+      },
+      {
+        title: 'The host starts the Windows engine',
+        detail:
+          'Within seconds, and it opens its own console. That engine is `llama-windows` — '
+          + 'llama.cpp over GGUF — and it serves the text classes and page reading on this '
+          + "machine's card with no WSL at all.",
+        commands: [],
+        done: false,
+      },
+      {
+        title: 'Move it to WSL2, from the engine console',
+        detail:
+          'What WSL2 adds is vLLM/SGLang and the five Python job types — narration, '
+          + 'transcription, alignment, voice matching, noise removal. It is a task on the '
+          + "console, not a step here: only the host can run wsl.exe, raise the two UAC prompts "
+          + 'and survive the reboot.',
+        commands: [],
+        done: (facts.wsl?.distros ?? []).some((d) => d.version === 2),
+      },
+    ];
   }
 
-  steps.push(
-    {
-      title: 'A Python 3.11 environment called "crucible"',
-      detail:
-        'Crucible\'s server runs on 3.11 exactly, and its installer FINDS that interpreter rather '
-        + 'than making one — `<conda root>/envs/crucible/bin/python`. Miniforge is the smallest way '
-        + 'to get a conda that does not disturb a system Python.',
-      commands: [line('conda create -n crucible python=3.11 -y')],
-      done: false,
-    },
-    {
-      title: 'The Crucible wheel',
-      detail: 'From the GitHub release, into that environment. Nothing is built from source.',
-      commands: [run(`pip install ${CRUCIBLE_WHEEL}`)],
-      done: false,
-    },
-    {
-      title: 'Initialise it',
-      detail:
-        'Writes ~/.crucible/config.toml with permissions 0600 and mints the bearer token. '
-        + 'BookForge never copies that token: it reads the file every time, so a later '
-        + '`crucible init --force` is fixed by doing nothing at all. NO `--enable-*` flags: '
-        + '`crucible install <type>` merges each one in and reloads the registry, so the job '
-        + 'types are turned on by "Set up for BookForge" rather than guessed at here.',
-      commands: [run('crucible init')],
-      done: facts.local.present,
-    },
-    {
-      title: 'Install the service',
-      detail: facts.platform === 'darwin'
-        ? 'A launchd agent, so the server is up when you log in. A local Crucible is a SERVICE and '
-          + 'no app owns it — it must not die because somebody closed a window while a 19 GB model '
-          + 'was resident.'
-        : 'A systemd user unit, so the server is up when you log in. A local Crucible is a SERVICE '
-          + 'and no app owns it. See the linger command below if you want it up at boot as well.',
-      commands: [run('crucible service install')],
-      done: false,
-    },
+  const plan = bootstrap.planJobTypes(bookforgeJobTypes());
+  return bootstrap.installSteps({
+    enableFlags: plan.enableFlags,
+    installs: plan.installs,
+    bind: [],
+    linger: false,
+  }).map((step) => ({
+    title: step.name,
+    detail: step.what,
+    commands: [],
     /*
-     * THE LAST STEP IS A BUTTON, AND THE THREE STEPS THAT USED TO BE HERE ARE
-     * GONE (2026-09-14, PHASE13-OPERATOR.md §0 and §5.2).
-     *
-     * "Install the job environments", "Measure the card" and "Pull the weights"
-     * were eleven copyable commands naming six weights and five envs — a second
-     * copy of what `shared/crucible/bookforge.module.json` states and what
-     * Crucible's own page installs with a button and a progress bar. Two copies
-     * of one fact, kept in step by hand, which is exactly R1's shape. They are
-     * replaced by the one door that does all of it: the page, and the **Set up
-     * for BookForge** button beside the server's row.
-     *
-     * What is left above is genuinely the PRE-SERVER MINUTE — the
-     * chicken-and-egg a page cannot do for itself, because until `crucible
-     * init` has run there is no page.
+     * `done` IS TRUE FOR EXACTLY ONE STEP, and only where this app measured
+     * it. `init` writes config.toml, and `local.ts` has already read whether
+     * one is there. Every other step is something only the machine it runs on
+     * knows the outcome of, and a checkbox that guessed would be worse than
+     * no checkbox.
      */
-    {
-      title: 'Open Crucible',
-      detail:
-        'Come back here: once that config.toml exists, BookForge reads the server out of it — '
-        + 'name, address and token — and this door becomes one button. Everything else about a '
-        + 'server happens on the server\'s OWN page: install a job type, pull weights, watch the '
-        + 'progress, read the token. "Set up for BookForge" beside its row posts this app\'s '
-        + 'module and does the whole stocking in one task.',
-      commands: [],
-      done: false,
-    },
-  );
-  return steps;
+    done: step.name === 'init' && facts.local.present,
+  }));
 }
 
 /**
- * The commands BOOKFORGE CANNOT RUN FOR YOU, listed apart from the sequence.
+ * THE COMMANDS BOOKFORGE CANNOT RUN FOR YOU.
  *
- * Each needs a privilege this app does not have and must not ask for silently.
- * `@crucible/bootstrap` draws the same line — it refuses by name and hands the
- * command over — and this list is that refusal's `command` field, in advance.
+ * Each needs a privilege this app does not have and must not ask for
+ * silently. `@crucible/bootstrap` draws the same line — it refuses by name and
+ * hands the command over — and this list is that refusal's `command` field, in
+ * advance, taken from the package rather than spelled a second time.
  */
-function elevatedFor(facts: CrucibleHostFacts): CrucibleInstallStep[] {
+async function elevatedFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]> {
   if (facts.platform === 'win32') {
-    const two = facts.wsl?.distros.filter((d) => d.version === 2) ?? [];
+    const bootstrap = await import('@crucible/bootstrap');
     return [{
-      title: 'If there is no WSL2 distribution yet',
+      title: 'The one line: install the Crucible host',
       detail:
-        'Run this in an ELEVATED PowerShell, then reboot Windows. The first launch of the distro '
-        + 'asks you to choose a username and password.',
-      commands: ['wsl --install -d Ubuntu'],
-      done: two.length > 0,
-    }, {
-      title: 'To keep the server up when you are logged out',
-      detail:
-        'systemd stops a user service at the end of the last session unless lingering is on. '
-        + 'Without it the Crucible is up only while a shell is open — which is fine for a desktop '
-        + 'and wrong for a machine other people render on. Run it INSIDE the distro.',
-      commands: ['sudo loginctl enable-linger "$USER"'],
+        'Run this in PowerShell. Everything else on Windows happens through the host — the WSL '
+        + 'state table, the UAC prompts, the distro, the reboot — because there is one install '
+        + 'sequence on a machine and it is the host\'s. `wsl --install` is NOT listed here any '
+        + 'more: the host raises it itself, by name, with the sentence that explains why.',
+      commands: [bootstrap.hostInstallCommand(CRUCIBLE_RELEASE)],
       done: false,
     }];
   }
@@ -1056,12 +1056,14 @@ function elevatedFor(facts: CrucibleHostFacts): CrucibleInstallStep[] {
     return [{
       title: 'To keep the server up when you are logged out',
       detail:
-        'systemd stops a user service at the end of the last session unless lingering is on.',
+        'systemd stops a user service at the end of the last session unless lingering is on. '
+        + 'Without it the Crucible is up only while a shell is open — which is fine for a desktop '
+        + 'and wrong for a machine other people render on.',
       commands: ['sudo loginctl enable-linger "$USER"'],
       done: false,
     }];
   }
-  // macOS needs neither: its service is a launchd agent, which starts at login
+  // macOS needs none: its service is a launchd agent, which starts at login
   // and needs no privilege to install.
   return [];
 }

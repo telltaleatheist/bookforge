@@ -18,12 +18,15 @@
  *
  * ── AND WHY THE CODES ARE `@crucible/bootstrap`'S OWN ──────────────────────
  *
- * `CrucibleHostRefusalCode` is a SUBSET of the package's `BootstrapRefusalCode`,
- * spelled identically. The day `electron/crucible/install.ts` takes the real
- * import, the refusals it already shows keep their names and the UI does not
- * move — which is the whole point of typing the seam against the package rather
- * than inventing a vocabulary that would then have to be translated.
+ * `CrucibleHostRefusalCode` WAS a hand-copied subset of the package's
+ * `BootstrapRefusalCode`, spelled identically so the UI would not move the day
+ * the real import landed. It landed (2026-09-15), so the copy is gone and the
+ * package's union IS the type. A refusal now crosses this wire verbatim — the
+ * code its owner chose, with nothing renamed on the way through — and a code
+ * the package adds appears here without anybody transcribing it.
  */
+
+import type { BootstrapRefusalCode } from '@crucible/bootstrap';
 
 import type { LocalServerVia } from './settings-wire';
 
@@ -38,26 +41,28 @@ import type { LocalServerVia } from './settings-wire';
 export type InstallPlatform = 'win32' | 'darwin' | 'linux' | 'other';
 
 /**
- * A refusal code this app can reach WITHOUT the package, spelled exactly as
- * `@crucible/bootstrap`'s `BootstrapRefusalCode` spells it.
+ * EVERY NAME THIS APP CAN SHOW FOR A FAILED INSTALL: the package's own union,
+ * plus the one thing the package cannot name.
  *
- * The four the app can answer for itself, plus the two `local.ts` already
- * answers. Everything else the package names — `no_conda`, `no_python`,
- * `wheel_missing`, `step_failed`, … — is a question only the package's own
- * probes can ask, and this app does not guess at them: they appear as STEPS of
- * the plan instead, which is what a person runs to make them go away.
+ * `BootstrapRefusalCode` covers both halves of the story — the six this app's
+ * own probes reach (`unsupported_platform`, `wsl_missing`, `no_wsl_distro`,
+ * `wsl_read_failed`, `no_nvidia_driver`, `not_apple_silicon`), the three
+ * `local.ts` answers (`no_local_config`, `config_unreadable`,
+ * `config_missing_key`), and everything only the installer can meet
+ * (`host_not_installed`, `host_unreachable`, `host_install_running`,
+ * `pack_not_published`, `pack_sha_mismatch`, `step_failed`, …). They are not
+ * transcribed here: one union, one owner.
+ *
+ * `bootstrap_not_installed` IS GONE (2026-09-15). It was this app's own word
+ * for "the package is not in package.json", and the package is in package.json
+ * — a name for a state that can no longer happen is a name somebody will one
+ * day show for a different reason.
+ *
+ * `install_failed` is the only name added, and it is added rather than
+ * borrowed: it means the installer threw something that is NOT a refusal, so
+ * there is no owner's name to carry and the error's own words are the message.
  */
-export type CrucibleHostRefusalCode =
-  | 'unsupported_platform'
-  | 'wsl_missing'
-  | 'no_wsl_distro'
-  | 'wsl_read_failed'
-  | 'no_nvidia_driver'
-  | 'not_apple_silicon'
-  | 'no_local_config'
-  | 'config_unreadable'
-  | 'config_missing_key'
-  | 'bootstrap_not_installed';
+export type CrucibleHostRefusalCode = BootstrapRefusalCode | 'install_failed';
 
 /**
  * A named refusal, in the package's own shape: `{code, message, command}`.
@@ -205,8 +210,13 @@ export interface CrucibleInstallPlan {
   elevated: CrucibleInstallStep[];
   /** Crucible's own README — the argument behind the sequence. */
   readme: string;
-  /** The release wheel the sequence installs. */
-  wheel: string;
+  /*
+   * `wheel` IS GONE FROM THIS SHAPE (2026-09-15). A Crucible has not been
+   * installed from a `.whl` since PHASE14: the server arrives as an ENV PACK
+   * with its own interpreter inside it, which is what the installer's
+   * `server-pack` step fetches and verifies. Nothing drew the field, and a
+   * field naming the wrong artefact is a wrong answer waiting for a reader.
+   */
   /*
    * `jobTypes` IS GONE FROM THIS SHAPE (2026-09-14, PHASE13-OPERATOR.md §5.4).
    *
@@ -220,10 +230,55 @@ export interface CrucibleInstallPlan {
    * `crucible:module`.
    */
   /**
-   * Whether the DRIVEN install can run. FALSE ON EVERY MACHINE TODAY:
-   * `@crucible/bootstrap` ships with a Crucible release that has not been cut.
+   * Whether the DRIVEN install can run ON THIS MACHINE.
+   *
+   * True on win32, darwin and linux since 2026-09-15, when
+   * `@crucible/bootstrap` was vendored: the only thing that can make it false
+   * now is a platform Crucible has no backend for.
    */
   driven: boolean;
-  /** The sentence the disabled button wears. Always set, driven or not. */
-  drivenWhy: string;
+  /**
+   * Why not, when `driven` is false. NULL when it is true — a reason beside a
+   * live button is a sentence that contradicts what it sits on, and the old
+   * "always set" field made every caller draw one.
+   */
+  drivenWhy: string | null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The driven install, as it happens
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ONE EVENT OF A RUNNING INSTALL, pushed to the renderer on
+ * `crucible:install-progress`.
+ *
+ * WHY THIS IS A STREAM AND NOT A RETURN VALUE. A Crucible install downloads
+ * gigabytes, imports a distro, raises two UAC prompts and may cross a reboot
+ * (crucible PHASE15-HOST.md §4.3). An `await` that answered at the end of all
+ * that would leave a person watching a spinner for twenty minutes with no way
+ * to tell a slow download from a wedged one — and the package already reports
+ * every step, every line and every WSL state as it happens. So they are
+ * forwarded, in the package's own shapes, and the awaited call answers only
+ * the ending.
+ *
+ * FIVE KINDS AND NO SIXTH. `state` is the one a Windows machine turns on: it
+ * is the 4c table's answer for THIS machine — `wsl_missing`,
+ * `virtualization_disabled`, `wsl1_only`, `no_crucible_distro`, … — with the
+ * sentence its owner wrote and the KIND of action it needs. It is not folded
+ * into `line`, because a state is a fact about the machine and a line is
+ * something a process printed, and a screen shows them differently.
+ */
+export type CrucibleInstallProgress =
+  /** One step of the sequence began, finished, or was skipped. */
+  | { kind: 'step'; step: string; index: number | null; total: number | null; status: string; detail: string }
+  /** Bytes, while a step downloads. `total` is null until the size is known. */
+  | { kind: 'progress'; file: string; done: number; total: number | null }
+  /** The WSL state table's answer for this machine, verbatim (win32 only). */
+  | { kind: 'state'; code: string; sentence: string; action: 'run' | 'run-elevated' | 'instruct' | 'link' }
+  /** One line a step printed. */
+  | { kind: 'line'; step: string; stream: 'stdout' | 'stderr'; text: string }
+  /** The install finished. The token is NOT here; the pairing file is. */
+  | { kind: 'done'; server: { name: string; url: string; configPath: string }; release: string; backend: string }
+  /** It stopped, by name. Every field is the refusing owner's own. */
+  | { kind: 'failed'; refusal: CrucibleHostRefusal };

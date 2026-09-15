@@ -156,6 +156,19 @@ export function sizeWords(bytes: number | null): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+/**
+ * HOW FAR A DOWNLOAD HAS GOT, in the one form a person reads.
+ *
+ * NO PERCENTAGE WHEN THE TOTAL IS NOT KNOWN, and the total genuinely is not
+ * known for the first moments of a pack fetch (the installer's `bytes_total`
+ * is null until the server answers with a length). A bar at 0% that jumps to
+ * 60% is a lie about the first half; "3.4 GB so far" is not.
+ */
+export function bytesWords(done: number, total: number | null): string {
+  const gb = (value: number): string => `${(value / 1024 ** 3).toFixed(1)} GB`;
+  return total === null ? `${gb(done)} so far` : `${gb(done)} of ${gb(total)}`;
+}
+
 /** A list, with an "and" where a person would put one. */
 export function joinWords(parts: readonly string[]): string {
   if (parts.length === 0) return '';
