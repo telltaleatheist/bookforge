@@ -479,12 +479,26 @@ export async function testCrucibleUpstream(
  * Both refusals reach a caller as `settings_document_unreadable`, because the
  * SDK's `CrucibleProtocolError` carries no code and this app does not mint one
  * per shape of somebody else's parse failure.
+ *
+ * ── THE CLOCK IS THE CALLER'S, AND THERE IS NO DEFAULT ────────────────────
+ *
+ * `capability()` takes `ProbeOptions` — this is one of the three calls an app
+ * makes about a machine that may be ASLEEP, and a suspended Mac Studio answers
+ * nothing at all while a `fetch` with no deadline hangs for minutes. So
+ * `timeoutMs` is forwarded when a caller states one and OMITTED when it does
+ * not, exactly as the SDK's own note asks: *"this client never puts a deadline
+ * on a call the caller did not put one on"*. A number invented here would be
+ * this file cancelling somebody's slow-but-working probe, which is the shape of
+ * a fallback even though it wears a unit.
  */
-export async function crucibleCapabilityWithRoutes(server: string): Promise<CrucibleCapabilityView> {
+export async function crucibleCapabilityWithRoutes(
+  server: string,
+  timeoutMs?: number,
+): Promise<CrucibleCapabilityView> {
   const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   let record: CapabilityRecord;
   try {
-    record = await client.capability();
+    record = await client.capability(timeoutMs === undefined ? undefined : { timeoutMs });
   } catch (err) {
     throw settingsFailure(server, 'GET /v1/capability', err);
   }

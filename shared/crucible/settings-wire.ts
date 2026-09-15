@@ -234,6 +234,25 @@ export interface CrucibleModuleProgress {
   jobTypes: string[] | null;
   /** The `failed` event's own code and message. Completed steps STAY (R6). */
   error: { code: string; message: string } | null;
+  /**
+   * WHAT THE SERVER ITSELF SAID WAS UNMET — `TaskStatus.unmet` (crucible
+   * `docs/PHASE15-HOST.md` §5.3a), read once when the stream ends.
+   *
+   * `null` UNTIL THE TASK IS TERMINAL, and that is not the same as `[]`. The
+   * events say nothing about unmet classes — the field is on the task
+   * document, not on a frame — so a running task genuinely has no answer here,
+   * and an empty array in its place would say "this engine serves everything
+   * BookForge asked for" before the engine had been asked.
+   *
+   * IT IS THE ENGINE'S ANSWER, NOT THIS APP'S PREDICTION. The `unmet` on
+   * {@link CrucibleCoordinationState} is what BookForge worked out from the
+   * capability record a moment BEFORE posting; this is what the server reports
+   * having resolved every class through that same record. They should agree,
+   * and where they do not the SERVER is right — it is the thing that did the
+   * resolving (crucible PHASE9: the capability record is the one place a class
+   * is resolved).
+   */
+  unmet: { class: string; reason: string }[] | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

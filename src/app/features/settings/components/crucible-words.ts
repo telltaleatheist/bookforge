@@ -29,6 +29,7 @@
 import type {
   CrucibleCoordinationState,
   CrucibleMissingEntry,
+  CrucibleUnmetClass,
 } from '@shared/crucible/coordinate-wire';
 import type {
   CrucibleCapabilityView,
@@ -96,7 +97,45 @@ function jobTypeWords(jobType: string): string {
  */
 export function missingWords(entry: CrucibleMissingEntry): string {
   if (entry.what === 'job-type') return jobTypeWords(entry.jobType);
+  /*
+   * A CLASS SAYS WHAT BOOKFORGE ASKED FOR, then what that engine picked: "the
+   * model for cleaning up text (qwen3.5-9b)". The CLASS is the half a person
+   * understands and the id is the machine's — crucible
+   * `docs/PHASE15-HOST.md` §5.3a is exactly the ruling that those are two
+   * facts with two owners — so the sentence carries both rather than reaching
+   * for `kind`, which would say "the text model" for `pages` on a
+   * `llama-windows` engine, where the class resolves to the llama.cpp binaries
+   * (§3.10, fact 1). That one kind is the only other thing a class can resolve
+   * to, and it is named rather than called a model.
+   */
+  if (entry.what === 'class') {
+    const thing = entry.kind === 'engine' ? 'the engine' : 'the model';
+    return `${thing} for ${capabilityClassWords(entry.class)} (${subjectWords(entry)})`;
+  }
   return `${subjectKindWords(entry.kind)} ${subjectWords(entry)}`;
+}
+
+/**
+ * "Not on this engine: reading pages — no mlx-darwin block for dots-ocr."
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3a, which is the whole reason this
+ * sentence exists: a class the engine has disabled *"is not a refusal"*, so it
+ * must not be drawn as one. It is a fact about that machine, said plainly,
+ * with the engine's OWN reason after the dash — the row said why, and putting
+ * a word of ours there is how a fixable shortfall becomes a mystery.
+ *
+ * The class is named with {@link capabilityClassWords}, which is the word this
+ * app already has for "what a capability class is for" and is what the wizard
+ * uses to say the same thing about the same classes.
+ *
+ * `null` WHEN NOTHING IS UNMET, because a row reading "Not on this engine:
+ * nothing" would be announcing the absence of news — the same rule the
+ * coordination map keeps about a server it has not asked.
+ */
+export function unmetWords(unmet: readonly CrucibleUnmetClass[]): string | null {
+  if (unmet.length === 0) return null;
+  const parts = unmet.map((entry) => `${capabilityClassWords(entry.class)} — ${entry.reason}`);
+  return `Not on this engine: ${joinWords(parts)}`;
 }
 
 function subjectKindWords(kind: string): string {
@@ -105,7 +144,9 @@ function subjectKindWords(kind: string): string {
 }
 
 /** A subject's own name: the manifest's, or its id when the manifest has none. */
-export function subjectWords(entry: Extract<CrucibleMissingEntry, { what: 'subject' }>): string {
+export function subjectWords(
+  entry: Extract<CrucibleMissingEntry, { what: 'subject' | 'class' }>,
+): string {
   return entry.name === null ? entry.id : entry.name;
 }
 
@@ -498,14 +539,55 @@ export function capabilityClassWords(capability: string): string {
  *
  * This is the whole of what replaced the old set-up button: the row
  * says what is happening instead of offering a thing to press.
+ *
+ * THE UNMET SENTENCE IS APPENDED TO WHATEVER THE PHASE SAID, once, here. The
+ * classes an engine does not serve are true of it while it downloads, while it
+ * waits half an hour on somebody else's chat, and when it is ready — so
+ * hanging the sentence off the state rather than writing it into three phase
+ * sentences is what stops the three from drifting apart (crucible
+ * ARCHITECTURE.md R1).
  */
 export function coordinationWords(state: CrucibleCoordinationState): string {
+  const head = phaseWords(state);
+  const unmet = unmetOf(state);
+  return unmet === null ? head : `${head} ${unmet}`;
+}
+
+/**
+ * THE ENGINE'S OWN ANSWER WHERE THERE IS ONE, this app's prediction until then.
+ *
+ * Both are read off the same capability record a second apart, so they should
+ * agree — and where they do not, the ENGINE is right, because it is the thing
+ * that resolved the classes (crucible PHASE9: the capability record is the one
+ * place a class is resolved). `progress.unmet` is null for the whole of a
+ * running task, which is why the prediction is what a person reads while the
+ * download is happening rather than nothing at all.
+ */
+function unmetOf(state: CrucibleCoordinationState): string | null {
+  if (state.phase === 'preparing' && state.progress.unmet !== null) {
+    return unmetWords(state.progress.unmet);
+  }
+  return 'unmet' in state ? unmetWords(state.unmet) : null;
+}
+
+function phaseWords(state: CrucibleCoordinationState): string {
   switch (state.phase) {
     case 'checking':
       return 'Checking what this engine has…';
 
     case 'stocked':
-      return 'Ready — this engine has everything BookForge needs.';
+      /*
+       * TWO SENTENCES FOR ONE PHASE, because `stocked` means "nothing is
+       * missing" and that is not the same claim as "this engine can do
+       * everything". An engine with a class unmet has nothing left to
+       * download — which is why coordination posts no task and the phase is
+       * this one — and telling somebody it has everything BookForge needs, a
+       * clause before naming a class it cannot serve, would be the row
+       * arguing with itself.
+       */
+      return state.unmet.length === 0
+        ? 'Ready — this engine has everything BookForge needs.'
+        : 'Ready — there is nothing left to download for this engine.';
 
     case 'preparing':
       return preparingWords(state);

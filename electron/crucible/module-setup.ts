@@ -98,6 +98,22 @@ export async function postBookForgeModule(server: string): Promise<string> {
  * time, so the module we would have posted and the task already running are
  * competing for the same slot, and joining the stream of the one in progress is
  * strictly better than queueing a second (PHASE13 §3.3 has no queue for tasks).
+ *
+ * ── AND ONE READ AFTER THE STREAM, FOR `unmet` ─────────────────────────────
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3a puts the classes this engine does not
+ * serve on the TASK DOCUMENT (`TaskStatus.unmet`) and on no frame of its
+ * stream, so it cannot be taken off the terminal event — `done`'s data is an
+ * open record and the SDK types it as one. `GET /v1/tasks/{id}` once, after the
+ * last frame, is the whole cost, and it is the SERVER's own answer rather than
+ * the prediction `coordinate.ts` made from the same capability record a moment
+ * earlier.
+ *
+ * IT DOES NOT FAIL THE FOLLOW. A task that ran to `done` and then could not be
+ * re-read is a task that ran to `done`; turning that into a failure would
+ * report a finished install as broken because a laptop lid closed a second
+ * later. `unmet` stays `null` in that case, which is exactly what it means —
+ * nobody said.
  */
 export async function followModuleTask(
   server: string,
@@ -116,6 +132,7 @@ export async function followModuleTask(
     skipped: null,
     jobTypes: null,
     error: null,
+    unmet: null,
   };
   onProgress(last);
 
@@ -179,6 +196,24 @@ export async function followModuleTask(
         break;
     }
     onProgress(last);
+  }
+
+  try {
+    const status = await client.task(taskId);
+    last = {
+      ...last,
+      unmet: status.unmet.map((need) => ({ class: need.class, reason: need.reason })),
+    };
+    onProgress(last);
+  } catch (err) {
+    /*
+     * SWALLOWED, AND `unmet` STAYS NULL. See the note above: the stream
+     * already said what happened to the work, and a re-read that did not land
+     * is a question nobody answered rather than a task that went wrong. This
+     * is NOT a fallback — nothing is guessed in its place, and `null` is the
+     * one value on that field that means "the server was not asked".
+     */
+    void err;
   }
   return last;
 }

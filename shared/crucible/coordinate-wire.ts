@@ -11,7 +11,12 @@
  * ── ASK, THEN ACT ──────────────────────────────────────────────────────────
  *
  * §4a as amended (crucible `cecfdd0`, from Foundry's review): connecting READS
- * `GET /v1/catalog` and compares the module against it. Nothing missing is a
+ * `GET /v1/info`, `GET /v1/catalog` and `GET /v1/capability` and compares the
+ * module against them. The third read is crucible `docs/PHASE15-HOST.md`
+ * §5.3a's: the module's `needs` carry CAPABILITY CLASSES, unresolved, and that
+ * engine's own capability record is the one place a class becomes an id — so
+ * "is the cleanup model here" cannot even be asked without it, because the
+ * answer is a different id on every machine. Nothing missing is a
  * read and nothing else — no task is posted at all. That is not an optimisation:
  * a Crucible runs ONE task at a time, so a task whose whole content would be
  * `skipped` events is a task two apps arriving at once collide on
@@ -45,11 +50,43 @@
 import type { CrucibleModuleProgress } from './settings-wire';
 
 /**
+ * ONE CLASS THIS ENGINE DOES NOT SERVE — and it is NOT a thing that is missing.
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3a: the module names CAPABILITY CLASSES
+ * and the SERVER resolves each one through its own capability record. *"A class
+ * this backend has DISABLED is not a refusal"* — the module task finishes
+ * `done` and reports it, and the app shows "not on this engine". The finding
+ * that produced the ruling is §4.6's: a Mac with no `pages` block refused
+ * Foundry's WHOLE module `unknown_subject` because the generator had already
+ * resolved the class to `dots-ocr`, which is the cuda-linux answer.
+ *
+ * WHICH IS WHY IT IS ITS OWN TYPE beside {@link CrucibleMissingEntry} rather
+ * than a flag on one. A missing thing is a thing to DOWNLOAD and it goes away;
+ * an unmet class is a fact about that machine and stays. Flattening the two
+ * would make a `stocked` engine with a class it cannot serve indistinguishable
+ * from one waiting on a download, which are opposite news.
+ */
+export interface CrucibleUnmetClass {
+  /** `clean`, `translate`, `simplify`, `analysis`, `pages`. */
+  readonly class: string;
+  /**
+   * WHY, IN THE ENGINE'S OWN WORDS — the capability row's `reason`, verbatim.
+   * Never one composed here: the row said why the class is off, with the
+   * shortfall in it, and a sentence of ours in its place is how a fixable
+   * problem becomes an unfixable one. The ONE exception is a class the record
+   * does not mention at all, where there is no row to quote and the absence
+   * itself is the reason (`coordinate.ts` says so where it composes it).
+   */
+  readonly reason: string;
+}
+
+/**
  * One thing this server has not got that BookForge's module asks for.
  *
- * Composed by comparing the vendored module against `GET /v1/catalog` and
- * `GET /v1/info`'s `capabilities[].jobType` — both reads the server already
- * owns the answer to, so nothing here is a second table (R1).
+ * Composed by comparing the vendored module against `GET /v1/catalog`,
+ * `GET /v1/info`'s `capabilities[].jobType` and `GET /v1/capability` — three
+ * reads the server already owns the answer to, so nothing here is a second
+ * table (R1).
  */
 export type CrucibleMissingEntry =
   /** A job type whose environment this server has not installed. */
@@ -90,6 +127,54 @@ export type CrucibleMissingEntry =
        * named.
        */
       readonly inCatalog: boolean;
+    }
+  /**
+   * WEIGHTS A CLASS RESOLVES TO, which this server has not pulled.
+   *
+   * crucible `docs/PHASE15-HOST.md` §5.3a. The module's `needs` carry CLASSES,
+   * unresolved, and that engine's own capability record is what turns one into
+   * an id — a different id per machine, which is exactly why the generator
+   * stopped doing it. So this app cannot say "the cleanup model `qwen3.5-9b` is
+   * missing" without first reading that engine's `selected`; having read it, it
+   * knows BOTH halves, the class BookForge asked for and the subject that
+   * engine picked for it.
+   *
+   * IT IS A SEPARATE VARIANT FROM `subject` BECAUSE `kind` WOULD LIE. The words
+   * key off `kind` (`crucible-words.ts`: `model` → *"the text model"*), and a
+   * `pages` class resolving to the llama.cpp binaries on a `llama-windows`
+   * engine would be drawn as "the text model". The CLASS is the half a person
+   * understands; the subject's id is the machine's answer, appended.
+   */
+  | {
+      readonly what: 'class';
+      /** `clean`, `translate`, `simplify`, `analysis`, `pages`. */
+      readonly class: string;
+      /** What THAT engine's capability record selected for the class. */
+      readonly id: string;
+      /**
+       * The catalog row's kind — `model`, or `engine` for the llama.cpp
+       * binaries a `llama-windows` server runs GGUF with (§3.10, fact 1).
+       * `null` when the subject is not in that catalog at all, because the kind
+       * is the catalog's to say and guessing `model` would be this app naming
+       * something it did not read.
+       */
+      readonly kind: string | null;
+      /** The manifest's display name, or null — then the id IS the name. */
+      readonly name: string | null;
+      /** Which job type these weights belong to, or null when uncatalogued. */
+      readonly jobType: string | null;
+      /** What the pull will fetch where the manifest declares it. Never 0. */
+      readonly expectedBytes: number | null;
+      /**
+       * Was the selected subject in that server's catalog at all?
+       *
+       * `false` is a strange state and is carried rather than hidden: that
+       * engine's own capability record named an id its own catalog does not
+       * list. Posting the module is still right — the server resolves the class
+       * itself and is the one owner of what a subject is — and the row has
+       * already named what it could not find.
+       */
+      readonly inCatalog: boolean;
     };
 
 /**
@@ -110,17 +195,34 @@ export interface CrucibleCoordinationHolder {
  * A server with NO state is the fifth case and is deliberately not a member:
  * nothing has asked it yet, and "idle" drawn as a row of its own would be a
  * screen announcing the absence of news.
+ *
+ * ── `unmet` RIDES ON EVERY PHASE THAT COMPARED ────────────────────────────
+ *
+ * The three phases that have read that engine's capability record — `stocked`,
+ * `preparing`, `waiting` — all carry {@link CrucibleUnmetClass}, because the
+ * classes an engine does not serve are true of it whatever the downloads are
+ * doing, and a half-hour wait is exactly when somebody wants to be told. **A
+ * server with nothing missing and an unmet class is `stocked`** with the class
+ * named: nothing is missing, which is what the word means, and BookForge posts
+ * nothing — no download makes an engine serve a class it does not serve.
  */
 export type CrucibleCoordinationState =
-  /** Reading `/v1/info` and `/v1/catalog`. No task, no lane, no card. */
+  /** Reading `/v1/info`, `/v1/catalog` and `/v1/capability`. No task, no card. */
   | { readonly server: string; readonly phase: 'checking' }
-  /** The read said nothing is missing. ZERO posts. */
-  | { readonly server: string; readonly phase: 'stocked'; readonly checkedAt: string }
+  /** The read said nothing is missing. ZERO posts. `unmet` may still have rows. */
+  | {
+      readonly server: string;
+      readonly phase: 'stocked';
+      readonly checkedAt: string;
+      readonly unmet: readonly CrucibleUnmetClass[];
+    }
   /** The module task is running — posted by us, or one we found and followed. */
   | {
       readonly server: string;
       readonly phase: 'preparing';
       readonly missing: readonly CrucibleMissingEntry[];
+      /** What the capability record said this engine does not serve. */
+      readonly unmet: readonly CrucibleUnmetClass[];
       readonly progress: CrucibleModuleProgress;
       /** True when this task was already running and we joined it (`task_busy`). */
       readonly followed: boolean;
@@ -133,6 +235,8 @@ export type CrucibleCoordinationState =
       readonly server: string;
       readonly phase: 'waiting';
       readonly missing: readonly CrucibleMissingEntry[];
+      /** What the capability record said this engine does not serve. */
+      readonly unmet: readonly CrucibleUnmetClass[];
       readonly holder: CrucibleCoordinationHolder;
       /** How many times the card has been asked about. 1 on the first refusal. */
       readonly attempts: number;
