@@ -120,6 +120,75 @@
  * contained exactly this one comment edit and no other movement in the three
  * files, and tier 2 still pins the same file by content sha256 either way.
  *
+ * ── THE DECISION OF 2026-09-14 (evening), 12b065d → 8fcc27a: THE FIRST
+ *    RE-VENDOR THAT RAN THE OTHER WAY ─────────────────────────────────────────
+ *
+ * Every movement this keeper had seen until tonight was FOUNDRY's: they ported
+ * an import, deleted dead code, reworked a runner. Tonight BOOKFORGE moved
+ * first. `9df3d93a` added class 2b to `electron/prompts/tts-narration-text.txt`
+ * — scripture book names are said in full and never shortened back — and
+ * Foundry's `8fcc27a` copied that file across byte-for-byte, its subject line
+ * saying so: *"vendored from BookForge 9df3d93a"*.
+ *
+ * The keeper went red and the failure named the wrong thing: *"carried verbatim
+ * at f2e3c2d and edited since (7049 bytes here, 8178 there)"*. IT WAS NOT A
+ * LINE-ENDING ARTEFACT (both sides are the same git blob,
+ * `67cb805e997d071fab45ad51e806cf57db08f5fa`, and `blob()` strips CR anyway),
+ * NOT A HEADER FOUNDRY ADDS (their vendor commit is `1 file changed, 2
+ * insertions(+)`, the same two lines as ours), AND NOT CONTENT DRIFT. The two
+ * live copies are IDENTICAL. What differed was the commit this keeper was
+ * comparing Foundry against: `BOOKFORGE_ANCHOR`, frozen at the 2026-09-05
+ * handover, which is 7,049 bytes and pre-dates class 2b by nine days.
+ *
+ * So `'carried'` — "still byte-identical to BookForge at the HANDOVER" — had
+ * quietly become a claim this repository can falsify on its own, by editing its
+ * own file. That is a fourth state, and neither of tier 2's other answers fits
+ * it: `'carried'` is now false, and a bare `{sha256}` pin would record the new
+ * bytes while SAYING NOTHING about whose bytes they are — it would go green on a
+ * Foundry-authored edit that this side never made, as long as somebody repinned.
+ * The pin is the wrong half of the assertion when the interesting fact is
+ * PROVENANCE.
+ *
+ * ── The fourth answer: `{ revendoredFrom, sha256, why }` ────────────────────
+ *
+ * It asserts THREE things, and the sha is the least of them:
+ *
+ *   1. Foundry's copy at the shipped commit is byte-identical to BOOKFORGE'S
+ *      COPY AT THE NAMED COMMIT. This is tier 1's question — "what left is what
+ *      arrived" — asked again about the second handover, and it is LIVE: it
+ *      reads both repositories, so a Foundry-side edit fails it no matter what
+ *      number is written below.
+ *   2. Its sha256 equals the pin. Belt and braces on (1), and the reason the
+ *      anchor cannot creep: moving `revendoredFrom` forward means regenerating a
+ *      number and writing why beside it, which is the DECISION the doctrine at
+ *      the top of this file demands.
+ *   3. BookForge AT HEAD still equals `revendoredFrom`. This is the alarm for
+ *      the state the keeper could not express tonight — our prompt moved on and
+ *      Foundry has not followed — and it is red on purpose. `foundry
+ *      clean-text` is what runs a book, so while the two differ THEIR copy is
+ *      the live behaviour and ours is a file that describes nothing. That is
+ *      the COVID incident's exact shape (see `checkSpokenAsWordAgreement`), and
+ *      "a re-vendor is owed" is a sentence `9df3d93a`'s own commit message had
+ *      to write in prose because this keeper had nowhere to put it.
+ *
+ * VERDICT on the class-2b move itself: it is a RULE ADDITION, in a prompt, and
+ * `NORMALIZER_VERSION` did NOT move — deliberately. The two constants name the
+ * DETERMINISTIC transform (`tts-number-normalizer.ts`, `tts-punctuation.ts`);
+ * `tts-narration-text.txt` is instruction to a model, whose output is judged by
+ * the validators those constants version, and class 2b adds no reading the
+ * validator did not already accept — `tools/test-prompt-examples.js` runs every
+ * pair it states through that validator, 88/88. A prompt that asks for readings
+ * the rules already ruled is not a rule move. (`tts-number-normalize.txt`, the
+ * half the `orpheus-finetune` corpora vendor, was left alone for the same
+ * reason and is still `'carried'`.)
+ *
+ * Nothing else moved on either side: `git log 12b065d..8fcc27a` touches exactly
+ * one of the thirteen, and `git log 0f962d5f..HEAD` on this side touches four —
+ * `tts-number-rules.ts`, `tts-spoken-forms.ts`, `narration-text-pass.ts` and
+ * this prompt — of which only this prompt is checked against our anchor by
+ * bytes at the shipped tier. The other three are pinned, checked by value, or
+ * recorded as replaced, which is why they did not fail with it.
+ *
  * ── What is compared, and why by name ───────────────────────────────────────
  *
  * Both sides are read out of GIT, never off a working tree:
@@ -364,9 +433,16 @@ const FROZEN_SINCE_BASELINE = [
  * anchor is the two commits together and this map is both of them.
  *
  * `shipped` says what tier 2 expects:
- *   'carried'          — still byte-identical at FOUNDRY_SHIPPED.
- *   { sha256, why }    — ported by `215294a`; pinned, with what it did.
- *   'replaced'         — the file is GONE at FOUNDRY_SHIPPED, on purpose.
+ *   'carried'                        — still byte-identical to BookForge at
+ *                                      BOOKFORGE_ANCHOR.
+ *   { sha256, why }                  — Foundry ported it; pinned, with what it
+ *                                      did.
+ *   { revendoredFrom, sha256, why }  — BOOKFORGE moved and Foundry followed:
+ *                                      byte-identical to BookForge at that
+ *                                      LATER commit, sha-pinned, and this side
+ *                                      must not have moved on again since.
+ *   'replaced'                       — the file is GONE at FOUNDRY_SHIPPED, on
+ *                                      purpose.
  */
 const FILES = [
   {
@@ -453,7 +529,26 @@ const FILES = [
     ours: 'electron/prompts/tts-narration-text.txt',
     theirs: 'src/clean/prompts/tts-narration-text.txt',
     vendoredAt: VENDOR_PASS,
-    shipped: 'carried',
+    shipped: {
+      revendoredFrom: '9df3d93a',
+      sha256: '86861e9b5a443e25abe68b471eb78d0ca8c8b207e542491970e03dd459e1ac4c',
+      why: 'THE FIRST RE-VENDOR THAT RAN THE OTHER WAY — see "THE DECISION OF 2026-09-14 '
+        + '(evening)" in the header. BookForge `9df3d93a` added CLASS 2b, "scripture book names '
+        + 'are said in FULL, always, and are never shortened", because the deterministic pass '
+        + 'expands every citation it is certain of and the model was never told not to abbreviate '
+        + 'one back. Foundry `8fcc27a` copied that file across byte-for-byte and its subject says '
+        + 'so: "vendored from BookForge 9df3d93a". Both commits are one file changed and two '
+        + 'insertions, both sides are git blob 67cb805e997d071fab45ad51e806cf57db08f5fa, and '
+        + 'this sha256 is '
+        + 'that blob CR-stripped. The 7049-vs-8178 failure that produced this entry was NOT '
+        + 'line endings and NOT drift: it was `carried` comparing Foundry against '
+        + 'BOOKFORGE_ANCHOR, a 2026-09-05 commit that pre-dates class 2b. '
+        + 'NORMALIZER_VERSION deliberately stayed at n6: the constants version the DETERMINISTIC '
+        + 'transform and its validator, this file is instruction to a model, and class 2b asks '
+        + 'for no reading that validator did not already accept — tools/test-prompt-examples.js '
+        + 'runs all 88 of the prompt\'s stated pairs through it. A prompt asking for rules '
+        + 'already ruled is not a rule move.',
+    },
   },
   {
     ours: 'tools/fixtures/text-normalization-cases.json',
@@ -711,6 +806,10 @@ function main() {
   // would otherwise read as thirteen missing files, which names the wrong
   // problem: a shallow clone or an unfetched Foundry is not a drifted copy.
   requireCommit(bookforge, BOOKFORGE_ANCHOR, 'BookForge');
+  for (const entry of FILES) {
+    const from = entry.shipped?.revendoredFrom;
+    if (from) requireCommit(bookforge, from, `BookForge (re-vendor source for ${entry.ours})`);
+  }
   const shipped = foundryShipped(foundry);
   const FOUNDRY_SHIPPED = shipped.rev;
   for (const rev of [VENDOR_PASS, VENDOR_LEAVES, ONE_DOOR_BASELINE, FOUNDRY_SHIPPED]) {
@@ -723,6 +822,7 @@ function main() {
   let pinned = 0;
   let replaced = 0;
   let agreed = 0;
+  let revendored = 0;
 
   for (const entry of FILES) {
     const { ours, theirs, vendoredAt, shipped } = entry;
@@ -795,6 +895,66 @@ function main() {
       continue;
     }
 
+    if (shipped.revendoredFrom) {
+      // BOOKFORGE moved and Foundry followed. Three questions, in the order
+      // that names the defect best: whose bytes, then the pin, then whether
+      // this side has moved on again since.
+      const source = blob(bookforge, shipped.revendoredFrom, ours);
+      if (source === null) {
+        problems.push(
+          `TIER 2 ${ours}: recorded as re-vendored from BookForge ${shipped.revendoredFrom} and `
+          + 'the file is not in this repository at that commit. The record names a handover that '
+          + 'did not happen.',
+        );
+        continue;
+      }
+      if (!source.equals(atShip)) {
+        problems.push(
+          `TIER 2 ${ours} -> ${theirs} @${FOUNDRY_SHIPPED}: recorded as vendored BYTE-FOR-BYTE `
+          + `from BookForge ${shipped.revendoredFrom} (${source.length} bytes) and Foundry's copy `
+          + `is ${atShip.length} bytes and differs. This is Foundry-side drift on a file this `
+          + 'repository authored: read their commit and DECIDE — a port gets recorded beside the '
+          + 'pin here, a rule move means the two programs now read text by different rules while '
+          + 'stamping the same NORMALIZER_VERSION.',
+        );
+        continue;
+      }
+      const actualSha = sha256(atShip);
+      if (actualSha !== shipped.sha256) {
+        problems.push(
+          `TIER 2 ${theirs} @${FOUNDRY_SHIPPED}: sha256 ${actualSha}, pinned ${shipped.sha256}. `
+          + `The bytes still match BookForge ${shipped.revendoredFrom}, so BOTH SIDES MOVED `
+          + 'TOGETHER and only this pin was left behind — which means a re-vendor happened and '
+          + 'nobody made the decision this pin exists to force. Read the commit, then repin with '
+          + 'the reason beside it.',
+        );
+        continue;
+      }
+      const atHead = blob(bookforge, 'HEAD', ours);
+      if (atHead === null) {
+        problems.push(
+          `TIER 2 ${ours}: gone from BookForge at HEAD, while Foundry still ships a copy vendored `
+          + `from ${shipped.revendoredFrom}. Deleting the source of a vendored file is a decision `
+          + 'and nothing here records it.',
+        );
+        continue;
+      }
+      if (!atHead.equals(source)) {
+        problems.push(
+          `TIER 2 ${ours}: A RE-VENDOR IS OWED. This repository's copy at HEAD (${atHead.length} `
+          + `bytes) is no longer what Foundry was vendored from at ${shipped.revendoredFrom} `
+          + `(${source.length} bytes), and Foundry @${FOUNDRY_SHIPPED} still carries the copy it `
+          + 'took from that commit. '
+          + '`foundry clean-text` is what runs a book, so THEIR copy is the live behaviour and '
+          + 'this side\'s file currently describes nothing — the COVID incident\'s exact shape. '
+          + 'Get it vendored, then move `revendoredFrom` and the sha256 here with the reason.',
+        );
+        continue;
+      }
+      revendored += 1;
+      continue;
+    }
+
     const actual = sha256(atShip);
     if (actual === shipped.sha256) {
       pinned += 1;
@@ -838,11 +998,12 @@ function main() {
   );
 
   assert.strictEqual(handover, FILES.length, 'every file must be checked at its vendor commit');
-  assert.strictEqual(carried + pinned + replaced + agreed, FILES.length);
+  assert.strictEqual(carried + pinned + replaced + agreed + revendored, FILES.length);
   console.log(
     `PASS test-foundry-clean-text-vendor — handover: ${handover}/${FILES.length} byte-identical to `
     + `bookforge ${BOOKFORGE_ANCHOR} at foundry ${VENDOR_PASS}/${VENDOR_LEAVES}. `
     + `Shipped (${FOUNDRY_SHIPPED}): ${carried} carried verbatim, ${pinned} ported and pinned, `
+    + `${revendored} re-vendored FROM this repo at a later commit and pinned, `
     + `${replaced} replaced by the engine's own driver, ${agreed} checked by VALUE. `
     + `n6/s1 agree on both sides. `
     + (freeze.note ?? `${freeze.frozen}/${FROZEN_SINCE_BASELINE.length} frozen since `
