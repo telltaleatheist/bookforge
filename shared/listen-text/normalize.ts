@@ -14,7 +14,7 @@
  * The book path already had all of this: the Clean text pass runs the number
  * RULES (tts-number-rules), the number EXPANDER (number-expansion) and a model
  * behind them, and the TTS export strips footnote-marker `<sup>`s with the shared
- * predicate. The LISTEN path — the TTS API server (extension), the reader bridge
+ * predicate. The LISTEN path — the Streaming tab, the reader bridge
  * (the in-app Play tab) and the book render service — ran none of it: raw page
  * text went to `canonicalizePunctuationText` and straight to the engine, so the
  * engine was handed "Project 2025" and "(TPUSA)" as digits and capitals and read

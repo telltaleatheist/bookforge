@@ -125,7 +125,7 @@ export class WorkerConfigService {
     // if the Add-ons tab hasn't been opened yet.
     void this.components.ensureLoaded();
     // Live-sync: when the streaming voice/engine selection changes from ANY source
-    // (the extension via the TTS API server, or another window), re-pull the
+    // (another window, or the app's own Listen surfaces), re-pull the
     // config so the voice picker's signals update reactively — no manual wiring.
     try {
       (window as { electron?: { ttsService?: { onConfig?: (cb: () => void) => () => void } } }).electron
@@ -205,7 +205,7 @@ export class WorkerConfigService {
    * The EFFECTIVE voice: the model the engine actually has loaded, and only when
    * nothing is loaded, the persisted default it would warm on start.
    *
-   * This is the same expression the TTS API server reports to external clients
+   * This is the same expression the reader bridge reports to the phone
    * (`getCurrentVoice() || getDefaultStreamVoice()`), deliberately — it is what
    * makes this picker and the browser extension's picker agree by construction
    * rather than by luck. Preferring the persisted default here was half of how

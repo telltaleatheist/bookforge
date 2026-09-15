@@ -1,5 +1,15 @@
 # BookForge Reader — Implementation Plan
 
+> **HISTORICAL (2026-09-03), and superseded on the one point that matters most.**
+> This plan describes an extension that reads pages aloud through BookForge's
+> local streaming TTS server over `ws://…:8766`. **That server is gone.** Phase
+> 16 made the extension a Crucible client — its own server registry, its own
+> connect code, its own session on `POST /v1/tts/stream` — and deleted
+> BookForge's relay along with `docs/TTS_API.md`. The live specification is
+> `docs/EXTENSION-TO-CRUCIBLE-PLAN.md`; the only part of this plan still wired to
+> BookForge is the tab recorder, whose protocol is `docs/TAB_RECORDER.md`.
+> Everything below is kept because it records why the UI is shaped the way it is.
+
 Chrome MV3 extension that reads web pages aloud through BookForge's local streaming
 TTS server. **Read `docs/TTS_API.md` first** — it is the authoritative wire-protocol
 spec; this plan covers everything on top of it: product decisions, architecture,

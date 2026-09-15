@@ -4,12 +4,11 @@ import { FormsModule } from '@angular/forms';
 import { Router, ActivatedRoute } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
-import { ElectronService, OrpheusBatchConfig, StreamEngineName } from '../../core/services/electron.service';
+import { ElectronService, OrpheusBatchConfig } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
-import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { ComponentService } from '../../core/services/component.service';
 import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
 import { CrucibleServersPanelComponent } from './components/crucible-servers-panel.component';
@@ -337,21 +336,27 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </p>
                 </div>
               </div>
-            } @else if (section.id === 'tts-api') {
-              <!-- TTS API Server Section -->
+            } @else if (section.id === 'tab-recorder') {
+              <!-- Tab Recorder Section.
+                   WAS "TTS Server", and the TTS half is deleted (Phase 16 step 8).
+                   What this endpoint does now is one thing: the browser extension
+                   captures a tab's audio and hands the raw samples here, because a
+                   browser has no filesystem and no ffmpeg and BookForge has both.
+                   Speech does not come through here any more - the extension holds
+                   a Crucible's card itself and reads pages with BookForge shut. -->
               <div class="bookshelf-section">
                 <!-- Server Status -->
-                <div class="server-status-card" [class.running]="ttsApiStatus()?.running">
+                <div class="server-status-card" [class.running]="tabRecordStatus()?.running">
                   <div class="status-indicator">
                     <span class="status-dot"></span>
                     <span class="status-text">
-                      {{ ttsApiStatus()?.running ? 'Running' : 'Stopped' }}
+                      {{ tabRecordStatus()?.running ? 'Running' : 'Stopped' }}
                     </span>
                   </div>
-                  @if (ttsApiStatus()?.running) {
+                  @if (tabRecordStatus()?.running) {
                     <div class="server-addresses">
                       <h4>WebSocket URLs</h4>
-                      @for (address of ttsApiStatus()?.addresses || []; track address) {
+                      @for (address of tabRecordStatus()?.addresses || []; track address) {
                         <span class="server-address">{{ address }}</span>
                       }
                     </div>
@@ -366,7 +371,11 @@ function toolPathText(raw: string | boolean | undefined): string {
                   <div class="field-row">
                     <div class="field-info">
                       <label class="field-label">Access Token</label>
-                      <p class="field-description">Paste this into the browser extension. Every connection must present it.</p>
+                      <p class="field-description">
+                        Only needed when the browser is on ANOTHER machine. A local
+                        BookForge trusts the extension by its origin, so the extension's
+                        token box stays empty in the normal case.
+                      </p>
                     </div>
                     <div class="field-control">
                       <div class="path-input-group">
@@ -374,13 +383,13 @@ function toolPathText(raw: string | boolean | undefined): string {
                           type="text"
                           class="text-input token-input"
                           readonly
-                          [value]="ttsApiTokenVisible() ? (ttsApiStatus()?.token || '') : '••••••••••••••••'"
+                          [value]="tabRecordTokenVisible() ? (tabRecordStatus()?.token || '') : '••••••••••••••••'"
                         />
-                        <desktop-button variant="ghost" size="sm" (click)="ttsApiTokenVisible.set(!ttsApiTokenVisible())">
-                          {{ ttsApiTokenVisible() ? 'Hide' : 'Show' }}
+                        <desktop-button variant="ghost" size="sm" (click)="tabRecordTokenVisible.set(!tabRecordTokenVisible())">
+                          {{ tabRecordTokenVisible() ? 'Hide' : 'Show' }}
                         </desktop-button>
-                        <desktop-button variant="ghost" size="sm" (click)="copyTtsApiToken()">
-                          {{ ttsApiCopied() ? 'Copied!' : 'Copy' }}
+                        <desktop-button variant="ghost" size="sm" (click)="copyTabRecordToken()">
+                          {{ tabRecordCopied() ? 'Copied!' : 'Copy' }}
                         </desktop-button>
                       </div>
                     </div>
@@ -396,11 +405,11 @@ function toolPathText(raw: string | boolean | undefined): string {
                       <input
                         type="number"
                         class="number-input"
-                        [value]="ttsApiViewPort()"
+                        [value]="tabRecordViewPort()"
                         min="1"
                         max="65535"
-                        (change)="updateTtsApiPort(+$any($event.target).value)"
-                        [disabled]="ttsApiSaving()"
+                        (change)="updateTabRecordPort(+$any($event.target).value)"
+                        [disabled]="tabRecordSaving()"
                       />
                     </div>
                   </div>
@@ -409,15 +418,15 @@ function toolPathText(raw: string | boolean | undefined): string {
                   <div class="field-row">
                     <div class="field-info">
                       <label class="field-label">Allow LAN Access</label>
-                      <p class="field-description">Accept connections from other machines on your network. Off = this computer only.</p>
+                      <p class="field-description">Accept recordings from a browser on another machine. Off = this computer only.</p>
                     </div>
                     <div class="field-control">
                       <label class="toggle">
                         <input
                           type="checkbox"
-                          [checked]="ttsApiViewHost() === '0.0.0.0'"
-                          (change)="toggleTtsApiLan($any($event.target).checked)"
-                          [disabled]="ttsApiSaving()"
+                          [checked]="tabRecordViewHost() === '0.0.0.0'"
+                          (change)="toggleTabRecordLan($any($event.target).checked)"
+                          [disabled]="tabRecordSaving()"
                         />
                         <span class="toggle-slider"></span>
                       </label>
@@ -425,133 +434,42 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </div>
                 </div>
 
-                <!-- Voice engine: which TTS model backs the Listen feature
-                     (in-app Play, browser extension, LAN clients). Persists and
-                     applies the next time the engine starts. -->
-                <div class="settings-group">
-                  <h4>Voice Engine</h4>
-                  <p class="field-description">
-                    The engine used for streaming playback — the in-app Listen tab, the
-                    TTS API server and the browser extension. <strong>Higgs</strong> is
-                    the narration engine; its voice is the checkpoint the server starts
-                    on, so a voice change restarts it. Orpheus is deprecated and is
-                    offered only while the local engines are still here. This names an
-                    engine, not an install: on a Crucible venue the streaming session is
-                    the server's, and what the engine needs is installed there.
-                  </p>
-                  <!-- One button per engine main reports, never a hand-written list:
-                       an engine this machine cannot run is offered disabled with
-                       main's own reason on hover, and selecting one main refuses
-                       surfaces that refusal. -->
-                  <div class="worker-options">
-                    @for (eng of workerCfg.engines(); track eng.id) {
-                      <button
-                        class="worker-btn"
-                        [class.selected]="workerCfg.engine() === eng.id"
-                        [disabled]="eng.available === false"
-                        [title]="eng.available === false ? (eng.reason || (eng.name + ' is not set up on this machine')) : streamEngineBlurb(eng.id)"
-                        (click)="setStreamEngine(eng.id)"
-                      >{{ eng.name }}</button>
-                    }
-                  </div>
-                  @for (eng of workerCfg.engines(); track eng.id) {
-                    @if (eng.available === false) {
-                      <span class="hint">{{ eng.name }} can't stream on this machine: {{ eng.reason || 'not set up' }}</span>
-                    }
-                  }
-                  @if (streamEngineError(); as err) {
-                    <span class="hint warn-text">{{ err }}</span>
-                  }
-                  @if (workerCfg.isOrpheus()) {
-                    <span class="hint">Orpheus runs one worker on the GPU, so the device and worker-count options below have nothing to act on.</span>
-                  }
-                  @if (workerCfg.isHiggs()) {
-                    <span class="hint">Higgs streams in fixed groups of {{ HIGGS_STREAM_GROUP }} sentences on the GPU; the device and worker-count options below have nothing to act on.</span>
-                  }
-                </div>
-
                 <!--
-                  "Batch size (audiobook processing)" WAS HERE and is deleted
-                  (2026-09-14, audit section 3.7). Its only reader was the
-                  legacy WSL Orpheus spawn (orpheus-batch.ts ->
-                  parallel-tts-bridge.ts), and on a Crucible the render width is
-                  the SERVER's — HIGGS_MAX_NUM_SEQS in its own config, which is
-                  the DIVISION OF KNOWLEDGE ruling: tuning is Crucible config,
-                  never a wire field and never a client's control. The record
-                  <userData>/orpheus-batch.json and its reader stay until the
-                  spawn layer goes; what is gone is the door that let somebody
-                  set a number for a machine that no longer decides it.
-                -->
+                  EVERY TTS CONTROL THAT STOOD HERE IS DELETED (Phase 16 step 8,
+                  docs/EXTENSION-TO-CRUCIBLE-PLAN.md section 0's two-column table).
 
-                <!-- Voice: which voice the streaming engine speaks with. Applies to
-                     the in-app Listen, the TTS API server, and the browser extension.
-                     Switching is live (no engine restart) and persists per engine. -->
-                <div class="settings-group">
-                  <h4>Voice</h4>
-                  <p class="field-description">
-                    The voice used for streaming playback. Changing it takes effect
-                    immediately if the server is running, and is remembered for next time.
-                    @if (workerCfg.isOrpheus()) {
-                      Orpheus voices are built in; <strong>leah</strong> has the best quality.
-                    } @else {
-                      Download more voices in <strong>Settings → Voices</strong>.
-                    }
-                  </p>
-                  @if (workerCfg.voices().length > 0) {
-                    <desktop-select
-                      [options]="voiceOptions()"
-                      [ngModel]="workerCfg.voice()"
-                      (ngModelChange)="setStreamVoice($event)"
-                    />
-                    <!-- The picker shows the voice actually loaded, so a failed
-                         switch snaps back to it — this says why, instead of leaving
-                         the user wondering why the narrator didn't change. -->
-                    @if (workerCfg.voiceError(); as err) {
-                      <span class="hint hint-error">Couldn't load that voice — {{ err }}</span>
-                    }
-                  } @else {
-                    <span class="hint">No voices available for this engine yet.</span>
-                  }
-                </div>
+                  "Voice Engine" - dropped. There is one narration engine, and when
+                  there is a second it arrives as a COLUMN of a voice list, never a
+                  selector: a voice implies its engine (section 4a). The Streaming
+                  tab still has its own engine toggle for the engine BookForge
+                  itself runs; that is a different fact from what a browser
+                  extension speaks with.
 
-                <!--
-                  TWO CONTROLS WERE DELETED HERE, AND BOTH WERE INERT
-                  (2026-09-14, audit sections 3.7 and 2.5).
+                  "Voice" - CARRIED, to the extension. Its list is the selected
+                  Crucible's GET /v1/voices, which is current because it is the
+                  server that holds the weights; a BookForge-side picker for a
+                  client BookForge no longer serves would be a second owner of one
+                  fact, and the stale one.
 
-                  "Generation Device" (Auto / CPU / GPU / MPS) looked like the
-                  most consequential choice on the page and set NOTHING: it was
-                  not persisted anywhere, and the only implementation of
-                  setStreamWorkerConfig (orpheus-worker-pool.ts) is an explicit
-                  no-op that reports back a hardcoded devicePref 'auto'; the
-                  Crucible backend's copy (crucible/stream.ts) is a no-op too.
-                  It also contradicted GPU IS ONE GLOBAL CHOICE — the VENUE is
-                  the choice now, and a render's device is the card of whichever
-                  server the venue named.
-
-                  "Streaming Engine" (enable multiple workers, 1-4) was the same
-                  defect with a worse promise: getStreamWorkerConfig() returns a
-                  fixed enabled:false, count:1, min:1, max:1, and the hint text
-                  said "Becomes the default everywhere".
-
-                  The CUDA acceleration pack went with the device buttons, which
-                  is where it was offered: it is a local pack for a local engine
-                  (DELETE-AFTER-PASS), and it is still reachable from General
-                  Add-ons for as long as the legacy layer exists.
+                  "Generation Device" and "enable multiple TTS workers" were
+                  already deleted on 2026-09-14 (both inert). Neither is coming
+                  back: the device is the server's ("always chosen by the crucible
+                  server") and the worker count was XTTS's.
                 -->
 
                 <div class="save-section">
-                  <desktop-button variant="primary" size="md" (click)="saveTtsServer()" [disabled]="!ttsServerDirty() || ttsApiSaving()">
-                    {{ ttsApiSaving() ? 'Saving…' : (ttsServerDirty() ? 'Save Changes' : 'Saved') }}
+                  <desktop-button variant="primary" size="md" (click)="saveTabRecordServer()" [disabled]="!tabRecordDirty() || tabRecordSaving()">
+                    {{ tabRecordSaving() ? 'Saving…' : (tabRecordDirty() ? 'Save Changes' : 'Saved') }}
                   </desktop-button>
-                  @if (ttsServerDirty()) {
-                    <desktop-button variant="ghost" size="md" (click)="discardTtsServer()" [disabled]="ttsApiSaving()">
+                  @if (tabRecordDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardTabRecordServer()" [disabled]="tabRecordSaving()">
                       Discard
                     </desktop-button>
                     <span class="unsaved-hint">Saving restarts the server</span>
                   }
                 </div>
 
-                @if (ttsApiError(); as error) {
+                @if (tabRecordError(); as error) {
                   <div class="status-message error">
                     {{ error }}
                   </div>
@@ -560,9 +478,9 @@ function toolPathText(raw: string | boolean | undefined): string {
                 <!-- Help text -->
                 <div class="help-text">
                   <p>
-                    Lets external clients — like the BookForge browser extension — stream
-                    text-to-speech from the TTS engine. Starts automatically with BookForge.
-                    Protocol reference: docs/TTS_API.md in the repository.
+                    The BookForge Reader extension's <strong>Record this tab</strong> sends
+                    raw audio here and ffmpeg writes the FLAC. Starts automatically with
+                    BookForge. Protocol reference: docs/TAB_RECORDER.md in the repository.
                   </p>
                 </div>
               </div>
@@ -1846,7 +1764,6 @@ export class SettingsComponent implements OnInit {
   private readonly pluginService = inject(PluginService);
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
-  protected readonly workerCfg = inject(WorkerConfigService);
   private readonly componentService = inject(ComponentService);
 
   readonly selectedSection = signal('library');
@@ -1861,47 +1778,20 @@ export class SettingsComponent implements OnInit {
    * card belongs to whichever server the venue named.
    */
 
-  /** Choose which TTS engine backs the Listen feature (applies on next start).
-   *  One engine, one button — the parameter stays because main still refuses an
-   *  engine name it does not have, and this is where a second one would arrive. */
-  setStreamEngine(engine: StreamEngineName): void {
-    this.streamEngineError.set(null);
-    void this.workerCfg.setEngine(engine).catch((err: unknown) => {
-      // Main REFUSES an engine it cannot run, by name, with the reason the
-      // picker would have shown; that refusal belongs on the page, not in the
-      // console — the button just clicked would otherwise do nothing visible.
-      this.streamEngineError.set(err instanceof Error ? err.message : String(err));
-    });
-  }
-
-  /** desktop-select options for the streaming voice picker (value = voice id). */
-  readonly voiceOptions = computed<DesktopSelectItems>(() =>
-    this.workerCfg.voices().map((v) => ({
-      value: v,
-      label: v.charAt(0).toUpperCase() + v.slice(1),
-    }))
-  );
-
-  /** Pick the voice for the active streaming engine (persists; warms live if running). */
-  setStreamVoice(voice: string): void {
-    void this.workerCfg.setVoice(voice);
-  }
-
-  /** Availability of a given streaming engine on this machine (for the chooser). */
-  /** Refusal from the last engine switch, shown under the chooser. */
-  readonly streamEngineError = signal<string | null>(null);
-  /** The Higgs Listen group width the pool uses (orpheus-worker-pool HIGGS_STREAM_BATCH_WIDTH). */
-  readonly HIGGS_STREAM_GROUP = 4;
-
-  streamEngineBlurb(id: StreamEngineName): string {
-    return id === 'higgs'
-      ? 'Faster renders; the voice is the checkpoint the server starts on'
-      : 'High-prosody neural TTS (single GPU worker)';
-  }
-
-  streamEngineInfo(id: StreamEngineName): { id: StreamEngineName; name: string; available: boolean; reason?: string } | undefined {
-    return this.workerCfg.engines().find((e) => e.id === id);
-  }
+  /*
+   * THE STREAMING VOICE AND ENGINE PICKERS ARE GONE FROM SETTINGS (Phase 16
+   * step 8, 2026-09-15). `setStreamEngine`, `setStreamVoice`, `voiceOptions`,
+   * `streamEngineBlurb`, `streamEngineInfo`, `streamEngineError` and
+   * `HIGGS_STREAM_GROUP` all existed for the "TTS Server" section, which served
+   * one external client: the browser extension. That client picks its own
+   * server and its own voice now, from that server's `GET /v1/voices`
+   * (docs/EXTENSION-TO-CRUCIBLE-PLAN.md section 0), so a BookForge-side picker
+   * for it would be a second owner of one fact, and the stale one.
+   *
+   * The engine BookForge ITSELF streams with is still chosen — on the Streaming
+   * tab, which is the surface that uses it (`live-tts.component.ts` binds the
+   * same WorkerConfigService). One control, on the page that acts on it.
+   */
 
   // Library section state
   readonly savedLibraryPath = computed(() => this.libraryService.libraryPath() || '~/Documents/BookForge');
@@ -1939,26 +1829,26 @@ export class SettingsComponent implements OnInit {
   readonly bookshelfSaving = signal(false);
   readonly bookshelfError = signal<string | null>(null);
 
-  // TTS Server section state. Port/host live main-process side in tts-api.json;
-  // worker count in tts-stream.json. Edits buffer in drafts until Save.
-  readonly ttsApiStatus = signal<{ running: boolean; port: number; host: string; token: string; addresses: string[] } | null>(null);
-  readonly ttsApiDraft = signal<{ port?: number; host?: string } | null>(null);
-  readonly ttsApiSaving = signal(false);
-  readonly ttsApiError = signal<string | null>(null);
-  readonly ttsApiTokenVisible = signal(false);
-  readonly ttsApiCopied = signal(false);
-  private ttsApiCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  // Tab Recorder section state. Port/host/token live main-process side in the
+  // server's config; edits buffer in a draft until Save.
+  readonly tabRecordStatus = signal<{ running: boolean; port: number; host: string; token: string; addresses: string[] } | null>(null);
+  readonly tabRecordDraft = signal<{ port?: number; host?: string } | null>(null);
+  readonly tabRecordSaving = signal(false);
+  readonly tabRecordError = signal<string | null>(null);
+  readonly tabRecordTokenVisible = signal(false);
+  readonly tabRecordCopied = signal(false);
+  private tabRecordCopiedTimer: ReturnType<typeof setTimeout> | null = null;
   // Effective port/host shown in the form (draft overlay over server status)
-  readonly ttsApiViewPort = computed(() => this.ttsApiDraft()?.port ?? this.ttsApiStatus()?.port ?? 8766);
-  readonly ttsApiViewHost = computed(() => this.ttsApiDraft()?.host ?? this.ttsApiStatus()?.host ?? '127.0.0.1');
+  readonly tabRecordViewPort = computed(() => this.tabRecordDraft()?.port ?? this.tabRecordStatus()?.port ?? 8766);
+  readonly tabRecordViewHost = computed(() => this.tabRecordDraft()?.host ?? this.tabRecordStatus()?.host ?? '127.0.0.1');
 
-  // Dirty flag for the TTS Server section's Save button (port/host only)
-  readonly ttsServerDirty = computed(() => {
-    const status = this.ttsApiStatus();
-    const apiDraft = this.ttsApiDraft();
-    return !!apiDraft && (
-      (apiDraft.port !== undefined && apiDraft.port !== status?.port) ||
-      (apiDraft.host !== undefined && apiDraft.host !== status?.host)
+  // Dirty flag for the Tab Recorder section's Save button (port/host only)
+  readonly tabRecordDirty = computed(() => {
+    const status = this.tabRecordStatus();
+    const draft = this.tabRecordDraft();
+    return !!draft && (
+      (draft.port !== undefined && draft.port !== status?.port) ||
+      (draft.host !== undefined && draft.host !== status?.host)
     );
   });
 
@@ -2047,8 +1937,8 @@ export class SettingsComponent implements OnInit {
     this.refreshCacheSize();
     // Check bookshelf server status
     this.refreshBookshelfStatus();
-    // Check TTS API server status
-    this.refreshTtsApiStatus();
+    // Check tab-record server status
+    this.refreshTabRecordStatus();
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
@@ -2438,68 +2328,67 @@ export class SettingsComponent implements OnInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // TTS API Server Methods
+  // Tab Recorder Methods
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async refreshTtsApiStatus(): Promise<void> {
+  async refreshTabRecordStatus(): Promise<void> {
     try {
-      const result = await this.electronService.ttsApiStatus();
+      const result = await this.electronService.tabRecordStatus();
       if (result.success && result.data) {
-        this.ttsApiStatus.set(result.data);
+        this.tabRecordStatus.set(result.data);
       }
     } catch (err) {
-      console.error('Failed to get TTS API server status:', err);
+      console.error('Failed to get tab-record server status:', err);
     }
   }
 
-  updateTtsApiPort(port: number): void {
+  updateTabRecordPort(port: number): void {
     if (port >= 1 && port <= 65535) {
-      this.ttsApiDraft.set({ ...(this.ttsApiDraft() ?? {}), port });
+      this.tabRecordDraft.set({ ...(this.tabRecordDraft() ?? {}), port });
     }
   }
 
-  toggleTtsApiLan(enabled: boolean): void {
-    this.ttsApiDraft.set({ ...(this.ttsApiDraft() ?? {}), host: enabled ? '0.0.0.0' : '127.0.0.1' });
+  toggleTabRecordLan(enabled: boolean): void {
+    this.tabRecordDraft.set({ ...(this.tabRecordDraft() ?? {}), host: enabled ? '0.0.0.0' : '127.0.0.1' });
   }
 
-  /** Persist all TTS Server edits: restart the WS server and/or set worker count. */
-  async saveTtsServer(): Promise<void> {
-    if (!this.ttsServerDirty()) return;
-    this.ttsApiSaving.set(true);
-    this.ttsApiError.set(null);
+  /** Persist the recorder's address: restarts the WebSocket server. */
+  async saveTabRecordServer(): Promise<void> {
+    if (!this.tabRecordDirty()) return;
+    this.tabRecordSaving.set(true);
+    this.tabRecordError.set(null);
 
     try {
-      // Port / host → restarts the WebSocket server
-      const apiDraft = this.ttsApiDraft();
-      if (apiDraft && (apiDraft.port !== undefined || apiDraft.host !== undefined)) {
-        const result = await this.electronService.ttsApiConfigure(apiDraft);
+      const draft = this.tabRecordDraft();
+      if (draft && (draft.port !== undefined || draft.host !== undefined)) {
+        const result = await this.electronService.tabRecordConfigure(draft);
         if (result.success && result.data) {
-          this.ttsApiStatus.set(result.data);
-          this.ttsApiDraft.set(null);
+          this.tabRecordStatus.set(result.data);
+          this.tabRecordDraft.set(null);
         } else {
-          this.ttsApiError.set(result.error || 'Failed to apply TTS server settings');
+          this.tabRecordError.set(result.error || 'Failed to apply tab recorder settings');
           return;
         }
       }
     } catch (err) {
-      this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to save TTS server settings');
+      this.tabRecordError.set(err instanceof Error ? err.message : 'Failed to save tab recorder settings');
     } finally {
-      this.ttsApiSaving.set(false);
+      this.tabRecordSaving.set(false);
     }
   }
 
-  discardTtsServer(): void {
-    this.ttsApiDraft.set(null);
-    this.ttsApiError.set(null);
+  discardTabRecordServer(): void {
+    this.tabRecordDraft.set(null);
+    this.tabRecordError.set(null);
   }
 
-  copyTtsApiToken(): void {
-    const token = this.ttsApiStatus()?.token;
+  copyTabRecordToken(): void {
+    const token = this.tabRecordStatus()?.token;
     if (!token) return;
     navigator.clipboard.writeText(token);
-    this.ttsApiCopied.set(true);
-    if (this.ttsApiCopiedTimer) clearTimeout(this.ttsApiCopiedTimer);
-    this.ttsApiCopiedTimer = setTimeout(() => this.ttsApiCopied.set(false), 2000);
+    this.tabRecordCopied.set(true);
+    if (this.tabRecordCopiedTimer) clearTimeout(this.tabRecordCopiedTimer);
+    this.tabRecordCopiedTimer = setTimeout(() => this.tabRecordCopied.set(false), 2000);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

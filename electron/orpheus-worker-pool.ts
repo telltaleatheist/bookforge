@@ -4,7 +4,7 @@
  * THE streaming engine for Listen, and since 2026-09-05 the only one — it declares
  * the {@link StreamingEngine} contract's types below and implements its surface
  * (start/load/generate/stream/cancel/end + state/voice accessors), which the
- * stream-scheduler and TTS API server drive through `streaming-engine.ts`.
+ * stream-scheduler drives through `streaming-engine.ts`.
  *
  *   - ONE worker, always. Orpheus uses vLLM (CUDA) or MLX (Apple Silicon), both of
  *     which saturate the single GPU and have built-in batching — extra processes
@@ -55,7 +55,7 @@ import { IdleWatch } from './stream-idle';
 // THE STREAMING CONTRACT
 //
 // These types are the shape every Listen consumer speaks — the scheduler, the
-// TTS API server, the reader bridge and `streaming-engine.ts`'s `StreamingEngine`
+// the reader bridge and `streaming-engine.ts`'s `StreamingEngine`
 // interface. They lived in `xtts-worker-pool.ts` until XTTS was removed from the
 // root (2026-09-05), for the historical reason that XTTS was the FIRST pool; the
 // contract was never XTTS's to own. It moved here rather than into a new
@@ -118,7 +118,7 @@ export interface LoadVoiceOptions {
  *  Server settings payload and its clients are written against it. */
 export type DevicePref = 'auto' | 'cpu' | 'gpu' | 'mps';
 
-/** The topology the TTS Server settings UI and the browser extension read. */
+/** The topology the Streaming tab reads. */
 export interface StreamWorkerConfig {
   /** Multi-worker capability toggle (off ⇒ always 1 worker) */
   enabled: boolean;
@@ -747,7 +747,7 @@ export function setServeEngineProbe(probe: () => StreamEngineId): void {
  *
  * WHY THE POOL NEEDS IT: a Higgs server is STARTED ON its voice, and every start
  * path calls `startSession()` BEFORE `loadVoice(getDefaultStreamVoice())`
- * (tts-api-server's ensureEngine, the reader bridge, the render service). With
+ * (the reader bridge, the render service). With
  * nothing loaded yet, `getDefaultVoice()` answered the catalog's FIRST renderable
  * voice — "default", the zero-shot base — so a cold Listen start loaded the base
  * checkpoint, was then told the user wanted deathstalker, and restarted to load
@@ -1880,7 +1880,7 @@ export function stop(): void {
 /** Kill the worker and free the weights.
  *
  *  `keepServiceArmed` is idle PARKING: it ends the ENGINE but leaves the service
- *  armed — serviceMode stays true, the TTS API server keeps listening, and the
+ *  armed — serviceMode stays true and the
  *  next speak cold-starts a fresh worker (reloading `lastVoice`). Clients see
  *  state 'stopped' with serviceMode still on, which is exactly what happened. */
 export async function endSession(opts?: { keepServiceArmed?: boolean }): Promise<void> {
@@ -1992,7 +1992,7 @@ export function getCurrentVoice(): string | null {
  * Can `voice` be rendered per REQUEST, alongside whatever else the engine has
  * loaded — or is loading it an exclusive act?
  *
- * Consumed by the TTS API server's post-load mismatch guard, which must not reject
+ * Consumed by the reader bridge's post-load mismatch guard, which must not reject
  * concurrent clients on voices that can happily share the engine. Every answer here
  * is a WAIVER of that guard, so the rule is: say true only for what is provably
  * shareable, and treat every other case — including "I don't know" — as exclusive.
@@ -2090,7 +2090,7 @@ export function getMaxConcurrentSentences(): number {
   return worker && worker.isReady ? streamBatchCeiling() : 1;
 }
 
-/** Orpheus is single-worker by nature; report a fixed topology so the TTS Server
+/** Orpheus is single-worker by nature; report a fixed topology so the Streaming tab
  *  UI shows sensible (non-editable) values. The worker-count/device controls are
  *  XTTS concepts and are no-ops here. */
 export function getStreamWorkerConfig(): StreamWorkerConfig {

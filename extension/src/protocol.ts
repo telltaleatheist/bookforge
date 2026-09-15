@@ -1,6 +1,10 @@
 /**
- * Wire protocol for the BookForge TTS API server (docs/TTS_API.md) — WHAT IS
- * LEFT OF IT.
+ * Wire protocol for BookForge's tab-record server (docs/TAB_RECORDER.md).
+ *
+ * This file used to be "what is left of the TTS API server". As of Phase 16
+ * step 8 there is no TTS API server: the speak half is deleted from BookForge
+ * (`electron/tab-record-server.ts` is the whole of what remains) and this is
+ * the recorder's protocol, entire.
  *
  * WebSocket, JSON text frames only. Client messages carry an `action`; server
  * messages carry a `type`.
@@ -28,9 +32,10 @@
  * different servers doing two different jobs.
  *
  * AND IT IS NOT ON BORROWED TIME. Owen ruled on 2026-09-14 that the plan's
- * step 6 is SPLIT: the SPEAK relay in `electron/tts-api-server.ts` goes, and
- * the recorder's endpoint on that same server STAYS. So the verbs below are
- * the permanent shape of this file, not a remnant waiting for a deletion.
+ * step 6 is SPLIT: the SPEAK relay went and the recorder's endpoint on that
+ * same server STAYED. Both halves of that ruling are carried out — the relay
+ * is deleted from BookForge, this endpoint is not — so the verbs below are the
+ * permanent shape of this file, not a remnant waiting for a deletion.
  */
 
 export const DEFAULT_PORT = 8766;
@@ -79,10 +84,10 @@ export type ClientAction =
 // ─── Server → client ──────────────────────────────────────────────────────────
 
 /**
- * The reply to `hello`. Its speech fields (state, voices, currentVoice, config,
- * engine, engines) are still SENT by the server and deliberately not declared
- * here: the extension no longer reads a single one of them, and a field a
- * client does not read is a field that can drift without anyone noticing.
+ * The reply to `hello`. It used to carry the engine's whole state (state,
+ * voices, currentVoice, config, engine, engines) and this interface
+ * deliberately declared none of it, because the extension read none of it.
+ * The server no longer SENDS any of it either: `version` is the reply.
  */
 export interface HelloEvent {
   type: 'hello';

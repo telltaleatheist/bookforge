@@ -91,7 +91,7 @@ export interface ToolPathsConfig {
 
   /**
    * Which Orpheus artifact form the RESIDENT STREAMING path serves (the /listen player,
-   * the TTS API server and the browser extension, which are all clients of the same
+   * and the Bookshelf reader bridge, which are all clients of the same
    * engine). Absent ⇒ 'merged'. The batch audiobook workers are NOT affected — they
    * always take the merged copy.
    *

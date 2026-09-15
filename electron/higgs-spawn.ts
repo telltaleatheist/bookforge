@@ -208,7 +208,7 @@ export function higgsPreflight(voiceId: string | undefined | null): HiggsModel {
  * than a voice id, because the override lives there.
  *
  * `higgsPreflight` stays for the STREAMING callers (Listen, the reader bridge,
- * the TTS API server): Listen is catalog-only by design — a resident engine
+ * the Listen surfaces): Listen is catalog-only by design — a resident engine
  * shared by every tab is not the place to load an uncertified checkpoint — and
  * they have no `ParallelTtsSettings` to read an override out of.
  */

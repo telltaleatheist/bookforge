@@ -234,16 +234,17 @@ export function stop(requestId?: string | number): void {
   sessions.stop(requestId);
 }
 
-/** True if a session with this requestId is still generating. Lets external
- *  callers (TTS API server) verify ownership before playhead/cancel. */
+/** True if a session with this requestId is still generating. Lets a caller
+ *  verify ownership before playhead/cancel. */
 export function isActive(requestId: string | number): boolean {
   return sessions.isActive(requestId);
 }
 
 /** Every generating session's requestId. Lets a caller preempt SELECTIVELY —
- *  the TTS API server cancels other clients' sessions on a preempting speak while
- *  sparing the requesting client's own read-ahead, which is already-rendered
- *  audio that a blanket stopAll would throw away. */
+ *  cancelling other clients' sessions while sparing the requesting client's own
+ *  read-ahead, which is already-rendered audio that a blanket stopAll would
+ *  throw away. The 8766 relay was this door's reason and is deleted; the reader
+ *  bridge still needs the same distinction. */
 export function activeIds(): (string | number)[] {
   return sessions.activeIds();
 }

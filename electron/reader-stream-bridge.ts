@@ -2,13 +2,19 @@
  * Reader Stream Bridge — WebSocket front door to the streaming TTS engine for the
  * Bookshelf web app's "Listen to anything" Reader (projects/bookshelf).
  *
- * This is the bookshelf-side twin of `tts-api-server.ts`. The difference:
- *   - tts-api-server is a STANDALONE ws server (its own port) for the Chrome
- *     extension + LAN clients, authed by a pinned Origin or a shared token.
- *   - This bridge rides the EXISTING bookshelf HTTP server (port 8765) via the
- *     `upgrade` event, and authenticates with the reader's own bearer token — the
- *     same identity the phone already uses for every /api call. No new port, no
- *     Origin dance; the phone is already a trusted, logged-in reader.
+ * This was the bookshelf-side twin of `tts-api-server.ts`, the standalone ws
+ * server on :8766 that spoke for the Chrome extension. That one is DELETED
+ * (Phase 16 step 8): the extension holds a Crucible's card itself. This bridge
+ * outlives it because the phone genuinely needs a LAN-addressable server with an
+ * ingest endpoint, which is BookForge's. It rides the EXISTING bookshelf HTTP
+ * server (port 8765) via the `upgrade` event, and authenticates with the
+ * reader's own bearer token — the same identity the phone already uses for every
+ * /api call. No new port, no Origin dance; the phone is already a trusted,
+ * logged-in reader.
+ *
+ * So the handleSpeak-shaped code below is no longer one of two copies. It is the
+ * only one, and the segmentation + packing it does is shared source
+ * (`shared/listen-text/`), not a mirror.
  *
  * Both drive the same in-process `streamScheduler`, so the wire protocol here is a
  * deliberate subset of the TTS API (no engine.start/config — engine lifecycle stays
@@ -183,7 +189,7 @@ export class ReaderStreamBridge {
   }
 
   /**
-   * Speak arbitrary text. Mirrors tts-api-server.handleSpeak but in-process: ensure
+   * Speak arbitrary text, in-process: ensure
    * the engine is up + voice warmed, split the text with the engine's own splitter,
    * echo the segmentation, then stream via the scheduler with a per-request sink
    * that forwards scheduler events (keyed 'kind') to the socket (keyed 'type').
@@ -239,10 +245,10 @@ export class ReaderStreamBridge {
     // a book and are a PASS the user runs, not something to do to a paragraph
     // somebody is waiting to hear.
     // The ONE deterministic Listen normalizer (shared/listen-text/normalize.ts): the same rewrite
-    // the TTS API server gives the extension's text.
+    // a reader's page text gets.
     const { speakableListenText } = await import('../shared/listen-text/normalize.js');
     const speakable = speakableListenText(text);
-    // THE UNIT ON THE WIRE IS PER ENGINE — the same branch the TTS API server
+    // THE UNIT ON THE WIRE IS PER ENGINE — the same branch the render path
     // makes, for the same reasons (see its comment, and shared/listen-text/chunks.ts):
     // Orpheus streams one sentence per row because width, not row length, is its
     // throughput; Higgs streams ramped chunks of one or more sentences because it
@@ -262,7 +268,7 @@ export class ReaderStreamBridge {
       let band;
       try {
         // THE ENGINE THAT WILL SPEAK IT STATES THE BAND, when it is somewhere
-        // else — the same read the TTS API server makes, for the same reason
+        // else — the same read every Listen surface makes, for the same reason
         // (electron/crucible/voice-band.ts). The local pool states nothing and
         // the catalog stands for it, because that engine IS this machine's
         // narrator. `higgsVoiceCapsForModel` defaults to THIS MACHINE'S arm,
@@ -364,7 +370,7 @@ export class ReaderStreamBridge {
     };
   }
 
-  /** The voices the active engine can actually use (mirrors tts-api-server).
+  /** The voices the active engine can actually use.
    *  Orpheus's voices are built into the model, so its whole set is usable —
    *  the branch that filtered a catalog down to the checkpoints actually on disk
    *  went with XTTS. */

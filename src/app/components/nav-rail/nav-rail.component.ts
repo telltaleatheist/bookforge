@@ -2,7 +2,6 @@ import { Component, inject, input, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
-import { TtsServerService } from '../../core/services/tts-server.service';
 import { BookshelfServerService } from '../../core/services/bookshelf-server.service';
 import { DesktopThemeService } from '../../creamsicle-desktop/services/theme.service';
 
@@ -79,44 +78,6 @@ export interface NavRailItem {
             <span class="service-dot"></span>
           }
         </button>
-        <div class="service-btn-wrap">
-          <button
-            class="service-btn"
-            [class.running]="ttsServer.state() === 'running'"
-            [class.starting]="ttsServer.state() === 'starting' || ttsServer.state() === 'warming'"
-            (click)="toggleTtsServer()"
-            (contextmenu)="openTtsSettings($event)"
-          >
-            <span class="nav-icon">🎙️</span>
-            <span class="nav-label">
-              @switch (ttsServer.state()) {
-                @case ('running') { TTS On }
-                @case ('starting') { Starting… }
-                @case ('warming') {
-                  @if (ttsServer.warmupPct() !== null) { Warming {{ ttsServer.warmupPct() }}% }
-                  @else { Warming… }
-                }
-                @default { TTS Server }
-              }
-            </span>
-            @if (ttsServer.state() === 'running') {
-              <span class="service-dot"></span>
-            }
-          </button>
-
-          <!-- Instant hover explainer: what the streaming server is for + a way
-               into its settings (also reachable via right-click on the button). -->
-          <div class="tts-popover" role="tooltip">
-            <div class="pop-title">TTS Streaming Server</div>
-            <div class="pop-state">{{ ttsServerTitle() }}</div>
-            <p class="pop-desc">
-              Generates speech on demand. Use it with the BookForge Reader browser
-              extension, or play your audiobooks live — no need to render an M4B
-              file first.
-            </p>
-            <button class="pop-settings" (click)="openTtsSettings($event)">⚙ Settings</button>
-          </div>
-        </div>
         <button class="debug-btn" (click)="themeService.toggleTheme()" [title]="themeTitle()">
           <span class="nav-icon">{{ themeIcon() }}</span>
           <span class="nav-label">{{ themeLabel() }}</span>
@@ -280,57 +241,6 @@ export interface NavRailItem {
       50% { opacity: 0.35; }
     }
 
-    /* Wrapper anchors the hover explainer to the TTS button. */
-    .service-btn-wrap {
-      position: relative;
-      width: 88px;
-      display: flex;
-      justify-content: center;
-    }
-
-    .tts-popover {
-      position: absolute;
-      left: calc(100% - 4px);
-      bottom: 0;
-      width: 240px;
-      padding: 12px;
-      text-align: left;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
-      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.32);
-      z-index: 1000;
-      opacity: 0;
-      visibility: hidden;
-      transform: translateX(-4px);
-      transition: opacity 0.12s ease, transform 0.12s ease;
-      pointer-events: none;
-    }
-    /* Show on hover/focus of the wrapper; the popover is inside it, so moving the
-       mouse into the popover keeps it open and its Settings button clickable. */
-    .service-btn-wrap:hover .tts-popover,
-    .service-btn-wrap:focus-within .tts-popover {
-      opacity: 1;
-      visibility: visible;
-      transform: translateX(0);
-      pointer-events: auto;
-    }
-    .pop-title { font-weight: 600; font-size: 13px; color: var(--text-primary); margin-bottom: 4px; }
-    .pop-state { font-size: 11px; color: var(--text-tertiary); margin-bottom: 8px; line-height: 1.35; }
-    .pop-desc { font-size: 12px; line-height: 1.45; color: var(--text-secondary); margin: 0 0 10px; }
-    .pop-settings {
-      width: 100%;
-      font-size: 12px;
-      font-weight: 500;
-      padding: 6px 10px;
-      border-radius: 6px;
-      border: 1px solid var(--border-default);
-      background: transparent;
-      color: var(--text-primary);
-      cursor: pointer;
-    }
-    .pop-settings:hover { background: var(--bg-hover); border-color: var(--accent); }
-
     .debug-btn {
       width: 88px;
       height: 52px;
@@ -365,7 +275,20 @@ export interface NavRailItem {
 })
 export class NavRailComponent {
   private readonly router = inject(Router);
-  readonly ttsServer = inject(TtsServerService);
+  /*
+   * THE "TTS SERVER" BUTTON IS DELETED (Phase 16 step 8, Owen 2026-09-15:
+   * *"we need to remove the tts server button from bookforge"*).
+   *
+   * It pinned the streaming engine as a resident service so that EXTERNAL
+   * clients — in practice one, the browser extension — always had a live
+   * endpoint at ws://…:8766. That relay is gone: the extension holds a
+   * Crucible's card itself, picks its own server and voice, and loads and
+   * unloads through that server's own jobs. Nothing outside this app asks
+   * BookForge to hold a model any more, so the global pin has no caller and
+   * `TtsServerService` is left to the two surfaces that genuinely use it —
+   * the Streaming tab and the audiobook Play view, each of which starts the
+   * engine for its own playback and shows its own state.
+   */
   readonly bookshelf = inject(BookshelfServerService);
   readonly themeService = inject(DesktopThemeService);
 
@@ -412,19 +335,8 @@ export class NavRailComponent {
     return current === route || current.startsWith(route + '/');
   }
 
-  toggleTtsServer(): void {
-    void this.ttsServer.toggle();
-  }
-
   toggleBookshelf(): void {
     void this.bookshelf.toggle();
-  }
-
-  /** Open the TTS streaming server's settings (hover popover button + right-click). */
-  openTtsSettings(event?: Event): void {
-    event?.preventDefault();
-    event?.stopPropagation();
-    void this.router.navigate(['/settings'], { queryParams: { section: 'tts-api' } });
   }
 
   bookshelfTitle(): string {
@@ -433,15 +345,6 @@ export class NavRailComponent {
       case 'running': return `Bookshelf is sharing your library on the network (port ${port}). Click to stop it.`;
       case 'starting': return 'Bookshelf server is starting…';
       default: return `Start the Bookshelf server: browse and stream your audiobooks from any device on the network (port ${port}).`;
-    }
-  }
-
-  ttsServerTitle(): string {
-    switch (this.ttsServer.state()) {
-      case 'running': return 'TTS server is running (~5 GB RAM/worker). Click to shut it down.';
-      case 'starting': return 'TTS server is starting (spawning workers). Click to cancel.';
-      case 'warming': return 'TTS server is loading the voice model into memory — it can generate once this finishes. Click to cancel.';
-      default: return 'Start the TTS server: instant streaming playback, and external clients (e.g. a browser extension) can connect.';
     }
   }
 

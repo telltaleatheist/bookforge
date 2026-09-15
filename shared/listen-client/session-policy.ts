@@ -286,9 +286,9 @@ export class ListenSessions<Data, Settings> {
   }
 
   /** Every generating session's requestId. Lets a caller preempt SELECTIVELY —
-   *  the TTS API server cancels other clients' sessions on a preempting speak
-   *  while sparing the requesting client's own read-ahead, which is
-   *  already-rendered audio that a blanket stopAll would throw away. */
+   *  cancelling other clients' sessions while sparing the requesting client's
+   *  own read-ahead, which is already-rendered audio that a blanket stopAll
+   *  would throw away. */
   activeIds(): (string | number)[] {
     return [...this.sessions.keys()];
   }

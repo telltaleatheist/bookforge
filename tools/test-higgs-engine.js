@@ -2522,23 +2522,15 @@ check('the CLI runs higgs on EVERY door the app runs it on', () => {
   // "CLI drives the app path"), so what is asserted here is an AGREEMENT between
   // two files and never a sentence in one of them.
   //
-  // This check used to require that the CLI REFUSED `--mode streaming` for Higgs
-  // by name, and that was right when Higgs v3 was a served endpoint with no
-  // windowed decode. Per-row Higgs streaming shipped 2026-09-05 — the app's
-  // `tts-api-server` has bound a Higgs voice ever since — so the refusal made the
-  // CLI the one door that could not reproduce a Listen defect on it. Lifted
-  // 2026-09-12, and the assertion moved to the invariant that actually matters:
-  // the CLI permits exactly what the app implements.
+  // The STREAMING half of this check is deleted (Phase 16 step 8, 2026-09-15).
+  // It compared the CLI's `--mode streaming` refusal against whether
+  // `tts-api-server.handleSpeak` bound a Higgs voice, and neither side exists:
+  // the speak relay is gone from BookForge and `--mode streaming` is gone from
+  // the CLI with it. What is left is the RENDER door, where the agreement still
+  // has two sides to compare.
   const cli = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf-8');
   assert.match(cli, /args\.engine in \("orpheus", "higgs"\)/,
     'the CLI still refuses --engine higgs');
-  const apiServer = fs.readFileSync(path.join(REPO, 'electron', 'tts-api-server.ts'), 'utf-8');
-  const appStreamsHiggs = /higgsPreflight\(/.test(apiServer);
-  const cliRefusesStreaming = /has no streaming path/.test(cli);
-  assert.strictEqual(cliRefusesStreaming, !appStreamsHiggs,
-    appStreamsHiggs
-      ? 'the app streams Higgs but the CLI still refuses --mode streaming for it'
-      : 'the CLI offers Higgs streaming that the app no longer implements');
   const adapter = fs.readFileSync(path.join(REPO, 'cli', 'orpheus-batch-render.js'), 'utf-8');
   assert.match(adapter, /ttsEngine: engine/,
     'the batch adapter still hardcodes the engine');

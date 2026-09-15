@@ -32,8 +32,9 @@ Three consequences worth knowing before you open the Options page:
 - **The tab recorder still needs BookForge.** It hands raw PCM to a machine
   with a filesystem and BookForge's ffmpeg writes the FLAC, so the recorder's
   own host/port/token rows are still in Options, labelled for what they are.
-  That half still speaks the WebSocket API in
-  [`../docs/TTS_API.md`](../docs/TTS_API.md).
+  That half speaks the WebSocket API in
+  [`../docs/TAB_RECORDER.md`](../docs/TAB_RECORDER.md), which is now the whole of
+  that server's protocol — `docs/TTS_API.md` was deleted with the speak relay.
 
 ## Build
 

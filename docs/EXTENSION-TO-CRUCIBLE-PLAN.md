@@ -304,6 +304,47 @@ the extension carries every one of them.
   - **Deliberately KEPT: BookForge's host/port/token rows in Options**, relabelled for what they
     are — and step 6 is now SPLIT so they stay for good: the recorder's endpoint outlives the
     speak relay. Removing those rows would break a working feature to satisfy a table.
+- **Steps 6 and 8 — LANDED, 2026-09-15.** Owen: *"i dont think we need to overcomplicate
+  the token logic … the right way to do this is to connect directly to crucible with the
+  extension, fully. cut bookforge out of the picture … there shouldnt be tts server logic in
+  bookforge anymore at all, including the settings."* The precondition held before a line was
+  deleted: `test-extension-option-columns` was already green on all five carried rows (voice,
+  speed, Buffer before playing, the idle window, the server picker), so the extension needed
+  nothing and the BookForge side went.
+  - **The nav-rail "TTS Server" button is gone**, with its hover explainer and its three
+    methods. Its whole justification was printed on it — *"external clients (e.g. a browser
+    extension) can connect"* — and there is no external client on that socket any more.
+    `TtsServerService` stays for the two surfaces that genuinely start an engine for their own
+    playback: the Streaming tab and the audiobook Play view.
+  - **`electron/tts-api-server.ts` is `electron/tab-record-server.ts`**, and it is the recorder's
+    alone: `speak`, `playhead`, `cancel`, `status`, `config.get/set` and `engine.start/stop/restart`
+    are deleted along with `handleSpeak`, `handleConfigSet`, `handleRestart`, `ensureEngine`,
+    `applyClientWorkerCount`, `refreshInstalledVoices` and the engine-state/config broadcasts.
+    A speech verb arriving on it is answered by NAME with where speech went, because an old
+    extension build is the likely sender and "unknown action" would not tell it. The config
+    file keeps the name `tts-api.json` on purpose (`extension/build.mjs` bakes the token out of
+    it; renaming mints a new one under every running install) and so does the probe's `service`
+    string — both stated in the file rather than quietly left.
+  - **Settings → TTS Server is Settings → Tab Recorder.** Token, port and LAN survive because
+    the recorder's address is still the app's to decide and a browser on another machine needs
+    all three; deleting the section would have left a security-relevant toggle reachable only
+    by hand-editing JSON. Everything TTS in it is deleted — the Voice Engine chooser and the
+    Voice picker, with `setStreamEngine`, `setStreamVoice`, `voiceOptions`, `streamEngineBlurb`,
+    `streamEngineInfo`, `streamEngineError` and `HIGGS_STREAM_GROUP`. The engine BookForge
+    ITSELF streams with is still chosen, on the Streaming tab, which is the page that acts on it.
+  - **`cli/orpheus-stream.js` and `--mode streaming` go with the relay.** That adapter's stated
+    premise was *"talks the documented WebSocket protocol to it, exactly as the BookForge Reader
+    extension does"*, and both halves became false; `--mode streaming` is refused by name rather
+    than removed in silence. `docs/TTS_API.md` is deleted and `docs/TAB_RECORDER.md` absorbed the
+    transport and auth that were still true.
+  - **The Streaming tab was VERIFIED not to depend on any of it** before the deletion:
+    `live-tts.component.ts` reaches main through `stream:start` / `stream:stop` /
+    `stream:playhead` and `onStreamEvent`, never the socket, and `reader-stream-bridge.ts` holds
+    `streamScheduler` in-process for the phone. `stream-scheduler.ts` therefore stays — it did
+    not exist only to serve the relay, which is why the relay could go without it.
+  - The keeper is `tools/test-no-tts-server-doors.js`, both columns by name in the shape of
+    `test-no-e2a-doors.js`: half forbidding the deleted surface, half insisting the carried
+    options are still in the extension.
 - **Step 4 — RULED (Owen, 2026-09-14 late): the Streaming tab STAYS IN THE MAIN PROCESS. No
   renderer token door.** And it already runs the shared client: the policy it drives IS
   `shared/listen-client/session-policy.ts`, the rows behind it ARE

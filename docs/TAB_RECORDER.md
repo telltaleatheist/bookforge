@@ -1,9 +1,62 @@
 # Tab Recorder — lossless capture of one browser tab's audio
 
 Contract for the BookForge Reader extension's **Record this tab** feature and the
-TTS API server's `record.*` actions. Written 2026-09-03. Read `docs/TTS_API.md`
-first for the transport, auth, and the existing action/event vocabulary; this
-document only adds to it.
+`record.*` actions of BookForge's tab-record server
+(`electron/tab-record-server.ts`). Written 2026-09-03; became the WHOLE of that
+server's protocol on 2026-09-15.
+
+> **`docs/TTS_API.md` is deleted, and this document absorbed what was true of
+> it.** That file was a complete integration guide for streaming speech out of
+> BookForge over this same socket — `speak`, `chunk`, `done`, `engine.*`,
+> `config.*`, `playhead`, `cancel`. Phase 16 deleted the speak relay
+> (`docs/EXTENSION-TO-CRUCIBLE-PLAN.md` step 8, Owen: *"connect directly to
+> crucible with the extension, fully. cut bookforge out of the picture"*): the
+> browser extension holds a Crucible's card itself and reads pages with
+> BookForge shut. Owen SPLIT step 6 on 2026-09-14 so that THIS endpoint outlives
+> that relay, because a browser can capture a tab but has no filesystem and no
+> ffmpeg, and nothing in Crucible owns anybody's Downloads folder.
+
+## Transport and auth
+
+| Property | Value |
+|---|---|
+| URL | `ws://127.0.0.1:8766` (port/host in BookForge's **Settings → Tab Recorder**) |
+| Transport | WebSocket; JSON text frames for control, BINARY frames for PCM |
+| Auth | Trusted Origin (the pinned extension) **or** the shared token |
+| Detection probe | Plain HTTP `GET http://127.0.0.1:8766/` returns `{"service":"bookforge-tts","version":1}` |
+| Protocol version | 1 (echoed in the `hello` reply) |
+| Auth close code | 4401 (`hello` with a bad token, a 10 s auth timeout, or any frame before `hello`) |
+
+The `service` string keeps its old spelling on purpose: it is the published
+answer that already-built clients compare against, and a truer word is not worth
+a silent detection failure. The config file is `tts-api.json` in the app's
+userData for the same reason — `extension/build.mjs` bakes the host/port/token
+out of it at build time, and renaming it would mint a fresh token under every
+running install.
+
+**Auth: trusted Origin, with a token for anything else.** The official BookForge
+Reader extension has a pinned identity (a `key` in its `manifest.json` → a fixed
+extension id). The browser stamps every WebSocket with an `Origin` header that
+page JavaScript cannot forge, so a connection whose Origin is exactly
+`chrome-extension://<pinned-id>` is provably that extension and is authorised
+**without a token** — which is why the extension's token box is empty in the
+normal case. Any other client (a LAN device, a script, a different extension)
+must present the shared token. A non-browser client can send any Origin header,
+so on a LAN-exposed server the token is the stronger gate; for the realistic
+threat — a drive-by webpage opening `ws://localhost` — Origin-pinning blocks it
+outright.
+
+```
+{action:'hello', token}   → {type:'hello', version: 1}
+```
+
+`version` is the whole reply. It used to carry the engine's state, its voice
+list and its config; there is no engine behind this socket any more.
+
+A speech verb that still arrives here (`speak`, `engine.start`, `config.set`, …)
+is answered with an `error` that says where speech went, rather than a bare
+"unknown action": it is almost certainly an old extension build, and the fix is a
+Crucible connect code in its Options, not a retry.
 
 ## Why it exists
 
@@ -37,7 +90,7 @@ Audible's own AAC, which every route shares.
 ```
 popup (user gesture)                offscreen document                     BookForge main
 ────────────────────                ───────────────────                    ──────────────
-[Record this tab]                                                          tts-api-server.ts
+[Record this tab]                                                       tab-record-server.ts
   │ chrome.tabCapture.getMediaStreamId({targetTabId})
   │ → streamId
   ├─ runtime msg {cmd:'record', op:'start', streamId, tabId, title, speed}
@@ -77,7 +130,7 @@ popup (user gesture)                offscreen document                     BookF
   it back. The popup's Record click is still what grants `activeTab`; that grant
   belongs to the extension and outlives the popup.
 
-## Wire protocol additions (`docs/TTS_API.md` must gain this section verbatim)
+## Wire protocol
 
 Client → server (JSON):
 
@@ -222,8 +275,10 @@ the way it renders playback state — no second channel.
   complete up to the last frame), and the popup shows it as done-with-warning.
   Never leave a `.partial.flac` behind; sweep them on server start, in every
   folder that has been recorded into.
-- **Recording and TTS playback share the socket** and must not interfere: a
-  `speak` while recording is fine; `record.*` never touches the stream scheduler.
+- **Recording no longer shares the socket with anything.** It used to: a `speak`
+  while recording was fine because `record.*` never touched the stream scheduler.
+  The speak half is deleted, and that independence is exactly why deleting it
+  cost the recorder nothing.
 - **The tab going away** (closed, navigated) ends the track; treat `track.ended`
   as `record.stop` — and restore the page's playback rate.
 

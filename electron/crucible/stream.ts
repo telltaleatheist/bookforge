@@ -4,10 +4,12 @@
  *
  * ── The one seam ───────────────────────────────────────────────────────────
  *
- * Three surfaces stream audio: the in-app Play tab, the browser extension (and
- * LAN clients) through `electron/tts-api-server.ts` on ws :8766, and the
- * Bookshelf Reader through `electron/reader-stream-bridge.ts` riding :8765.
- * All three speak one protocol to ONE scheduler (`electron/stream-scheduler.ts`),
+ * Two surfaces stream audio through this app: the in-app Play/Streaming tabs,
+ * and the Bookshelf Reader through `electron/reader-stream-bridge.ts` riding
+ * :8765. (There were three. The browser extension came through
+ * `electron/tts-api-server.ts` on ws :8766 until Phase 16 deleted that relay —
+ * the extension is a Crucible client now and does not pass through here at all.)
+ * Both speak one protocol to ONE scheduler (`electron/stream-scheduler.ts`),
  * and the scheduler — plus the surfaces' own engine-lifecycle calls — drives one
  * interface: `StreamingEngine` in `electron/streaming-engine.ts`, reached through
  * `getActiveEngine()`. Until 2026-09-14 the only thing behind that interface was

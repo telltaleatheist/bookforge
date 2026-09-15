@@ -448,47 +448,23 @@ check('the pool refuses to name an engine when no probe is registered', () => {
     'setServeEngineProbe is gone, so nothing can register the engine the pool spawns for');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-console.log('per-engine settings are applied to the engine being switched TO');
-// ─────────────────────────────────────────────────────────────────────────────
-check('config.set and engine.restart apply the worker count AFTER the switch', () => {
-  // `applyClientWorkerCount` reads `getActiveEngine()`. Called before the switch it
-  // wrote the user's count onto the pool they were leaving, which the switch then
-  // discarded — a silently ignored setting, not a visible failure. Harmless only
-  // while ENGINES.orpheus and ENGINES.higgs are the same object, which is exactly
-  // the kind of "currently fine" that stops being fine without warning.
-  //
-  // Asserted on ORDER in the compiled output, because the two handlers are private
-  // methods on a server class that needs a live socket to drive.
-  const js = fs.readFileSync(path.join(DIST, 'tts-api-server.js'), 'utf-8');
-  for (const handler of ['handleConfigSet', 'handleRestart']) {
-    const body = js.match(new RegExp(`async ${handler}\\(ws, msg\\) \\{[\\s\\S]*?\\n    \\}\\n`));
-    assert.ok(body, `${handler} is not in the compiled server — did it move?`);
-    const apply = body[0].indexOf('applyClientWorkerCount');
-    const switchAt = body[0].indexOf('setStreamConfig');
-    assert.ok(apply !== -1, `${handler} no longer applies the client worker count`);
-    assert.ok(switchAt !== -1, `${handler} no longer switches engine`);
-    assert.ok(apply > switchAt,
-      `${handler} applies the worker count to the OUTGOING engine (at ${apply}, `
-      + `before the switch at ${switchAt})`);
-  }
-});
-
-check('engine.restart captures residency BEFORE the switch, on purpose', () => {
-  // The opposite order from the worker count, and deliberately so. "Is a client
-  // holding this server resident" is a property of the session, not of whichever
-  // pool is loaded. Read after the switch it would ask a pool that has not been
-  // started, get false, and drop residency on every engine change.
-  const js = fs.readFileSync(path.join(DIST, 'tts-api-server.js'), 'utf-8');
-  const body = js.match(/async handleRestart\(ws, msg\) \{[\s\S]*?\n    \}\n/);
-  assert.ok(body, 'handleRestart is not in the compiled server — did it move?');
-  const was = body[0].indexOf('isServiceMode');
-  const switchAt = body[0].indexOf('setStreamConfig');
-  assert.ok(was !== -1 && switchAt !== -1, 'handleRestart no longer does both things');
-  assert.ok(was < switchAt,
-    'residency is now read from the engine being switched INTO, which has not been '
-    + 'started — every engine change would silently stop the server being resident');
-});
+/*
+ * TWO CHECKS STOOD HERE AND THEIR SUBJECT IS DELETED (Phase 16 step 8,
+ * 2026-09-15). Both pinned an ORDER inside `tts-api-server.js`:
+ * `handleConfigSet` and `handleRestart` had to apply the client's worker count
+ * AFTER the engine switch (before it, the count landed on the pool the user was
+ * leaving and the switch discarded it), and `handleRestart` had to read
+ * residency BEFORE the switch (after it, it asked a pool that had not started,
+ * got false, and silently dropped residency on every engine change).
+ *
+ * `config.set` and `engine.restart` are gone: they were the 8766 relay's verbs,
+ * an external client's way to drive BookForge's engine, and the only external
+ * client on that socket is now a Crucible client that drives a Crucible. The
+ * worker count went with them (XTTS-only; XTTS is removed), and so did the
+ * server class those two private methods lived on. There is no order left to
+ * get wrong, so these are deleted rather than repointed at something that only
+ * looks similar.
+ */
 
 // The async rows settle here, before anything decides the exit code. `process.exit`
 // below would otherwise run with them still in flight and report a clean suite.

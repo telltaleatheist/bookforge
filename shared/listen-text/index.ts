@@ -4,7 +4,7 @@
  * Three programs read this directory and each of them turns a page or a
  * paragraph into rows a TTS engine is handed:
  *
- *   - the main process (`electron/tts-api-server.ts`, `reader-stream-bridge.ts`,
+ *   - the main process (`electron/reader-stream-bridge.ts`,
  *     `book-render-service.ts`), compiled by `tsconfig.electron.json`;
  *   - the Angular renderer (`src/app/core/listen/`), compiled by
  *     `tsconfig.app.json`;

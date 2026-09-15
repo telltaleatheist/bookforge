@@ -148,7 +148,7 @@ export type OrpheusArtifact = 'merged' | 'adapter';
  *             from the shared base and everything from skipping vLLM's LoRA path, which
  *             adds two rank-64 GEMMs per targeted projection per token (196 on this 3B).
  *   'stream'  the resident streaming server (orpheus-worker-pool) and every client of it
- *             — the /listen player, the TTS API server, the browser extension. CONFIGURABLE
+ *             — the /listen player and the Bookshelf reader bridge. CONFIGURABLE
  *             via `orpheusStreamingArtifact` in tool-paths.json, default MERGED.
  *
  *             This one is a judgement call rather than an obvious win, which is why it is

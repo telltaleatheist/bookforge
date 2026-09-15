@@ -475,12 +475,31 @@ export class SettingsService {
         icon: '🌐',
         fields: [], // Bookshelf Server section has custom UI
       },
+      /*
+       * WAS "TTS Server" (id `tts-api`), AND THE TTS IS GONE FROM IT (Phase 16
+       * step 8, Owen 2026-09-15: *"there shouldnt be tts server logic in
+       * bookforge anymore at all, including the settings"*). The section used to
+       * carry the streaming voice, the voice-engine chooser and the 8766 relay's
+       * address, because one WebSocket served an external client its speech. The
+       * browser extension is a Crucible client now — it picks its own server and
+       * its own voice from that server's `GET /v1/voices` — so the voice and the
+       * engine left with the relay.
+       *
+       * What is left is the TAB RECORDER's address, and it is not TTS: a browser
+       * can capture a tab but has no filesystem and no ffmpeg, so recording hands
+       * raw PCM to a machine that has both. Owen split the plan's step 6 on
+       * 2026-09-14 so that endpoint outlives the speak relay, and its host/port/
+       * token are still the app's to decide — the extension types them into its
+       * own Options, and a browser on ANOTHER machine needs LAN binding and the
+       * token to reach this one. Deleting the section outright would have left a
+       * security-relevant toggle reachable only by hand-editing JSON.
+       */
       {
-        id: 'tts-api',
-        name: 'TTS Server',
-        description: 'The streaming voice, and the external client API (browser extension)',
-        icon: '🔊',
-        fields: [], // TTS Server section has custom UI
+        id: 'tab-recorder',
+        name: 'Tab Recorder',
+        description: 'Where the browser extension sends captured tab audio to be written',
+        icon: '⏺️',
+        fields: [], // Tab Recorder section has custom UI
       },
       {
         id: 'add-ons',

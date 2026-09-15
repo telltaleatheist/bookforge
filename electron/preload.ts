@@ -1814,6 +1814,28 @@ export interface ElectronAPI {
     /** Move every queued book that says `from` (null = says nothing) onto `to`. */
     bulkWaitFor: (from: string | null, to: string) =>
       Promise<{ success: boolean; data?: { moved: number }; error?: string }>;
+    /**
+     * TURN THE QUEUE'S GPU DIAL — `any`, or one registered server's name
+     * (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`).
+     *
+     * The dial DEFERS: a book that names a machine is never sent elsewhere by
+     * it, and a book that says `any` takes the dial's machine. A RUNNING job
+     * ignores it entirely — turning it governs the admission of new runs only,
+     * so this can never take work off a card.
+     *
+     * Its current value rides on the snapshot (`QueueSnapshot.gpuDial`); this is
+     * only the write. A server this machine does not have is refused BY NAME.
+     */
+    setGpuDial: (value: string) =>
+      Promise<{ success: boolean; data?: { dial: string }; error?: string }>;
+    /**
+     * SEND A STAGED BOOK INTO THE LIVE QUEUE.
+     *
+     * Adding a book puts it in Pending, where its server is chosen while nothing
+     * about it is committed; this is the press that commits it. Refused by name
+     * for a run that is already in the queue.
+     */
+    sendToQueue: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => () => void;
     onStepFinished: (callback: (event: QueueStepFinished) => void) => () => void;
     /**
@@ -1990,7 +2012,11 @@ export interface ElectronAPI {
     /** Fired when the streaming voice/engine selection changes from any source. */
     onConfig: (callback: () => void) => () => void;
   };
-  ttsApi: {
+  /** The tab recorder's endpoint (docs/TAB_RECORDER.md). This socket carried
+   *  speech until Phase 16 step 8; it does not any more — the extension talks to
+   *  a Crucible directly. What is left is the recorder's address, which is still
+   *  the app's to decide because the recorder's file lands on the app's disk. */
+  tabRecord: {
     status: () => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
     configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
   };
@@ -3150,6 +3176,8 @@ const electronAPI: ElectronAPI = {
     waitForCounts: () => ipcRenderer.invoke('jobs:wait-for-counts'),
     bulkWaitFor: (from: string | null, to: string) =>
       ipcRenderer.invoke('jobs:bulk-wait-for', from, to),
+    setGpuDial: (value: string) => ipcRenderer.invoke('jobs:set-gpu-dial', value),
+    sendToQueue: (jobId: string) => ipcRenderer.invoke('jobs:send-to-queue', jobId),
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: QueueSnapshot) => callback(snapshot);
       ipcRenderer.on('jobs:changed', listener);
@@ -3343,11 +3371,11 @@ const electronAPI: ElectronAPI = {
       };
     },
   },
-  ttsApi: {
+  tabRecord: {
     status: () =>
-      ipcRenderer.invoke('tts-api:status'),
+      ipcRenderer.invoke('tab-record:status'),
     configure: (updates: { port?: number; host?: string }) =>
-      ipcRenderer.invoke('tts-api:configure', updates),
+      ipcRenderer.invoke('tab-record:configure', updates),
   },
   ttsStream: {
     getWorkerConfig: () =>

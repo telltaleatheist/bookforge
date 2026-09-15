@@ -633,7 +633,8 @@ export class AddOnsPanelComponent implements OnInit {
   readonly selectionMode = input(false);
 
   /** When true, show ONLY the GPU/CUDA acceleration packs (for embedding in the
-   *  TTS Server settings, where the device choice lives). */
+   *  TTS Server settings, where the device choice used to live — both that
+   *  section and the device choice are deleted). */
   readonly onlyGpu = input(false);
 
   /** When set, show EXACTLY these component ids (in catalog order) — used by the

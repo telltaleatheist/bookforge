@@ -3031,19 +3031,21 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // TTS API Server (WebSocket access for external clients, e.g. browser extension)
+  // Tab-record server — the endpoint the browser extension hands captured tab
+  // PCM to (docs/TAB_RECORDER.md). It relayed SPEECH until Phase 16 step 8; the
+  // extension is a Crucible client now and BookForge is out of that path.
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async ttsApiStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
+  async tabRecordStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.ttsApi.status();
+      return (window as any).electron.tabRecord.status();
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsApiConfigure(updates: { port?: number; host?: string }): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
+  async tabRecordConfigure(updates: { port?: number; host?: string }): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.ttsApi.configure(updates);
+      return (window as any).electron.tabRecord.configure(updates);
     }
     return { success: false, error: 'Not running in Electron' };
   }

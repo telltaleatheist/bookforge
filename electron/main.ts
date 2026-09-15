@@ -841,22 +841,21 @@ function emitImportProgress(name: string, fraction: number, projectId?: string):
   }
 }
 
-// Nudge the TTS API server to recompute its installed-voice list and push it to
-// connected external clients (e.g. after a voice download/uninstall). No-op if
-// the server hasn't started yet — start() builds the list itself.
-async function refreshTtsApiVoices(): Promise<void> {
-  try {
-    const { ttsApiServer } = await import('./tts-api-server.js');
-    await ttsApiServer.refreshInstalledVoices();
-  } catch (err) {
-    console.error('[Startup] Failed to refresh TTS API voices:', err);
-  }
-}
+/*
+ * `refreshTtsApiVoices` IS GONE (Phase 16 step 8, 2026-09-15).
+ *
+ * It pushed a fresh installed-voice list down the 8766 socket after a voice
+ * download, install or uninstall, so an external client's picker updated
+ * without a reconnect. There is no external client on that socket any more:
+ * the browser extension reads its voice list from the selected Crucible's own
+ * `GET /v1/voices`, which is always current because it is the server that has
+ * the weights. Nothing replaced this because nothing needs to.
+ */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // First-run "update": download + install the mandatory runtime components
 // (Python env, default voice, English language pack) in the background, then
-// start the TTS API server. Gated behind the library-location step so the user
+// start the tab-record server. Gated behind the library-location step so the user
 // can quit before any large download begins; triggered from startup (when a
 // library is already set) and from the library:set-root handler (first run).
 // Idempotent — the ensure* calls are no-ops once their assets are installed.
@@ -864,7 +863,7 @@ async function refreshTtsApiVoices(): Promise<void> {
 
 let runtimeSetupInFlight: Promise<void> | null = null;
 let runtimeSetupDone = false;
-let ttsApiStarted = false;
+let tabRecordStarted = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Startup upgrade check — installed components that are behind the catalog, and
@@ -915,16 +914,16 @@ async function runStartupUpgradeCheck(): Promise<void> {
 
 let lastUpgradeReport: import('./components/startup-upgrade-check').StartupUpgradeReport | null = null;
 
-async function startTtsApiServerOnce(): Promise<void> {
-  if (ttsApiStarted) return;
-  ttsApiStarted = true;
+async function startTabRecordServerOnce(): Promise<void> {
+  if (tabRecordStarted) return;
+  tabRecordStarted = true;
   try {
-    const { ttsApiServer } = await import('./tts-api-server.js');
-    const status = await ttsApiServer.start(app.getPath('userData'));
-    console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
+    const { tabRecordServer } = await import('./tab-record-server.js');
+    const status = await tabRecordServer.start(app.getPath('userData'));
+    console.log(`[Startup] Tab-record server on port ${status.port} (host ${status.host})`);
   } catch (err) {
-    ttsApiStarted = false; // allow a later retry
-    console.error('[Startup] TTS API server failed to start:', err);
+    tabRecordStarted = false; // allow a later retry
+    console.error('[Startup] Tab-record server failed to start:', err);
   }
 }
 
@@ -970,7 +969,7 @@ async function doRuntimeSetup(): Promise<boolean> {
   }
 
   setRuntimeStatus({ state: 'ready', message: 'Ready' });
-  await startTtsApiServerOnce();
+  await startTabRecordServerOnce();
 
   return true;
 }
@@ -7523,10 +7522,6 @@ function setupIpcHandlers(): void {
       const result = await installOrpheusBase(status.base);
       // A newly installed base makes previously-unusable adapter voices resolvable —
       // refresh the live voice list for the same reason a voice install does.
-      if (result?.success) {
-        const { ttsApiServer } = await import('./tts-api-server.js');
-        await ttsApiServer.refreshInstalledVoices();
-      }
       return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7544,13 +7539,8 @@ function setupIpcHandlers(): void {
       const result = await installOrpheusModel(repoId, (p) => {
         if (!event.sender.isDestroyed()) event.sender.send('orpheus:install-progress', p);
       });
-      // A newly installed custom voice must surface in the live voice list (Listen
-      // UI + extension clients) without an app restart — otherwise it only appears
-      // on next launch / engine switch. See getAvailableVoices() (orpheus).
+      // A RESIDENT streaming engine must forget what it knows about this
       if (result?.success) {
-        const { ttsApiServer } = await import('./tts-api-server.js');
-        await ttsApiServer.refreshInstalledVoices();
-        // …and a RESIDENT streaming engine must forget what it knows about this
         // voice. The install just replaced the files under a path the engine has
         // already registered, so without this a retrained voice keeps rendering from
         // the previous training run — the engine's own cached copy — until the
@@ -7575,13 +7565,10 @@ function setupIpcHandlers(): void {
       await isWslAlive();
       const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
       const result = removeOrpheusModel(id);
-      // Drop the removed voice from the live list too (same reasoning as install),
-      // and from a resident streaming engine's registration set — its files are gone,
-      // so any future request naming it must fail loudly at the load rather than be
-      // accepted on the strength of stale bookkeeping.
+      // Drop the removed voice from a resident streaming engine's registration
+      // set — its files are gone, so any future request naming it must fail
+      // loudly at the load rather than be accepted on stale bookkeeping.
       if (result?.success) {
-        const { ttsApiServer } = await import('./tts-api-server.js');
-        await ttsApiServer.refreshInstalledVoices();
         const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
         orpheusWorkerPool.forgetVoice(id);
       }
@@ -8853,18 +8840,19 @@ function setupIpcHandlers(): void {
   // ── TTS service: the engine pinned as a resident service ──
   // Unlike the implicit play-button start, service mode survives listen-window
   // close. It does NOT hold the weights forever: on idle timeout the ENGINE
-  // PARKS — the worker is killed and its memory freed, serviceMode stays true
-  // and the API server keeps listening — so an external client (e.g. a browser
-  // extension) still has a live endpoint while the machine gets its RAM back,
-  // and the next speak pays the cold start. State changes broadcast on
+  // PARKS — the worker is killed and its memory freed and serviceMode stays
+  // true, so the next play pays the cold start. State changes broadcast on
   // 'tts-service:state' to all windows; the main process is the single source
   // of truth.
+  //
+  // WHO ASKS FOR THIS, NOW THAT NOTHING EXTERNAL DOES (Phase 16 step 8): the
+  // app's own listening surfaces — the Streaming tab and the audiobook Play
+  // view. The nav-rail "TTS Server" button that pinned it for a browser
+  // extension is deleted; the extension holds a Crucible's card itself.
 
   // Live-sync the streaming voice/engine selection to the renderer: when it
-  // changes from ANY source (the in-app picker, or an extension client via the
-  // TTS API server), broadcast 'tts-service:config' so the Settings voice picker
-  // refreshes. The browser extension is synced separately by the API server's
-  // own `config` rebroadcast (both hang off the same streaming-engine event).
+  // changes from ANY source, broadcast 'tts-service:config' so every picker
+  // refreshes.
   void import('./streaming-engine.js').then(({ onStreamConfigChanged, onActiveEngineState }) => {
     const pushConfig = () => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -8874,8 +8862,8 @@ function setupIpcHandlers(): void {
     onStreamConfigChanged(pushConfig);
     // Engine state carries the loaded voice with it: stopping the engine (or a
     // worker crash) drops the model, so the picker's effective voice falls back to
-    // the persisted default. Same reason the TTS API server pushes a config here —
-    // both pickers show the same value, so both have to be told at the same moment.
+    // the persisted default. Every picker shows the same value, so all of them
+    // have to be told at the same moment.
     onActiveEngineState(pushConfig);
   });
 
@@ -8928,22 +8916,28 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ── TTS API server: WebSocket access for external clients (browser extension) ──
+  // ── Tab-record server: the endpoint the extension hands captured PCM to ──
+  //
+  // This socket used to carry speech as well; it does not (Phase 16 step 8).
+  // What is left is the recorder's, and the two verbs below exist because the
+  // recorder's ADDRESS is still the app's to decide: the extension types a host
+  // and a port into its Options, and a browser on another machine needs LAN
+  // binding and the token to reach this one.
 
-  ipcMain.handle('tts-api:status', async () => {
+  ipcMain.handle('tab-record:status', async () => {
     try {
-      const { ttsApiServer } = await import('./tts-api-server.js');
-      return { success: true, data: ttsApiServer.getStatus() };
+      const { tabRecordServer } = await import('./tab-record-server.js');
+      return { success: true, data: tabRecordServer.getStatus() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('tts-api:configure', async (_event, updates: { port?: number; host?: string }) => {
+  ipcMain.handle('tab-record:configure', async (_event, updates: { port?: number; host?: string }) => {
     try {
-      const { ttsApiServer } = await import('./tts-api-server.js');
-      ttsApiServer.saveConfig(updates);
-      const status = await ttsApiServer.start(app.getPath('userData'));
+      const { tabRecordServer } = await import('./tab-record-server.js');
+      tabRecordServer.saveConfig(updates);
+      const status = await tabRecordServer.start(app.getPath('userData'));
       return { success: true, data: status };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -8956,7 +8950,7 @@ function setupIpcHandlers(): void {
     try {
       const { getStreamConfigPayload } = await import('./streaming-engine.js');
       // Includes worker topology PLUS engine selection (`engine`) + availability
-      // (`engines`) so the TTS Server settings UI can render the engine chooser.
+      // (`engines`) so the Streaming tab can render the engine chooser.
       return { success: true, data: getStreamConfigPayload() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -9022,9 +9016,6 @@ function setupIpcHandlers(): void {
     const result = await componentManager.install(id, (p) => {
       event.sender.send('components:progress', p);
     });
-    // A newly-downloaded voice should appear in external clients (extension)
-    // without a reconnect.
-    void refreshTtsApiVoices();
     return result;
   });
 
@@ -9051,7 +9042,6 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('components:uninstall', async (_event, id: string) => {
     const result = await componentManager.uninstall(id);
-    void refreshTtsApiVoices();
     return result;
   });
 
@@ -12968,8 +12958,8 @@ app.whenReady().then(async () => {
   // only — dev ships no tarball/snapshot and the ensure* calls return at once).
   // Runs in the background so the window isn't blocked; readiness is broadcast
   // so the renderer can show a "Setting up…" overlay and gate job submission
-  // until the runtime is actually usable. The TTS API server start is folded in
-  // here so external clients (browser extension) never hit a half-ready runtime.
+  // until the runtime is actually usable. The tab-record server start is folded
+  // in here so a recording never hits a half-ready runtime.
   void (async () => {
     const { bundledRuntimeReady } = await import('./tools-env-bootstrap.js');
 
@@ -12983,7 +12973,7 @@ app.whenReady().then(async () => {
 
     if (runtimeReady) {
       // Already fully installed (returning launch) → ready immediately; still bring
-      // up the TTS API server (startRuntimeSetup's ensure* calls are no-ops here).
+      // up the tab-record server (startRuntimeSetup's ensure* calls are no-ops here).
       setRuntimeStatus({ state: 'ready', message: 'Ready' });
       void startRuntimeSetup();
       return;
@@ -13391,9 +13381,9 @@ app.whenReady().then(async () => {
     else queueEngine.pause();
   });
 
-  // NOTE: the TTS API server is started by startRuntimeSetup() (the first-run
-  // "update"), gated behind the library-location step so external clients never
-  // hit a half-ready runtime.
+  // NOTE: the tab-record server is started by startRuntimeSetup() (the first-run
+  // "update"), gated behind the library-location step so a recording never hits
+  // a half-ready runtime.
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Window management: Cmd+W hides, Cmd+Q double-press to quit
@@ -13855,15 +13845,16 @@ app.on('before-quit', async (event) => {
     }
   });
 
-  // Stop TTS API server if running — same keep-alive hazard as the bookshelf.
-  await quitStepWithDeadline('stop TTS API server', 10_000, async () => {
+  // Stop the tab-record server if running — same keep-alive hazard as the
+  // bookshelf, and a live capture is finalized rather than lost.
+  await quitStepWithDeadline('stop tab-record server', 10_000, async () => {
     try {
-      const { ttsApiServer } = await import('./tts-api-server.js');
-      if (ttsApiServer.isRunning()) {
-        await ttsApiServer.stop();
+      const { tabRecordServer } = await import('./tab-record-server.js');
+      if (tabRecordServer.isRunning()) {
+        await tabRecordServer.stop();
       }
     } catch (err) {
-      console.error('[MAIN] Failed to stop TTS API server:', err);
+      console.error('[MAIN] Failed to stop the tab-record server:', err);
     }
   });
 

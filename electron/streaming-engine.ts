@@ -1,12 +1,12 @@
 /**
  * Streaming Engine selector — chooses which TTS engine backs the Listen feature
- * (the in-app Play tab, the TTS API server, and the browser extension).
+ * (the in-app Play and Streaming tabs, and the Bookshelf reader bridge).
  *
  * ONE ENGINE, and one place it can run. Higgs is the engine; a Crucible server
  * is where it runs. The local narrator worker pool that used to back this
  * interface is DELETED (docs/LEGACY-REMOVAL.md), so `getActiveEngine()` is a
  * Crucible streaming session and nothing else — and this module's remaining job
- * is the SELECTION: the thing the TTS Server settings payload, the browser
+ * is the SELECTION: the thing the Streaming tab's payload, the browser
  * extension's `config` message and the persisted `tts-engine.json` are written
  * against, and what makes a voice change OBSERVABLE (see `observable()` below).
  *
@@ -209,7 +209,7 @@ function isEngineName(v: unknown): v is StreamEngineName {
 
 // Fired whenever the stream selection changes (engine or default voice), from
 // ANY source — the in-app Settings picker or an extension client's config.set.
-// Consumers fan it out to their transport: the TTS API server rebroadcasts a
+// Consumers fan it out to their transport: the reader bridge rebroadcasts a
 // `config` message to WS clients (extension), and main forwards it to the
 // renderer so the Angular voice picker refreshes. This is what keeps the two
 // pickers live-synced.
@@ -336,7 +336,7 @@ setPersistedVoiceProbe(() => readPersisted().voices?.[getSelectedEngineName()] ?
  * the loaded model without telling anyone — so the app's picker and the browser
  * extension's picker could each be showing a narrator that isn't in memory. The
  * wrapper fires the config event whenever a load actually changes the live voice,
- * and both transports rebroadcast it (main → renderer, TTS API server → clients).
+ * and both transports rebroadcast it (main → renderer, reader bridge → phone).
  *
  * Spread-copied rather than subclassed: the pools are plain function-object
  * literals whose functions close over module state and never use `this`.
@@ -569,13 +569,13 @@ export function getAvailableEngines(): EngineInfo[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config facade (for the TTS Server settings UI / IPC)
+// Config facade (for the Streaming tab / IPC)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface StreamConfigPayload extends StreamWorkerConfig {
   engine: StreamEngineName;
   engines: EngineInfo[];
-  // Voice selection for the active engine (TTS Server settings picker).
+  // Voice selection for the active engine (the Streaming tab's picker).
   voices: string[];            // voices the active engine can use
   voice: string;               // the persisted default (what start will warm)
   currentVoice: string | null; // the live-loaded voice, when a session is running
@@ -605,7 +605,7 @@ export function getStreamConfigPayload(): StreamConfigPayload {
 }
 
 /**
- * Apply a settings update from the TTS Server UI. `engine` switches the active
+ * Apply a settings update from the Streaming tab. `engine` switches the active
  * engine; worker-count/device updates are delegated to the active engine (a no-op
  * on Orpheus, which is single-worker on a fixed device). Returns the refreshed
  * payload.
@@ -654,7 +654,7 @@ export async function setStreamConfig(updates: {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine-state bridge — forward the pool's state changes as the ACTIVE engine's
-// state, so a single subscription (the TTS API server) always reflects reality.
+// state, so a single subscription always reflects reality.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function onActiveEngineState(
