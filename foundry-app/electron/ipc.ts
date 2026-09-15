@@ -33,7 +33,6 @@ import {
 } from './app-settings';
 import { probeCloud, writeCloudProviders } from './cloud-providers';
 import { openCrucibleUi } from './crucible-ui';
-import { heldSet, openingModelFor } from './llm-catalog';
 import {
   coordinateEveryServer,
   coordinateServer,
@@ -131,11 +130,9 @@ import {
   invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
-import type { ModelClass } from '../shared/types';
 import * as queue from './job-queue';
 import { applyPageReaderRemoval, machineModels, removeFoundryDownloads } from './machine-models';
-import { cancelOllamaInstall, cancelPull, installOllama, probeOllama, pullModel } from './ollama';
-import { finishSetup, llmChoices, setupState } from './setup';
+import { finishSetup, setupState } from './setup';
 import { probeSystem } from './system-probe';
 import {
   createCaptureProject,
@@ -563,14 +560,16 @@ function sizeOnDisk(bytes: number): string {
 /**
  * SOMETHING THAT DECIDES A TILE MOVED. Say so; say nothing about what.
  *
- * The dock's gates are composed in main off five facts (act-gates.ts), and three
- * of the five are changed by doors in this file: ollama's library, the page
- * reader's directory, and the settings file. A fourth is the server registry,
- * whose capability reads light a tile outright — `afterRegistryChanged` below is
- * that door. (The fifth is the hardware, which does not change while the app is
- * open.) Without this push a person would pull the 9B the wizard recommended and
- * watch Translate stay gray until they restarted the app — which is the exact
- * failure Owen's rule was written to prevent, arriving from the other direction.
+ * The dock's gates are composed in main off three facts (act-gates.ts), and every
+ * one of them is changed by a door in this file: the SERVER REGISTRY, whose
+ * capability reads are the only thing that lights a text tile (`afterRegistryChanged`
+ * below is that door), the page reader's directory, and the settings file. The
+ * hardware probe and Ollama's library were two more until 2026-09-15, and both
+ * described a machine that does not run the work.
+ *
+ * Without this push a person would connect an engine and watch Translate stay gray
+ * until they restarted the app — which is the exact failure Owen's rule was written
+ * to prevent, arriving from the other direction.
  *
  * NO PAYLOAD, on `projects:changed`'s reasoning. The gates are one composed
  * answer and composing them costs a probe, so this says only that the machine
@@ -3403,11 +3402,12 @@ export function registerIpc(): void {
   ipcMain.handle('page-reader:state', () =>
     pageReader.pageReaderState(readAppSettings().keepServerWarmMinutes));
   /*
-   * The install does NOT go through the job queue, on `ollama:pull`'s reasoning
-   * one door along: the queue exists to keep GPU work from running two at a
-   * time and to give a run a cancellable row, and a download is neither. It is
-   * cancellable through its own door, and what it has already fetched survives
-   * the cancel — see `fetchResumable`.
+   * The install does NOT go through the job queue, and the reason outlived the
+   * door that used to state it (`ollama:pull`, deleted with Foundry's own model
+   * store): the queue exists to keep GPU work from running two at a time and to
+   * give a run a cancellable row, and a download is neither. It is cancellable
+   * through its own door, and what it has already fetched survives the cancel —
+   * see `fetchResumable`.
    */
   ipcMain.handle('page-reader:install', async () => {
     const outcome = await pageReader.installPageReader(
@@ -3458,141 +3458,31 @@ export function registerIpc(): void {
 
   ipcMain.handle('system:probe', (_event, force?: boolean) => probeSystem(force === true));
 
-  ipcMain.handle('ollama:facts', () => probeOllama(readAppSettings().ollamaUrl));
-  ipcMain.handle('ollama:choices', () => llmChoices());
   /*
-   * Two long-running doors, and NEITHER goes through the job queue — unlike an
-   * env install, which does.
+   * ── TWELVE DOORS STOOD HERE: `ollama:*` AND `llm:*` ─────────────────────────
    *
-   * The queue exists to keep expensive GPU work from running two at a time and
-   * to give a run a row somebody can cancel from the shelf. An ollama pull is
-   * neither: ollama is doing the work in its own process, it will keep doing it
-   * whether or not this app is looking, and a row on the shelf saying "pulling"
-   * would be a row that cannot be cancelled in any meaningful sense and cannot
-   * be resumed by us either. Progress is broadcast instead, and the wizard
-   * draws it; if the window closes, ollama finishes anyway, which is exactly
-   * the behaviour a person expects from a download they started in a tool that
-   * is not this one.
-   */
-  ipcMain.handle('ollama:install', () =>
-    installOllama((progress) => broadcast('ollama:progress', progress)));
-  ipcMain.handle('ollama:install-cancel', () => { cancelOllamaInstall(); });
-  ipcMain.handle('ollama:pull', async (_event, tag: string) => {
-    const outcome = await pullModel(
-      tag,
-      readAppSettings().ollamaUrl,
-      (progress) => broadcast('ollama:progress', progress),
-    );
-    // A pull is the commonest way a dark tile becomes a lit one — it is what the
-    // gate's own refusal tells somebody to go and do — so the dock is told the
-    // moment it lands rather than at the next app start.
-    gatesChanged();
-    return outcome;
-  });
-  ipcMain.handle('ollama:pull-cancel', () => { cancelPull(); });
-
-  /*
-   * The models a language job starts from, and where ollama is. Read by the
-   * dialogs when they open, written by setup and by the settings screen.
+   * Owen, 2026-09-15: *"we dont have any local models. crucible handles all
+   * model orchestration. if theres no connected crucible server then tiles
+   * should be disabled."* So there is no model for this app to name, no lineup
+   * for it to offer, and nothing for it to pull:
    *
-   * TWO MODELS, BECAUSE THERE ARE TWO JOBS. `model` is `defaultLlmModel`, what
-   * Translate, Simplify and Analyse open with; `cleanModel` is
-   * `cleanTextModel`, what the narration cleanup opens with, and Clean text
-   * reads THAT one — a pass with its own declared default and its own economy
-   * has no business being dragged along by the translate seed.
+   *   `ollama:facts`, `ollama:choices`, `ollama:install`, `ollama:install-cancel`,
+   *   `ollama:pull`, `ollama:pull-cancel`, the `ollama:progress` push, `llm:stored`,
+   *   `llm:defaults`, `llm:set-model`, `llm:set-clean-model`, `llm:ollama-url` and
+   *   `llm:set-ollama-url`.
    *
-   * ANSWERED WITH WHAT WAS STORED, never with what was sent: `clampModelTag`
-   * refuses a name with whitespace in it and falls back, and a renderer that
-   * kept its own optimistic copy would show a model the next job will not use.
-   */
-  /*
-   * WHAT IS STORED, for the card that EDITS it — a different question from
-   * what a dialog should open with, and the two must not share a door. The
-   * Settings card shows these tags in fields somebody types over and saves; if
-   * it read the resolved answer, opening Settings on a machine whose stored tag
-   * had gone stale would silently rewrite that person's choice the moment they
-   * pressed Save. So the editor reads the file and the dialogs read the
-   * machine.
-   */
-  ipcMain.handle('llm:stored', () => {
-    const settings = readAppSettings();
-    return {
-      model: settings.defaultLlmModel,
-      cleanModel: settings.cleanTextModel,
-      ollama: settings.ollamaUrl,
-    };
-  });
-  ipcMain.handle('llm:defaults', async (_event, cls: ModelClass) => {
-    const settings = readAppSettings();
-    /*
-     * ── ONE ANSWER NOW, BECAUSE THERE IS NO LONGER A CHOICE TO RESOLVE ───────
-     *
-     * This used to branch on `llmServer`: under vLLM it answered with
-     * `vllmModel` and `vllmUrl` instead of the ollama pair, because a vLLM
-     * serves one model under an id of its own shape and is not on ollama's port.
-     * Both of those settings are retired (docs/SLOTS.md, Wave 61,
-     * `AppSettings.crucibleServers`) and the branch went with them.
-     *
-     * WHAT THESE THREE FIELDS MEAN NOW is narrower and truer: they are the LOCAL
-     * slot's answers. The tag Translate/Simplify/Analyse open with, the tag Clean
-     * text opens with, and the Ollama on this machine. A job placed on a Crucible
-     * uses none of them — the server's own capability record names the model and
-     * the registry names the address — and that is decided at the spawn, where
-     * the server can actually be asked (electron/crucible-dispatch.ts).
-     */
-    /*
-     * ── THE MODEL IS RESOLVED NOW, NOT WHEN SETUP RAN ─────────────────────────
-     *
-     * These two tags are SEEDS, and until 2026-09-14 they were handed back
-     * exactly as stored — so a dialog opened with whatever the wizard wrote
-     * months ago, even after the machine gained a model that the stored one
-     * cannot stand in for. A tile lit by a 27B would then run a 9B.
-     * `openingModelFor` answers per CLASS, because the classes have different
-     * floors: translate and simplify need a 27B, analysis has none, and the
-     * cleanup has its own model and its own setting. The stored tag still wins
-     * whenever it can serve the class — a deliberate choice is not overridden,
-     * only a stale one.
-     *
-     * A PROBE PER DIALOG OPEN is what that costs: the machine's memory and
-     * ollama's list. `actGates` already pays it on every menu draw, so the
-     * price is known and the alternative is a field that lies.
-     */
-    const [profile, ollama] = await Promise.all([probeSystem(), probeOllama(settings.ollamaUrl)]);
-    const held = heldSet(ollama.models);
-    const wanted: ModelClass = cls === 'clean' ? 'clean' : cls;
-    return {
-      model: openingModelFor(wanted, settings.defaultLlmModel, profile, held),
-      cleanModel: openingModelFor('clean', settings.cleanTextModel, profile, held),
-      ollama: settings.ollamaUrl,
-    };
-  });
-  ipcMain.handle('llm:set-model', (_event, model: string) =>
-    writeAppSettings({ defaultLlmModel: model }).defaultLlmModel);
-  ipcMain.handle('llm:set-clean-model', (_event, model: string) =>
-    writeAppSettings({ cleanTextModel: model }).cleanTextModel);
-  /*
-   * NEITHER OF THOSE TWO PUSHES `acts:gates-changed`, and the omission is the
-   * rule rather than an oversight: the gate asks what this machine HOLDS and
-   * what FITS, not which tag a dialog opens with. Naming a model nobody has
-   * pulled does not light a tile and does not dark one. `llm:set-servers`
-   * below DOES push, because repointing the machine at a vLLM moves the act
-   * off this machine's own memory entirely.
-   */
-
-  /*
-   * WHERE OLLAMA IS — the one server setting this app still keeps, and the
-   * settings card's own read.
+   * The MODEL a request names is the engine's capability record's `selected`
+   * (crucible docs/PHASE15-HOST.md §3.3), applied at the spawn by the placement
+   * (`doorArgs`, electron/job-queue.ts). A person choosing one in Foundry was
+   * choosing something that was then ignored, which is the defect rather than
+   * the feature. Where the text work runs IS still configurable from this app —
+   * `crucible:engine-settings*` writes the ENGINE's own settings through
+   * `PUT /v1/settings`, route and upstream per class, and that pass-through is
+   * untouched. What went is Foundry keeping a model of its own.
    *
-   * It was `llm:servers`, a pair of doors answering "what has this machine been
-   * told" over four fields, because two servers' URLs existed at once and
-   * neither was in effect. There is one now: the local slot is Ollama. Every
-   * other server is a registry entry with a token behind it and is read through
-   * `crucible:settings`, which has a card of its own.
+   * Ollama is still PROBED, by exactly one caller that is not a door:
+   * `machine-models.ts`, which counts what is on this disk (docs/SLOTS.md §5b).
    */
-  ipcMain.handle('llm:ollama-url', () => readAppSettings().ollamaUrl);
-  /** Answered with what was STORED, never with what was sent — `llm:set-model`'s rule. */
-  ipcMain.handle('llm:set-ollama-url', (_event, url: string) =>
-    writeAppSettings({ ollamaUrl: url }).ollamaUrl);
 
   /*
    * ── THE SERVER REGISTRY AND THE SLOTS DERIVED FROM IT ─────────────────────
@@ -4060,15 +3950,14 @@ export function registerIpc(): void {
   /*
    * THE TILE GATE, AND IT IS ONE DOOR FOR ALL FIVE ACTS.
    *
-   * Owen (docs/SLOTS.md §1): *"the tiles arent lit up until the models are
-   * present"*, and translation on a processor *"should just be disabled"*. Every
-   * fact that decides it lives here — the hardware probe, ollama's `/api/tags`,
-   * the settings file, the page reader's directory, and eventually package C's
-   * server registry — so the answer is composed in main and the renderer draws
-   * it. Five acts in one call because they come off ONE probe of one machine,
-   * and a dock asking separately could light Translate beside a Simplify that
-   * had just gone dark. The stage gate (shared/stages.ts) is unchanged and still
-   * the renderer's: that one is about the book, this one is about the machine.
+   * Owen, 2026-09-15: *"if theres no connected crucible server then tiles should
+   * be disabled."* Every fact that decides it lives here — the server registry's
+   * capability reads, the cloud providers, the settings file and the page
+   * reader's directory — so the answer is composed in main and the renderer draws
+   * it. Five acts in one call because they come off ONE snapshot, and a dock
+   * asking separately could light Translate beside a Simplify that had just gone
+   * dark. The stage gate (shared/stages.ts) is unchanged and still the
+   * renderer's: that one is about the book, this one is about the venue.
    */
   ipcMain.handle('acts:gates', () => actGates());
 

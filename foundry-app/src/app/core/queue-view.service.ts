@@ -84,12 +84,24 @@ export class QueueViewService {
    *
    * ONCE, AND NOT ON A TIMER. It is a settings fact — it changes when somebody
    * edits the Servers card, which is a different screen — and a queue that
-   * re-read it on a clock would repaint the board for nothing. The list arriving
-   * late is why the EMPTY list has to mean something honest rather than nothing:
-   * `computeLanes` answers an empty list with the local lane, so the bench before
-   * the read lands is the bench a person with no Crucible sees forever.
+   * re-read it on a clock would repaint the board for nothing.
+   *
+   * THE LIST ARRIVING LATE IS WHY {@link slotsRead} EXISTS. An empty list used to
+   * mean one lane — the local one — so the bench before the read landed was the
+   * bench a person with no Crucible saw forever, and drawing it early cost
+   * nothing. Since Wave 66 an empty list means NO GPU lane (Owen: *"there should
+   * be no local gpu listed in the queue"*), and the sentence that goes with it
+   * tells somebody to add an engine. Saying that for a frame to a person who has
+   * three would be the board being confidently wrong about itself.
    */
   readonly computeSlots = signal<ComputeSlot[]>([]);
+
+  /**
+   * HAS `slots:list` ANSWERED YET — the difference between "no engines" and "not
+   * asked yet", which is only interesting because the two want different
+   * sentences. See {@link computeSlots}.
+   */
+  private readonly slotsRead = signal(false);
 
   /**
    * WHY THERE IS NO PICKER, when the answer is not "nobody added a server".
@@ -100,6 +112,32 @@ export class QueueViewService {
    * have not filled in and a list nothing could ask for.
    */
   readonly slotRefusal = signal<SlotRefusal | null>(null);
+
+  /**
+   * THE ORDINARY EMPTY BOARD, IN ONE SENTENCE — or the empty string, which is
+   * every window that has an engine and every window that has not asked yet.
+   *
+   * ── Why this is a sentence and not simply an absence of cards ─────────────
+   *
+   * Because until Wave 66 there was always a GPU card: this machine's own, called
+   * "This computer". Owen deleted it — *"everything goes through a crucible server
+   * now, including local… there should be no local gpu listed in the queue"* — so
+   * a person with no engine registered now opens this page and finds the GPU side
+   * of the bench empty. Drawing nothing would leave them looking for the card
+   * they had yesterday; this says where it went and what to press, in the same
+   * words the placement refuses a job with (`noEngineReason`,
+   * electron/crucible-dispatch.ts).
+   *
+   * IT IS NOT DRAWN WHEN THE HOST HAS ALREADY EXPLAINED ITSELF: `slotRefusal` is
+   * a different and more specific silence, and the page prefers it (the two are
+   * one `@if`/`@else if`). Nor before the read lands — see {@link computeSlots}.
+   */
+  readonly noEngineNote = computed(() => (
+    this.slotsRead() && this.computeSlots().length === 0
+      ? 'No GPU engine is connected, so there is nowhere to translate, simplify, clean, analyse '
+        + 'or read pages. Add one in Settings › Servers. Exports and compiles run here as always.'
+      : ''
+  ));
 
   /**
    * THE GPU SIDE OF THE BOARD — one lane per machine, derived from the list.
@@ -115,6 +153,7 @@ export class QueueViewService {
     void api.slots.list().then((answer) => {
       this.computeSlots.set(answer.slots);
       this.slotRefusal.set(answer.refusal);
+      this.slotsRead.set(true);
     });
   }
 
@@ -285,8 +324,9 @@ export class QueueViewService {
    * (`computeLanes`, shared/queue-board.ts), so each one gets its own card with
    * its own name at the top, and the count in the band head counts machines and
    * CPU slots together, because that is genuinely how many things may be going
-   * at once. The friend with no Crucible sees exactly what they saw before: one
-   * card, headed with this computer's name.
+   * at once. The friend with one Crucible sees one GPU card, headed with the name
+   * they gave that server — including when the server is on this very desk, which
+   * since Wave 66 is the only way this machine's card appears here at all.
    *
    * A CARD SAYS WHAT IS WAITING FOR IT, in dispatch's own sentence. A row parked
    * on a busy Mac already carries the reason it is parked (`Job.message`,
@@ -358,8 +398,10 @@ export class QueueViewService {
     }
     /*
      * THE MACHINES THAT ARE ON THEIR WAY OUT — a run whose `ranOn` matches no
-     * lane. `laneOfRun` answers null for exactly that and for nothing else: an
-     * absent `ranOn` and the local slot's name both resolve to the local lane.
+     * lane. `laneOfRun` answers null for exactly that, and for an absent `ranOn`
+     * on a board where no lane is this machine's card (`localLane`); the second
+     * cannot be a GPU row, because since Wave 66 a GPU row is always placed on a
+     * named slot or refused.
      */
     for (const job of onCards) {
       if (laneOfRun(job.ranOn, lanes, job.ranVia) !== null) continue;
@@ -458,9 +500,9 @@ export class QueueViewService {
    * "1 of 1 running", or what is free — the right-hand side of a lane head.
    *
    * THE GPU TOTAL IS THE NUMBER OF CARDS THE BENCH DRAWS, which is the number of
-   * machines plus whatever upstream work is actually going. One, for a person
-   * with no Crucible; three, for somebody with two servers and a card of their
-   * own.
+   * machines plus whatever upstream work is actually going. ZERO, for a person
+   * with no engine registered — the honest number since Wave 66, and the one the
+   * empty-board sentence beside it explains; two, for somebody with two servers.
    *
    * IT WAS `lanes().length` AND CANNOT BE ANY MORE (Wave 62). Every Crucible slot
    * carries a second, upstream lane the scheduler always rations by and the bench
@@ -475,6 +517,13 @@ export class QueueViewService {
       ? this.slots().filter((slot) => slot.lane === 'gpu' && !slot.leaving).length
       : CPU_LANE_SLOTS;
     if (busy > 0) return `${busy} of ${total} running`;
+    /*
+     * ZERO IS NOT "0 slots free", WHICH WOULD BE ARITHMETIC IN PLACE OF A FACT.
+     * A GPU side with no lanes is a machine with no engine registered (Wave 66),
+     * and the band head is the first place a person meets that; the sentence
+     * under the cards says what to do about it.
+     */
+    if (total === 0) return 'no engine connected';
     return total === 1 ? '1 slot free' : `${total} slots free`;
   }
 
@@ -760,8 +809,8 @@ export class QueueViewService {
    * ── Empty is the ordinary case and means "nothing counted" ────────────────
    *
    * `Job.usage` is set only when the engine printed its usage line, which it does
-   * only when the server counted. Ollama does not, so a run on this machine's own
-   * GPU has no usage at all — and an empty string is what every surface here
+   * only when the server counted. An Ollama door does not count, so a run routed
+   * through one has no usage at all — and an empty string is what every surface here
    * already draws for a fact a row does not have. The request count rides in the
    * tooltip rather than the line: three numbers in a row on a card is a table,
    * and the two that answer "what did this cost" are the tokens.

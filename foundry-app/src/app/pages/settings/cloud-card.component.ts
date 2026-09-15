@@ -91,8 +91,8 @@ interface EditableProvider extends CloudProviderView {
 
       <p class="detail">
         An OpenAI or Anthropic API key, so translation, simplification, narration cleanup and
-        analysis can run on usage credits instead of on this computer's own GPU. Reading the
-        pages of a book never goes to a provider — that stays here or on a Crucible.
+        analysis can run on usage credits instead of on a GPU engine. Reading the pages of a
+        book never goes to a provider — that stays here or on a Crucible.
       </p>
 
       @for (row of rows(); track row.key) {

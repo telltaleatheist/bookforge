@@ -2,10 +2,27 @@
  * SLOTS — the places a job's compute can go, as both programs name them.
  *
  * The plan of record is docs/SLOTS.md, and Owen's sentence is the whole design:
- * *"the friend sees a single gpu slot if theyre local — their GPU slot. if
- * theyre using crucible on their local machine, the local GPU disappears… or
- * they can add a remote crucible server, like to the mac… itll show the mac's
- * gpu slot as open and usable, plus their local GPU."*
+ * *"everything goes through a crucible server now, including local… there should
+ * be no local gpu listed in the queue"*, and then precisely: *"cpu slots are
+ * always local. we dont outsource simple cpu work to crucible. one gpu slot in
+ * the queue per connected crucible server. including the local crucible, which is
+ * indistinguishable from the remote crucible server."*
+ *
+ * ── THAT RULING REPLACED AN EARLIER ONE, AND HALF THIS FILE WAS BUILT ON IT ──
+ *
+ * The earlier sentence was *"the friend sees a single gpu slot if theyre local —
+ * their GPU slot… if theyre using crucible on their local machine, the local GPU
+ * disappears."* So a machine's own Ollama WAS a slot (`LOCAL_SLOT_NAME`, "This
+ * computer"), and an enabled loopback Crucible hid it — one card, one owner.
+ *
+ * There is no local slot now at all. The GPU slots are exactly the enabled
+ * Crucible servers, in registry order, plus the cloud slots after them; a
+ * Crucible on this desk is an ordinary registry entry that replaces nothing,
+ * because there is nothing left for it to replace. What the ruling protects is
+ * the CPU side of the board, which was never a slot and is not one now: a
+ * compile, a rasterise and an EPUB assembly are this machine's disk and this
+ * machine's cores, counted by `CPU_LANE_SLOTS` (shared/queue-board.ts) and
+ * outsourced to nobody.
  *
  * ── WHY THIS IS `ComputeSlot` AND NOT `Slot` ────────────────────────────────
  *
@@ -86,16 +103,6 @@ export interface SlotAvailability {
 export const ANY_SLOT = 'any';
 
 /**
- * What the machine's own GPU is called in the picker.
- *
- * It is a NAME and not a `kind` test at the call sites for one reason: a row's
- * `waitFor` is a string, it is written down the moment somebody picks it, and it
- * has to keep meaning the same thing afterwards. The registry refuses a server
- * with this name for the same reason it refuses {@link ANY_SLOT}.
- */
-export const LOCAL_SLOT_NAME = 'This computer';
-
-/**
  * THE LONGEST A SLOT NAME MAY BE — 48 characters, and the number is shared with
  * BookForge so that a name accepted in one app is accepted in the other.
  *
@@ -167,13 +174,27 @@ export function tidySlotName(value: unknown): string {
  * rather than a decision, and refusing one would be this app teaching somebody
  * to count spaces.
  *
- * ── AND THE TWO NAMES THE QUEUE HAS ALREADY SPENT ───────────────────────────
+ * ── AND THE ONE NAME THE QUEUE HAS ALREADY SPENT ────────────────────────────
  *
- * {@link ANY_SLOT} and {@link LOCAL_SLOT_NAME} are what a row's `waitFor` says
- * when it means "the first slot that will take it" and "this machine's own
- * GPU". A slot wearing either would make a stored row mean something other than
- * what the person picked. The clamps always dropped these; now the writers
- * refuse them BY NAME instead of accepting a server that then vanishes.
+ * {@link ANY_SLOT} is what a row's `waitFor` says when it means "the first slot
+ * that will take it". A slot wearing it would make a stored row mean something
+ * other than what the person picked. The clamps always dropped it; now the
+ * writers refuse it BY NAME instead of accepting a server that then vanishes.
+ *
+ * IT USED TO BE TWO. `LOCAL_SLOT_NAME` ("This computer") was the other, and it is
+ * gone with the slot it named — Owen: *"there should be no local gpu listed in
+ * the queue"*. A name nothing uses is not reserved, so the reservation went with
+ * the constant rather than being kept as a rule about a word this app no longer
+ * says.
+ *
+ * AND THE CPU LANE NEEDS NO RESERVATION EITHER, which was worth checking rather
+ * than assuming: Owen's ruling protects that lane by name — *"cpu slots are
+ * always local. we dont outsource simple cpu work to crucible"* — but the lane
+ * has no name in this namespace and never had one. The CPU side of the board is
+ * a COUNT (`CPU_LANE_SLOTS`, shared/queue-board.ts), its bench cards are keyed
+ * `cpu:<n>` and titled "CPU · slot 1 of 2", and the scheduler's occupancy map
+ * holds a lane name only for a GPU run (`Slot.on`, electron/job-queue.ts, is null
+ * for every CPU row). There is no string a server could collide with.
  *
  * WHAT IS DELIBERATELY NOT HERE IS UNIQUENESS. One name cannot see the other
  * list, so a collision is refused at the two writers (which read both lists) and
@@ -203,17 +224,25 @@ export function slotNameRefusal(name: string, what: string): string | null {
     return `"${name}" cannot contain "/" or "\\" — the name becomes a browser partition when `
       + 'this app opens that server\'s own page.';
   }
-  const key = name.toLowerCase();
-  if (key === ANY_SLOT.toLowerCase() || key === LOCAL_SLOT_NAME.toLowerCase()) {
+  if (name.toLowerCase() === ANY_SLOT.toLowerCase()) {
     return `"${name}" is a name the queue has already spent: "${ANY_SLOT}" means the first slot `
-      + `that will take a row, and "${LOCAL_SLOT_NAME}" means this machine's own GPU. `
-      + `Give this ${what} a different name.`;
+      + `that will take a row. Give this ${what} a different name.`;
   }
   return null;
 }
 
 /**
  * Whose compute a slot is.
+ *
+ * ── `local` IS GONE, AND THE UNION IS WHERE THAT IS ENFORCED ────────────────
+ *
+ * It was the machine's own Ollama, and Owen's ruling deleted it: *"everything
+ * goes through a crucible server now, including local… there should be no local
+ * gpu listed in the queue."* Removing the member rather than leaving it
+ * unconstructed is the point — the compiler now refuses a slot, a lane or a
+ * capacity that claims to be this machine's card, so there is no path by which
+ * one comes back by accident. A Crucible on this desk is `crucible`, exactly as
+ * the one in the next room is.
  *
  * `cloud` WAS THE SEAM AND IS NOW BUILT — docs/SLOTS.md §3 and §7 (Package F,
  * app half). It was declared here before anything constructed one, because every
@@ -229,22 +258,20 @@ export function slotNameRefusal(name: string, what: string): string | null {
  * exactly what "never fallen back to" means when it is spent money on the other
  * side of the choice.
  */
-export type ComputeSlotKind = 'local' | 'crucible' | 'cloud';
+export type ComputeSlotKind = 'crucible' | 'cloud';
 
 /** One place a job's compute can go. */
 export interface ComputeSlot {
   /**
    * What a row's `waitFor` names, and what every sentence about the wait says.
-   * Unique across the list: the local slot's is {@link LOCAL_SLOT_NAME} and a
-   * Crucible slot's is the registry entry's own name.
+   * Unique across the list, and it is always somebody's own name: a Crucible
+   * slot's is the registry entry's, a cloud slot's is the provider entry's.
    */
   name: string;
   kind: ComputeSlotKind;
   /**
    * A Crucible slot's base URL, without `/v1` — for the settings row, for the
-   * "unreachable" sentence, and for composing the engine's `--endpoint`. Absent
-   * on the local slot, which has no one address: its text acts go to Ollama and
-   * its page reading to whatever the reader owns.
+   * "unreachable" sentence, and for composing the engine's `--endpoint`.
    *
    * ── AND DELIBERATELY ABSENT ON A CLOUD SLOT, WHICH DOES HAVE ONE ───────────
    *
@@ -254,11 +281,10 @@ export interface ComputeSlot {
    * (shared/queue-board.ts) decides which lane is THIS MACHINE'S CARD by asking
    * whether a lane's url is loopback. An OpenAI-compatible endpoint at
    * `http://localhost:8000/v1` is a perfectly ordinary thing to configure, and a
-   * cloud slot that carried it would be adopted as the local lane — so a page
-   * reading, which loads dots on this machine's GPU whatever the registry says,
-   * would hold the cloud provider's lane and leave the card unguarded. The
-   * address lives on the provider entry, where the settings card reads it; the
-   * placement composes `--endpoint` from there.
+   * cloud slot that carried it would be adopted as this machine's card — a
+   * provider's rate limit standing in for a GPU, and whatever genuinely does run
+   * on that card left unguarded. The address lives on the provider entry, where
+   * the settings card reads it; the placement composes `--endpoint` from there.
    */
   url?: string;
 }
@@ -282,9 +308,16 @@ export interface CrucibleServerView {
   /**
    * Is this the Crucible on this very machine? Derived from the URL rather than
    * stored, so a person who edits the address does not leave a flag behind
-   * claiming otherwise. A loopback entry that is enabled HIDES the local slot —
-   * Owen: *"if theyre using crucible on their local machine, the local GPU
-   * disappears"* — one card, one owner.
+   * claiming otherwise.
+   *
+   * IT NO LONGER HIDES ANYTHING. It used to be the one thing that removed the
+   * local slot — Owen's earlier *"if theyre using crucible on their local
+   * machine, the local GPU disappears"* — and there is no local slot to remove:
+   * *"one gpu slot in the queue per connected crucible server. including the
+   * local crucible, which is indistinguishable from the remote crucible server."*
+   * What it is still good for is locality itself: which lane is this machine's
+   * card (`localLane`, shared/queue-board.ts), and which entry an Uninstall or a
+   * local-config read is about.
    */
   loopback: boolean;
 }
@@ -745,9 +778,12 @@ export interface CrucibleInstallPlan {
 /**
  * Is this URL's host the machine it is read on?
  *
- * Shared because two programs ask it: main, to decide whether an entry hides the
- * local slot, and the settings card, to draw the "this replaces your local GPU
- * slot" line as somebody types. `0.0.0.0` and `::` are in the set because they
+ * Shared because two programs ask it: the board, to decide which lane is this
+ * machine's own card (`localLane`, shared/queue-board.ts), and main, to tell a
+ * local entry from a remote one for the doors that are genuinely about locality
+ * — the Uninstall, and the read of this machine's own `config.toml`. It used to
+ * decide whether an entry HID the local slot, and there is no local slot now.
+ * `0.0.0.0` and `::` are in the set because they
  * are bind addresses that a person pastes out of a config file, and a client
  * that dialled either of them would be dialling this machine.
  */

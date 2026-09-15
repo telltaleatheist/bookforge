@@ -10,7 +10,6 @@ import {
 import type { RewriteMode, SimplifyRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedLlmDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -61,8 +60,7 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
  * is a translate step, and what comes out is a records file cast into a book —
  * every word of the machinery this window talks to is the one the Translate
  * dialog talks to, and the plan it asks main for is the same shape. So the fields
- * are the same fields, in the same order, for the same reasons: the model matters
- * and its trade is real, Ollama is a server this app never starts, and the
+ * are the same fields, in the same order, for the same reasons: the
  * instructions are appended to the prompt word for word because terminology is
  * per-book and no default can be right about it.
  *
@@ -130,25 +128,6 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
               }
             </div>
           </div>
-
-          <label class="field">
-            <span class="label">Model</span>
-            <input type="text" [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
-          </label>
-          <!--
-            The same measured trade the Translate dialog states, because it is the
-            same model doing the same per-block work for the same hours.
-          -->
-          <p class="note">
-            <strong>qwen3:32b</strong> is the most faithful of the models measured and is slow —
-            hours for a full book. <strong>qwen2.5:14b</strong> is roughly twice as fast and good
-            for a draft, but drops the occasional clause.
-          </p>
-
-          <label class="field">
-            <span class="label">Ollama <em>used, never started</em></span>
-            <input type="text" [ngModel]="ollama()" (ngModelChange)="ollama.set($event)" name="ollama">
-          </label>
 
           <label class="field">
             <span class="label">Rewriter instructions <em>optional</em></span>
@@ -420,12 +399,10 @@ export class SimplifyDialogComponent {
   });
 
   protected readonly mode = signal<RewriteMode>('dejargon');
-  protected readonly model = signal(DEFAULT_MODEL);
-  protected readonly ollama = signal(DEFAULT_OLLAMA);
   /*
-   * NO `server` SIGNAL ANY MORE — `TranslateRequest.server` (shared/types.ts)
-   * carries the whole argument. The two above are the LOCAL slot's answers, and
-   * WHERE a job goes is picked on its queue row (docs/SLOTS.md §3).
+   * NO MODEL, NO OLLAMA AND NO `server` SIGNAL. See the Translate dialog, where
+   * all three are argued: the engine chooses the model and the queue row chooses
+   * the engine.
    */
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
@@ -433,9 +410,6 @@ export class SimplifyDialogComponent {
   protected readonly busy = signal(false);
 
   constructor() {
-    // The model and the URL are the app's own settings, written by first-run
-    // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults('simplify', this.model, this.ollama);
     // A complaint about the last book is cleared when the book changes, and
     // nothing else resets — the instructions in particular are somebody's careful
     // answer and survive switching tabs.
@@ -515,10 +489,23 @@ export class SimplifyDialogComponent {
         // spawn when the promised chain could not say it — see above.
         ...(to.length === 0 ? {} : { to, from: to }),
         rewrite,
-        // The LOCAL slot's model and URL. Never empty — see the translate
-        // dialog's note, where the branch that allowed it is argued away.
-        model: this.model().trim() || DEFAULT_MODEL,
-        ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        /*
+         * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
+         *
+         * Owen, 2026-09-15: *"we dont have any local models. crucible handles
+         * all model orchestration."* The ENGINE's capability record names the
+         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
+         * placement applies it at the spawn, over the top of these two
+         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
+         * choose something that was then ignored, and it is gone.
+         *
+         * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
+         * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
+         * and prints the request's own pair (BookForge's `cli/clean-step.js`).
+         * The declared defaults are the honest thing for that line to carry.
+         */
+        model: DEFAULT_MODEL,
+        ollama: DEFAULT_OLLAMA,
         // Where the answers go, and the whole of what this run makes. Named after
         // the mode as well as the language, so a plain-terms rewrite and an
         // easy-language one of one book are two files and two rows.

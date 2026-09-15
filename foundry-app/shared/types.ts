@@ -639,9 +639,11 @@ export type RewriteMode = 'dejargon' | 'destiffen' | 'learner';
  * already is, and it is the pattern that keeps `argsFor` honest — a request
  * cannot carry a flag the command it will become does not have.
  *
- * The endpoint IS here, unlike the conversion request's reading backend. Ollama
- * is not a backend this app owns, starts or configures anywhere else, so there
- * is no settings screen for the dialog to contradict.
+ * THE ENDPOINT AND THE MODEL ARE STILL FIELDS, and nobody chooses them. A
+ * placement replaces both immediately before the spawn (`doorArgs`,
+ * electron/job-queue.ts); what they carry is the declared default, which is what
+ * an UNPLACED line prints — the one caller that has no server to ask is
+ * BookForge's dry run.
  */
 export interface TranslateRequest {
   kind: 'translate';
@@ -767,9 +769,9 @@ export interface TranslateRequest {
    * had since amendments could outlive the blocks they name.
    */
   generation?: string;
-  /** `--model`: the model that translates. Empty under vLLM means "what it serves". */
+  /** `--model`: overwritten by the placement. See the header. */
   model: string;
-  /** `--ollama`: the server's URL. Used, never started. */
+  /** `--endpoint`: overwritten by the placement. See the header. */
   ollama: string;
   /**
    * WHICH DIALECT — and it is no longer a field, because it is no longer
@@ -790,9 +792,11 @@ export interface TranslateRequest {
    * still agree — more strictly than before, because one function now composes
    * all three out of one placement, where three branches each spelled two.
    *
-   * WHAT `model` AND `ollama` NOW MEAN, precisely: the LOCAL slot's answers — the
-   * tag the person could edit in the dialog, and the Ollama on this machine. A
-   * Crucible placement replaces both, and neither field is consulted.
+   * WHAT `model` AND `ollama` NOW MEAN, precisely: the DECLARED DEFAULTS, which
+   * every dialog fills in without asking (Owen, 2026-09-15: *"we dont have any
+   * local models. crucible handles all model orchestration"*). A placement
+   * replaces both, and on a machine with no engine there is no placement and no
+   * run — the job is refused by name rather than falling back to here.
    */
   /** `--instructions`: appended to the system prompt verbatim, per book. */
   instructions?: string;
@@ -987,7 +991,7 @@ export interface CleanRequest {
    */
   stampPath: string;
   /**
-   * `--model`: the Ollama model that does the cleaning, and `--endpoint`: the
+   * `--model`: the model that does the cleaning, and `--endpoint`: the
    * server's URL. Used, never started — `TranslateRequest`'s reason exactly, and
    * the flag is spelled `--endpoint` rather than `--ollama` because that is what
    * the engine's own command declares.
@@ -1013,9 +1017,11 @@ export interface CleanRequest {
    * still agree — more strictly than before, because one function now composes
    * all three out of one placement, where three branches each spelled two.
    *
-   * WHAT `model` AND `ollama` NOW MEAN, precisely: the LOCAL slot's answers — the
-   * tag the person could edit in the dialog, and the Ollama on this machine. A
-   * Crucible placement replaces both, and neither field is consulted.
+   * WHAT `model` AND `ollama` NOW MEAN, precisely: the DECLARED DEFAULTS, which
+   * every dialog fills in without asking (Owen, 2026-09-15: *"we dont have any
+   * local models. crucible handles all model orchestration"*). A placement
+   * replaces both, and on a machine with no engine there is no placement and no
+   * run — the job is refused by name rather than falling back to here.
    */
   /**
    * `--concurrency`: blocks in flight at once. Absent means the engine's own
@@ -1167,11 +1173,11 @@ export interface AnalyzeRequest {
   categories: readonly { name: string; enabled: boolean; description?: string; label?: string }[];
   /** `--model`: the model the verifier is asked of. Empty under vLLM means "what it serves". */
   model: string;
-  /** `--ollama`: the server's URL. Used, never started. */
+  /** `--endpoint`: overwritten by the placement. See the header. */
   ollama: string;
   /**
    * NO `--server` FIELD — `TranslateRequest`'s note says where the dialect went
-   * and why. `model` and `ollama` above are the LOCAL slot's answers.
+   * and why. `model` and `ollama` above are the declared defaults a placement
    */
   /**
    * THE STEP THIS REPORT BELONGS TO, minted with it and travelling with it.
@@ -1766,8 +1772,10 @@ export interface ServerStatus {
 
 /**
  * `download` has a percentage; the rest are a sentence and an indeterminate bar.
- * The same five-phase shape as `OllamaPhase`, and deliberately: the wizard draws
- * both, and one shape means one bar.
+ * It was one of a pair — `OllamaPhase` had the same five-phase shape, so the
+ * wizard could draw both with one bar — and it is the half that survived the
+ * deletion of Foundry's own model pull. The shape is kept as it is: it is the
+ * right one, and nothing is gained by re-cutting it now that it is alone.
  */
 export type PageReaderPhase = 'download' | 'verify' | 'unpack' | 'done' | 'error';
 
@@ -1919,7 +1927,7 @@ export interface EnvInstallResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// First run — electron/system-probe.ts, electron/ollama.ts, electron/llm-catalog.ts
+// First run — electron/system-probe.ts, electron/ollama.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
 /*
@@ -2007,78 +2015,23 @@ export interface OllamaFacts {
   detail: string;
 }
 
-/** One row of the Qwen lineup, as the wizard draws it. */
-export interface LlmModelOption {
-  /** The ollama tag — what `ollama pull` is given and what a job's `--model` is. */
-  tag: string;
-  label: string;
-  /** The download, from ollama's own library listing. */
-  downloadGB: number;
-  /** Weights plus working room. The number `fits` is decided against. */
-  needsGB: number;
-  description: string;
-  /** `needsGB` clears this machine's `modelMemoryMB`. */
-  fits: boolean;
-  /** The largest one that fits. Exactly one row has this, and only if any fits. */
-  recommended: boolean;
-  /** True when ollama already holds it — no download to ask permission for. */
-  installed: boolean;
-}
-
-/** What the wizard's model step is looking at. */
-/**
- * WHAT A MACHINE UNDER THE TRANSLATE FLOOR IS TOLD, and why the wizard needs
- * it rather than working it out.
+/*
+ * ── THREE SHAPES STOOD HERE: `LlmModelOption`, `TranslateFloorMiss`, `LlmChoices`
  *
- * Owen, 2026-09-14: *"either they use the 27b or they use an api key for Claude
- * or OpenAI."* So on a card that cannot hold a 27B, translation and
- * simplification are not something Ollama will ever do here, however many
- * models are pulled — and a step whose blurb promised them would be selling a
- * download that cannot deliver. The floor is `llm-catalog.ts`'s, read with the
- * same `eligibleFor`/`fitsOn` the act gate uses, so the wizard and the tile
- * cannot disagree about what this machine can run.
+ * They were the wizard model step's whole answer — a lineup row with its
+ * download size and whether it fitted this machine, the sentence a card under
+ * the translate floor was shown, and the bundle of the three plus the hardware
+ * profile and Ollama's state.
  *
- * Null when the machine DOES clear the floor, which is the ordinary answer and
- * draws nothing.
+ * Owen, 2026-09-15: *"we dont have any local models. crucible handles all model
+ * orchestration. if theres no connected crucible server then tiles should be
+ * disabled."* There is no lineup for this app to offer, no floor for it to
+ * enforce and no machine for it to measure a model against, so the step, the
+ * door (`ollama:choices`) and these three shapes went together.
+ *
+ * `OllamaFacts` above SURVIVED, and only just: its one reader is the disk
+ * inventory (docs/SLOTS.md §5b), which counts weights that are already here.
  */
-export interface TranslateFloorMiss {
-  /** The smallest model that would serve translate here — "Qwen 3.5 · 27B". */
-  needs: string;
-  /** What it wants, in gigabytes, against what this machine has. */
-  needsGB: number;
-}
-
-export interface LlmChoices {
-  profile: SystemProfile;
-  ollama: OllamaFacts;
-  options: LlmModelOption[];
-  /**
-   * The tag the wizard should preselect: the recommendation, or — when nothing
-   * fits — the smallest, which the screen marks with the CPU warning.
-   */
-  suggested: string;
-  /** The model jobs use today, whether or not setup has ever run. */
-  current: string;
-  /** Set when no model that fits this machine can serve translate. See the type. */
-  translateFloorMiss: TranslateFloorMiss | null;
-  /**
-   * THE CLASSES A CRUCIBLE ON THIS MACHINE HAS ALREADY TAKEN OVER — null when
-   * none has, which is every machine without one.
-   *
-   * docs/SLOTS.md §5b: *"the app never pulls into [Ollama] while a local Crucible
-   * serves the class."* The wizard honours that by saying so in the rows rather
-   * than by hiding them: the list still describes the machine (that is what the
-   * step is for), each row still says what it costs, and the button that would
-   * spend seventeen gigabytes on a second copy of a model this computer already
-   * has is off, with the server's name beside it.
-   *
-   * A LOCAL SERVER ONLY. A Crucible on the Mac in the other room is a slot, not
-   * an owner of anything on this disk, and it does not stop somebody pulling a
-   * model for the evenings the Mac is asleep — which is the same distinction
-   * §5b draws about deleting.
-   */
-  crucible: { server: string; classes: ModelClass[] } | null;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The catalog, the tiles it lights, and the weights on this disk
@@ -2102,8 +2055,8 @@ export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'page
  * The acts the dock draws a tile for and this machine can refuse.
  *
  * `read` is the page reader rather than a class name, because the tile says OCR
- * and the act is "read this book's pages" — the one act whose model is served
- * locally by Foundry itself instead of pulled into ollama.
+ * and the act is "read this book's pages" — and it is the one act Foundry can
+ * still serve itself, with weights it downloaded, when no engine serves `pages`.
  */
 export type ActName = 'translate' | 'simplify' | 'analysis' | 'clean' | 'read';
 
@@ -2221,25 +2174,15 @@ export interface RemovalOutcome {
   detail: string;
 }
 
-/** `download` has a percentage; the other two are a sentence and a spinner. */
-export type OllamaPhase = 'download' | 'verify' | 'write' | 'done' | 'error';
-
-export interface OllamaPullProgress {
-  tag: string;
-  phase: OllamaPhase;
-  /** 0–100 while downloading. Meaningless otherwise; read `detail`. */
-  percent: number;
-  detail: string;
-}
-
-/** What `ollama:install` did. The binary is installed by ollama's own screen. */
-export interface OllamaInstallResult {
-  ok: boolean;
-  /** Where the installer landed, when one was fetched. */
-  path: string | null;
-  detail: string;
-}
-
+/*
+ * `OllamaPhase`, `OllamaPullProgress` AND `OllamaInstallResult` STOOD HERE — the
+ * shapes a model pull and an installer fetch drew a bar with. Foundry pulls no
+ * models and installs no Ollama (Owen, 2026-09-15), so all three went with
+ * `ollama:pull` and `ollama:install`.
+ *
+ * `PageReaderPhase` above is the surviving half of the pair they were designed
+ * against, and its note still says so: one shape, one bar.
+ */
 /**
  * Has this person been through setup, and what did they decline?
  *

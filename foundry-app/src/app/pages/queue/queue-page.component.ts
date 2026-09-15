@@ -168,15 +168,23 @@ interface PickerGroup {
           moving.
         -->
         <!--
-          WHY THERE IS NO PICKER, when the answer is not "nobody added a
-          server". A hosted window whose host offers no registry has no slots
-          and is not broken — every job runs the way it did before servers
-          could be chosen — but a board that simply drew nothing would be
-          telling the person their list is empty when the truth is that
-          nothing could be asked. Drawn where the cards would be, once.
+          WHY THERE ARE NO GPU CARDS, in the two sentences that answer it.
+
+          THE FIRST is the hosted one: a window whose host offers no registry, or
+          whose host could not be asked. The person cannot fix that from here, so
+          the sentence is the host's own (SlotRefusal, shared/slots.ts) and says
+          which half of the queue is affected.
+
+          THE SECOND is the ordinary empty state, and since Wave 66 it IS
+          ordinary rather than an edge: there is no local GPU slot any more, so a
+          machine with no engine registered has no GPU side to its board at all.
+          A board that simply drew nothing would leave somebody looking for the
+          card they used to have; this says where it went and what to press.
         -->
         @if (view.slotRefusal(); as refusal) {
           <p class="slot-refusal">{{ refusal.sentence }}</p>
+        } @else if (view.noEngineNote(); as note) {
+          <p class="slot-refusal">{{ note }}</p>
         }
         <div class="slots" [class.wide]="view.slots().length > 3">
           @for (slot of view.slots(); track slot.key) {
@@ -192,18 +200,17 @@ interface PickerGroup {
                   which is the difference between "the GPU in this box" and "a
                   Crucible in another room" (docs/SLOTS.md §3).
 
-                  THE "on <slot>" TAG IS STILL HERE and has moved to the one
-                  card that still needs it. A GPU card IS a machine now, so a tag
-                  under its own name saying the run is on it would be the card
-                  repeating itself; a CPU card is this computer's disk, and where
-                  its run went is the question the tag was always answering. It
-                  is gated on there being more than one machine, exactly as it
-                  was: with one slot there is no other answer it could give.
+                  THE "on <slot>" TAG IS GONE, and the ruling took it. It survived
+                  on the CPU card, where it answered "which machine did this run
+                  go to" for a row whose lane is a count rather than a name — and
+                  the answer was always "This computer", the local slot's name,
+                  written onto every unplaced run. There is no local slot now
+                  (Owen: *"cpu slots are always local. we dont outsource simple
+                  cpu work to crucible"*), such a run records no machine at all,
+                  and a CPU card that said "on" nothing would be furniture. The
+                  CPU lane is this computer, always, and the band says so.
                 -->
                 @if (whose(slot); as kind) { <span class="on">{{ kind }}</span> }
-                @if (slot.lane === 'cpu' && view.computeSlots().length > 1) {
-                  @if (slot.occupant?.ranOn; as where) { <span class="on">on {{ where }}</span> }
-                }
                 <!--
                   WHO IS ACTUALLY ANSWERING, on the card that is a server sending
                   the work on. The head names the machine; this names the service
@@ -1023,8 +1030,11 @@ export class QueuePageComponent {
   /**
    * ── THE SLOT PICKER — WHERE, not when ─────────────────────────────────────
    *
-   * docs/SLOTS.md §3. A slot is a place a job's compute can go: this computer's
-   * own GPU, or a registered Crucible server.
+   * docs/SLOTS.md §3. A slot is a place a job's compute can go: a registered
+   * Crucible server, or a cloud provider somebody configured. It used to include
+   * this computer's own GPU and no longer does — Owen, Wave 66: *"one gpu slot in
+   * the queue per connected crucible server. including the local crucible, which
+   * is indistinguishable from the remote crucible server."*
    *
    * THE LIST IS THE SERVICE'S NOW, and it is the same move this whole page is:
    * the bench draws a card per slot, the picker draws a name per slot, and two
@@ -1033,9 +1043,12 @@ export class QueuePageComponent {
    * was (a settings fact, changed on another screen); the argument now lives on
    * `QueueViewService.computeSlots` with the rest of the board's vocabulary.
    *
-   * EMPTY OR ONE ENTRY IS THE COMMON CASE AND DRAWS NO PICKER. Owen: *"a friend
-   * with no Crucible sees ONE slot, their local GPU, and never meets the
-   * picker."* Every `@if (picking(job))` in the template above is that sentence.
+   * ONE ENTRY DRAWS NO PICKER, and so does none: there is nothing to choose
+   * between in either case. Owen's sentence for it was *"a friend with no
+   * Crucible sees ONE slot, their local GPU, and never meets the picker"* — the
+   * slot is a Crucible now rather than a local GPU, and the half about the picker
+   * is unchanged. Every `@if (picking(job))` in the template above is that
+   * sentence.
    */
   protected readonly slots = this.view.computeSlots;
   protected readonly anySlot = ANY_SLOT;
@@ -1046,15 +1059,17 @@ export class QueuePageComponent {
    *
    * The kinds are the board's (`ComputeSlotKind`), said in a person's words: a
    * `crucible` slot is a server somebody registered and a `cloud` slot is a
-   * provider with a bill attached. THE LOCAL SLOT SAYS NOTHING, because it has
-   * already said it: its name is "This computer" (`LOCAL_SLOT_NAME`,
-   * shared/slots.ts), and a kind line repeating that under it would be furniture.
-   * A card that is `leaving` says nothing either — its hover says the whole
-   * story, and a kind beside a name that is no longer offered would read as a
-   * claim the list no longer makes.
+   * provider with a bill attached. There used to be a third, the local slot,
+   * which said nothing because its name already said it; it is gone (Wave 66,
+   * Owen: *"there should be no local gpu listed in the queue"*), and every GPU
+   * card on this bench is now somebody's server.
+   *
+   * A CPU CARD SAYS NOTHING, and neither does a card that is `leaving` — its
+   * hover says the whole story, and a kind beside a name that is no longer
+   * offered would read as a claim the list no longer makes.
    */
   protected whose(slot: SlotView): string {
-    if (slot.leaving || slot.kind === null || slot.kind === 'local') return '';
+    if (slot.leaving || slot.kind === null) return '';
     return slot.kind === 'cloud' ? 'cloud' : 'crucible';
   }
 
@@ -1081,8 +1096,8 @@ export class QueuePageComponent {
    * something `any` falls through to"*. Every mechanism that enforces that is in
    * main — the `any` walk steps past them, `New jobs wait for: top` cannot name
    * one — and all of it is invisible here. What is visible is this dropdown, and
-   * a provider sitting in the same flat list as "This computer" would read as
-   * one more machine. The `<optgroup>` is where the difference is SAID: "Cloud —
+   * a provider sitting in the same flat list as somebody's Mac would read as one
+   * more machine. The `<optgroup>` is where the difference is SAID: "Cloud —
    * costs credits", once, above the names it applies to.
    *
    * A STORED NAME THAT IS NO LONGER A SLOT IS KEPT IN THE LIST, at the end of

@@ -40,8 +40,21 @@
  * read it from. The CPU side is still a count, because it still is one: the CPU
  * lane is about this machine's disk and this machine's cores, and nothing in the
  * slot list changes how many of those there are.
+ *
+ * ── AND THE GPU SIDE HAS NO LANE OF ITS OWN ANY MORE (Wave 66, the slot half) ─
+ *
+ * Owen: *"everything goes through a crucible server now, including local… there
+ * should be no local gpu listed in the queue"*, and then precisely: *"cpu slots
+ * are always local. we dont outsource simple cpu work to crucible. one gpu slot
+ * in the queue per connected crucible server. including the local crucible, which
+ * is indistinguishable from the remote crucible server."*
+ *
+ * Both halves of that land here. The GPU side is one lane per REGISTERED SERVER
+ * and nothing else — a machine with no server registered has no GPU lane at all,
+ * where it used to have one called "This computer" — and the CPU side is
+ * untouched, because the ruling protects it in as many words.
  */
-import { isLoopbackUrl, LOCAL_SLOT_NAME, type ComputeSlot, type ComputeSlotKind } from './slots';
+import { isLoopbackUrl, type ComputeSlot, type ComputeSlotKind } from './slots';
 import type { JobKind } from './types';
 
 /**
@@ -162,6 +175,14 @@ export const LANES: readonly Lane[] = ['gpu', 'cpu'];
  * `JobResource`). It is NOT derived from the slot list and must not be: a
  * compile is this machine's disk whichever machine's card the reading is on, so
  * registering a Crucible in another room does not buy a third compile here.
+ *
+ * ── AND OWEN'S RULING PROTECTS IT BY NAME (Wave 66) ────────────────────────
+ *
+ * *"cpu slots are always local. we dont outsource simple cpu work to crucible."*
+ * The same ruling deleted the local GPU slot, so it is worth saying which half of
+ * the board it applies to: this one stays exactly as it was. A compile, a
+ * rasterise and an EPUB assembly are work on the disk in front of the person, and
+ * sending them to a server would be a network round trip in place of a file copy.
  */
 export const CPU_LANE_SLOTS = 2;
 
@@ -198,7 +219,6 @@ export const CPU_LANE_SLOTS = 2;
  * something a walk wandered into and billed somebody for.
  */
 export const SLOT_CAPACITY: Readonly<Record<ComputeSlotKind, number>> = {
-  local: 1,
   crucible: 1,
   cloud: 1,
 };
@@ -304,18 +324,19 @@ export interface ComputeLane {
  * `computeSlots()`) and the BENCH (core/queue-view.service.ts, which reads
  * `slots:list`) cannot disagree about how many lanes there are.
  *
- * ── AN EMPTY LIST IS ONE LANE, AND THAT IS THE HOSTED PROMISE ──────────────
+ * ── AN EMPTY LIST IS NO LANES, AND THAT IS THE RULING (Wave 66) ────────────
  *
- * A host that offers no registry gets an empty list (`hostServers`,
- * electron/crucible-registry.ts), and every job in that window takes the path it
- * took before slots existed. So an empty list answers with exactly one lane —
- * today's single GPU lane, unchanged, byte for byte in behaviour — rather than
- * with nothing, which would be a board on which no GPU job could ever start.
- * BookForge's vendored copy therefore changes in no way it can observe until it
- * chooses to offer a list. The lane is named for the local slot because that is
- * what it IS (`UNPLACED`, electron/crucible-dispatch.ts, places every such run
- * on a slot of that name), and hosted the name is never drawn: the bench, the
- * chip and the queue page are all standalone-only.
+ * It used to be ONE lane, named for the local slot: a machine with no Crucible —
+ * and a hosted window whose host offers no registry — kept a GPU lane of its own
+ * so that every job took the path it took before slots existed. Owen deleted the
+ * thing that lane stood for: *"there should be no local gpu listed in the queue."*
+ *
+ * So an empty slot list is an empty board on the GPU side, and a GPU job on it
+ * has nowhere to go. That is NOT a row that sits queued for ever: the scheduler
+ * lets such a row through (`canStart`, electron/job-queue.ts) precisely so the
+ * placement can refuse it by name — *"no GPU engine is connected"* — which is the
+ * honest answer and the one a person can act on. The CPU side is untouched and
+ * every export, compile and rasterise still runs exactly as it did.
  *
  * ── AND A CRUCIBLE SLOT IS TWO LANES NOW (Wave 62, Package K) ──────────────
  *
@@ -328,15 +349,11 @@ export interface ComputeLane {
  * bench skips an empty upstream lane, core/queue-view.service.ts), not the
  * rationing.
  *
- * THE LOCAL SLOT AND THE CLOUD SLOT GET ONE LANE EACH. Neither has a route: the
- * local slot is Ollama on this desk, and a `cloud` slot is an app-held key that
- * PHASE15 §5.3 deletes outright (Package L). Giving either a second lane would be
- * inventing a machine.
+ * A CLOUD SLOT GETS ONE LANE. It has no route: a `cloud` slot is an app-held key
+ * that PHASE15 §5.3 deletes outright (Package L), and giving it a second lane
+ * would be inventing a machine.
  */
 export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
-  if (slots.length === 0) {
-    return [{ name: LOCAL_SLOT_NAME, kind: 'local', capacity: SLOT_CAPACITY.local, route: 'local' }];
-  }
   return slots.flatMap((slot): ComputeLane[] => {
     const url = slot.url === undefined ? {} : { url: slot.url };
     const card: ComputeLane = {
@@ -362,19 +379,23 @@ export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
  *
  * ── The case that makes this a function and not a name comparison ───────────
  *
- * Most of the time it is the slot called {@link LOCAL_SLOT_NAME}. But an enabled
- * LOOPBACK Crucible HIDES that slot (`computeSlots`, and Owen: *"if theyre using
- * crucible on their local machine, the local GPU disappears"*) — and the things
- * that still run locally regardless do not disappear with it. A page reading
- * takes the local dots server while `CRUCIBLE_READS` is false, whatever the
- * registry says, and if that reading held a lane of its own beside the loopback
- * Crucible's, the board would cheerfully start a translation on the very card
- * the reading is using. One card, one lane, whichever name the list gives it.
+ * It used to have two answers: the slot called "This computer", or — when an
+ * enabled LOOPBACK Crucible had hidden that slot — the loopback Crucible's own
+ * lane. There is no local slot now (Owen: *"there should be no local gpu listed
+ * in the queue"*), so the second answer is the only one left: this machine's card
+ * is the lane of the Crucible registered at a loopback address, if there is one.
  *
- * NULL ONLY WHEN NOTHING IN THE LIST IS THIS MACHINE — every slot a remote
- * Crucible. `computeLanes` never returns an empty list, so null here means "the
- * local card is not one of the places work may go", which is exactly the state a
- * fully remote setup is in.
+ * The question is still worth asking, because the things that run on this card
+ * regardless of the registry have not gone anywhere. A page reading takes the
+ * local dots server while `CRUCIBLE_READS` is false, whatever the list says, and
+ * a reading holding a lane of its own beside the loopback Crucible's would let
+ * the board start a translation on the very card the reading is using. One card,
+ * one lane, whichever name the list gives it.
+ *
+ * NULL WHEN NOTHING IN THE LIST IS THIS MACHINE — every slot a remote Crucible,
+ * or no slots at all. Null means "the local card is not one of the places work
+ * may go", which is now the ordinary state of a desk with no Crucible on it as
+ * well as of a fully remote setup.
  *
  * AN UPSTREAM LANE IS NEVER THIS MACHINE'S CARD, and the guard is not belt and
  * braces: a loopback Crucible's upstream lane carries the same loopback URL as
@@ -383,10 +404,9 @@ export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
  * card was free.
  */
 export function localLane(lanes: readonly ComputeLane[]): ComputeLane | null {
-  const card = lanes.filter((lane) => lane.route === 'local');
-  return card.find((lane) => lane.kind === 'local')
-    ?? card.find((lane) => lane.url !== undefined && isLoopbackUrl(lane.url))
-    ?? null;
+  return lanes.find(
+    (lane) => lane.route === 'local' && lane.url !== undefined && isLoopbackUrl(lane.url),
+  ) ?? null;
 }
 
 /**
@@ -396,9 +416,10 @@ export function localLane(lanes: readonly ComputeLane[]): ComputeLane | null {
  * maps it onto the board as it stands NOW, which is the question the bench asks
  * and the one place the two can differ. Two mappings, both deliberate:
  *
- *   * ABSENT, or the local slot's name, resolves through {@link localLane} — so
- *     a reading that was never placed, and a run recorded before this window
- *     learned about slots, draw on the card that is actually doing the work.
+ *   * ABSENT resolves through {@link localLane} — so a run that was never placed
+ *     draws on the card that is actually doing the work, when one of the lanes IS
+ *     this machine's card, and on none when it is not. (It used to accept the
+ *     local slot's name here as well; that name is gone with the slot.)
  *   * A NAME NOTHING IN THE LIST CARRIES answers NULL, and null is not a shrug:
  *     it is a run on a server somebody switched off or removed WHILE IT WAS
  *     RUNNING. docs/SLOTS.md §3 — *"jobs never start on one slot and finish on
@@ -422,7 +443,7 @@ export function laneOfRun(
   if (ranVia !== undefined && ranOn !== undefined) {
     return lanes.find((lane) => lane.name === upstreamLaneName(ranOn)) ?? null;
   }
-  if (ranOn === undefined || ranOn === LOCAL_SLOT_NAME) return localLane(lanes);
+  if (ranOn === undefined) return localLane(lanes);
   return lanes.find((lane) => lane.name === ranOn) ?? null;
 }
 

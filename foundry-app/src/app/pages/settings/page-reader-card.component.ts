@@ -156,9 +156,10 @@ import { api } from '../../core/foundry';
         <!--
           PACKAGE E GOES HERE: the offer to connect a Crucible server instead of,
           or beside, this one. It is a SLOT of its own rather than a setting on
-          this card (docs/SLOTS.md §3) — a loopback Crucible replaces the local
-          slot, a remote one adds to it — so it wants its own card in this
-          column, not a field in this one.
+          this card (docs/SLOTS.md §3) — since Wave 66 every GPU slot is a
+          registered engine and one on this machine is no different from one in
+          the next room — so it wants its own card in this column, not a field in
+          this one.
         -->
       } @else {
         <p class="detail">Looking…</p>

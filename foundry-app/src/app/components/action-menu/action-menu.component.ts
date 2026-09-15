@@ -954,15 +954,20 @@ export class ActionMenuComponent {
    *
    * The predicates beside it (`canTranslate`, `canClean`, …) ask the LEDGER: is
    * there a book at this position for the act to be aimed at. They cannot ask
-   * whether a model is installed, whether it fits, or whether anything is
-   * serving, because none of that lives in the renderer — it is measured in main
-   * (electron/act-gates.ts) off the hardware probe, ollama's library, the
-   * settings file and the page reader's directory.
+   * whether anything is SERVING the act, because that does not live in the
+   * renderer — it is measured in main (electron/act-gates.ts) off the server
+   * registry's capability reads, the settings file and the page reader's
+   * directory.
+   *
+   * IT USED TO MEASURE THIS MACHINE as well — the hardware probe and Ollama's
+   * library, for Owen's *"the tiles arent lit up until the models are present"*
+   * and his rule that a translation on a processor *"should just be disabled"*
+   * (docs/SLOTS.md §1). Both were about work that ran here, and none does:
+   * 2026-09-15, *"if theres no connected crucible server then tiles should be
+   * disabled."*
    *
    * BOTH HAVE TO SAY YES, and they are kept apart because they say different
-   * things when they say no. Owen's rule is that *"the tiles arent lit up until
-   * the models are present"* and that a translation on a processor *"should just
-   * be disabled"* (docs/SLOTS.md §1) — and a tile that greyed for that reason
+   * things when they say no — a tile that greyed because no engine is connected
    * while its tooltip said "there is no book at this step" would be sending
    * somebody to open a book that was never the problem.
    */

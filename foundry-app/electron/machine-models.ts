@@ -60,6 +60,7 @@ import {
 } from './crucible-provider';
 import { LINEUP_PROVENANCE } from './llm-catalog';
 import { probeOllama } from './ollama';
+import { DEFAULT_OLLAMA_ENDPOINT } from '../shared/pipeline';
 import {
   pageReaderDir,
   pageReaderFootprint,
@@ -85,8 +86,17 @@ import type {
  */
 export async function machineModels(): Promise<MachineModels> {
   const settings = readAppSettings();
+  /*
+   * OLLAMA'S OWN PORT, AND NOT A SETTING ANY MORE. `AppSettings.ollamaUrl` was
+   * deleted with every other model setting (Owen, 2026-09-15) — the address the
+   * ENGINE forwards to is the engine's own `upstreams.ollama.url`, and Foundry
+   * keeping a second copy of it was one fact with two owners. What this probe
+   * is for is unchanged and is not about where work runs: it counts what is on
+   * THIS DISK, and a machine with an Ollama on a moved port shows an empty
+   * Ollama row, which is a smaller wrong answer than a stale address.
+   */
   const [ollama] = await Promise.all([
-    probeOllama(settings.ollamaUrl),
+    probeOllama(DEFAULT_OLLAMA_ENDPOINT),
     refreshCrucibleFacts(),
   ]);
 

@@ -233,7 +233,7 @@ import {
   capabilityClassOf, placeJob, placesOnASlot, CRUCIBLE_READS, UNPLACED,
   type LaneClaim, type Lease, type Placement,
 } from './crucible-dispatch';
-import { ANY_SLOT, LOCAL_SLOT_NAME } from '../shared/slots';
+import { ANY_SLOT } from '../shared/slots';
 
 /**
  * The three things that become an engine child.
@@ -2778,12 +2778,14 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
  *
  * ── Where each value comes from ────────────────────────────────────────────
  *
- * The placement wins where it says anything, and null means "the request's own"
- * — which is the LOCAL slot's whole answer. `request.ollama` is the Ollama URL
- * the dialog showed and `request.model` is the tag the person could edit; both
- * are per-run choices this file must not second-guess. A Crucible placement
- * carries the server's `<url>/openai` and the model its own capability record
- * selected, because neither of those is anybody's preference (docs/SLOTS.md §5).
+ * The placement wins where it says anything, and null means "the request's own".
+ * A Crucible placement carries the server's `<url>/openai` and the model its own
+ * capability record selected, and that is now the ONLY thing that ever reaches a
+ * real run: `request.model` and `request.ollama` are the declared defaults every
+ * dialog fills in, and with no engine connected a text act is refused rather than
+ * placed (Owen, 2026-09-15: *"if theres no connected crucible server then tiles
+ * should be disabled"*). The null branch survives for the DRY RUN, which has no
+ * server to ask — see `argsFor`.
  *
  * ── Why the model can be missing ────────────────────────────────────────────
  *
@@ -2791,9 +2793,9 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
  * resident model, and an empty `--model` tells the engine to ask the server, use
  * what it is serving and record that name (src/translate/vllm.ts). Passing
  * `--model ""` would be this file inventing an empty name; leaving the flag off
- * says what is meant. On the Ollama door it is never blank — the dialogs fall
- * back to a declared default, because an Ollama holds a library and the engine
- * refuses a run that does not say which model it means.
+ * says what is meant. On the Ollama door it is never blank — the request carries
+ * a declared default, because an Ollama holds a library and the engine refuses a
+ * run that does not say which model it means.
  *
  * ── And `--server` only when it is not the engine's default ─────────────────
  *
@@ -3458,7 +3460,20 @@ function endpointFor(): string | null {
  */
 function laneAtPick(job: Job, lanes: readonly ComputeLane[]): string | null {
   if (JOB_RESOURCE[job.kind] !== 'gpu') return null;
-  if (!placesOnASlot(job.kind)) return localLane(lanes)?.name ?? LOCAL_SLOT_NAME;
+  /*
+   * A GPU ROW THAT IS NEVER PLACED TAKES THIS MACHINE'S CARD, when one of the
+   * lanes IS this machine's card — which since Wave 66 means a Crucible
+   * registered at a loopback address, there being no local slot any more. NULL
+   * when there is none: there is no lane to reserve, and inventing a name for one
+   * would be a reservation against a machine the board does not have.
+   *
+   * THE ARM IS UNREACHABLE WHILE `CRUCIBLE_READS` IS TRUE and is kept for the
+   * reason it was written: it is the constant that decides it, not a fact about
+   * the kind. Every GPU kind has a capability class today, so `placesOnASlot` is
+   * true for all of them; the day a reading goes back on the local path, this is
+   * the line that keeps two of them off one card.
+   */
+  if (!placesOnASlot(job.kind)) return localLane(lanes)?.name ?? null;
   if (lanes.length === 1) return lanes[0]!.name;
   return null;
 }
@@ -3512,6 +3527,22 @@ function canStart(job: Job, lanes: readonly ComputeLane[]): boolean {
   let held = 0;
   for (const slot of slots.values()) if (slot.resource === resource) held += 1;
   if (resource === 'cpu') return held < CPU_LANE_SLOTS;
+  /*
+   * ── A BOARD WITH NO GPU LANE ADMITS THE ROW SO IT CAN BE REFUSED ──────────
+   *
+   * Since Wave 66 the GPU side is one lane per registered Crucible and nothing
+   * else (Owen: *"there should be no local gpu listed in the queue"*), so a
+   * machine with no server registered has NO GPU lane. The ceiling below would
+   * then be zero and every GPU row would sit queued for ever, unstarted and
+   * unexplained — *"a row that neither fails nor finishes is worse than either"*.
+   *
+   * So the row is let through, and the PLACEMENT refuses it by name one step
+   * later (`placeJob`, electron/crucible-dispatch.ts: *"no GPU engine is
+   * connected — add one in Settings › Servers"*). It reserves nothing on the way:
+   * `laneAtPick` has no lane to give it, and the walk it is about to enter has no
+   * candidate to claim.
+   */
+  if (lanes.length === 0) return true;
   /*
    * THE CEILING IS THE SUM OF THE LANES' CAPACITIES, not the number of lanes.
    * It was the count while every lane took one run; a server's `[cloud]` lane
@@ -4157,7 +4188,16 @@ async function placeRun(
        * will take whatever is free next time. This is the other half of the
        * sentence, and it is what the shelf shows while the run is alive.
        */
-      next.ranOn = outcome.placement.slot.name;
+      /*
+       * A PLACEMENT WITH NO SLOT RECORDS NO MACHINE. Since Wave 66 that is a job
+       * which never meets a model — an export, a compile, a mint — and it runs on
+       * this machine's cores by the ruling that keeps the CPU lane local. An
+       * absent `ranOn` is what every reader already understands as "here"
+       * (`laneOfRun`, shared/queue-board.ts); writing the name of a slot the list
+       * no longer carries would be a sentence about a machine nothing else names.
+       */
+      if (outcome.placement.slot !== null) next.ranOn = outcome.placement.slot.name;
+      else delete next.ranOn;
       /*
        * AND WHETHER IT WAS FORWARDED, which is the other half of "where it went"
        * and the thing that puts the row in the server's `[cloud]` lane rather

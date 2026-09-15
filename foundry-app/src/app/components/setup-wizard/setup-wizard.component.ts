@@ -4,32 +4,39 @@
  * ── WHAT IT IS FOR, IN ONE SENTENCE ─────────────────────────────────────────
  *
  * Foundry needs four things that do not arrive with the application — a folder
- * to keep books in, ollama, a language model small enough for THIS computer,
- * and one or two prebuilt Pythons — and until this screen existed, a new
- * installation discovered each of them by failing at it. The wizard asks for
- * them in the order they are needed, says what each one costs before fetching
- * a byte of it, and lets every single one be skipped.
+ * to keep books in, a GPU engine, one or two prebuilt Pythons and the page
+ * reader — and until this screen existed, a new installation discovered each of
+ * them by failing at it. The wizard asks for them in the order they are needed,
+ * says what each one costs before fetching a byte of it, and lets every single
+ * one be skipped.
  *
- * ── AND ONE STEP THAT IS NOT A NEED AT ALL ──────────────────────────────────
+ * ── IT USED TO ASK FOR OLLAMA AND A MODEL, AND THAT STEP IS DELETED ─────────
  *
- * Crucible (Wave 61 package E, docs/SLOTS.md) sits after Ollama and offers three
- * doors — connect to one elsewhere, use one already on this machine, install one
- * here. Owen: *"foundry should work if they have no idea what theyre doing and
- * they just want to convert PDFs to EPUB. but if they do know what theyre doing
- * and they want access to speed, they can use crucible."* So it is the one step
- * whose blurb says outright that most people should walk past it, the Ollama
- * step before it is untouched and remains the beginner's path, and the doors
- * themselves are a child component (`app-crucible-doors`) shared with the
- * Settings card so the two screens cannot offer different choices.
+ * Between the library and the engine there was a step that probed for Ollama,
+ * offered to fetch its official installer, listed the Qwen lineup with one row
+ * badged for this machine's card, and pulled the chosen tag with a bar. Owen,
+ * 2026-09-15: *"we dont have any local models. crucible handles all model
+ * orchestration. if theres no connected crucible server then tiles should be
+ * disabled."* Foundry runs no model, so there is nothing for this screen to
+ * measure the machine against and nothing for it to download.
+ *
+ * ── THE ENGINE STEP IS THE ONE THAT MATTERS NOW ─────────────────────────────
+ *
+ * It offers three doors — connect to one elsewhere, use one already on this
+ * machine, install one here — and it stopped being optional in Wave 66: every
+ * GPU slot in the queue is a registered engine, so somebody who skips it cannot
+ * translate, simplify, clean, analyse or read pages at all. The doors themselves
+ * are a child component (`app-crucible-doors`) shared with the Settings card so
+ * the two screens cannot offer different choices.
  *
  * ── IT IS A FLOW, NOT A QUESTION, AND THAT DECIDES THREE THINGS ─────────────
  *
  * `UiService.dialogs` is the one-modal list, and this is deliberately not on
  * it (see `setupOpen` there). A modal is a question with an answer; this is
- * five steps, most of which START WORK THAT OUTLIVES THE STEP — an env install
- * goes into the queue and finishes whether or not this screen is looking, and
- * an ollama pull is happening in ollama's process and would finish if the whole
- * app were closed. So:
+ * several steps, most of which START WORK THAT OUTLIVES THE STEP — an env
+ * install goes into the queue and finishes whether or not this screen is
+ * looking, and a page-reader download keeps what it has already fetched even
+ * when it is cancelled. So:
  *
  *   * it does not go through `only()`, which would let any dialog opened over
  *     it clear the boolean and take a half-finished setup off the screen;
@@ -43,10 +50,10 @@
  * ── NOTHING DOWNLOADS BECAUSE YOU ARRIVED SOMEWHERE ─────────────────────────
  *
  * Every step that costs bytes has a button, and the button is the permission.
- * Arriving at the ollama step probes (a request to localhost), arriving at the
- * environments step reads the catalog (a directory check) — neither of those
- * spends anything of the user's. The moment something is going to be fetched,
- * the size is on screen next to the button that fetches it.
+ * Arriving at the environments step reads the catalog (a directory check),
+ * arriving at the engine step reads the registry — neither of those spends
+ * anything of the user's. The moment something is going to be fetched, the size
+ * is on screen next to the button that fetches it.
  *
  * ── NEVER WHEN HOSTED ───────────────────────────────────────────────────────
  *
@@ -64,9 +71,6 @@ import type {
   EnvInstallProgress,
   EnvTarget,
   Job,
-  LlmChoices,
-  LlmModelOption,
-  OllamaPullProgress,
   PageReaderProgress,
   PageReaderState,
 } from '@shared/types';
@@ -89,7 +93,7 @@ import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
 type StepId =
-  | 'welcome' | 'library' | 'ollama' | 'crucible' | 'routes' | 'envs' | 'reading' | 'done';
+  | 'welcome' | 'library' | 'crucible' | 'routes' | 'envs' | 'reading' | 'done';
 
 interface StepDef {
   id: StepId;
@@ -103,16 +107,16 @@ interface StepDef {
  * The order, and the only place it is written down.
  *
  * Library first because it is free and it is the one answer everything else
- * lands beside. Ollama before the environments because it is the step most
- * likely to send somebody out of the app into another installer, and coming
- * back to a screen that is already downloading Pythons is better than coming
- * back to one that has been waiting.
+ * lands beside. The engine before the environments because it is a decision
+ * rather than a download: somebody who connects to an engine here has changed
+ * what the rest of setup means, and finding that out after paying for two
+ * Pythons would be finding it out too late.
  */
 const STEPS: readonly StepDef[] = [
   {
     id: 'welcome',
     title: 'Welcome',
-    blurb: 'Four things to set up. Each one can be skipped, and each one can be done later from Settings.',
+    blurb: 'A library folder, a GPU engine, the Python environments and the page reader. Each one can be skipped, and each one can be done later from Settings.',
   },
   {
     id: 'library',
@@ -120,22 +124,28 @@ const STEPS: readonly StepDef[] = [
     blurb: 'Where finished books live. A folder you can open, back up and sync — not somewhere hidden.',
   },
   {
-    id: 'ollama',
-    title: 'Ollama and a model',
-    blurb: 'The model this machine runs text on. It gets the largest that fits — and a card that cannot hold a 27B reaches translation another way.',
-  },
-  {
     /*
-     * AFTER OLLAMA AND BEFORE THE ENVIRONMENTS. After, because the Ollama step
-     * is what most people will use and a Crucible offered first would read as a
-     * requirement. Before the environments, because it is a decision rather than
-     * a download: somebody who connects to a Crucible here has changed what the
-     * rest of setup means, and finding that out after paying for two Pythons
-     * would be finding it out too late.
+     * AFTER THE LIBRARY AND BEFORE THE ENVIRONMENTS. It used to sit after an
+     * Ollama step, on the argument that the Ollama step *"is what most people will
+     * use and a Crucible offered first would read as a requirement"* — and since
+     * Wave 66 it IS one, and since 2026-09-15 there is no Ollama step to sit
+     * after. Before the environments, because it is a decision rather than a
+     * download: somebody who connects to an engine here has changed what the rest
+     * of setup means, and finding that out after paying for two Pythons would be
+     * finding it out too late.
      */
     id: 'crucible',
-    title: 'Crucible (optional)',
-    blurb: 'Most people should skip this. It is how a second machine, or a faster path on this one, gets used.',
+    /*
+     * IT SAID *"Crucible (optional)"* AND *"Most people should skip this"*, and
+     * Owen's Wave 66 ruling retired both: *"everything goes through a crucible
+     * server now, including local… there should be no local gpu listed in the
+     * queue."* Every GPU slot in the queue is a registered engine, so a person
+     * who skips this step has no slot and cannot translate, simplify, clean,
+     * analyse or read pages at all. Telling them to walk past it would be this
+     * screen sending somebody to a dead queue.
+     */
+    title: 'A GPU engine',
+    blurb: 'Where translation, simplification, cleanup, analysis and page reading run — on this machine or another one. Without one they cannot run.',
   },
   {
     /*
@@ -207,8 +217,9 @@ const STEPS: readonly StepDef[] = [
           @if (current() === 'welcome') {
             <p class="lead">
               Foundry turns a scanned or PDF book into text you can read, translate, simplify and
-              search for claims. Most of that work happens on this computer, which is why there is
-              anything to set up at all.
+              search for claims. The book itself is made on this computer; anything that meets a
+              language model is sent to a GPU engine, which is the one thing here worth setting up
+              carefully.
             </p>
             <p class="line">
               Nothing on the next screens downloads until you press the button that downloads it,
@@ -234,130 +245,30 @@ const STEPS: readonly StepDef[] = [
             </div>
           }
 
-          <!-- ── Ollama ──────────────────────────────────────────────────── -->
-          @if (current() === 'ollama') {
-            @if (choices(); as facts) {
-              <div class="state" [attr.data-ok]="facts.ollama.running">
-                <span class="dotstate" [attr.data-ok]="facts.ollama.running"></span>
-                <span>{{ facts.ollama.detail }}</span>
-              </div>
-
-              @if (!facts.ollama.running) {
-                <p class="line">
-                  Foundry does not install or manage ollama — this fetches its official installer and
-                  opens it, so you land in ollama's own setup screen. Come back here and press Check
-                  again when it has finished.
-                </p>
-                <div class="actions">
-                  <button class="primary" type="button" [disabled]="busy()" (click)="getOllama()">
-                    Download the ollama installer
-                  </button>
-                  <button class="ghost" type="button" [disabled]="busy()" (click)="reprobe()">Check again</button>
-                </div>
-              } @else {
-                <p class="machine">{{ facts.profile.detail }}</p>
-                <!--
-                  THE ONE THING THIS SCREEN MUST NOT PROMISE. Owen's floor
-                  (docs/SLOTS.md §1): translation and simplification need a 27B,
-                  or a Crucible, or a cloud key. On a smaller card no amount of
-                  pulling makes them work, so it is said BEFORE the download
-                  rather than discovered afterwards as a dark tile. The
-                  narration cleanup and the analysis still run here, which is
-                  why the step is not skipped — it is narrowed.
-                -->
-                @if (facts.translateFloorMiss; as miss) {
-                  <p class="warn">
-                    Translation and simplification need {{ miss.needs }} or larger, which wants
-                    {{ miss.needsGB }} GB — more than this machine has. The models below still
-                    clean text for the narrator and run analysis. For translation, connect a
-                    Crucible server or a cloud provider in Settings.
-                  </p>
-                }
-                <!--
-                  docs/SLOTS.md §5b: the app never pulls into Ollama while a
-                  LOCAL Crucible serves the class. Said in the rows rather than
-                  by hiding them — the list's job is to describe this machine,
-                  and a list that silently shortened itself would describe a
-                  different one. The download buttons are off; choosing a row
-                  still works, because the tag it writes is what a job uses if
-                  that server is later switched off.
-                -->
-                @if (facts.crucible; as taken) {
-                  <p class="ok-note">
-                    The Crucible on this machine ({{ taken.server }}) already serves
-                    {{ taken.classes.join(', ') }} here, so Foundry will not pull a second copy of
-                    these models into Ollama.
-                  </p>
-                }
-                <div class="models">
-                  @for (option of facts.options; track option.tag) {
-                    <button
-                      class="model"
-                      type="button"
-                      [class.picked]="option.tag === chosen()"
-                      [class.unfit]="!option.fits"
-                      (click)="chosen.set(option.tag)"
-                    >
-                      <span class="model-head">
-                        <span class="model-name">{{ option.label }}</span>
-                        @if (option.recommended) { <span class="badge">Recommended</span> }
-                        @if (option.installed) { <span class="badge held">Already here</span> }
-                        @if (!option.fits) { <span class="badge warn-badge">Bigger than this machine</span> }
-                      </span>
-                      <span class="model-meta">
-                        {{ option.downloadGB }} GB download · wants about {{ option.needsGB }} GB of
-                        {{ memoryWord(facts) }} · {{ option.description }}
-                      </span>
-                      @if (!option.fits) {
-                        <span class="model-warn">{{ unfitSays(facts) }}</span>
-                      }
-                    </button>
-                  }
-                </div>
-
-                <div class="actions">
-                  @if (chosenOption(); as pick) {
-                    @if (pick.installed) {
-                      <button class="primary" type="button" [disabled]="busy()" (click)="useModel()">
-                        Use {{ pick.tag }}
-                      </button>
-                    } @else {
-                      <button class="primary" type="button"
-                              [disabled]="busy() || facts.crucible !== null"
-                              (click)="pullModel()">
-                        Download {{ pick.tag }} ({{ pick.downloadGB }} GB) and use it
-                      </button>
-                    }
-                  }
-                  @if (busy()) {
-                    <button class="ghost" type="button" (click)="cancelOllama()">Cancel</button>
-                  }
-                </div>
-              }
-
-              @if (ollamaSaid(); as progress) {
-                @if (progress.phase === 'download') {
-                  <div class="bar"><div class="fill" [style.width.%]="progress.percent"></div></div>
-                }
-                <p class="small" [class.bad]="progress.phase === 'error'">{{ progress.detail }}</p>
-              }
-              @if (modelSaid()) { <p class="ok-note">{{ modelSaid() }}</p> }
-            } @else {
-              <p class="line">Asking ollama…</p>
-            }
-          }
-
           <!-- ── Crucible ────────────────────────────────────────────────── -->
           @if (current() === 'crucible') {
+            <!--
+              THIS SCREEN USED TO SAY *"Foundry does not need it"*, and Owen's
+              ruling of Wave 66 made that untrue: *"everything goes through a
+              crucible server now, including local… there should be no local gpu
+              listed in the queue."* Every act that meets a model is a Crucible's
+              work, so the step says what it actually is — the one that decides
+              whether translation, simplification, cleanup, analysis and page
+              reading can run at all — rather than offering itself as optional
+              polish.
+            -->
             <p class="lead">
               Crucible is a separate program that serves models over the network — on this
-              machine or on another one. Foundry does not need it: everything on the last
-              screen works without it, and this step can be skipped for good.
+              machine or on another one. Every GPU slot in Foundry's queue is one of these,
+              including one installed here, so this is the step that decides whether
+              translation, simplification, cleanup, analysis and page reading can run at all.
+              Compiling a book and exporting it never need one.
             </p>
             <p class="line">
-              What it buys is speed and reach. A Crucible on a machine with a bigger card runs
-              the translation there; a Crucible on this machine replaces the local GPU slot with
-              one that holds its models properly instead of loading and unloading per job.
+              A Crucible on a machine with a bigger card runs the work there; a Crucible on this
+              machine runs it here and holds its models properly instead of loading and
+              unloading per job. Registering both gives the queue two GPU slots and it will use
+              whichever is free.
             </p>
             @if (crucibleServers().length > 0) {
               <p class="ok-note">
@@ -473,8 +384,9 @@ const STEPS: readonly StepDef[] = [
             @if (reader(); as it) {
               <p class="lead">
                 The model that reads pages is dots.ocr. Every other thing foundry asks a model to do
-                — translate, simplify, clean, analyse — goes to the ollama on the last step, but no
-                ollama serves this one, so this is the one piece foundry fetches itself.
+                — translate, simplify, clean, analyse — runs on the GPU engine you connected, and so
+                does this when the engine serves it. This copy is the fallback for a machine that
+                has no engine of its own, and it is the only weights foundry ever fetches.
               </p>
               <p class="line">{{ it.platformNote }}</p>
               <p class="line">{{ it.detail }}</p>
@@ -662,13 +574,6 @@ const STEPS: readonly StepDef[] = [
       padding: 6px 8px;
     }
 
-    .state {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
     .dotstate {
       width: 8px;
       height: 8px;
@@ -679,29 +584,6 @@ const STEPS: readonly StepDef[] = [
     }
     .dotstate[data-ok="true"] { background: var(--ok); }
 
-    .models { display: flex; flex-direction: column; gap: 6px; }
-    .model {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      align-items: flex-start;
-      text-align: left;
-      width: 100%;
-      padding: 8px 10px;
-      background: var(--bg-input);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  background-color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .model:hover { background: var(--bg-hover); border-color: var(--border-default); }
-    .model.picked { border-color: var(--accent); background: var(--accent-faint); }
-    .model.unfit .model-name { color: var(--text-secondary); }
-    .model-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .model-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-    .model-meta { font-size: 11px; color: var(--text-tertiary); }
-    .model-warn { font-size: 11px; color: var(--warn); }
 
     .badge {
       font-size: 10px;
@@ -786,11 +668,6 @@ export class SetupWizardComponent {
   /** The four llm classes, in the order the routes step draws them. */
   protected readonly classes = LLM_CLASSES;
   protected readonly libraryDir = signal('');
-  protected readonly choices = signal<LlmChoices | null>(null);
-  protected readonly chosen = signal('');
-  protected readonly busy = signal(false);
-  protected readonly ollamaSaid = signal<OllamaPullProgress | null>(null);
-  protected readonly modelSaid = signal('');
   protected readonly envItems = signal<EnvCatalogItem[]>([]);
   protected readonly readingSaid = signal('');
   protected readonly warming = signal(false);
@@ -876,9 +753,6 @@ export class SetupWizardComponent {
   });
   protected readonly index = computed(() => Math.max(0, this.indexOf(this.current())));
   protected readonly def = computed(() => this.visible()[this.index()] ?? STEPS[0]!);
-  protected readonly chosenOption = computed<LlmModelOption | null>(() =>
-    this.choices()?.options.find((option) => option.tag === this.chosen()) ?? null);
-
   private readonly envJobs = computed(() =>
     this.queue.jobs().filter((job) => job.kind === 'env-install'));
   protected readonly envBusy = computed(() =>
@@ -900,10 +774,6 @@ export class SetupWizardComponent {
 
     api.env.onInstallProgress((progress) => {
       this.live.update((all) => ({ ...all, [progress.target]: progress }));
-    });
-    api.ollama.onProgress((progress) => {
-      this.ollamaSaid.set(progress);
-      if (progress.phase === 'done' || progress.phase === 'error') this.busy.set(false);
     });
     api.pageReader.onProgress((progress) => {
       this.readerSaid.set(progress);
@@ -960,7 +830,6 @@ export class SetupWizardComponent {
       const here = this.current();
       if (here === 'welcome') void this.loadProfile();
       if (here === 'library') void this.loadLibrary();
-      if (here === 'ollama') void this.loadChoices();
       if (here === 'crucible') void this.loadCrucible();
       if (here === 'routes') void this.loadRoutes();
       if (here === 'envs') void this.loadEnvs();
@@ -992,13 +861,6 @@ export class SetupWizardComponent {
     this.libraryDir.set(await api.library.dir());
   }
 
-  private async loadChoices(): Promise<void> {
-    if (!api) return;
-    const facts = await api.ollama.choices();
-    this.choices.set(facts);
-    if (this.chosen().length === 0) this.chosen.set(facts.suggested);
-  }
-
   private async loadEnvs(): Promise<void> {
     if (!api) return;
     this.envItems.set(await api.env.catalog());
@@ -1017,14 +879,6 @@ export class SetupWizardComponent {
     const view = await api.crucible.settings();
     this.crucibleServers.set(view.servers);
     this.coordination.set(await api.crucible.coordination());
-    /*
-     * AND THE OLLAMA STEP'S FACTS, because registering a local Crucible changes
-     * them: a class it serves is a class this wizard must not pull a second copy
-     * of into Ollama (docs/SLOTS.md §5b). Read here rather than on the way back
-     * to that step, so somebody who presses Back finds the rows already saying
-     * so instead of watching them change under the cursor.
-     */
-    if (this.choices() !== null) await this.loadChoices();
   }
 
   // ── Where the text work runs (PHASE15-HOST.md §5.2) ───────────────────────
@@ -1217,67 +1071,6 @@ export class SetupWizardComponent {
     // Main's value wins: it clamps, and a renderer holding an optimistic copy
     // would show a folder nothing writes to.
     this.libraryDir.set(await api.library.set(chosen));
-  }
-
-  // ── Ollama ────────────────────────────────────────────────────────────────
-
-  protected memoryWord(facts: LlmChoices): string {
-    switch (facts.profile.memoryBasis) {
-      case 'vram': return 'video memory';
-      case 'unified': return 'unified memory';
-      case 'ram': return 'system memory';
-    }
-  }
-
-  protected unfitSays(facts: LlmChoices): string {
-    return facts.profile.memoryBasis === 'ram'
-      ? 'There is no GPU here, so anything at all runs on the processor — expect minutes per page rather than seconds. You can still choose it.'
-      : 'It will spill onto the processor and run several times slower, or refuse to load. You can still choose it.';
-  }
-
-  protected async reprobe(): Promise<void> {
-    this.ollamaSaid.set(null);
-    await this.loadChoices();
-  }
-
-  protected async getOllama(): Promise<void> {
-    if (!api) return;
-    this.busy.set(true);
-    this.modelSaid.set('');
-    const result = await api.ollama.install();
-    this.busy.set(false);
-    this.ollamaSaid.set({
-      tag: 'ollama',
-      phase: result.ok ? 'done' : 'error',
-      percent: result.ok ? 100 : 0,
-      detail: result.detail,
-    });
-  }
-
-  protected cancelOllama(): void {
-    void api?.ollama.cancelInstall();
-    void api?.ollama.cancelPull();
-    this.busy.set(false);
-  }
-
-  protected async pullModel(): Promise<void> {
-    const pick = this.chosenOption();
-    if (!api || !pick) return;
-    this.busy.set(true);
-    this.modelSaid.set('');
-    const result = await api.ollama.pull(pick.tag);
-    this.busy.set(false);
-    if (result.ok) {
-      await this.useModel();
-      await this.loadChoices();
-    }
-  }
-
-  protected async useModel(): Promise<void> {
-    const pick = this.chosenOption();
-    if (!api || !pick) return;
-    const stored = await api.llm.setModel(pick.tag);
-    this.modelSaid.set(`Translation, simplification and analysis will start from ${stored}.`);
   }
 
   // ── Environments ──────────────────────────────────────────────────────────

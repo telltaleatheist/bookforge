@@ -4,20 +4,18 @@ import { FormsModule } from '@angular/forms';
 import { fold } from '@shared/original';
 import { canCleanFrom } from '@shared/stages';
 import {
-  cleanTextModelsFor,
   DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
 } from '@shared/pipeline';
 import type { CleanRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedCleanDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
-import { api, ollamaRunsMlx } from '../../core/foundry';
+import { api } from '../../core/foundry';
 
 /**
  * Clean text — say the book again in the words it already has, punctuated and
@@ -43,8 +41,7 @@ import { api, ollamaRunsMlx } from '../../core/foundry';
  * step of its own, and what comes out is a records file materialised into a
  * derived book — every word of the machinery this window talks to is the machinery
  * the other two talk to, and the plan it asks main for is the same shape. So the
- * fields are the same fields, in the same order, for the same reasons: the model
- * matters and its trade is real, and Ollama is a server this app never starts.
+ * fields are the same fields, in the same order, for the same reasons.
  *
  * ── AND WHAT IT DELIBERATELY DOES NOT ASK ───────────────────────────────────
  *
@@ -84,38 +81,6 @@ import { api, ollamaRunsMlx } from '../../core/foundry';
           <label class="field">
             <span class="label">Book</span>
             <input type="text" [value]="name()" readonly [title]="input">
-          </label>
-
-          <!--
-            A LIST RATHER THAN A TEXT BOX, because the cleanup's models are three
-            and the field was a place to mistype one of them. The stored setting
-            is still the seed and is still whatever Settings holds, so an unlisted
-            tag rides at the top of the list as itself — see the unlisted() field.
-          -->
-          <label class="field">
-            <span class="label">Model</span>
-            <select [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
-              @if (unlisted(); as stored) {
-                <option [value]="stored">{{ stored }}</option>
-              }
-              @for (choice of models; track choice.tag) {
-                <option [value]="choice.tag">{{ choice.label }}</option>
-              }
-            </select>
-          </label>
-          <!--
-            The same measured trade the other two dialogs state, because it is the
-            same model doing the same per-block work for the same hours.
-          -->
-          <p class="note">
-            The <strong>8-bit</strong> 9B is the measured default — about fifty blocks a minute.
-            The <strong>16-bit</strong> twin is the same model at full precision and somewhat
-            slower; the <strong>27B</strong> runs at roughly a fifth of the 9B's rate.
-          </p>
-
-          <label class="field">
-            <span class="label">Ollama <em>used, never started</em></span>
-            <input type="text" [ngModel]="ollama()" (ngModelChange)="ollama.set($event)" name="ollama">
           </label>
 
           <p class="note">
@@ -313,49 +278,17 @@ export class CleanDialogComponent {
     return project === null ? undefined : this.ledger.aimedAt(project.dir);
   });
 
-  protected readonly model = signal(DEFAULT_MODEL);
-
-  /**
-   * The three tags a cleanup is offered, in their declared order — the 16-bit
-   * one named for the runner THIS machine has, which on Apple Silicon is the
-   * MLX build and everywhere else the GGUF (`cleanTextModelsFor`). A machine
-   * cannot change architecture while the dialog is open, so it is a constant.
-   */
-  protected readonly models = cleanTextModelsFor(ollamaRunsMlx);
-
-  /**
-   * The stored model when it is NOT one of the three — the extra row at the top
-   * of the list, and null when the setting names something the list already has.
-   *
-   * A `<select>` whose value matches no option shows an empty box, and an empty
-   * box here would be this window disagreeing with the job it is about to queue:
-   * `add()` sends `model()` whatever the list contains.
-   */
-  protected readonly unlisted = computed(() => {
-    const chosen = this.model().trim();
-    if (chosen.length === 0) return null;
-    return this.models.some((choice) => choice.tag === chosen) ? null : chosen;
-  });
-  protected readonly ollama = signal(DEFAULT_OLLAMA);
   /*
-   * NO `server` SIGNAL ANY MORE — `TranslateRequest.server` (shared/types.ts)
-   * carries the whole argument. The two above are the LOCAL slot's answers, and
-   * WHERE a job goes is picked on its queue row (docs/SLOTS.md §3).
+   * NO MODEL PICKER, NO OLLAMA FIELD AND NO `server` SIGNAL. See the Translate
+   * dialog, where all three are argued. The three-tag list this window offered
+   * — 8-bit, 16-bit, 27B — was Foundry choosing a model, which is the engine's
+   * decision now (Owen, 2026-09-15).
    */
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */
   protected readonly busy = signal(false);
 
   constructor() {
-    // ITS OWN STORED MODEL, `cleanTextModel` — NOT `defaultLlmModel`, which
-    // seeds translate, simplify and analyse and names a 27b that runs the
-    // cleanup at a fifth of the 9b-q8_0's rate. Unset, that setting IS
-    // DEFAULT_CLEAN_TEXT_MODEL (mirroring the engine's
-    // DEFAULT_NORMALIZER_MODEL), so this field opens on the declared default
-    // until somebody types otherwise in Settings — Owen, 2026-09-08. The same
-    // key is what BookForge's own Clean text press reads out of the same
-    // app-settings.json. See core/llm-defaults.ts.
-    seedCleanDefaults(this.model, this.ollama);
     // A complaint about the last book is cleared when the book changes.
     effect(() => {
       this.source();
@@ -402,10 +335,23 @@ export class CleanDialogComponent {
         // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
         // carried verbatim — the queue reads it, nothing here interprets it.
         ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
-        // The LOCAL slot's model and URL. Never empty — see the translate
-        // dialog's note, where the branch that allowed it is argued away.
-        model: this.model().trim() || DEFAULT_MODEL,
-        ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        /*
+         * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
+         *
+         * Owen, 2026-09-15: *"we dont have any local models. crucible handles
+         * all model orchestration."* The ENGINE's capability record names the
+         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
+         * placement applies it at the spawn, over the top of these two
+         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
+         * choose something that was then ignored, and it is gone.
+         *
+         * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
+         * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
+         * and prints the request's own pair (BookForge's `cli/clean-step.js`).
+         * The declared defaults are the honest thing for that line to carry.
+         */
+        model: DEFAULT_MODEL,
+        ollama: DEFAULT_OLLAMA,
         ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
         ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // Minted by the plan and carried back to the landing, so the row and the

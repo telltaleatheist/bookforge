@@ -12,7 +12,6 @@ import {
 import type { TranslateRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedLlmDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -50,11 +49,11 @@ import { api } from '../../core/foundry';
  *   nothing to work on — so the dialog says where to stand rather than offering
  *   to translate photographs of pages.
  *
- *   **The Ollama endpoint IS a field here**, unlike the reading backend in the
- *   OCR dialog. That one is owned by the settings screen and a second control
- *   would be a second opinion. Ollama has no settings screen: it is a server
- *   the user already runs, that this app never starts, stops or configures, so
- *   there is nothing here to contradict.
+ *   **There is no model field and no endpoint field**, and there were both. They
+ *   described where the work ran, and it runs on a connected GPU engine, which
+ *   names its own model per class (Owen, 2026-09-15: *"crucible handles all model
+ *   orchestration"*). A control that cannot change the run is a control that
+ *   lies to whoever uses it.
  *
  *   **Translator instructions are free text and they matter.** Terminology is
  *   per-book — which words stay in the source language, whether loaded
@@ -172,28 +171,6 @@ import { api } from '../../core/foundry';
               row holds rather than the book's own.
             </p>
           }
-
-          <label class="field">
-            <span class="label">Model</span>
-            <input type="text" [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
-          </label>
-          <!--
-            The measured differences, said before the choice rather than after
-            six hours of it. This is the one field where the default is worth
-            departing from on purpose, and the trade is real: 14b is about twice
-            as fast and omits more.
-          -->
-          <p class="note">
-            <strong>qwen3:32b</strong> is the most faithful of the models measured and is slow —
-            hours for a full book. <strong>qwen2.5:14b</strong> is roughly twice as fast and good
-            for a draft, but drops the occasional clause. Whatever you pick, every paragraph is
-            checked before it goes into the book.
-          </p>
-
-          <label class="field">
-            <span class="label">Ollama <em>used, never started</em></span>
-            <input type="text" [ngModel]="ollama()" (ngModelChange)="ollama.set($event)" name="ollama">
-          </label>
 
           <label class="field">
             <span class="label">Translator instructions <em>optional</em></span>
@@ -578,17 +555,15 @@ export class TranslateDialogComponent {
     if (standing === null || wanted.length === 0) return false;
     return languageTagFor(standing).toLowerCase() === languageTagFor(wanted).toLowerCase();
   });
-  protected readonly model = signal(DEFAULT_MODEL);
-  protected readonly ollama = signal(DEFAULT_OLLAMA);
   /*
-   * THERE USED TO BE A `server` SIGNAL HERE, seeded from Settings and never
-   * shown, riding on the request so that the kind, the URL and the model agreed.
-   * The setting behind it is retired (docs/SLOTS.md, Wave 61) and so is the
-   * field: the two above are the LOCAL slot's answers, and a job sent to a
-   * registered Crucible takes its model and its address from that server rather
-   * than from this dialog. WHERE a job goes is picked on its queue row, not
-   * here — a per-book choice that this dialog deliberately does not make, for
-   * the same reason it never made this one.
+   * ── NO MODEL SIGNAL, NO OLLAMA SIGNAL, AND NO `server` ONE EITHER ────────
+   *
+   * All three were fields on this window at one time or another, and all three
+   * described where the work ran. It runs on a connected GPU engine now, which
+   * chooses its own model (Owen, 2026-09-15: *"crucible handles all model
+   * orchestration"*), and WHERE is picked on the job's own queue row — a
+   * per-book choice this dialog deliberately does not make, for the same reason
+   * it no longer makes the other one.
    */
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
@@ -596,10 +571,6 @@ export class TranslateDialogComponent {
   protected readonly busy = signal(false);
 
   constructor() {
-    // The model and the URL come from the app's own settings, which first-run
-    // setup wrote after measuring the machine. The constants above are the
-    // floor for a renderer with no bridge under it — see core/llm-defaults.ts.
-    seedLlmDefaults('translate', this.model, this.ollama);
     // Same rule as the OCR dialog: a complaint about the last book is cleared
     // when the book changes, and nothing else resets. The instructions in
     // particular are the user's careful answer and survive switching tabs.
@@ -642,15 +613,22 @@ export class TranslateDialogComponent {
         ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
         /*
-         * THE MODEL IS NEVER EMPTY NOW, and the branch that allowed it went with
-         * the vLLM setting. Empty meant "whatever that server is serving", which
-         * is a question only the OpenAI door asks — and the only thing on that
-         * door is a Crucible, whose model is named by its own capability record
-         * at the spawn. This pair is the LOCAL slot's, and Ollama holds a library
-         * the engine refuses to guess at.
+         * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
+         *
+         * Owen, 2026-09-15: *"we dont have any local models. crucible handles
+         * all model orchestration."* The ENGINE's capability record names the
+         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
+         * placement applies it at the spawn, over the top of these two
+         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
+         * choose something that was then ignored, and it is gone.
+         *
+         * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
+         * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
+         * and prints the request's own pair (BookForge's `cli/clean-step.js`).
+         * The declared defaults are the honest thing for that line to carry.
          */
-        model: this.model().trim() || DEFAULT_MODEL,
-        ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        model: DEFAULT_MODEL,
+        ollama: DEFAULT_OLLAMA,
         /*
          * WHERE THE ANSWERS GO, AND THE WHOLE OF WHAT THIS RUN MAKES. Every
          * accepted block lands there the moment it is accepted, so a run that is

@@ -60,7 +60,6 @@ import { cloudProviderViews, enabledCloudProviders } from './cloud-providers';
 import { foundryHost, hosted } from './host';
 import {
   ANY_SLOT,
-  LOCAL_SLOT_NAME,
   isLoopbackUrl,
   slotNameRefusal,
   tidySlotName,
@@ -133,9 +132,17 @@ function readRegistry(): RegistryRead {
       entries: [],
       refusal: {
         code: 'host_provides_no_registry',
+        /*
+         * THE SECOND SENTENCE USED TO BE *"Work will run the way it did before
+         * servers could be chosen"*, and Wave 66 made it false: there is no
+         * local GPU slot to fall back to, so GPU work in a window like this has
+         * nowhere to go and is refused by name rather than quietly run here.
+         * Exports and compiles are unaffected — they are CPU work, and Owen's
+         * ruling keeps that lane local.
+         */
         sentence: 'This window is running inside another application, and that application has '
-          + 'not offered a list of Crucible servers. Work will run the way it did before '
-          + 'servers could be chosen.',
+          + 'not offered a list of GPU engines. Translation, simplification, cleanup, analysis '
+          + 'and page reading have nowhere to run; exports and compiles are unaffected.',
       },
     };
   }
@@ -381,22 +388,40 @@ function refuseHostedRegistryChange(): void {
 /**
  * WHERE A JOB'S COMPUTE CAN GO, in priority order.
  *
- * ── The local slot, and the one thing that removes it ──────────────────────
+ * ── THERE IS NO LOCAL SLOT, AND THAT IS THE WHOLE OF WAVE 66's SLOT HALF ───
  *
- * The machine's own GPU is first and is what a person with no Crucible sees —
- * one slot, no picker, nothing to learn. It disappears for exactly one reason:
- * an ENABLED entry whose URL is loopback. Owen: *"if theyre using crucible on
- * their local machine, the local GPU disappears."* One card, one owner — a local
- * Crucible and an Ollama on one box would be two slots pointing at one GPU, and
- * the board would cheerfully start a job in each.
+ * It used to be first, and it used to be what a person with no Crucible saw:
+ * this machine's own Ollama, under the name "This computer", removed for exactly
+ * one reason — an enabled entry whose URL was loopback. Owen deleted the slot
+ * outright: *"everything goes through a crucible server now, including local…
+ * there should be no local gpu listed in the queue"*, and *"one gpu slot in the
+ * queue per connected crucible server. including the local crucible, which is
+ * indistinguishable from the remote crucible server."*
  *
- * WHAT "DISAPPEARS" MEANS IS TEXT ACTS, and the line is worth stating because
- * reading is the other expensive thing this app does. Page reading stays on its
- * own local path until a Crucible `pages` slot is wired (see `CRUCIBLE_READS` in
- * crucible-dispatch.ts, and Package B, which owns that reader). So a loopback
- * Crucible takes the translate/simplify/clean/analyse work off Ollama and leaves
- * the reader where it is; nothing about that is hidden from the person, because
- * the reader has a settings row of its own.
+ * So the GPU slots are the enabled Crucible servers, in registry order, and
+ * nothing else. A loopback entry is one of them and replaces nothing. A machine
+ * with no server registered has NO slot, which is not a broken app and is not a
+ * silent fallback either: a GPU job in that state is refused by name, with the
+ * one thing a person can do about it (`placeJob`, crucible-dispatch.ts). CPU work
+ * — every export, compile and rasterise — is untouched, because the same ruling
+ * says so: *"cpu slots are always local. we dont outsource simple cpu work to
+ * crucible."*
+ *
+ * ── AN ORCHESTRATOR WITH NO ENGINE IS NOT A SLOT ───────────────────────────
+ *
+ * crucible docs/PHASE17-ORCHESTRATOR.md §6: a registered address may be a tray
+ * ORCHESTRATOR that manages an engine, and `resolveEngine` follows that hop once.
+ * An orchestrator WITH an engine is a perfectly good slot — one machine, one
+ * lane, whichever of its two addresses the person registered. An orchestrator
+ * with NO engine serves no job type at all, and a lane for it would be a lane the
+ * scheduler could fill with work nothing can answer. BookForge's bench draws no
+ * row for one; neither does this list.
+ *
+ * IT IS READ OUT OF THE RESOLVER'S CACHE AND NEVER ASKED FOR HERE
+ * ({@link engineAbsence}). This function is called on every pump pass and behind
+ * every picker; a network hop in it would put a round trip in front of the board.
+ * A cache that has never been filled answers "unknown", and unknown DRAWS THE
+ * LANE — a machine nobody has probed yet is not a machine that has answered.
  *
  * ── THE CLOUD SLOTS COME LAST, AND THE ORDER IS THE WHOLE STATEMENT ────────
  *
@@ -417,10 +442,12 @@ function refuseHostedRegistryChange(): void {
  * ── Hosted, this list is the host's whole answer ───────────────────────────
  *
  * Including the emptiness of it. A host that registers no `slots` provider gets
- * an empty list, and an empty list is not a broken app: the dispatcher reads it
- * as "no placement to decide" and every job takes the path it took before this
- * feature existed. That is what makes this additive for BookForge until they
- * choose to supply one. A host that offers no cloud slot therefore has none —
+ * an empty list, and an empty list is no longer a window that quietly runs
+ * everything here: since Wave 66 there is no local slot to fall back to, so GPU
+ * work in such a window is refused by name (`placeJob`, crucible-dispatch.ts) and
+ * CPU work goes on exactly as before. `SlotRefusal` is what says which silence
+ * this is, and its sentence says which half of the queue is affected. A host that
+ * offers no cloud slot therefore has none —
  * this app's own `cloudProviders` are not merged into a host's list, because the
  * work in a hosted window runs on the host's compute and its bill is the host's.
  */
@@ -460,10 +487,11 @@ function slotsFrom(entries: readonly CrucibleServerEntry[]): ComputeSlot[] {
    * lookup impossible to miss: every slot named here came from an entry that
    * `crucibleServerNamed` will find.
    *
-   * ONE SUPPRESSION HOSTED, AND IT USED TO BE TWO. No local slot — BookForge
-   * requires Crucible and has no ollama fallback (SLOTS.md §1), so offering
-   * this window the host's own card would be offering a GPU the host's queue
-   * is already rationing.
+   * NOTHING IS SUPPRESSED HOSTED ANY MORE, and it used to be two things and then
+   * one. The one was the local slot — BookForge requires Crucible and has no
+   * ollama fallback (SLOTS.md §1) — and there is no local slot on either side of
+   * that seam now, so the branch that hid it is gone rather than kept as a test
+   * of something that cannot happen.
    *
    * CLOUD SLOTS ARE DRAWN HOSTED, and the reverse was a mistake that
    * contradicted a ruling. Owen: *"if a user can't run a 27b for translation,
@@ -475,14 +503,10 @@ function slotsFrom(entries: readonly CrucibleServerEntry[]): ComputeSlot[] {
    * The key is the host USER's own, typed into this card by the person who
    * will pay for it, and there is no third party anywhere in it.
    */
-  const servers = entries.filter((entry) => entry.enabled);
-  const local: ComputeSlot[] = hosted() || servers.some((entry) => isLoopbackUrl(entry.url))
-    ? []
-    : [{ name: LOCAL_SLOT_NAME, kind: 'local' }];
-  const out: ComputeSlot[] = [
-    ...local,
-    ...servers.map((entry): ComputeSlot => ({ name: entry.name, kind: 'crucible', url: entry.url })),
-  ];
+  const servers = entries.filter((entry) => entry.enabled && engineAbsence(entry) === null);
+  const out: ComputeSlot[] = servers.map(
+    (entry): ComputeSlot => ({ name: entry.name, kind: 'crucible', url: entry.url }),
+  );
   const taken = new Set(out.map((slot) => slot.name.toLowerCase()));
   for (const provider of enabledCloudProviders()) {
     if (taken.has(provider.name.toLowerCase())) continue;
@@ -508,10 +532,11 @@ function slotsFrom(entries: readonly CrucibleServerEntry[]): ComputeSlot[] {
  * carrying the word "top" would move. `any` stays the reserved word, which is
  * the one answer that genuinely means "decide later".
  *
- * UNDEFINED WHEN THERE IS NOTHING TO DECIDE — no slots at all (hosted with no
- * provider), or exactly one. A row with no `waitFor` is every row this queue has
- * ever held, and it takes the local path; writing a name onto it would put a
- * fact on the wire that the picker is not even drawn to show.
+ * UNDEFINED WHEN THERE IS NOTHING TO DECIDE — no slots at all, or exactly one. A
+ * row with no `waitFor` is every row this queue has ever held; writing a name
+ * onto it would put a fact on the wire that the picker is not even drawn to show.
+ * With one slot the walk finds that slot anyway, and with none the placement
+ * refuses by name — neither is a decision this function has to pre-empt.
  *
  * AND `top` IS THE TOP NON-CLOUD SLOT (docs/SLOTS.md §3: a cloud provider is *"a
  * deliberate per-job choice, never something `any` falls through to"*). The
@@ -663,6 +688,57 @@ const hops = new Map<string, HopEntry>();
 /** In flight, so two placements racing on one server make one round of requests. */
 const hopsInFlight = new Map<string, Promise<EngineTarget>>();
 
+/**
+ * THE ENTRIES THAT TURNED OUT TO BE AN ORCHESTRATOR WITH NOTHING BEHIND THEM —
+ * the negative half of the resolution, kept so the SLOT LIST can read it without
+ * asking anybody anything.
+ *
+ * Keyed and clocked exactly as {@link hops} is (`hopKey`, {@link HOP_CACHE_MS}),
+ * because it is the same fact with the opposite sign and a person fixes it the
+ * same way — `crucible install` on that machine, or re-pointing the entry — after
+ * which the next resolution overwrites it.
+ *
+ * ONLY `orchestrator_has_no_engine` IS REMEMBERED HERE. A machine that is
+ * unreachable is asleep, not engineless, and hiding its slot would take a lane
+ * away from somebody whose Mac is shut; a chained orchestrator
+ * (`orchestrator_engine_is_not_an_engine`) is a misconfiguration the placement
+ * already refuses with a sentence naming both addresses, and a person needs to
+ * see that slot in the picker to understand which entry they must re-point.
+ */
+const engineless = new Map<string, { at: number; sentence: string }>();
+
+/**
+ * IS THIS ENTRY KNOWN TO HAVE NO ENGINE BEHIND IT — the refusal's own sentence,
+ * or null for "no" and for "nobody has asked yet".
+ *
+ * SYNCHRONOUS, AND A CACHE READ AND NOTHING ELSE — `crucible-provider.ts`'s
+ * posture, for its reason: the readers are the slot list and the dispatcher's
+ * pinned branch, both of which run on every pump pass and behind every picker,
+ * and neither may put a network hop behind a lane. An unfilled cache answers null
+ * so an unprobed machine keeps its lane; the two states are told apart nowhere in
+ * this app because the answer to both is the same one.
+ */
+export function engineAbsence(entry: CrucibleServerEntry): string | null {
+  const known = engineless.get(hopKey(entry));
+  if (known === undefined || Date.now() - known.at >= HOP_CACHE_MS) return null;
+  return known.sentence;
+}
+
+/**
+ * Every ENABLED entry currently known to have no engine behind it — for the two
+ * sentences that have to name them: a pinned row whose one server is in this
+ * state, and the refusal a board with no slots at all gives.
+ */
+export function enginelessServers(): { name: string; sentence: string }[] {
+  const out: { name: string; sentence: string }[] = [];
+  for (const entry of crucibleServers()) {
+    if (!entry.enabled) continue;
+    const sentence = engineAbsence(entry);
+    if (sentence !== null) out.push({ name: entry.name, sentence });
+  }
+  return out;
+}
+
 function hopKey(entry: CrucibleServerEntry): string {
   return `${entry.name.toLowerCase()}\u0000${entry.url}`;
 }
@@ -680,6 +756,13 @@ function hopKey(entry: CrucibleServerEntry): string {
  */
 export function forgetEngineTargets(): void {
   hops.clear();
+  /*
+   * AND THE NEGATIVE HALF WITH IT. An entry that answered "no engine" is one
+   * whose slot this app is hiding; somebody who has just pressed Save on the
+   * Servers card — after installing the engine, or after re-pointing the row —
+   * must get that slot back on the next read rather than a minute later.
+   */
+  engineless.clear();
 }
 
 /**
@@ -735,7 +818,28 @@ export async function resolveEngine(
   if (running !== undefined) return withToken(await running, entry.token);
   const attempt = resolveOnce(entry, options).finally(() => { hopsInFlight.delete(key); });
   hopsInFlight.set(key, attempt);
-  const target = await attempt;
+  let target: EngineTarget;
+  try {
+    target = await attempt;
+  } catch (err) {
+    /*
+     * THE ONE FAILURE THAT IS REMEMBERED — see {@link engineless}. It is written
+     * here rather than in `resolveOnce` because this is the function that owns
+     * the cache and its clock, and a second writer of one cache is how a fact
+     * gets a different lifetime depending on which caller found it.
+     */
+    if (err instanceof CrucibleOrchestratorError && err.code === 'orchestrator_has_no_engine') {
+      engineless.set(key, { at: Date.now(), sentence: err.message });
+    }
+    throw err;
+  }
+  /*
+   * A RESOLUTION IS THE ANSWER TO THE OPPOSITE QUESTION TOO: an entry that has
+   * just named its engine is not an entry with none, whatever it said a minute
+   * ago, and leaving the old fact to expire would hide a working slot for the
+   * rest of the window.
+   */
+  engineless.delete(key);
   hops.set(key, { at: Date.now(), target });
   return target;
 }

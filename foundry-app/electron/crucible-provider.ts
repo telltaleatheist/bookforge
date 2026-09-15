@@ -7,10 +7,11 @@
  * Three things need to know whether a Crucible is serving a class of model:
  *
  *   1. the tiles (act-gates.ts) — ANY enabled Crucible serving `translate` lights
- *      Translate even where ollama holds nothing at all, because the models are
- *      over there. It was LOCAL only until Wave 62; `anyServerServing` is the
- *      wider question and the note on it argues why a remote one may be asked
- *      now (it costs no request: this snapshot already has the answer);
+ *      Translate, and since 2026-09-15 it is the ONLY thing that does: Foundry
+ *      keeps no model of its own, so an engine's answer is the whole answer. It
+ *      was LOCAL only until Wave 62; `anyServerServing` is the wider question and
+ *      the note on it argues why a remote one may be asked now (it costs no
+ *      request: this snapshot already has the answer);
  *   2. the inventory row (machine-models.ts) — SLOTS.md §5b's "Models on this
  *      machine" lists a local Crucible's residency beside ollama's store;
  *   3. the deletion rule (machine-models.ts, `pageReaderRemovalOffer`) — Foundry
@@ -325,10 +326,15 @@ export function remoteCrucibleServing(cls: ModelClass): string | null {
  * WHAT A CRUCIBLE ON THIS MACHINE HAS TAKEN OVER — the server's name and every
  * class it is serving, or null when none has taken over anything.
  *
- * For the Ollama step of the wizard and the Language model card, which must not
- * pull a model for a class this machine already serves (SLOTS.md §5b: *"the app
- * never pulls into [Ollama] while a local Crucible serves the class"*). They say
- * so in the row rather than hiding it, so they need the NAME as well as the fact.
+ * ONE READER NOW: `pageReaderSuperseded` (page-reader.ts), which is SLOTS.md §5b's
+ * deletion rule — a local Crucible serving `pages` is what lets Foundry remove its
+ * own copy of the reader, and the sentence it prints names the server.
+ *
+ * IT ALSO SERVED the wizard's Ollama step and the Language model card, which had
+ * to avoid pulling a model for a class this machine already served. Both are
+ * deleted (Owen, 2026-09-15: *"we dont have any local models"*), and with them
+ * the only rule this function existed for that was about pulling rather than
+ * deleting.
  *
  * THE FIRST LOOPBACK SERVER THAT SERVES ANYTHING, and its classes. Two local
  * Crucibles is a state the registry allows and nobody has; naming the first is
@@ -385,14 +391,14 @@ export function localCrucibleSummary(): { detail: string; items: MachineModelIte
       detail: silent.length === local.length
         ? `${named} is registered on this machine and did not answer, so what it holds is not known `
           + 'here. Nothing has been removed on the strength of it.'
-        : `${named} is registered on this machine and is serving no class, so Foundry's own models `
-          + 'are still what this computer runs.',
+        : `${named} is registered on this machine and is serving no class, so nothing here is `
+          + 'serving a model at all — switch a class on in its own console.',
       items: [],
     };
   }
   return {
-    detail: `${named} is a Crucible on this machine. The models below are ITS copies — a class it `
-      + 'serves is a class Foundry does not pull into Ollama, and the page reader it serves is one '
+    detail: `${named} is a Crucible on this machine. The models below are ITS copies — every act `
+      + 'that meets a model runs on an engine like this one, and the page reader it serves is one '
       + 'Foundry removes its own copy of (docs/SLOTS.md §5b).'
       + (silent.length === 0 ? '' : ` ${silent.map((name) => `"${name}"`).join(', ')} did not answer.`),
     items,

@@ -22,11 +22,6 @@ import { app } from 'electron';
 import { hostedLibraryDir } from './host';
 import { readJson } from '../shared/json';
 import {
-  DEFAULT_CLEAN_TEXT_MODEL,
-  DEFAULT_OLLAMA_ENDPOINT,
-  DEFAULT_TRANSLATE_MODEL,
-} from '../shared/pipeline';
-import {
   ANY_SLOT,
   slotNameRefusal,
   tidySlotName,
@@ -160,53 +155,28 @@ export interface AppSettings {
    * thirteenth built-in does not have to reconcile itself with a file.
    */
   analysisCategories: CustomAnalysisCategory[];
-  /**
-   * THE OLLAMA MODEL EVERY LANGUAGE JOB STARTS FROM — translate, simplify,
-   * analyse.
+  /*
+   * ── THREE MODEL SETTINGS STOOD HERE, AND ALL THREE ARE DELETED ────────────
    *
-   * `qwen3.8:27b` was ruled the standard for every task (Owen, 2026-08-22) and
-   * remains the fallback when this is unset, so nothing about an existing
-   * machine changes by adding this field. What it buys is the machine that
-   * CANNOT run it: 27b wants seventeen gigabytes of weights, an 8 GB card is an
-   * ordinary card, and a default nobody's hardware can honour is a default that
-   * makes the app look broken on first use. Setup measures the machine and
-   * writes the largest Qwen 3.5 that fits here.
+   * `defaultLlmModel` (what Translate, Simplify and Analyse opened with),
+   * `cleanTextModel` (Clean text's own, because the cleanup has its own
+   * economy — ~9 blocks/min on the 27b against ~50 on the 9b-q8_0) and
+   * `ollamaUrl` (where Ollama is).
    *
-   * IT IS A SEED, NOT A LOCK. The three dialogs still show the model in an
-   * editable field and still send whatever is in it; this decides what is in it
-   * when the dialog opens. Somebody who types a different model for one book
-   * gets that model for that book and this is untouched — a per-run choice is
-   * not a change of mind about the default.
+   * Owen, 2026-09-15: *"we dont have any local models. crucible handles all
+   * model orchestration. if theres no connected crucible server then tiles
+   * should be disabled."* The model a run uses is named by the ENGINE's own
+   * capability record and applied at the spawn, so all three were settings that
+   * could not affect a run. The cleanup's measured ratios moved to
+   * `DEFAULT_CLEAN_TEXT_MODEL`'s own note (shared/pipeline.ts), which is where
+   * the constant they argue for lives.
+   *
+   * THE ENGINE'S OLLAMA IS A DIFFERENT FACT AND IT SURVIVES: crucible
+   * docs/PHASE15-HOST.md §3.2 keeps `upstreams.ollama.url` in the ENGINE's own
+   * settings, written through `crucible:engine-settings`. This file's copy was
+   * the duplicate, and a duplicate of somebody else's setting is the kind that
+   * goes stale silently.
    */
-  defaultLlmModel: string;
-  /**
-   * The model the narration cleanup — **Clean text** — runs.
-   *
-   * NOT `defaultLlmModel`, and the separation is the whole point of this key.
-   * That one seeds translate, simplify and analyse; the cleanup declares its
-   * own default (`DEFAULT_CLEAN_TEXT_MODEL`, shared/pipeline.ts, mirroring the
-   * engine's `DEFAULT_NORMALIZER_MODEL`) because it is a different job with a
-   * different economy — measured 2026-09-08, the 27b the language dialogs open
-   * with walks a book at ~9 blocks/min against ~50 on the 9b-q8_0.
-   *
-   * A SEED, NOT A LOCK, exactly as above: the Clean dialog still shows the tag
-   * in an editable field and still sends whatever is in it.
-   *
-   * AND IT IS READ BY TWO DOORS. Hosted, BookForge's userData IS this app's, so
-   * BookForge's own Clean text press reads this same key out of this same file
-   * (`electron/narration-clean-text.ts` there). One file, one model — the two
-   * doors cannot run a cleanup against different models.
-   */
-  cleanTextModel: string;
-  /**
-   * Where ollama is. Its own default port unless somebody moved it.
-   *
-   * Here rather than in the engine's settings.json for the reason that file's
-   * header gives about server lifecycle: foundry never starts, stops or
-   * configures ollama, and the engine is handed the URL on the command line for
-   * every run. This is the app remembering what to hand it.
-   */
-  ollamaUrl: string;
   /**
    * ── THE SERVER REGISTRY — one entry per Crucible, IN PRIORITY ORDER ────────
    *
@@ -496,23 +466,6 @@ export function clampAnalysisCategories(value: unknown): CustomAnalysisCategory[
 }
 
 /**
- * A model tag, or the standing default.
- *
- * NOT VALIDATED AGAINST A LIST, and that is on purpose: the lineup this app
- * knows about (electron/llm-catalog.ts) is what setup OFFERS, not what ollama
- * can run. Somebody who has pulled a model of their own and typed its name has
- * said something true about their machine that a hardcoded table cannot know,
- * and refusing it would make the setting less useful than the text field it
- * seeds. The shape check is all there is: a non-empty single token.
- */
-export function clampModelTag(value: unknown, fallback = DEFAULT_TRANSLATE_MODEL): string {
-  if (typeof value !== 'string') return fallback;
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || /\s/.test(trimmed)) return fallback;
-  return trimmed;
-}
-
-/**
  * One of the two answers, or `top`. A word this build does not know is not one.
  */
 export function clampNewJobsWaitFor(value: unknown): NewJobsWaitFor {
@@ -640,13 +593,13 @@ export function clampCloudProviders(value: unknown): CloudProviderEntry[] {
 /**
  * A provider model id, or empty when there is not one.
  *
- * NOT VALIDATED AGAINST A LIST, `clampModelTag`'s rule and then some: hosted
+ * NOT VALIDATED AGAINST A LIST — hosted
  * line-ups change monthly, so a table compiled into this build would refuse the
  * model somebody is paying for. The shape check is all there is — a non-empty
  * single token — and the PROOF is the Test button, which lists the provider's
  * own `/v1/models` and says whether this id is among them.
  *
- * EMPTY RATHER THAN A FALLBACK, unlike `clampModelTag`: there is no sensible
+ * EMPTY RATHER THAN A FALLBACK: there is no sensible
  * default model for somebody else's account, and an entry with no model is one
  * `clampCloudProviders` drops rather than one that spawns a run the engine
  * refuses by name.
@@ -711,20 +664,6 @@ export function clampCrucibleUrl(value: unknown): string | null {
   }
 }
 
-/** An http(s) origin, or ollama's own. Anything unparsable is the default. */
-export function clampOllamaUrl(value: unknown, fallback = DEFAULT_OLLAMA_ENDPOINT): string {
-  if (typeof value !== 'string') return fallback;
-  const trimmed = value.trim().replace(/\/+$/, '');
-  if (trimmed.length === 0) return fallback;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fallback;
-    return trimmed;
-  } catch {
-    return fallback;
-  }
-}
-
 /** Step ids, deduplicated and capped. A stale id is harmless; a corpus is not. */
 export function clampSkipped(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -745,9 +684,6 @@ export function readAppSettings(): AppSettings {
     keepServerWarmMinutes: clampKeepWarm(raw?.['keepServerWarmMinutes']),
     libraryDir: clampLibraryDir(hostedLibraryDir() ?? raw?.['libraryDir']),
     analysisCategories: clampAnalysisCategories(raw?.['analysisCategories']),
-    defaultLlmModel: clampModelTag(raw?.['defaultLlmModel']),
-    cleanTextModel: clampModelTag(raw?.['cleanTextModel'], DEFAULT_CLEAN_TEXT_MODEL),
-    ollamaUrl: clampOllamaUrl(raw?.['ollamaUrl']),
     crucibleServers: clampCrucibleServers(raw?.['crucibleServers']),
     cloudProviders: clampCloudProviders(raw?.['cloudProviders']),
     newJobsWaitFor: clampNewJobsWaitFor(raw?.['newJobsWaitFor']),
@@ -790,15 +726,6 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   }
   if (patch.analysisCategories !== undefined) {
     root['analysisCategories'] = clampAnalysisCategories(patch.analysisCategories);
-  }
-  if (patch.defaultLlmModel !== undefined) {
-    root['defaultLlmModel'] = clampModelTag(patch.defaultLlmModel);
-  }
-  if (patch.cleanTextModel !== undefined) {
-    root['cleanTextModel'] = clampModelTag(patch.cleanTextModel, DEFAULT_CLEAN_TEXT_MODEL);
-  }
-  if (patch.ollamaUrl !== undefined) {
-    root['ollamaUrl'] = clampOllamaUrl(patch.ollamaUrl);
   }
   if (patch.crucibleServers !== undefined) {
     root['crucibleServers'] = clampCrucibleServers(patch.crucibleServers);

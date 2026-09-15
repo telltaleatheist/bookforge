@@ -18,7 +18,6 @@ import {
 import type { AnalyzeRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
-import { seedLlmDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -244,29 +243,6 @@ import { api } from '../../core/foundry';
             <span class="tally">{{ picked().size }} of {{ all().length }}</span>
           </div>
 
-          <label class="field">
-            <span class="label">Model <em>the verifier, not the ranker</em></span>
-            <input type="text" [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
-          </label>
-          <!--
-            THE TWO STAGES, NAMED, because the field above only governs one of
-            them and a person changing it should know which. The ranking is done
-            by an entailment model this app does not offer a choice about; what
-            this names is the model that answers the one question the ranker
-            cannot — is the author asserting this, or reporting it.
-          -->
-          <p class="note">
-            Every sentence is scored by an entailment model first — that pass is
-            fixed and takes minutes. This model answers the question that decides a
-            flag: <strong>is the author asserting this claim, or quoting, questioning
-            or arguing against it?</strong> One call per surviving passage, which is
-            what makes a hot book an hour.
-          </p>
-
-          <label class="field">
-            <span class="label">Ollama <em>used, never started</em></span>
-            <input type="text" [ngModel]="ollama()" (ngModelChange)="ollama.set($event)" name="ollama">
-          </label>
 
           <p class="note">
             The report is filed as a step under the one you are standing on, and nothing about the
@@ -571,23 +547,17 @@ export class AnalysisDialogComponent {
     new Set(ANALYSIS_CATEGORY_IDS),
   );
 
-  protected readonly model = signal(DEFAULT_MODEL);
-  protected readonly ollama = signal(DEFAULT_OLLAMA);
   /*
-   * NO `server` SIGNAL ANY MORE — `TranslateRequest.server` (shared/types.ts)
-   * carries the whole argument. Verification is hundreds of tiny closed
-   * questions over one loaded model, which is the shape a batching server gains
-   * most on; the way to get one now is to place the row on a Crucible slot, on
-   * its own row, rather than to put this machine into a mode.
+   * NO MODEL, NO OLLAMA AND NO `server` SIGNAL. See the Translate dialog, where
+   * all three are argued. Verification is hundreds of tiny closed questions over
+   * one loaded model, which is the shape a batching server gains most on; the
+   * way to get one is to place the row on an engine slot, on its own row.
    */
   protected readonly problem = signal<string | null>(null);
   /** The plan hashes the whole book to key it, and materialises one. Not instant. */
   protected readonly busy = signal(false);
 
   constructor() {
-    // The model and the URL are the app's own settings, written by first-run
-    // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults('analysis', this.model, this.ollama);
     // The Translate dialog's rule: a complaint about the last book is cleared when
     // the book changes, and nothing else resets. The checklist in particular is
     // the user's careful answer and survives switching tabs.
@@ -787,10 +757,23 @@ export class AnalysisDialogComponent {
           // shows, a custom category's exactly as its author typed them.
           label: one.name,
         })),
-        // The LOCAL slot's model and URL — the three other dialogs' rule, in
-        // their words.
-        model: this.model().trim() || DEFAULT_MODEL,
-        ollama: this.ollama().trim() || DEFAULT_OLLAMA,
+        /*
+         * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
+         *
+         * Owen, 2026-09-15: *"we dont have any local models. crucible handles
+         * all model orchestration."* The ENGINE's capability record names the
+         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
+         * placement applies it at the spawn, over the top of these two
+         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
+         * choose something that was then ignored, and it is gone.
+         *
+         * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
+         * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
+         * and prints the request's own pair (BookForge's `cli/clean-step.js`).
+         * The declared defaults are the honest thing for that line to carry.
+         */
+        model: DEFAULT_MODEL,
+        ollama: DEFAULT_OLLAMA,
         // Main's answer travelling back to main: the step the report is named
         // after, minted at the plan so the file and the row agree hours later.
         stepId: plan.stepId,

@@ -9,7 +9,7 @@ import { EngineSettingsCardComponent } from './engine-settings-card.component';
 import { EnvCardComponent } from './env-card.component';
 import { LibraryCardComponent } from './library-card.component';
 import { MachineModelsCardComponent } from './machine-models-card.component';
-import { LlmCardComponent } from './llm-card.component';
+import { SetupCardComponent } from './setup-card.component';
 import { PageReaderCardComponent } from './page-reader-card.component';
 import { ServersCardComponent } from './servers-card.component';
 
@@ -30,7 +30,7 @@ import { ServersCardComponent } from './servers-card.component';
   selector: 'app-settings-page',
   imports: [
     CloudCardComponent, EngineSettingsCardComponent, EnvCardComponent, FormsModule,
-    LibraryCardComponent, LlmCardComponent,
+    LibraryCardComponent, SetupCardComponent,
     MachineModelsCardComponent, PageReaderCardComponent, ServersCardComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -160,14 +160,14 @@ import { ServersCardComponent } from './servers-card.component';
           }
 
           <!--
-            The model the three language dialogs open with, and the way back
-            into first-run setup. Beside the library card because both are about
+            THE WAY BACK INTO FIRST-RUN SETUP, and what was skipped. It was the
+            language-model card and held the model every dialog opened with;
+            Owen deleted the subject on 2026-09-15 (*"we dont have any local
+            models. crucible handles all model orchestration"*), so what is left
+            is the wizard door. Beside the library card because both are about
             what the user has chosen rather than about what the engine measured.
-            Hosted, the model is still foundry's own — BookForge has no opinion
-            about which ollama model translates a book — so unlike the library
-            card this one stays.
           -->
-          <app-llm-card />
+          <app-setup-card />
 
           <!--
             WHERE ELSE WORK CAN GO — the Crucible servers this machine knows
@@ -200,8 +200,8 @@ import { ServersCardComponent } from './servers-card.component';
             AND THE THIRD ANSWER TO THE SAME QUESTION — somebody else's computer,
             rented by the token (docs/SLOTS.md §3, Package F). Directly under the
             Servers card because the three cards read downwards as the three
-            places a text act can go: this machine's Ollama, a Crucible somebody
-            runs, a provider somebody pays. It is LAST of the three because it is
+            places a text act can go: an engine on this machine, an engine somebody
+            else runs, a provider somebody pays. It is LAST of the three because it is
             the one with a bill on it, and because Owen asked for it as the
             answer for a machine that cannot do the other two — *"for weaker
             systems"*. Drawn hosted as well, read-only, for the Servers card's

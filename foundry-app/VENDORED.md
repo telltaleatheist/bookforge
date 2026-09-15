@@ -10,10 +10,55 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **40aaa42** — *feat(app)!: a local Crucible is an ordinary server — the reserved name is gone, and a server name is a label with one owner* |
-| Engine sha | **40aaa42** (v2.0.0) — rebuilt clean from this tree, so the two AGREE again: `dist/foundry-windows-x64.exe` answers `foundry 2.0.0 (40aaa42)`. |
+| Source sha | **75e53b3** — *feat(app)!: Foundry keeps no models — the local text path is deleted and the engine decides* |
+| Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-15 |
-| Copied by | `git -C <foundry> archive 40aaa42 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 75e53b3 app | tar -x --strip-components=1`, then the three deletions below by hand |
+
+## The `40aaa42 → 75e53b3` re-vendor (2026-09-15)
+
+Two commits, both BREAKING, both about the same retreat: Foundry stops owning
+anything that decides where or on what a job runs.
+
+- **`631bb9c`** — *no local GPU slot; one lane per connected engine, and the CPU
+  lane stays local.*
+- **`75e53b3`** — *Foundry keeps no models; the local text path is deleted and
+  the engine decides.*
+
+**Three files were DELETED**, which a plain `tar -x` over the top does not do —
+it only adds and overwrites. They were removed by hand after the extract, and
+the reconciliation was done by comparing `git ls-tree -r 75e53b3 app/` against
+`git ls-files foundry-app/`, not by eye:
+
+    shared/model-lineup-local.json
+    src/app/core/llm-defaults.ts
+    src/app/pages/settings/llm-card.component.ts
+
+The only other files in this subtree that are NOT in Foundry's `app/` are
+`VENDORED.md` and `IPC-CHANNELS.md`, which are ours. That difference is what
+makes the comparison above a reliable orphan check rather than a guess.
+
+**All 169 blobs hash-verified** against `75e53b3:app/<path>` with
+`git hash-object`, 0 mismatched — including `package-lock.json`, which matters
+because `npm install` in this directory resolves `"foundry": "file:.."` to the
+BookForge repository root and rewrites the lock's `name` to `bookforge-app`. No
+install was run; the lock is Foundry's own bytes
+(`65d40ac2943f13d1dea87a5cee32fd378f1e6f51`). `package.json` did not move at all,
+so the `file:..` devDependency is still there and the hazard is unchanged.
+
+**`node_modules` was confirmed a REAL directory here, not a junction**, before
+anything touched this tree.
+
+**Nothing in BookForge broke, and the reason is structural rather than lucky.**
+This subtree is SEALED: BookForge imports nothing from it, and every reference to
+it in `electron/` is a comment beside a fact re-declared on the house rule. So
+BookForge's own `tsc` says NOTHING about this copy — a green typecheck here is
+not evidence. What is evidence: the keepers that read this subtree as TEXT
+(`test-foundry-manifest-version`, `test-foundry-hosted-crucible-seam`,
+`test-foundry-host-queue`, `test-foundry-clean-text-vendor`,
+`test-foundry-host-nodes`) all pass, and the subtree's OWN two typechecks
+(`tsconfig.electron.json`, `tsconfig.app.json`, run inside `foundry-app/`) are
+clean.
 
 **THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and at `40aaa42` they
 agree**, which is the normal state rather than a problem: this table

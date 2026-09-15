@@ -6,9 +6,15 @@
  *
  * *"foundry should work if they have no idea what theyre doing and they just
  * want to convert PDFs to EPUB. but if they do know what theyre doing and they
- * want access to speed, they can use crucible."* So a person who never opens
- * this card has one slot — their own GPU — and never meets a picker anywhere in
- * the app. Everything below is the opt-in half.
+ * want access to speed, they can use crucible."* It was the opt-in half of the
+ * app, and a person who never opened it still had one slot — their own GPU.
+ *
+ * THAT IS NO LONGER TRUE AND THE CARD SAYS SO. Owen, Wave 66: *"everything goes
+ * through a crucible server now, including local… there should be no local gpu
+ * listed in the queue"*, and 2026-09-15: *"if theres no connected crucible server
+ * then tiles should be disabled."* A person who never opens this card has NO GPU
+ * slot, and the empty state below tells them what cannot run rather than
+ * promising it will run here.
  *
  * ── THE ORDER IS THE SETTING, which is why a drag is a save ────────────────
  *
@@ -67,7 +73,7 @@ import { FormsModule } from '@angular/forms';
 import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible-doors.component';
 import { coordinationWords } from '../../core/crucible-words';
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
-import { ANY_SLOT, isLoopbackUrl } from '@shared/slots';
+import { ANY_SLOT } from '@shared/slots';
 import type {
   ComputeSlot,
   CrucibleProbe,
@@ -124,9 +130,11 @@ interface EditableServer extends CrucibleServerView {
         -->
         <p class="detail">
           A GPU engine (Crucible) is a separate program that serves models over the network.
-          These are the engines this machine can send translation, simplification, analysis and
-          narration cleanup to, and jobs are tried in this order. Without an engine, everything
-          runs on this computer's own GPU through Ollama.
+          These are the engines this machine can send translation, simplification, analysis,
+          narration cleanup and page reading to, and jobs are tried in this order. Every one of
+          them is a GPU slot in the queue — including an engine running on this computer, which
+          is a server like any other. Without an engine there is no GPU slot at all, and that
+          work has nowhere to run; exports and compiles are unaffected.
         </p>
 
         @for (row of rows(); track row.key) {
@@ -199,15 +207,30 @@ interface EditableServer extends CrucibleServerView {
             @if (coordinationOf(row.name); as said) {
               <p class="small">{{ said }}</p>
             }
-            @if (isLoopback(row.url) && row.enabled) {
-              <p class="small">
-                This is the engine on this machine, so it replaces the local GPU slot rather
-                than sitting beside it.
-              </p>
-            }
+            <!--
+              THE SENTENCE THAT WAS HERE SAID *"This is the engine on this
+              machine, so it replaces the local GPU slot rather than sitting
+              beside it"*, and Owen's ruling made every clause of it false:
+              *"one gpu slot in the queue per connected crucible server.
+              including the local crucible, which is indistinguishable from the
+              remote crucible server."* There is no local GPU slot for a loopback
+              engine to replace, and nothing about this row is special — so it is
+              drawn like every other row, and the card says nothing rather than
+              explaining a difference that no longer exists.
+            -->
           </div>
         } @empty {
-          <p class="small">No servers. Everything runs on this computer.</p>
+          <!--
+            THE EMPTY STATE IS NOW A REAL ONE. It read *"No servers. Everything
+            runs on this computer."* — true while this machine's own GPU was a
+            slot, and false since Owen's ruling deleted it. No engine means no GPU
+            slot, so it says what cannot run rather than promising it will run
+            here.
+          -->
+          <p class="small">
+            No engines. Translation, simplification, cleanup, analysis and page reading have
+            nowhere to run until one is added; exports and compiles are unaffected.
+          </p>
         }
 
         <div class="actions">
@@ -353,7 +376,6 @@ export class ServersCardComponent {
    */
   protected readonly coordination = signal<CrucibleCoordinationMap>({});
 
-  protected readonly isLoopback = isLoopbackUrl;
   protected readonly slotNames = computed(() => this.slots().map((slot) => slot.name).join(', '));
 
   private nextKey = 1;

@@ -90,13 +90,17 @@
  * format; a person pasting one is not reading those documents, and two words for
  * one thing across two apps is how somebody concludes they have two things.
  *
- * ── NOTHING HERE IS A STEP ANYBODY HAS TO TAKE ──────────────────────────────
+ * ── IT WAS OPTIONAL, AND IT IS NOT ANY MORE ────────────────────────────────
  *
  * Owen: *"foundry should work if they have no idea what theyre doing and they
  * just want to convert PDFs to EPUB. but if they do know what theyre doing and
- * they want access to speed, they can use crucible."* Every door is closed until
- * it is opened, and the wizard's step around this one is skippable like every
- * other. The Ollama path is untouched and remains the beginner's path.
+ * they want access to speed, they can use crucible."* That held while Ollama on
+ * this machine was the beginner's path. It is not: *"we dont have any local
+ * models. crucible handles all model orchestration. if theres no connected
+ * crucible server then tiles should be disabled"* (2026-09-15). Converting a PDF
+ * to an EPUB still needs none of this; everything that meets a model needs one of
+ * these doors. The wizard's step around it is still skippable, because a person
+ * is allowed to look at the app before furnishing it.
  */
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';

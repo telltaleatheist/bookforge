@@ -287,9 +287,9 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
       <!--
         FIRST RUN, AND IT IS MOUNTED UNCONDITIONALLY FOR A HARDER REASON THAN
         capture-progress's. An @if around this is a DESTROY, and this component
-        holds the subscriptions that draw an environment download and an ollama
-        pull — both of which take many minutes and both of which keep running in
-        another process regardless. A wrapper flag that flickered would take the
+        holds the subscriptions that draw an environment download and a page-reader
+        download — both of which take many minutes, and the first of which keeps
+        running in another process regardless. A wrapper flag that flickered would take the
         only progress a person can see off the screen while the download it was
         reporting carried on. It decides its own visibility from
         UiService.setupOpen, which the shell never touches.

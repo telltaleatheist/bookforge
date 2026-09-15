@@ -61,15 +61,16 @@ import { cloudEndpointOf, cloudHeaderMapFor, cloudProviderNamed } from './cloud-
 import {
   CrucibleOrchestratorError,
   clientFor,
-  computeSlots,
   crucibleServerNamed,
   engineClientFor,
+  enginelessServers,
   resolveEngine,
+  slotAvailability,
 } from './crucible-registry';
 import type { CrucibleServerEntry } from './app-settings';
 import type { CapabilityRecord, CapabilityRow } from '../shared/engine-settings';
 import { upstreamLaneName } from '../shared/queue-board';
-import { ANY_SLOT, LOCAL_SLOT_NAME, slotNamed, type ComputeSlot } from '../shared/slots';
+import { ANY_SLOT, slotNamed, type ComputeSlot, type SlotRefusal } from '../shared/slots';
 import type { LlmServerKind } from '../shared/pipeline';
 import type { JobKind, ModelClass } from '../shared/types';
 
@@ -169,16 +170,17 @@ export const CRUCIBLE_READS = true;
  * `placeJob` (which returns {@link UNPLACED} and never looks at a slot),
  * `placedBy` (which puts no `waitFor` on the row, so no picker is drawn), and —
  * since Package G — the PUMP, which has to know which lane a row will hold
- * before it picks it. A run that is never placed still runs on this machine's
- * card: a page reading loads dots on the local GPU whatever the registry says.
- * Three copies of one predicate is how a reading ends up holding no lane at all
- * and two of them start on one card, so there is one copy and it is here, beside
- * the switch (`CRUCIBLE_READS`) that decides half of it.
+ * before it picks it. A run that is never placed still runs on this machine: an
+ * export is this disk, and a reading with `CRUCIBLE_READS` off would be this
+ * card. Three copies of one predicate is how a reading ends up holding no lane at
+ * all and two of them start on one card, so there is one copy and it is here,
+ * beside the switch (`CRUCIBLE_READS`) that decides half of it.
  *
  * FALSE IS NOT "CHEAP" AND IS NOT "NO GPU". An export is false because it never
- * meets a model; a reading is false because its model is on a path this module
- * does not route yet. What they share is only that the answer to *whose machine*
- * is already decided — it is this one.
+ * meets a model; a reading would be false because its model is on a path this
+ * module does not route — which it now does, so that clause is live only if the
+ * constant is ever turned back off. What they share is only that the answer to
+ * *whose machine* is already decided — it is this one.
  */
 export function placesOnASlot(kind: JobKind): boolean {
   if (capabilityClassOf(kind) === null) return false;
@@ -191,12 +193,31 @@ export function placesOnASlot(kind: JobKind): boolean {
  * about the queue.
  *
  * `endpoint` and `model` are NULLABLE and null means "the request's own", which
- * is the local slot's whole answer: the Ollama URL and the model tag the person
- * chose in the dialog are on the request already, and a placement that copied
- * them here would be a second owner of a per-run choice.
+ * is {@link UNPLACED}'s whole answer: the URL and the model tag the person chose
+ * in the dialog are on the request already, and a placement that copied them here
+ * would be a second owner of a per-run choice. Every PLACED run fills both in,
+ * because a slot's endpoint and a server's selected model are nobody's preference
+ * (docs/SLOTS.md §5).
  */
 export interface Placement {
-  slot: ComputeSlot;
+  /**
+   * WHOSE MACHINE THIS RUN WENT TO — or NULL for a run that was never placed on
+   * one at all.
+   *
+   * Null is not "undecided" and it is not a failure: it is the whole answer for a
+   * job that puts nothing in front of a model (an export, a compile, a mint, an
+   * environment install). Those run on this machine's disk and this machine's
+   * cores, which Owen's ruling keeps here — *"cpu slots are always local. we dont
+   * outsource simple cpu work to crucible"* — and there is no slot for that work
+   * to name, because the CPU side of the board is a count rather than a list.
+   *
+   * IT USED TO BE THE LOCAL SLOT, and the field was never nullable: a job like
+   * that was placed on a slot called "This computer" and recorded as having run
+   * there. That slot is gone (Wave 66), and inventing a name for a machine the
+   * list no longer carries would put a string in front of a person that nothing
+   * else in the app says. {@link UNPLACED} is the one value that carries it.
+   */
+  slot: ComputeSlot | null;
   /**
    * Which engine dialect. `openai` is the engine's default and goes unspelled on
    * the command line; `ollama` and `anthropic` are both written out (`doorArgs`,
@@ -224,13 +245,12 @@ export interface Placement {
   /**
    * THE CLAIM ON THE RESIDENT MODEL, held for the length of this run.
    *
-   * Null on the local slot, which shares nothing with anybody, on every
-   * placement that never touched a Crucible, AND on a Crucible placement whose
-   * route is upstream — PHASE15 §3.4: *"no lease, no lane, the settlement
-   * untouched (nothing was on the card)"*, and §3.4 again on the lease route
-   * itself, which refuses one by name (`lease_not_needed`). Non-null placements
-   * MUST be released — see {@link Lease}, which says what happens if they are
-   * not. `settled` (electron/job-queue.ts) already reads an absent lease as
+   * Null on every placement that never touched a Crucible, AND on a Crucible
+   * placement whose route is upstream — PHASE15 §3.4: *"no lease, no lane, the
+   * settlement untouched (nothing was on the card)"*, and §3.4 again on the lease
+   * route itself, which refuses one by name (`lease_not_needed`). Non-null
+   * placements MUST be released — see {@link Lease}, which says what happens if
+   * they are not. `settled` (electron/job-queue.ts) already reads an absent lease as
    * nothing to release, which is why this needed no change there.
    */
   lease: Lease | null;
@@ -249,22 +269,26 @@ export interface Placement {
   via: string | null;
 }
 
-/** The local slot's placement — today's lines, spelled as a placement. */
-function localPlacement(slot: ComputeSlot): Placement {
-  return { slot, door: 'ollama', endpoint: null, model: null, env: {}, lease: null, via: null };
-}
-
 /**
- * THE PLACEMENT NOTHING PICKED — what a job takes when there is no slot list at
- * all.
+ * THE PLACEMENT NOTHING PICKED — what a job takes when it never meets a model.
  *
- * That is not an error case, it is the common one: a person with no Crucible,
- * and a hosted window whose host registers no slot provider. `computeSlots()`
- * answers with one slot or none, no picker is drawn anywhere, and this is the
- * path every job in this app took before Package C existed.
+ * ── What it means NOW, which is narrower than what it used to mean ──────────
+ *
+ * It was "there is no slot list, so run the way this app ran before slots
+ * existed": a person with no Crucible, and a hosted window whose host registers
+ * no slot provider, both landed here and both ran against this machine's Ollama.
+ * Owen's ruling ended that — *"there should be no local gpu listed in the queue"*
+ * — so an empty slot list is now a REFUSAL for anything that needs a card
+ * ({@link placeJob}), and this value is left to the jobs it was always honest
+ * for: the ones with no capability class at all. An export, a compile, a
+ * rasterise, an environment install. They take `slot: null` because the CPU side
+ * of the board is not a list of machines, and `door: 'ollama'` with a null
+ * endpoint and a null model because that is what "the request's own" means on the
+ * one command line they still spell (`argsFor`, electron/job-queue.ts, whose
+ * `--dry-run` caller has no server to ask).
  */
 export const UNPLACED: Placement = {
-  slot: { name: LOCAL_SLOT_NAME, kind: 'local' },
+  slot: null,
   door: 'ollama',
   endpoint: null,
   model: null,
@@ -416,8 +440,8 @@ export type LaneClaim = (lane: string) => boolean;
  *
  * So the claim is taken INSIDE `placeOnCrucible`, after the capability row is
  * read and the route is known, on the lane the route names. `placeOn` claims for
- * the two slot kinds that need no read (the local slot, and a cloud provider,
- * which Package L deletes).
+ * the one slot kind that needs no read (a cloud provider, which Package L
+ * deletes; the local slot was the other, and Wave 66 deleted it).
  *
  * TWO CONSEQUENCES, BOTH DELIBERATE. The walk now costs one capability read per
  * candidate even when our own job holds that machine's card — the read is what
@@ -433,31 +457,55 @@ export async function placeJob(
   say: PlacementProgress,
   claim: LaneClaim,
 ): Promise<PlacementOutcome> {
-  const slots = computeSlots();
+  const available = slotAvailability();
+  const slots = available.slots;
   const capability = capabilityClassOf(kind);
   /*
-   * NOTHING TO DECIDE, and the three ways that happens are one answer. No
-   * capability class (an export, a mint, an install — no model anywhere near
-   * it); no slot list (hosted with no provider); or one slot, which is the
-   * friend with a GPU and no Crucible, who never meets a picker.
-   *
-   * NEITHER ARM CLAIMS A LANE, and the pump is why: a run that is never placed
-   * is a run on THIS machine, and `laneAtPick` gives it the local lane before it
-   * is ever picked (`placesOnASlot` is the shared half of this test). Claiming
-   * here as well would be a second owner of one reservation.
+   * NOTHING TO DECIDE, and it is now ONE way rather than three: this job never
+   * meets a model (an export, a mint, an install). It claims no lane, and the
+   * pump is why — such a row is a run on THIS machine and `laneAtPick` settles it
+   * before the pick (`placesOnASlot` is the shared half of this test), so
+   * claiming here as well would be a second owner of one reservation.
    *
    * `capability === null` IS `placesOnASlot`'s FIRST CLAUSE, repeated for the
    * compiler rather than for the reader: the walk below needs the class narrowed
    * to a non-null one, and a predicate in another function cannot narrow a local.
    */
-  if (capability === null || !placesOnASlot(kind) || slots.length === 0) {
+  if (capability === null || !placesOnASlot(kind)) {
     return { verdict: 'go', placement: UNPLACED };
+  }
+  /*
+   * ── AND AN EMPTY SLOT LIST IS A REFUSAL NOW, NOT A LOCAL RUN (Wave 66) ────
+   *
+   * It used to fall through to {@link UNPLACED} and run against this machine's
+   * Ollama, because there was always a local slot behind it. Owen deleted it:
+   * *"everything goes through a crucible server now, including local… there
+   * should be no local gpu listed in the queue."* With nothing registered there
+   * is nowhere for this act to go, and the honest answer is to say so ONCE, by
+   * name, with the thing a person can do about it — not to park the row for ever
+   * on the hope that a server appears, and not to run somewhere nobody chose.
+   */
+  if (slots.length === 0) {
+    return { verdict: 'refuse', reason: noEngineReason(available.refusal) };
   }
 
   const pinned = waitFor !== undefined && waitFor !== ANY_SLOT ? waitFor : null;
   if (pinned !== null) {
     const slot = slotNamed(slots, pinned);
     if (slot === null) {
+      /*
+       * THE ONE REASON A NAMED SERVER IS NOT A SLOT WHILE STILL BEING REGISTERED
+       * AND SWITCHED ON: it resolved to an orchestrator with no engine behind it
+       * (`engineAbsence`, crucible-registry.ts, and PHASE17 §6). That is not
+       * something a backoff fixes — somebody installs an engine on that machine
+       * or re-points the row — so the row FAILS with the resolver's own sentence,
+       * which names both. Parking it under "switched off or no longer registered"
+       * would be a wrong sentence about a row that would then never finish.
+       */
+      const absent = enginelessServers().find(
+        (server) => server.name.toLowerCase() === pinned.toLowerCase(),
+      );
+      if (absent !== undefined) return { verdict: 'refuse', reason: absent.sentence };
       /*
        * A row waiting for a slot that is not in the list — switched off, renamed
        * or removed while the row sat in the queue. It WAITS rather than fails,
@@ -538,13 +586,38 @@ function whatToDoAbout(capability: CapabilityClass): string {
 }
 
 /**
+ * THE SENTENCE FOR A BOARD WITH NO GPU SLOT ON IT — the one refusal that is
+ * about the app's configuration rather than about any server.
+ *
+ * THREE SILENCES, TOLD APART, because they want three different things done. A
+ * host that offered no registry (or could not be asked) already carries its own
+ * sentence on {@link SlotRefusal}, and it is used verbatim rather than reworded —
+ * a hosted window's person cannot open this app's Settings. Every enabled server
+ * that resolved to an orchestrator with nothing behind it says so in the
+ * resolver's own words, which name the machine and what to install on it.
+ * Otherwise the list is genuinely empty and the fix is one screen away.
+ */
+function noEngineReason(refusal: SlotRefusal | null): string {
+  if (refusal !== null) return refusal.sentence;
+  const absent = enginelessServers();
+  if (absent.length > 0) {
+    return `${absent.map((server) => server.sentence).join(' ')} There is no other GPU engine `
+      + 'connected — add one in Settings › Servers.';
+  }
+  return 'No GPU engine is connected — add one in Settings › Servers. Translation, '
+    + 'simplification, cleanup, analysis and page reading all run on a Crucible now, including '
+    + 'a Crucible on this machine.';
+}
+
+/**
  * One slot, asked whether it will start this act now.
  *
- * THE TWO KINDS THAT NEED NO SERVER CLAIM HERE. A local slot is this machine's
- * card and a cloud provider is one key; neither has a second lane and neither has
- * a route to read, so the lane is knowable without a request and is taken before
- * the placement is built. The Crucible path claims inside `placeOnCrucible`,
- * after the route is known — see `placeJob`'s note on where the claim moved.
+ * THE ONE KIND THAT NEEDS NO SERVER CLAIMS HERE. A cloud provider is one key: no
+ * second lane and no route to read, so its lane is knowable without a request and
+ * is taken before the placement is built. The Crucible path claims inside
+ * `placeOnCrucible`, after the route is known — see `placeJob`'s note on where
+ * the claim moved. (The local slot used to be the other such kind, and there is
+ * no local slot.)
  */
 async function placeOn(
   slot: ComputeSlot,
@@ -552,11 +625,9 @@ async function placeOn(
   say: PlacementProgress,
   claim: LaneClaim,
 ): Promise<PlacementOutcome> {
-  if (slot.kind === 'local' || slot.kind === 'cloud') {
+  if (slot.kind === 'cloud') {
     if (!claim(slot.name)) return transientWait(busyWithOurs(slot.name));
-    return slot.kind === 'local'
-      ? { verdict: 'go', placement: localPlacement(slot) }
-      : placeOnCloud(slot, capability);
+    return placeOnCloud(slot, capability);
   }
   const entry = crucibleServerNamed(slot.name);
   if (entry === null) {

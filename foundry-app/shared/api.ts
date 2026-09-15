@@ -43,7 +43,6 @@ import type {
   CrucibleUninstallRun,
 } from './uninstall-wire';
 import type {
-  ModelClass,
   ActGates,
   AnalysisPlan,
   AnalysisReading,
@@ -73,12 +72,8 @@ import type {
   HostNodes,
   Job,
   JobRequest,
-  LlmChoices,
   MetadataOutcome,
   MetadataWriteOutcome,
-  OllamaFacts,
-  OllamaInstallResult,
-  OllamaPullProgress,
   PdfMetadataFields,
   LedgerStep,
   ProjectLedger,
@@ -156,15 +151,6 @@ export type MenuAction =
 export interface FoundryApi {
   /** process.platform, for the one or two places the UI says "on Windows". */
   platform: string;
-
-  /**
-   * process.arch, and it is here for exactly one question: whether ollama on
-   * this machine has an MLX runner under it, which is `darwin` + `arm64` and
-   * nothing else. It decides which build of one model the Clean text picker
-   * offers (`cleanTextModelsFor`, shared/pipeline.ts) — the same weights on
-   * llama.cpp are pinned to one slot and run at half the rate.
-   */
-  arch: string;
 
   /**
    * Whether this window is standing inside another app.
@@ -1316,70 +1302,19 @@ export interface FoundryApi {
     probe(force?: boolean): Promise<SystemProfile>;
   };
 
-  /**
-   * Ollama, which foundry never starts, stops or configures — see
-   * electron/ollama.ts. These doors detect it, fetch its official installer,
-   * and pull one model; nothing more.
+  /*
+   * ── THE `ollama` AND `llm` NAMESPACES STOOD HERE ──────────────────────
+   *
+   * Twelve doors: detect Ollama, fetch its installer, pull a model with a bar,
+   * and read and write the model each language dialog opened with.
+   *
+   * Owen, 2026-09-15: *"we dont have any local models. crucible handles all
+   * model orchestration. if theres no connected crucible server then tiles
+   * should be disabled."* The model a request names comes from the engine's own
+   * capability record at the spawn, so a model chosen in Foundry was a choice
+   * that was then ignored. The window onto the ENGINE's settings — route and
+   * upstream per class — is `crucible.engineSettings*` below and is untouched.
    */
-  ollama: {
-    facts(): Promise<OllamaFacts>;
-    /** Hardware, ollama's state, the lineup with one row badged, and today's model. */
-    choices(): Promise<LlmChoices>;
-    /**
-     * Fetch the official installer and hand it to the OS. `ok` means it was
-     * OPENED, never that ollama is installed — that happens in a window this
-     * app does not own, so `facts()` is the only thing that ever says so.
-     */
-    install(): Promise<OllamaInstallResult>;
-    cancelInstall(): Promise<void>;
-    /** `POST /api/pull`, streamed. A failure is a result, not a rejection. */
-    pull(tag: string): Promise<{ ok: boolean; detail: string }>;
-    cancelPull(): Promise<void>;
-    /** Installer download AND model pull, on one channel. Returns its unsubscribe. */
-    onProgress(listener: (progress: OllamaPullProgress) => void): () => void;
-  };
-
-  /**
-   * What the language dialogs open with. `model` is translate/simplify/analyse's
-   * seed; `cleanModel` is Clean text's, which is a separate stored setting
-   * because the narration cleanup declares its own default.
-   */
-  llm: {
-    /**
-     * What a language dialog OPENS with — the LOCAL slot's answers, and only
-     * those.
-     *
-     * There is no `server` field any more and no resolution behind this door:
-     * the local slot is Ollama (docs/SLOTS.md §2), and a job placed on a
-     * registered Crucible takes its model from that server's own capability
-     * record and its address from the registry, decided at the spawn rather than
-     * carried from a dialog (electron/crucible-dispatch.ts).
-     */
-    /**
-     * What a dialog for this ACT should open with, resolved against the machine
-     * NOW rather than read from a tag the wizard wrote once. The stored choice
-     * wins whenever it can still serve the class; a stale one is replaced by the
-     * largest installed model that can (electron/llm-catalog.ts,
-     * `openingModelFor`). The class matters because the floors differ: translate
-     * and simplify need a 27B, analysis has none, the cleanup has its own.
-     */
-    defaults(cls: ModelClass): Promise<{ model: string; cleanModel: string; ollama: string }>;
-    /**
-     * What is STORED — for the Settings card, which edits these. Deliberately
-     * not `defaults`: that answer is resolved against the machine, and an
-     * editor seeded from it would write the resolution back as the person's
-     * choice the first time they pressed Save.
-     */
-    stored(): Promise<{ model: string; cleanModel: string; ollama: string }>;
-    /** Answers with the tag AS STORED — a name main refused comes back changed. */
-    setModel(model: string): Promise<string>;
-    /** The Clean text model, same rule: answered with what was stored. */
-    setCleanModel(model: string): Promise<string>;
-    /** Where Ollama is. The one server address this app still keeps by itself. */
-    ollamaUrl(): Promise<string>;
-    /** Answered with what was stored — a URL main refused comes back changed. */
-    setOllamaUrl(url: string): Promise<string>;
-  };
 
   /**
    * ── WHERE COMPUTE-HEAVY WORK GOES ─────────────────────────────────────────
