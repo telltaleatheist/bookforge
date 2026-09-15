@@ -24,15 +24,18 @@
  *
  * They have different answers on the same machine and both are in the answer.
  * Owen's PC is proved by its PAIRING FILE (the line the WSL guest left, whose
- * url and token are the ones the registry entry `local` holds) and the work is
- * done by the HOST PACK's `crucible.cmd`. A single field would have had to pick
- * one of those two facts and throw the other away.
+ * url and token are the ones a registry entry holds) and the work is done by the
+ * HOST PACK's `crucible.cmd`. A single field would have had to pick one of those
+ * two facts and throw the other away.
  *
  * `proof` — §6.1's list:
  *   - `pairing-file`, this machine's file, read through the SDK, matching a
- *     registry entry on BOTH url and token. The name deliberately need not
- *     match: this PC's file says `crucible@owens-pc-wsl` and Foundry registered
- *     the same engine as `local`, which is one engine with two labels.
+ *     registry entry on BOTH url and token. THE NAME IS NEVER PART OF THE
+ *     PROOF, and Owen's ruling is why: *"a local crucible server shouldnt be
+ *     treated any differently than a remote crucible server"* — a name is
+ *     something a person typed and proves nothing about whose machine an engine
+ *     is on. The entry may also have been renamed since it was added, which is a
+ *     gesture that must not quietly take a door away.
  *   - `windows-host`, the existence of `%LOCALAPPDATA%\Crucible\host\
  *     crucible.cmd` — which is what *"the host is installed"* MEANS (§6.2,
  *     quoting `crucible/host/paths.py`). §6.1 words this proof as "the host this
@@ -359,7 +362,7 @@ export function crucibleUninstallPerform(
  * from the exit code, because a fatal `stop_failed` is a run where the other
  * steps happened and the server did not stop.
  *
- * `wsl-guest` counts as well: on Owen's PC the engine a `local` row points at is
+ * `wsl-guest` counts as well: on Owen's PC the engine that row points at is
  * inside the guest, and `--wsl-too` is what stops that one.
  */
 export function uninstallStoppedTheEngine(plan: CrucibleUninstallPlan): boolean {

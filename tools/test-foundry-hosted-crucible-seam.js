@@ -755,6 +755,122 @@ async function main() {
       + 'runJob retries it for ever — re-read both before changing either.');
   });
 
+  // ── 7. THE NAMING CONTRACT, END TO END, WITH NO NETWORK AND NO GPU ───────
+  //
+  // The one thing that can silently strand a hosted act is a NAME: BookForge's
+  // step sends `waitFor`, and their `slotNamed` matches it against a slot list
+  // derived from the registry this app handed over. Every other property of the
+  // placement refuses out loud; a name that misses is a `wait`, and a detached
+  // `runJob` retries a wait for ever.
+  //
+  // Both halves are pure functions over a list, so the WHOLE chain runs here:
+  //
+  //   hostCrucibleServers()          <- ours, the snapshot the window is handed
+  //     -> recordHost({servers})     <- the mount seam, as main.ts wires it
+  //     -> readRegistry()            <- theirs: cleanHostServers
+  //     -> computeSlots() / slotsFrom
+  //     -> slotNamed(slots, waitFor) <- theirs, exact and case-sensitive
+  //
+  // This is what makes the preflight in queue-steps/foundry-job.ts provable
+  // rather than argued. It is checked at every re-vendor because their half of
+  // it moves: `40aaa42` introduced `tidySlotName`, which COLLAPSES runs of
+  // whitespace, and had it been applied to host entries a server named
+  // `my  mac` would have become `my mac` over there — our preflight passing,
+  // their lookup missing, the row parked for ever with nothing in any log.
+  console.log('\nOur registry row -> their slot, by name\n');
+
+  const foundryHostMod = require(path.join(
+    REPO, 'foundry-app', 'dist', 'electron', 'host.js'));
+  const foundrySlots = require(path.join(
+    REPO, 'foundry-app', 'dist', 'shared', 'slots.js'));
+
+  /** Wire our registry into their mount seam, exactly as `main.ts` does. */
+  function handOverToTheWindow() {
+    foundryHostMod.recordHost({
+      servers: () => hostRegistry.hostCrucibleServers(),
+    });
+    return hopRegistry.computeSlots();
+  }
+
+  check('a BookForge row becomes a slot of exactly the name the step will send', () => {
+    hostRegistry.refreshHostCrucibleRegistry(reader());
+    const slots = handOverToTheWindow();
+    /*
+     * THE NAMES ARE TAKEN FROM THE SNAPSHOT, never written out here. They were
+     * hardcoded once and it cost a red keeper within the hour: `24b7bf67`
+     * deleted the reserved server name `local` (BookForge's mirror of foundry
+     * `40aaa42`, "a local Crucible is an ordinary server") and this suite's
+     * fixture became `3090 Ti`. The PROPERTY has nothing to do with what a
+     * server is called — it is that whatever we hold, we can also find — so
+     * naming one here only pinned the fixture.
+     */
+    const enabled = hostRegistry.hostCrucibleServers().filter((row) => row.enabled);
+    assert.ok(enabled.length > 0, 'the scripted registry offers no enabled server to check');
+    for (const row of enabled) {
+      // `waitFor` is composed the way the step composes it: the row's own name,
+      // trimmed. If these two ever disagree the row parks rather than failing.
+      const waitFor = row.name.trim();
+      const theirs = slots.map((s) => s.name).join(', ');
+      assert.notStrictEqual(foundrySlots.slotNamed(slots, waitFor), null,
+        `BookForge would send waitFor="${waitFor}" and the hosted window derives no slot by that `
+        + `name (its slots: ${theirs}). This is the forever-park that `
+        + 'hostedCrucibleServerNotOffered exists to prevent, and it means the two halves of the '
+        + 'naming contract have drifted.');
+    }
+  });
+
+  check('a DISABLED row is not a slot — which is why the preflight refuses it here', () => {
+    // Their `slotsFrom` filters disabled entries out before a slot exists, so
+    // "switched off" is indistinguishable from "not registered" over there.
+    // BookForge still hands the row across (marked), and refuses at the step.
+    const slots = handOverToTheWindow();
+    const rows = hostRegistry.hostCrucibleServers();
+    const off = rows.find((s) => !s.enabled);
+    assert.ok(off !== undefined, 'the scripted registry no longer has a disabled row to check');
+    assert.strictEqual(foundrySlots.slotNamed(slots, off.name), null,
+      `"${off.name}" is switched off in BookForge's registry and the hosted window still derives a `
+      + 'slot for it. The preflight and the placement would then disagree about whether that '
+      + 'server is available.');
+    // And the row DOES cross, marked — their derivation filters, so ours must
+    // not, or nothing over there could say "that one is switched off".
+    assert.strictEqual(off.enabled, false);
+  });
+
+  check('the name is carried through UNTIDIED — no collapse, no truncation, no case fold', () => {
+    /*
+     * The property `40aaa42` put at risk. Driven with names that would move if
+     * any tidying were applied on the hosted path: a run of spaces, a mixed
+     * case, and a name at the 48-character limit their writer now enforces.
+     *
+     * NOTE these names never go through their writer — a hosted registry is
+     * read-only over there — so the writer's rules are not what governs here.
+     * What governs is `cleanHostServers`, which trims and nothing else.
+     */
+    const awkward = 'My  Mac';
+    const longName = 'x'.repeat(48);
+    hostRegistry.refreshHostCrucibleRegistry({
+      routing: () => ({
+        ranked: [{ name: awkward, enabled: true }, { name: longName, enabled: true }],
+        newJobsWaitFor: 'top-ranked',
+        unknown: [],
+        legacyLocalRender: false,
+      }),
+      server: (name) => ({
+        name, url: 'https://example:7100', token: 'crux_test_aaaa', source: 'registry',
+      }),
+    });
+    const slots = handOverToTheWindow();
+    for (const name of [awkward, longName]) {
+      assert.notStrictEqual(foundrySlots.slotNamed(slots, name), null,
+        `"${name}" did not survive the crossing intact. Something on the hosted path is now `
+        + 'tidying, collapsing or truncating a name — `tidySlotName` (foundry 40aaa42) does '
+        + 'exactly that, and it must stay OFF `cleanHostServers`. BookForge would send the '
+        + 'untidied name and the row would park for ever.');
+    }
+    // Restore the suite's own registry for anything after this.
+    hostRegistry.refreshHostCrucibleRegistry(reader());
+  });
+
   // ── THE SECOND TRIPWIRE: FOUNDRY'S PHASE15 5.3 DELETIONS ─────────────
   //
   // What their 5.3 deletes is the same list this app has already deleted, on

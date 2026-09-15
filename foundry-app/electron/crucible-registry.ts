@@ -62,6 +62,8 @@ import {
   ANY_SLOT,
   LOCAL_SLOT_NAME,
   isLoopbackUrl,
+  slotNameRefusal,
+  tidySlotName,
   type CloudSettingsView,
   type ComputeSlot,
   type SlotAvailability,
@@ -249,9 +251,17 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
   );
   const next: CrucibleServerEntry[] = [];
   for (const edit of edits.slice(0, CRUCIBLE_SERVER_MAX)) {
-    const name = typeof edit.name === 'string' ? edit.name.replace(/\s+/g, ' ').trim() : '';
+    const name = tidySlotName(edit.name);
     const url = clampCrucibleUrl(edit.url);
-    if (name.length === 0) throw new Error('A server needs a name — it is what a queue row waits for.');
+    /*
+     * THE NAME RULE HAS ONE OWNER and it is `slotNameRefusal` (shared/slots.ts),
+     * which says what is wrong in a sentence this can throw verbatim. It used to
+     * be two rules — this writer refused an empty name and nothing else, while
+     * `clampCrucibleServers` silently cut at 60 — so a long name got past here
+     * and arrived on disk as something the card was no longer showing.
+     */
+    const wrongName = slotNameRefusal(name, 'server');
+    if (wrongName !== null) throw new Error(wrongName);
     if (cloud.has(name.toLowerCase())) {
       throw new Error(
         `"${name}" is already the name of a cloud provider. Two slots with one name is a row `
@@ -304,7 +314,7 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
  * beside the first would leave the stale one in the picker.
  */
 export function addCrucibleServer(name: string, url: string, token: string): CrucibleServerView[] {
-  const label = name.replace(/\s+/g, ' ').trim();
+  const label = tidySlotName(name);
   const kept = crucibleServers()
     .filter((entry) => entry.name.toLowerCase() !== label.toLowerCase())
     .map((entry): CrucibleServerEdit => ({
@@ -334,7 +344,7 @@ export function addCrucibleServer(name: string, url: string, token: string): Cru
  * in the picker that fails every job placed on it.
  */
 export function removeCrucibleServer(name: string): CrucibleServerView[] {
-  const key = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  const key = tidySlotName(name).toLowerCase();
   const kept = crucibleServers()
     .filter((entry) => entry.name.toLowerCase() !== key)
     .map((entry): CrucibleServerEdit => ({
@@ -967,7 +977,7 @@ export async function addLocalCrucible(name: string): Promise<LocalCrucibleAdd> 
       : new LocalCrucibleError('wsl_read_failed', err instanceof Error ? err.message : String(err));
     return { outcome: 'failed', code: failure.code, message: failure.message };
   }
-  const wanted = name.replace(/\s+/g, ' ').trim();
+  const wanted = tidySlotName(name);
   const label = wanted.length > 0 ? wanted : read.serverName;
   const existing = crucibleServers();
   const clash = existing.find((entry) => entry.url === read.url && entry.name !== label);

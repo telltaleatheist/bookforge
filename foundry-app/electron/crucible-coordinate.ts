@@ -39,18 +39,19 @@
  * ── NOTHING TO PRESS, ON ANY SERVER ────────────────────────────────────────
  *
  * Owen, 2026-09-14: *"lets make it as simple as possible."* Coordination is
- * automatic on every server this app is connected to — the loopback entry and
- * every remote, however long ago it was registered (crucible `1a10cc8`). The
- * one way to say "not that one" is the ENABLE switch that already means it,
- * which is why {@link coordinateServer} refuses a disabled server by name
- * rather than inventing a second opinion about which servers count.
+ * automatic on every server this app is connected to, however long ago it was
+ * registered (crucible `1a10cc8`). The one way to say "not that one" is the
+ * ENABLE switch that already means it, which is why {@link coordinateServer}
+ * refuses a disabled server by name rather than inventing a second opinion about
+ * which servers count.
  *
- * THERE IS NO `local` CONSTANT IN THIS APP and none is introduced here. "The
- * Crucible on this machine" is any registry entry whose URL is loopback
- * (`isLoopbackUrl`, shared/slots.ts), which is the same test `computeSlots`
- * makes when it takes the local GPU slot away. {@link coordinateEveryServer}
- * starts those first for one reason: they are the ones whose card this app is
- * also about to want.
+ * THERE IS NO `local` CONSTANT IN THIS APP and none is introduced here. Owen's
+ * ruling: *"it shouldnt be named 'local' anywhere. it might not be local. a
+ * local crucible server shouldnt be treated any differently than a remote
+ * crucible server."* So this module asks every enabled server the same question
+ * in the same way, and {@link coordinateEveryServer} takes them IN THE
+ * REGISTRY'S ORDER — the operator's own drag rank — rather than putting an
+ * address at the front of the queue.
  *
  * ── THE FOUR THINGS THAT CAN COME BACK, AND WHY EACH IS ITS OWN ACT ────────
  *
@@ -112,7 +113,6 @@ import {
 } from './crucible-registry';
 import { readCapability } from './crucible-dispatch';
 import type { CapabilityRecord } from '../shared/engine-settings';
-import { isLoopbackUrl } from '../shared/slots';
 import type {
   CrucibleCoordinationMap,
   CrucibleCoordinationState,
@@ -363,19 +363,32 @@ export function coordinateServer(server: string): Promise<CrucibleCoordinationSt
 }
 
 /**
- * Coordinate with every ENABLED server in the registry, loopback ones first.
+ * Coordinate with every ENABLED server, IN THE REGISTRY'S OWN ORDER.
  *
- * App start's moment. The two reasons for the ordering are the same reason:
- * a loopback Crucible is the one that has taken this machine's own GPU slot
- * (`computeSlots`), so it is the server this app is about to want and the one
- * whose missing model is the difference between a lit tile and a dark one.
+ * App start's moment.
+ *
+ * ── THE ORDER IS THE OPERATOR'S, AND THIS APP HAS NO OTHER ─────────────────
+ *
+ * It used to start the loopback entries first, on the reasoning that a Crucible
+ * on this machine is the one that took the local GPU slot and so the one this
+ * app is about to want. Owen's ruling retires that reasoning: *"a local crucible
+ * server shouldnt be treated any differently than a remote crucible server. it
+ * should all be entered the exact same way… it might not be local."* An address
+ * is not a ranking, and `127.0.0.1` is exactly as likely to be a tunnel to
+ * somebody else's card as it is to be the machine this window is drawn on.
+ *
+ * The registry IS a ranking, and the only one this app is entitled to: the rows
+ * are in the order the person dragged them into, which is the same order
+ * `computeSlots` hands to the picker and the same order the `any` walk takes
+ * them in. So a sweep that asked in any other order would be this app inventing
+ * a second opinion about which server matters most.
  *
  * STARTED IN ORDER, NOT AWAITED IN ORDER. A run can end in a half-hour WAIT on
  * a held card, and a sweep that awaited each server in turn would leave the
  * Mac unasked until the PC's chat finished. The synchronous prefix of
- * {@link coordinateServer} runs before its first `await`, so iterating in this
- * order really does put the loopback entry's `GET /v1/info` on the wire first;
- * after that they proceed together.
+ * {@link coordinateServer} runs before its first `await`, so iterating really
+ * does put the top row's `GET /v1/info` on the wire first; after that they
+ * proceed together.
  *
  * A DISABLED SERVER IS NOT ASKED AT ALL and not reported either: filtering here
  * rather than letting each run refuse itself means a registry of six switched-off
@@ -383,11 +396,7 @@ export function coordinateServer(server: string): Promise<CrucibleCoordinationSt
  */
 export function coordinateEveryServer(): Promise<CrucibleCoordinationState[]> {
   const enabled = crucibleServers().filter((entry) => entry.enabled);
-  const ordered = [
-    ...enabled.filter((entry) => isLoopbackUrl(entry.url)),
-    ...enabled.filter((entry) => !isLoopbackUrl(entry.url)),
-  ];
-  return Promise.all(ordered.map((entry) => coordinateServer(entry.name)));
+  return Promise.all(enabled.map((entry) => coordinateServer(entry.name)));
 }
 
 async function runCoordination(server: string): Promise<CrucibleCoordinationState> {

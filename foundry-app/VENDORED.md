@@ -10,13 +10,13 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1ce539a** — *feat(app): an orchestrator is not an engine — the hop is followed once, and a standing refusal fails instead of parking for ever* |
-| Engine sha | **e6d5424** (v1.3.0) — the INSTALLED binary, which is older than this copy. They are allowed to differ; see the note below and the 2026-09-15 entry at the foot. |
+| Source sha | **40aaa42** — *feat(app)!: a local Crucible is an ordinary server — the reserved name is gone, and a server name is a label with one owner* |
+| Engine sha | **40aaa42** (v2.0.0) — rebuilt clean from this tree, so the two AGREE again: `dist/foundry-windows-x64.exe` answers `foundry 2.0.0 (40aaa42)`. |
 | Copied on | 2026-09-15 |
-| Copied by | `git -C <foundry> archive 1ce539a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 40aaa42 app | tar -x --strip-components=1` |
 
-**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and from 2026-09-15
-they do again**, which is the normal state rather than a problem: this table
+**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and at `40aaa42` they
+agree**, which is the normal state rather than a problem: this table
 names the code COMPILED INTO THIS APP, and
 `tools/test-foundry-clean-text-vendor.js`'s tier-2 anchor names the code that
 RUNS (the commit the installed binary reports). The paragraph below describes
@@ -1670,3 +1670,102 @@ files changed from the committed base (33 modified, 13 added, **no deletions**),
 matching `git diff --name-status e6d5424..1ce539a -- app` exactly. The only
 files in the subtree that are not in `app/` are this note and
 `IPC-CHANNELS.md`.
+
+---
+
+**40aaa42 (copied 2026-09-15, same day) — A LOCAL CRUCIBLE IS AN ORDINARY
+SERVER, and the app sha and engine sha agree again.**
+
+A same-day refresh over `1ce539a`, ten files, no deletions. Owen ruled the next
+version is 2.0, and the binary was rebuilt clean from this tree, so
+`dist/foundry-windows-x64.exe` answers **`foundry 2.0.0 (40aaa42)`** — all hex
+in the parentheses, which is what `tools/test-foundry-clean-text-vendor.js`'s
+tier-2 regex needs in order to find a commit and VERIFY rather than refuse.
+
+What it carries: `registerPairing()` is the ONE writer both pairing doors share,
+so a pairing file is registered exactly as a pasted connect code is — same
+refusals, same clamp, the name taken from the LINE unless a person typed one,
+and the `PAIRING_SERVER_NAME = 'local'` holdout gone structurally rather than by
+swapping a constant. `adoptPairingFile`'s any-loopback decline became *"is this
+file's URL already registered"*, and `coordinateEveryServer` now takes the
+registry's drag rank rather than loopback-first — *"an address is not a ranking,
+and `127.0.0.1` is as likely to be a tunnel as this machine."* Slot-name rules
+gained one owner in their `shared/slots.ts`, consulted by all four callers and
+applied to the cloud list too, with the silent `.slice(0, 60)` deleted outright.
+
+── WHAT WAS CHECKED ON THIS SIDE, RATHER THAN ASSUMED ──────────────────────
+
+The commit is marked BREAKING and its subject is about a reserved NAME, and
+BookForge hands the hosted window an entry literally called `local`. Three
+things were read before trusting the refresh:
+
+  * **`local` is still a legal name.** The new forbidden set is `:`, `/`, `\`,
+    control characters and the reserved words `any` / `This computer` (either
+    case). `LOCAL_SLOT_NAME = 'This computer'` survives and is their own
+    GPU-slot label, unrelated to a registry entry named `local`. What retired is
+    the reserved name the PAIRING door used to write.
+  * **The new name rules are not applied to host-supplied entries.**
+    `cleanHostServers` still uses a bare `.trim()`; the three `tidySlotName`
+    call sites are their standalone WRITE doors (add, remove, adopt-local).
+    That matters because `tidySlotName` collapses runs of whitespace: if it ran
+    on the hosted path, a BookForge server named `my␣␣mac` would become `my␣mac`
+    over there, BookForge's preflight would pass, and their `slotNamed` would
+    then miss — the exact forever-park the preflight exists to prevent. It does
+    not run there, so the preflight's `entry.name.trim()` comparison is still
+    byte-for-byte what they match against.
+  * **`slotNamed` is still `slot.name === name`** — exact and case-sensitive,
+    which is what `hostedCrucibleServerNotOffered` claims in its sentence.
+
+── THE CONNECT-CODE DOOR NOW COORDINATES, AND NOTHING DOUBLES UP ───────────
+
+That door was the one road into their registry that skipped the
+coordinate-on-connect moment while `crucible:add` beside it took it. It is a
+correctness fix and it changes nothing here: hosted, their registry is the
+HOST's and read-only (`mount.ts` guards the pairing adoption to standalone), so
+neither write door is reachable to add a server in the first place.
+
+The startup sweep DOES run hosted, by their explicit design, and it is not
+double coordination: *"each app still posts its OWN module: the union of the two
+modules on one server is the contract. What is suppressed hosted is the DRAWING
+(the Servers card is BookForge's), not the asking."* So a hosted launch has
+BookForge posting `bookforge.module.json` and the window posting
+`foundry.module.json` against the same servers — two different documents, by
+contract. It is `void`-ed rather than awaited, so it costs a launch nothing.
+
+── The install ────────────────────────────────────────────────────────────
+
+`@crucible/client` did not move at this sha (still
+`file:vendor/crucible-client-0.6.0.tgz`, already installed), so the install was
+close to a no-op — but the full procedure was run anyway, inside the dist lock:
+`node_modules` re-confirmed a REAL directory (`LinkType` empty) immediately
+before `npm install --no-audit --no-fund` (**never `npm ci`**); the `foundry`
+self-link junction that install recreates — `"foundry": "file:.."`, which
+vendored here points at BookForge's REPO ROOT — deleted with a NON-recursive
+`.Delete()` after asserting it really is a junction, with the repo root and the
+main `node_modules` count verified either side; then `npm rebuild electron` and
+`npm run build`.
+
+── THE INSTALL POLLUTES `package-lock.json` — RESTORE IT AFTERWARDS ───────
+
+Found 2026-09-15, in the subtree committed at `0da32263`. `npm install` resolves
+this package's own `"foundry": "file:.."` dependency, and vendored here `..` is
+**BookForge's repo root** — so npm rewrote the vendored lock's root entry to
+`"name": "bookforge-app", "version": "0.1.7"` with BookForge's whole dependency
+list, displacing foundry's own `"version": "1.3.0"`. The subtree stopped being a
+mechanical copy of anything, and the next `npm install`/`npm ci` run in here
+would have been resolving against BookForge's manifest.
+
+It is harmless at runtime — `node_modules` is already built and the lock is only
+read by the next install — which is exactly why it went unnoticed for a commit.
+
+**So the last step of every re-vendor is to put the lock back:**
+```
+git -C <foundry> show <sha>:app/package-lock.json > foundry-app/package-lock.json
+```
+then re-run the blob verification, which is what catches it. Do this AFTER the
+install and the build, not before. It is the same defect the self-link junction
+has, in a file rather than a directory, and it wants the same treatment: let the
+install create it, then undo it.
+
+Verification: **171/171 blobs** hash-verified against `40aaa42:app/` — including
+`package-lock.json`, restored per the note above after the install rewrote it.

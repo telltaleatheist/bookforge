@@ -54,6 +54,8 @@ import {
 import {
   CLOUD_PROVIDER_ENDPOINT,
   CLOUD_PROVIDER_LABEL,
+  slotNameRefusal,
+  tidySlotName,
   type CloudProbe,
   type CloudProviderEdit,
   type CloudProviderKind,
@@ -179,10 +181,15 @@ export function writeCloudProviders(edits: readonly CloudProviderEdit[]): CloudP
   );
   const next: CloudProviderEntry[] = [];
   for (const edit of edits.slice(0, CLOUD_PROVIDER_MAX)) {
-    const name = typeof edit.name === 'string' ? edit.name.replace(/\s+/g, ' ').trim() : '';
-    if (name.length === 0) {
-      throw new Error('A provider needs a name — it is what a queue row waits for.');
-    }
+    const name = tidySlotName(edit.name);
+    /*
+     * ONE NAME RULE FOR BOTH LISTS — `slotNameRefusal` (shared/slots.ts), which
+     * `writeCrucibleServers` consults for the same reason: these two arrays feed
+     * ONE picker and one lane string, and a name that was legal on this card and
+     * not on that one would be a rule somebody has to learn twice.
+     */
+    const wrongName = slotNameRefusal(name, 'provider');
+    if (wrongName !== null) throw new Error(wrongName);
     if (crucibles.has(name.toLowerCase())) {
       throw new Error(
         `"${name}" is already the name of a Crucible server. Two slots with one name is a row `

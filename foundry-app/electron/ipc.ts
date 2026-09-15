@@ -22,8 +22,15 @@ import * as path from 'node:path';
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
+import type { Pairing } from '@crucible/client';
+
 import { actGates } from './act-gates';
-import { readAppSettings, writeAppSettings, type CrucibleServerEntry } from './app-settings';
+import {
+  clampCrucibleUrl,
+  readAppSettings,
+  writeAppSettings,
+  type CrucibleServerEntry,
+} from './app-settings';
 import { probeCloud, writeCloudProviders } from './cloud-providers';
 import { openCrucibleUi } from './crucible-ui';
 import { heldSet, openingModelFor } from './llm-catalog';
@@ -73,7 +80,7 @@ import { pairingFileRead, readConnectCode } from './crucible-pairing';
 import { forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
 import {
   CRUCIBLE_WHEEL,
-  isLoopbackUrl,
+  tidySlotName,
   type CloudProviderEdit,
   type ConnectCodePreview,
   type CrucibleProbe,
@@ -700,8 +707,9 @@ function serversConnectedBySave(
 }
 
 /**
- * THE FIRST OF PHASE15 §5.1's THREE WAYS IN: the pairing file on this machine,
- * read and registered as `local`, with nobody typing anything.
+ * THE FIRST OF PHASE15 §5.1's THREE WAYS IN: the connect code a Crucible left on
+ * this machine, read and registered under THE NAME THE LINE CARRIES, with nobody
+ * typing anything.
  *
  * ── Why it is here and not in crucible-pairing.ts ───────────────────────────
  *
@@ -713,24 +721,39 @@ function serversConnectedBySave(
  * that is the exact failure the pass was written for. crucible-pairing.ts reads
  * a file; this decides what the app does about what it read.
  *
- * ── THE NAME IS `local`, FOR PARITY WITH BOOKFORGE ──────────────────────────
+ * ── THERE IS NO RESERVED NAME. THE LINE NAMES THE SERVER ────────────────────
  *
- * Both apps register this machine's engine under the same name, so a person
- * looking at two apps' settings sees one server called one thing. `local` also
- * survives re-reading: `addCrucibleServer` replaces an existing name IN PLACE,
- * keeping its rank and its enabled state, so pressing "Look again" after the
- * host rotated a token fixes the entry rather than growing a second one.
+ * This used to register the entry as `local`, and the doc-comment here used to
+ * justify that word as parity with BookForge. Owen's ruling ends both halves:
+ * *"it shouldnt be named 'local' anywhere. it might not be local. a local
+ * crucible server shouldnt be treated any differently than a remote crucible
+ * server. it should all be entered the exact same way… bookforge shouldnt even
+ * know if it's local because it doesnt mater."* BookForge deleted its own
+ * reserved identity (their `24b7bf67`), so there is nothing left to be in parity
+ * with either.
  *
- * ── IT DOES NOTHING WHEN THERE IS ALREADY A LOOPBACK ENTRY ──────────────────
+ * What replaces it was already in the line. A pairing file IS A CONNECT CODE the
+ * machine left on disk — same spelling, same `parsePairing`, same `{name, url,
+ * token}` — so this registers it EXACTLY as a pasted one is registered, through
+ * {@link registerPairing}, which is the one writer both doors share. The name is
+ * the server's own (`crucible@owens-pc-wsl`, whatever the operator called it),
+ * which is the same name a person would see in the preview if they pasted the
+ * line by hand.
  *
- * §5.1 way 1 is "when the app has no `local` entry yet", and the test is the
- * LOOPBACK-NESS of what is registered rather than the name — Owen's PC registers
- * its WSL server through door 2 under whatever name he typed, and adopting the
- * pairing file on top of that would be two entries pointing at one engine, which
- * is the duplicate `slotsFrom` exists to drop. A person who wants the file read
- * anyway presses the button, which calls this same function; it will still
- * decline, and that is an honest answer about a machine that already has its
- * engine.
+ * RE-READING STILL FIXES A ROTATED TOKEN rather than growing a second row:
+ * `addCrucibleServer` replaces an existing NAME in place, keeping its rank and
+ * its enabled state, and the name is stable because it comes out of the line.
+ *
+ * ── IT DECLINES WHEN THIS URL IS ALREADY REGISTERED ─────────────────────────
+ *
+ * Not when ANY loopback entry is — that was the same "local is special"
+ * assumption one layer down, and wrong on its own terms: somebody with a tailnet
+ * Crucible registered AND a pairing file on disk got neither, because the
+ * tailnet row's address happened to be loopback. The question actually being
+ * asked is "do I already have THIS server", so the test is the clamped URL
+ * against the registry's, which is name-free and locality-free. It is also
+ * `addLocalCrucible`'s test (crucible-registry.ts), which has keyed on the URL
+ * all along.
  *
  * ── HOSTED, THE REGISTRY IS THE HOST'S AND THIS DOES NOTHING ────────────────
  *
@@ -758,20 +781,11 @@ export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
       message: 'The servers are the host application\'s while Foundry is running inside it.',
     };
   }
-  const already = crucibleServers().find((entry) => isLoopbackUrl(entry.url));
-  if (already !== undefined) {
-    return {
-      outcome: 'failed',
-      code: 'already_registered',
-      message: `This machine's Crucible is already registered as "${already.name}" `
-        + `at ${already.url}.`,
-    };
-  }
   const read = await pairingFileRead();
   if (read.found === 'absent') {
     // Debug volume, one line, and the SAME sentence the button shows — see
     // crucible-pairing.ts: an absent file is a fact about this machine.
-    console.log(`[pairing] no pairing file at ${read.path} — no local Crucible on this machine.`);
+    console.log(`[pairing] no pairing file at ${read.path} — nothing has left a code here.`);
     return {
       outcome: 'failed',
       code: 'no_local_config',
@@ -783,28 +797,86 @@ export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
     console.error(`[pairing] refused: ${read.message}`);
     return { outcome: 'failed', code: 'config_unreadable', message: read.message };
   }
-  addCrucibleServer(PAIRING_SERVER_NAME, read.pairing.url, read.pairing.token);
+  /*
+   * THE ADDRESS DECIDES, NOT THE ADDRESS'S SHAPE. Compared through
+   * `clampCrucibleUrl` because that is what the registry stored its own rows
+   * through, so a trailing slash on one side is not a second server.
+   */
+  const url = clampCrucibleUrl(read.pairing.url);
+  const already = crucibleServers().find((entry) => entry.url === url);
+  if (already !== undefined) {
+    return {
+      outcome: 'failed',
+      code: 'already_registered',
+      message: `${read.pairing.url} is already registered as "${already.name}".`,
+    };
+  }
+  /*
+   * A LINE THE REGISTRY WILL NOT TAKE IS A FACT, NOT A CRASH. `registerPairing`
+   * goes through the one writer, which refuses BY NAME — a name with a `:` in
+   * it, an address that is not http(s) — and this is the one road nobody
+   * pressed: mount.ts calls it at startup and does not await it, on the stated
+   * contract that it *"cannot reject"*. So the refusal is caught and worn as the
+   * third outcome the type already has, which is also the sentence the "Look
+   * again" button shows.
+   */
+  let name: string;
+  try {
+    name = registerPairing(read.pairing, '');
+  } catch (err) {
+    const said = err instanceof Error ? err.message : String(err);
+    console.error(`[pairing] ${read.path} could not be registered: ${said}`);
+    return {
+      outcome: 'failed',
+      code: 'config_unreadable',
+      message: `${read.path} names a server this app cannot store: ${said}`,
+    };
+  }
   await afterRegistryChanged();
-  console.log(
-    `[pairing] registered "${PAIRING_SERVER_NAME}" at ${read.pairing.url} from ${read.path}.`,
-  );
+  console.log(`[pairing] registered "${name}" at ${read.pairing.url} from ${read.path}.`);
   // A server this app has just met, by the same rule as `crucible:add`:
   // finding it is the request (PHASE14 §4a), so it is coordinated with now.
-  void coordinateWithServer(PAIRING_SERVER_NAME, 'it was found in the pairing file');
+  void coordinateWithServer(name, 'it was found in the pairing file');
   return {
     outcome: 'added',
     servers: crucibleServerViews(),
-    serverName: read.pairing.name,
+    serverName: name,
     url: read.pairing.url,
     configPath: read.path,
   };
 }
 
 /**
- * The name this machine's own engine is registered under, in both apps.
- * See {@link adoptPairingFile} — parity with BookForge is the whole argument.
+ * REGISTER ONE PAIRING LINE — the ONE writer behind both doors that take one.
+ *
+ * A pairing FILE is a connect code the machine left on disk, and a pasted
+ * connect code is the same line off somebody's operator page. Owen's ruling —
+ * *"it should all be entered the exact same way"* — means the two cannot differ
+ * in how they name the server, so they do not differ in the code either: same
+ * `addCrucibleServer`, same refusals, same `slotNameRefusal` clamp on the way to
+ * disk, same name source.
+ *
+ * THE NAME IS THE LINE'S UNLESS SOMEBODY TYPED ONE. `typed` is the connect-code
+ * card's Name box: the preview filled it with the code's own name and a person
+ * may have renamed it before pressing Add, and a door that re-read the name out
+ * of the line would silently throw that away. Empty — which is what the pairing
+ * file's path passes, because there is no box on that road — means the line's
+ * own name.
+ *
+ * It answers THE NAME AS STORED, because that is what the caller has to
+ * coordinate with and log: `addCrucibleServer` tidies whitespace, and a
+ * coordination keyed on the untidied string would be a run under a name no card
+ * draws.
+ *
+ * NO TOKEN CROSSES OUT OF HERE. The line carries one; it goes into the registry
+ * and nowhere else, which is crucible-registry.ts's standing rule.
  */
-const PAIRING_SERVER_NAME = 'local';
+function registerPairing(pairing: Pairing, typed: string): string {
+  const wanted = tidySlotName(typed);
+  const name = wanted.length > 0 ? wanted : tidySlotName(pairing.name);
+  addCrucibleServer(name, pairing.url, pairing.token);
+  return name;
+}
 
 export function registerIpc(): void {
   /**
@@ -3599,7 +3671,7 @@ export function registerIpc(): void {
      * an un-normalised name would be a second row under a name no card draws.
      */
     const stored = crucibleServers().find(
-      (entry) => entry.name.toLowerCase() === name.replace(/\s+/g, ' ').trim().toLowerCase(),
+      (entry) => entry.name.toLowerCase() === tidySlotName(name).toLowerCase(),
     );
     if (stored !== undefined) void coordinateWithServer(stored.name, 'it was added');
     return crucibleSettingsView();
@@ -3662,27 +3734,30 @@ export function registerIpc(): void {
     return probeCrucibleAt(read.pairing.url, read.pairing.token);
   });
   /*
-   * Add, through the registry's ONE writer, answering with the whole settings
-   * view for `crucible:add`'s reason. The NAME is the caller's: the preview
-   * filled a box with the code's own name and somebody may have renamed it
-   * before pressing, and a door that re-read the name out of the line would
-   * silently throw that away. An EMPTY name falls back to the code's, which is
-   * what pressing Add on an untouched preview means.
+   * Add, through {@link registerPairing} — which is the SAME writer the pairing
+   * file's road uses, because a pairing file is this line on disk and Owen's
+   * ruling is that the two are *"entered the exact same way"*. The NAME is the
+   * caller's: the preview filled a box with the code's own name and somebody may
+   * have renamed it before pressing, and a door that re-read the name out of the
+   * line would silently throw that away. An EMPTY name falls back to the code's,
+   * which is what pressing Add on an untouched preview means.
    *
    * IT REJECTS BY NAME on a line that will not parse, rather than answering a
    * view: this is the door that WRITES, and everything that writes the registry
    * in this file rejects rather than returning a failed shape.
+   *
+   * AND IT COORDINATES, which it did not before this door and the pairing file's
+   * shared one writer: PHASE14 §4a's moment is *a server being added*, and
+   * `crucible:add` beside it has always taken that pass. A server added by
+   * pasting a code was the one road into the registry that did not, which is a
+   * card this app would then have found missing at the first job instead of now.
    */
   ipcMain.handle('crucible:add-connect-code', async (_event, line: string, name: string) => {
     const read = readConnectCode(line);
     if (!read.read) throw new Error(read.message);
-    const wanted = name.replace(/\s+/g, ' ').trim();
-    addCrucibleServer(
-      wanted.length > 0 ? wanted : read.pairing.name,
-      read.pairing.url,
-      read.pairing.token,
-    );
+    const stored = registerPairing(read.pairing, name);
     await afterRegistryChanged();
+    void coordinateWithServer(stored, 'it was added from a connect code');
     return crucibleSettingsView();
   });
 
@@ -4109,9 +4184,13 @@ export function registerIpc(): void {
    * ── AND THE FIRST SWEEP, ONCE AT STARTUP ──────────────────────────────────
    *
    * crucible `docs/PHASE14-ENVPACKS.md` §4a and Owen, 2026-09-14: *"lets make
-   * it as simple as possible."* Every ENABLED server, loopback entries first,
-   * with no button and no question — the enable switch in Settings is the one
-   * opt-out, because it is the control that already means "not that one".
+   * it as simple as possible."* Every ENABLED server, in the REGISTRY'S OWN
+   * ORDER, with no button and no question — the enable switch in Settings is the
+   * one opt-out, because it is the control that already means "not that one".
+   * It used to put the loopback entries at the front; Owen's ruling that *"a
+   * local crucible server shouldnt be treated any differently than a remote
+   * crucible server"* retired that, and `coordinateEveryServer` argues why the
+   * operator's drag rank is the only order this app is entitled to.
    *
    * IT RUNS HOSTED TOO. The registry is the host's over there and read-only,
    * and each app still posts its OWN module: the union of the two modules on

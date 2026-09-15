@@ -96,6 +96,123 @@ export const ANY_SLOT = 'any';
 export const LOCAL_SLOT_NAME = 'This computer';
 
 /**
+ * THE LONGEST A SLOT NAME MAY BE — 48 characters, and the number is shared with
+ * BookForge so that a name accepted in one app is accepted in the other.
+ *
+ * It used to be enforced by nobody and applied by one silent `.slice(0, 60)` on
+ * the way to disk (electron/app-settings.ts), which is the worst of the three
+ * possible answers: the card showed one name, the file held another, and the
+ * truncated one could collide with a row that was already there.
+ */
+export const SLOT_NAME_MAX = 48;
+
+/**
+ * A SLOT NAME AS IT IS STORED — trimmed, with runs of whitespace collapsed to
+ * one space.
+ *
+ * ONE SPELLING, because the name IS the identity: it is what a row's `waitFor`
+ * says, what `ranOn` records, what the scheduler keys its occupancy by and what
+ * the bench card is headed with. Two writers that tidied differently would put
+ * two strings in front of one machine.
+ */
+export function tidySlotName(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+/**
+ * WHAT IS WRONG WITH A SLOT NAME, as a sentence somebody can act on — or null
+ * when nothing is.
+ *
+ * ── ONE OWNER FOR A RULE THAT TWO PLACES ENFORCE ────────────────────────────
+ *
+ * The registry has a REFUSING writer (`writeCrucibleServers`, with
+ * `writeCloudProviders` beside it) and a CLEANING clamp (`clampCrucibleServers`,
+ * `clampCloudProviders` — electron/app-settings.ts). That division of labour is
+ * right and stays: the writer says what to fix because somebody is looking at a
+ * card, the clamp drops what it cannot store because nobody is. What was wrong
+ * is that the two enforced DIFFERENT RULES — the writer checked no length at
+ * all while the clamp quietly truncated at 60 — so a long name was refused by
+ * nobody and silently shortened on the way to disk, where it could collide with
+ * another entry or stop matching the name the card was still showing. This
+ * function is the one rule and both consult it. The `what` is the noun the
+ * caller's card uses (`server`, `provider`), so the sentence names the thing the
+ * person is editing.
+ *
+ * ── WHY EACH CHARACTER IS FORBIDDEN, HERE ───────────────────────────────────
+ *
+ * Not "because BookForge forbids it". The limits are shared with that app so
+ * that one name is legal in both, but each of these breaks something in THIS
+ * one:
+ *
+ *   * `:` is the mark between a slot and its upstream lane. `upstreamLaneName`
+ *     composes `<slot>:cloud` (shared/queue-board.ts), and that string is an
+ *     identity THREE readers compare by: the scheduler's occupancy map, the
+ *     walk's claim, and the bench's card. A server called `3090:cloud` would
+ *     give its own card lane the name of server `3090`'s UPSTREAM lane, and two
+ *     lanes with one string is one lane.
+ *   * `/` and `\` because a Crucible server's name becomes an Electron session
+ *     partition, `crucible:<name>` (electron/crucible-ui.ts) — which is the
+ *     whole of what keeps two servers' operator pages out of each other's
+ *     cookies and storage.
+ *   * A control character because the name is drawn as a label, written into a
+ *     JSON settings file and printed in log lines, and not one of those three
+ *     has an escape for it.
+ *
+ * ONE RULE FOR EVERY SLOT NAME rather than two that differ by list: both lists
+ * feed one picker and one lane string, and a person moving a name from one card
+ * to the other should not discover it is legal on only one of them.
+ *
+ * Runs of whitespace are not refused, they are COLLAPSED — see
+ * {@link tidySlotName}, which every caller runs first. A double space is a typo
+ * rather than a decision, and refusing one would be this app teaching somebody
+ * to count spaces.
+ *
+ * ── AND THE TWO NAMES THE QUEUE HAS ALREADY SPENT ───────────────────────────
+ *
+ * {@link ANY_SLOT} and {@link LOCAL_SLOT_NAME} are what a row's `waitFor` says
+ * when it means "the first slot that will take it" and "this machine's own
+ * GPU". A slot wearing either would make a stored row mean something other than
+ * what the person picked. The clamps always dropped these; now the writers
+ * refuse them BY NAME instead of accepting a server that then vanishes.
+ *
+ * WHAT IS DELIBERATELY NOT HERE IS UNIQUENESS. One name cannot see the other
+ * list, so a collision is refused at the two writers (which read both lists) and
+ * deduped at the two clamps — `writeCrucibleServers` argues that split.
+ */
+export function slotNameRefusal(name: string, what: string): string | null {
+  if (name.length === 0) {
+    return `A ${what} needs a name — it is what a queue row waits for.`;
+  }
+  if (name.length > SLOT_NAME_MAX) {
+    return `That name is too long — a ${what}'s name is at most ${SLOT_NAME_MAX} characters, `
+      + `and this one is ${name.length}.`;
+  }
+  /*
+   * THE NAME IS NOT ECHOED BACK IN THIS ONE SENTENCE: a control character
+   * printed into a card's line is a card that draws wrong, which would be this
+   * refusal reproducing the thing it is refusing.
+   */
+  if ([...name].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)) {
+    return `A ${what}'s name cannot contain control characters.`;
+  }
+  if (name.includes(':')) {
+    return `"${name}" cannot contain ":" — that is the mark between a slot and its upstream `
+      + 'lane, so this name would be the same string as another slot\'s lane.';
+  }
+  if (name.includes('/') || name.includes('\\')) {
+    return `"${name}" cannot contain "/" or "\\" — the name becomes a browser partition when `
+      + 'this app opens that server\'s own page.';
+  }
+  const key = name.toLowerCase();
+  if (key === ANY_SLOT.toLowerCase() || key === LOCAL_SLOT_NAME.toLowerCase()) {
+    return `"${name}" is a name the queue has already spent: "${ANY_SLOT}" means the first slot `
+      + `that will take a row, and "${LOCAL_SLOT_NAME}" means this machine's own GPU. `
+      + `Give this ${what} a different name.`;
+  }
+  return null;
+}
+
+/**
  * Whose compute a slot is.
  *
  * `cloud` WAS THE SEAM AND IS NOW BUILT — docs/SLOTS.md §3 and §7 (Package F,

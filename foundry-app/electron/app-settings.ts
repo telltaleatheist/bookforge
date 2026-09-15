@@ -28,7 +28,8 @@ import {
 } from '../shared/pipeline';
 import {
   ANY_SLOT,
-  LOCAL_SLOT_NAME,
+  slotNameRefusal,
+  tidySlotName,
   type CloudProviderKind,
   type NewJobsWaitFor,
 } from '../shared/slots';
@@ -548,31 +549,32 @@ export function clampWslDistro(value: unknown): string {
  *     explicit that its `url` is the base WITHOUT the version prefix and refuses
  *     one that has it — better to drop the row here, where the settings card can
  *     say so, than to mint a client that throws a config error at dispatch.
- *   * A name that collides with {@link LOCAL_SLOT_NAME} or {@link ANY_SLOT}.
- *     Those two are what a row's `waitFor` says when it means "this machine" and
- *     "the first that will take it"; a server wearing either name would make a
- *     stored row mean something other than what the person picked.
+ *   * A name `slotNameRefusal` (shared/slots.ts) has something to say about —
+ *     too long, a control character, a `:`, a `/` or a `\`, or one of the two
+ *     names the queue has already spent. THAT FUNCTION IS THE RULE AND THIS IS
+ *     ONE OF ITS TWO READERS: it used to be two rules, a writer that checked no
+ *     length beside this clamp's silent `.slice(0, 60)`, so a long name was
+ *     refused by nobody and shortened on the way to disk into something the card
+ *     was no longer showing. Dropped here rather than truncated, because a
+ *     truncation is a name nobody chose.
  *   * A name already used by an earlier entry, first writing wins — the picker
  *     keys off the name and two rows sharing one would be one row the person
  *     cannot choose between.
  */
 export function clampCrucibleServers(value: unknown): CrucibleServerEntry[] {
   if (!Array.isArray(value)) return [];
-  const reserved = new Set([LOCAL_SLOT_NAME.toLowerCase(), ANY_SLOT.toLowerCase()]);
   const seen = new Set<string>();
   const out: CrucibleServerEntry[] = [];
   for (const raw of value) {
     if (out.length >= CRUCIBLE_SERVER_MAX) break;
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
-    const name = typeof entry['name'] === 'string'
-      ? entry['name'].replace(/\s+/g, ' ').trim().slice(0, 60)
-      : '';
+    const name = tidySlotName(entry['name']);
     const url = clampCrucibleUrl(entry['url']);
     const token = typeof entry['token'] === 'string' ? entry['token'].trim() : '';
-    if (name.length === 0 || url === null || token.length === 0) continue;
+    if (slotNameRefusal(name, 'server') !== null || url === null || token.length === 0) continue;
     const key = name.toLowerCase();
-    if (reserved.has(key) || seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
     out.push({ name, url, token, enabled: entry['enabled'] !== false });
   }
@@ -595,10 +597,14 @@ export function clampCrucibleServers(value: unknown): CrucibleServerEntry[] {
  *     `Authorization` on a wire that wants `x-api-key`.
  *   * An `endpoint` that is not http(s). Empty is kept as empty, which MEANS the
  *     provider's own address and is the ordinary case.
- *   * A name that collides with {@link LOCAL_SLOT_NAME} or {@link ANY_SLOT},
- *     with an earlier cloud entry, or with a registered Crucible — the picker
- *     keys off the name and a slot list with two rows called one thing is a row
- *     the person cannot choose between. THE CRUCIBLE HALF OF THAT TEST IS NOT
+ *   * A name `slotNameRefusal` (shared/slots.ts) has something to say about, by
+ *     `clampCrucibleServers`' argument and through the same one function: the
+ *     two lists feed ONE picker and one lane string, so a name legal in one card
+ *     and not the other would be a rule a person has to learn twice.
+ *   * A name that collides with an earlier cloud entry, or with a registered
+ *     Crucible — the picker keys off the name and a slot list with two rows
+ *     called one thing is a row the person cannot choose between. THE CRUCIBLE
+ *     HALF OF THAT TEST IS NOT
  *     HERE: this function is handed one array and `clampCrucibleServers` is
  *     handed the other, so neither can see the other's names at the clamp. The
  *     refusal is at the two WRITERS (electron/cloud-providers.ts and
@@ -607,26 +613,24 @@ export function clampCrucibleServers(value: unknown): CrucibleServerEntry[] {
  */
 export function clampCloudProviders(value: unknown): CloudProviderEntry[] {
   if (!Array.isArray(value)) return [];
-  const reserved = new Set([LOCAL_SLOT_NAME.toLowerCase(), ANY_SLOT.toLowerCase()]);
   const seen = new Set<string>();
   const out: CloudProviderEntry[] = [];
   for (const raw of value) {
     if (out.length >= CLOUD_PROVIDER_MAX) break;
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
-    const name = typeof entry['name'] === 'string'
-      ? entry['name'].replace(/\s+/g, ' ').trim().slice(0, 60)
-      : '';
+    const name = tidySlotName(entry['name']);
     const kind = entry['kind'] === 'openai' || entry['kind'] === 'anthropic'
       ? entry['kind']
       : null;
     const apiKey = typeof entry['apiKey'] === 'string' ? entry['apiKey'].trim() : '';
     const model = clampCloudModel(entry['model']);
     const endpoint = clampCloudEndpoint(entry['endpoint']);
-    if (name.length === 0 || kind === null || apiKey.length === 0 || model.length === 0) continue;
+    if (slotNameRefusal(name, 'provider') !== null) continue;
+    if (kind === null || apiKey.length === 0 || model.length === 0) continue;
     if (endpoint === null) continue;
     const key = name.toLowerCase();
-    if (reserved.has(key) || seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
     out.push({ name, kind, apiKey, model, endpoint, enabled: entry['enabled'] !== false });
   }

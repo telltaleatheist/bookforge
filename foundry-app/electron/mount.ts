@@ -534,11 +534,15 @@ export function mountFoundry(host?: FoundryHost): void {
   /*
    * ── THE ENGINE ON THIS MACHINE, FOUND WITHOUT ANYBODY BEING ASKED ──────────
    *
-   * crucible `docs/PHASE15-HOST.md` §5.1, way 1: when the registry has no
-   * loopback entry, `<CRUCIBLE_HOME>/pairing` is read and what it names is
-   * registered as `local`. Owen's whole sentence for this phase is *"the user
-   * shouldn't have to interact with crucible almost at all"* — a machine whose
-   * installer already wrote a token has nothing left to type.
+   * crucible `docs/PHASE15-HOST.md` §5.1, way 1: `<CRUCIBLE_HOME>/pairing` is
+   * read and, unless its ADDRESS is already registered, the server is added
+   * under the name the line itself carries. Owen's whole sentence for this phase
+   * is *"the user shouldn't have to interact with crucible almost at all"* — a
+   * machine whose installer already wrote a token has nothing left to type.
+   *
+   * NO RESERVED NAME AND NO LOCALITY TEST, per Owen's ruling (*"a local crucible
+   * server shouldnt be treated any differently than a remote crucible server"*):
+   * see `adoptPairingFile`, which argues both.
    *
    * STANDALONE ONLY, hence the guard rather than a `hosted()` check inside: a
    * hosted window's registry is the HOST's and is read-only from here (the door

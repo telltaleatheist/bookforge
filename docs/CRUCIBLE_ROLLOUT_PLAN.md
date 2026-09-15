@@ -1147,6 +1147,26 @@ apps' doors.
   load, a slot switched off. A slot MISSING from the list stays transient by their deliberate
   choice — right for a row in their pump, fatal for a detached `runJob` — so BookForge's preflight
   now covers exactly that one case and nothing else.
+- **D1-v2. RE-VENDORED AGAIN AT `40aaa42` (foundry 2.0.0), same day.** Ten files, no deletions.
+  The binary is rebuilt clean from that tree, so the app sha and the engine sha AGREE again and
+  `dist/foundry-windows-x64.exe` answers `foundry 2.0.0 (40aaa42)` — all hex in the parentheses,
+  which is what `tools/test-foundry-clean-text-vendor.js`'s tier-2 regex needs to find a commit and
+  verify instead of refusing. It carries `registerPairing()` as the ONE writer both pairing doors
+  share, the connect-code door finally COORDINATING (it was the one road into their registry that
+  skipped the moment `crucible:add` beside it took), and slot-name rules under one owner with the
+  silent `.slice(0, 60)` deleted. **Three things were read rather than assumed**, because the
+  commit is marked BREAKING and its subject is a reserved NAME while BookForge hands that window an
+  entry literally called `local`: (1) `local` is still legal — the retired reserved name was the
+  PAIRING door's, and `LOCAL_SLOT_NAME = 'This computer'` is their own GPU-slot label; (2) the new
+  `tidySlotName` is NOT applied to host-supplied entries (`cleanHostServers` still uses a bare
+  `.trim()`), which matters because it collapses whitespace runs — had it run there, a server named
+  `my␣␣mac` would become `my␣mac` over there, our preflight would pass and their `slotNamed` would
+  miss, which is the exact forever-park the preflight exists to prevent; (3) `slotNamed` is still
+  `slot.name === name`, exact and case-sensitive, which is what our refusal sentence claims.
+  **Nothing double-coordinates:** hosted, their registry is the host's and read-only, so neither
+  write door can add a server at all; the startup sweep does run hosted by their explicit design,
+  with each app posting its OWN module — *"the union of the two modules on one server is the
+  contract"* — and only the drawing suppressed.
 - **D1-cautions.** Three come with the tip and **Owen has accepted all three**: `CRUCIBLE_READS` is
   true (this seam sends `waitFor: null` for a `read`, so their own default decides and nothing
   changes); the old cloud card sits beside the engine settings card until a later package; the

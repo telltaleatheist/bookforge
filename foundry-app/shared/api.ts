@@ -1457,8 +1457,16 @@ export interface FoundryApi {
      */
     addLocal(name: string): Promise<LocalCrucibleAdd>;
     /**
-     * LOOK FOR A CONNECT CODE CRUCIBLE LEFT ON THIS MACHINE, and register what
-     * it names as `local` — PHASE15-HOST.md §3.6 and §5.1, way 1.
+     * LOOK FOR A CONNECT CODE CRUCIBLE LEFT ON THIS MACHINE, and register it
+     * UNDER THE NAME THE LINE CARRIES — PHASE15-HOST.md §3.6 and §5.1, way 1.
+     *
+     * There is no reserved name and this door does not invent one. Owen's
+     * ruling: *"it shouldnt be named 'local' anywhere. it might not be local…
+     * it should all be entered the exact same way."* A pairing file is a
+     * connect code the machine left on disk, so main registers it through the
+     * same writer `addConnectCode` uses (electron/ipc.ts `registerPairing`).
+     * It DECLINES when the address in the line is already registered — the
+     * address, never the name and never whether it looks loopback.
      *
      * The same read runs once at start (electron/mount.ts) and needs no button
      * to have happened. This door is the SECOND CHANCE §3.6 asks for: the engine

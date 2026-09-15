@@ -26,9 +26,12 @@
  * the person than the one above it. A screen that offered them in another order
  * would be asking somebody to type a token they never needed to see.
  *
- * 0. **The engine on this machine, found on its own.** No door at all in the
- *    ordinary case: main reads the connect code Crucible left at
- *    `<CRUCIBLE_HOME>/pairing` at start and registers what it names as `local`
+ * 0. **An engine that left a connect code here, found on its own.** No door at
+ *    all in the ordinary case: main reads the connect code Crucible left at
+ *    `<CRUCIBLE_HOME>/pairing` at start and registers it under THE NAME THE LINE
+ *    CARRIES, exactly as a pasted code is registered — there is no reserved name
+ *    and no "this machine" identity, per Owen's ruling *"it shouldnt be named
+ *    'local' anywhere. it might not be local"*
  *    (§3.6; electron/ipc.ts `adoptPairingFile`). What is here is the SECOND
  *    CHANCE §3.6 asks for — "Look again on this machine", for an engine
  *    installed AFTER this app opened, which is exactly what happens when
@@ -849,19 +852,28 @@ export class CrucibleDoorsComponent {
   }
 
   /**
-   * Read the local server's own config and register it.
+   * Read that server's own config and register it.
    *
    * Pressing this a second time after `crucible init --force` is the supported
    * fix for a stale token — the entry is replaced in place, keeping its rank —
    * and the note says so, because otherwise the only way to learn it is to hit
    * the 401 first.
+   *
+   * THE NAME IS SENT EMPTY, WHICH MEANS "THE SERVER'S OWN". It used to send
+   * "This machine", which was this app naming a server after where it happened
+   * to find it. Owen's ruling retires that: *"a local crucible server shouldnt
+   * be treated any differently than a remote crucible server. it should all be
+   * entered the exact same way."* `addLocalCrucible` (electron/crucible-
+   * registry.ts) already falls back to the `[server] name` in that config.toml,
+   * which is the same source the other two doors take a name from — the line
+   * the server printed about itself.
    */
   protected async addLocal(): Promise<void> {
     if (!api) return;
     this.busy.set('local');
     this.localNote.set(null);
     try {
-      const answer = await api.crucible.addLocal('This machine');
+      const answer = await api.crucible.addLocal('');
       if (answer.outcome === 'added') {
         this.localFailed.set(false);
         this.localNote.set(
