@@ -41,15 +41,17 @@
 // is the one door narrator refuses a Higgs book for the absence of.
 const ANCHORS = [
   { name: 'prep', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    '--ebook', ebookArgPath," },
-  { name: 'retake', file: 'electron/parallel-tts-bridge.ts', start: "args = [\n      '--session', sessionId," },
-  // NOT anchored on "const args: string[] = [" — the first `[` after that anchor
-  // is the one in `string[]`, so the capture comes back as the empty array, for
-  // the one door that renders every sentence of every book. Anchored on the
-  // assignment instead.
-  { name: 'worker', file: 'electron/parallel-tts-bridge.ts', start: "= [\n    '--session', prepInfo.sessionId," },
+  // TWO DOORS LEFT THIS LIST ON 2026-09-15, and their absence is the point:
+  // `worker` (every sentence of every book) and `retake` were the LOCAL narrator
+  // spawn, deleted with that layer (docs/LEGACY-REMOVAL.md). A render's sentences
+  // and its retakes are a Crucible job now — there is no argv to pin, because
+  // there is no command line. If either name comes back here, something has
+  // started spawning a renderer on this machine again, and that is a decision
+  // rather than a refactor.
   { name: 'assembly-render', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    // Only include --ebook" },
   { name: 'assembly-reassembly', file: 'electron/reassembly-bridge.ts', start: "const appArgs = [\n      '--headless',\n      '--ebook', epubPath," },
-  // SEVEN NOW. The align door is the coverage guard's own spawn, and it is the
+  // FIVE NOW (seven until the local renderer went). The align door is the
+  // coverage guard's own spawn, and it is the
   // one door in narrator's OWN spelling (dashes-and-words) rather than e2a's —
   // which is exactly why it is worth pinning: a flag renamed on either side
   // silently stops producing the report, and the only symptom is an assembly
@@ -261,10 +263,17 @@ if (require.main === module) {
   // engine: undefined means the tools env (assembly/resume/list); 'orpheus' is
   // the render engine. Higgs is covered by tools/test-higgs-engine.js, which owns
   // the voice document this capture would have to fake.
+  /*
+   * FIVE DOORS. `worker` and `retake` were the local renderer's own phase and
+   * went with it (docs/LEGACY-REMOVAL.md); `buildNarratorSpawn` still builds the
+   * other five and a flag lost from any of them is still silent and expensive.
+   *
+   * `prep` names the HIGGS engine now, not Orpheus. Orpheus is retired and
+   * cannot render, so a prep plan captured for it would pin an environment no
+   * job can ask for.
+   */
   const DOORS = [
-    { name: 'prep', engine: 'orpheus', phase: 'prep' },
-    { name: 'worker', engine: 'orpheus', phase: 'worker' },
-    { name: 'retake', engine: 'orpheus', phase: 'worker' },
+    { name: 'prep', engine: 'higgs', phase: 'prep' },
     { name: 'assembly', engine: undefined, phase: 'assembly' },
     { name: 'align', engine: undefined, phase: 'align' },
     { name: 'resume', engine: undefined, phase: 'resume' },

@@ -315,138 +315,63 @@ check('the Listen facade reaches no local pool at all', () => {
     'the legacy local-render switch is being read again');
 });
 
-check('every id the selector can choose is one the pool knows, and the rest are retired', () => {
+check('every id the selector can choose is runnable, and the rest are retired', () => {
   /*
-   * THEY USED TO BE COMPARED FOR EQUALITY, and are now compared for CONTAINMENT.
+   * REPOINTED 2026-09-15. This compared the selector's union against the local
+   * POOL's `StreamEngineId`; the pool is deleted (docs/LEGACY-REMOVAL.md), so
+   * there is no second union in that direction any more.
    *
-   * `orpheus-worker-pool.ts` declares its own `StreamEngineId` rather than
-   * importing `StreamEngineName` (the import would be a cycle), and two spellings
-   * of one union is a drift waiting to happen. But they are no longer the same
-   * question: the pool is the HELD RECORD of the local narrator spawn — kept, not
-   * deleted, until its measured tuning has been audited against Crucible's own
-   * environment — so it still names `orpheus`, while the selector offers `higgs`.
+   * There is still a second union, and it is a better one to compare against:
+   * `shared/tts/engine-caps.ts`'s engine table, which NARRATION reads. Two
+   * surfaces in one app name engines, they retired Orpheus a day apart
+   * (narration 2026-09-14, Listen 2026-09-15), and nothing compared them — which
+   * is exactly the window in which a selector can offer an engine the rest of the
+   * app has stopped being able to render.
    *
-   * Two things would still be bugs, and both are asserted: a SELECTABLE id the
-   * pool has never heard of (nothing could serve it), and an id the pool names
-   * that the selector neither offers nor RETIRES (a saved value with nothing true
-   * to display).
+   * Two things are bugs and both are asserted: a SELECTABLE stream id the engine
+   * table does not call runnable (nothing could serve it), and an id the stream
+   * selector RETIRES that the table still calls runnable (the two surfaces
+   * disagree about whether a voice can be produced at all).
    */
-  const poolSrc = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
-  const pool = poolSrc.match(/export type StreamEngineId = ([^;]+);/);
   const sel = streamTs.match(/export type StreamEngineName = ([^;]+);/);
-  assert.ok(pool && sel, 'one of the two unions is gone or renamed');
-  const ids = (t) => t.split('|').map((x) => x.trim().replace(/'/g, ''));
-  const poolIds = ids(pool[1]);
-  const selIds = ids(sel[1]);
+  assert.ok(sel, 'the selector union is gone or renamed');
+  const selIds = sel[1].split('|').map((x) => x.trim().replace(/'/g, ''));
+  const caps = require(path.join(REPO, 'dist', 'shared', 'tts', 'engine-caps.js'));
+
   for (const id of selIds) {
-    assert.ok(poolIds.includes(id),
-      `the selector offers ${id} and the pool streams ${pool[1]} — nothing could serve it`);
+    const row = caps.TTS_ENGINES[id];
+    assert.ok(row, `the Listen selector offers "${id}" and the engine table has no such engine`);
+    assert.strictEqual(row.retired, null,
+      `the Listen selector offers "${id}" and the engine table calls it retired — `
+      + 'nothing could serve it');
   }
-  for (const id of poolIds.filter((x) => !selIds.includes(x))) {
-    assert.match(stream.streamEngineLabel(id), /\(retired\)$/,
-      `the pool still names ${id} and the selector neither offers nor retires it — `
-      + 'it would be a saved value with nothing true to display');
+
+  for (const [id, row] of Object.entries(caps.TTS_ENGINES)) {
+    if (selIds.includes(id)) continue;
+    if (row.retired !== null) continue;
+    assert.fail(
+      `the engine table calls "${id}" runnable and the Listen selector neither offers nor `
+      + 'retires it — the two surfaces disagree about what this build can produce');
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-console.log('selection REFUSES rather than falling back');
-// ─────────────────────────────────────────────────────────────────────────────
-// `setSelectedEngineName` calls `getAvailableEngines` INTERNALLY, so stubbing the
-// module's export changes nothing about what it sees. It is lifted here with its
-// free variables rebound, the same way the other keepers exercise module-private
-// code: what runs below is the shipped body, driven against a machine whose
-// availability list is missing an engine.
-const selectSrc = streamJs.match(/async function setSelectedEngineName\(name\) \{[\s\S]*?\n}\n/);
 /*
- * Driven with a SECOND, INVENTED id (`shimmer`) beside the real one. With a
- * single selectable engine there is nothing to omit from an availability list and
- * nothing to switch away from, so the two rows below would both be vacuous — and a
- * vacuous row is worse than no row, because it reads as coverage.
+ * A THIRD CHECK STOOD HERE AND ITS SUBJECT IS DELETED (2026-09-15).
+ *
+ * "the pool refuses to name an engine when no probe is registered" pinned that
+ * `serveEngineProbe` had NO default. It had defaulted to `() => 'orpheus'`, and
+ * because `streaming-engine.ts` registered it at module load, that default could
+ * only ever be reached when the registration was dropped or reordered — where it
+ * answered by rendering a Higgs session in Orpheus, silently, with the app
+ * reporting Higgs throughout.
+ *
+ * The pool is deleted (docs/LEGACY-REMOVAL.md) and nothing registers a probe any
+ * more. The LESSON is the durable part and is why this note replaces the check
+ * rather than the check simply vanishing: A DEFAULT THAT CAN ONLY BE REACHED BY A
+ * BUG SHOULD BE A REFUSAL, because reaching it means the thing that was supposed
+ * to answer never ran, and guessing there turns a wiring mistake into wrong audio
+ * nobody can see.
  */
-function liftedSelect(availability) {
-  assert.ok(selectSrc, 'setSelectedEngineName is not in the compiled selector — did it move?');
-  return eval(
-    `(function (isEngineName, RETIRED_STREAM_ENGINES, STREAM_ENGINE_NAMES,
-                getSelectedEngineName, getAvailableEngines,
-                getActiveEngine, readPersisted, writePersisted, emitStreamConfigChanged) {
-       let selected = null;   // the module-level binding the real body assigns to
-       ${selectSrc[0]}
-       return setSelectedEngineName;
-     })`,
-  )(
-    (v) => v === 'higgs' || v === 'shimmer',
-    new Map(),
-    ['higgs', 'shimmer'],
-    () => 'shimmer',
-    () => availability,
-    () => ({ endSession: async () => {} }),
-    () => ({}),
-    () => {},
-    () => {},
-  );
-}
-
-checkAsync('an engine missing from getAvailableEngines() cannot be selected', () => {
-  // `if (info && !info.available)` read "not in the availability list ⇒ allow it",
-  // so the one mistake the check exists to catch — a selectable engine forgotten in
-  // `getAvailableEngines()` — was the case it waved through. The two lists are
-  // hand-maintained in one file; nothing but this makes them agree.
-  return liftedSelect([{ id: 'shimmer', name: 'Shimmer', available: true }])('higgs').then(
-    () => { throw new Error('selecting an engine with no availability row was accepted'); },
-    (err) => {
-      assert.match(err.message, /not in getAvailableEngines/i,
-        `refused, but not for the right reason: ${err.message}`);
-    },
-  );
-});
-
-checkAsync('an engine that IS listed and available is still selectable', () => {
-  // The refusal above must not be "refuse everything". This is also the row that
-  // would have caught `isEngineName` returning `v === 'orpheus'` while every other
-  // surface offered Higgs.
-  return liftedSelect([
-    { id: 'shimmer', name: 'Shimmer', available: true },
-    { id: 'higgs', name: 'Higgs', available: true },
-  ])('higgs');
-});
-
-checkAsync('every listed engine is a NAME the selector knows', () => {
-  // The REAL `setSelectedEngineName`, not the lifted one — the lifted copy is given
-  // its own `isEngineName` and so is blind to this.
-  //
-  // `isEngineName` was a hand-written second copy of the engine list, and it went
-  // stale the moment Higgs was added: Higgs reached the union,
-  // `getAvailableEngines()`, the Settings picker and the extension's engine menu,
-  // while this one function still read `v === 'orpheus'`. Selecting it failed with
-  // "Unknown streaming engine: higgs. This build streams: orpheus, higgs." — a
-  // message that contradicts itself in its own second clause.
-  //
-  // Host-independent: on a machine where an engine is unavailable the refusal names
-  // the machine, not the name. Either is fine here; "unknown" is not.
-  return Promise.all(stream.getAvailableEngines().map((e) => stream
-    .setSelectedEngineName(e.id)
-    .then(
-      () => {},
-      (err) => {
-        assert.doesNotMatch(err.message, /Unknown streaming engine/,
-          `${e.id} is offered by getAvailableEngines() and rejected by name: ${err.message}`);
-      },
-    )));
-});
-
-check('the pool refuses to name an engine when no probe is registered', () => {
-  // `serveEngineProbe` used to default to `() => 'orpheus'`. `streaming-engine.ts`
-  // registers it at module load, so the default could only ever be reached when the
-  // registration was dropped or reordered — and it answered that by rendering a Higgs
-  // session in Orpheus, silently, with the app reporting Higgs throughout.
-  const poolMod = require(path.join(DIST, 'orpheus-worker-pool.js'));
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
-  assert.match(src, /let serveEngineProbe: \(\(\) => StreamEngineId\) \| null = null;/,
-    'the serve-engine probe has a default again — an unregistered probe must fail, not guess');
-  assert.ok(typeof poolMod.setServeEngineProbe === 'function',
-    'setServeEngineProbe is gone, so nothing can register the engine the pool spawns for');
-});
 
 /*
  * TWO CHECKS STOOD HERE AND THEIR SUBJECT IS DELETED (Phase 16 step 8,

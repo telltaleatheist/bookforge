@@ -1355,7 +1355,7 @@ check('narrator is addressed by NARRATOR_*, and the LAUNCH SCRIPT by HIGGS_*', (
   // read out of the script itself, so a variable BookForge sets that the script
   // never reads fails here.
   const script = fs.readFileSync(
-    path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_v3.sh'), 'utf-8');
+    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch', 'serve_higgs_v3.sh'), 'utf-8');
   for (const key of Object.keys(env).filter((k) => /^HIGGS_/.test(k))) {
     assert.ok(script.includes(`${key}=`) || script.includes(`$${key}`),
       `${key} is set by BookForge and read nowhere in serve_higgs_v3.sh`);
@@ -1383,7 +1383,7 @@ check('the SGLang launcher reads every HIGGS_* variable its spawn sets', () => {
     wslDistro: 'Ubuntu',
   });
   const script = fs.readFileSync(
-    path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_sgl.sh'), 'utf-8');
+    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch', 'serve_higgs_sgl.sh'), 'utf-8');
   const set = Object.keys(sglEnv).filter((k) => /^HIGGS_/.test(k));
   assert.ok(set.length >= 6, `only ${set.length} HIGGS_* variables reached the SGLang launcher`);
   for (const key of set) {
@@ -1397,52 +1397,28 @@ check('the SGLang launcher reads every HIGGS_* variable its spawn sets', () => {
   assert.match(script, /HIGGS_STACK.*sglang-omni/s,
     'serve_higgs_sgl.sh does not assert which stack it is');
   assert.match(
-    fs.readFileSync(path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_v3.sh'), 'utf-8'),
+    fs.readFileSync(path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch', 'serve_higgs_v3.sh'), 'utf-8'),
     /HIGGS_STACK.*vllm-omni/s,
     'serve_higgs_v3.sh does not assert which stack it is');
 });
 
-check('the packaged launcher is canonical and electron/scripts/ is its copy', () => {
-  // THE LAUNCHER MOVED INTO NARRATOR on 2026-09-13, as package data:
-  // `python/narrator/engine/higgs/launch/serve_higgs_v3.sh`, with the certified
-  // frames-7500 deploy profile beside it. That is what makes narrator startable
-  // by a client that has never heard of BookForge — Crucible's first real `tts`
-  // render died because the only copy of this script lived in this repo's
-  // electron/ tree and narrator refused to launch without being handed a path
-  // into it.
-  //
-  // THE PACKAGED PAIR IS CANONICAL. The copies under electron/scripts/higgs/
-  // belong to the LEGACY local render path (docs/CRUCIBLE_ROLLOUT_PLAN.md item
-  // 2.4) and die with it; until then they are kept BYTE-IDENTICAL, because the two
-  // halves of one launch — this repo's installer, which copies its copy into
-  // <env>/bin/ and hashes it, and narrator, which runs its own — must not be
-  // able to run different scripts under one set of measurements.
-  //
-  // BYTES, not text: .gitattributes pins both pairs to LF for a reason the
-  // profile makes sharp (certificates bind to its sha256), and a comparison that
-  // normalised line endings would be blind to exactly the drift that matters.
-  const packaged = path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch');
-  const legacy = path.join(REPO, 'electron', 'scripts', 'higgs');
-  // serve_higgs_sgl.sh JOINED THE PAIR ON 2026-09-15, on Owen's ruling that
-  // "we dont use vllm-omni. we use sglang. vllm-omni doesnt work for higgs".
-  // It had the SAME defect the vllm-omni launcher had before 0eeb0267 — its
-  // only copy lived in this repo — and it had it for the stack the shipped
-  // catalog actually selects, so every non-BookForge client was locked out of
-  // the one stack that works. It ships ALONE, with no sibling: SGLang-Omni has
-  // no deploy profile (which is why sampling must ride on every request), so
-  // there is nothing for its `$(dirname "$0")` to find and nothing invented.
-  for (const name of [
-    'serve_higgs_v3.sh', 'higgs_default_frames7500.yaml', 'serve_higgs_sgl.sh',
-  ]) {
-    const mine = fs.readFileSync(path.join(packaged, name));
-    const theirs = fs.readFileSync(path.join(legacy, name));
-    assert.ok(mine.equals(theirs),
-      `electron/scripts/higgs/${name} is not byte-identical to narrator's own `
-      + `python/narrator/engine/higgs/launch/${name}. THE PACKAGED COPY IS `
-      + 'CANONICAL — edit that one and copy it here; this copy dies with the '
-      + 'legacy local render path.');
-  }
-});
+/*
+ * A MIRROR CHECK STOOD HERE AND HAS NOTHING LEFT TO MIRROR.
+ *
+ * It compared `electron/scripts/higgs/{serve_higgs_v3.sh, serve_higgs_sgl.sh,
+ * higgs_default_frames7500.yaml}` BYTE FOR BYTE against narrator's own packaged
+ * copies, because two clients — BookForge, which deployed its copy into
+ * <env>/bin/ and hashed it, and narrator, which runs its own — must not be able
+ * to run different scripts under one set of measurements.
+ *
+ * Its own comment said this copy "dies with the legacy local render path". It
+ * did (docs/LEGACY-REMOVAL.md). `python/narrator/engine/higgs/launch/` is now
+ * the ONLY copy, which is the state the mirror existed to approximate, so every
+ * check below reads it directly. `.gitattributes` still pins those files to LF,
+ * and that still matters for the reason the profile makes sharp: a cap
+ * certificate binds to the yaml's sha256, and a CRLF checkout is not the file
+ * anything was measured against.
+ */
 
 check('the launcher requires HIGGS_ENV and defaults its own deploy profile', () => {
   // Both halves of the 2026-09-13 change, read off the CANONICAL copy.
@@ -1591,7 +1567,7 @@ check('the catalog names the profile that raises the frame ceiling (vllm-omni)',
   const spec = higgs.higgsServingSpec();
   assert.strictEqual(spec.deployConfig, 'higgs_default_frames7500.yaml',
     'the catalog no longer names the 7500-frame profile, so every render is capped at 81.92 s');
-  assert.ok(fs.existsSync(path.join(REPO, 'electron', 'scripts', 'higgs', spec.deployConfig)),
+  assert.ok(fs.existsSync(path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch', spec.deployConfig)),
     `the catalog names ${spec.deployConfig} but this build ships no such file — the installer `
     + 'would have nothing to copy and --deploy-config would point at a missing path');
   // ON THE vllm-omni FIXTURE, because that is the only stack `--deploy-config`
@@ -1739,634 +1715,53 @@ check('the cold start recorded is the MEASURED 297 s, and it is the only startup
     + 'reads it; a startup limit that lives here must be MEASURED and wired, not declared.');
 });
 
-check('the bridge watchdogs all clear that cold start', () => {
-  // Read from the SOURCE, so tightening one of them without re-reading the cold
-  // start fails here rather than four minutes into somebody's render.
-  //
-  // THE ANCHOR IS THE MEASURED COLD START (297 s), not a declared limit — that
-  // is what the check's name has always claimed and, since 2026-09-13, what it
-  // actually reads.
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
-  const coldMs = higgs.higgsServingSpec().coldStartSeconds * 1000;
-  for (const name of ['WORKER_PROGRESS_TIMEOUT_MS', 'PREP_STALL_TIMEOUT_MS']) {
-    const m = src.match(new RegExp('const ' + name + ' = (\\d+) \\* 60 \\* 1000'));
-    assert.ok(m, name + ' is no longer an "<n> * 60 * 1000" literal — re-check it by hand');
-    const ms = Number(m[1]) * 60 * 1000;
-    assert.ok(ms > coldMs,
-      name + ' is ' + ms + ' ms, which does not clear the ' + coldMs + ' ms Higgs cold start');
-  }
-});
+/*
+ * TWO WATCHDOG CHECKS STOOD HERE AND THEIR SUBJECT IS DELETED.
+ *
+ * They pinned that the bridge's worker watchdogs all outlived a Higgs cold start
+ * (~55 s warm, up to ~300 s cold), and that the bridge MIRRORED narrator's own
+ * READY_TIMEOUT_SECONDS rather than guessing at it. There is no worker to watch:
+ * a render is a Crucible job, and the server's own progress frames are the
+ * heartbeat (`crucible/render.ts`).
+ *
+ * The measured numbers are not lost — WORKER_PROGRESS_TIMEOUT_MS (12 minutes,
+ * widened from 5 because a legitimate MLX batch under GPU contention runs
+ * minutes between per-sentence lines) and the cold-start figures are in
+ * docs/LEGACY-REMOVAL.md's appendix. The RULE they encoded is the part worth
+ * carrying into any future watchdog: a timeout shorter than a legitimate cold
+ * start does not report a hang, it CAUSES one, by killing a process that was
+ * working and then doing it twice more on retry.
+ */
 
-check("the bridge mirrors narrator's ready timeout, and outlives it", () => {
-  // ONE FACT, TWO OWNERS — and until 2026-09-13 they disagreed by five minutes.
-  //
-  // narrator waits `READY_TIMEOUT_SECONDS` (900) for a Higgs server to answer
-  // /health, and spends that whole wait SILENT on stdout: `served_common.start()`
-  // sends the server's output to a file the backend owns, so none of the
-  // bridge's heartbeat regexes can fire while ~19 GB loads. The bridge's
-  // `WORKER_STARTUP_TIMEOUT_MS` was a flat 600 s, justified in its own comment
-  // against a belief that narrator gave up at 300 — a number that was never
-  // narrator's. A slow start was therefore killed with five minutes of
-  // narrator's patience still to run.
-  //
-  // THE PREVIOUS VERSION OF THIS KEEPER KNEW AND SAID SO IN A COMMENT, and
-  // deliberately did not assert it because the bridge was "another owner's
-  // file". That is the second-order finding of crucible/docs/ARCHITECTURE.md in
-  // its mildest form: a fact that is written down where nothing can go red.
-  // It is asserted now, in both directions.
-  //
-  // NARRATOR IS AUTHORITATIVE, and for a reason rather than by seniority: it
-  // owns the wait, it measured the cold start (297 s worst case, this catalog),
-  // and its `wait_ready` raises the moment the process actually dies — so the
-  // patience is only ever paid while something is genuinely still coming up.
-  // The bridge carries a MIRROR of the number and derives its own budget from
-  // it; this check is what makes the mirror real.
-  const engine = fs.readFileSync(
-    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'v3_engine.py'), 'utf-8');
-  const narrator = engine.match(/READY_TIMEOUT_SECONDS\s*=\s*([\d.]+)/);
-  assert.ok(narrator, 'narrator no longer declares READY_TIMEOUT_SECONDS in v3_engine.py');
-  const narratorMs = Math.round(Number(narrator[1]) * 1000);
+/*
+ * THREE PATCH-SCRIPT CHECKS STOOD HERE AND THIS REPO NO LONGER SHIPS THEM.
+ *
+ * `patch_vllm.py` and `patch_sentinel_filter.py` edited vllm-omni's
+ * site-packages in the local Higgs env; they went with `electron/scripts/higgs/`
+ * (docs/LEGACY-REMOVAL.md) and narrator does NOT package them — only the two
+ * launchers and the deploy profile. Patching an inference env is the thing that
+ * installs it, which is Crucible.
+ *
+ * What they pinned is recorded in docs/LEGACY-REMOVAL.md and is the checklist
+ * for whoever owns that env next:
+ *
+ *   - both patches must be RE-APPLIED after any pip upgrade, which is why the
+ *     doctor grepped for markers on every check rather than trusting an
+ *     "installed once" flag. Without patch_vllm.py every voice-clone request
+ *     returns HTTP 400; without the sentinel filter every chunk ends with
+ *     ~240 ms of audible garbage;
+ *   - sentinels are filtered BY TOKEN IDENTITY, never by position — 0 is a valid
+ *     codec code, so substituting a sentinel with 0 turns it into real sound,
+ *     and codebook c is delayed by c positions so they smear across the last
+ *     Q-1 = 7 frames;
+ *   - `patch_vllm.py` once patched from a stale `.orig` and wrote OLD content
+ *     back over a freshly upgraded site-packages file, which the doctor then
+ *     certified as patched;
+ *   - the staleness marker must be a VARIABLE NAME (HIGGS_SENTINEL_REPORT), not
+ *     a fragment of a warning's format string — re-wording the warning once made
+ *     a correctly patched env report STALE.
+ */
 
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
-  const mirror = src.match(/const NARRATOR_HIGGS_READY_TIMEOUT_MS = (\d+) \* 1000/);
-  assert.ok(mirror,
-    'the bridge no longer mirrors narrator READY_TIMEOUT_SECONDS as '
-    + 'NARRATOR_HIGGS_READY_TIMEOUT_MS — if it reads it some better way, retire this half');
-  assert.strictEqual(Number(mirror[1]) * 1000, narratorMs,
-    'the bridge mirrors ' + Number(mirror[1]) + ' s of narrator patience; narrator waits '
-    + (narratorMs / 1000) + ' s. One of the two moved.');
-
-  // And the ordering the mirror exists to guarantee: the bridge's verdict lands
-  // AFTER narrator's, so a worker killed as "stuck" is one narrator has already
-  // stopped waiting on.
-  const derived = src.match(
-    /const WORKER_STARTUP_TIMEOUT_MS = NARRATOR_HIGGS_READY_TIMEOUT_MS \+ (\d+) \* 60 \* 1000/);
-  assert.ok(derived,
-    'WORKER_STARTUP_TIMEOUT_MS is no longer derived from NARRATOR_HIGGS_READY_TIMEOUT_MS. '
-    + 'A flat literal here is how it came to be 300 s short of narrator in the first place.');
-  const startupMs = narratorMs + Number(derived[1]) * 60 * 1000;
-  assert.ok(startupMs > narratorMs,
-    'WORKER_STARTUP_TIMEOUT_MS (' + startupMs + ' ms) does not outlive narrator\'s '
-    + narratorMs + ' ms wait — the bridge would kill a worker narrator is still waiting on');
-  assert.ok(startupMs > higgs.higgsServingSpec().coldStartSeconds * 1000,
-    'WORKER_STARTUP_TIMEOUT_MS does not clear the measured Higgs cold start');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. The doctor's patch table must agree with the catalog's
-// ─────────────────────────────────────────────────────────────────────────────
-console.log('doctor / catalog agreement');
-
-const toolPaths = require(path.join(DIST, 'tool-paths.js'));
-
-check('the two patch tables name the same patches with the same markers', () => {
-  // They are deliberately separate copies (tool-paths must not depend on the
-  // catalog JSON — a malformed catalog would break WSL detection). This is what
-  // keeps them in step.
-  const fromCatalog = higgs.higgsServingSpec().patches;
-  const fromDoctor = toolPaths.HIGGS_PATCHES;
-  assert.strictEqual(fromDoctor.length, fromCatalog.length);
-  for (const p of fromCatalog) {
-    const d = fromDoctor.find((x) => x.id === p.id);
-    assert.ok(d, `the doctor does not know about patch "${p.id}"`);
-    assert.strictEqual(d.marker, p.marker, `patch "${p.id}" has drifting markers`);
-    // The absent-marker travels with the marker or the two tables mean different
-    // things by "applied" — one would accept a file the other calls half-patched.
-    assert.strictEqual(d.absentMarker, p.absentMarker,
-      `patch "${p.id}" has drifting absent-markers`);
-    assert.ok(d.relPath.endsWith(p.target) || p.target.endsWith(d.relPath),
-      `patch "${p.id}" targets differ: ${d.relPath} vs ${p.target}`);
-  }
-});
-
-check('the sentinel-filter patch is the one the Higgs stack requires', () => {
-  // The rename is the point: patch_tail_trim.py was a band-aid that trimmed the
-  // trailing run by position and kept the 0-substitution everywhere else, and it
-  // is retired. Both tables must name the replacement, and the doctor must ask
-  // for the string only the replacement writes.
-  const fromCatalog = higgs.higgsServingSpec().patches.find(
-    (p) => p.id === 'higgs-sentinel-filter');
-  assert.ok(fromCatalog, 'the catalog does not require the sentinel filter');
-  assert.strictEqual(fromCatalog.script, 'patch_sentinel_filter.py');
-  assert.strictEqual(fromCatalog.marker, '_filter_sentinel_frames');
-  assert.strictEqual(fromCatalog.absentMarker, '[:, :-1]');
-  for (const table of [higgs.higgsServingSpec().patches, toolPaths.HIGGS_PATCHES]) {
-    assert.ok(!table.some((p) => p.id === 'higgs-tail-trim'),
-      'the retired tail-trim patch is still required somewhere');
-    assert.ok(!table.some((p) => p.marker === '_trim_trailing_sentinel_frames'),
-      'a table still greps for the helper BOTH patches write — that certifies the band-aid');
-  }
-});
-
-check('each patch marker is a string the PRISTINE file cannot contain', () => {
-  // A marker that is ordinary code would report "patched" on an unpatched file.
-  for (const p of toolPaths.HIGGS_PATCHES) {
-    assert.ok(p.marker.length > 8, `marker "${p.marker}" is too generic to be evidence`);
-  }
-});
-
-check('the checked-in patch scripts introduce their markers AND remove the trim', () => {
-  // The doctor greps site-packages for these; if the shipped script does not
-  // write them, an applied patch would report as missing forever. And the
-  // absent-marker is the other half of the sentinel filter's proof: the script
-  // must REFUSE to write a file that still carries upstream's one-frame trim,
-  // which is what `[:, :-1]` is.
-  const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
-  const byId = {
-    'vllm-negative-token-id': 'patch_vllm.py',
-    'higgs-sentinel-filter': 'patch_sentinel_filter.py',
-  };
-  for (const p of toolPaths.HIGGS_PATCHES) {
-    const src = fs.readFileSync(path.join(dir, byId[p.id]), 'utf-8');
-    assert.ok(src.includes(p.marker), `${byId[p.id]} never writes the marker "${p.marker}"`);
-    if (p.absentMarker) {
-      assert.ok(src.includes('ABSENT_MARKER'),
-        `${byId[p.id]} declares no ABSENT_MARKER, so nothing checks the trim is gone`);
-      assert.ok(src.includes(p.absentMarker),
-        `${byId[p.id]} does not name the absent-marker "${p.absentMarker}" the doctor greps for`);
-    }
-  }
-});
-
-check('the sentinel report is ONE name in THREE files, and they agree', () => {
-  // FOUR COPIES OF ONE STRING, which is four chances for the campaign this
-  // check belongs to (crucible/docs/ARCHITECTURE.md: one fact, two owners,
-  // nothing comparing them) to happen inside the fix for it.
-  //
-  //   1. the PATCH declares it and the emitted site-packages file carries it —
-  //      electron/scripts/higgs/patch_sentinel_filter.py, V3_MARKER;
-  //   2. the DOCTOR greps for it to tell a v3 env from a v1/v2 one —
-  //      electron/tool-paths.ts, HIGGS_PATCHES staleMarker;
-  //   3. NARRATOR exports it to the server and reads the file back —
-  //      python/narrator/engine/higgs/v3_served.py, SENTINEL_REPORT_ENV;
-  //   4. CRUCIBLE mirrors the doctor's table so a server can answer "is this env
-  //      sound" without a BookForge checkout — crucible/crucible/narratorpatches.py.
-  //
-  // The fourth is another repo's and is NOT read here; it is named so that
-  // whoever changes this string knows there is a fourth copy to carry. The
-  // three that live in this repo are compared, because a disagreement between
-  // them is silent in every direction: narrator exports a variable the patched
-  // file does not read (no report is ever written, and the proof refuses a
-  // healthy server), or the doctor greps a string the patch does not write
-  // (every correct env reports STALE forever).
-  const patch = fs.readFileSync(
-    path.join(REPO, 'electron', 'scripts', 'higgs', 'patch_sentinel_filter.py'), 'utf-8');
-  const declared = patch.match(/^V3_MARKER = "([^"]+)"/m);
-  assert.ok(declared, 'patch_sentinel_filter.py no longer declares V3_MARKER');
-  const name = declared[1];
-
-  const row = toolPaths.HIGGS_PATCHES.find((p) => p.id === 'higgs-sentinel-filter');
-  assert.strictEqual(row.staleMarker, name,
-    'the doctor greps "' + row.staleMarker + '" but the patch writes "' + name + '"');
-
-  const served = fs.readFileSync(
-    path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'v3_served.py'), 'utf-8');
-  const narrator = served.match(/^SENTINEL_REPORT_ENV = '([^']+)'/m);
-  assert.ok(narrator, 'v3_served.py no longer declares SENTINEL_REPORT_ENV');
-  assert.strictEqual(narrator[1], name,
-    'narrator exports ' + narrator[1] + ' but the patched file reads ' + name);
-
-  // And the string has to be one a v1/v2 file CANNOT contain, or "stale" means
-  // nothing. The retired v2 marker was a fragment of an English warning; this
-  // one is the variable name, which is the contract that must not drift.
-  assert.ok(!patch.includes('final=%s, window=%d frames\'')
-    && !/^V2_MARKER/m.test(patch),
-    'the retired v2 marker is still declared — two stale markers is no stale marker');
-});
-
-check('the RETIRED patch_tail_trim.py is gone from the shipped scripts', () => {
-  // It was superseded on 2026-09-05 and deleted rather than left beside its
-  // replacement. The two edit the same file and must never stack; a retired
-  // script sitting next to the live one is how a retirement gets undone by
-  // somebody tidying up — and patch_sentinel_filter.py has to REPAIR a file that
-  // carries the band-aid (it restores from .orig first), so the band-aid being
-  // reachable is a live hazard, not a cosmetic one.
-  const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
-  assert.ok(!fs.existsSync(path.join(dir, 'patch_tail_trim.py')),
-    'the retired patch_tail_trim.py is still shipped');
-  assert.ok(fs.existsSync(path.join(dir, 'patch_sentinel_filter.py')));
-});
-
-check('the WSL scripts are LF — a CRLF shebang is a bad interpreter', () => {
-  // DIRECTORIES ARE SKIPPED, and that is a fix rather than an exemption: this
-  // read every entry as a file, so the first subdirectory to appear here made
-  // the check die on EISDIR — which reads as "the scripts have CRLF" in the
-  // keeper output and is nothing of the kind. (2026-09-13: a test loaded
-  // patch_sentinel_filter.py with importlib and left a `__pycache__/` beside
-  // it.) A directory has no shebang; there is nothing here to assert about one.
-  const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const buf = fs.readFileSync(path.join(dir, entry.name));
-    assert.ok(!buf.includes('\r'),
-      `${entry.name} contains CR bytes and will not run under bash`);
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 7. The narrator contract constants
-// ─────────────────────────────────────────────────────────────────────────────
-console.log('narrator contract');
-
-const spawnMod = require(path.join(DIST, 'higgs-spawn.js'));
-// The ONE owner of the Mac's MLX tier table. The Higgs batch env is asserted
-// against it rather than against a copied number, so a tier change moves both.
-const memoryMod = require(path.join(DIST, 'orpheus-memory.js'));
-
-check('the e2a prep scaffolding is GONE — Higgs preps on narrator', () => {
-  // HIGGS_PREP_ENGINE_ALIAS/-ENV_ENGINE existed to tell e2a's packer `orpheus`
-  // while running in the bundled env. narrator's paragraph packer IS the Higgs
-  // chunking rule now, and the e2a route also wrote a session recording the
-  // WRONG engine with no higgs_voice — which resume and retake read back.
-  assert.strictEqual(spawnMod.HIGGS_PREP_ENGINE_ALIAS, undefined);
-  assert.strictEqual(spawnMod.HIGGS_PREP_ENV_ENGINE, undefined);
-  assert.strictEqual(spawnMod.higgsPrepMaxChars, undefined);
-});
-
-check('the worker names higgs-v3, which is what narrator must accept', () => {
-  assert.strictEqual(spawnMod.HIGGS_NARRATOR_ENGINE, 'higgs-v3');
-  assert.strictEqual(spawnMod.HIGGS_NARRATOR_ENGINE_ENV, 'higgs-v3');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. buildHiggsSpawn — the function that produces the actual command line
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// This section exists because the review found THREE defects inside
-// buildHiggsSpawn and nothing tested it: the narrator package was resolved with a
-// message that blamed packaging, Windows paths were never translated for the
-// guest (the guard's character class held an escaped FORWARD slash and nothing
-// else), and the worker argv carried a spurious --fine_tuned beside
-// --higgs_voice. All three are argv/env facts, all three are testable without a
-// GPU, and none of them was covered.
-console.log('buildHiggsSpawn');
-
-const B = String.fromCharCode(92); // backslash, built so no editor eats it
-
-check('the drive-path guard matches BOTH separators', () => {
-  // The exact regression: /^[A-Za-z]:[\/]/ is a class containing an escaped
-  // forward slash only, so it matched 'C:/x' and missed 'C:\x' — and path.join
-  // on win32 emits backslashes, so every --session_dir crossed into the guest
-  // as a literal Windows path that narrator then refused.
-  const guard = /^[A-Za-z]:[\\/]/;
-  assert.strictEqual(guard.test('C:' + B + 'Users' + B + 'x'), true, 'backslash path missed');
-  assert.strictEqual(guard.test('C:/Users/x'), true);
-  assert.strictEqual(guard.test('E:' + B + 'training' + B + 'x'), true);
-  assert.strictEqual(guard.test('/mnt/c/x'), false);
-  assert.strictEqual(guard.test('--session_dir'), false);
-  assert.strictEqual(guard.test('higgs-v3'), false);
-});
-
-check('narratorPythonRoot refuses by NAME when the package is not checked out', () => {
-  // It used to say "this is a packaging bug", which sends a reader to
-  // electron-builder config for a checkout problem. python/narrator lives on
-  // feat/narrator, which lands first.
-  let threw = null;
-  try { spawnMod.narratorPythonRoot(); } catch (err) { threw = err; }
-  if (!threw) return; // the package IS present (feat/narrator merged) — fine
-  assert.match(threw.message, /narrator package is not in this checkout/);
-  assert.match(threw.message, /feat\/narrator/, 'the refusal does not name the branch');
-  assert.ok(!/packaging bug/i.test(threw.message), 'still blames packaging');
-});
-
-// A SCRATCH narrator package, so these run on this branch as well as after
-// feat/narrator lands.
-//
-// This is not testing a fake: `narratorPythonRoot` only asks whether
-// `narrator/__init__.py` exists, and everything under test — argv order, path
-// translation, which flags are present — is BookForge's own construction, none of
-// which reads a line of narrator's source. Skipping instead would have left the
-// three defects the review found in exactly the state that let them ship.
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-higgs-spawn-'));
-fs.mkdirSync(path.join(SCRATCH, 'python', 'narrator'), { recursive: true });
-fs.writeFileSync(path.join(SCRATCH, 'python', 'narrator', '__init__.py'), '');
-APP_PATH = SCRATCH;
-process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
-
-// FORCE THE WSL ARM. Without a tool-paths.json the toggle is off, so on Windows
-// buildHiggsSpawn takes the native arm and correctly refuses ("vLLM-Omni has no
-// Windows build") — which is right behaviour and the wrong thing to test here.
-// The compiled bridge calls `(0, tool_paths_1.shouldUseWsl2ForHiggs)()` through
-// the module object, so overriding it is a real seam and not a rewrite. Writing
-// a tool-paths.json instead would edit the developer's own configuration.
-const wslWasOn = toolPaths.shouldUseWsl2ForHiggs();
-toolPaths.shouldUseWsl2ForHiggs = () => true;
-const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
-// The REAL host, captured before the override: two checks below assert on paths the
-// code derives from the host (os.tmpdir(), the repo root), which are drive paths only
-// on Windows. On a Mac/Linux host they are POSIX paths that toGuestPath passes through
-// unchanged by design, so those two checks are host-conditional (Mac run, 2026-09-05).
-const REAL_HOST = TRUE_HOST;
-if (process.platform !== 'win32') {
-  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-}
-process.on('exit', () => {
-  toolPaths.shouldUseWsl2ForHiggs = () => wslWasOn;
-  if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
-});
-
-{
-  const model = higgs.resolveHiggsModel('default');
-  const WIN_SESSION = 'C:' + B + 'Users' + B + 't' + B + 'proj' + B + 'tmp' + B + 'ebook-abc';
-  const WIN_SENTENCES = 'C:' + B + 'Users' + B + 't' + B + 'proj' + B + 'sentences';
-  const workerArgs = [
-    '--session', 'abc-123',
-    '--session_dir', WIN_SESSION,
-    '--sentences_dir', WIN_SENTENCES,
-    '--device', 'CUDA',
-    '--tts_engine', 'higgs-v3',
-    '--sentence_start', '0', '--sentence_end', '99',
-    '--higgs_voice', 'default',
-  ];
-  const plan = spawnMod.buildHiggsSpawn('worker', {
-    model, args: workerArgs, cwd: REPO, jobId: 'job1',
-  });
-  const line = plan.viaWsl ? plan.args[plan.args.length - 1] : plan.args.join(' ');
-
-  check('the worker spawns narrator.compat.worker, never an e2a script', () => {
-    assert.match(line, /-m narrator\.compat\.worker/);
-    assert.ok(!/worker\.py/.test(line), 'an e2a script path reached a Higgs spawn');
-  });
-
-  check('NO Windows path survives into the command line', () => {
-    // The whole of finding 3, asserted on the real output rather than the regex.
-    const leaked = line.match(/[A-Za-z]:[\\\\/][^' ]*/g);
-    assert.strictEqual(leaked, null, 'untranslated Windows path(s): ' + leaked);
-  });
-
-  check('the session and sentences dirs arrive as /mnt/<drive>/… paths', () => {
-    if (!plan.viaWsl) return; // native arm: Windows paths are correct there
-    assert.match(line, /\/mnt\/c\/Users\/t\/proj\/tmp\/ebook-abc/);
-    assert.match(line, /\/mnt\/c\/Users\/t\/proj\/sentences/);
-  });
-
-  check('every ENV value is translated too, not just argv', () => {
-    if (!plan.viaWsl) return;
-    if (REAL_HOST !== 'win32') return; // host tmpdir is POSIX here; nothing to translate
-    // NARRATOR_HIGGS_VOICES is written to the Windows temp dir and must be named
-    // in the guest's filesystem. It used to be translated by its own call, which
-    // is how the argv guard's bug stayed invisible in a log.
-    const m = line.match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
-    assert.ok(m, 'NARRATOR_HIGGS_VOICES is not exported');
-    assert.match(m[1], /^\/mnt\/[a-z]\//, 'voices path is not a guest path: ' + m[1]);
-  });
-
-  check('the worker carries --higgs_voice and NOT --fine_tuned', () => {
-    // Finding 10: pushVoiceArgs falls through to --fine_tuned for any engine it
-    // does not recognise, so a Higgs worker carried both. They are a prompt TOKEN
-    // and a CATALOG ID; one handed where the other belongs renders a whole book
-    // in the wrong voice.
-    assert.match(line, /--higgs_voice/);
-    assert.ok(!/--fine_tuned/.test(line), '--fine_tuned reached a Higgs worker');
-  });
-
-  check('the engine is higgs-v3 in BOTH the flag and NARRATOR_ENGINE', () => {
-    assert.match(line, /--tts_engine' 'higgs-v3'|--tts_engine higgs-v3/);
-    assert.match(line, /NARRATOR_ENGINE='higgs-v3'|NARRATOR_ENGINE=higgs-v3/);
-  });
-
-  check('PYTHONPATH points at the narrator package, in the guest filesystem', () => {
-    const m = line.match(/PYTHONPATH='([^']+)'/);
-    assert.ok(m, 'PYTHONPATH is not exported');
-    if (plan.viaWsl && REAL_HOST === 'win32') assert.match(m[1], /^\/mnt\/[a-z]\//); // repo root is a drive path only on Windows
-  });
-
-  check('no ORPHEUS_* variable rides along', () => {
-    assert.ok(!/ORPHEUS_/.test(line), 'an Orpheus variable leaked into a Higgs spawn');
-  });
-
-  const prep = spawnMod.buildHiggsSpawn('prep', {
-    model,
-    args: ['--headless', '--prep_only', '--ebook', 'C:' + B + 'books' + B + 'a.epub',
-           '--session', 'abc', '--session_dir', WIN_SESSION,
-           '--tts_engine', 'higgs-v3', '--higgs_voice', 'default'],
-    cwd: REPO, jobId: 'job1',
-  });
-  const prepLine = prep.viaWsl ? prep.args[prep.args.length - 1] : prep.args.join(' ');
-
-  check('prep goes to compat.app --prep_only, never to e2a', () => {
-    assert.match(prepLine, /-m narrator\.compat\.app/);
-    assert.match(prepLine, /--prep_only/);
-    assert.ok(!/app\.py/.test(prepLine), 'e2a app.py reached a Higgs prep');
-  });
-
-  check('prep ALWAYS carries --session_dir', () => {
-    // narrator has no default sessions root and refuses to guess; forwarding
-    // NARRATOR_SESSIONS_ROOT is not an alternative because it holds a HOST path
-    // while a guest render derives its session dir from the guest root.
-    assert.match(prepLine, /--session_dir/);
-  });
-
-  const asm = spawnMod.buildHiggsSpawn('assembly', {
-    model,
-    args: ['--headless', '--output_dir', 'C:' + B + 'out', '--session', 'abc',
-           '--session_dir', WIN_SESSION, '--assemble_only', '--no_split'],
-    cwd: REPO, jobId: 'job1',
-  });
-  const asmLine = asm.viaWsl ? asm.args[asm.args.length - 1] : asm.args.join(' ');
-
-  check('assembly goes to compat.app and omits --tts_engine', () => {
-    // dispatch routes --assemble_only before any engine resolution, and the value
-    // the argv would otherwise carry is the literal 'higgs' — a documented
-    // ENGINE_NEAR_MISS that would be refused by name the moment assembly is gated.
-    assert.match(asmLine, /-m narrator\.compat\.app/);
-    assert.match(asmLine, /--assemble_only/);
-    assert.ok(!/--tts_engine/.test(asmLine), 'assembly still sends --tts_engine');
-  });
-
-  check('the WSL arm translates catalog paths INSIDE the voice document', () => {
-    // Reads the document back off the WINDOWS side, so it can only run there. On a Mac the
-    // forced win32 arm still yields a POSIX doc path, fs.readFileSync gets a path that does
-    // not exist, and the case fails for EVERY voice - which made promote_voice's --mac step
-    // refuse every promotion at the last gate, after the 8 GB rsync had already succeeded
-    // (hit 2026-09-11 promoting sigma). Same guard the ENV-translation case above uses.
-    if (REAL_HOST !== 'win32') return;
-    // NEW-3: the document used to be written with raw catalog paths, so a
-    // host-native path reached the guest untranslated. It is translated at
-    // write time, per arm — not stored pre-translated, which is right on the
-    // WSL arm by accident and meaningless on macOS/Linux.
-    const m = probeVoice({
-      id: 'winclone', kind: 'clips',
-      voice: { clips: [{
-        path: 'C:' + B + 'refs' + B + 'joined.wav', transcript: 'a joined pair', seconds: 27.4,
-      }] },
-      backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
-    });
-    const p2 = spawnMod.buildHiggsSpawn('worker', {
-      model: m, args: workerArgs, cwd: REPO, jobId: 'jobpaths',
-    });
-    const docPath = (p2.viaWsl ? p2.args[p2.args.length - 1] : p2.args.join(' '))
-      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
-    assert.ok(docPath, 'no voices document was named');
-    // Read the document off the WINDOWS side — it is written there and only
-    // NAMED in guest form.
-    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
-    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
-    assert.strictEqual(doc.winclone.clips[0].path, '/mnt/c/refs/joined.wav',
-      'the clip path was not translated for the guest');
-  });
-
-  check('a \\\\wsl$ UNC catalog path becomes a guest path, not a UNC string', () => {
-    // The form tool-paths.ts documents for orpheusModelsDir on a Windows+WSL
-    // machine: the models dir lives on ext4 and is NAMED from Windows as a UNC.
-    // Handling only drive letters would translate a session dir correctly and
-    // leave this one unusable.
-    const m = probeVoice({
-      id: 'uncft', kind: 'checkpoint',
-      voice: { checkpoint: { wsl: B+B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'higgs-models' + B + 'ds' } },
-      backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
-    });
-    const p3 = spawnMod.buildHiggsSpawn('worker', {
-      model: m, args: workerArgs, cwd: REPO, jobId: 'jobunc',
-    });
-    const docPath = (p3.viaWsl ? p3.args[p3.args.length - 1] : p3.args.join(' '))
-      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
-    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
-    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
-    assert.strictEqual(doc.uncft.checkpointDir, '/home/t/higgs-models/ds',
-      'the UNC checkpoint path was not translated');
-  });
-
-  check('an already-guest-form path passes through unchanged', () => {
-    // What makes the translation safe to apply to argv, to env values and to
-    // catalog paths without tracking which were already translated.
-    const m = probeVoice({
-      id: 'guestft', kind: 'checkpoint',
-      voice: { checkpoint: { wsl: '/home/t/higgs-models/ds' } },
-      backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
-    });
-    const p4 = spawnMod.buildHiggsSpawn('worker', {
-      model: m, args: workerArgs, cwd: REPO, jobId: 'jobguest',
-    });
-    const docPath = (p4.viaWsl ? p4.args[p4.args.length - 1] : p4.args.join(' '))
-      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
-    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
-    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
-    assert.strictEqual(doc.guestft.checkpointDir, '/home/t/higgs-models/ds');
-  });
-
-  check('the NATIVE arm writes catalog paths through UNCHANGED', () => {
-    // macOS/Linux: there is no guest, so translation would corrupt a perfectly
-    // good host path. Driven by turning the WSL toggle off, which is the same
-    // seam the arm-forcing above uses.
-    toolPaths.shouldUseWsl2ForHiggs = () => false;
-    const origPlat = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-    try {
-      const m = probeVoice({
-        id: 'macclone', kind: 'clips',
-        voice: { clips: [{ path: '/Users/t/refs/joined.wav', transcript: 'a pair', seconds: 27.4 }] },
-        backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
-      });
-      const written = higgs.writeHiggsVoicesDocument(m, 'jobmac', { arm: 'darwin', userDataDir: MAC_USER_DATA });
-      const doc = JSON.parse(fs.readFileSync(written, 'utf-8'));
-      assert.strictEqual(doc.macclone.clips[0].path, '/Users/t/refs/joined.wav',
-        'a native-arm path was translated when it should not have been');
-      fs.rmSync(written, { force: true });
-    } finally {
-      Object.defineProperty(process, 'platform', origPlat);
-      toolPaths.shouldUseWsl2ForHiggs = () => true;
-    }
-  });
-
-  check('assembly translates its paths too', () => {
-    const leaked = asmLine.match(/[A-Za-z]:[\\\\/][^' ]*/g);
-    assert.strictEqual(leaked, null, 'untranslated Windows path(s) in assembly: ' + leaked);
-  });
-
-  // ── The MLX batch budget: darwin, and the WORKER door only ────────────────
-  //
-  // narrator's Higgs MLX backend renders ONE ROW unless BookForge asks for more
-  // (NARRATOR_HIGGS3_MLX_BATCH, default 1), so these two variables are the whole
-  // ask. They are pinned here because every wrong place to put them is silent:
-  // on the WSL arm they would be read by nothing (that Higgs is a vLLM-Omni
-  // server), and on the serve/prep/assembly doors they would look configured
-  // while no batch exists to spend them on.
-  const BATCH_VARS = ['NARRATOR_HIGGS3_MLX_BATCH', 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'];
-
-  check('the WSL arm gets NO MLX batch variables on any door', () => {
-    for (const text of [line, prepLine, asmLine]) {
-      for (const name of BATCH_VARS) {
-        assert.ok(!text.includes(name),
-          `${name} reached the served arm, where nothing reads it`);
-      }
-    }
-  });
-
-  check('darwin: the WORKER carries the batch ceiling and its memory budget', () => {
-    // BOTH readings are taken UNDER the forced arm: auto tier resolution reads
-    // `process.platform` itself (a Mac bands on unified RAM), so a profile read
-    // outside `onArm` answers for a different machine entirely.
-    const { env, profile } = onArm('darwin', () => ({
-      env: spawnMod.higgsMlxBatchEnv('worker'),
-      profile: memoryMod.orpheusMemoryProfile(
-        memoryMod.resolveConcreteOrpheusTier(null, null)),
-    }));
-    for (const name of BATCH_VARS) {
-      assert.ok(env[name], `the darwin worker sets no ${name}`);
-      assert.ok(Number(env[name]) > 0, `${name} is not a positive number: ${env[name]}`);
-    }
-    // The SAME numbers the Orpheus MLX arm gets: one Metal device, one unified
-    // memory pool, one answer.
-    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_BATCH, String(profile.batchSize));
-    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB, String(profile.mlxMemBudgetGB));
-  });
-
-  check('darwin: SERVE carries the ceiling the POOL passed, not the tier width', () => {
-    // The Listen path batches its read-ahead (the row being listened to renders
-    // solo), and the width it may use is the pool's `streamBatchCeiling()` —
-    // floor-16 over the tier's width, so NOT the worker's number. Passed in
-    // because higgs-spawn cannot import the pool back (require cycle).
-    const { env, profile } = onArm('darwin', () => ({
-      env: spawnMod.higgsMlxBatchEnv('serve', 40),
-      profile: memoryMod.orpheusMemoryProfile(
-        memoryMod.resolveConcreteOrpheusTier(null, null)),
-    }));
-    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_BATCH, '40');
-    // The BUDGET is still the tier's on both doors: one unified memory pool.
-    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB, String(profile.mlxMemBudgetGB));
-  });
-
-  check('darwin: a serve door with NO ceiling is REFUSED BY NAME', () => {
-    // Never defaulted to the worker's width: a Listen server that quietly
-    // rendered its read-ahead one row at a time while every variable looked
-    // configured is the inert-knob failure in its quietest form.
-    for (const bad of [undefined, 0, -1, Number.NaN, '16']) {
-      assert.throws(
-        () => onArm('darwin', () => spawnMod.higgsMlxBatchEnv('serve', bad)),
-        /streamBatchCeiling|ceiling/,
-        `higgsMlxBatchEnv('serve', ${JSON.stringify(bad)}) did not refuse`);
-    }
-  });
-
-  check('darwin: prep and assembly carry NO batch variables', () => {
-    // They load no model. A budget there is a lever read by nothing.
-    for (const door of ['prep', 'assembly']) {
-      const env = onArm('darwin', () => spawnMod.higgsMlxBatchEnv(door));
-      assert.deepStrictEqual(env, {}, `the ${door} door carries a batch budget`);
-    }
-  });
-
-  check('no ORPHEUS_* name rides along with the batch variables', () => {
-    // The Higgs spawn strips Orpheus's variables deliberately; a Higgs knob
-    // SPELLED ORPHEUS_ would be stripped with them and read by nothing.
-    const env = onArm('darwin', () => spawnMod.higgsMlxBatchEnv('worker'));
-    assert.ok(!/ORPHEUS_/.test(JSON.stringify(env)),
-      'an ORPHEUS_* variable leaked into the Higgs batch env');
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 9. The refusal is WIRED, not merely defined
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The review's finding 7 was not "assertRunnableTtsEngine has no call site" but
-// something sharper: no main-process file imported `engine-caps` AT ALL, so the
-// refusal four source comments and the design doc promised could not exist. A
-// legacy `xtts` job re-run from the queue page went straight to a spawn.
-//
-// These assert the wiring by reading the SOURCE, because the alternative is
-// booting Electron's IPC layer to prove an import exists.
 console.log('the retired-engine refusal is wired');
 
 const mainSrc = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
@@ -2412,110 +1807,29 @@ check('the queue boundary refuses a retired engine before anything spawns', () =
     'the check does not read the engine off the job config');
 });
 
-check('the retake door refuses a retired engine too', () => {
-  // It reads settings.ttsEngine straight out of session_state.json, so an old
-  // XTTS book reaches it with no UI in between.
-  const at = bridgeSrc.indexOf('export async function regenerateSentenceIndices');
-  assert.ok(at > 0, 'regenerateSentenceIndices is gone');
-  const body = bridgeSrc.slice(at, at + 4000);
-  assert.match(body, /assertRunnableTtsEngine/, 'the retake door is ungated');
-});
+/*
+ * THE TWO RETAKE-DOOR CHECKS STOOD HERE. `regenerateSentenceIndices` is deleted
+ * (docs/LEGACY-REMOVAL.md) — a retake is a Crucible `reroll` job now
+ * (`electron/crucible/reroll.ts`), which has no local spawn and therefore no
+ * engine routing of its own to get wrong. The engine refusal they checked still
+ * exists and is still checked, one door along, in this section's other cases.
+ */
 
-check('the retake door routes Higgs to narrator instead of e2a worker.py', () => {
-  // Finding 8: it built pythonInvocation('higgs'), which returns the MARKER path
-  // <e2a>/higgs_wsl_env — not a directory — and handed it e2a's worker.py.
-  //
-  // UPDATED at the Phase 3 cut-over. The `higgsRetakePlan` branch this used to
-  // look for is gone, and so is the e2a command line it existed to differ from:
-  // the door now builds ONE argv and hands it to `buildJobSpawn`, which routes by
-  // engine. The intent is unchanged and is what is asserted — a Higgs retake
-  // reaches narrator's worker module and carries --higgs_voice, never
-  // --fine_tuned and never a script path.
-  const at = bridgeSrc.indexOf('export async function regenerateSentenceIndices');
-  const body = bridgeSrc.slice(at, at + 12000);
-  assert.match(body, /buildJobSpawn\(\{/, 'the retake door does not go through the engine-routing spawn');
-  assert.match(body, /phase: 'worker'/, 'the retake door does not open the worker door');
-  assert.match(body, /HIGGS_VOICE_FLAG/, 'the Higgs retake does not pass --higgs_voice');
-  // COMMENTS STRIPPED FIRST — BLOCK COMMENTS TOO. The door's prose still explains
-  // what it used to do and why (the marker-path failure; what `compat/` answers),
-  // and a few lines on a block comment records the Sep 1 2026 incident in which an
-  // orphaned e2a worker.py rendered for 1h31m. That history is the reason the code
-  // is shaped as it is. Asserting on the raw text would make the file's own
-  // explanation the thing that fails it, which teaches people to delete comments
-  // rather than write them.
-  //
-  // NO `$` ON THE LINE-COMMENT PATTERN. This repo is core.autocrlf=true, so a
-  // split on '\n' leaves a '\r' at the end of every line; `.` does not match a
-  // carriage return (it is a line terminator) and `$` without /m anchors to the
-  // end of the whole string, so `/\/\/.*$/` matches NOTHING on a CRLF file and
-  // every comment survives the strip.
-  const code = body
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .split('\n').map((l) => l.replace(/\/\/.*/, '')).join('\n');
-  assert.ok(!/worker\.py/.test(code), "e2a's worker.py is still SPAWNED by the retake door");
-});
-
-check('an Orpheus render with NO voice is refused, not defaulted', () => {
-  // narrator has no self-limiting failure here the way e2a did: with no
-  // `--fine_tuned`, `engine/orpheus/engine.py` takes DEFAULT_VOICE, validates
-  // 'leah' as a legal stock voice, and renders the whole book in it with exit 0.
-  // Asserted on the SOURCE (comments stripped) because pushVoiceArgs is
-  // module-private and its inputs are a live settings object; what must not come
-  // back is the shape where an absent voice reaches the argv builder unremarked.
-  const at = bridgeSrc.indexOf('function pushVoiceArgs');
-  assert.ok(at > 0, 'pushVoiceArgs is gone or renamed');
-  const body = bridgeSrc.slice(at, at + 6000)
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .split('\n').map((l) => l.replace(/\/\/.*/, '')).join('\n');
-  assert.match(body, /if \(!requested\)\s*\{[\s\S]{0,400}throw new Error\(/,
-    'pushVoiceArgs no longer refuses an absent Orpheus voice — narrator would '
-    + "render the whole book in 'leah' and report success");
-  // And the refusal has to NAME the consequence, or it reads as a validation nit.
-  // COMMENT-STRIPPED `body`, not raw `bridgeSrc`. Scanning the raw source meant the
-  // guard could be satisfied by prose: a comment mentioning leah anywhere in those
-  // 700 characters passed the check while the thrown message said nothing about it.
-  // The retake door a few rows down already strips comments; this now matches.
-  const at2 = body.indexOf('if (!requested)');
-  assert.match(body.slice(at2, at2 + 700),
-    /leah/, 'the refusal does not name the voice the book would have been rendered in');
-  assert.ok(at2 < body.indexOf('ORPHEUS_STOCK_VOICES.includes(requested)'),
-    'the absent-voice refusal must come BEFORE the not-installed one, or an absent '
-    + 'voice falls through it');
-});
-
-check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () => {
-  // Finding 10: one call site was not guarded, so a Higgs worker carried BOTH
-  // `--fine_tuned default` and `--higgs_voice default`. They are a prompt TOKEN
-  // and a CATALOG ID; one handed where the other belongs renders a whole book in
-  // the wrong voice.
-  //
-  // UPDATED at the Phase 3 cut-over. The guard used to be `if
-  // (!isHiggsJob(settings)) pushVoiceArgs(...)` with the Higgs voice appended
-  // somewhere else; every door now writes the CHOICE in one place —
-  // `if (isHiggsJob(settings)) { args.push(HIGGS_VOICE_FLAG, ...) } else {
-  // pushVoiceArgs(...) }` — which is the same rule stated so that neither branch
-  // can be forgotten. So the assertion is now that each call site sits in the
-  // ELSE of a Higgs test, rather than after a negated one.
-  let from = 0;
-  let guarded = 0;
-  let total = 0;
-  for (;;) {
-    const at = bridgeSrc.indexOf('pushVoiceArgs(args, settings)', from);
-    if (at < 0) break;
-    total++;
-    const before = bridgeSrc.slice(Math.max(0, at - 400), at);
-    // Either shape counts: the old negated guard, or the if/else that replaced it
-    // (recognised by the Higgs test AND the voice flag its branch pushes).
-    if (/!isHiggsJob\(settings\)/.test(before)
-      || (/if \(isHiggsJob\(settings\)\)/.test(before) && /HIGGS_VOICE_FLAG/.test(before))) {
-      guarded++;
-    }
-    from = at + 1;
-  }
-  assert.ok(total >= 3, 'expected at least 3 pushVoiceArgs call sites, saw ' + total);
-  assert.strictEqual(guarded, total,
-    (total - guarded) + ' of ' + total + ' pushVoiceArgs call sites are not guarded against Higgs');
-});
+/*
+ * TWO `pushVoiceArgs` CHECKS STOOD HERE AND THE FUNCTION IS DELETED.
+ *
+ * They pinned that an Orpheus render with NO voice was REFUSED rather than
+ * defaulted, and that no Higgs door ever called the Orpheus-shaped voice
+ * builder. Orpheus is retired and cannot render at all now
+ * (`shared/tts/engine-caps.ts`), which is a stronger form of the first, and
+ * there is exactly one voice flag left — `HIGGS_VOICE_FLAG` — which is a
+ * stronger form of the second.
+ *
+ * The reason the first mattered is worth keeping: with no `--fine_tuned`,
+ * `compat/app.py` never set `fine_tuned`, the engine took DEFAULT_VOICE,
+ * validated 'leah' as a legal stock voice, and rendered THE WHOLE BOOK in it
+ * with a log line and exit 0. A silent wrong-voice render, not a crash.
+ */
 
 check('the CLI runs higgs on EVERY door the app runs it on', () => {
   // The standing rule is that the CLI mirrors the app's code path (CLAUDE.md,
@@ -2695,11 +2009,13 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
   // Owen, 2026-09-06: "send the deathstalker model to huggingface ... make it
   // downloadable in the setup/settings page ... mirrored from huggingface".
   // The catalog names the repo; Settings → Higgs downloads it into THIS arm's
-  // voice.checkpoint path (electron/higgs-hf-install.ts + scripts/higgs/higgs_download.py).
+  // voice.checkpoint path. THE DOWNLOADER IS GONE (docs/LEGACY-REMOVAL.md): it
+  // pulled ~8.5 GB onto THIS machine's disk, and a voice is pulled on the server
+  // that will speak it (`crucible voices pull <id>`). What the catalog must still
+  // do is NAME the source, and name it well enough to be refused when malformed —
+  // which is the whole of what is checked here now.
   const ds = higgs.listHiggsModels().find((m) => m.id === 'deathstalker');
   assert.deepStrictEqual(ds.source, { type: 'hf', ref: 'owenmorgan/deathstalker-higgs-v3' });
-  assert.ok(fs.existsSync(path.join(REPO, 'electron', 'scripts', 'higgs', 'higgs_download.py')),
-    'the downloader script is missing from electron/scripts/higgs');
   for (const [why, source] of [
     ['blank ref', { type: 'hf', ref: '' }],
     ['not a user/repo', { type: 'hf', ref: 'deathstalker-higgs-v3' }],
@@ -2715,32 +2031,24 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
   assert.match(higgs.higgsVoiceUnavailableReason(clone, PICKER_USER_DATA) || '', /names a download source/);
 });
 
-check('a voice chunkGap reaches the PREP door, and only that door', () => {
-  // Higgs is pads=false: it emits bare speech, and every chunk join IS the model's own trailing
-  // silence plus whatever the assembler inserts. text/prep.py stamps that inject into gaps.json
-  // at PREP, from text/gaps.classify_gap, whose floor NARRATOR_SENTENCE_GAP overrides.
-  //
-  // Before this field existed nothing set it per voice, so classify_gap's hardcoded 0.6 s
-  // default reached EVERY Higgs voice regardless of how that narrator pauses (2026-09-11).
-  const gap = { injectS: 0.62, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
-    method: '-40 dB rel clip peak, 20 ms hop', source: 'pause_match.py', measuredOn: '2026-09-11' };
-  const m = probeVoice({
-    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
-    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } }, chunkGap: gap,
-  });
-  assert.strictEqual(spawnMod.higgsChunkGapEnv(m, 'prep').NARRATOR_SENTENCE_GAP, '0.62');
-  // The other doors load a model or read a file prep already wrote; setting it there would
-  // imply it does something.
-  for (const kind of ['worker', 'assembly', 'retake']) {
-    assert.deepStrictEqual(spawnMod.higgsChunkGapEnv(m, kind), {},
-      `${kind} was given a sentence gap, which only prep consumes`);
-  }
-  // A voice with no chunkGap sets NOTHING and keeps the historical 0.6 s default, so the field
-  // is additive: an unmeasured voice behaves exactly as it did before.
-  const bare = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
-    backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } } });
-  assert.deepStrictEqual(spawnMod.higgsChunkGapEnv(bare, 'prep'), {});
-});
+/*
+ * A CHECK STOOD HERE THAT DROVE `higgsChunkGapEnv`, which lived in
+ * `higgs-spawn.ts` and is deleted (docs/LEGACY-REMOVAL.md).
+ *
+ * It pinned that a voice's `chunkGap.injectS` reached the PREP door and ONLY the
+ * prep door — the other doors load a model or read a file prep already wrote, so
+ * setting it there would imply it did something. The fact behind it survives in
+ * the catalog and is recorded in docs/LEGACY-REMOVAL.md: Higgs is `pads=false`,
+ * so every chunk join IS the model's own trailing silence plus whatever the
+ * assembler inserts; `text/prep.py` stamps the inject into gaps.json at prep from
+ * `text.gaps.classify_gap`, whose hardcoded 0.6 s floor `NARRATOR_SENTENCE_GAP`
+ * overrode. Before the field existed that 0.6 s reached EVERY Higgs voice
+ * regardless of how that narrator pauses (2026-09-11).
+ *
+ * The catalog half — that a malformed `chunkGap` is REFUSED, and that an inject
+ * stated as the TARGET rather than net of the model's tail is refused by name —
+ * is still checked below, and that is the half this repo still owns.
+ */
 
 check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', () => {
   // THE ONE MISTAKE THIS FIELD INVITES. A join is (modelSelfTailS + injectS), so injectS must
@@ -3335,24 +2643,38 @@ check('the render doors resolve the voice through ONE function', () => {
   // door; `higgsModelForJob(settings)` is the only one that can see an override.
   assert.strictEqual(/higgsPreflight/.test(bridgeSrc), false,
     'parallel-tts-bridge still resolves a Higgs voice without its override');
-  // Seven since 2026-09-15: the four local render doors, the two in the
-  // Crucible seam (`startCrucibleGeneration`) — the voice-id mapping to the
-  // server's voice, and the refusal sentence that names the BookForge voice it
-  // could not map — and `venueBandForPrep`, which asks the VENUE for that
-  // voice's cap and band before prep packs the book
-  // (`electron/crucible/voice-band.ts`). Every one reads the SAME door, which
-  // is the point of this pin: a remote render must see the override exactly as
-  // a local one does, and a band fetched for a voice the render does not use
-  // would pack the book to the wrong certificate.
+  // FIVE since the local renderer was deleted (docs/LEGACY-REMOVAL.md). It was
+  // seven: the four LOCAL render doors are gone, and what is left is prep, the
+  // two in the Crucible seam (`startCrucibleGeneration`) — the voice-id mapping
+  // to the server's voice, and the refusal sentence that names the BookForge
+  // voice it could not map — plus `venueBandForPrep`, which asks the VENUE for
+  // that voice's cap and band before prep packs the book
+  // (`electron/crucible/voice-band.ts`).
+  //
+  // The COUNT is not the point; the SHARING is. Every one of them reads the same
+  // door, because narrator's reaction to a voice its document does not name is
+  // not a crash — the lookup misses and a whole book renders in the base model's
+  // own speaker. A band fetched for a voice the render does not use would pack
+  // the book to the wrong certificate, which is the same failure one layer up.
   const sites = bridgeSrc.match(/higgsModelForJob\(/g) || [];
-  assert.strictEqual(sites.length, 7,
-    `expected 7 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
-  // Listen stays catalog-only — a resident engine shared by every tab is not the
-  // place to load an uncertified checkpoint.
-  const pool = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
-  assert.ok(/higgsPreflight\(/.test(pool), 'the streaming pool no longer uses the catalog-only door');
-  assert.strictEqual(/higgsModelForJob/.test(pool), false,
-    'the streaming pool reads a book render override — Listen is catalog-only');
+  assert.strictEqual(sites.length, 5,
+    `expected 5 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
+  /*
+   * LISTEN STAYS CATALOG-ONLY, and the check moved with the code.
+   *
+   * It used to read `orpheus-worker-pool.ts` and require that the resident pool
+   * called the catalog-only door and NEVER `higgsModelForJob` — because a book's
+   * per-run override must not reach an engine every tab shares, which would load
+   * an uncertified checkpoint for a listener who asked for nothing. The pool is
+   * deleted (docs/LEGACY-REMOVAL.md); Listen is a Crucible streaming session, and
+   * the same property is asserted of the module that replaced it.
+   */
+  const reader = fs.readFileSync(path.join(REPO, 'electron', 'reader-stream-bridge.ts'), 'utf-8');
+  assert.strictEqual(/higgsModelForJob/.test(reader), false,
+    'the Listen path reads a book render override — Listen is catalog-only');
+  const listen = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'stream.ts'), 'utf-8');
+  assert.strictEqual(/higgsModelForJob/.test(listen), false,
+    'the Crucible streaming door reads a book render override — Listen is catalog-only');
 });
 
 check('TEST MODE is capped by ONE helper, in both render doors', () => {

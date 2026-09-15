@@ -108,7 +108,6 @@ const GUEST_ROOT = '/home/keeper/bookforge-sessions';
 
 const CRUCIBLE = { where: 'crucible', server: 'mac', because: 'the caller named it' };
 const LOCAL = { where: 'crucible', server: 'local', because: 'the top-ranked server' };
-const LEGACY = { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' };
 
 let passed = 0;
 const failures = [];
@@ -136,100 +135,25 @@ function lift(name) {
   return m[0];
 }
 
-/** The shipped completion tail with every collaborator stubbed and a recorder. */
-function buildTail() {
-  const recorder = { normalizeRan: false, assemblyRan: false, completions: [], deleted: [] };
-  const activeSessions = { delete: (id) => { recorder.deleted.push(id); } };
-  const emitComplete = (session, success, outputPath, error) => {
-    recorder.completions.push({ success, outputPath, error });
-  };
-  const logger = { log: async () => {}, logError: async () => {} };
-  const ttsLog = { info: () => {}, warn: () => {}, error: () => {} };
-  const built = eval(
-    `(function (path, console, activeSessions, emitComplete, logger, ttsLog, recorder) {
-       const MAX_WORKER_RETRIES = 2;
-       const mainWindow = null;
-       const isOomError = () => false;
-       const retryWorker = () => {};
-       const stopWatchdog = () => {};
-       const stopRenderedPoller = () => {};
-       const rendererSend = () => {};
-       const runPostRenderAlignment = async () => {};
-       const cacheSessionToProject = async () => ({ success: true });
-       const findMissingSentenceFiles = async () => [];
-       const removeScratchSession = async () => {};
-       const orpheus_memory_1 = { noteOrpheusOom: () => {} };
-       const rolling_logger_1 = { getTTSLogger: () => ttsLog };
-       const chapter_closer_1 = { stopChapterCloser: async () => null };
-       const denoise_bridge_1 = { finalDenoiseReady: () => ({ ok: true }), denoiseSentences: async () => {} };
-       const rvc_models_1 = { getRvcVoiceById: () => null, resolveRvcIndexRate: () => 0.3 };
-       const rvc_bridge_1 = { rvcEnhancementReady: () => ({ ok: true }), enhanceSentences: async () => {} };
-       const normalizeWslSessionToWindows = async () => { recorder.normalizeRan = true; };
-       const runAssembly = async () => { recorder.assemblyRan = true; return 'C:\\\\out\\\\book.m4b'; };
-       ${lift('completeAfterWorkers')}
-       ${lift('checkAllWorkersComplete')}
-       return { checkAllWorkersComplete };
-     })`,
-  )(path, { log: () => {}, warn: () => {}, error: () => {} }, activeSessions, emitComplete, logger, ttsLog, recorder);
-  return { ...built, recorder };
-}
-
-/** A session whose single worker finished; `venue` is the one variable. */
-function finishedSession(venue, sessionDir) {
-  return {
-    jobId: 'keeper-job',
-    cancelled: false,
-    isResumeJob: false,
-    ...(venue ? { venue } : {}),
-    workers: [{ id: 0, status: 'complete', retryCount: 0, sentenceStart: 0, sentenceEnd: 9 }],
-    prepInfo: {
-      sessionId: 'keeper',
-      sessionDir,
-      processDir: `${sessionDir}${path.sep}p`,
-      chaptersDir: `${sessionDir}${path.sep}p${path.sep}chapters`,
-      chaptersDirSentences: `${sessionDir}${path.sep}p${path.sep}chapters${path.sep}sentences`,
-      totalChapters: 1,
-      totalSentences: 10,
-    },
-    config: { settings: { language: 'en', ttsEngine: 'higgs' }, skipAssembly: false, outputDir: 'C:\\out' },
-  };
-}
-
-/** The shipped normaliser, with the copy branch stubbed to explode if reached. */
-const normalize = eval(
-  `(function (fsSync, path, logger, console) {
-     ${lift('isWslUncPath')}
-     ${lift('sessionDirFromCachedSentences')}
-     const fs = { rm: async () => {} };
-     const findE2aProcessDir = () => null;
-     const narratorScratchRoot = () => { throw new Error('the copy branch must not be reached'); };
-     const copyDirOutOfWsl = async () => { throw new Error('the copy branch must not be reached'); };
-     const rewriteSessionStatePaths = async () => {};
-     ${lift('normalizeWslSessionToWindows')}
-     return normalizeWslSessionToWindows;
-   })`,
-)(fs, path, { log: async () => {} }, { log: () => {} });
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 (async () => {
-  console.log('1. the venue decides, not the engine\'s toggle');
+  console.log('1. no render can enter the guest, whatever the toggles say');
 
-  await check('a Crucible venue never preps in WSL, for either engine, with both toggles on', () => {
+  /*
+   * THIS SECTION USED TO BE A CONTRAST. It drove `prepRunsInWsl` with a Crucible
+   * venue and with the LEGACY one and showed that only the venue moved the
+   * answer. The legacy venue is deleted (docs/LEGACY-REMOVAL.md), so there is
+   * nothing to contrast with — and what is left is the stronger statement: with
+   * BOTH WSL toggles on and either engine named, no venue this app can construct
+   * preps in the guest, because there is only one kind of venue left.
+   */
+  await check('prepRunsInWsl is false for every venue, both engines, both toggles on', () => {
     for (const venue of [CRUCIBLE, LOCAL]) {
       for (const engine of ['higgs', 'orpheus']) {
         assert.strictEqual(bridge.prepRunsInWsl(venue, engine), false,
           `${engine} on crucible "${venue.server}" would prep in the guest`);
       }
-    }
-  });
-
-  await check(ON_WINDOWS
-    ? 'the legacy venue keeps the engine\'s answer: both engines go to the guest'
-    : 'the legacy venue keeps the engine\'s answer: no guest off Windows', () => {
-    for (const engine of ['higgs', 'orpheus']) {
-      assert.strictEqual(bridge.prepRunsInWsl(LEGACY, engine), ON_WINDOWS,
-        `${engine} on the legacy venue answered ${!ON_WINDOWS} on ${process.platform}`);
     }
   });
 
@@ -251,31 +175,6 @@ const normalize = eval(
     }
     assert.ok(fs.existsSync(SCRATCH), 'the scratch root was not created');
   });
-
-  if (ON_WINDOWS) {
-    await check('the legacy venue, same toggles, same engine, still goes to the guest', () => {
-      for (const engine of ['higgs', 'orpheus']) {
-        const home = bridge.sessionHomeFor(LEGACY, engine, ID);
-        assert.strictEqual(home.inGuest, true, `${engine}: a legacy WSL prep left the guest`);
-        assert.strictEqual(home.guestRoot, GUEST_ROOT);
-        assert.strictEqual(home.sessionDir, `${GUEST_ROOT}/ebook-${ID}`);
-        assert.ok(isUnc(home.sessionDirForReading) && /Ubuntu/.test(home.sessionDirForReading),
-          `the host reads it through \\\\wsl$: ${home.sessionDirForReading}`);
-      }
-    });
-    await check('MUTATION: the venue is the ONE thing that moved the session', () => {
-      const a = bridge.sessionHomeFor(CRUCIBLE, 'higgs', ID);
-      const b = bridge.sessionHomeFor(LEGACY, 'higgs', ID);
-      assert.notStrictEqual(a.sessionDir, b.sessionDir,
-        'both venues placed the session in the same directory — the placement is not reading the venue');
-    });
-  } else {
-    await check('the legacy venue is native off Windows (there is no guest)', () => {
-      const home = bridge.sessionHomeFor(LEGACY, 'higgs', ID);
-      assert.strictEqual(home.inGuest, false);
-      assert.strictEqual(home.sessionDir, path.join(SCRATCH, `ebook-${ID}`));
-    });
-  }
 
   console.log('3. the prep spawn is built on the host');
 
@@ -325,14 +224,23 @@ const normalize = eval(
       /onHost and wslCondaEnv 'qwen-align' were both given/);
   });
 
-  await check('narratorSpawnCrossesIntoWsl is the ONE computation the spawn and the voice document share', () => {
-    const src = fs.readFileSync(path.join(REPO, 'electron', 'higgs-spawn.ts'), 'utf8');
-    assert.ok(/narratorSpawnCrossesIntoWsl\('higgs', kind, onHost\)/.test(src),
-      'higgs-spawn.ts must derive the voice document\'s arm from narratorSpawnCrossesIntoWsl with onHost');
-    const spawnSrc = fs.readFileSync(path.join(REPO, 'electron', 'narrator-spawn.ts'), 'utf8');
-    assert.ok(/narratorSpawnCrossesIntoWsl\(engine, phase, req\.onHost === true\)/.test(spawnSrc),
-      'buildNarratorSpawn must derive its own arm from the same function');
-  });
+  /*
+   * A CHECK STOOD HERE AND ITS SUBJECT IS DELETED.
+   *
+   * "narratorSpawnCrossesIntoWsl is the ONE computation the spawn and the voice
+   * document share" read `electron/higgs-spawn.ts` and proved that the arm the
+   * voice document was WRITTEN for was the same arm the command line was BUILT
+   * for — the two were computed separately once, and the moment a per-run
+   * override lived in one of them they could disagree about which voice a book
+   * was in. narrator's reaction to a voice its document does not name is not a
+   * crash: a whole book renders in the base model's own speaker.
+   *
+   * `higgs-spawn.ts` is deleted (docs/LEGACY-REMOVAL.md) and there is no voice
+   * document, because there is no local Higgs server to start on a voice. The
+   * surviving half of that lesson — that a render must resolve its voice through
+   * ONE function so no two doors can disagree — is `higgsModelForJob` in
+   * `higgs-models.ts`, and `tools/test-higgs-engine.js` is where it is pinned.
+   */
 
   console.log('4. the tools env is MEASURED before a Crucible-venue prep spawns');
 
@@ -374,50 +282,41 @@ const normalize = eval(
     console.log(`  --    this machine has no tools env at ${realToolsEnv}; the real probe is not measured here`);
   }
 
-  await check('prepareSession asks hostPrepRefusal on the Crucible branch and the Higgs doctor on the legacy one', () => {
+  await check('prepareSession measures the tools env, and the local doctor is not back', () => {
+    /*
+     * It used to assert a two-armed branch: `hostPrepRefusal` on the Crucible
+     * side and the Higgs DOCTOR on the legacy one. The doctor is deleted with the
+     * local environment it examined — the engine runs on a Crucible server, which
+     * answers for its own environment — so the surviving half is asserted
+     * directly, and the doctor's absence with it.
+     */
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const at = src.indexOf('export async function prepareSession(');
     const body = src.slice(at, src.indexOf('const home = sessionHomeFor(', at));
-    assert.ok(/if \(venue\.where === 'crucible'\) \{[\s\S]*?await hostPrepRefusal\(engine\)[\s\S]*?\} else if \(isHiggsJob\(settings\)\) \{[\s\S]*?await higgsEnvironmentRefusal\(\)/.test(body),
-      'the Crucible branch must probe the tools env and the legacy branch must keep the doctor');
-    const spawnAt = src.indexOf('const prepPlan = buildJobSpawn({', at);
-    assert.ok(spawnAt > 0 && /onHost: venue\.where === 'crucible'/.test(src.slice(spawnAt, spawnAt + 700)),
-      'the prep spawn must be built onHost exactly when the venue is a Crucible');
+    assert.ok(/await hostPrepRefusal\(engine\)/.test(body),
+      'prepareSession no longer measures the tools env before it spawns');
+    assert.ok(!/higgsEnvironmentRefusal/.test(body),
+      'the local Higgs doctor is back in prepareSession — that question belongs to the '
+      + 'server that will run the engine, not to this machine');
   });
 
-  console.log('5. the completion tail never calls the normaliser for a Crucible venue');
+  /*
+   * SECTION 5 STOOD HERE AND ITS SUBJECT IS DELETED.
+   *
+   * It drove the SHIPPED completion tail and proved it did not call
+   * `normalizeWslSessionToWindows` for a Crucible-venue session, with a mutation
+   * arm proving the recorder could see the call at all, and a third check that
+   * the normaliser refused such a session BY NAME.
+   *
+   * `normalizeWslSessionToWindows` no longer exists: it copied a finished session
+   * out of the guest onto Windows, and nothing renders in the guest. The defect
+   * it guarded — a render bound for the Mac writing its session to ext4 and then
+   * dying on the copy back out — cannot be reconstructed, because the branch that
+   * placed a session in the guest is gone with it. Section 1 above now asserts
+   * that directly and unconditionally, which is the stronger form.
+   */
 
-  await check('the SHIPPED tail assembles a Crucible-venue session without normalizeWslSessionToWindows', async () => {
-    const { checkAllWorkersComplete, recorder } = buildTail();
-    await checkAllWorkersComplete(finishedSession(CRUCIBLE, path.join(SCRATCH, 'ebook-keeper')));
-    assert.strictEqual(recorder.normalizeRan, false, 'the normaliser was called for a session that never entered WSL');
-    assert.strictEqual(recorder.assemblyRan, true, 'assembly never ran');
-    assert.deepStrictEqual(recorder.completions.map((c) => c.success), [true], JSON.stringify(recorder.completions));
-    assert.deepStrictEqual(recorder.deleted, ['keeper-job']);
-  });
-
-  await check('MUTATION: the same tail DOES call it for a legacy session (the recorder measures)', async () => {
-    const { checkAllWorkersComplete, recorder } = buildTail();
-    await checkAllWorkersComplete(finishedSession(undefined, 'C:\\scratch\\ebook-keeper'));
-    assert.strictEqual(recorder.normalizeRan, true, 'the legacy tail skipped the normaliser too — the gate is not the venue');
-    assert.strictEqual(recorder.assemblyRan, true);
-  });
-
-  await check('the normaliser refuses a Crucible-venue session by name (a caller bug, said)', async () => {
-    const hostPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    try {
-      await assert.rejects(
-        () => normalize(finishedSession(CRUCIBLE, path.join(SCRATCH, 'ebook-keeper'))),
-        /rendered on crucible "mac"[\s\S]*never enters WSL/);
-      // And a native legacy session is simply nothing to do — not a refusal.
-      await normalize(finishedSession(undefined, 'C:\\scratch\\ebook-keeper'));
-    } finally {
-      Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true });
-    }
-  });
-
-  console.log('6. the scratch-root refusal arrives BEFORE a legacy WSL prep, naming the setting');
+  console.log('6. the scratch-root refusal names the setting a person can fix');
 
   await check('narratorScratchRoot() refuses an unmounted root naming "Narrator scratch folder"', () => {
     const gone = path.join(WORK, 'no-such-volume', 'tmp');
@@ -432,19 +331,6 @@ const normalize = eval(
       narratorPaths.setNarratorScratchRoot(SCRATCH);
     }
   });
-
-  if (ON_WINDOWS) {
-    await check('a legacy WSL prep reaches that refusal at placement time, before the guest root is even named', () => {
-      const gone = path.join(WORK, 'no-such-volume', 'tmp');
-      narratorPaths.setNarratorScratchRoot(gone);
-      try {
-        assert.throws(() => bridge.sessionHomeFor(LEGACY, 'orpheus', ID),
-          (err) => err.message.includes(gone) && /Narrator scratch folder/.test(err.message));
-      } finally {
-        narratorPaths.setNarratorScratchRoot(SCRATCH);
-      }
-    });
-  }
 
   await check('the guest branch of sessionHomeFor asks narratorScratchRoot() before getWslSessionsRoot()', () => {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
@@ -467,10 +353,19 @@ const normalize = eval(
       assert.ok(at > 0, `${name} not found`);
       return src.slice(at, at + 1600);
     };
-    assert.ok(/if \(!sessionRunsInWsl\(session\)\) return;/.test(fn('async function ensureGuestCanReachSession(')),
-      'ensureGuestCanReachSession would mount the library share in WSL for a render that never goes there');
-    assert.ok(/const orpheusViaWsl = engine === 'orpheus' && sessionRunsInWsl\(session\);/.test(fn('async function acquireGpuForJob(')),
-      'the clear-guest gate and the wedge check must key on the session\'s arm');
+    /*
+     * TWO GATES LEFT THIS LIST ON 2026-09-15 with the local renderer.
+     * `ensureGuestCanReachSession` mounted the library share INSIDE the guest for
+     * a render that was about to happen there, and `acquireGpuForJob` carried an
+     * `orpheusViaWsl` clear-guest arm. Neither has a subject any more: nothing
+     * renders in the guest, so nothing needs the share mounted there or the guest
+     * cleared before it.
+     *
+     * The two TEARDOWN gates below SURVIVE and still ask, and that is not
+     * leftover: a session object outlives its render, Stop and quit share one
+     * teardown path, and a session restored from an older queue file can still
+     * carry a venue this build would never mint.
+     */
     const stopAt = src.indexOf('export async function stopParallelConversion(');
     assert.ok(/if \(sessionRunsInWsl\(session\)\) \{/.test(src.slice(stopAt, stopAt + 6000)),
       'Stop must not tear down guest workers for a session that has none');
@@ -483,19 +378,15 @@ const normalize = eval(
 
   await check('the fresh launch points decide the venue BEFORE prep and hand it to prepareSession', () => {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-    for (const name of ['export async function startParallelConversion(', 'export async function renderRangeHeadless(']) {
+    for (const name of ['export async function startParallelConversion(', 'async function renderRangeHeadless(']) {
       const at = src.indexOf(name);
+      assert.ok(at > 0, `${name} not found`);
       const body = src.slice(at, at + 12000);
       const decide = body.indexOf('await decideGenerationVenue(');
       const prep = body.indexOf('await prepareSession(');
-      assert.ok(decide > 0 && prep > 0 && decide < prep, `${name} preps before it knows where the render runs`);
-      assert.ok(/await prepareSession\([^;]*?, venue, /.test(body.slice(prep, prep + 200)), `${name} preps without the venue`);
-      assert.ok(/assemblyProcess: null,\s*venue,/.test(body), `${name} does not carry the venue on its session`);
+      assert.ok(decide > 0 && prep > 0 && decide < prep,
+        `${name} preps before it knows where the render runs`);
     }
-    const resume = src.slice(src.indexOf('export async function resumeParallelConversion('));
-    const decide = resume.indexOf('await decideAndRememberVenue(session)');
-    const guest = resume.indexOf('await ensureGuestCanReachSession(session)');
-    assert.ok(decide > 0 && guest > 0 && decide < guest, 'a resume must know its venue before the guest gates run');
   });
 
   await check('the copy-out probe asks mountpoint, not test -d (a stale mount point is a directory)', () => {

@@ -117,6 +117,32 @@
  * that is `narrator-spawn.ts`'s new `wslCondaEnv` field, and the fixture drives
  * this phase without it because the fixture's env resolution is stubbed out.)
  *
+ * 2026-09-15, TWO DOORS LEFT THE SNAPSHOT AND PREP CHANGED ENGINE — the local
+ * renderer's deletion (docs/LEGACY-REMOVAL.md). This is the first re-baseline
+ * here that REMOVES rows rather than editing them, so it is worth being exact
+ * about what was checked:
+ *
+ *   - `worker` and `retake` are GONE from both halves, because
+ *     `regenerateSentenceIndices` and `startWorker` are gone. A render's
+ *     sentences and its retakes are a Crucible job; there is no argv left to
+ *     pin. Their absence is now itself asserted, in the extractor's anchor list
+ *     and in REQUIRED — if either name comes back, something has started
+ *     spawning a renderer on this machine again.
+ *   - `prep` names `higgs` where it named `orpheus`. Orpheus is retired and
+ *     cannot render, so a prep plan captured for it pins an environment no job
+ *     can ask for. narrator's id is `higgs-v3` — a different string from
+ *     BookForge's `higgs` on purpose.
+ *   - The two checks that were DRIVEN through the deleted `worker` door (the
+ *     guest path/env translation, and the Mac's engine-env resolution) now drive
+ *     through `prep`, which is the door that still names an engine. The
+ *     properties they assert are unchanged.
+ *
+ * Checked, not assumed, exactly as every entry above: the regeneration masked
+ * the engine id and the env name it resolves, and required all five surviving
+ * doors on all three arms to compare byte-equal. `assembly`, `align`, `resume`
+ * and `list` were identical without any masking at all; `prep` differed in that
+ * ONE dimension and nothing else. Nothing rode along.
+ *
  * 2026-09-09, THE TWO ASSEMBLY DOORS' `flags` literals, for the chapter gap
  * (Owen: *"can we artificially insert 3 seconds of silence at the end of every
  * chapter so its easier to tell when it moves from one to the next"*). Two
@@ -241,8 +267,16 @@ console.log('the flags narrator REQUIRES, present by name');
 
 const REQUIRED = {
   prep: ['--session', '--session_dir', '--ebook', '--prep_only', '--tts_engine'],
-  worker: ['--session', '--session_dir', '--sentences_dir', '--tts_engine'],
-  retake: ['--session', '--session_dir', '--sentences_dir', '--tts_engine'],
+  /*
+   * `worker` and `retake` STOOD HERE and are gone with the local renderer
+   * (docs/LEGACY-REMOVAL.md, 2026-09-15). Their flags mattered for a reason that
+   * no longer has a subject — "--sentences_dir off a worker and a resume
+   * re-renders a book that was already 90% done" — because a render's sentences
+   * and its retakes are a Crucible job now, with no command line to lose a flag
+   * from. `tools/narrator-argv-extract.js` states the same thing about its
+   * anchors; if either name reappears in either place, a renderer has started
+   * spawning on this machine again.
+   */
   'assembly-render': ['--session', '--session_dir', '--output_dir', '--assemble_only'],
   'assembly-reassembly': ['--session', '--session_dir', '--output_dir', '--assemble_only'],
   /*
@@ -342,11 +376,18 @@ const envOf = (row) => (row.viaWsl ? row.bash.exports : row.env);
 for (const arm of ARMS) {
   const doors = plans[arm].doors;
 
-  check(`${arm}: render doors go to the ENGINE env, tools doors to the tools env`, () => {
-    for (const d of ['prep', 'worker', 'retake']) {
-      assert.strictEqual(envOf(doors[d]).NARRATOR_ENGINE, 'orpheus',
-        `${d} does not name its engine`);
-    }
+  check(`${arm}: the engine door names its engine, tools doors go to the tools env`, () => {
+    /*
+     * PREP IS THE ONLY DOOR LEFT THAT NAMES AN ENGINE, and it names HIGGS.
+     * It used to be one of three ('prep', 'worker', 'retake') and it used to say
+     * `orpheus`; the other two went with the local renderer and Orpheus is
+     * retired, so a plan captured for it would pin an environment no job can ask
+     * for. narrator's id is `higgs-v3`, not BookForge's `higgs` — they are
+     * different strings on purpose (narrator names a model generation, BookForge
+     * names a picker entry), and `narratorEngineId()` is the one translator.
+     */
+    assert.strictEqual(envOf(doors.prep).NARRATOR_ENGINE, 'higgs-v3',
+      'prep does not name its engine');
     for (const d of ['assembly', 'align', 'resume', 'list']) {
       assert.ok(!('NARRATOR_ENGINE' in envOf(doors[d])),
         `${d} names an engine — it is engine-agnostic and runs in the tools env`);
@@ -460,22 +501,31 @@ check('toGuestPath maps every shape a Windows host can name a file by', () => {
 check('wsl: argv paths AND env values are both translated for the guest', () => {
   // The pair that used to be done by different code — one correct, one not — which
   // is how the argv guard's bug stayed invisible in a log for weeks.
-  const worker = plans.wsl.doors.worker;
-  assert.ok(worker.viaWsl, 'the wsl arm did not route through WSL');
-  assert.match(worker.bash.run, /\/mnt\/c\/lib\/tmp\/ebook-abc/,
+  //
+  // DRIVEN THROUGH `prep` SINCE 2026-09-15. It was the `worker` door, which is
+  // deleted; prep is the door that still names an engine, so it is the one whose
+  // plan still crosses into the guest on this arm.
+  const crossing = plans.wsl.doors.prep;
+  assert.ok(crossing.viaWsl, 'the wsl arm did not route through WSL');
+  assert.match(crossing.bash.run, /\/mnt\/c\/lib\/tmp\/ebook-abc/,
     '--session_dir crossed untranslated');
-  assert.strictEqual(worker.bash.exports.PROBE_PATH, '/mnt/c/lib/rejects',
+  assert.strictEqual(crossing.bash.exports.PROBE_PATH, '/mnt/c/lib/rejects',
     'a path-valued env var crossed untranslated');
-  assert.strictEqual(worker.bash.exports.PROBE_PLAIN, 'x',
+  assert.strictEqual(crossing.bash.exports.PROBE_PLAIN, 'x',
     'a non-path env value was mangled by the translation');
-  assert.strictEqual(worker.bash.cd, 'cd ~',
+  assert.strictEqual(crossing.bash.cd, 'cd ~',
     'the guest cwd is not the WSL home');
 });
 
-check('native-mac: Orpheus render runs in narrator-mlx, assembly does not', () => {
+check('native-mac: the engine door runs in narrator-mlx, assembly does not', () => {
+  // Was "Orpheus render runs in narrator-mlx" and was driven through the deleted
+  // `worker` door. The PROPERTY is unchanged and is the interesting one: an
+  // engine-named door resolves the MLX env, and an engine-agnostic door must not
+  // — assembly needs numpy/soundfile, not mlx, and a door that quietly started
+  // resolving the engine env for an ASSEMBLY would still have perfect flags.
   const doors = plans['native-mac'].doors;
-  assert.match(runOf(doors.worker), /narrator-mlx/,
-    'the mac render door does not name narrator-mlx');
+  assert.match(runOf(doors.prep), /narrator-mlx/,
+    'the mac engine door does not name narrator-mlx');
   assert.ok(!/narrator-mlx/.test(runOf(doors.assembly)),
     'the mac assembly door resolved the MLX env — it needs numpy/soundfile, not mlx');
 });

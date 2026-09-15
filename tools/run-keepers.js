@@ -70,11 +70,6 @@ const SUITES = [
   // for four days after it was measured at 500-700.
   'test-one-fact-one-owner',
   'test-higgs-engine',
-  // The TWO Higgs doctors and the platform dispatch between them. Separate from
-  // test-higgs-engine because that suite is about the engine id, the catalog and
-  // the spawn; this one is about which environment a machine is asked about, and
-  // it drives every platform as a fixture.
-  'test-higgs-doctor-arms',
   // The wsl.exe argv trap: a script handed to wsl.exe without --exec is run
   // through the distro's default shell, which expands every $ before bash sees
   // it. That silently made the Higgs doctor report a correctly patched env as
@@ -89,8 +84,42 @@ const SUITES = [
   // test-narrator-argv-snapshot. Its BASELINE is kept, as data:
   // tools/snapshots/orpheus-argv-base.json, described in that directory's README.
   'test-narrator-argv-snapshot',
-  'test-serve-spawn-env',
-  'test-narrator-log-strings',
+  /*
+   * THREE SUITES WERE RETIRED HERE ON 2026-09-15, with the local narrator spawn
+   * (docs/LEGACY-REMOVAL.md). Named rather than silently dropped, for the same
+   * reason 'test-orpheus-argv-snapshot' is named above: a suite that vanishes
+   * from a list looks like it was never there.
+   *
+   *   'test-higgs-doctor-arms'  — the two Higgs doctors and the dispatcher that
+   *     chose between them. `higgsDoctor()` and `higgsEnvironmentRefusal()` are
+   *     deleted: the engine runs on a Crucible server, which answers for its own
+   *     environment. Its two defects are recorded in docs/LEGACY-REMOVAL.md — a
+   *     Mac shown "WSL distribution" as the reason it could not narrate, and the
+   *     mirror bug, `return null` on darwin having checked NOTHING. That second
+   *     one is the durable lesson and outlives the file: AN UNCHECKED PASS IS AS
+   *     BAD AS A WRONG REFUSAL, and it is the quieter of the two.
+   *
+   *   'test-serve-spawn-env'    — the Listen server's 33-variable spawn, pinned
+   *     against a baseline from the commit before the narrator cut-over. Its
+   *     subject was `buildSpawnPlan` in orpheus-worker-pool.ts; there is no
+   *     local Listen server. The VARIABLES are not lost — every one of them,
+   *     with its measured value and the reason for it, is in
+   *     docs/LEGACY-REMOVAL.md's appendix, which is where they matter now: as
+   *     the specification Crucible's recipes are checked against.
+   *     `tools/serve-spawn-extract.js` and `tools/smoke-serve-spawn.js` went
+   *     with it. `tools/snapshots/serve-spawn-base.json` is KEPT as data, like
+   *     orpheus-argv-base.json.
+   *
+   *   'test-narrator-log-strings' — the four matchers that read the render
+   *     worker's stdout (PROGRESS_LINE_RE, GENERATION_ACTIVITY_RE, the two
+   *     MODEL_LOAD ones, REPAIR_START_RE). There is no worker and no stdout; a
+   *     Crucible render's progress arrives as the server's own job events. The
+   *     suite's argument was that each matcher fails SILENTLY and in the wrong
+   *     direction — a progress line that stops matching freezes the watchdog's
+   *     clock and kills a worker that was rendering perfectly — and that is
+   *     worth remembering the next time anything here parses a log to decide
+   *     whether a process is alive.
+   */
   'test-no-e2a-doors',
   // PHASE 15's deletion, pinned the same way. Ollama, Claude and OpenAI left
   // BookForge entirely (Owen: "they dont have ollama fallbacks or cloud anything

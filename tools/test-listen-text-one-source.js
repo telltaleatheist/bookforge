@@ -381,19 +381,28 @@ check('no extension source declares its own segmenter, normalizer or packer', ()
 // 4. The read-ahead depth the shared file could not import
 // ═══════════════════════════════════════════════════════════════════════════
 
-check("CRUCIBLE_STREAM_IN_FLIGHT is still the local pool's STREAM_RAMP_WIDTH", () => {
+check("CRUCIBLE_STREAM_IN_FLIGHT is still the scheduler's STREAM_RAMP_WIDTH", () => {
+  /*
+   * REPOINTED 2026-09-15, same invariant. The number used to live in
+   * `orpheus-worker-pool.ts`; that pool is deleted (docs/LEGACY-REMOVAL.md) and
+   * `STREAM_RAMP_WIDTH` moved to `electron/streaming-contract.ts`, which is where
+   * the Listen contract lives now. Nothing about the CHECK changed — it is still
+   * one measured number written in two places, because a browser bundle cannot
+   * import a main-process module and the shared file has to restate it.
+   */
   const { CRUCIBLE_STREAM_IN_FLIGHT } =
     require(path.join(REPO, 'dist', 'shared', 'listen-client', 'crucible-rows.js'));
-  const poolSrc = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
-  const m = poolSrc.match(/export const STREAM_RAMP_WIDTH\s*=\s*(\d+)/);
+  const contractSrc =
+    fs.readFileSync(path.join(REPO, 'electron', 'streaming-contract.ts'), 'utf-8');
+  const m = contractSrc.match(/export const STREAM_RAMP_WIDTH\s*=\s*(\d+)/);
   if (!m) {
-    throw new Error('STREAM_RAMP_WIDTH has moved or been renamed in electron/orpheus-worker-pool.ts');
+    throw new Error('STREAM_RAMP_WIDTH has moved or been renamed in electron/streaming-contract.ts');
   }
   if (CRUCIBLE_STREAM_IN_FLIGHT !== Number(m[1])) {
     throw new Error(
-      `the Crucible read-ahead depth is ${CRUCIBLE_STREAM_IN_FLIGHT} and the local pool's ramp is `
+      `the Crucible read-ahead depth is ${CRUCIBLE_STREAM_IN_FLIGHT} and the scheduler's ramp is `
       + `${m[1]}. They are one measured number — the narrowest width that beats speech rate — and `
-      + 'the shared file restates it because it cannot import the narrator pool into a browser '
+      + 'the shared file restates it because it cannot import a main-process module into a browser '
       + 'bundle. If the measurement changed, change both; if it did not, this is drift.');
   }
 });
