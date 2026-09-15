@@ -955,8 +955,38 @@ apps' doors.
   Higgs. **RULING, then BUILD or DELETE.**
 - **B2. `higgs-default` on cuda-linux** — the token voice exists as a manifest; whether the WSL
   server can serve it is the owed ruling from 06:00. **RULING.**
-- **B3. Zero-shot voices** — Crucible's `zeroshot` takes clips in the request; the render door
-  refuses it. Upload the clip, or local-only? **RULING.**
+- **B3. Zero-shot voices — the upload question is SETTLED; the PUBLISHING question is the
+  one still open.** Crucible's `zeroshot` takes clips in the request and
+  `electron/crucible/voice-load.ts` sends them: `crucibleVoiceLoadFor` reads the wav off
+  THIS machine's disk and uploads it base64, under the one server-side id `zeroshot`, with
+  `name` saying which of the four is up. That works today.
+
+  **What Owen expected, 2026-09-15:** *"zero shot works effectively identically to fine
+  tuned models. it sends it through the base and appends the reference clip that's already
+  present on the crucible server."* The first half is exact. The second describes the
+  design Crucible is BUILT for and which nobody has finished — and the gap is why these
+  four are special-cased everywhere they appear.
+
+  `crucible/voices/zeroshot.toml` takes `clips` as EITHER a published list of
+  `{file, transcript, seconds}` (the server holds the bytes — Owen's description) or the
+  literal `"from-request"`. It is `"from-request"`, and says why: the four wavs *"are not
+  published anywhere: they live in `<userData>/runtime/higgs-models/refs/`"*, and Crucible
+  *"pulls a published artifact at a pinned revision and has no other way to get bytes onto
+  a server."*
+
+  **What it costs to close, and the manifest already gives the recipe:** join each voice's
+  clips into one wav with 0.35 s of silence between, join the transcripts in the same
+  order, measure `seconds`, publish the set, and write four manifests with real `clips`
+  lists. Then `needsReference` goes false, the four become ordinary server-side voices,
+  `placeVoices` picks them up with no change, and `placeCarriedVoices` —
+  `electron/crucible/voice-inventory.ts`, written 2026-09-15 for exactly this case — has
+  nothing left to place. The local disk stops being an authority about voices at all.
+
+  **Until then the special case is CORRECT and must not be tidied away.** For those four,
+  and only those four, this machine's disk is the right thing to ask, because this app is
+  the only thing holding the bytes. `tools/test-voice-inventory.js` pins both halves so a
+  later cleanup cannot merge two questions that have two answers. **RULING: publish the
+  reference set, or keep carrying the clips?**
 - **B4. The retake ladder's sampling channel** and the guard belonging to the model (the
   crucible-guard ruling, NOT STARTED). **RULING + BUILD.**
 - **B5. Narrator's items-in door** — a remote ALIGN cannot finish without it. **BUILD (narrator).**
