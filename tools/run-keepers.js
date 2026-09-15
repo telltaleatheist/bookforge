@@ -588,6 +588,19 @@ const SUITES = [
   // the LOCAL check is the right one for exactly those. Both are pinned here so a
   // later change cannot quietly merge two questions that have two answers.
   'test-voice-inventory',
+  // WHAT `build:electron` COPIES, AND WHAT IT MUST. Eleven source paths in one
+  // shell line, none of them checked — so a directory deleted in a refactor sits
+  // there until somebody runs a full build and gets a bare "cp: no such file or
+  // directory" five minutes in. That is how electron/scripts/higgs went when the
+  // local spawn layer was deleted: tsc clean, keepers green, build broken.
+  //
+  // The other direction is the quiet one and is asserted from the RUNTIME side:
+  // text-server.ts resolves serve_text_vllm.sh through a candidate that walks UP
+  // out of dist/ into the checkout, so a dev run finds it whether or not the
+  // build copied it — while a packaged app, whose `files` is dist/** alone, has
+  // no checkout to walk into. Present-in-the-checkout is not the requirement;
+  // copied-into-dist is.
+  'test-build-copies',
   // WHERE EACH STEP OF A BOOK RUNS. §4.4 — every step of one book runs on the
   // machine the book was assigned — and the failure is SILENT by construction:
   // §4's safety default is that an undeclared step does not travel, so a
