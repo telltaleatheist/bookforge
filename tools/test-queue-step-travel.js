@@ -96,6 +96,31 @@ const STEPS = {
       + 'machine — §4.4, and nothing says so at run time');
   });
 
+  await check('video-assembly declares CPU — it is deterministic work, not inference', () => {
+    /*
+     * MEASURED 2026-09-15, because it had declared `gpu` with no comment since
+     * before the slot sets existed and that charged it to the legacy local
+     * narrator set: a video mux waited for the 3090 Ti, and a render waited
+     * behind a video mux. `electron/video-assembly-bridge.ts` end to end —
+     * PNG frames drawn in an OFFSCREEN BrowserWindow and read back with
+     * `capturePage()`, then `ffmpeg -f concat … -c:v libx264 -preset medium
+     * -crf 23 -c:a aac`. A SOFTWARE x264 encode: no NVENC, no `-hwaccel`, no
+     * encoder selection, no weights, no VRAM held.
+     *
+     * Owen's boundary is MODEL INFERENCE vs DETERMINISTIC work, not GPU vs CPU,
+     * so this belongs in `local-work` beside assembly and muxing. Pinned here
+     * because the only thing standing between this step and the card is one
+     * word in one module.
+     */
+    const mod = require(path.join(DIST, 'queue-steps', 'video-assembly.js')).videoAssemblyStep;
+    assert.strictEqual(mod.resource({}), 'cpu');
+    assert.strictEqual(mod.resource({ resolution: '1080p', mode: 'bilingual' }), 'cpu',
+      'no config makes drawing subtitles onto frames an inference job');
+    assert.strictEqual(mod.machines, undefined,
+      'and a CPU step is never sent to a server (SERVER_CPU_SLOTS is 0), so the omission is '
+      + 'the honest one rather than the silent one §4 warns about');
+  });
+
   await check('the unconditional travellers say `any` whatever the config says', () => {
     for (const type of ['tts-conversion', 'align', 'rvc-enhancement', 'final-denoise', 'vlm-convert']) {
       assert.strictEqual(STEPS[type]().machines({}), 'any', type);

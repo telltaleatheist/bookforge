@@ -105,6 +105,7 @@ import {
 import {
   cloudLaneOf,
   isCloudLane,
+  legacySetCharged,
   slotSetForStep,
   slotSetOccupancy,
   slotSets,
@@ -573,7 +574,24 @@ function currentSlotSets(): SlotSet[] {
   const upstreams: Record<string, EngineUpstreams> = {};
   for (const name of enabledServers) upstreams[name] = crucibleUpstreamsOf(name);
 
-  return slotSets({ enabledServers, upstreams, occupied });
+  /*
+   * AND WHETHER THE LEGACY GPU ROW EXISTS AT ALL — read off the same jobs the
+   * `occupied` pass above reads, with `slotSetForStep`, so the row is present
+   * for exactly the steps this scheduler would send there. Owen, 2026-09-15:
+   * *"without a crucible server, there is no gpu slot, because bookforge
+   * shouldnt know how to drive gpu work in-app."*
+   *
+   * Computed here rather than inside `slotSets` because that module takes facts
+   * and never a snapshot — which is what keeps it drivable by a keeper with no
+   * engine — and computed with the shared function rather than by listing the
+   * step kinds, so this and the bench cannot disagree about a row.
+   */
+  return slotSets({
+    enabledServers,
+    upstreams,
+    occupied,
+    legacyCharged: legacySetCharged({ jobs }),
+  });
 }
 
 export function snapshot(): QueueSnapshot {

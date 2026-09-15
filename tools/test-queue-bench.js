@@ -84,10 +84,12 @@ function job(steps, over = {}) {
  *
  * `slotSets` is composed by the REAL composer rather than written out here, so
  * a keeper cannot pass against a capacity model the engine does not have. With
- * no servers named, that is the legacy narrator's one GPU slot plus BookForge's
- * own two CPU slots — which is exactly the shape the old global
- * `RESOURCE_SLOTS` had, and why every pre-per-server test below still reads the
- * same.
+ * no servers named, that is BookForge's own two CPU slots, plus the legacy
+ * narrator's one GPU slot WHEN SOMETHING IN THESE JOBS CHARGES IT (2026-09-15 —
+ * the row is no longer unconditional). A test that wants a GPU lane therefore
+ * queues a GPU step that cannot travel, and with that the shape is exactly what
+ * the old global `RESOURCE_SLOTS` had, which is why every pre-per-server test
+ * below still reads the same.
  */
 function snap(jobs, running = true, servers = []) {
   const occupied = [];
@@ -107,6 +109,10 @@ function snap(jobs, running = true, servers = []) {
       // asked answers, and it draws the same bench they were written against.
       upstreams: Object.fromEntries(servers.map((n) => [n, 'unknown'])),
       occupied,
+      // Answered off these jobs with the scheduler's own function, exactly as
+      // `currentSlotSets` answers it: the legacy row exists while something in
+      // the queue can run nowhere else, and is absent otherwise.
+      legacyCharged: slots.legacySetCharged({ jobs }),
     }),
   };
 }
@@ -244,7 +250,13 @@ test('a waiting step whose parent is not in the queue throws rather than guessin
 // ── The bench ───────────────────────────────────────────────────────────────
 
 test('all three slots are drawn, whatever is running', () => {
-  const lanes = bench.benchLanes(snap([]));
+  /*
+   * The GPU lane here is the legacy spawn's, and since 2026-09-15 that row is
+   * drawn only while something charges it — so this queues a GPU step that
+   * cannot travel, which is the thing the row is FOR. It is queued, not running,
+   * which is the point of the check: a free slot is information.
+   */
+  const lanes = bench.benchLanes(snap([job([step({ id: 's_q' })])]));
   assert.strictEqual(lanes.length, 3);
   assert.deepStrictEqual(lanes.map((l) => `${l.resource}${l.index}of${l.of}`),
     ['gpu1of1', 'cpu1of2', 'cpu2of2']);
@@ -274,7 +286,10 @@ test('a step that has measured nothing reports null, not zero', () => {
 test('two CPU steps fill both CPU slots and leave the GPU free', () => {
   const a = step({ id: 's_a', status: 'running', resource: 'cpu', label: 'Read the pages' });
   const b = step({ id: 's_b', status: 'running', resource: 'cpu', label: 'Make the EPUB' });
-  const lanes = bench.benchLanes(snap([job([a, b])]));
+  // …and a queued GPU row, so there is a GPU lane to leave free at all: the
+  // legacy set is drawn only while something charges it.
+  const g = step({ id: 's_g', label: 'Narrate' });
+  const lanes = bench.benchLanes(snap([job([a, b, g])]));
   assert.strictEqual(lanes[0].occupant, null);
   assert.strictEqual(lanes[1].occupant.label, 'Read the pages');
   assert.strictEqual(lanes[2].occupant.label, 'Make the EPUB');

@@ -490,6 +490,13 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
  * spelled it would be a second owner of it, crucible `docs/ARCHITECTURE.md`
  * R1). So a server's lane carries no temperature at all, which is the honest
  * answer for every remote one and a missing decoration for the local one.
+ *
+ * CONSEQUENCE OF THE LEGACY ROW BECOMING CONDITIONAL (2026-09-15): the reading
+ * is drawn only while that row is on the bench, and with nothing charging it
+ * there is nowhere truthful to put the number at all. That is the same missing
+ * decoration, widened — not a lie — and what would fix it is the snapshot
+ * carrying which server name is this machine's, which belongs to
+ * `electron/crucible/local.ts` and is a ruling, not a bench change.
  */
 function isThisMachine(setId: string, _snapshot: QueueSnapshot): boolean {
   return setId === LEGACY_LOCAL_NARRATOR;

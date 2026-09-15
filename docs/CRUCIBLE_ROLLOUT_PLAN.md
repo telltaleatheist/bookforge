@@ -623,8 +623,16 @@ apps' doors.
   `routing.legacyLocalRender`. That layer is deleted after Owen's in-app pass (~250 GB of envs
   with it). Until then both paths exist and the switch decides. **DELETE after the pass.**
   **CORRECTED 2026-09-15:** the switch is not the last tenant of the legacy GPU row.
-  `generate-sentences` with `method: 'epub-align'` and `video-assembly` both charge it and
-  neither goes away with that layer — see **B7**, which is what actually empties the row.
+  `generate-sentences` with `method: 'epub-align'` also charges it and does not go away with
+  that layer — see **B7**, which is what actually empties the row.
+  **AND THE ROW IS NOW CONDITIONAL (same day).** `slotSets` draws it only when something in
+  the snapshot would charge it, computed with `slotSetForStep` over the snapshot's own steps
+  (`SlotSetFacts.legacyCharged`, `legacySetCharged()`), so with nothing queued the bench is
+  exactly Owen's sentence — one GPU slot per registered server plus `local-work [cpu][cpu]`.
+  The old argument for drawing it unconditionally (a step charging a set with no slots is
+  never launched) was about a step that EXISTS, so the row exists exactly then; the bench and
+  the pump read one function, so they cannot disagree about it. `video-assembly` left the list
+  the same day — see B7.
 - **A6. The bench's cloud lanes — FIXED 2026-09-15 (`8699d71d`).** Owen read the bench and it
   did not match §0d's ruling: nine rows, four of them cloud lanes on engines that can never
   fill one (nothing routes upstream on either server today, and no upstream is configured).
@@ -731,15 +739,26 @@ apps' doors.
     the align stage — which on this PC are two separate envs today and would be one Crucible
     engine's problem instead of BookForge's.
 
-  **Until it exists, the bench keeps one GPU row that is not a registered server.** It is not
-  only this step: `video-assembly` declares `resource: 'gpu'` with no `machines()` at all and
-  draws its frames in a hidden BrowserWindow, which is not inference and will never be a
-  Crucible job (open question of its own: has anyone measured that it needs the card?), and any
-  render at all takes that row while `legacyLocalRender` is on. Deleting the row without moving
-  the work would leave those steps charging a set with no slots — `slotsOf` answers 0 for a set
-  that is not on the bench — so the scheduler would never launch them.
-  `tools/test-queue-slot-sets.js` pins the shape instead: every GPU row is a registered server,
-  bar this one named exception.
+  **Until it exists, the bench keeps one GPU row that is not a registered server — but only
+  while a step of this kind is actually in the queue.** Deleting the row outright would leave
+  such a step charging a set with no slots (`slotsOf` answers 0 for a set that is not on the
+  bench) and the scheduler would never launch it; so as of 2026-09-15 the row is drawn exactly
+  when something charges it, derived from the snapshot with `slotSetForStep` itself
+  (`SlotSetFacts.legacyCharged`). With nothing queued there is NO in-app GPU row, which is
+  Owen's sentence realised; `epub-align` queued, or any render while `legacyLocalRender` is on,
+  brings it back with its one card. `tools/test-queue-slot-sets.js` pins both halves of that
+  shape, and that every GPU row drawn is a registered server's bar this one named exception.
+
+  **`video-assembly` was the third tenant and is not any more — MEASURED 2026-09-15.** It
+  declared `resource: 'gpu'` with no comment since before the slot sets existed, so a video mux
+  waited for the 3090 Ti and a render waited behind a video mux. Read end to end,
+  `electron/video-assembly-bridge.ts` draws PNG frames in an offscreen BrowserWindow
+  (`capturePage()`) and muxes them with `ffmpeg -f concat … -c:v libx264 -preset medium -crf 23
+  -c:a aac` — a SOFTWARE x264 encode, no NVENC, no `-hwaccel`, no weights, no VRAM held across
+  the run. Owen's boundary is MODEL INFERENCE vs DETERMINISTIC work, not GPU vs CPU, so it is
+  `cpu` and charges `local-work` beside assembly and muxing. Rows queued before the change are
+  re-asked on load (`reviveInterrupted` re-derives `resource` from the module), so nothing
+  needs migrating. Pinned in `tools/test-queue-step-travel.js`.
 
 ### C. Install and stocking — phase 13, in flight
 

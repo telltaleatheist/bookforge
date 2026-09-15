@@ -186,7 +186,12 @@ function passConfig(kind, ai) {
     assert.strictEqual(slots.isCloudLane('mac:cloud'), true);
     assert.strictEqual(slots.isCloudLane('mac'), false, 'the engine itself is not its own lane');
     assert.strictEqual(slots.CLOUD_LANE_SLOTS, 2);
-    const lane = slots.slotSets({ enabledServers: ['mac'], upstreams: { mac: 'configured' }, occupied: [] })
+    const lane = slots.slotSets({
+      enabledServers: ['mac'], upstreams: { mac: 'configured' }, occupied: [],
+      // Nothing is queued in this check, so no in-app GPU row is drawn — which
+      // is not what it is about either way.
+      legacyCharged: false,
+    })
       .find((set) => set.id === slots.cloudLaneOf('mac'));
     // `configured` rather than `unknown`: an engine that ROUTES a class upstream
     // necessarily has that upstream configured — the server itself refuses

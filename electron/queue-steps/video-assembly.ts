@@ -37,7 +37,32 @@ export const videoAssemblyStep: StepModule = {
   type: 'video-assembly',
   consumes: null,
   produces: 'video',
-  resource: () => 'gpu',
+  /**
+   * CPU — AND THIS IS THE COMMENT THAT WAS MISSING.
+   *
+   * It said `gpu` with no reason given since before the slot sets existed, which
+   * charged it to the legacy local-narrator set (`shared/queue/slot-sets.ts`):
+   * a video mux waited for the 3090 Ti, and a render waited behind a video mux.
+   * Measured end to end 2026-09-15 (`electron/video-assembly-bridge.ts`):
+   *
+   *  - frames are drawn in an OFFSCREEN BrowserWindow and read back with
+   *    `capturePage()` into PNG buffers on disk — page layout, not a model;
+   *  - the mux is `ffmpeg -f concat … -vf scale=…,format=yuv420p -c:v libx264
+   *    -preset medium -crf 23 -c:a aac` — a SOFTWARE x264 encode. No NVENC, no
+   *    `-hwaccel`, no encoder selection of any kind;
+   *  - nothing here loads weights, and no VRAM is held across the run.
+   *
+   * Owen's boundary is MODEL INFERENCE vs DETERMINISTIC work, not GPU vs CPU —
+   * an encoder block would not change this answer either, because an ASIC on the
+   * card is not the SM and VRAM a model holds, and drawing subtitles onto frames
+   * is never inference. So this is work BookForge does itself, and it charges
+   * `local-work` beside assembly and muxing.
+   *
+   * No `machines()`, and that is now the honest omission rather than a silent
+   * one: a CPU step is never sent to a server (`SERVER_CPU_SLOTS` is 0), and
+   * Crucible has no job of this shape to send it to.
+   */
+  resource: () => 'cpu',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as VideoStepConfig;

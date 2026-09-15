@@ -24,9 +24,16 @@
  *  - A DISABLED SERVER FINISHES WHAT IT HAS AND TAKES NOTHING NEW. §4.3: a job
  *    that started on a machine finishes on that machine, so its set survives
  *    marked `retiring` and disappears when the occupant lands.
- *  - THE LEGACY SPAWN KEEPS ITS OLD BEHAVIOUR — one GPU slot, always present
- *    while the layer exists, whatever the render switch says. A step whose
- *    module has not been taught to travel spawns here regardless.
+ *  - THE LEGACY SPAWN IS DRAWN ONLY WHEN SOMETHING CHARGES IT. Owen,
+ *    2026-09-15: *"we would have as many gpu slots as we have connected crucible
+ *    serves … without a crucible server, there is no gpu slot, because bookforge
+ *    shouldnt know how to drive gpu work in-app."* So with nothing queued the
+ *    bench is one GPU row per registered server and `local-work [cpu][cpu]`, and
+ *    the legacy row appears — with its one GPU slot, and its old behaviour
+ *    unchanged — exactly while the queue holds a step that can run nowhere else
+ *    (`epub-align` today). The fact is computed with `slotSetForStep`, the
+ *    function the scheduler allocates with, so the bench and the pump cannot
+ *    disagree about whether the row is there.
  *  - THIS MACHINE HAS ONE CARD BEHIND TWO VENUES. The legacy spawn and the
  *    local Crucible are two sets over one 3090 Ti, and the single global slot
  *    used to stop them running together by accident.
@@ -90,6 +97,33 @@ const jobOfSteps = (steps, over = {}) => ({
 const unknownUpstreams = (servers) =>
   Object.fromEntries(servers.map((name) => [name, 'unknown']));
 
+/**
+ * The step that still charges the legacy set — `generate-sentences` with
+ * `method: 'epub-align'`.
+ *
+ * Its module declares `machines()` `local` (it reads the project's EPUB off
+ * THIS disk and Crucible has no `align-longform` job), so the engine writes
+ * `travels: false` and `slotSetForStep` sends it to the legacy spawn. Built as a
+ * STEP rather than named as a type because that is all the scheduler sees.
+ */
+const epubAlignStep = (over = {}) => stepOf({
+  id: 'align', type: 'generate-sentences', label: 'Generate sentences',
+  config: { method: 'epub-align' }, resource: 'gpu', travels: false,
+  status: 'queued', ...over,
+});
+
+/**
+ * The facts, with the legacy row answered the way the engine answers it: by
+ * running `slotSetForStep` over the jobs. `jobs` defaults to none, which is the
+ * bench Owen asked for — one GPU slot per registered server and nothing else.
+ */
+const factsOf = ({ servers = [], upstreams, occupied = [], jobs = [] }) => ({
+  enabledServers: servers,
+  upstreams: upstreams ?? unknownUpstreams(servers),
+  occupied,
+  legacyCharged: slots.legacySetCharged({ jobs }),
+});
+
 test('a CPU step is work BookForge does itself, whatever its run says', () => {
   const step = stepOf({ resource: 'cpu' });
   const job = jobOfSteps([step], { waitForResolved: 'mac' });
@@ -128,8 +162,10 @@ test('a travelling GPU step with no assignment yet answers NULL, not a guess', (
     'nothing can say which card it wants, and admission says so in its own words');
 });
 
-test('every enabled server brings [gpu] AND its cloud lane; the legacy spawn [gpu]; local-work [cpu][cpu]', () => {
-  const sets = slots.slotSets({ enabledServers: ['local', 'mac'], upstreams: unknownUpstreams(['local', 'mac']), occupied: [] });
+test('every enabled server brings [gpu] AND its cloud lane; a charged legacy spawn [gpu]; local-work [cpu][cpu]', () => {
+  const sets = slots.slotSets(factsOf({
+    servers: ['local', 'mac'], jobs: [jobOfSteps([epubAlignStep()])],
+  }));
   assert.deepStrictEqual(sets.map((s) => s.id),
     ['local', 'local:cloud', 'mac', 'mac:cloud', LEGACY, slots.LOCAL_WORK_SET]);
   assert.strictEqual(sets[0].gpu, 1);
@@ -144,7 +180,7 @@ test('a cloud lane hangs off its engine, holds no card, and is two wide', () => 
   // crucible PHASE15 §5.3. A class the engine ROUTES upstream runs on
   // somebody's API: the engine forwards it and settles nothing, so the lane
   // has gpu 0 literally and not as an omission.
-  const sets = slots.slotSets({ enabledServers: ['mac'], upstreams: unknownUpstreams(['mac']), occupied: [] });
+  const sets = slots.slotSets(factsOf({ servers: ['mac'] }));
   const lane = sets.find((x) => x.id === slots.cloudLaneOf('mac'));
   assert.ok(lane !== undefined, 'every engine gets one');
   assert.strictEqual(lane.gpu, 0);
@@ -164,9 +200,7 @@ test('a cloud lane hangs off its engine, holds no card, and is two wide', () => 
 // whole of the new rule.
 
 test('an engine WITH an upstream configured draws its cloud lane', () => {
-  const sets = slots.slotSets({
-    enabledServers: ['mac'], upstreams: { mac: 'configured' }, occupied: [],
-  });
+  const sets = slots.slotSets(factsOf({ servers: ['mac'], upstreams: { mac: 'configured' } }));
   const lane = sets.find((s) => s.id === 'mac:cloud');
   assert.ok(lane, 'a key or a url on any of the three upstreams means it CAN forward work');
   assert.strictEqual(lane.cpu, slots.CLOUD_LANE_SLOTS);
@@ -174,9 +208,11 @@ test('an engine WITH an upstream configured draws its cloud lane', () => {
 });
 
 test('an engine with NO upstream configured draws no lane at all', () => {
-  const sets = slots.slotSets({
-    enabledServers: ['local', 'mac'], upstreams: { local: 'none', mac: 'none' }, occupied: [],
-  });
+  const sets = slots.slotSets(factsOf({
+    servers: ['local', 'mac'],
+    upstreams: { local: 'none', mac: 'none' },
+    jobs: [jobOfSteps([epubAlignStep()])],
+  }));
   assert.deepStrictEqual(sets.map((s) => s.id), ['local', 'mac', LEGACY, slots.LOCAL_WORK_SET],
     'a lane the scheduler can never fill is a row the bench must not draw (ARCHITECTURE R3)');
   assert.strictEqual(slots.slotsOf(sets, 'mac:cloud', 'cpu'), 0);
@@ -187,32 +223,47 @@ test('an engine with NO upstream configured draws no lane at all', () => {
 });
 
 test('an engine nobody has ASKED keeps its lane — not knowing is not knowing there is none', () => {
-  const sets = slots.slotSets({
-    enabledServers: ['mac'], upstreams: { mac: 'unknown' }, occupied: [],
-  });
+  const sets = slots.slotSets(factsOf({ servers: ['mac'], upstreams: { mac: 'unknown' } }));
   assert.ok(sets.some((s) => s.id === 'mac:cloud'),
     'never read, unreachable, or older than the settings door: today\'s behaviour is kept');
 });
 
 test('a server the caller said NOTHING about is refused by name, never defaulted', () => {
   assert.throws(
-    () => slots.slotSets({ enabledServers: ['mac'], upstreams: {}, occupied: [] }),
+    () => slots.slotSets({ enabledServers: ['mac'], upstreams: {}, occupied: [], legacyCharged: false }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], occupied: [] }),
+    () => slots.slotSets({ enabledServers: [], occupied: [], legacyCharged: false }),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
+  );
+});
+
+test('a caller that said nothing about the LEGACY row is refused by name too', () => {
+  assert.throws(
+    () => slots.slotSets({ enabledServers: [], upstreams: {}, occupied: [] }),
+    /`legacyCharged` was not supplied/,
+    'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
+  );
+  assert.throws(
+    () => slots.slotSets({
+      enabledServers: [], upstreams: {}, occupied: [LEGACY], legacyCharged: false,
+    }),
+    /`occupied` says the legacy local narrator is holding something of ours/,
+    'both are read off the same steps, so they cannot honestly disagree — and the occupied '
+    + 'pass would have drawn the row `retiring`, which is false of the one set that always '
+    + 'takes new work while the layer exists',
   );
 });
 
 test('an engine with no upstream that is STILL HOLDING a routed row keeps the lane, retiring', () => {
   // The lane is skipped for `none`, so it is not marked seen — and the occupied
   // pass then draws it: the occupant keeps its slot and nothing new is placed.
-  const sets = slots.slotSets({
-    enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: ['mac:cloud'],
-  });
+  const sets = slots.slotSets(factsOf({
+    servers: ['mac'], upstreams: { mac: 'none' }, occupied: ['mac:cloud'],
+  }));
   const lane = sets.find((s) => s.id === 'mac:cloud');
   assert.ok(lane, '§4.3: work that started somewhere finishes there');
   assert.strictEqual(lane.retiring, true);
@@ -220,28 +271,51 @@ test('an engine with no upstream that is STILL HOLDING a routed row keeps the la
   assert.strictEqual(lane.gpu, 0);
 });
 
-test('EVERY GPU row is a registered server, bar the one named legacy exception', () => {
+test('WITH NOTHING QUEUED there is no legacy row: one GPU slot per server, and two local CPU', () => {
   /*
-   * Owen's end state: *"without a crucible server, there is no gpu slot,
-   * because bookforge shouldnt know how to drive gpu work in-app."*
-   *
-   * The legacy set is the one row that is not a registered server's, and it is
-   * NOT a leftover: while it exists, `slotSetForStep` sends every GPU step whose
-   * module has not been taught to travel to it, and there are three such steps
-   * today — `generate-sentences` with `method: 'epub-align'` (a local
-   * WhisperX/Qwen3 spawn over a whole audiobook, which Crucible has no job type
-   * for), `video-assembly` (frames drawn in a hidden BrowserWindow — never an
-   * inference job), and any render at all while `legacyLocalRender` is on.
-   * Deleting the row would strand those with nought slots and the scheduler
-   * would never launch them.
-   *
-   * So this pins the SHAPE rather than wishing the row away: nothing else may
-   * join it. A new in-app GPU venue has to change this line.
+   * Owen, 2026-09-15: *"we would have as many gpu slots as we have connected
+   * crucible serves … without a crucible server, there is no gpu slot, because
+   * bookforge shouldnt know how to drive gpu work in-app."* This is that bench,
+   * exactly.
    */
+  const sets = slots.slotSets(factsOf({
+    servers: ['local', 'mac'], upstreams: { local: 'none', mac: 'none' },
+  }));
+  assert.deepStrictEqual(sets.map((s) => s.id), ['local', 'mac', slots.LOCAL_WORK_SET]);
+  assert.deepStrictEqual(sets.filter((s) => s.gpu > 0).map((s) => s.id), ['local', 'mac'],
+    'every GPU row is a registered server’s, and there is no other kind');
+  assert.strictEqual(slots.slotsOf(sets, LEGACY, 'gpu'), 0,
+    'a set that is not on the bench has no room — and nothing is asking for one');
+});
+
+test('A QUEUED epub-align brings the legacy row back, with its one card', () => {
+  /*
+   * The row exists exactly when something charges it, and this is the step that
+   * does: `generate-sentences` with `method: 'epub-align'` reads the project
+   * EPUB off THIS disk and Crucible has no `align-longform` job
+   * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7). Deleting the row outright would leave
+   * it charging a set with nought slots, and the scheduler would never launch it.
+   */
+  const job = jobOfSteps([epubAlignStep()]);
+  assert.strictEqual(slots.slotSetForStep(job, job.steps[0]), LEGACY,
+    'this is the scheduler’s own reading of the step, not a list of step types');
+  const sets = slots.slotSets(factsOf({ servers: ['local', 'mac'], jobs: [job] }));
+  const legacy = sets.find((s) => s.id === LEGACY);
+  assert.ok(legacy, 'the row is drawn for the step that can run nowhere else');
+  assert.strictEqual(legacy.gpu, 1, 'the legacy stopgap keeps exactly one card');
+  assert.strictEqual(legacy.cpu, 0);
+  assert.strictEqual(legacy.retiring, false,
+    'it takes new work for as long as the layer exists — `retiring` would be a lie');
+  assert.strictEqual(slots.slotsOf(sets, LEGACY, 'gpu'), 1);
+});
+
+test('EVERY GPU row that IS drawn is a registered server, bar the one named legacy exception', () => {
+  // The shape, pinned rather than the row wished away: nothing else may join it.
+  // A new in-app GPU venue has to come past this line.
   const servers = ['local', 'mac'];
-  const sets = slots.slotSets({
-    enabledServers: servers, upstreams: unknownUpstreams(servers), occupied: [],
-  });
+  const sets = slots.slotSets(factsOf({
+    servers, jobs: [jobOfSteps([epubAlignStep()])],
+  }));
   const gpuRows = sets.filter((s) => s.gpu > 0).map((s) => s.id);
   assert.deepStrictEqual(gpuRows, ['local', 'mac', LEGACY]);
   for (const id of gpuRows) {
@@ -250,6 +324,70 @@ test('EVERY GPU row is a registered server, bar the one named legacy exception',
   }
   assert.strictEqual(sets.find((s) => s.id === slots.LOCAL_WORK_SET).gpu, 0,
     "BookForge's own work has no card — CPU only");
+});
+
+test('legacySetCharged reads the STEPS, so a finished one charges nothing', () => {
+  const queued = jobOfSteps([epubAlignStep()]);
+  assert.strictEqual(slots.legacySetCharged({ jobs: [queued] }), true);
+  for (const status of ['done', 'failed', 'cancelled']) {
+    assert.strictEqual(
+      slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status })])] }), false,
+      `a ${status} step is history, not a plan — and it is what empties the row`);
+  }
+  assert.strictEqual(
+    slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'held' })])] }), true,
+    'a held step is still work that can run nowhere else; the lane must not appear at the '
+    + 'instant Start is pressed');
+  assert.strictEqual(
+    slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'running' })])] }), true,
+    'and a running one charges it too, which is why the occupied pass never draws this row');
+});
+
+test('a travelling render charges no legacy row, and a CPU step charges none either', () => {
+  const travelling = stepOf({ travels: true, status: 'queued' });
+  assert.strictEqual(slots.legacySetCharged({
+    jobs: [jobOfSteps([travelling], { waitForResolved: 'mac' })],
+  }), false, 'it goes to the Mac’s set, so nothing in-app is being driven');
+  assert.strictEqual(slots.legacySetCharged({
+    jobs: [jobOfSteps([stepOf({ resource: 'cpu', status: 'queued' })])],
+  }), false, 'work BookForge does itself is `local-work`, which is always there');
+  const unrouted = stepOf({ travels: true, status: 'queued' });
+  assert.strictEqual(slots.legacySetCharged({ jobs: [jobOfSteps([unrouted])] }), false,
+    'a row with no venue yet answers null, and null is not the legacy spawn');
+});
+
+test('VIDEO ASSEMBLY IS NOT INFERENCE, so it charges local-work and draws no GPU row', () => {
+  /*
+   * Measured 2026-09-15 (`electron/video-assembly-bridge.ts`): PNG frames drawn
+   * in an offscreen BrowserWindow, muxed with `ffmpeg -c:v libx264` — a software
+   * x264 encode, no NVENC and no model. Owen's boundary is MODEL INFERENCE vs
+   * DETERMINISTIC work, not GPU vs CPU, so the step declares `cpu` and the
+   * legacy row it used to charge stays empty. (The declaration itself is pinned
+   * on the module in `tools/test-queue-step-travel.js`.)
+   */
+  const video = stepOf({
+    id: 'v', type: 'video-assembly', label: 'Render video', resource: 'cpu', status: 'queued',
+  });
+  const job = jobOfSteps([video]);
+  assert.strictEqual(slots.slotSetForStep(job, video), slots.LOCAL_WORK_SET);
+  assert.strictEqual(slots.legacySetCharged({ jobs: [job] }), false);
+  const sets = slots.slotSets(factsOf({ servers: ['mac'], jobs: [job] }));
+  assert.ok(!sets.some((s) => s.id === LEGACY),
+    'a video mux must not make the bench draw a card nobody is using');
+});
+
+test('local-work is always present and always CPU-only, charged legacy row or not', () => {
+  for (const jobs of [[], [jobOfSteps([epubAlignStep()])]]) {
+    for (const servers of [[], ['mac']]) {
+      const sets = slots.slotSets(factsOf({ servers, jobs }));
+      const own = sets.find((s) => s.id === slots.LOCAL_WORK_SET);
+      assert.ok(own, 'a machine with no server at all still assembles and muxes');
+      assert.strictEqual(own.gpu, 0);
+      assert.strictEqual(own.cpu, slots.LOCAL_WORK_CPU_SLOTS);
+      assert.strictEqual(own.retiring, false);
+      assert.strictEqual(sets[sets.length - 1].id, slots.LOCAL_WORK_SET, 'and it is last');
+    }
+  }
 });
 
 test('cloudLaneOf and serverOfCloudLane are exact inverses, and nothing else is a lane', () => {
@@ -296,25 +434,18 @@ test("a cloud lane is never THIS machine's card, even local's", () => {
 });
 
 test('a DISABLED server contributes no set, so nothing new is claimed there', () => {
-  const sets = slots.slotSets({ enabledServers: ['local'], upstreams: unknownUpstreams(['local']), occupied: [] });
+  const sets = slots.slotSets(factsOf({ servers: ['local'] }));
   assert.ok(!sets.some((s) => s.id === 'mac'));
   assert.strictEqual(slots.slotsOf(sets, 'mac', 'gpu'), 0,
     'an unknown set has no room, so a claim against it waits rather than launching');
 });
 
 test('a disabled server still HOLDING our work keeps its set, marked retiring', () => {
-  const sets = slots.slotSets({ enabledServers: ['local'], upstreams: unknownUpstreams(['local']), occupied: ['mac'] });
+  const sets = slots.slotSets(factsOf({ servers: ['local'], occupied: ['mac'] }));
   const mac = sets.find((s) => s.id === 'mac');
   assert.ok(mac, '§4.3: a job that started on a machine finishes on that machine');
   assert.strictEqual(mac.retiring, true);
   assert.strictEqual(sets.find((s) => s.id === 'local').retiring, false);
-});
-
-test('local-work is always there and is never retiring', () => {
-  const sets = slots.slotSets({ enabledServers: [], upstreams: {}, occupied: [] });
-  const own = sets.find((s) => s.id === slots.LOCAL_WORK_SET);
-  assert.strictEqual(own.retiring, false);
-  assert.strictEqual(own.cpu, 2, 'a machine with no server still assembles and muxes');
 });
 
 test('occupancy counts only what is RUNNING, per set', () => {
@@ -356,9 +487,12 @@ function snapOf(jobs, servers) {
       if (id !== null && !occupied.includes(id)) occupied.push(id);
     }
   }
+  // The legacy row is answered exactly as `currentSlotSets` answers it — off
+  // these jobs, with the scheduler's own function — so the bench under test is
+  // the bench the engine would build.
   return {
     jobs, running: true,
-    slotSets: slots.slotSets({ enabledServers: servers, upstreams: unknownUpstreams(servers), occupied }),
+    slotSets: slots.slotSets(factsOf({ servers, occupied, jobs })),
   };
 }
 
@@ -366,7 +500,8 @@ test('every machine gets its own lanes, and a lane says which machine it is', ()
   const snap = snapOf([], ['local', 'mac']);
   const lanes = bench.benchLanes(snap);
   const gpus = lanes.filter((l) => l.resource === 'gpu');
-  assert.deepStrictEqual(gpus.map((l) => l.setId), ['local', 'mac', LEGACY]);
+  assert.deepStrictEqual(gpus.map((l) => l.setId), ['local', 'mac'],
+    'nothing is queued, so there is no legacy lane to draw');
   assert.strictEqual(gpus[1].setLabel, 'mac');
   /*
    * SIX CPU LANES NOW, AND EVERY ONE OF THEM IS REAL WORK SOMEWHERE.
@@ -391,7 +526,20 @@ test('a step on the Mac occupies the MAC\'s lane and leaves this machine\'s free
   const lanes = bench.benchLanes(snap).filter((l) => l.resource === 'gpu');
   assert.strictEqual(lanes.find((l) => l.setId === 'mac').occupant.title, 'Mistborn');
   assert.strictEqual(lanes.find((l) => l.setId === 'local').occupant, null);
-  assert.strictEqual(lanes.find((l) => l.setId === LEGACY).occupant, null);
+  assert.strictEqual(lanes.find((l) => l.setId === LEGACY), undefined,
+    'and nothing in this queue can only run in-app, so that row is not drawn at all');
+});
+
+test('a queued epub-align draws the legacy lane BESIDE the servers, and it is empty', () => {
+  const job = jobOfSteps([epubAlignStep()], { id: 'j1', title: 'Wool' });
+  const lanes = bench.benchLanes(snapOf([job], ['local', 'mac'])).filter((l) => l.resource === 'gpu');
+  assert.deepStrictEqual(lanes.map((l) => l.setId), ['local', 'mac', LEGACY]);
+  const legacy = lanes.find((l) => l.setId === LEGACY);
+  assert.strictEqual(legacy.occupant, null, 'it is queued, not running');
+  assert.strictEqual(legacy.setLabel, 'the local narrator (legacy)',
+    'the heading is unchanged: a SlotSet has a heading and nothing else, and inventing a '
+    + 'second sentence field for one row is a change to what a bench row IS');
+  assert.strictEqual(legacy.retiring, false);
 });
 
 test('a row waiting for a card is told WHICH card', () => {
@@ -426,7 +574,10 @@ test("a row waiting for a full CLOUD lane is not told to look at its own process
 
 
 test('the thermal reading never lands on a remote machine\'s lane', () => {
-  const snap = snapOf([], ['mac']);
+  // A legacy-charging row is queued so the lane the reading belongs on exists:
+  // it is drawn on THIS machine's venue and on no server's, because nvidia-smi
+  // samples this card and the snapshot does not carry which server is local.
+  const snap = snapOf([jobOfSteps([epubAlignStep()])], ['mac']);
   snap.gpuThermal = { celsius: 84, throttleActive: true };
   const lanes = bench.benchLanes(snap).filter((l) => l.resource === 'gpu');
   assert.strictEqual(lanes.find((l) => l.setId === 'mac').thermal, null,
@@ -632,6 +783,44 @@ test('the legacy spawn keeps ONE card, and a step that cannot travel waits for i
 
   assert.strictEqual(gpu.runs.length + local.runs.length, 1,
     'the legacy set has one GPU slot, exactly as the old global number did');
+});
+
+test('THE BENCH AND THE PUMP AGREE: the row appears with the step and goes with it', async () => {
+  /*
+   * The whole reason the row was unconditional was this hazard, stated in
+   * `slot-sets.ts` before it was made conditional: a GPU step whose module has
+   * not been taught to travel spawns HERE, and with no set to charge it
+   * `slotsOf` answers 0 and the scheduler never launches it. It cannot happen,
+   * because the same snapshot that holds the step is the one the row is derived
+   * from — which this drives through the real engine rather than asserting.
+   */
+  const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
+  await fresh('legacy-row-appears', [local], host);
+
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
+    'nothing is queued, so BookForge advertises no in-app card at all');
+
+  engine.enqueue({
+    title: 'Enhance',
+    steps: [{
+      type: 'rvc-enhancement', label: 'Enhance', config: {},
+      sourceRef: { kind: 'audio-session', path: '/s' },
+    }],
+  });
+  engine.start();
+  await settle(40);
+
+  const withRow = engine.snapshot().slotSets.find((s) => s.id === LEGACY);
+  assert.ok(withRow, 'the step arrived and the row arrived with it, in the same snapshot');
+  assert.strictEqual(withRow.gpu, 1);
+  assert.strictEqual(withRow.retiring, false, 'it is holding our work, and it takes more');
+  assert.strictEqual(local.runs.length, 1, 'and it LAUNCHED — no set, no slots, no launch');
+
+  local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
+  await settle(40);
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
+    'and the row is gone the moment nothing charges it — no in-app GPU slot');
 });
 
 test('the local Crucible and the legacy spawn never run on the card together', async () => {

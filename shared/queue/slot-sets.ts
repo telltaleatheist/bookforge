@@ -17,7 +17,7 @@
  *     local:cloud          [ cpu ] [ cpu ]     ← only if it HAS an upstream
  *     mac          [ gpu ] [ cpu ] [ cpu ]     ← a registered remote
  *     mac:cloud            [ cpu ] [ cpu ]     ← only if IT has an upstream
- *     legacy…      [ gpu ]                     ← the dated local-narrator spawn
+ *     legacy…      [ gpu ]                     ← ONLY while a step charges it
  *     local-work           [ cpu ] [ cpu ]     ← what BookForge does ITSELF
  *
  * ── THE CLOUD LANE, AND WHY IT HANGS OFF A SERVER ──────────────────────────
@@ -56,10 +56,25 @@
  * no gpu slot, because bookforge shouldnt know how to drive gpu work in-app …
  * even if that server is just a local windows install with no wsl engine."*
  *
- * The legacy set below is the one row that is not yet that, and THIS FILE USED
- * TO SAY IT WAS ONE SUBTRACTION AWAY. Measured 2026-09-15, it is not: three
- * different things send GPU work there, and only the first is the legacy spawn
- * layer.
+ * The legacy set below is the one row that is not that, and it is now drawn
+ * ONLY WHEN SOMETHING IN THE QUEUE WOULD CHARGE IT
+ * ({@link SlotSetFacts.legacyCharged}). With nothing charging it the bench is
+ * exactly Owen's sentence: one GPU slot per registered server, plus
+ * `local-work`'s two CPU slots, and no more.
+ *
+ * ── WHY IT IS CONDITIONAL RATHER THAN DELETED ──────────────────────────────
+ *
+ * This file used to push the row unconditionally, and the argument for that was
+ * sound as far as it went: a GPU step whose module has not been taught to travel
+ * spawns HERE whatever the switch says, and with no set to charge it
+ * {@link slotsOf} answers 0, so the scheduler finds nought slots and never
+ * launches it. But that argument is about a step that EXISTS. So the row exists
+ * exactly then, and the fact is computed by running {@link slotSetForStep} —
+ * the function the scheduler itself allocates with — over the snapshot's own
+ * steps, so the bench and the pump cannot come to disagree about whether the row
+ * is there (crucible `docs/ARCHITECTURE.md` R1: one fact, one owner).
+ *
+ * Measured 2026-09-15, TWO things still send GPU work there:
  *
  *  1. **Any render at all while `legacyLocalRender` is on** — the dated switch,
  *     which does go with that layer after Owen's in-app pass.
@@ -73,17 +88,19 @@
  *     DTW of the ebook's sentences onto it) is this act's middle stage and most
  *     of its cost. `align-longform` is a Crucible job type that does not exist;
  *     it is written up as a ruling in `docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7.
- *  3. **`video-assembly`** — subtitle frames drawn in a hidden BrowserWindow and
- *     muxed by ffmpeg. Not inference at all, so not a job type Crucible would
- *     ever grow. Whether it is really GPU work, or a `cpu` step declared `gpu`
- *     since before any of this, is a question nobody has measured.
  *
- * So the row stays, and it stays for a stated reason rather than as a leftover:
- * deleting it would leave those steps charging a set with no slots, and
- * {@link slotsOf} answers 0 for a set that is not on the bench, so the
- * scheduler would simply never launch them. `tools/test-queue-slot-sets.js`
- * pins the SHAPE instead — every GPU row is a registered server, bar this one
- * named exception — so a new in-app GPU venue has to come past that check.
+ * A third tenant was listed here until 2026-09-15 and is gone: **`video-assembly`**
+ * declared `resource: 'gpu'` with no comment and nobody had measured it. Read
+ * end to end (`electron/video-assembly-bridge.ts`), it draws PNG frames in an
+ * offscreen BrowserWindow and muxes them with `ffmpeg -c:v libx264` — a SOFTWARE
+ * x264 encode, no NVENC, no hwaccel, no model. Owen's boundary is MODEL
+ * INFERENCE vs DETERMINISTIC work, not GPU vs CPU, so it is `cpu` and charges
+ * `local-work` like every other thing BookForge does itself.
+ *
+ * `tools/test-queue-slot-sets.js` pins the SHAPE: with nothing queued there is
+ * no legacy row at all, with an `epub-align` queued there is exactly one, and
+ * every GPU row drawn is a registered server's bar that one named exception — so
+ * a new in-app GPU venue has to come past that check.
  *
  * ── The correction, and it is the whole of what makes this safe ─────────────
  *
@@ -109,6 +126,7 @@
  */
 
 import { LEGACY_LOCAL_NARRATOR } from './wait-for';
+import { TERMINAL_STEP_STATUSES } from './engine-types';
 import type { QueueJob, QueueStep, StepResource } from './engine-types';
 
 /**
@@ -212,7 +230,18 @@ export interface SlotSet {
   readonly retiring: boolean;
 }
 
-/** How a set's id reads as a heading. */
+/**
+ * How a set's id reads as a heading.
+ *
+ * The legacy row's heading is UNCHANGED now that the row is conditional, and
+ * deliberately: it would be useful to say WHY it is there — "the local narrator
+ * (legacy) — aligning Mistborn against its EPUB" — but a {@link SlotSet} has a
+ * heading and nothing else, and `BenchLane.hold` is already the sentence for a
+ * different fact (admission refusing a FREE lane). Inventing a second sentence
+ * field for one row is a change to what a bench row IS, which is not this. The
+ * row's reason is instead readable where it already lives: the occupant, or
+ * `stillReason`'s sentence on the row waiting for it.
+ */
 function labelFor(id: string): string {
   if (id === LOCAL_WORK_SET) return 'BookForge itself';
   if (id === LEGACY_LOCAL_NARRATOR) return 'the local narrator (legacy)';
@@ -298,6 +327,39 @@ export function slotSetOccupancy(
 }
 
 /**
+ * IS THERE ANYTHING IN THIS QUEUE THAT CAN ONLY RUN ON THE LEGACY SPAWN?
+ *
+ * The one owner of the question the legacy row's existence turns on, and it is
+ * answered with {@link slotSetForStep} — the very function the scheduler
+ * allocates with — rather than by listing the step kinds that charge it. A list
+ * would be a second opinion about a decision `slotSetForStep` already makes, and
+ * the two would drift the first time a module's `machines()` changed (crucible
+ * `docs/ARCHITECTURE.md` R1).
+ *
+ * EVERY STEP THAT IS NOT TERMINAL COUNTS, held ones included. The row means
+ * *this queue holds work that can only run here*, and a held step is such work:
+ * deciding it on `queued` alone would make the lane appear at the instant the
+ * user pressed Start, which is a bench that changes because it was looked at.
+ * A step that has finished, failed or been cancelled charges nothing, and that
+ * is what empties the row.
+ *
+ * Off the JOBS, like {@link slotSetOccupancy} and for the same reason: the pump
+ * asks it inside a synchronous pass without deep-copying itself first, and the
+ * bench draws the answer it gave.
+ */
+export function legacySetCharged(
+  snapshot: { readonly jobs: readonly QueueJob[] },
+): boolean {
+  for (const job of snapshot.jobs) {
+    for (const step of job.steps) {
+      if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+      if (slotSetForStep(job, step) === LEGACY_LOCAL_NARRATOR) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * WHETHER ONE ENGINE CAN SEND WORK ELSEWHERE AT ALL — three values, and the
  * third is not a shrug.
  *
@@ -369,6 +431,31 @@ export interface SlotSetFacts {
    * even when its server was disabled or removed, marked `retiring` — §4.3.
    */
   readonly occupied: readonly string[];
+  /**
+   * DOES ANYTHING IN THE SNAPSHOT CHARGE THE LEGACY SPAWN — {@link legacySetCharged}.
+   *
+   * Owen, 2026-09-15: *"we would have as many gpu slots as we have connected
+   * crucible serves … without a crucible server, there is no gpu slot, because
+   * bookforge shouldnt know how to drive gpu work in-app."* So the one GPU row
+   * that is not a server's is drawn only while a step exists that can be run
+   * nowhere else, and is absent otherwise.
+   *
+   * Passed IN rather than derived here because this module never sees the
+   * snapshot: `slotSets` takes facts, not jobs, which is what lets a keeper drive
+   * every branch with no engine. The caller computes it with
+   * {@link legacySetCharged} so there is still exactly one owner of the
+   * question — a caller that answered it its own way would be the bench and the
+   * pump disagreeing about a row.
+   *
+   * It covers RUNNING steps as well as queued ones, which is why the legacy set
+   * is never reached by the `occupied` pass below: a row that is drawn because
+   * something of ours is on it must not be marked `retiring`, because the legacy
+   * spawn is not retiring — it takes new work for as long as the layer exists.
+   *
+   * Decided ONCE per snapshot by the caller, so a row cannot appear and vanish
+   * between two steps of one pump.
+   */
+  readonly legacyCharged: boolean;
 }
 
 /**
@@ -396,6 +483,36 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       'slotSets: `upstreams` was not supplied. Every enabled server needs one of '
         + "'configured' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
         + 'CAN forward work and for one nobody has asked yet, and for no other.',
+    );
+  }
+
+  /*
+   * AND A CALLER THAT SAID NOTHING ABOUT THE LEGACY SPAWN IS REFUSED TOO, for
+   * the same reason and with the same two bad guesses: `true` draws a GPU row
+   * Owen has ruled must not exist without a Crucible server behind it, and
+   * `false` strands a step that can run nowhere else on a set with nought slots,
+   * which the scheduler would never launch and nothing would explain.
+   */
+  if (typeof facts.legacyCharged !== 'boolean') {
+    throw new Error(
+      'slotSets: `legacyCharged` was not supplied. Compute it with `legacySetCharged(snapshot)` '
+        + '— the legacy GPU row exists exactly while something in the queue charges it, and '
+        + 'neither guess is a thing to make on a caller\'s behalf.',
+    );
+  }
+  /*
+   * AND THE TWO FACTS MUST AGREE ABOUT THIS ROW. `legacySetCharged` counts
+   * running steps as well as queued ones, so a caller holding something on the
+   * legacy spawn cannot honestly answer `false` — and if one did, the occupied
+   * pass below would draw the row `retiring`, which says "this set takes no new
+   * work" about the one set that always does while the layer exists. Refused by
+   * name rather than reconciled.
+   */
+  if (!facts.legacyCharged && facts.occupied.includes(LEGACY_LOCAL_NARRATOR)) {
+    throw new Error(
+      'slotSets: `occupied` says the legacy local narrator is holding something of ours while '
+        + '`legacyCharged` says nothing charges it. Both are read off the same steps — compute '
+        + 'the second with `legacySetCharged(snapshot)` rather than by hand.',
     );
   }
 
@@ -445,25 +562,27 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   }
 
   /*
-   * THE LEGACY SET IS ALWAYS HERE, and it is not conditional on the switch.
+   * THE LEGACY SET IS HERE WHEN SOMETHING CHARGES IT, and never otherwise.
    *
-   * `routing.legacyLocalRender` decides whether a RENDER takes the local
-   * narrator spawn. It does not decide whether that spawn layer exists: a GPU
-   * step whose module has not been taught to travel spawns on this machine
-   * whatever the switch says, and with no set to charge it to the scheduler
-   * would find nought slots and never launch it.
+   * It is still not conditional on the SWITCH. `routing.legacyLocalRender`
+   * decides whether a RENDER takes the local narrator spawn; it does not decide
+   * whether that spawn layer exists, and `generate-sentences` with
+   * `method: 'epub-align'` comes here whatever the switch says. What decides the
+   * row is whether the QUEUE holds such a step at all — the caller's
+   * {@link legacySetCharged}, computed with `slotSetForStep`, so the row is
+   * present for exactly the steps the scheduler would send here and for no
+   * others.
    *
-   * AND THE SWITCH IS NOT THE LAST TENANT EITHER — see the header's list,
-   * measured 2026-09-15: `generate-sentences`'s `epub-align` method and
-   * `video-assembly` both come here, and neither goes away with the legacy
-   * layer. So this row outlives that layer, and what removes it is §B7 (a
-   * Crucible `align-longform` job type, Owen's ruling) plus an answer about
-   * whether a video mux is GPU work at all.
+   * With the row absent, `slotsOf` answers 0 for it — which is the correct
+   * answer, because in that state nothing is asking: a step that would charge it
+   * makes the row appear in the same snapshot it appears in.
    *
    * Its gpu slot is ONE, which is what keeps the stopgap behaving exactly as it
-   * did under the old global number.
+   * did under the old global number. What removes the row for good is §B7 (a
+   * Crucible `align-longform` job type, Owen's ruling) plus the deletion of the
+   * legacy layer after the in-app pass.
    */
-  if (!seen.has(LEGACY_LOCAL_NARRATOR)) {
+  if (facts.legacyCharged && !seen.has(LEGACY_LOCAL_NARRATOR)) {
     seen.add(LEGACY_LOCAL_NARRATOR);
     sets.push({
       id: LEGACY_LOCAL_NARRATOR,
@@ -477,7 +596,13 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     });
   }
 
-  // A set nobody may claim into, kept alive by its occupant alone.
+  /*
+   * A set nobody may claim into, kept alive by its occupant alone. Only a
+   * SERVER's set or a cloud lane can reach here: the legacy set is drawn above
+   * whenever anything of ours is on it (that is what charges it), and the two
+   * facts are checked against each other at the top rather than papered over
+   * with a third branch in this expression.
+   */
   for (const id of facts.occupied) {
     if (id === LOCAL_WORK_SET || seen.has(id)) continue;
     seen.add(id);
@@ -486,9 +611,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       id,
       label: labelFor(id),
       gpu: cloud ? 0 : SERVER_GPU_SLOTS,
-      cpu: cloud
-        ? CLOUD_LANE_SLOTS
-        : id === LEGACY_LOCAL_NARRATOR ? 0 : SERVER_CPU_SLOTS,
+      cpu: cloud ? CLOUD_LANE_SLOTS : SERVER_CPU_SLOTS,
       retiring: true,
     });
   }
