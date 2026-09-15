@@ -37,8 +37,27 @@ type SessionTake = LiveTake & { audioUrl: string };
   template: `
     <div class="live-tts">
       <header class="lt-header">
-        <h1>🎤 Live TTS</h1>
-        <p class="subtitle">Type text, render it in your voice, audition, and download the WAV. Great for ad reads and testing voice fidelity.</p>
+        <div class="lt-title">
+          <h1>🎤 Live TTS</h1>
+          <p class="subtitle">Type text, render it in your voice, audition, and download the WAV. Great for ad reads and testing voice fidelity.</p>
+        </div>
+
+        <!-- LOAD VOICE / UNLOAD — the extension popup's one button, on this tab
+             (docs/EXTENSION-TO-CRUCIBLE-PLAN.md §0: "the tab's process buttons are
+             the extension's popup buttons"). It replaces the nav rail's "TTS
+             Server", which was deleted with the relay it existed for: a voice on
+             a card is a card nobody else can use, so the tab that puts one there
+             is the tab that must be able to give it back. Generate still loads on
+             demand; this is the explicit door, and the only way to close it. -->
+        <div class="lt-engine">
+          <span class="lt-engine-state" [class.on]="ttsServer.state() === 'running'">{{ statusText() }}</span>
+          <desktop-button
+            variant="secondary"
+            size="sm"
+            [disabled]="engineBusy()"
+            (click)="toggleEngine()"
+          >{{ engineButtonLabel() }}</desktop-button>
+        </div>
       </header>
 
       <div class="lt-body">
@@ -179,7 +198,10 @@ type SessionTake = LiveTake & { audioUrl: string };
       display: flex; flex-direction: column; height: 100%;
       background: var(--surface-0); color: var(--text-primary);
     }
-    .lt-header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border-subtle); flex-shrink: 0; }
+    .lt-header {
+      padding: 20px 24px 12px; border-bottom: 1px solid var(--border-subtle); flex-shrink: 0;
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    }
     .lt-header h1 { margin: 0; font-size: 20px; font-weight: 700; }
     .subtitle { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); max-width: 640px; }
 
@@ -208,6 +230,15 @@ type SessionTake = LiveTake & { audioUrl: string };
     .settings-row { display: flex; align-items: center; gap: 12px; }
     .field-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); width: 92px; flex-shrink: 0; }
     .lt-select { flex: 1; min-width: 0; }
+
+    .lt-title { min-width: 0; }
+    .lt-engine { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .lt-engine-state {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+    }
+    .lt-engine-state.on { color: var(--accent); }
 
     .engine-toggle { display: flex; gap: 6px; }
     .engine-btn {
@@ -321,6 +352,19 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
 
   readonly canGenerate = computed(() => this.text().trim().length > 0 && !this.busy());
 
+  /** The one button's label. Mirrors the extension popup's Load voice / Unload. */
+  readonly engineButtonLabel = computed(() =>
+    this.ttsServer.state() === 'stopped' ? 'Load voice' : 'Unload'
+  );
+
+  /** Mid-flight states are not a thing to press: a load that is half done is
+   *  neither loaded nor free, and a render owns the engine while it runs. */
+  readonly engineBusy = computed(() =>
+    this.isGenerating() ||
+    this.ttsServer.state() === 'starting' ||
+    this.ttsServer.state() === 'warming'
+  );
+
   readonly statusText = computed(() => {
     if (this.isGenerating()) {
       const total = this.sentencesTotal();
@@ -357,6 +401,29 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
     if (this.isGenerating()) void this.electron.streamStop();
     this.streamRequestId++;
     for (const t of this.takes()) URL.revokeObjectURL(t.audioUrl);
+  }
+
+  /**
+   * Load the picked voice, or give the card back.
+   *
+   * The nav rail used to own this globally, for an audience that no longer
+   * exists (a browser extension reaching BookForge's 8766 relay). It is here now
+   * because this is the surface that holds a voice resident, and REFUSALS BELONG
+   * ON THE PAGE: a load that fails silently leaves a button that looks pressed
+   * and an engine that never came up.
+   */
+  async toggleEngine(): Promise<void> {
+    this.errorMsg.set(null);
+    if (this.ttsServer.state() !== 'stopped') {
+      await this.ttsServer.stop();
+      return;
+    }
+    const voice = this.workerCfg.voice();
+    if (!voice) { this.errorMsg.set('Pick a voice first — a load names the voice it loads'); return; }
+    const started = await this.ttsServer.start(voice);
+    if (!started.success) {
+      this.errorMsg.set(started.error || 'Failed to start the TTS engine');
+    }
   }
 
   // ── Settings handlers (persist through WorkerConfigService, engine-aware) ──
