@@ -101,7 +101,13 @@ function snap(jobs, running = true, servers = []) {
   return {
     jobs,
     running,
-    slotSets: slots.slotSets({ enabledServers: servers, occupied }),
+    slotSets: slots.slotSets({
+      enabledServers: servers,
+      // Not what these tests are about: `unknown` is what an engine nobody has
+      // asked answers, and it draws the same bench they were written against.
+      upstreams: Object.fromEntries(servers.map((n) => [n, 'unknown'])),
+      occupied,
+    }),
   };
 }
 

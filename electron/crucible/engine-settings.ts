@@ -82,7 +82,12 @@ import type {
 import { CRUCIBLE_UPSTREAM_NAMES } from '../../shared/crucible/settings-wire';
 import { CRUCIBLE_TEXT_ACTS } from './text-acts';
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
-import { noteCrucibleRoutes, routesFromCapability, routesFromSettings } from './routes';
+import {
+  noteCrucibleRoutes,
+  noteCrucibleUpstreams,
+  routesFromCapability,
+  routesFromSettings,
+} from './routes';
 
 /**
  * Every way this door refuses, by name.
@@ -303,6 +308,28 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
       url: row.url === undefined ? null : row.url,
     };
   }
+
+  /*
+   * THE QUEUE'S CLOUD LANE IS RECORDED HERE, and this is the one funnel every
+   * settings document passes through — the GET at coordination and the whole
+   * document `PUT /v1/settings` answers with (§3.2) alike. So an upstream
+   * configured from this app's own panel, or read off a machine at connect,
+   * reaches the scheduler by the same line, and neither caller can forget it.
+   *
+   * ANY of the three, because the lane means "this engine can forward work",
+   * not "it can forward it to Anthropic": which upstream a class goes to is the
+   * route's business, and the lane counts sockets rather than accounts
+   * (`shared/queue/slot-sets.ts`, `CLOUD_LANE_SLOTS`).
+   *
+   * `configured` is the SERVER's own boolean about its own stored key or url
+   * (§3.1), read rather than re-derived from `keyHint`: a key hint is what a
+   * panel prints, and an upstream configured with a url and no key would read
+   * as unconfigured if this counted hints (crucible ARCHITECTURE.md R1).
+   */
+  noteCrucibleUpstreams(
+    server,
+    CRUCIBLE_UPSTREAM_NAMES.some((name) => upstreams[name].configured),
+  );
 
   return {
     routes,

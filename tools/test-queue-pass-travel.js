@@ -186,9 +186,13 @@ function passConfig(kind, ai) {
     assert.strictEqual(slots.isCloudLane('mac:cloud'), true);
     assert.strictEqual(slots.isCloudLane('mac'), false, 'the engine itself is not its own lane');
     assert.strictEqual(slots.CLOUD_LANE_SLOTS, 2);
-    const lane = slots.slotSets({ enabledServers: ['mac'], occupied: [] })
+    const lane = slots.slotSets({ enabledServers: ['mac'], upstreams: { mac: 'configured' }, occupied: [] })
       .find((set) => set.id === slots.cloudLaneOf('mac'));
-    assert.ok(lane, 'every registered engine has a lane for the classes it routes elsewhere');
+    // `configured` rather than `unknown`: an engine that ROUTES a class upstream
+    // necessarily has that upstream configured — the server itself refuses
+    // `route_upstream_unconfigured` otherwise (crucible PHASE15 §3.2) — so this
+    // is the engine this test is about, said in the fact the lane is drawn on.
+    assert.ok(lane, 'an engine with an upstream has a lane for the classes it routes there');
     assert.strictEqual(lane.gpu, 0, 'not "a card we are not counting" — there is none');
     assert.strictEqual(lane.cpu, 2, 'the same width `local-work` gets, for the same reason');
   });

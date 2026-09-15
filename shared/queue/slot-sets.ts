@@ -14,9 +14,9 @@
  * So capacity is per MACHINE, and the sets are:
  *
  *     local        [ gpu ] [ cpu ] [ cpu ]     ← this machine's Crucible
- *     local:cloud          [ cpu ] [ cpu ]     ← classes it ROUTES upstream
+ *     local:cloud          [ cpu ] [ cpu ]     ← only if it HAS an upstream
  *     mac          [ gpu ] [ cpu ] [ cpu ]     ← a registered remote
- *     mac:cloud            [ cpu ] [ cpu ]     ← classes IT routes upstream
+ *     mac:cloud            [ cpu ] [ cpu ]     ← only if IT has an upstream
  *     legacy…      [ gpu ]                     ← the dated local-narrator spawn
  *     local-work           [ cpu ] [ cpu ]     ← what BookForge does ITSELF
  *
@@ -26,6 +26,10 @@
  * to forward one of the four llm classes to Anthropic, OpenAI or a remote
  * Ollama on the operator's account — a ROUTE, set before any request, never a
  * fallback. Such a run holds no card anywhere: it costs the engine a socket.
+ *
+ * A lane is drawn for an engine that HAS AN UPSTREAM CONFIGURED, and that is
+ * {@link SlotSetFacts.upstreams}. See its own note for why that fact and not
+ * the per-class route.
  *
  * Making it wait behind a nine-hour narration would be the queue punishing a
  * job for the company it keeps — the same argument that used to give a
@@ -45,7 +49,7 @@
  * outlet for it."* The end state is exactly:
  *
  *     <server>     [ gpu ] [ cpu ] [ cpu ]     one per REGISTERED Crucible
- *     <server>:cloud       [ cpu ] [ cpu ]     its upstream-routed classes
+ *     <server>:cloud       [ cpu ] [ cpu ]     ONLY if it has an upstream
  *     local-work           [ cpu ] [ cpu ]     CPU slots stay local
  *
  * — and no more. The legacy set below, and its GPU slot, are DELETED with the
@@ -264,6 +268,26 @@ export function slotSetOccupancy(
   return counts;
 }
 
+/**
+ * WHETHER ONE ENGINE CAN SEND WORK ELSEWHERE AT ALL — three values, and the
+ * third is not a shrug.
+ *
+ * `configured` — at least one of its three upstreams has a key or a url on it
+ * (`GET /v1/settings`'s `upstreams[*].configured`, crucible
+ * `docs/PHASE15-HOST.md` §3.1). The engine CAN forward a class, whether or not
+ * any class is routed today.
+ *
+ * `none` — the document was read and all three are unconfigured. There is
+ * nowhere for that engine to forward anything, so a lane on the bench would be
+ * a row the scheduler can never fill (crucible `docs/ARCHITECTURE.md` R3:
+ * nothing is told "maybe").
+ *
+ * `unknown` — nobody has read that engine's settings yet, it did not answer, or
+ * it predates the settings door. **Absence of knowledge is not absence of an
+ * upstream**, so an unknown engine keeps the lane it has always had.
+ */
+export type EngineUpstreams = 'configured' | 'none' | 'unknown';
+
 export interface SlotSetFacts {
   /**
    * Every ENABLED registered server, in rank order, this machine's own `local`
@@ -272,6 +296,45 @@ export interface SlotSetFacts {
    * going there.
    */
   readonly enabledServers: readonly string[];
+  /**
+   * PER ENGINE: can it send work elsewhere at all. One entry for every name in
+   * {@link enabledServers} — a name missing from here is REFUSED BY NAME rather
+   * than assumed either way, because the two guesses are a lane that never
+   * fills and a lane that vanishes under a running row.
+   *
+   * ── WHY THIS FACT AND NOT THE PER-CLASS ROUTE ─────────────────────────────
+   *
+   * The lane used to be drawn unconditionally, and the argument for that was
+   * sound as far as it went: whether a particular class is routed upstream is
+   * the ENGINE's setting, it can change between two pumps from the engine's own
+   * page or from the other app, and a lane that appeared and vanished with it
+   * would make the bench flicker and make a row's placement depend on when the
+   * scheduler last happened to read. The capability record's `route` field
+   * (`electron/crucible/routes.ts`) is the fact that argument is about, and it
+   * is the one already in hand — coordination reads `GET /v1/capability` on
+   * every connect, so deriving "some class is routed" from it costs nothing.
+   *
+   * It is still the wrong fact, and Owen ruled on the level rather than the
+   * mechanism (2026-09-15): *"local shouldnt be an option because it's driven
+   * fully and completely through crucible"* — a bench row must correspond to
+   * something real. "Some class happens to be routed right now" is a setting an
+   * operator flips while reading a book; "this engine has an upstream" is a
+   * deliberate, rare act (a key pasted into a field, tested, saved). So the
+   * same anti-flicker argument is kept and raised one level: the lane exists
+   * exactly when the engine CAN forward work, which is stable across the
+   * route changes that used to be the worry, and which is true of every engine
+   * on which a route could be set at all — `route_upstream_unconfigured` (§3.2)
+   * is the server refusing to route a class to an upstream it has not got, so
+   * `configured` is implied by any route and never the other way round. A lane
+   * cannot be stranded under a running row by this: both facts are read at the
+   * same two moments (coordination, and a settings write's own answer), so they
+   * cannot come to disagree about one engine.
+   *
+   * The cost is one extra read of a document the app already speaks, at a
+   * moment it is already talking to that machine. That is what buys a bench
+   * with no rows on it that nothing can ever use.
+   */
+  readonly upstreams: Readonly<Record<string, EngineUpstreams>>;
   /**
    * Set ids that currently hold something of ours. A set named here survives
    * even when its server was disabled or removed, marked `retiring` — §4.3.
@@ -291,6 +354,22 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   const sets: SlotSet[] = [];
   const seen = new Set<string>();
 
+  /*
+   * A CALLER THAT SAID NOTHING ABOUT UPSTREAMS IS REFUSED, not defaulted. The
+   * type says the field is required, which settles it for every TypeScript
+   * caller; this is for the ones the compiler does not see — the keepers, the
+   * CLI, anything driving the pure module from plain JS — because the two
+   * guesses available here are "draw a lane nothing can fill" and "hide a lane
+   * a running row is on", and neither is a thing to decide on somebody's behalf.
+   */
+  if (facts.upstreams === undefined || facts.upstreams === null) {
+    throw new Error(
+      'slotSets: `upstreams` was not supplied. Every enabled server needs one of '
+        + "'configured' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
+        + 'CAN forward work and for one nobody has asked yet, and for no other.',
+    );
+  }
+
   for (const name of facts.enabledServers) {
     if (seen.has(name)) continue;
     seen.add(name);
@@ -302,26 +381,38 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       retiring: false,
     });
     /*
-     * ITS CLOUD LANE, ALWAYS, AND NOT CONDITIONAL ON A ROUTE BEING SET.
-     *
-     * Whether any class is routed upstream is the ENGINE's setting and can
-     * change between two pumps, from the engine's own page or from the other
-     * app. A lane that appeared and vanished with it would make the bench
-     * flicker and, worse, would make a row's placement depend on when the
-     * scheduler last happened to read. An empty lane on the bench costs
-     * nothing and says a true thing: this engine can route work elsewhere.
+     * ITS CLOUD LANE — WHEN THE ENGINE HAS SOMEWHERE TO SEND WORK, and still
+     * not conditional on a particular class being routed there today. The whole
+     * argument, and why this is one level up from the route, is on
+     * {@link SlotSetFacts.upstreams}.
      */
-    const lane = cloudLaneOf(name);
-    seen.add(lane);
-    sets.push({
-      id: lane,
-      label: labelFor(lane),
-      // No card. Not "a card we are not counting" — there is none: the engine
-      // forwards the request and settles nothing.
-      gpu: 0,
-      cpu: CLOUD_LANE_SLOTS,
-      retiring: false,
-    });
+    const upstreams = facts.upstreams[name];
+    if (upstreams === undefined) {
+      throw new Error(
+        `slotSets: nothing was said about whether "${name}" has an upstream configured. `
+          + 'Every enabled server needs an entry in `upstreams` — a name with no entry is a '
+          + 'caller that forgot, not an engine with no upstream.',
+      );
+    }
+    /*
+     * `none` DRAWS NOTHING, and the lane is not marked `seen` either: should
+     * that engine somehow be holding a routed row of ours, the occupied pass
+     * below still draws its lane, `retiring`, so the occupant keeps its slot
+     * and nothing new is placed there.
+     */
+    if (upstreams !== 'none') {
+      const lane = cloudLaneOf(name);
+      seen.add(lane);
+      sets.push({
+        id: lane,
+        label: labelFor(lane),
+        // No card. Not "a card we are not counting" — there is none: the engine
+        // forwards the request and settles nothing.
+        gpu: 0,
+        cpu: CLOUD_LANE_SLOTS,
+        retiring: false,
+      });
+    }
   }
 
   /*

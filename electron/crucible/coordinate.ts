@@ -83,7 +83,7 @@ import {
 } from '@crucible/client';
 
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal } from './servers';
-import { crucibleCapabilityWithRoutes } from './engine-settings';
+import { crucibleCapabilityWithRoutes, crucibleEngineSettings } from './engine-settings';
 import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
 import { LOCAL_SERVER_NAME } from './local';
 import { rankedServers } from './routing';
@@ -399,6 +399,8 @@ async function runCoordination(
     return report({ server, phase: 'unreachable', message: describeRead(err, server) });
   }
 
+  await readUpstreamPresence(server);
+
   const { missing, unmet } = missingForBookForge(installedJobTypes, catalog, capability);
   if (missing.length === 0) {
     /*
@@ -420,6 +422,59 @@ async function runCoordination(
   }
 
   return prepare(server, missing, unmet, deps);
+}
+
+/**
+ * A FOURTH READ, FOR THE BENCH: has this engine got anywhere to send work.
+ *
+ * ── Why here ───────────────────────────────────────────────────────────────
+ *
+ * The queue draws an engine's `[cloud]` lane only when that engine has an
+ * upstream configured (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`),
+ * and the scheduler answers that inside a synchronous pump. So it is read at
+ * the moments it can change and held in `crucible/routes.ts` — exactly the
+ * arrangement the per-class route already has, and this is the other of its two
+ * moments (the first being a settings write's own answer). Nothing polls.
+ *
+ * Coordination is that moment because it already runs on every connect to every
+ * enabled server (PHASE14 §4a) and has just made three reads of this machine.
+ * `GET /v1/settings` is the fourth, and it is the same kind of thing: cheap,
+ * read-only, touching neither the lane nor the card.
+ *
+ * ── Why it is NOT in the `Promise.all` above ───────────────────────────────
+ *
+ * Those three reads decide whether coordination happened at all — a server that
+ * cannot answer one of them is not answering, and the run reports `unreachable`.
+ * This one decides a row on a bench. A server that predates PHASE15 has no
+ * settings door and answers 404 (`settings_door_absent`), and failing the whole
+ * coordination of an older but perfectly usable Crucible over a bench row would
+ * be this read deciding something that is not its business.
+ *
+ * ── Why the failure is swallowed, and why that is not a fallback ───────────
+ *
+ * Nothing is recorded when the read fails, and the record's answer for a server
+ * it has not heard about is `unknown` — a stated third value, which draws the
+ * lane exactly as it was drawn before this fact existed. That is the one
+ * behaviour the ruling asks for by name: absence of knowledge is not absence of
+ * an upstream. A `catch` that wrote `false` here would be the fallback.
+ */
+async function readUpstreamPresence(server: string): Promise<void> {
+  try {
+    // For the record it fills on the way past (`projectSettings` →
+    // `noteCrucibleUpstreams`), not for the document, which nothing here reads.
+    await crucibleEngineSettings(server);
+  } catch (err) {
+    glogUpstream(server, err);
+  }
+}
+
+/** One line, so a bench row that stayed on an engine with no upstream has a why. */
+function glogUpstream(server: string, err: unknown): void {
+  const detail = err instanceof Error ? err.message : String(err);
+  console.log(
+    `[CRUCIBLE] "${server}" did not say whether it has an upstream configured, so its cloud `
+      + `lane stays on the bench: ${detail}`,
+  );
 }
 
 /** Post the module (or join the task already running) and follow it to the end. */

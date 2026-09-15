@@ -39,6 +39,7 @@
  * can read is not a fallback; a guess is.
  */
 import type { CrucibleRouteKind, CrucibleTextActName } from '../../shared/crucible/settings-wire';
+import type { EngineUpstreams } from '../../shared/queue/slot-sets';
 
 /** What this record can say about one class on one engine. */
 export type CrucibleRouteAnswer = CrucibleRouteKind | 'unknown';
@@ -47,6 +48,24 @@ export type CrucibleRouteAnswer = CrucibleRouteKind | 'unknown';
 type ServerRoutes = Readonly<Record<string, CrucibleRouteKind>>;
 
 const byServer = new Map<string, ServerRoutes>();
+
+/**
+ * …AND WHETHER EACH ENGINE HAS ANYWHERE TO SEND WORK AT ALL.
+ *
+ * A second fact in the same record, and deliberately not a second module: it is
+ * read at the same two moments (coordination, and a settings write's own
+ * answer), it is answered inside the same synchronous pump, and
+ * {@link forgetCrucibleRoutes} must forget both together — a server removed
+ * while one of the two records still named it would be answered about from the
+ * half that had not been pruned.
+ *
+ * It is what the queue's cloud lane is drawn on
+ * (`shared/queue/slot-sets.ts`'s `SlotSetFacts.upstreams`, which carries the
+ * whole argument for why this fact and not `route`). Absent means `unknown`,
+ * the record's own third value, and NOT "no upstream": nobody has read that
+ * engine's settings yet.
+ */
+const upstreamsByServer = new Map<string, boolean>();
 
 /**
  * Record what one engine says about where its classes run.
@@ -84,8 +103,42 @@ export function crucibleRouteOf(server: string, capability: string): CrucibleRou
  * not what makes it wrong.
  */
 export function forgetCrucibleRoutes(server?: string): void {
-  if (server === undefined) byServer.clear();
-  else byServer.delete(server);
+  if (server === undefined) {
+    byServer.clear();
+    upstreamsByServer.clear();
+    return;
+  }
+  byServer.delete(server);
+  upstreamsByServer.delete(server);
+}
+
+/**
+ * Record whether one engine has ANY upstream configured.
+ *
+ * One caller: {@link projectSettings} in `engine-settings.ts`, which is the one
+ * funnel every settings document this app reads passes through — the GET at
+ * coordination and the whole-document answer to a PUT alike. Recorded there
+ * rather than at each call site for the reason `noteCrucibleRoutes` has two
+ * callers and no third: a reader that forgot would leave the bench drawing a
+ * lane the operator has just taken away, or hiding one they have just made.
+ */
+export function noteCrucibleUpstreams(server: string, configured: boolean): void {
+  upstreamsByServer.set(server, configured);
+}
+
+/**
+ * Can this engine send work elsewhere at all — `configured`, `none`, or
+ * `unknown` because nobody has read its settings.
+ *
+ * `unknown` is a stated third value and not a shrug: an engine that has not
+ * been asked, did not answer, or predates the settings door keeps the cloud
+ * lane it has always had, because absence of knowledge is not absence of an
+ * upstream.
+ */
+export function crucibleUpstreamsOf(server: string): EngineUpstreams {
+  const configured = upstreamsByServer.get(server);
+  if (configured === undefined) return 'unknown';
+  return configured ? 'configured' : 'none';
 }
 
 /** Every engine this app has read routes from, for a log line and for keepers. */

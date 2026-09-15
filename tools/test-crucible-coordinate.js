@@ -394,6 +394,69 @@ async function main() {
     } finally { await noDoor.close(); }
   });
 
+  await check('the connect also reads WHETHER THAT ENGINE HAS AN UPSTREAM — the bench\'s cloud lane', async () => {
+    /*
+     * A FOURTH READ, AND IT IS INVISIBLE EVERYWHERE ELSE TOO.
+     *
+     * The queue draws an engine's `[cloud]` lane only when that engine has an
+     * upstream configured (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`),
+     * and the scheduler answers that inside a synchronous pump — so the fact is
+     * read at the moments it can change and held in `crucible/routes.ts`. This
+     * is one of the two moments (the other being a settings write's own answer).
+     * Dropped, the only symptom would be four CPU rows on the bench for lanes
+     * that can never fill, which is exactly the defect this pins.
+     *
+     * The three arms are the three answers, and the third is the one that is
+     * not an omission: a server with no settings door at all is UNKNOWN and
+     * keeps its lane, because absence of knowledge is not absence of an
+     * upstream — and it is still `stocked`, because a bench row is not a
+     * reason to call a working Crucible unreachable.
+     */
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+
+    coordinate.resetCoordinationForTests();
+    routes.forgetCrucibleRoutes();
+    const withKey = await startFake({ settings: { upstreams: { anthropic: { key: 'sk-ant-1234' } } } });
+    try {
+      const name = registerFake(withKey.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.strictEqual(withKey.settings.reads, 1,
+        'the document is read once, on the same connect — not on a timer of its own');
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'configured',
+        'a key on any of the three means the engine CAN forward work, so the lane is drawn');
+    } finally { await withKey.close(); }
+
+    coordinate.resetCoordinationForTests();
+    routes.forgetCrucibleRoutes();
+    const bare = await startFake({});
+    try {
+      const name = registerFake(bare.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none',
+        'nowhere to forward anything: a lane here would be a row nothing can fill');
+    } finally { await bare.close(); }
+
+    coordinate.resetCoordinationForTests();
+    routes.forgetCrucibleRoutes();
+    const noDoor = await startFake({ settings: { noSettingsDoor: true } });
+    try {
+      const name = registerFake(noDoor.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked',
+        'a pre-phase-15 Crucible is perfectly usable; a bench row is not a reason to refuse it');
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown',
+        "it could not say, so today's behaviour is kept and the lane stays");
+    } finally { await noDoor.close(); }
+
+    // …and a server that is FORGOTTEN is forgotten in both halves of the
+    // record at once: a name pruned from one and answered from the other is
+    // the two-owners defect the record exists as one module to avoid.
+    routes.forgetCrucibleRoutes();
+    assert.strictEqual(routes.crucibleUpstreamsOf('anything'), 'unknown');
+  });
+
   await check('the state it published is the state a screen would read', async () => {
     coordinate.resetCoordinationForTests();
     const fake = await startFake({});

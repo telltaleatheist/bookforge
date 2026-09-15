@@ -112,10 +112,11 @@ import {
   thisMachinesCardHeldBy,
   LOCAL_WORK_SET,
   WAIT_STEP_CAP,
+  type EngineUpstreams,
   type SetOccupancy,
   type SlotSet,
 } from '../shared/queue/slot-sets';
-import { crucibleRouteOf } from './crucible/routes';
+import { crucibleRouteOf, crucibleUpstreamsOf } from './crucible/routes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -557,7 +558,22 @@ function currentSlotSets(): SlotSet[] {
     }
   }
 
-  return slotSets({ enabledServers, occupied });
+  /*
+   * ONE ENTRY PER ENABLED SERVER, always, because `slotSets` refuses a name it
+   * was told nothing about. The record always answers — `unknown` for an engine
+   * nobody has read yet — so this map is complete by construction, and a name
+   * missing from it could only be a defect here rather than a machine that has
+   * not spoken.
+   *
+   * Read straight from `crucible/routes.ts` rather than through the injected
+   * host, for the same reason `crucibleRouteOf` is: it is a synchronous
+   * in-memory record with no Electron, no registry and no HTTP in it, so it
+   * costs this file none of the properties the injected seams exist to keep.
+   */
+  const upstreams: Record<string, EngineUpstreams> = {};
+  for (const name of enabledServers) upstreams[name] = crucibleUpstreamsOf(name);
+
+  return slotSets({ enabledServers, upstreams, occupied });
 }
 
 export function snapshot(): QueueSnapshot {
