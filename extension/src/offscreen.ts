@@ -85,8 +85,12 @@ import {
   describeHolder,
   describeRefusal,
   loadVoice as loadVoiceJob,
-  unloadVoice as unloadVoiceJob
+  residentClipOf,
+  unloadVoice as unloadVoiceJob,
+  type ResidentClip
 } from './crucible';
+import { findClip, referenceFor } from './clips';
+import { VoiceReferenceRefused } from '../../shared/crucible/voice-reference';
 import {
   PlaybackStatus,
   QueueItem,
@@ -104,6 +108,7 @@ import {
   QueueOffscreenCmd,
   SyncOffscreenCmd,
   SetVoiceOffscreenCmd,
+  SetClipOffscreenCmd,
   SetIdleOffscreenCmd,
   ServerChangedOffscreenCmd,
   Settings,
@@ -133,6 +138,7 @@ type OffscreenMessage =
   | QueueOffscreenCmd
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
+  | SetClipOffscreenCmd
   | SetIdleOffscreenCmd
   | ServerChangedOffscreenCmd;
 
@@ -713,6 +719,8 @@ function engineStatus(): EngineStatus {
     note: engineNote,
     holder: engineHolder,
     idleMinutes,
+    residentClip: residentClip === null ? null : (residentClip.name ?? residentClip.sha256.slice(0, 12)),
+    residentClipNote,
   };
 }
 
@@ -734,6 +742,20 @@ function voiceForSpeak(): string | null {
 
 /** The picker's own choice, which Load acts on. Persisted; may not be resident. */
 let chosenVoice: string | null = null;
+/**
+ * The clip a zero-shot load will be cloned from — an id in the IndexedDB clip
+ * store, or null for "none picked".
+ *
+ * NULL IS NOT A DEFAULT WAITING TO BE FILLED. A `zeroshot` load with no clip
+ * is refused `reference_required` — by this document before it asks, and by
+ * the server if it ever got there — because the base weights with no reference
+ * are the MODEL'S own speaker under a voice id somebody chose for a person's.
+ */
+let chosenClipId: string | null = null;
+/** What `/v1/activity` says was cloned onto that card, or null. */
+let residentClip: ResidentClip | null = null;
+/** Why `residentClip` is null when the answer is not "nothing was cloned". */
+let residentClipNote: string | null = null;
 /** A load-voice job for this voice is in flight. */
 let switchingVoice: string | null = null;
 /** Bumped per voice switch, so an earlier one that is still loading can tell it
@@ -744,6 +766,46 @@ let idleMinutes = DEFAULT_SETTINGS.idleMinutes;
 
 function sameVoice(a: string | null, b: string | null): boolean {
   return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * WHICH CLIP IS ON THAT CARD — asked on every server read.
+ *
+ * `zeroshot` is one voice id and any number of recordings, so "zeroshot is
+ * resident" is not an answer to "will my book be read in the voice I picked".
+ * A failure here is RECORDED AND SHOWN, never swallowed: not knowing which
+ * clip is loaded is exactly the state this read exists to end, and a blank
+ * where the clip name goes reads as "no clip", which would be a lie.
+ */
+async function readResidentClip(named: ServerEntry): Promise<void> {
+  try {
+    residentClip = await residentClipOf(named);
+    residentClipNote = null;
+  } catch (err) {
+    residentClip = null;
+    residentClipNote = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * Is the clip already on the card the one that was picked?
+ *
+ * TWO FACTS, both from the server's own report: the clip's `name` and its
+ * duration. One would not do — a name is a label a person typed and two
+ * clients may each have typed it, and a duration alone is shared by every
+ * fifteen-second clip. The sha256 beside them is the real identity, and this
+ * client deliberately does NOT compute one: hashing a megabyte in the
+ * offscreen document on every Load press to save a reload is the wrong trade,
+ * and disagreeing with the server about a hash would be worse than reloading.
+ *
+ * WHEN IT CANNOT TELL, IT RELOADS. A false "same clip" reads a whole book in
+ * somebody else's voice and reports success; a false "different clip" costs
+ * one load.
+ */
+function residentClipIsTheChosenOne(chosen: { name: string; seconds: number }): boolean {
+  if (residentClip === null || residentClip.name === null) return false;
+  return residentClip.name === chosen.name
+    && Math.abs(residentClip.seconds - chosen.seconds) < 0.05;
 }
 
 function persistVoice(voice: string): void {
@@ -824,8 +886,13 @@ async function refreshServer(): Promise<boolean> {
       loadable: v.loadable,
       reason: v.reason,
       resident: v.resident,
+      // THE ROW'S FACT, never inferred from the id: a server is entitled to
+      // call a zero-shot voice anything it likes, and a picker that guessed
+      // from the name would hide the clip list on the day it was renamed.
+      needsReference: v.needsReference,
     }));
     voices = voiceRows.map((v) => v.id);
+    await readResidentClip(named);
     // The picker adopts the resident voice, exactly as it used to adopt the
     // app's: what is on the card is the truth, and a stored choice that names
     // something else is a choice, not a claim about the server.
@@ -2293,8 +2360,51 @@ async function loadPickedVoice(voice: string | null): Promise<void> {
     broadcast();
     return;
   }
-  if (sameVoice(voice, serverVoice) && residentKind === 'tts') {
-    // Already on the card. Opening the session is the rest of what Load means.
+  /*
+   * THE CLIP, IF THIS VOICE IS CLONED FROM ONE (PHASE3-TTS.md §5's
+   * amendment). The ROW says whether it needs one; a voice this server does
+   * not list is not guessed about either way, because a load of a voice the
+   * picker does not know is refused below by the server anyway and refusing
+   * it here for the wrong reason would send the reader to the wrong fix.
+   */
+  const row = voiceRows.find((v) => v.id === voice);
+  let reference: { data: string; transcript: string; name: string } | null = null;
+  let chosenClip: { name: string; seconds: number } | null = null;
+  if (row?.needsReference === true) {
+    if (chosenClipId === null || chosenClipId === '') {
+      // THE SERVER'S OWN NAME, made here rather than a megabyte later.
+      engineNote = `reference_required: "${voice}" is cloned from a recording, and no clip is `
+        + 'picked. Choose one under the voice, or add one in Options → Zero-shot clips. The base '
+        + 'weights with no reference are the model\'s OWN speaker, which is not the voice you '
+        + 'chose.';
+      broadcast();
+      return;
+    }
+    const stored = await findClip(chosenClipId);
+    if (stored === null) {
+      engineNote = `reference_required: the clip this extension was told to use (${chosenClipId}) `
+        + 'is no longer in its clip store. Pick another under the voice, or add it again in '
+        + 'Options → Zero-shot clips.';
+      broadcast();
+      return;
+    }
+    chosenClip = { name: stored.name, seconds: stored.seconds };
+    try {
+      reference = await referenceFor(chosenClipId);
+    } catch (err) {
+      // `reference_malformed` from this side — the same word the server uses,
+      // arrived at from the same bytes, before they are sent.
+      engineNote = err instanceof VoiceReferenceRefused
+        ? err.message
+        : `The clip could not be read: ${err instanceof Error ? err.message : String(err)}`;
+      broadcast();
+      return;
+    }
+  }
+  if (sameVoice(voice, serverVoice) && residentKind === 'tts'
+      && (chosenClip === null || residentClipIsTheChosenOne(chosenClip))) {
+    // Already on the card — and for a cloned voice, cloned from the SAME clip.
+    // Opening the session is the rest of what Load means.
     await ensureStream();
     broadcast();
     return;
@@ -2309,7 +2419,7 @@ async function loadPickedVoice(voice: string | null): Promise<void> {
   switchingVoice = voice;
   broadcast();
   try {
-    await loadVoiceJob(bound, voice, (line) => { engineNote = line; broadcast(); });
+    await loadVoiceJob(bound, voice, reference, (line) => { engineNote = line; broadcast(); });
     engineNote = null;
   } catch (err) {
     engineNote = describeRefusal(err, named.name);
@@ -2349,6 +2459,10 @@ async function unloadResidentVoice(): Promise<void> {
   broadcast();
   try {
     await unloadVoiceJob(bound, voice, (line) => { engineNote = line; broadcast(); });
+    // Nothing is on the card, so nothing was cloned onto it. Said here rather
+    // than waited for, so the popup does not show the departed clip's name
+    // beside "nothing loaded" until the next server read.
+    residentClip = null;
     engineNote = null;
   } catch (err) {
     engineNote = describeRefusal(err, named.name);
@@ -2413,6 +2527,58 @@ async function handleSetVoice(voice: string): Promise<void> {
   if (current) {
     // Same block: set the resume point, or CLEAR a stale one (a startChar left over
     // from an earlier mid-block click would otherwise re-apply itself here).
+    if (resumeItem && current.id === resumeItem.id) {
+      current = { ...current, startChar: resumeChar > 0 ? resumeChar : undefined };
+    }
+    await startCurrent(true);
+  } else {
+    broadcast();
+  }
+}
+
+/**
+ * Pick a different CLIP for the zero-shot voice — the other half of an
+ * identity whose first half is the voice id.
+ *
+ * It goes through the same door a voice switch does, and for the same reason:
+ * a clone is the base weights plus THIS recording, so changing the recording
+ * changes who is reading exactly as much as changing the voice would. The
+ * session closes, the card is re-pointed, and the read picks up where it was.
+ *
+ * It does NOT check that the current voice needs a reference. A clip chosen
+ * against a checkpoint voice is simply never sent (`loadPickedVoice` reads the
+ * ROW), and the choice survives for the moment the user picks the zero-shot
+ * voice it belongs to.
+ */
+async function handleSetClip(clipId: string): Promise<void> {
+  if (clipId === (chosenClipId ?? '')) return;
+  chosenClipId = clipId === '' ? null : clipId;
+  chrome.runtime
+    .sendMessage({ target: 'background', cmd: 'put-settings', patch: { zeroshotClipId: clipId } })
+    .catch(() => { /* background asleep; storage is re-read on next start */ });
+  const voice = chosenVoice;
+  const row = voice === null ? undefined : voiceRows.find((v) => v.id === voice);
+  if (voice === null || row?.needsReference !== true) { broadcast(); return; }
+
+  // The same sequence as a voice switch, because it IS one: a different clip
+  // is a different speaker under the same id.
+  const token = ++voiceSwitchToken;
+  const resumeChar = resumeCharForSwitch();
+  const resumeItem = current;
+  switchingVoice = voice;
+  cancelGeneration();
+  dropAllPrefetch();
+  forgetAllRendered();
+  broadcast();
+
+  await loadPickedVoice(voice);
+  if (token !== voiceSwitchToken) return;
+  if (!sameVoice(serverVoice, voice)) {
+    errorMsg = engineNote ?? `Crucible "${server?.name ?? '?'}" did not load "${voice}".`;
+    broadcast();
+    return;
+  }
+  if (current) {
     if (resumeItem && current.id === resumeItem.id) {
       current = { ...current, startChar: resumeChar > 0 ? resumeChar : undefined };
     }
@@ -3049,6 +3215,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'record': void handleRecord(msg); break;
     case 'engine': void handleEngine(msg.op, msg.voice); break;
     case 'set-voice': void handleSetVoice(msg.voice); break;
+    case 'set-clip': void handleSetClip(msg.clipId); break;
     case 'set-idle': void handleSetIdle(msg.minutes); break;
     case 'server-changed': void handleServerChanged(); break;
     case 'queue':
@@ -3065,6 +3232,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
 // and the countdown is the one the user chose.
 void getSettings().then((s) => {
   if (!chosenVoice && s.voice) chosenVoice = s.voice;
+  if (chosenClipId === null && s.zeroshotClipId !== '') chosenClipId = s.zeroshotClipId;
   idleMinutes = s.idleMinutes;
   broadcast();
 });

@@ -116,6 +116,16 @@
       <label for="voice">Voice</label>
       <select id="voice"></select>
     </div>
+    <!-- THE CLIP, only for a voice whose row says needsReference. A zero-shot
+         voice is the base weights plus somebody's recording, and the recording
+         is this browser's (plan §4b) — so it is picked here, beside the voice
+         it completes, and there is no default: loading with none picked is
+         refused `reference_required` before anything is sent. -->
+    <div class="field hidden" id="clipRow">
+      <label for="clip">Reference clip</label>
+      <select id="clip"></select>
+      <div class="note" id="clipNote"></div>
+    </div>
     <div class="row">
       <button id="server" class="primary">Load voice</button>
     </div>

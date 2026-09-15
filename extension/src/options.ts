@@ -43,6 +43,8 @@ import {
   type ServerEntry,
 } from './servers';
 import { describeRefusal, probe } from './crucible';
+import { addClip, listClips, removeClip, type ClipSummary } from './clips';
+import { VoiceReferenceRefused } from '../../shared/crucible/voice-reference';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -52,6 +54,12 @@ const addBtn = $('add') as HTMLButtonElement;
 const addResult = $('addResult') as HTMLSpanElement;
 const voiceEl = $('voice') as HTMLSelectElement;
 const voiceHint = $('voiceHint') as HTMLParagraphElement;
+const clipsEl = $('clips') as HTMLDivElement;
+const clipFileEl = $('clipFile') as HTMLInputElement;
+const clipNameEl = $('clipName') as HTMLInputElement;
+const clipTranscriptEl = $('clipTranscript') as HTMLTextAreaElement;
+const clipAddBtn = $('clipAdd') as HTMLButtonElement;
+const clipResult = $('clipResult') as HTMLSpanElement;
 const idleEl = $('idleMinutes') as HTMLSelectElement;
 const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
 const rateEl = $('rate') as HTMLSelectElement;
@@ -272,17 +280,127 @@ async function drawVoices(): Promise<void> {
   voiceEl.textContent = '';
   for (const v of rows) {
     const o = document.createElement('option');
+    const label = engines.size > 1 ? `${v.display} — ${v.narratorEngine}` : v.display;
     o.value = v.id;
-    o.textContent = engines.size > 1 ? `${v.display} — ${v.narratorEngine}` : v.display;
+    // A voice that is cloned from a clip says so IN THE LIST. Its row is the
+    // authority (`needsReference`), never the id: picking it without a clip is
+    // refused `reference_required`, and knowing that before the press beats
+    // finding out after it.
+    o.textContent = v.needsReference ? `${label} (needs a reference clip)` : label;
     o.disabled = !v.loadable && !v.resident;
     if (v.reason) o.title = v.reason;
     voiceEl.appendChild(o);
   }
   if (rows.some((v) => v.id === chosen)) voiceEl.value = chosen;
-  voiceHint.textContent = engines.size > 1
+  const cloned = rows.filter((v) => v.needsReference).length;
+  const clipLine = cloned === 0 ? ''
+    : ` ${cloned === 1 ? 'One voice is' : `${cloned} voices are`} cloned from a reference clip — `
+      + 'pick which of yours under the voice in the popup.';
+  voiceHint.textContent = (engines.size > 1
     ? `${rows.length} voices on "${entry.name}", across ${engines.size} engines. A voice brings its `
       + 'engine with it — there is nothing else to choose.'
-    : `${rows.length} voices on "${entry.name}". Load one from the toolbar popup.`;
+    : `${rows.length} voices on "${entry.name}". Load one from the toolbar popup.`) + clipLine;
+}
+
+// ─── Zero-shot clips ──────────────────────────────────────────────────────────
+//
+// A `zeroshot` voice is the base weights plus somebody's recording (plan §4b,
+// crucible PHASE3-TTS.md §5's amendment). The WEIGHTS are the server's; the
+// CLIP is this browser's, and it stays here until that voice is loaded. Two
+// clients, two clip stores, one voice subject.
+//
+// EVERY REFUSAL IS THE SERVER'S OWN WORD, MADE EARLY. `reference_malformed`
+// covers a file that is not a RIFF/WAVE container, a clip over narrator's
+// 30-second budget, one over the 32 MiB ceiling, and a blank transcript —
+// all four answerable from the bytes on this side, all four refused here
+// rather than uploaded so a server can read the same header and say the same
+// thing. Nothing is trimmed, converted or transcribed.
+
+async function drawClips(): Promise<void> {
+  let stored: ClipSummary[];
+  try {
+    stored = await listClips();
+  } catch (err) {
+    clipsEl.textContent = '';
+    const p = document.createElement('div');
+    p.className = 'empty';
+    p.textContent = err instanceof Error ? err.message : String(err);
+    clipsEl.appendChild(p);
+    return;
+  }
+  clipsEl.textContent = '';
+  if (stored.length === 0) {
+    const p = document.createElement('div');
+    p.className = 'empty';
+    p.textContent = 'No clips yet. A zero-shot voice cannot be loaded without one.';
+    clipsEl.appendChild(p);
+    return;
+  }
+  for (const clip of stored) clipsEl.appendChild(clipRow(clip));
+}
+
+function clipRow(clip: ClipSummary): HTMLDivElement {
+  const row = document.createElement('div');
+  row.className = 'server';
+
+  const who = document.createElement('div');
+  who.className = 'who';
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = `${clip.name} — ${clip.seconds.toFixed(1)}s, `
+    + `${clip.sampleRate} Hz, ${clip.channels === 1 ? 'mono' : `${clip.channels} ch`}`;
+  const said = document.createElement('div');
+  said.className = 'where';
+  // The transcript IS the row's second line: it is the half of a clip that
+  // cannot be heard, and a store that hid it would let a wrong one sit there.
+  said.textContent = clip.transcript;
+  who.append(name, said);
+  row.appendChild(who);
+
+  const remove = document.createElement('button');
+  remove.className = 'danger';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => {
+    void removeClip(clip.id).then(drawClips);
+  });
+  row.appendChild(remove);
+
+  return row;
+}
+
+clipAddBtn.addEventListener('click', async () => {
+  const file = clipFileEl.files?.[0];
+  if (file === undefined) { setClipResult('Choose a WAV file first.', 'bad'); return; }
+  clipAddBtn.disabled = true;
+  setClipResult('Reading…', 'pending');
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const added = await addClip({
+      name: clipNameEl.value,
+      transcript: clipTranscriptEl.value,
+      bytes,
+    });
+    clipFileEl.value = '';
+    clipNameEl.value = '';
+    clipTranscriptEl.value = '';
+    setClipResult(`Added "${added.name}" (${added.seconds.toFixed(1)}s).`, 'good');
+    await drawClips();
+  } catch (err) {
+    // A VoiceReferenceRefused already carries the server's code in front of
+    // its sentence, which is the whole point of using the server's names.
+    setClipResult(
+      err instanceof VoiceReferenceRefused ? err.message
+        : err instanceof Error ? err.message : String(err),
+      'bad',
+    );
+  } finally {
+    clipAddBtn.disabled = false;
+  }
+});
+
+function setClipResult(text: string, cls: 'good' | 'bad' | 'pending'): void {
+  clipResult.textContent = text;
+  clipResult.className = `result ${cls}`;
 }
 
 // ─── The rest of the settings ─────────────────────────────────────────────────
@@ -297,6 +415,7 @@ async function restore(): Promise<void> {
   idleEl.value = String(s.idleMinutes);
   rateEl.value = String(s.rate);
   await drawServers();
+  await drawClips();
 }
 
 function current(): Pick<Settings, 'host' | 'port' | 'token' | 'recordingsDir'

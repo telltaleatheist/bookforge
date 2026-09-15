@@ -29,7 +29,14 @@ import {
   CrucibleUnreachable,
   CrucibleVersionError,
 } from '@crucible/client';
-import type { Activity, CrucibleClient, ServerInfo, VoiceInfo } from '@crucible/client';
+import type {
+  Activity,
+  CrucibleClient,
+  ServerInfo,
+  VoiceInfo,
+  VoiceReference,
+} from '@crucible/client';
+import type { ServerEntry } from './servers';
 
 /** What `Test` shows for one server: is it there, and what is on its card. */
 export interface ServerProbe {
@@ -75,6 +82,27 @@ export function describeRefusal(err: unknown, serverName: string): string {
     }
     if (err.code === 'job_type_disabled') {
       return `${at} does not serve speech (${err.serverMessage}). Pick a server that does.`;
+    }
+    /*
+     * THE THREE ZERO-SHOT REFUSALS (PHASE3-TTS.md §5's amendment), all made
+     * before the job is queued. Two of them this extension also makes itself,
+     * with the same names, from the bytes it already has
+     * (`shared/crucible/voice-reference.ts`); these sentences are for the
+     * server's own, which are the authority.
+     */
+    if (err.code === 'reference_required') {
+      return `${at}: ${err.serverMessage}. That voice is cloned from a recording and no clip was `
+        + 'sent. Pick one under the voice in the popup, or add one in Options → Zero-shot clips.';
+    }
+    if (err.code === 'reference_not_allowed') {
+      return `${at}: ${err.serverMessage}. That voice's speaker is in its own weights, so a clip `
+        + 'would clone somebody else and leave the weights doing nothing. Clear the clip.';
+    }
+    if (err.code === 'reference_malformed') {
+      // VERBATIM. The server read the bytes and said what was wrong with them
+      // — the duration it measured, the ceiling it applies — and rewording
+      // that into a friendlier sentence would lose the number to act on.
+      return `${at}: ${err.serverMessage}`;
     }
     return `${at} refused this (HTTP ${err.status}, ${err.code}): ${err.serverMessage}`;
   }
@@ -139,6 +167,82 @@ export function activityOf(client: CrucibleClient): Promise<Activity> {
   return client.activity();
 }
 
+/** The clip a resident `zeroshot` voice was cloned from, as the server reports it. */
+export interface ResidentClip {
+  /** The label whoever loaded it sent. Null when they sent none. */
+  readonly name: string | null;
+  /** Over the DECODED audio, so two clients sending the same wav agree. */
+  readonly sha256: string;
+  readonly seconds: number;
+}
+
+/**
+ * WHICH CLIP IS ON THE CARD — read straight off `/v1/activity`, because the
+ * vendored SDK drops the field.
+ *
+ * `zeroshot` is ONE voice id and any number of recordings, so the id alone is
+ * two clients each assuming the resident one is theirs. PHASE3-TTS.md §5's
+ * amendment answers it: `GET /v1/activity`'s `resident` block carries
+ * `reference: {name, sha256, seconds}`, null for every other kind and for a
+ * model, and the `load-voice` job's own `done` carries the same object.
+ *
+ * ── WHY THIS IS A `fetch` AND NOT `client.activity()` ─────────────────────
+ *
+ * The 0.6.0 SDK's activity reader builds its `resident` out of four named
+ * fields — `kind`, `id`, `since`, `memory_bytes_estimate` — and silently
+ * drops everything else, `reference` included. The field IS on the wire and
+ * IS in the contract; what is missing is a line in the SDK's shaper. This is
+ * the same situation, and the same treatment, as
+ * `electron/crucible/settings-wire.ts` before the phase-15 re-pack: BookForge
+ * speaks the documented wire in the meantime and a keeper FAILS BY NAME the
+ * day the SDK models it — which is the instruction to delete this function,
+ * not a regression.
+ *
+ * It reads ONLY the reference. Everything else about that server still comes
+ * from `client.activity()`, so there is no second opinion about anything the
+ * SDK already answers.
+ */
+export async function residentClipOf(entry: ServerEntry): Promise<ResidentClip | null> {
+  const response = await fetch(`${entry.url}/v1/activity`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Crucible "${entry.name}" answered HTTP ${response.status} for /v1/activity, so which clip `
+      + 'is resident there cannot be read.',
+    );
+  }
+  const body = await response.json() as { resident?: { reference?: unknown } | null };
+  const resident = body.resident;
+  if (resident === null || resident === undefined) return null;
+  const reference = resident.reference;
+  // A checkpoint voice, or a model, reports `reference: null`. That is an
+  // answer — "nothing was cloned" — and it is not the same as the key being
+  // absent, which is a server that predates the field and is NOT read as
+  // "no clip": it is read as "this server cannot say", and said so.
+  if (reference === null) return null;
+  if (reference === undefined) {
+    throw new Error(
+      `Crucible "${entry.name}" does not report a resident reference on /v1/activity. That server `
+      + 'predates PHASE3-TTS.md §5\'s amendment, so which clip is loaded there is unknowable from '
+      + 'here — update it.',
+    );
+  }
+  const row = reference as { name?: unknown; sha256?: unknown; seconds?: unknown };
+  if (typeof row.sha256 !== 'string' || typeof row.seconds !== 'number') {
+    throw new Error(
+      `Crucible "${entry.name}" reported a resident reference this extension cannot read `
+      + '(no sha256, or no seconds).',
+    );
+  }
+  return {
+    name: typeof row.name === 'string' && row.name !== '' ? row.name : null,
+    sha256: row.sha256,
+    seconds: row.seconds,
+  };
+}
+
 /**
  * Who is using the voice engine on that server, as one sentence — for the
  * popup, after an `engine_in_use` or a `stream_session_open`.
@@ -178,9 +282,19 @@ export type JobProgress = (line: string) => void;
 export async function loadVoice(
   client: CrucibleClient,
   voice: string,
+  reference: VoiceReference | null,
   onProgress?: JobProgress,
 ): Promise<void> {
-  const jobId = await client.loadVoice(voice);
+  /*
+   * THE CLIP TRAVELS WITH THE LOAD, which is the one moment it is needed
+   * (PHASE3-TTS.md §5's amendment). `null` is a real answer and not an
+   * omission: it is what every checkpoint voice sends, and sending one on a
+   * checkpoint is `reference_not_allowed`. Whether a voice wants one is the
+   * ROW's to say (`needsReference`), never this function's to guess.
+   */
+  const jobId = reference === null
+    ? await client.loadVoice(voice)
+    : await client.loadVoice(voice, { reference });
   for await (const event of client.events(jobId)) {
     if (event.event === 'warming') onProgress?.(event.data.message);
     else if (event.event === 'queued') onProgress?.(`queued (position ${event.data.position})`);

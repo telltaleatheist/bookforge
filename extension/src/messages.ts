@@ -150,6 +150,17 @@ export interface VoiceRow {
   reason: string | null;
   /** Is it the voice on the card at this moment? */
   resident: boolean;
+  /**
+   * Does loading it need a reference clip (`VoiceInfo.needsReference`)?
+   *
+   * True for a `zeroshot` voice — the base weights plus somebody's recording —
+   * and false for every other kind. The pickers read it to decide whether to
+   * show the clip list under the row; loading without one is refused
+   * `reference_required`, and loading a CHECKPOINT with one is refused
+   * `reference_not_allowed`. It is the row's fact, never inferred from the id:
+   * a server is entitled to call a zero-shot voice anything it likes.
+   */
+  needsReference: boolean;
 }
 
 /** The selected server and what is on its card. Replaces the old ServerConfig. */
@@ -172,6 +183,19 @@ export interface EngineStatus {
   holder: string | null;
   /** Minutes of no reading before this extension posts an unload (0 = never). */
   idleMinutes: number;
+  /**
+   * WHICH CLIP a resident zero-shot voice was cloned from, from
+   * `/v1/activity`'s `resident.reference` — the name whoever loaded it sent,
+   * or its sha256 when they sent none.
+   *
+   * `zeroshot` is one voice id and any number of recordings, so without this
+   * two clients each assume the resident one is theirs. Null when the resident
+   * thing is a checkpoint voice or a model (nothing was cloned), and null as
+   * well when the read could not be made — `residentClipNote` says which.
+   */
+  residentClip: string | null;
+  /** Why `residentClip` is null when it is not simply "nothing was cloned". */
+  residentClipNote: string | null;
 }
 
 export const NO_ENGINE: EngineStatus = {
@@ -184,6 +208,8 @@ export const NO_ENGINE: EngineStatus = {
   note: null,
   holder: null,
   idleMinutes: 0,
+  residentClip: null,
+  residentClipNote: null,
 };
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
@@ -351,6 +377,24 @@ export interface SetVoiceCmd {
 }
 
 /**
+ * Switch the CLIP a zero-shot voice is cloned from — the other half of an
+ * identity whose first half is the voice id.
+ *
+ * It travels the same road as {@link SetVoiceCmd} and is acted on the same
+ * way, because it is the same act: a clone is the base weights plus ONE
+ * recording, so a different recording is a different speaker under an
+ * unchanged id, and reading on through the switch would be reading the rest of
+ * the page in somebody else's voice. `''` means "no clip picked", which is a
+ * state a zero-shot load is refused in (`reference_required`), not a default.
+ */
+export interface SetClipCmd {
+  target: 'background';
+  cmd: 'set-clip';
+  /** An id in the IndexedDB clip store (`clips.ts`), or `''` for none. */
+  clipId: string;
+}
+
+/**
  * Start / stop / discard a tab recording.
  *
  * The POPUP owns the gesture: `chrome.tabCapture.getMediaStreamId` needs a user
@@ -419,6 +463,7 @@ export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'l
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
 export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
+export interface SetClipOffscreenCmd { target: 'offscreen'; cmd: 'set-clip'; clipId: string; }
 export interface SetIdleOffscreenCmd { target: 'offscreen'; cmd: 'set-idle'; minutes: number; }
 /** The Options page changed the registry or the selection: drop the session and
  *  re-read. Sent by background, which is the context that can watch storage. */
@@ -467,12 +512,14 @@ export type RuntimeMessage =
   | QueueOpCmd
   | SyncCmd
   | SetVoiceCmd
+  | SetClipCmd
   | PlayItemCmd
   | PlaySequenceCmd
   | EngineOffscreenCmd
   | QueueOffscreenCmd
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
+  | SetClipOffscreenCmd
   | SetIdleOffscreenCmd
   | ServerChangedOffscreenCmd
   | SnapshotMsg
@@ -498,6 +545,19 @@ export interface Settings {
   /** The voice the popup's Load button will make resident, and the one the
    *  pickers show. '' until the first read of the selected server's voices. */
   voice: string;
+  /**
+   * WHICH STORED CLIP a zero-shot load will be cloned from — an id in the
+   * IndexedDB clip store (`clips.ts`), or `''` for "none picked".
+   *
+   * Beside the voice because it QUALIFIES the voice: `zeroshot` names the base
+   * weights and this names the recording, and neither is the whole answer on
+   * its own. `''` is not a default that gets filled in — a zero-shot load with
+   * no clip is refused `reference_required`, by the popup before it asks and
+   * by the server if it ever got there, because the base weights with no
+   * reference are the MODEL'S own speaker under a voice id the user chose for
+   * somebody else's.
+   */
+  zeroshotClipId: string;
   /**
    * Minutes of no reading before this extension posts an unload-voice job to
    * the selected server (0 = never). A CLIENT timer — see SetIdleCmd.
@@ -548,6 +608,9 @@ export const DEFAULT_SETTINGS: Settings = {
   port: typeof __BFR_PORT__ === 'number' ? __BFR_PORT__ : 8766,
   token: typeof __BFR_TOKEN__ === 'string' ? __BFR_TOKEN__ : '',
   voice: '',
+  // No clip, and nothing picks one: which recording a clone is made from is a
+  // person's choice about whose voice a book is read in.
+  zeroshotClipId: '',
   // 15 minutes: long enough that closing one article and opening another does
   // not pay for a load twice, short enough that a card is not held overnight by
   // a browser nobody is listening to. Owen's rule (2026-09-14) is that a model

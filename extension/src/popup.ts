@@ -45,6 +45,7 @@ import {
   formatElapsed,
   minimumCaptureRateFor
 } from '../../shared/audio/tab-recording';
+import { listClips, type ClipSummary } from './clips';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -56,6 +57,9 @@ const playPauseBtn = $('playPause') as HTMLButtonElement;
 const stopBtn = $('stopBtn') as HTMLButtonElement;
 const nowNote = $('nowNote') as HTMLDivElement;
 const voiceEl = $('voice') as HTMLSelectElement;
+const clipRow = $('clipRow') as HTMLDivElement;
+const clipEl = $('clip') as HTMLSelectElement;
+const clipNote = $('clipNote') as HTMLDivElement;
 const idleEl = $('idle') as HTMLSelectElement;
 const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
 const bufferNote = $('bufferNote') as HTMLDivElement;
@@ -361,8 +365,11 @@ function renderEngine(): void {
   const engine = s?.engine ?? null;
   const connected = !!s?.connected;
 
-  const sig = rows.map((v) => `${v.id}:${v.engine}:${v.loadable}:${v.resident}`).join('|');
+  const sig = rows
+    .map((v) => `${v.id}:${v.engine}:${v.loadable}:${v.resident}:${v.needsReference}`)
+    .join('|');
   if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(rows); }
+  renderClipPicker(rows);
 
   // Mirror the resident voice so the popup stays in lockstep with whatever the
   // server is actually holding. Don't clobber while the dropdown is open.
@@ -384,13 +391,87 @@ function renderEngine(): void {
       + 'here would take the card from whatever put it there.', 'bad');
     return;
   }
+  /*
+   * WHICH CLIP, BESIDE WHICH VOICE. `zeroshot` is one voice id and any number
+   * of recordings, so "zeroshot on mac-studio" is not an answer to "whose
+   * voice will this be read in" — and this extension is not the only client
+   * that can put one there. `residentClipNote` is the case where the server
+   * could not be asked; it is SHOWN rather than left blank, because a blank
+   * where a clip name goes reads as "no clip", which would be a lie.
+   */
+  if (engine?.resident && engine.residentClipNote) {
+    setNote(`${engine.resident} on ${engine.server} — ${engine.residentClipNote}`, 'bad');
+    return;
+  }
+  const clonedFrom = engine?.residentClip ? `, cloned from "${engine.residentClip}"` : '';
   setNote(
     engine?.resident
-      ? `${engine.resident} on ${engine.server} (${engine.backend ?? 'backend unknown'}).`
+      ? `${engine.resident} on ${engine.server}${clonedFrom} `
+        + `(${engine.backend ?? 'backend unknown'}).`
       : `${engine?.server ?? 'No server'} — nothing loaded. Press Load voice.`,
     '',
   );
 }
+
+// ─── The zero-shot clip ───────────────────────────────────────────────────────
+//
+// A `zeroshot` voice is the base weights plus somebody's recording, and the
+// RECORDING is this browser's (plan §4b). So the picker for it sits directly
+// under the voice, appears only for a row whose `needsReference` is true, and
+// is a choice with NO default: loading with nothing picked is refused
+// `reference_required` — the server's own word — before anything is sent.
+
+/** The clips in this browser's store, read once when the popup opens. */
+let clips: ClipSummary[] = [];
+/** The one the Load button will send, or '' for none. */
+let selectedClip = '';
+/** Rebuild the <option>s only when something actually changed. */
+let clipSig: string | null = null;
+
+function renderClipPicker(rows: VoiceRow[]): void {
+  const row = rows.find((v) => v.id === selectedVoice);
+  const wanted = row?.needsReference === true;
+  clipRow.classList.toggle('hidden', !wanted);
+  if (!wanted) return;
+
+  const sig = `${clips.map((c) => `${c.id}:${c.name}`).join('|')}#${selectedClip}`;
+  if (sig !== clipSig) {
+    clipSig = sig;
+    clipEl.textContent = '';
+    // "No clip" is a real, named state and it is FIRST, so a picker that has
+    // not been touched says what it is rather than silently nominating a
+    // recording the user did not choose.
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = clips.length === 0 ? 'No clips in this browser' : 'No clip picked';
+    clipEl.appendChild(none);
+    for (const c of clips) {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = `${c.name} — ${c.seconds.toFixed(1)}s`;
+      o.title = c.transcript;
+      clipEl.appendChild(o);
+    }
+    clipEl.value = clips.some((c) => c.id === selectedClip) ? selectedClip : '';
+  }
+  clipNote.textContent = clips.length === 0
+    ? 'This voice is cloned from a recording and there are none here. Add one in Options → '
+      + 'Zero-shot clips (a WAV and the book-exact text it says).'
+    : selectedClip === ''
+      ? 'reference_required — pick a clip. The base weights with no recording are the model\'s '
+        + 'OWN speaker, not the voice you chose.'
+      : 'Loading this voice clones it from that recording.';
+}
+
+clipEl.addEventListener('change', () => {
+  // Picking a clip IS the instruction to use it, exactly as picking a voice
+  // is: a different recording is a different speaker under the same id.
+  selectedClip = clipEl.value;
+  clipSig = null;
+  void chrome.storage.local.set({ zeroshotClipId: selectedClip });
+  send({ target: 'background', cmd: 'set-clip', clipId: selectedClip });
+  renderEngine();
+});
 
 function setNote(text: string, cls: '' | 'good' | 'bad'): void {
   engineNote.textContent = text;
@@ -551,8 +632,22 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage) => {
 });
 
 // Seed the voice selection from storage before the first snapshot arrives.
+// The clip store is IndexedDB and is the same store the Options page writes
+// and the offscreen document reads — one store, three windows onto it.
+void listClips().then((found) => {
+  clips = found;
+  clipSig = null;
+  render();
+}, (err: unknown) => {
+  clips = [];
+  clipSig = null;
+  clipNote.textContent = err instanceof Error ? err.message : String(err);
+});
+
 void loadSettings().then((s) => {
   selectedVoice = s.voice;
+  selectedClip = s.zeroshotClipId;
+  clipSig = null;
   recordSpeed = (RECORD_SPEEDS as readonly number[]).includes(s.recordSpeed) ? s.recordSpeed : 1;
   recordingsDir = s.recordingsDir || DEFAULT_RECORDINGS_DIR;
   bufferEl.checked = s.bufferBeforePlaying;

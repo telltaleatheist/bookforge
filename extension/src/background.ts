@@ -18,6 +18,7 @@ import {
   RecordCmd,
   EngineCmd,
   QueueOpCmd,
+  SetClipCmd,
   SetVoiceCmd,
   SetIdleCmd,
   PutSettingsCmd,
@@ -186,6 +187,12 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
     }
     case 'set-voice':
       void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice });
+      return;
+    // The clip a zero-shot voice is cloned from. Relayed, not acted on: the
+    // offscreen document owns the session that has to close and the load that
+    // has to happen, exactly as it does for a voice.
+    case 'set-clip':
+      void sendToOffscreen({ target: 'offscreen', cmd: 'set-clip', clipId: (raw as SetClipCmd).clipId });
       return;
     case 'set-idle':
       void sendToOffscreen({ target: 'offscreen', cmd: 'set-idle', minutes: (raw as SetIdleCmd).minutes });

@@ -101,6 +101,38 @@
         nothing read, the extension unloads it. Loading it again costs the wait once.</p>
     </div>
 
+    <h2>Zero-shot clips</h2>
+    <p class="hint">A <strong>zero-shot</strong> voice is the base model plus <em>somebody's
+      recording</em>. The weights are the server's; the clip is <strong>yours</strong>, and it
+      lives in this browser — nothing here is uploaded until you load that voice. Pick which one to
+      use under the voice in the toolbar popup.</p>
+    <p class="hint">A clip is one <strong>WAV</strong> of one voice, about fifteen seconds
+      (<strong>30 s</strong> is the hard ceiling), plus the <strong>book-exact text it says</strong>.
+      The transcript is required and it is never a guess: a clone conditioned on the wrong words is
+      a whole book in a subtly wrong voice that nothing reports as a failure.</p>
+
+    <div id="clips" class="servers"></div>
+
+    <div class="field">
+      <label for="clipFile">Add a clip</label>
+      <input id="clipFile" type="file" accept="audio/wav,.wav" />
+      <div class="field">
+        <label for="clipName">Short name</label>
+        <input id="clipName" type="text" placeholder="the stranger" />
+        <p class="hint">What the server reports as the resident clip, so you (and anyone else on
+          that machine) can tell two recordings apart.</p>
+      </div>
+      <div class="field">
+        <label for="clipTranscript">Transcript — the exact words in the clip</label>
+        <textarea id="clipTranscript" rows="3"
+          placeholder="He had been walking for some time."></textarea>
+      </div>
+      <div class="row">
+        <button id="clipAdd">Add clip</button>
+        <span id="clipResult" class="result"></span>
+      </div>
+    </div>
+
     <h2>Playback</h2>
     <div class="field">
       <div class="checkbox">
