@@ -87,7 +87,7 @@ orchestrator claims the engine (`managed_by` set); T2 full pytest; then hand bac
 - **Windows orchestrator:** the Phase 17 pack rebuilt (sha 0da51e6d…) with a NEW consent setting —
   `%LOCALAPPDATA%\Crucible\config.toml` `[orchestrator] distro = "Ubuntu"` names the distro the orchestrator may
   manage (watch + claim + unit restart widen; destructive recipes stay refused by rootfs) — and the unit probe /
-  start / restart / tray Stop all carry `XDG_RUNTIME_DIR`. Tray swap + claim verification running as this is written.
+  start / restart / tray Stop all carry `XDG_RUNTIME_DIR`. **Tray swapped 08:24, pack 0da51e6d, pid 23052 — THE CLAIM LANDED:** 7101 `/v1/info` reads `engine.owner: wsl-unit`, 7100 `/v1/peer` reads `managed_by {crucible-orchestrator@owens-pc, http://127.0.0.1:7101}`, pairing file byte-identical. Measured on the way: `taskkill /PID` without /F does not stop the tray (PHASE17 §4.4 `POST /quit` owed). The morning's figures are in crucible PHASE15 §7.3/§7.6/§7b and PHASE17 §8 (f300df8).
 - Two things for later rulings: the tray has no shutdown route (PHASE17 §4.4 owed: `POST /quit`); `recipe_sha256` in
   envpacks.json is line-ending dependent (CRLF checkout vs LF) — one line to fix in release machinery.
 
