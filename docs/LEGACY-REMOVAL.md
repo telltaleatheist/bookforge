@@ -586,15 +586,63 @@ measured line between honest fast reads (≥0.75 of expected) and truncations (0
 `minChunkGap` measured over **1151 chunks of The Mysterious Stranger**: median 0.81 s,
 p10 0.39 s, min 0.00 s.
 
-## B2. OWED NEXT — `electron/orpheus-memory.ts`, not yet harvested
+## B2. The tier tables — `electron/orpheus-memory.ts`, HARVESTED 2026-09-15
 
-It was not on the deletion list and it holds the TIER TABLES every number above is sized
-against — `VLLM_TIERS` (`extreme: capMB 18432, marginMB 1024, ceiling 0.95, vllmBatch 96`)
-and the MLX tiers (`extreme: batchSize 64, cacheLimitGB 8, memBudgetGB 42`;
-`fast: 72/8/34`; `moderate: 48/6/22`; `light: 24/3/13`). Those are what
-`ORPHEUS_MLX_CACHE_LIMIT_GB`, `ORPHEUS_MLX_MEM_BUDGET_GB`, `ORPHEUS_GPU_MEM_UTIL` and
-`NARRATOR_HIGGS3_MLX_BATCH` are filled from, so they are the same class of fact as the 7x.
-**Harvest this file before it goes**, whether or not it is deleted in the same pass.
+This file was never on the deletion list and is **still on disk**, reachable only through
+two IPC knobs that size an engine this build no longer runs. It is harvested here because
+it is the SOURCE of every environment number in section A: `ORPHEUS_MLX_CACHE_LIMIT_GB`,
+`ORPHEUS_MLX_MEM_BUDGET_GB`, `ORPHEUS_GPU_MEM_UTIL` and `NARRATOR_HIGGS3_MLX_BATCH` are all
+filled from a tier row. Deleting it without this would lose the derivation, not just the
+values — the same class of loss as the 7x.
+
+**vLLM tiers** (Windows/Linux; `marginMB` is VRAM kept FREE, because vLLM reserves its
+fraction UP FRONT and a desktop that loses its last MB takes Chrome down mid-job):
+
+| tier | capMB | marginMB | ceiling | vllmBatch |
+| --- | --- | --- | --- | --- |
+| extreme | 18432 (KV ~10 GiB) | 1024 | 0.95 | 96 |
+| fast | 13312 (KV ~5 GiB) | 2048 | 0.88 | 64 |
+| moderate | 10240 (KV ~2.4 GiB) | 2048 | 0.70 | 40 |
+| light | 8704 | 2048 | 0.55 | 20 |
+
+`reservation = min(capMB, free − marginMB) − ORPHEUS_ADAPTER_HEADROOM_MB`, which is why
+`capMB ≥ 8824 + 1024 = 9848` for an adapter voice to fit at all.
+
+**MLX tiers** (Apple silicon, unified memory — overshoot means SWAP, not a clean failure):
+
+| tier | batchSize | cacheLimitGB | memBudgetGB | selected at |
+| --- | --- | --- | --- | --- |
+| extreme | 64 | 8 | 42 | ≥60 GB RAM |
+| fast | 72 | 8 | 34 | ≥44 GB |
+| moderate | 48 | 6 | 22 | ≥28 GB |
+| light | 24 | 3 | 13 | below |
+
+**The formula, and the measurement under it.** KV costs a MEASURED **0.1147 MB per
+generated token per row**, so the footprint scales with width × DEPTH — a 75-row batch at
+the 3700-token cap really peaked at **36.8 GB**, where the old width-only formula promised
+~30 GB and every Mac tier was overcommitted by roughly 2x. Rather than shrink `batchSize`
+(which would cost throughput on the SHORT batches that were never the problem), each batch
+derives its own width from its depth:
+
+    width × depth × 0.1147 MB + 6.9 GB weights + cacheLimitGB ≤ memBudgetGB
+
+`batchSize` stays the CEILING — the throughput knee, measured: **width 128 is SLOWER than
+96**. At full 3700-token depth the budgets yield extreme 64 rows (~42 GB), fast 46 (~34),
+moderate 22 (~22), light 7 (~13); shallow batches keep the full tier width.
+
+**Why extreme is 64/42 and not 96/55.** 55 was the budget at which width 96 survived even
+at worst-case depth, and the worst case is a bound the fleet never reaches — rows EOS far
+earlier than their cap, measured at width 96 on a real book: **26.9 GB actual against the
+55 GB bound, 42.1 vs 38.1 sent/min, same WER.** Then continuous batching
+(`ORPHEUS_MLX_CONTINUOUS`) kept the KV cache at full depth permanently — refilled rows are
+padded to the oldest live row — so the 55 GB worst case BECAME the steady state and the
+extend/filter transients on top of it read 53 GB. 64 brings the steady state to ~42 GB with
+the transients inside the budget. 42 is the floor that still yields 64 rows at the 3700 cap
+(27.1 GB headroom ÷ 0.414 GB per row = 65); **41 would trim it to 62.**
+
+**Status:** `orpheus-memory.ts` and `orpheus-batch.ts` are now dead knobs — they size an
+engine this build cannot start, and their Settings rows point at nothing. They are a
+follow-on deletion, and with this section the record no longer depends on them.
 
 ## C. Incidents
 
