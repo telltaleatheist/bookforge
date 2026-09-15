@@ -496,20 +496,21 @@ function toolPathText(raw: string | boolean | undefined): string {
                   bundled relocatable env and never need conda). Shown in dev /
                   bring-your-own setups.
 
-                  DELETE WITH THE SPAWN LAYER (audit section 3.15). Both
-                  readers of "tool-paths.json" -> "condaPath" are the LEGACY
-                  LOCAL NARRATOR SPAWN — "narrator-paths.ts" (env resolution for
-                  a per-engine conda env) and "narrator-spawn.ts" (the spawn's
-                  own conda prefix) — so this row dies in the commit that
-                  deletes that layer.
+                  IT SURVIVED THE DELETION, and for a reason worth writing
+                  down because the audit predicted the opposite. Audit section
+                  3.15 said both readers of "tool-paths.json" -> "condaPath"
+                  were the LEGACY LOCAL NARRATOR SPAWN, so the row would die
+                  with that layer. The layer IS dead (2026-09-15,
+                  docs/LEGACY-REMOVAL.md) — and the row is still live, because
+                  one reader was never the spawn: "getPythonInvocation()" with
+                  no engine resolves the TOOLS env, and its bring-your-own arm
+                  runs that env through conda. Prep, assembly and epub-align all
+                  go through it.
 
-                  THE SWITCH IS ALREADY GONE (2026-09-15,
-                  docs/LEGACY-REMOVAL.md); the spawn itself is HELD one more
-                  commit, because those files are the surviving record of
-                  narrator tuning measured over months and Crucible was found
-                  missing one of its knobs (a 7x MLX batch width) on the same
-                  day. Removing the door before the reader would strand exactly
-                  the machine the audit is run on.
+                  So the reader CHANGED rather than went. A machine using the
+                  bundled relocatable env never reaches this; a machine that
+                  pointed BookForge at its own conda still needs it, and taking
+                  the door away would strand exactly that machine.
                 -->
                 @if (!usingBundledEnv()) {
                 <div class="tool-row">
