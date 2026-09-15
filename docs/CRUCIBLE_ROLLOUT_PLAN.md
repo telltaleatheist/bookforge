@@ -127,6 +127,24 @@ child. All refused by name now, flags left declared so a stale script gets a sen
 using": a read is banned when the value is BOUND, and the two files allowed to look must throw
 about what they see.
 
+**The `.cmd` defect, found by Foundry and reproduced here (`7cf49297`).** `spawn('…crucible.cmd', argv)` throws **EINVAL** on Electron 33's Node — the CVE-2024-27980 fix refuses a
+`.cmd`/`.bat` without a shell — and the host pack's `crucible.cmd` is the ONLY Crucible CLI a
+Windows machine has, so the first real press of the uninstall door would have failed with nothing
+on screen about batch files. `electron/crucible/host-runner.ts` is BookForge's runner now: the
+package's `processRunner()` everywhere else, and `cmd.exe /d /s /c ""<program>" "<arg>""` with
+`windowsVerbatimArguments` for a batch target (`/d` skips AutoRun, whose output would land in the
+JSON this app parses; `/s` makes the quoting one rule). NOT `shell: true` — that is the injection
+hole the CVE is about. A token with `"` or `%` is `uninstall_bad_path`, refused not escaped: both
+would turn a path into a different path and this command deletes directories. A space is fine.
+Measured against a real scratch `.cmd` in a spaced directory: bare spawn EINVAL, hardened run exit
+7 with stdout, stream three lines, non-`.cmd` untouched. The INSTALL door spawns no `.cmd` today
+(win32 `install()` is HTTP plus `fileExists`/`readFile`) and shares the runner anyway, with the
+no-spawn fact pinned. Keeper +6 (29). **Ruling, both apps: the uninstall checkboxes are
+CLEAR-ONLY** — a change clears the plan and the person presses "Show me what would go" again; no
+automatic re-run, because a dry run measures six weight directories and a plan that reappeared by
+itself under a live "Remove it" button is somebody pressing Remove against numbers they had not
+read.
+
 **Gates:** `npx tsc -p tsconfig.electron.json` 0, `npx tsc --noEmit -p .` 0, `npx ng build` 0,
 `node tools/run-keepers.js` **159 suites, 0 failing** (1 skipped: `test-quire`, no
 `BOOKFORGE_KA_EPUB`). Every new row verified in `dist/renderer`.
