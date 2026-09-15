@@ -38,7 +38,13 @@ Protocol (one JSON object per line):
                  # 'cancel'/'stop' ABORT a running generate_batch - see the reader
                  # thread in run(). Un-rendered rows come back as ordinary per-item
                  # failures with message 'cancelled', then 'batch_done' as always.
-  stdout: {type: 'ready', device, backend?}
+  stdout: {type: 'ready', device, backend?, itemSampling: true}
+                 # `itemSampling` says THIS BUILD parses `sampling` on a
+                 # generate_batch item (below). A narrator without the key has
+                 # no such channel and would drop a rung in silence, so a client
+                 # driving a take ladder must refuse rather than render take 0
+                 # and call it take N. Engine-level support is a separate and
+                 # later fact: `sampling_not_supported`, per row.
           {type: 'status' | 'loaded' | 'error' | 'stopped', ...}
           {type: 'audio', format:'pcm16', data, duration, sampleRate}        # batch
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
@@ -2253,8 +2259,26 @@ class OrpheusStreamServer:
         # sent even when it could not be determined - as absent, which the pool reads
         # as "unknown" and treats as NOT capable.
         _warn_fake_engine('ready')
+        # `itemSampling` IS THE CHANNEL SAYING IT EXISTS, and it is a BUILD fact,
+        # not an engine one. Crucible resolves a take ladder's rung and sends the
+        # numbers on every `generate_batch` item; a narrator built before
+        # `engine/item_sampling.py` has no such channel and DROPS the key in
+        # silence - `_resolve_row` there read only `item['voice']` - so take 1
+        # rendered at take 0's sampling and was reported as a successful take 1.
+        # That is the shape crucible/docs/ARCHITECTURE.md's audit names: a fact
+        # with two owners (the recipe's narrator pin and Crucible's belief about
+        # it) and nothing comparing them. Measured 2026-09-15: two renders of one
+        # sentence at take 0 and take 1 came back byte-identical because the env's
+        # pinned narrator predated the channel. So the handshake carries the fact,
+        # and Crucible refuses a rung by name when it is absent.
+        #
+        # Sent at 'ready', which is BEFORE any engine loads, so it can only say
+        # "this narrator parses `sampling` on an item" - never "this engine has
+        # that lever". The latter stays where it belongs: `accept_item_sampling`,
+        # per row, as `sampling_not_supported`.
         send_response('ready', {'device': self.device,
-                                **({'backend': self.backend} if self.backend else {})})
+                                **({'backend': self.backend} if self.backend else {}),
+                                'itemSampling': True})
 
         inbox: "queue.Queue" = queue.Queue()
         reader = threading.Thread(target=self._read_stdin, args=(inbox,),

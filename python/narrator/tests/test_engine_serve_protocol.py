@@ -221,6 +221,25 @@ class ServeProtocolTest(_WorkerCase):
         self.assertEqual(msgs[-1]['backend'], 'transformers')
         self.assertTrue(all(m['type'] == 'status' for m in msgs[:-1]), msgs)
 
+    def test_handshake_advertises_the_per_item_sampling_channel(self):
+        """A client driving a take ladder can tell whether this narrator HAS one.
+
+        Measured 2026-09-15: Crucible sent take 1's `{"temperature": 0.7}` on
+        every `generate_batch` item to a narrator whose env pin predated
+        `engine/item_sampling.py`. That narrator's `_resolve_row` read only
+        `item['voice']`, so the rung was dropped in silence and take 1 came back
+        BYTE-IDENTICAL to take 0 - reported as a successful take 1. Nothing
+        compared the recipe's pin with Crucible's belief about it.
+
+        The handshake is where that comparison becomes possible, so the fact
+        rides on `ready`. It is a BUILD fact - `ready` is sent before any engine
+        loads - and says only that an item's `sampling` is parsed at all. Whether
+        the loaded ENGINE has a given lever is `accept_item_sampling`'s answer,
+        per row, as `sampling_not_supported`.
+        """
+        ready = self._ready()
+        self.assertIs(ready.get('itemSampling'), True, ready)
+
     def test_unknown_stock_voice_is_refused_not_substituted(self):
         self._ready()
         self.w.send(action='load', voice='nosuchvoice', warm=False)
