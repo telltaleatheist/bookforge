@@ -2962,14 +2962,34 @@ async function liveStepIds(): Promise<Set<string>> {
 async function cleanNarratorScratchRoot(): Promise<void> {
   await sweepDirContents(narratorScratchRoot());
 
-  // WSL Orpheus runs the WSL-native e2a, which writes sessions to its own
-  // <wslE2a>/tmp (not <library>/tmp) — sweep that too so it doesn't accumulate.
-  // GATED on a timeout-bounded liveness probe: this runs at STARTUP, and fs against
-  // \\wsl$ with a wedged VM strands the readdir/rm promises forever (and used to
-  // contribute to the boot hang).
+  // A WSL render writes its session into BookForge's OWN guest directory
+  // (`<guest home>/bookforge-sessions`, `getWslSessionsRoot`), which is not under
+  // the scratch root swept above — so sweep that too or it accumulates in the VM.
+  //
+  // GATED ON THE ENGINE THAT ACTUALLY RENDERS THERE, and it was not. This asked
+  // `shouldUseWsl2ForOrpheus()` until 2026-09-15, which is the RETIRED engine's
+  // toggle: `TtsEngineId` is `'higgs'` alone, so nothing selects Orpheus, the
+  // condition was false on every machine, and the sweep had quietly stopped
+  // running. Higgs is what crosses into the guest now (`narratorRunsInWsl` →
+  // `shouldUseWsl2ForHiggs`) and writes to the SAME root — so guest sessions were
+  // piling up inside WSL with nothing saying so. The shape this project keeps
+  // paying for: a condition whose falseness looks like health.
+  //
+  // The old comment also described `<wslE2a>/tmp`, an ebook2audiobook checkout's
+  // own tmp. That has not been this path since Phase 6 — the root is BookForge's
+  // own guest directory (see `guestRoot` in parallel-tts-bridge.ts) — so it is
+  // corrected with the gate rather than left describing a path nothing sweeps.
+  //
+  // ORPHEUS ITSELF IS UNTOUCHED. Owen, 2026-09-15: *"the orpheus environment can
+  // stay ... i might use orpheus again in the future"*. Its WSL path is still
+  // here; what changed is only which toggle this SWEEP asks about.
+  //
+  // STILL GATED on a timeout-bounded liveness probe: this runs at STARTUP, and fs
+  // against \\wsl$ with a wedged VM strands the readdir/rm promises forever (and
+  // used to contribute to the boot hang).
   try {
-    const { shouldUseWsl2ForOrpheus, getWslSessionsRoot, wslPathToWindows } = await import('./tool-paths.js');
-    if (shouldUseWsl2ForOrpheus()) {
+    const { shouldUseWsl2ForHiggs, getWslSessionsRoot, wslPathToWindows } = await import('./tool-paths.js');
+    if (shouldUseWsl2ForHiggs()) {
       const { isWslAlive } = await import('./wsl-lifecycle.js');
       if (await isWslAlive()) {
         await sweepDirContents(wslPathToWindows(getWslSessionsRoot()));
