@@ -202,6 +202,28 @@ retrieve and return the audio."*
   MLX-arm render with a clip (owed since 09-13; the button's T9 does not cover it — a
   separate measured run on the Mac once the clip picker exists).
 
+> **CONTRACT GAP, measured 2026-09-14 while building step 3 — the clip store is BLOCKED and
+> was not built.** Two things this section assumes are not in the contract or the SDK:
+>
+> 1. **There is no `reference` field.** `load-voice` takes a voice id and nothing else
+>    (`@crucible/client` 0.6.0's `loadVoice(voice: string)`; `JobRequest` is
+>    `{type, model?, params, inputs}` and PHASE3-TTS.md §6 names no reference channel). The
+>    `reference: {data: <base64 wav>}` this section describes exists nowhere I can find. No
+>    wire field was invented for it.
+> 2. **A `kind = "zeroshot"` voice is refused BEFORE any engine starts**, on either arm, at
+>    the load door as well as the render door — PHASE3-TTS.md §5's
+>    `narratorvoices.voice_entry` list and §6's `voice_kind_unsupported`, whose own words are
+>    *"narrator's `load` message carries `voice`, `modelDir`, `adapterDir`, `baseDir`, `caps`
+>    and `warm` — **and no reference clips**. There is no channel on this wire for the thing
+>    a zero-shot voice *is*."*
+>
+> The manifest CAN say `clips = "from-request"` (§157's escape hatch: "a job naming it must
+> carry the clips in its `inputs`"), so the shape exists for a render job — but a streaming
+> session takes no inputs at all, and the load door refuses the kind regardless. So the
+> extension's clip picker needs, in this order: narrator's load message to carry clips, the
+> `voice_kind_unsupported` refusal lifted, and a `load-voice` field to put them in. Until
+> then a clip store in the extension would be a file input wired to a refusal.
+
 ## 5. Order of work
 
 1. Owen's ruling on §2 (takes are the spread) — RULED, see §2; narrator's sampling channel assigned. 2. `shared/listen-text/` + `shared/listen-client/`
@@ -210,3 +232,49 @@ extracted from the app with keepers (no behaviour change; the 8766 relay still r
 Orpheus removed; "Buffer before playing" as a client gate. 4. BookForge's Streaming tab on the
 shared client. 5. Owen's Sunday check on both machines. 6. Delete the 8766 relay and
 `tts-api-server.ts`. 7. Delete the Enhance page and its bridge (ruled: drop). 8. Delete the TTS server button and its options from BookForge once the extension carries every one of them.
+### Status (2026-09-14, evening)
+
+- **Step 2 — LANDED.** `9d2a85f3` moved the Listen text path to `shared/listen-text/`
+  (`normalize.ts`, `chunks.ts`, and the segmenter out of `text-ai.ts`) with no behaviour change
+  but one stated exception: `splitIntoSentences` no longer logs per paragraph, because it now
+  runs in a browser tab's console. Two knots had to be untied for a browser to compile the
+  graph — the packer's 25-char floor became an import instead of a hand-written mirror, and
+  `NarrationTextRewrite` moved to `shared/text/` so the pure number rules no longer drag 7,000
+  lines of EPUB processor into a bundle. `tts-punctuation.ts`, `tts-number-rules.ts` and
+  `number-expansion.ts` stayed in `electron/` ON PURPOSE: the orpheus-finetune side loads them
+  as `dist/electron/*.js` (docs/NARRATION_TEXT_PASS.md), so the shared → electron arrow is
+  named and reasoned in `normalize.ts`'s header rather than a path changing in silence under a
+  second repository. `a7f12592` moved the session policy
+  (`shared/listen-client/session-policy.ts`, out of `stream-scheduler.ts`) and the Crucible row
+  layer (`crucible-rows.ts`, out of `electron/crucible/stream.ts`); `0d372bce` moved the
+  read-ahead depth beside it. Both app files keep their exported surfaces byte-identical to
+  their callers, and `test-crucible-stream` (22 checks) is green unchanged — including the exact
+  wording a dropped session fails its rows with. The 8766 relay runs on this code.
+- **Step 3 — LANDED.** `c6a7897e`. The registry, the picker and the connect code
+  (`extension/src/servers.ts`, the SDK's `parsePairing`, one selected server, and no fallback to
+  "the first one"); the five doors (`extension/src/crucible.ts`); Load / Unload as `load-voice`
+  and `unload-voice` jobs whose own events drive the button; the stream client in the offscreen
+  document, on the shared policy and the shared row layer; Orpheus, the engine selector,
+  `cpuWorkers`, the device row and the restart row all gone; "Buffer before playing" a pure
+  client gate, with `fastStart` off the wire entirely. `db775aa5` is the two keepers —
+  `test-listen-text-one-source` (the two bundles' function bodies, byte for byte) and
+  `test-extension-option-columns` (both columns of §0's table, by name).
+  - **NOT built: the zero-shot clip store (§4b).** See the contract gap recorded there: there is
+    no `reference` field on `load-voice`, and a `kind = "zeroshot"` voice is refused before any
+    engine starts. Nothing was invented to work around it.
+  - **Deliberately KEPT: BookForge's host/port/token rows in Options**, relabelled for what they
+    are. The tab recorder hands raw PCM to a machine with a filesystem, step 6 deletes the server
+    that answers it, and the `record.*` verbs have nowhere else to go yet. Removing those rows
+    now would break a working feature to satisfy a table.
+- **Step 4 — SATISFIED IN SUBSTANCE, NOT RELOCATED. RULING OWED FROM OWEN.** BookForge's
+  Streaming tab does run the same shared client: the policy it drives IS
+  `shared/listen-client/session-policy.ts`, the rows behind it ARE
+  `shared/listen-client/crucible-rows.ts`, and it reaches the same registry through the same
+  venue decision. What is NOT done is moving that client into `src/app/core/listen/` so the
+  RENDERER talks to the Crucible itself — because that puts a bearer token in the Angular
+  renderer, and `electron/crucible/servers.ts` refuses to hand one out by design: "the only type
+  that carries a plaintext token out of the registry" is the main-process one, and every listing
+  carries `tokenMasked`. The two ways forward are a token door to the renderer, or an IPC byte
+  pipe for the session's five verbs — which is a relay, and this phase exists to delete one. No
+  door was opened on a guess. The tab's process buttons are still BookForge's own; turning them
+  into the popup's Load/Unload is step 8's work and touches the files the Enhance deletion is in.
