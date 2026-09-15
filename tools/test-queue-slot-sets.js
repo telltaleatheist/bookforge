@@ -98,6 +98,17 @@ const unknownUpstreams = (servers) =>
   Object.fromEntries(servers.map((name) => [name, 'unknown']));
 
 /**
+ * Every named server as a plain ENGINE — the overwhelmingly common case and
+ * every pre-Phase-17 Crucible.
+ *
+ * The default for tests that are not about the orchestrator relation, because
+ * an engine is what draws the bench those tests were written against. The
+ * orchestrator cases state their own.
+ */
+const allEngines = (servers) =>
+  Object.fromEntries(servers.map((name) => [name, 'engine']));
+
+/**
  * The step that still charges the legacy set — `generate-sentences` with
  * `method: 'epub-align'`.
  *
@@ -117,9 +128,10 @@ const epubAlignStep = (over = {}) => stepOf({
  * running `slotSetForStep` over the jobs. `jobs` defaults to none, which is the
  * bench Owen asked for — one GPU slot per registered server and nothing else.
  */
-const factsOf = ({ servers = [], upstreams, occupied = [], jobs = [] }) => ({
+const factsOf = ({ servers = [], upstreams, roles, occupied = [], jobs = [] }) => ({
   enabledServers: servers,
   upstreams: upstreams ?? unknownUpstreams(servers),
+  roles: roles ?? allEngines(servers),
   occupied,
   alignerCharged: slots.longformAlignCharged({ jobs }),
 });
@@ -230,12 +242,15 @@ test('an engine nobody has ASKED keeps its lane — not knowing is not knowing t
 
 test('a server the caller said NOTHING about is refused by name, never defaulted', () => {
   assert.throws(
-    () => slots.slotSets({ enabledServers: ['mac'], upstreams: {}, occupied: [], alignerCharged: false }),
+    () => slots.slotSets({
+      enabledServers: ['mac'], upstreams: {}, roles: { mac: 'engine' },
+      occupied: [], alignerCharged: false,
+    }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], occupied: [], alignerCharged: false }),
+    () => slots.slotSets({ enabledServers: [], roles: {}, occupied: [], alignerCharged: false }),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -243,13 +258,13 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
 
 test('a caller that said nothing about the LEGACY row is refused by name too', () => {
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], upstreams: {}, occupied: [] }),
+    () => slots.slotSets({ enabledServers: [], upstreams: {}, roles: {}, occupied: [] }),
     /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, occupied: [LEGACY], alignerCharged: false,
+      enabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false,
     }),
     /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
@@ -286,6 +301,113 @@ test('WITH NOTHING QUEUED there is no legacy row: one GPU slot per server, and t
     'every GPU row is a registered server’s, and there is no other kind');
   assert.strictEqual(slots.slotsOf(sets, LEGACY, 'gpu'), 0,
     'a set that is not on the bench has no room — and nothing is asking for one');
+});
+
+/*
+ * ── THE BENCH OWEN COUNTS ───────────────────────────────────────────────────
+ *
+ * Measured 2026-09-15: he launched and read *"0 of 8 slots in use"* over
+ * `local · GPU`, `local — routed elsewhere · CPU ×2`, `mac · GPU`,
+ * `mac — routed elsewhere · CPU ×2` and `BookForge itself · CPU ×2`, with a
+ * record on disk saying NEITHER engine has an upstream. His ruling: *"i should
+ * see two cpu slots (local) and two gpu slots (one wsl crucible engine, one mlx
+ * crucible engine)."*
+ *
+ * The number on that header is `benchLanes(snapshot).length`, so it is pinned
+ * here at that level rather than at the set list: four LANES, not four rows.
+ */
+test('no engine has an upstream: the bench is FOUR lanes and not one says "routed elsewhere"', () => {
+  const sets = slots.slotSets(factsOf({
+    servers: ['local', 'mac'], upstreams: { local: 'none', mac: 'none' },
+  }));
+  const lanes = bench.benchLanes({ jobs: [], running: false, slotSets: sets });
+  assert.strictEqual(lanes.length, 4, 'the header reads "of 4", never "of 8"');
+  assert.deepStrictEqual(
+    lanes.map((l) => `${l.setLabel} · ${l.resource} · slot ${l.index} of ${l.of}`),
+    [
+      'local · gpu · slot 1 of 1',
+      'mac · gpu · slot 1 of 1',
+      'BookForge itself · cpu · slot 1 of 2',
+      'BookForge itself · cpu · slot 2 of 2',
+    ],
+  );
+  assert.ok(!lanes.some((l) => l.setLabel.includes('routed elsewhere')),
+    'a cloud lane belongs to an engine that CAN forward work, and neither of these can');
+});
+
+// ── An ORCHESTRATOR has no card, so it draws no row ─────────────────────────
+//
+// crucible `docs/PHASE17-ORCHESTRATOR.md` §1: backend kind `orchestrator`, ZERO
+// job types, manages exactly one engine. Owen, 2026-09-15: *"crucible on windows
+// is a passthrough orchestrator so it shouldnt show up."* Measured the same day
+// on his machine: :7101 answers `role: orchestrator`, `jobTypes: []`,
+// `engine {url: http://127.0.0.1:7100, backend: cuda-linux, owner: wsl-unit}`,
+// and :7100 answers `role: engine` with eleven job types.
+
+test('a registered ORCHESTRATOR draws no GPU row and no cloud lane', () => {
+  const sets = slots.slotSets(factsOf({
+    servers: ['tray', 'mac'],
+    roles: { tray: 'orchestrator', mac: 'engine' },
+    upstreams: { tray: 'configured', mac: 'none' },
+  }));
+  assert.deepStrictEqual(sets.map((s) => s.id), ['mac', slots.LOCAL_WORK_SET],
+    'a GPU slot for a process that serves no job types is a lane nothing can fill');
+  assert.strictEqual(slots.slotsOf(sets, 'tray', 'gpu'), 0);
+  assert.strictEqual(slots.slotsOf(sets, 'tray:cloud', 'cpu'), 0,
+    'not even a cloud lane: it settles nothing and forwards nothing of its own');
+});
+
+test('the ENGINE behind it draws the row, so the card is counted exactly once', () => {
+  /*
+   * Both halves registered — the tray process and the WSL engine it manages —
+   * which is the shape that would otherwise draw two GPU rows over one 3090 Ti.
+   * Nothing dedupes them: the orchestrator simply has no row to collide with.
+   */
+  const sets = slots.slotSets(factsOf({
+    servers: ['tray', 'local'],
+    roles: { tray: 'orchestrator', local: 'engine' },
+    upstreams: { tray: 'none', local: 'none' },
+  }));
+  assert.deepStrictEqual(sets.filter((s) => s.gpu > 0).map((s) => s.id), ['local']);
+});
+
+test('an orchestrator STILL HOLDING something of ours keeps its row, retiring', () => {
+  // It is skipped rather than marked seen, for the reason the absent cloud lane
+  // is: a row is never yanked out from under a running step.
+  const sets = slots.slotSets(factsOf({
+    servers: ['tray'], roles: { tray: 'orchestrator' }, upstreams: { tray: 'none' },
+    occupied: ['tray'],
+  }));
+  const row = sets.find((s) => s.id === 'tray');
+  assert.ok(row, '§4.3: work that started somewhere finishes there');
+  assert.strictEqual(row.retiring, true);
+});
+
+test('a server nobody has asked about its ROLE keeps its row — every older Crucible is an engine', () => {
+  const sets = slots.slotSets(factsOf({
+    servers: ['mac'], roles: { mac: 'unknown' }, upstreams: { mac: 'none' },
+  }));
+  assert.deepStrictEqual(sets.map((s) => s.id), ['mac', slots.LOCAL_WORK_SET],
+    'absence of knowledge is not absence of an engine, and a bench that emptied itself '
+    + 'until the first read landed would be worse than one that corrects itself a tick later');
+});
+
+test('a caller that said nothing about ROLES is refused by name, never defaulted', () => {
+  assert.throws(
+    () => slots.slotSets({
+      enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: false,
+    }),
+    /`roles` was not supplied/,
+    'the type says required; this is for the callers the compiler does not see',
+  );
+  assert.throws(
+    () => slots.slotSets({
+      enabledServers: ['mac'], upstreams: { mac: 'none' }, roles: {},
+      occupied: [], alignerCharged: false,
+    }),
+    /nothing was said about whether "mac" is an engine or an orchestrator/,
+    'a name with no entry is a caller that forgot, not a server with no role',
+  );
 });
 
 test('A QUEUED epub-align brings the legacy row back, with its one card', () => {
@@ -785,6 +907,77 @@ test('a DISABLED server finishes what it has and takes nothing new', async () =>
   await settle(40);
   assert.ok(!engine.snapshot().slotSets.some((s) => s.id === 'mac'),
     'and the set is gone once its occupant lands');
+});
+
+/*
+ * ── THE DEFECT A UNIT TEST CANNOT SEE ───────────────────────────────────────
+ *
+ * Measured on Owen's machine, 2026-09-15. He launched, the window asked for one
+ * snapshot while `crucible-upstreams.json` did not yet exist (it was created
+ * three seconds later, at 15:04:16, by the very reads that answer this), so both
+ * engines were `unknown` — which DRAWS the lane — and the bench read "0 of 8
+ * slots in use". Coordination answered a moment later and the record became
+ * right, and the window never heard: every other publication is a structural
+ * change in the QUEUE, and an idle queue has none. `GET /api/queue/snapshot`
+ * against that same running process answered three sets while the bench drew
+ * five.
+ *
+ * So the fix is not an earlier read — the rest of these reads are HTTP to a WSL
+ * guest and a Mac, and `unknown → draw it` stays the rule — but that the record
+ * ANNOUNCES what it learns and the engine republishes. This is that, driven
+ * through the real record and the real engine, with nothing in the queue.
+ */
+test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redraw it', async () => {
+  const routes = require(path.join(DIST, 'crucible', 'routes.js'));
+  // As at launch: nothing has been asked, so every engine is `unknown`.
+  routes.forgetCrucibleRoutes();
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
+  await fresh('record-invalidates', [fakeModule('tts-conversion', { travels: true })], host);
+
+  const published = [];
+  const stop = engine.onQueueChanged((snap) => { published.push(snap); });
+
+  assert.deepStrictEqual(
+    engine.snapshot().slotSets.map((s) => s.id),
+    ['local', 'local:cloud', 'mac', 'mac:cloud', slots.LOCAL_WORK_SET],
+    'the launch bench is the conservative one BY DESIGN — this is the snapshot the window got',
+  );
+
+  // The two reads land. NOTHING is queued, so no pump, no step, no structural change.
+  routes.noteCrucibleUpstreams('local', false);
+  routes.noteCrucibleUpstreams('mac', false);
+
+  assert.strictEqual(published.length, 2, 'each answer is news exactly once');
+  const last = published[published.length - 1];
+  assert.deepStrictEqual(last.slotSets.map((s) => s.id), ['local', 'mac', slots.LOCAL_WORK_SET]);
+  assert.strictEqual(bench.benchLanes(last).length, 4, 'four slots, which is what Owen asked for');
+  assert.ok(!bench.benchLanes(last).some((l) => l.setLabel.includes('routed elsewhere')));
+
+  // Re-recording the SAME answer is not news: coordination runs on every connect.
+  routes.noteCrucibleUpstreams('mac', false);
+  assert.strictEqual(published.length, 2, 'a listener fired on every connect would be a timer');
+
+  // A role landing is news too — and takes the orchestrator's row off the bench.
+  routes.noteCrucibleRole('mac', {
+    server: { name: 'crucible-orchestrator@owens-pc', version: '0.6.0', apiVersion: 1 },
+    role: 'orchestrator',
+    engine: {
+      name: 'crucible@owens-pc-wsl', url: 'http://127.0.0.1:7100',
+      backend: 'cuda-linux', owner: 'wsl-unit',
+    },
+  });
+  assert.strictEqual(published.length, 3);
+  assert.deepStrictEqual(
+    published[2].slotSets.map((s) => s.id), ['local', slots.LOCAL_WORK_SET],
+    'a process that serves no job types gets no card',
+  );
+  assert.strictEqual(
+    routes.crucibleEngineBehind('mac').url, 'http://127.0.0.1:7100',
+    'and the engine it fronts is remembered, so an operator can be told what to register',
+  );
+
+  stop();
+  routes.forgetCrucibleRoutes();
 });
 
 test('the legacy spawn keeps ONE card, and a step that cannot travel waits for it', async () => {

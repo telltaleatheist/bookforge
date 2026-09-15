@@ -48,9 +48,14 @@
  * *"there will never, ever be a local gpu configured. there simply wont be an
  * outlet for it."* The end state is exactly:
  *
- *     <server>     [ gpu ] [ cpu ] [ cpu ]     one per REGISTERED Crucible
+ *     <server>     [ gpu ] [ cpu ] [ cpu ]     one per REGISTERED Crucible ENGINE
  *     <server>:cloud       [ cpu ] [ cpu ]     ONLY if it has an upstream
  *     local-work           [ cpu ] [ cpu ]     CPU slots stay local
+ *
+ * — ENGINE, because a registered address can also be an ORCHESTRATOR, which
+ * serves no job types and has no card ({@link EngineRole}). It draws no row at
+ * all; the engine it fronts draws one. Owen, 2026-09-15: *"crucible on windows
+ * is a passthrough orchestrator so it shouldnt show up."*
  *
  * — and no more. Owen again, 2026-09-15: *"without a crucible server, there is
  * no gpu slot, because bookforge shouldnt know how to drive gpu work in-app …
@@ -423,6 +428,36 @@ export function longformAlignCharged(
  */
 export type EngineUpstreams = 'configured' | 'none' | 'unknown';
 
+/**
+ * WHICH HALF OF THE ORCHESTRATOR/ENGINE RELATION A REGISTERED NAME IS — and
+ * therefore whether it has a card at all.
+ *
+ * crucible `docs/PHASE17-ORCHESTRATOR.md` §1: a Crucible process declares a
+ * `role`. An `engine` serves job types on a backend. An `orchestrator` has
+ * backend kind `orchestrator`, **zero job types**, manages exactly one engine,
+ * and reads capability THROUGH to it. Owen, 2026-09-15: *"crucible on windows
+ * is a passthrough orchestrator so it shouldnt show up."*
+ *
+ * `engine` — it runs the work itself. One GPU row, which is the row this bench
+ * has always drawn.
+ *
+ * `orchestrator` — it runs NOTHING. A GPU row for it is a lane the scheduler
+ * could place work into that nothing can serve, and the refusal would come from
+ * the engine's own door (`job_type_not_served`) rather than from the bench. So
+ * it draws no row and no lane. The row belongs to the ENGINE it fronts, which
+ * this app reaches under its own registered name — on Windows that is `local`,
+ * whose connect code names the WSL engine and not the tray process in front of
+ * it. An orchestrator registered ALONGSIDE its engine therefore adds nothing
+ * and removes nothing: the card is counted once, by the half that has it.
+ *
+ * `unknown` — nobody has read that server's `/v1/info` yet, or it did not
+ * answer. **Absence of knowledge is not absence of an engine**, and every
+ * pre-Phase-17 Crucible reads as `engine` the moment it is asked, so an unknown
+ * server keeps the row it has always had rather than vanishing off the bench
+ * for the one tick before the read lands.
+ */
+export type EngineRole = 'engine' | 'orchestrator' | 'unknown';
+
 export interface SlotSetFacts {
   /**
    * Every ENABLED registered server, in rank order, this machine's own `local`
@@ -470,6 +505,23 @@ export interface SlotSetFacts {
    * with no rows on it that nothing can ever use.
    */
   readonly upstreams: Readonly<Record<string, EngineUpstreams>>;
+  /**
+   * WHICH OF THEM IS AN ORCHESTRATOR AND THEREFORE HAS NO CARD —
+   * {@link EngineRole}, one entry per enabled server, and the reason a row is
+   * not drawn for a process that serves no job types.
+   *
+   * Read at the one moment it can be known — `GET /v1/info`, which coordination
+   * already makes on every connect — and held in `electron/crucible/routes.ts`
+   * beside the other two facts this bench is composed from, because the
+   * scheduler answers it inside a synchronous pump.
+   *
+   * It is a fact about the PROCESS and not about the install: on a Windows
+   * machine one Crucible install runs an orchestrator and an engine as two
+   * processes on two ports, and only one of them answers any given `/v1/info`.
+   * So the question is asked of the ADDRESS this app has registered, never of
+   * the machine.
+   */
+  readonly roles: Readonly<Record<string, EngineRole>>;
   /**
    * Set ids that currently hold something of ours. A set named here survives
    * even when its server was disabled or removed, marked `retiring` — §4.3.
@@ -532,6 +584,22 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   }
 
   /*
+   * AND A CALLER THAT SAID NOTHING ABOUT ROLES IS REFUSED THE SAME WAY. The two
+   * guesses here are "draw a GPU row for a process that serves no job types" —
+   * a lane nothing can fill, which is the defect the fact exists to close — and
+   * "hide the row of every engine nobody has asked yet", which empties the bench
+   * at every launch. Neither is a thing to decide on a caller's behalf.
+   */
+  if (facts.roles === undefined || facts.roles === null) {
+    throw new Error(
+      'slotSets: `roles` was not supplied. Every enabled server needs one of '
+        + "'engine' | 'orchestrator' | 'unknown', because an orchestrator serves no job types "
+        + 'and must not be drawn a card, while an engine — and a server nobody has asked yet — '
+        + 'gets exactly one.',
+    );
+  }
+
+  /*
    * AND A CALLER THAT SAID NOTHING ABOUT THAT ROW IS REFUSED TOO, for
    * the same reason and with the same two bad guesses: `true` draws a GPU row
    * Owen has ruled must not exist without a Crucible server behind it, and
@@ -563,6 +631,29 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
 
   for (const name of facts.enabledServers) {
     if (seen.has(name)) continue;
+
+    /*
+     * AN ORCHESTRATOR DRAWS NOTHING — not a card, and not a cloud lane either.
+     * PHASE17 §1: it serves zero job types and manages one engine, so every row
+     * it could be given is a row the scheduler could claim into and nothing
+     * could serve. The engine it fronts draws the row, under the name this app
+     * has registered for the engine itself.
+     *
+     * NOT marked `seen`, for the reason the absent cloud lane is not: if that
+     * address is somehow holding something of ours, the occupied pass below
+     * still draws it `retiring`, so the occupant keeps its slot and nothing new
+     * is placed there. A row is never yanked out from under a running step.
+     */
+    const role = facts.roles[name];
+    if (role === undefined) {
+      throw new Error(
+        `slotSets: nothing was said about whether "${name}" is an engine or an orchestrator. `
+          + 'Every enabled server needs an entry in `roles` — a name with no entry is a caller '
+          + 'that forgot, not a server with no role.',
+      );
+    }
+    if (role === 'orchestrator') continue;
+
     seen.add(name);
     sets.push({
       id: name,

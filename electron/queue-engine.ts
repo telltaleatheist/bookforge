@@ -113,11 +113,12 @@ import {
   thisMachinesCardHeldBy,
   LOCAL_WORK_SET,
   WAIT_STEP_CAP,
+  type EngineRole,
   type EngineUpstreams,
   type SetOccupancy,
   type SlotSet,
 } from '../shared/queue/slot-sets';
-import { crucibleRouteOf, crucibleUpstreamsOf } from './crucible/routes';
+import { crucibleRoleOf, crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -575,6 +576,17 @@ function currentSlotSets(): SlotSet[] {
   for (const name of enabledServers) upstreams[name] = crucibleUpstreamsOf(name);
 
   /*
+   * …AND WHICH OF THEM HAS A CARD AT ALL. A registered address can be an
+   * ORCHESTRATOR (crucible PHASE17 §1) — zero job types, one engine managed,
+   * capability read through to it — and a GPU row for one is a lane the
+   * scheduler could claim into that nothing can serve. Owen, 2026-09-15:
+   * *"crucible on windows is a passthrough orchestrator so it shouldnt show
+   * up."* Same record, same reason it is read here and not through the host.
+   */
+  const roles: Record<string, EngineRole> = {};
+  for (const name of enabledServers) roles[name] = crucibleRoleOf(name);
+
+  /*
    * AND WHETHER THE LEGACY GPU ROW EXISTS AT ALL — read off the same jobs the
    * `occupied` pass above reads, with `slotSetForStep`, so the row is present
    * for exactly the steps this scheduler would send there. Owen, 2026-09-15:
@@ -589,6 +601,7 @@ function currentSlotSets(): SlotSet[] {
   return slotSets({
     enabledServers,
     upstreams,
+    roles,
     occupied,
     alignerCharged: longformAlignCharged({ jobs }),
   });
@@ -638,6 +651,49 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
  */
 let admissionRecheckMs = 15_000;
 let admissionRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * THE BENCH IS COMPOSED FROM A RECORD THAT LEARNS, SO IT REPUBLISHES WHEN IT
+ * DOES.
+ *
+ * ── The defect, measured 2026-09-15 ────────────────────────────────────────
+ *
+ * Owen's bench drew eight slots where four belong — `local` and `mac` each with
+ * a phantom `— routed elsewhere` lane — while `GET /api/queue/snapshot` against
+ * the SAME running process answered three sets and no lane. The renderer asks
+ * for one snapshot as it boots and then only ever replaces it from this
+ * publication (`QueueService`). Every other publication is a STRUCTURAL change
+ * in the queue: a step landed, a run was added, Start was pressed. With an empty
+ * queue there are none, ever.
+ *
+ * And the facts the bench is composed from are not the queue's. Whether an
+ * engine has an upstream, and whether an address is an engine at all, are learnt
+ * a second or two after the window opens — coordination and the start-up reads —
+ * and every one of them is `unknown` until then, which deliberately DRAWS the
+ * row and the lane. So the first snapshot is the conservative one by design, and
+ * before this nothing ever replaced it.
+ *
+ * ── Why this and not an earlier read ───────────────────────────────────────
+ *
+ * Moving the reads before the window would only narrow the window: one of them
+ * is a file, but the rest are HTTP to a WSL guest and a Mac, and a machine that
+ * is asleep answers when it answers. `unknown → draw it` stays the rule (it is
+ * what stops a running upstream-routed row being stranded by a hidden lane); the
+ * fix is that the moment it stops being unknown is a moment the bench hears
+ * about. Nothing polls: the record announces, and it announces only when an
+ * ANSWER changes.
+ *
+ * A pump is deliberately NOT started from here. A row held at admission because
+ * a route was `unknown` is already re-tried by `admissionRecheckTimer`, which
+ * exists for exactly the refusals nothing else re-triggers; starting work from a
+ * record listener would give this module a second door into the scheduler.
+ */
+let unsubscribeCrucibleRecord: (() => void) | null = null;
+
+function watchCrucibleRecord(): void {
+  if (unsubscribeCrucibleRecord !== null) unsubscribeCrucibleRecord();
+  unsubscribeCrucibleRecord = onCrucibleRecordChanged(() => { publish(); });
+}
 
 function publish(): void {
   const snap = snapshot();
@@ -2776,6 +2832,10 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // unreachable now.
   reachCache.clear();
   busyHolds.clear();
+  // The bench redraws when the Crucible record learns something. Armed here
+  // rather than at import so a second `configure` in one process (the keepers)
+  // leaves exactly one listener behind, not two.
+  watchCrucibleRecord();
 
   const loaded = await loadState();
   if (!loaded) {
@@ -3123,6 +3183,10 @@ export async function shutdown(): Promise<void> {
   running = false;
   if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+  if (unsubscribeCrucibleRecord !== null) {
+    unsubscribeCrucibleRecord();
+    unsubscribeCrucibleRecord = null;
+  }
   await persist();
 }
 

@@ -243,6 +243,21 @@ function fakeNamer(serversModule) {
     if (!fake) return real(name, clientName);
     return new CrucibleClient({ url: fake.url, token: 'test-token-abcd', clientName });
   };
+  /*
+   * AND THE REGISTRY ROW ITSELF, because not every door goes through
+   * `crucibleClientFor` any more. `engine-resolve.ts` takes the ENTRY — it has
+   * to build a second client at the ORCHESTRATOR's `engine.url` with the same
+   * token, which a name cannot express — so a fake that stubbed only the client
+   * factory would make every resolver call refuse "no crucible server named
+   * fakeN is registered". The token is the same invented one the client stub
+   * uses; these fakes check no bearer.
+   */
+  const realGet = serversModule.getServer;
+  serversModule.getServer = function getServerWithFakes(name) {
+    const fake = fakesByName.get(name);
+    if (!fake) return realGet(name);
+    return { name, url: fake.url, token: 'test-token-abcd' };
+  };
   let registered = 0;
   return function registerFake(url) {
     const name = `fake${++registered}`;

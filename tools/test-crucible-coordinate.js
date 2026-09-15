@@ -157,6 +157,12 @@ function startFake(options) {
   const opts = Object.assign({
     missing: [], uncatalogued: [], jobTypes: MODULE.job_types.map((j) => j.type), refuse: null,
     acceptsWorkAfter: 0, settings: {}, taskUnmet: undefined,
+    /*
+     * EXTRA KEYS ON `/v1/info`, in the server's own spelling — PHASE17's `role`,
+     * `managed_by` and `engine`. Absent by default, which is exactly what a
+     * pre-Phase-17 Crucible answers and what the SDK reads as a plain `engine`.
+     */
+    info: {},
   }, options);
   const seen = {
     info: 0, catalog: 0, posts: [], taskLists: 0, eventStreams: [], activity: 0, cancelled: [],
@@ -182,6 +188,7 @@ function startFake(options) {
           gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 25757220864 } },
         job_types: ['echo'],
         capabilities: opts.jobTypes.map((jobType) => ({ job_type: jobType, models: [] })),
+        ...opts.info,
       });
       return true;
     }
@@ -557,7 +564,7 @@ async function main() {
     try {
       const a = registerFake(withKey.url);
       const b = registerFake(bare.url);
-      const asked = await coordinate.readUpstreamsOnStart(() => ['local', a, b]);
+      const asked = await coordinate.readBenchFactsOnStart(() => ['local', a, b]);
 
       assert.deepStrictEqual(asked, [a, b],
         '`local` is skipped: the local coordination reads its settings on the way past, and two '
@@ -565,6 +572,16 @@ async function main() {
       assert.strictEqual(routes.crucibleUpstreamsOf(a), 'configured');
       assert.strictEqual(routes.crucibleUpstreamsOf(b), 'none',
         'and this is the row that used to be drawn as a phantom cloud lane');
+      /*
+       * THE SECOND BENCH FACT, read in the same pass. A server that predates
+       * PHASE17 says no `role` at all and reads as an ENGINE — which is what
+       * these fakes are — so it keeps the GPU row it has always had.
+       */
+      assert.strictEqual(routes.crucibleRoleOf(a), 'engine',
+        'no `role` on the wire is an engine, not an unknown (PHASE17: additive)');
+      assert.strictEqual(routes.crucibleRoleOf(b), 'engine');
+      assert.strictEqual(routes.crucibleEngineBehind(a), null,
+        'an engine fronts nothing — the ref belongs to an orchestrator');
       assert.strictEqual(withKey.settings.reads, 1, 'once each, and nothing polls');
       assert.strictEqual(bare.settings.reads, 1);
       assert.strictEqual(withKey.seen.posts.length + bare.seen.posts.length, 0,
@@ -585,10 +602,193 @@ async function main() {
     const dead = await startFake({});
     const name = registerFake(dead.url);
     await dead.close();
-    const asked = await coordinate.readUpstreamsOnStart(() => [name]);
+    const asked = await coordinate.readBenchFactsOnStart(() => [name]);
     assert.deepStrictEqual(asked, [name], 'it was asked, and the failure did not stop the sweep');
     assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown');
+    assert.strictEqual(routes.crucibleRoleOf(name), 'unknown',
+      'and it keeps its GPU row too: recording `engine` on a timeout would be the fallback');
     routes.forgetCrucibleRoutes();
+  });
+
+  await check('AN ORCHESTRATOR IS RECORDED AS ONE, and the engine it fronts is remembered', async () => {
+    /*
+     * crucible `docs/PHASE17-ORCHESTRATOR.md` §1. Owen, 2026-09-15: *"crucible
+     * on windows is a passthrough orchestrator so it shouldnt show up."* The
+     * bench draws no row for a process that serves no job types
+     * (`shared/queue/slot-sets.ts`'s `EngineRole`), and this is the read that
+     * tells it so — the SDK's `engineOf` is the whole of the rule, used once.
+     */
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    routes.unbindCrucibleUpstreamsFile();
+    routes.forgetCrucibleRoutes();
+    const resolve = require(path.join(REPO, 'dist', 'electron', 'crucible', 'engine-resolve.js'));
+    resolve.forgetResolvedEngine();
+    /*
+     * The live shape, measured on Owen's machine the same day: `:7101` answers
+     * `role: orchestrator` with zero job types, naming `crucible@owens-pc-wsl`
+     * at `:7100`, `backend: cuda-linux`, `owner: wsl-unit`; `:7100` answers
+     * `role: engine`, `managed_by` the first. Two fakes, the same relation.
+     */
+    const wsl = await startFake({ info: { role: 'engine', managed_by: null } });
+    const tray = await startFake({
+      jobTypes: [],
+      info: {
+        role: 'orchestrator',
+        engine: {
+          name: 'crucible@owens-pc-wsl', url: wsl.url,
+          backend: 'cuda-linux', owner: 'wsl-unit',
+        },
+      },
+    });
+    try {
+      const name = registerFake(tray.url);
+      await coordinate.readBenchFactsOnStart(() => [name]);
+      assert.strictEqual(routes.crucibleRoleOf(name), 'orchestrator');
+      assert.strictEqual(routes.crucibleEngineBehind(name).url, wsl.url,
+        'so an operator can be told which address to register instead of this one');
+
+      const resolved = await resolve.resolveEngine(servers.getServer(name), 'keeper');
+      assert.strictEqual(resolved.url, wsl.url, 'work goes to the engine, never to the front');
+      assert.strictEqual(resolved.through.owner, 'wsl-unit');
+      assert.strictEqual(resolved.info.role, 'engine',
+        'the SECOND document is read, which is what makes "one hop" enforced and not assumed');
+    } finally {
+      await tray.close();
+      await wsl.close();
+      resolve.forgetResolvedEngine();
+      routes.forgetCrucibleRoutes();
+    }
+  });
+
+  await check('A CHAIN IS REFUSED BY NAME — an app follows one hop and no more', async () => {
+    // An orchestrator whose `engine.url` names another orchestrator is a
+    // misconfiguration on those machines. A client that followed it would loop.
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    const resolve = require(path.join(REPO, 'dist', 'electron', 'crucible', 'engine-resolve.js'));
+    routes.unbindCrucibleUpstreamsFile();
+    resolve.forgetResolvedEngine();
+    const second = await startFake({
+      jobTypes: [],
+      info: {
+        role: 'orchestrator',
+        engine: { name: 'deeper', url: 'http://127.0.0.1:1', backend: null, owner: 'child' },
+      },
+    });
+    const first = await startFake({
+      jobTypes: [],
+      info: {
+        role: 'orchestrator',
+        engine: { name: 'second', url: second.url, backend: null, owner: 'child' },
+      },
+    });
+    try {
+      const name = registerFake(first.url);
+      await assert.rejects(
+        () => resolve.resolveEngine(servers.getServer(name), 'keeper'),
+        /crucible_orchestrator_chain/,
+      );
+    } finally {
+      await first.close();
+      await second.close();
+      resolve.forgetResolvedEngine();
+      routes.forgetCrucibleRoutes();
+    }
+  });
+
+  await check('AN ORCHESTRATOR THAT MANAGES NOTHING is a fact, refused by its own name', async () => {
+    // `orchestrator_has_no_engine` — a Windows machine whose WSL engine is not
+    // installed yet. Something to show a person next to the install button.
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    const resolve = require(path.join(REPO, 'dist', 'electron', 'crucible', 'engine-resolve.js'));
+    routes.unbindCrucibleUpstreamsFile();
+    resolve.forgetResolvedEngine();
+    const bare = await startFake({ jobTypes: [], info: { role: 'orchestrator', engine: null } });
+    try {
+      const name = registerFake(bare.url);
+      await assert.rejects(
+        () => resolve.resolveEngine(servers.getServer(name), 'keeper'),
+        /crucible_orchestrator_has_no_engine/,
+      );
+      assert.strictEqual(routes.crucibleRoleOf(name), 'orchestrator',
+        'the record still learns what that address IS — the refusal is about where work goes');
+    } finally {
+      await bare.close();
+      resolve.forgetResolvedEngine();
+      routes.forgetCrucibleRoutes();
+    }
+  });
+
+  await check('THE CACHE HOLDS NO TOKEN: a rotated one is used, never the one it resolved with', async () => {
+    /*
+     * The resolution is keyed on NAME + URL and never on the token — a rotated
+     * token cannot change which process answers an address — so the token has to
+     * come from the entry in hand on EVERY call. BookForge owns the registry
+     * these entries come from, so a rotation here is the case that would be ours
+     * to cause, and a cached secret would be ours to send.
+     */
+    const resolve = require(path.join(REPO, 'dist', 'electron', 'crucible', 'engine-resolve.js'));
+    resolve.forgetResolvedEngine();
+    const bearers = [];
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (ctx.url.pathname !== '/v1/info') return false;
+      bearers.push(req.headers.authorization);
+      ctx.send(res, 200, {
+        server: { name: 'fake-engine', version: '0.6.0', api_version: 1 },
+        host: {
+          platform: 'linux', arch: 'x86_64', backend: 'cuda-linux',
+          gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 25757220864 },
+        },
+        job_types: ['echo'], capabilities: [], role: 'engine', managed_by: null,
+      });
+      return true;
+    });
+    try {
+      const before = { name: 'rotator', url: fake.url, token: 'token-the-first' };
+      await resolve.resolveEngine(before, 'keeper');
+      const after = { name: 'rotator', url: fake.url, token: 'token-the-second' };
+      const client = await resolve.engineClientFor(after, 'keeper');
+      await client.info();
+      assert.deepStrictEqual(bearers, ['Bearer token-the-first', 'Bearer token-the-second'],
+        'the second call was served out of the cache and STILL carried the new token');
+    } finally {
+      await fake.close();
+      resolve.forgetResolvedEngine();
+    }
+  });
+
+  await check('NO REFUSAL CARRIES THE BEARER — these sentences land in queue rows', async () => {
+    // A refusal from this door is read by a person, in a row, in a log. The
+    // token must not be in it, and neither must the word.
+    const resolve = require(path.join(REPO, 'dist', 'electron', 'crucible', 'engine-resolve.js'));
+    resolve.forgetResolvedEngine();
+    const secret = 'sk-do-not-print-me-0123456789';
+    const bare = await startFake({ jobTypes: [], info: { role: 'orchestrator', engine: null } });
+    const chained = await startFake({
+      jobTypes: [],
+      info: {
+        role: 'orchestrator',
+        engine: { name: 'deeper', url: bare.url, backend: null, owner: 'child' },
+      },
+    });
+    try {
+      for (const url of [bare.url, chained.url]) {
+        let message = null;
+        try {
+          await resolve.resolveEngine({ name: 'secretive', url, token: secret }, 'keeper');
+        } catch (err) {
+          message = err.message;
+        }
+        assert.ok(message !== null, 'both of these refuse');
+        assert.ok(!message.includes(secret), `the refusal quoted the token: ${message}`);
+        assert.ok(!/bearer|authorization/i.test(message),
+          'nor does it name the header, which is how a token ends up quoted next');
+        assert.ok(message.includes(url), 'it names the ADDRESS, which is what a person can act on');
+      }
+    } finally {
+      await bare.close();
+      await chained.close();
+      resolve.forgetResolvedEngine();
+    }
   });
 
   await check('the state it published is the state a screen would read', async () => {

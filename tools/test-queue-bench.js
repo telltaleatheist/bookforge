@@ -108,6 +108,9 @@ function snap(jobs, running = true, servers = []) {
       // Not what these tests are about: `unknown` is what an engine nobody has
       // asked answers, and it draws the same bench they were written against.
       upstreams: Object.fromEntries(servers.map((n) => [n, 'unknown'])),
+      // Nor are they about the orchestrator relation: every one of these is an
+      // engine, which is what every pre-Phase-17 Crucible reads as.
+      roles: Object.fromEntries(servers.map((n) => [n, 'engine'])),
       occupied,
       // Answered off these jobs with the scheduler's own function, exactly as
       // `currentSlotSets` answers it: the legacy row exists while something in

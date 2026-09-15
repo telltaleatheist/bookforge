@@ -29,7 +29,7 @@
  * its next connect — and a book already placed keeps the lane it was placed
  * in, which is the only sane moment-to-change for a running row.
  *
- * ── One of the two facts here is remembered on disk ───────────────────────
+ * ── One of the three facts here is remembered on disk ─────────────────────
  *
  * Whether an engine has an UPSTREAM configured is written to
  * `<userData>/crucible-upstreams.json` and read back at start, because
@@ -50,8 +50,10 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { engineOf } from '@crucible/client';
+import type { EngineRef, ServerInfo } from '@crucible/client';
 import type { CrucibleRouteKind, CrucibleTextActName } from '../../shared/crucible/settings-wire';
-import type { EngineUpstreams } from '../../shared/queue/slot-sets';
+import type { EngineRole, EngineUpstreams } from '../../shared/queue/slot-sets';
 
 /** What this record can say about one class on one engine. */
 export type CrucibleRouteAnswer = CrucibleRouteKind | 'unknown';
@@ -78,6 +80,81 @@ const byServer = new Map<string, ServerRoutes>();
  * engine's settings yet.
  */
 const upstreamsByServer = new Map<string, boolean>();
+
+/**
+ * …AND WHETHER THE ADDRESS UNDER THAT NAME IS AN ENGINE OR AN ORCHESTRATOR.
+ *
+ * The third fact in the same record, here for the reasons the second one is:
+ * read at the moment this app connects, answered inside the same synchronous
+ * pump, and forgotten by {@link forgetCrucibleRoutes} together with the others.
+ *
+ * crucible `docs/PHASE17-ORCHESTRATOR.md` §1: an orchestrator has backend kind
+ * `orchestrator`, serves ZERO job types, manages exactly one engine and reads
+ * capability through to it. So it has no card, and the bench must not draw it
+ * one (`shared/queue/slot-sets.ts`'s {@link EngineRole}, which carries the whole
+ * argument). A name this app has never asked is absent, which answers
+ * `unknown` — and `unknown` DRAWS the row, because every pre-Phase-17 Crucible
+ * is an engine and a bench that emptied itself until the first read landed
+ * would be worse than one that corrects itself a tick later.
+ *
+ * The engine ref is kept beside the role rather than discarded: it is the one
+ * thing worth SAYING about a registered orchestrator ("that address manages the
+ * engine at <url>"), and re-deriving it would mean a second reader of the same
+ * document.
+ */
+const rolesByServer = new Map<string, { role: EngineRole; engine: EngineRef | null }>();
+
+/**
+ * WHO WANTS TO KNOW WHEN ANY OF THIS CHANGES.
+ *
+ * ── The defect this closes (measured 2026-09-15) ──────────────────────────
+ *
+ * Owen's bench drew EIGHT slots where four belong: `local` and `mac` each with
+ * a phantom `— routed elsewhere` cloud lane. The record was right and the
+ * BENCH WAS OLD. `crucible-upstreams.json` did not exist yet when that launch
+ * read it (created 15:04:16, read at 15:04:13), so both engines were `unknown`
+ * — which draws the lane — until coordination answered three seconds later. The
+ * renderer had already asked for its one snapshot inside that window, and with
+ * an empty queue there is no pump, no step landing and no structural change, so
+ * nothing ever published again. The main process was answering three slot sets
+ * to `/api/queue/snapshot` while the window still drew eight.
+ *
+ * The rule was never wrong and neither was the read. What was missing is that
+ * a record which answers `unknown` and then LEARNS has to say so: the whole
+ * design of this module is "filled at exactly the two moments it can change",
+ * and a fact nobody is told about is a fact the bench cannot act on.
+ *
+ * So the record announces its own changes, and the queue engine republishes.
+ * Fired only when an ANSWER actually changes — re-recording the same routes on
+ * every connect is not news, and a bench that republished on every coordination
+ * would be a timer wearing a listener's clothes.
+ */
+type RecordListener = () => void;
+let recordListeners: RecordListener[] = [];
+
+/**
+ * Be told when this record's answer about any server changes. Returns the
+ * unsubscribe, which is how a keeper (and `configure`, called twice in one
+ * process) avoids leaving a listener behind.
+ */
+export function onCrucibleRecordChanged(listener: RecordListener): () => void {
+  recordListeners.push(listener);
+  return () => { recordListeners = recordListeners.filter((l) => l !== listener); };
+}
+
+/** Announce a change. A listener that throws is REPORTED, never swallowed silently. */
+function recordChanged(): void {
+  for (const listener of recordListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.log(
+        '[CRUCIBLE] a listener on the routing record threw: '
+          + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
 
 /**
  * …AND THIS ONE IS REMEMBERED ACROSS RESTARTS, because otherwise its `unknown`
@@ -140,8 +217,12 @@ interface UpstreamsRecord {
  */
 export function loadCrucibleUpstreams(file: string): void {
   upstreamsFile = file;
+  const had = upstreamsByServer.size > 0;
   upstreamsByServer.clear();
-  if (!fs.existsSync(file)) return;
+  if (!fs.existsSync(file)) {
+    if (had) recordChanged();
+    return;
+  }
 
   const raw = fs.readFileSync(file, 'utf-8');
   let parsed: unknown;
@@ -174,6 +255,7 @@ export function loadCrucibleUpstreams(file: string): void {
     }
     upstreamsByServer.set(server, configured);
   }
+  recordChanged();
 }
 
 /** Forget the file, so a keeper (or a test run) writes nothing. */
@@ -219,7 +301,16 @@ function saveUpstreams(): void {
  * neither owns a second copy.
  */
 export function noteCrucibleRoutes(server: string, routes: Readonly<Record<string, CrucibleRouteKind>>): void {
+  const before = byServer.get(server);
   byServer.set(server, { ...routes });
+  if (before === undefined || !sameRoutes(before, routes)) recordChanged();
+}
+
+/** Do two route tables say the same thing about the same classes? */
+function sameRoutes(a: ServerRoutes, b: Readonly<Record<string, CrucibleRouteKind>>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => a[key] === b[key]);
 }
 
 /**
@@ -247,16 +338,21 @@ export function crucibleRouteOf(server: string, capability: string): CrucibleRou
  */
 export function forgetCrucibleRoutes(server?: string): void {
   if (server === undefined) {
+    const had = byServer.size > 0 || upstreamsByServer.size > 0 || rolesByServer.size > 0;
     byServer.clear();
     upstreamsByServer.clear();
+    rolesByServer.clear();
     // The remembered half goes with it, or a removed server would come back at
     // the next launch as a fact about a machine that is not there.
     saveUpstreams();
+    if (had) recordChanged();
     return;
   }
-  byServer.delete(server);
-  upstreamsByServer.delete(server);
+  const had = byServer.delete(server);
+  const hadUpstream = upstreamsByServer.delete(server);
+  const hadRole = rolesByServer.delete(server);
   saveUpstreams();
+  if (had || hadUpstream || hadRole) recordChanged();
 }
 
 /**
@@ -270,11 +366,73 @@ export function forgetCrucibleRoutes(server?: string): void {
  * lane the operator has just taken away, or hiding one they have just made.
  */
 export function noteCrucibleUpstreams(server: string, configured: boolean): void {
+  const before = upstreamsByServer.get(server);
   upstreamsByServer.set(server, configured);
   // Remembered across restarts: see {@link upstreamsFile}. Written on every note
   // rather than on a shutdown hook — there is no moment an app is guaranteed to
   // get, and this is one small file per settings read.
   saveUpstreams();
+  // `unknown` becoming an answer is the change that matters most: it is what
+  // takes a phantom cloud lane off a bench nothing else would redraw.
+  if (before !== configured) recordChanged();
+}
+
+/**
+ * Record whether the address registered under this name is an ENGINE or an
+ * ORCHESTRATOR, out of the `/v1/info` the caller has already read.
+ *
+ * The SDK's {@link engineOf} is the whole of the rule (PHASE17 §6) and this is
+ * its one use in this app: `null` means "this IS the engine, talk to the address
+ * you have", an {@link EngineRef} means "this is an orchestrator, its engine is
+ * over there". The hop is deliberately NOT followed here — this module reads no
+ * documents at all — and the ref is kept so a caller can say where the engine
+ * is instead of just refusing the row.
+ *
+ * `orchestrator_has_no_engine` is a fact and not a fault: a Windows machine
+ * whose WSL engine is not installed yet answers it. It is recorded as an
+ * orchestrator with no engine, which draws no row for the same reason as one
+ * with an engine — this address has no card either way.
+ */
+export function noteCrucibleRole(server: string, info: ServerInfo): void {
+  let entry: { role: EngineRole; engine: EngineRef | null };
+  if (info.role === 'orchestrator') {
+    let engine: EngineRef | null;
+    try {
+      engine = engineOf(info);
+    } catch {
+      // The one throw `engineOf` makes: an orchestrator that manages nothing.
+      engine = null;
+    }
+    entry = { role: 'orchestrator', engine };
+  } else {
+    entry = { role: 'engine', engine: null };
+  }
+  const before = rolesByServer.get(server);
+  rolesByServer.set(server, entry);
+  if (before === undefined || before.role !== entry.role || before.engine?.url !== entry.engine?.url) {
+    recordChanged();
+  }
+}
+
+/**
+ * Is the address under this name an engine, an orchestrator, or has nobody
+ * asked — {@link EngineRole}, whose own note carries why `unknown` draws a row.
+ */
+export function crucibleRoleOf(server: string): EngineRole {
+  const entry = rolesByServer.get(server);
+  if (entry === undefined) return 'unknown';
+  return entry.role;
+}
+
+/**
+ * The engine a registered ORCHESTRATOR manages, for the sentence that tells an
+ * operator what to register instead. `null` for an engine, for an orchestrator
+ * that manages nothing, and for a name nobody has asked.
+ */
+export function crucibleEngineBehind(server: string): EngineRef | null {
+  const entry = rolesByServer.get(server);
+  if (entry === undefined) return null;
+  return entry.engine;
 }
 
 /**

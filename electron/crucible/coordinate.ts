@@ -82,10 +82,12 @@ import {
   type CatalogRow,
 } from '@crucible/client';
 
-import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal } from './servers';
+import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal, getServer } from './servers';
+import { resolveEngine } from './engine-resolve';
 import { crucibleCapabilityWithRoutes, crucibleEngineSettings } from './engine-settings';
 import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
 import { LOCAL_SERVER_NAME } from './local';
+import { noteCrucibleRole } from './routes';
 import { rankedServers } from './routing';
 import type {
   CrucibleCapabilityView,
@@ -392,6 +394,15 @@ async function runCoordination(
       client.catalog(),
       crucibleCapabilityWithRoutes(server),
     ]);
+    /*
+     * THE FIRST OF THE THREE READS ALSO SAYS WHICH HALF OF THE RELATION THIS
+     * ADDRESS IS — PHASE17 §1's `role`. Recorded here rather than by a read of
+     * its own for the reason the routes are: this is already the moment
+     * BookForge connects and asks what is there, and the bench needs the answer
+     * inside a synchronous pump. An orchestrator has no card, so it draws no
+     * slot set (`shared/queue/slot-sets.ts`'s `EngineRole`).
+     */
+    noteCrucibleRole(server, info);
     installedJobTypes = info.capabilities.map((item) => item.jobType);
     catalog = rows;
     capability = record;
@@ -465,6 +476,35 @@ async function readUpstreamPresence(server: string): Promise<void> {
     await crucibleEngineSettings(server);
   } catch (err) {
     glogUpstream(server, err);
+  }
+}
+
+/**
+ * THE OTHER BENCH FACT: is this address an engine or an orchestrator.
+ *
+ * `GET /v1/info` and nothing else, for a server this app is not otherwise
+ * coordinating with right now. Coordination records the role out of the info it
+ * already reads (see `runCoordination`); this exists because coordination at
+ * start is `local`'s alone, and without it a registered orchestrator would keep
+ * a GPU row nothing can serve until something happened to connect to it — the
+ * same shape of defect the upstream record was given a file to close.
+ *
+ * A failure is swallowed AND SAID: the record answers `unknown` for a server it
+ * has not heard from, and `unknown` draws the row, because every pre-Phase-17
+ * Crucible is an engine. Recording `engine` on a timeout would be the fallback.
+ */
+async function readRolePresence(server: string): Promise<void> {
+  try {
+    // Through the ONE resolver, so the answer this records is the one placement
+    // would get — including the second read that makes "one hop, never a chain"
+    // enforced rather than assumed. It records the role on the way past.
+    await resolveEngine(getServer(server), CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.log(
+      `[CRUCIBLE] "${server}" did not say whether it is an engine or an orchestrator, so it keeps `
+        + `its row on the bench: ${detail}`,
+    );
   }
 }
 
@@ -621,7 +661,7 @@ export async function coordinateLocalOnStart(
 }
 
 /**
- * ASK EVERY OTHER ENABLED ENGINE THE ONE BENCH QUESTION, once, at start.
+ * ASK EVERY OTHER ENABLED ENGINE THE TWO BENCH QUESTIONS, once, at start.
  *
  * ── The defect this closes ─────────────────────────────────────────────────
  *
@@ -635,11 +675,22 @@ export async function coordinateLocalOnStart(
  * makes the steady state right; this makes it CURRENT, for an upstream
  * configured on that machine since this app last heard from it.
  *
+ * ── The second question, and the second defect ────────────────────────────
+ *
+ * The same shape, one level up: a registered address that is an ORCHESTRATOR
+ * serves no job types and has no card, so it must draw no row at all
+ * (`shared/queue/slot-sets.ts`'s `EngineRole`; crucible PHASE17 §1). Nobody had
+ * asked, so the bench drew a GPU slot for anything registered — correct today
+ * on Owen's machine only because `local`'s connect code happens to name the WSL
+ * engine on :7100 rather than the tray orchestrator in front of it on :7101.
+ * `GET /v1/info` is the question and this is the moment it is asked.
+ *
  * ── Why this shape ────────────────────────────────────────────────────────
  *
- * It is one `GET /v1/settings` per enabled server, once, and no timer: exactly
- * the read `coordinateServer` already makes as its fourth (`readUpstreamPresence`),
- * called at the one moment there is no other occasion for it. Not a full
+ * It is one `GET /v1/settings` and one `GET /v1/info` per enabled server, once,
+ * and no timer: exactly the reads `coordinateServer` already makes
+ * (`readUpstreamPresence`, and the info at the head of its own three),
+ * called at the one moment there is no other occasion for them. Not a full
  * coordination, because coordinating is what this app does when it CONNECTS to
  * a machine (PHASE14 §4a) — posting module tasks to every registered Crucible
  * at every launch would be a far bigger act than answering a bench row.
@@ -659,7 +710,7 @@ export async function coordinateLocalOnStart(
  * injected for the reason {@link CoordinateDeps} is: a keeper drives it with a
  * scripted set rather than with this machine's registry.
  */
-export async function readUpstreamsOnStart(
+export async function readBenchFactsOnStart(
   enabledServers: () => readonly string[] = () => rankedServers().map((row) => row.name),
 ): Promise<string[]> {
   let enabled: readonly string[];
@@ -675,6 +726,6 @@ export async function readUpstreamsOnStart(
     return [];
   }
   const asked = enabled.filter((name) => name !== LOCAL_SERVER_NAME);
-  await Promise.all(asked.map((name) => readUpstreamPresence(name)));
+  await Promise.all(asked.flatMap((name) => [readUpstreamPresence(name), readRolePresence(name)]));
   return asked;
 }

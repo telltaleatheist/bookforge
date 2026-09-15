@@ -276,7 +276,8 @@ check('the in-app GPU bench row survives, named for its ONE remaining tenant', (
   assert.strictEqual(slots.LONGFORM_ALIGN_SET, 'local-longform-align');
   assert.strictEqual(typeof slots.longformAlignCharged, 'function');
   const drawn = slots.slotSets({
-    enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: true,
+    enabledServers: ['mac'], upstreams: { mac: 'none' }, roles: { mac: 'engine' },
+    occupied: [], alignerCharged: true,
   });
   const row = drawn.find((s) => s.id === slots.LONGFORM_ALIGN_SET);
   assert.ok(row !== undefined, 'a charged epub-align draws no row, so it can never be launched');

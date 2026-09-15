@@ -75,6 +75,7 @@ import {
 import { getWslDistro } from '../tool-paths';
 import type { LocalServerVia } from '../../shared/crucible/settings-wire';
 import { forgetCrucibleRoutes } from './routes';
+import { forgetResolvedEngine } from './engine-resolve';
 
 export { LOCAL_SERVER_NAME, CrucibleLocalError } from './local';
 export type { LocalServer } from './local';
@@ -505,6 +506,17 @@ export function addServer(server: { name: string; url: string; token: string }):
 /** Forget a remote server. See {@link ServerRegistry.remove}. */
 export function removeServer(name: string): CrucibleServerListing {
   const after = defaultRegistry().remove(name);
+  /*
+   * WHICH PROCESS THAT ADDRESS RESOLVED TO GOES FIRST.
+   *
+   * `engine-resolve.ts` holds, for a minute, the engine behind each registered
+   * address — and capability, placement and the bench read THROUGH that hop
+   * now. So it is forgotten before anything else: a stale resolution would send
+   * the next read to a machine the operator has just taken away, and one whose
+   * NAME is re-added for a different machine would be answered about from the
+   * old one.
+   */
+  forgetResolvedEngine(name);
   /*
    * ITS ROUTES GO WITH IT.
    *
