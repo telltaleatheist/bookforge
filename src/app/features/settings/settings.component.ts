@@ -578,22 +578,20 @@ function toolPathText(raw: string | boolean | undefined): string {
                   bundled relocatable env and never need conda). Shown in dev /
                   bring-your-own setups.
 
-                  DELETE-AFTER-PASS, 2026-09-14 (audit section 3.15). Both
+                  DELETE WITH THE SPAWN LAYER (audit section 3.15). Both
                   readers of "tool-paths.json" -> "condaPath" are the LEGACY
                   LOCAL NARRATOR SPAWN — "narrator-paths.ts" (env resolution for
                   a per-engine conda env) and "narrator-spawn.ts" (the spawn's
                   own conda prefix) — so this row dies in the commit that
-                  deletes that layer, behind "legacyLocalRender", after Owen's
-                  in-app pass.
+                  deletes that layer.
 
-                  IT IS NOT DELETED NOW, deliberately, and the audit's section 7
-                  summary line ("Advanced loses conda") is deferred one commit
-                  for a stated reason: this is the LAST door to that key now
-                  that the Audiobook duplicate is gone, and the layer that reads
-                  it is still the one a bring-your-own setup renders with during
-                  the very pass that decides when the layer dies. Removing the
-                  door before the reader would strand exactly the machine the
-                  pass is run on.
+                  THE SWITCH IS ALREADY GONE (2026-09-15,
+                  docs/LEGACY-REMOVAL.md); the spawn itself is HELD one more
+                  commit, because those files are the surviving record of
+                  narrator tuning measured over months and Crucible was found
+                  missing one of its knobs (a 7x MLX batch width) on the same
+                  day. Removing the door before the reader would strand exactly
+                  the machine the audit is run on.
                 -->
                 @if (!usingBundledEnv()) {
                 <div class="tool-row">
@@ -742,16 +740,16 @@ function toolPathText(raw: string | boolean | undefined): string {
                 machine (rollout section 2 ruling 1) — the envs are job types it
                 installs, the weights are subjects in its catalog, and
                 "crucible doctor" is the doctor — so each page had no content
-                left. Orpheus is additionally DEPRECATED (Owen, 2026-09-14) and
-                Higgs is the one narration engine; the Orpheus spawn layer
-                itself lives until the in-app pass deletes it, behind
-                legacyLocalRender.
+                left. Orpheus is additionally RETIRED (Owen, 2026-09-14) from
+                both the narration and the Listen picker, and Higgs is the one
+                engine; the Orpheus spawn layer itself is held until Crucible's
+                environment has been audited against it (docs/LEGACY-REMOVAL.md).
 
                 Where each thing went: the environments and the weights are
                 installed from the SERVER's own page (Crucible Servers -> Open,
                 and BookForge installs what it needs the moment it connects to one).
                 The WSL keys the
-                Orpheus page owned are read only by that legacy spawn and die
+                Orpheus page owned are read only by that held spawn and die
                 with it. wslDistro did not move, because it never belonged to
                 Orpheus: its non-legacy reader is crucible/local.ts, which finds
                 it in tool-paths.json exactly as before.

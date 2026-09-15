@@ -776,13 +776,33 @@ apps' doors.
   legacy set's own slot).
 - **A2. Local slots are not "removed" when a local Crucible exists — they are RENAMED.** Once
   `local` resolves, this machine's card IS the `local` server's GPU slot; there is no separate
-  "BookForge's own GPU" slot to remove. What still exists beside it is the LEGACY SPAWN LAYER
-  (WSL narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
-  `routing.legacyLocalRender`. That layer is deleted after Owen's in-app pass (~250 GB of envs
-  with it). Until then both paths exist and the switch decides. **DELETE after the pass.**
-  **CORRECTED 2026-09-15:** the switch is not the last tenant of the legacy GPU row.
-  `generate-sentences` with `method: 'epub-align'` also charges it and does not go away with
-  that layer — see **B7**, which is what actually empties the row.
+  "BookForge's own GPU" slot to remove. What still existed beside it was the LEGACY SPAWN
+  LAYER (WSL narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
+  `routing.legacyLocalRender`.
+  **HALF DONE, 2026-09-15 — `docs/LEGACY-REMOVAL.md`.** The SWITCH and every DECISION behind
+  it are deleted: `legacyLocalRender` is out of the record, the wire, the IPC and the Settings
+  page (a record still carrying the key is stripped on read and said once, never honoured and
+  never refused); `GenerationVenue`, `RunVenue`/`StepVenue`, `TextActVenue` and `VlmVenue` are
+  one-member unions; every `legacyLocal:` arm on every Crucible door is gone; Listen is a
+  Crucible session with no local backend; Orpheus is retired from the Listen picker as it was
+  from narration's. Every act is now "a Crucible server, or a named refusal", and
+  `tools/test-no-legacy-venue-doors.js` is what keeps it that way.
+  **The SPAWN ITSELF is HELD, deliberately.** `orpheus-worker-pool.ts`, `narrator-spawn.ts`,
+  `higgs-spawn.ts` and everything else that builds narrator's environment or argv is the
+  SURVIVING RECORD of tuning measured over months — Crucible's `mlx-darwin` arm was found on
+  2026-09-15 rendering one chunk at a time because nobody set `NARRATOR_HIGGS3_MLX_BATCH`,
+  which BookForge's spawn has set to 64 since 2026-09-05 (7x, measured). Deleting those files
+  now would destroy the only copy of knobs Crucible may still be missing. **DELETE once that
+  audit says what is missing and it has been carried across** (~250 GB of envs with it).
+  **CORRECTED 2026-09-15:** the switch was not the last tenant of the in-app GPU row.
+  `generate-sentences` with `method: 'epub-align'` also charges it and did not go away with
+  the switch — see **B7**, which is what actually empties the row. With the switch deleted
+  that act is the row's ONLY tenant, so the row was RENAMED to say so:
+  `LONGFORM_ALIGN_SET` / `local-longform-align` / "the local long-form aligner"
+  (`legacySetCharged`/`legacyCharged` became `longformAlignCharged`/`alignerCharged`). An old
+  `step.venue` spelling is read into the new set at one door, as a FILE migration. The row is
+  NOT deleted: `slotsOf` answers 0 for a set that is not on the bench, so deleting it would
+  leave `epub-align` charging nothing and never being launched.
   **AND THE ROW IS NOW CONDITIONAL (same day).** `slotSets` draws it only when something in
   the snapshot would charge it, computed with `slotSetForStep` over the snapshot's own steps
   (`SlotSetFacts.legacyCharged`, `legacySetCharged()`), so with nothing queued the bench is
@@ -805,7 +825,7 @@ apps' doors.
   the settings door is `unknown` and KEEPS its lane — absence of knowledge is not absence of an
   upstream — and `SlotSetFacts.upstreams` refuses a server it was told nothing about by name.
   Bench today: one `[gpu]` per registered Crucible, no cloud lanes, `local-work [cpu][cpu]`,
-  and the legacy `[gpu]` row B7 is about ONLY while something charges it (see A2).
+  and the `local-longform-align [gpu]` row B7 is about ONLY while something charges it (A2).
 - **A6b. The record was in memory only, so `unknown` was every launch — FIXED 2026-09-15.**
   Owen read the bench again and it still drew `mac — routed elsewhere · CPU ×2` while `local`'s
   lane was correctly gone. Measured: the Mac's `GET /v1/settings` says
@@ -857,7 +877,10 @@ apps' doors.
 
 ### B. Engines — one is missing entirely
 
-- **B1. Orpheus is not in Crucible — and will not be (ruled deprecated 2026-09-14, see above).** Kept for the record: Every voice manifest is `narrator_engine = "higgs-v3"`;
+- **B1. Orpheus is not in Crucible — and will not be (ruled deprecated 2026-09-14; RETIRED
+  from both pickers 2026-09-15, narration in `c167d5ea` and Listen in the legacy-removal
+  commit — a saved record still parses and displays as "Orpheus (retired)" and can no longer
+  be chosen).** Kept for the record: Every voice manifest is `narrator_engine = "higgs-v3"`;
   `engines/narrator.py` knows Orpheus only as a comment. CLAUDE.md still calls Orpheus "the
   narration engine" and the wizard gives it a step of its own. So an Orpheus render or Listen
   can ONLY take the legacy WSL path, and deleting that layer (A2) deletes Orpheus. Ruling:
@@ -917,13 +940,15 @@ apps' doors.
     engine's problem instead of BookForge's.
 
   **Until it exists, the bench keeps one GPU row that is not a registered server — but only
-  while a step of this kind is actually in the queue.** Deleting the row outright would leave
+  while a step of this kind is actually in the queue.** As of 2026-09-15 `epub-align` is its
+  ONLY tenant (the legacy render venue is deleted, A2), so the row is named for it:
+  `local-longform-align`, "the local long-form aligner". Deleting the row outright would leave
   such a step charging a set with no slots (`slotsOf` answers 0 for a set that is not on the
   bench) and the scheduler would never launch it; so as of 2026-09-15 the row is drawn exactly
   when something charges it, derived from the snapshot with `slotSetForStep` itself
-  (`SlotSetFacts.legacyCharged`). With nothing queued there is NO in-app GPU row, which is
-  Owen's sentence realised; `epub-align` queued, or any render while `legacyLocalRender` is on,
-  brings it back with its one card. `tools/test-queue-slot-sets.js` pins both halves of that
+  (`SlotSetFacts.alignerCharged`). With nothing queued there is NO in-app GPU row, which is
+  Owen's sentence realised; an `epub-align` queued brings it back with its one card, and
+  nothing else does any more. `tools/test-queue-slot-sets.js` pins both halves of that
   shape, and that every GPU row drawn is a registered server's bar this one named exception.
 
   **`video-assembly` was the third tenant and is not any more — MEASURED 2026-09-15.** It

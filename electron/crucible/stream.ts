@@ -840,9 +840,9 @@ export class CrucibleStreamingEngine {
         this.deps.selectedEngine() === 'higgs'
           ? `crucible "${this.server ?? '(none bound)'}" advertises none of the voices BookForge can ask a `
             + 'Crucible for (CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE), so there is nothing to stream. Pull a voice '
-            + 'there (`crucible voices pull <id>`), or turn on the legacy local-render switch.'
-          : 'Every voice a Crucible serves is higgs-v3; the Orpheus selection has nothing to stream through '
-            + 'one. Select Higgs, or turn on the legacy local-render switch in Settings → Crucible Servers.',
+            + 'there: `crucible voices pull <id>`.'
+          : 'Every voice a Crucible serves is higgs-v3, and Higgs is the one engine this build streams. '
+            + 'Select Higgs in Settings — the local narrator pool it used to fall to is deleted.',
       );
     }
     return available[0] as string;

@@ -76,7 +76,9 @@ import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow } from './runtime';
-import { WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import {
+  RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
+} from '../../shared/queue/wait-for';
 import {
   CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED,
   narratorDoorOwedBeforeSubmit,
@@ -187,6 +189,9 @@ export const alignStep: StepModule = {
      * CLI align has always taken.
      */
     const assigned = ctx.job.waitForResolved;
+    if (assigned === RETIRED_LOCAL_NARRATOR_VENUE) {
+      throw new Error(`legacy_venue_retired: ${retiredVenueReason()}`);
+    }
     if (assigned !== undefined && assigned !== WAIT_FOR_ANY) {
       throw new Error(
         `${CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED}: ${narratorDoorOwedBeforeSubmit(assigned)}`,

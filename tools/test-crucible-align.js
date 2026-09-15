@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, legacyHost,
+  crucibleHost, noServerHost,
 } = require('./fake-crucible');
 
 const ALIGN = path.join(REPO, 'dist', 'electron', 'crucible', 'align.js');
@@ -271,17 +271,28 @@ async function venueDoor() {
   const config = (dir, over = {}) => ({ processDir: dir, language: 'en', device: 'gpu', ...over });
 
   {
+    /*
+     * THERE IS NO LOCAL ALIGNER ARM LEFT. This used to pin the legacy switch
+     * reaching `runCoverageAlignLocally`; the switch and the spawn behind it
+     * are deleted (docs/LEGACY-REMOVAL.md), and `CoverageAlignDeps` has no
+     * `legacyLocal` seam to hand one in through. With nothing enabled the job
+     * returns a REFUSAL — it never throws, because the post-render phase's
+     * contract is that this one answers — and it takes no card.
+     */
     const dir = freshSession();
-    let localCalls = 0;
-    const result = await coverage.runCoverageAlign('step-legacy', config(dir), null, {
-      venueHost: legacyHost(),
-      legacyLocal: async () => { localCalls += 1; return { success: true, reportPath: path.join(dir, 'coverage.json'), chunksAligned: 2 }; },
+    const result = await coverage.runCoverageAlign('step-nothing-enabled', config(dir), null, {
+      venueHost: noServerHost(),
     });
-    await check('the legacy switch runs the local spawn and the result says so', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(result.success, true);
-      assert.deepStrictEqual(result.venue,
-        { where: 'legacy-local-narrator', origin: 'decided here', because: 'the legacy local-render switch is on' });
+    await check('with nothing enabled the run fails by name and aligns nothing here', () => {
+      assert.strictEqual(result.success, false);
+      assert.ok(/nowhere to run/.test(result.error) && /no_enabled_server/.test(result.error), result.error);
+      assert.strictEqual(result.venue, undefined);
+      assert.ok(!fs.existsSync(path.join(dir, 'coverage.json')), 'nothing aligned locally instead');
+    });
+    await check('the coverage-align job has no local seam to hand a spawn in through', () => {
+      const srcTs = fs.readFileSync(path.join(REPO, 'electron', 'coverage-align-job.ts'), 'utf-8');
+      assert.ok(!/legacyLocal/.test(srcTs),
+        'a `legacyLocal` dep is a fallback wearing a test seam\'s hat');
     });
   }
   {
@@ -292,7 +303,6 @@ async function venueDoor() {
     try {
       result = await coverage.runCoverageAlign('step-crucible', config(dir), null, {
         venueHost: crucibleHost(server),
-        legacyLocal: async () => { throw new Error('a routed server must not spawn the local narrator'); },
       });
     } finally {
       await fake.close();
@@ -323,7 +333,6 @@ async function venueDoor() {
     try {
       result = await coverage.runCoverageAlign('step-follows-run', config(dir), null, {
         venueHost: crucibleHost(localName),
-        legacyLocal: async () => { throw new Error('must not spawn locally'); },
       });
     } finally {
       await mac.close();
@@ -405,26 +414,21 @@ async function venueDoor() {
     });
   }
   {
-    // A row whose run was rendered by the legacy narrator aligns locally without re-deciding —
-    // even with the routing record now pointing at a server.
-    const a = await startFake('run');
-    const aName = registerFake(a.url);
-    const dir = freshSession();
-    let localCalls = 0;
-    let result;
-    try {
-      result = await coverage.runCoverageAlign('step-row-legacy', config(dir, { runVenue: { where: 'legacy-local-narrator' } }), null, {
-        venueHost: crucibleHost(aName),
-        legacyLocal: async () => { localCalls += 1; return { success: true }; },
-      });
-    } finally {
-      await a.close();
-    }
-    await check('a run the legacy narrator rendered aligns with the legacy narrator — the run\'s venue, not the record\'s', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(a.state.submitted.length, 0);
-      assert.deepStrictEqual(result.venue,
-        { where: 'legacy-local-narrator', origin: 'the run', because: "the run's venue (the queue row)" });
+    /*
+     * A ROW WHOSE RUN THE DELETED NARRATOR RENDERED IS REFUSED, NOT RE-ROUTED.
+     * It used to align locally without re-deciding. That run-venue shape no
+     * longer exists in the type, and the row's own string is turned away one
+     * level up by `runVenueOfRow` — re-deciding would send the alignment of a
+     * book rendered here to somebody else's card, with no record on either side
+     * of where the audio actually came from (PHASE7-LANES §4.3).
+     */
+    const stepVenue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'step-venue.js'));
+    const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
+    await check('a run the deleted narrator rendered is refused by name, never aligned here', () => {
+      assert.throws(
+        () => stepVenue.runVenueOfRow(waitFor.RETIRED_LOCAL_NARRATOR_VENUE),
+        (err) => err.code === 'legacy_venue_retired',
+      );
     });
   }
   {
@@ -490,34 +494,20 @@ async function venueDoor() {
     });
   }
   {
-    const dir = freshSession();
-    const result = await coverage.runCoverageAlign('step-nowhere', config(dir), null, {
-      venueHost: {
-        view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: false }),
-        enabled: () => { const e = new Error('no_enabled_server: no Crucible server is enabled'); e.code = 'no_enabled_server'; throw e; },
-        ping: async () => { throw new Error('unused'); },
-      },
-    });
-    await check('with the legacy switch off and no server enabled the run fails by name — nothing runs locally', () => {
-      assert.strictEqual(result.success, false);
-      assert.ok(/nowhere to run/.test(result.error) && /no_enabled_server/.test(result.error), result.error);
-      assert.strictEqual(result.venue, undefined);
-    });
-  }
-  {
     const fake = await startFake('run');
     const named = registerFake(fake.url);
     const dir = freshSession();
     let result;
     try {
       result = await coverage.runCoverageAlign('step-named', config(dir, { crucible: { server: named } }), null, {
-        venueHost: legacyHost(),
-        legacyLocal: async () => { throw new Error('the caller named a server; local must not run'); },
+        // NOTHING ENABLED: the record would refuse, so this proves the caller's
+        // own instruction is answered before the record is ever read.
+        venueHost: noServerHost(),
       });
     } finally {
       await fake.close();
     }
-    await check('the caller\'s own server name wins over the legacy switch when the run has no venue yet', () => {
+    await check('the caller\'s own server name is answered before the record is read at all', () => {
       assert.deepStrictEqual(result.venue, { where: 'crucible', server: named, origin: 'decided here', because: 'the caller named it' });
       assert.strictEqual(fake.state.submitted.length, 1);
     });

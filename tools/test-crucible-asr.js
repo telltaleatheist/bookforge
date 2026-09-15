@@ -25,8 +25,9 @@
  *  6. Refusals by name, before the upload where the server can be asked: a
  *     server with no `asr`, a model it does not offer, `server_busy` with the
  *     holder's line — and NO local transcription in any of them.
- *  7. The venue door: the legacy switch routes to the local spawn and says so;
- *     a routed server routes to the Crucible.
+ *  7. The venue door: a routed server routes to the Crucible, and with NOTHING
+ *     ENABLED the door refuses `no_enabled_server` by name. There is no local
+ *     whisper spawn to fall back to any more (docs/LEGACY-REMOVAL.md).
  *
  * No GPU, no whisper, no network beyond 127.0.0.1.
  */
@@ -36,7 +37,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, legacyHost,
+  crucibleHost, noServerHost,
 } = require('./fake-crucible');
 
 const ASR = path.join(REPO, 'dist', 'electron', 'crucible', 'asr.js');
@@ -329,21 +330,31 @@ async function refusals() {
 
 async function venueDoor() {
   {
-    let localCalls = 0;
-    const log = [];
-    const outcome = await asr.transcribeAtVenue({
-      host: legacyHost(),
-      audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never.vtt'),
-      legacyLocal: async () => { localCalls += 1; return { cues: 7 }; },
-      onLog: (l) => log.push(l),
+    /*
+     * THERE IS NO LOCAL ARM LEFT. This check used to pin the opposite — the
+     * legacy switch reaching `transcribe_audiobook.py` here — and that switch
+     * and the spawn behind it are deleted (docs/LEGACY-REMOVAL.md). What must
+     * be true now is the thing the old arm hid: with nothing to place the work
+     * on, the door REFUSES BY NAME and touches no card, rather than quietly
+     * transcribing a whole audiobook on whatever machine happened to run it.
+     */
+    const outVtt = path.join(work, 'never.vtt');
+    let caught = null;
+    try {
+      await asr.transcribeAtVenue({
+        host: noServerHost(),
+        audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: outVtt,
+      });
+    } catch (err) { caught = err; }
+    await check('with nothing enabled the door refuses by name and transcribes nothing here', () => {
+      assert.ok(caught !== null, 'it must not have quietly succeeded');
+      assert.strictEqual(caught.code, 'no_enabled_server', caught.message);
+      assert.ok(!fs.existsSync(outVtt), 'nothing transcribed locally instead');
     });
-    await check('the legacy switch routes to the local spawn and says so', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(outcome.venue.where, 'legacy-local-narrator');
-      assert.strictEqual(outcome.venue.origin, 'decided here');
-      assert.strictEqual(outcome.cues, 7);
-      assert.strictEqual(outcome.crucible, undefined);
-      assert.ok(log.some((l) => /local whisper spawn/.test(l) && /decided here/.test(l) && /legacy/.test(l)), log.join('\n'));
+    await check('the asr door takes no local callback at all', () => {
+      const src = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'asr.ts'), 'utf-8');
+      assert.ok(!/legacyLocal/.test(src),
+        'a `legacyLocal` option is a fallback wearing an option\'s hat');
     });
   }
   {
@@ -351,13 +362,12 @@ async function venueDoor() {
     const server = registerFake(fake.url);
     const audio = freshAudio('book.m4b');
     const outVtt = path.join(path.dirname(audio), 'out.vtt');
-    let localCalls = 0;
+    const localCalls = 0;
     let outcome;
     try {
       outcome = await asr.transcribeAtVenue({
         host: crucibleHost(server),
         audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: outVtt,
-        legacyLocal: async () => { localCalls += 1; return { cues: 0 }; },
       });
     } finally {
       await fake.close();
@@ -377,14 +387,15 @@ async function venueDoor() {
     try {
       outcome = await asr.transcribeAtVenue({
         crucible: { server: named },
-        host: legacyHost(),   // would go local if the caller's name did not win
+        // NOTHING ENABLED: the record would refuse, so this proves the caller's
+        // own instruction is answered before the record is ever read.
+        host: noServerHost(),
         audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
-        legacyLocal: async () => { throw new Error('the caller named a server; local must not run'); },
       });
     } finally {
       await fake.close();
     }
-    await check('the caller\'s own server name wins over the legacy switch when the run has no venue yet', () => {
+    await check('the caller\'s own server name is answered before the record is read at all', () => {
       assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: named, origin: 'decided here', because: 'the caller named it' });
     });
   }
@@ -403,7 +414,6 @@ async function venueDoor() {
         runVenue: { where: 'crucible', server: mineName }, runVenueSource: 'the queue row',
         host: crucibleHost(otherName),
         audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
-        legacyLocal: async () => { throw new Error('must not run locally'); },
         onLog: (l) => log.push(l),
       });
     } finally {
@@ -419,23 +429,27 @@ async function venueDoor() {
     });
   }
   {
-    let localCalls = 0;
-    const outcome = await asr.transcribeAtVenue({
-      runVenue: { where: 'legacy-local-narrator' }, runVenueSource: 'the queue row',
-      host: crucibleHost('never-asked'),
-      audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never.vtt'),
-      legacyLocal: async () => { localCalls += 1; return { cues: 1 }; },
-    });
-    await check('a run the legacy narrator rendered transcribes locally without re-deciding', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(outcome.venue.origin, 'the run');
+    /*
+     * A RUN THE DELETED NARRATOR RENDERED IS REFUSED, NOT RE-DECIDED. It used
+     * to transcribe locally without re-deciding, which is what a
+     * `{where:'legacy-local-narrator'}` run venue meant. That shape no longer
+     * exists in the type, and the row's own string is turned away one level up,
+     * by `runVenueOfRow` — re-deciding would move a half-rendered book onto a
+     * different card (PHASE7-LANES §4.3).
+     */
+    const stepVenue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'step-venue.js'));
+    const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
+    await check('a run the deleted narrator rendered is refused by name, never transcribed here', () => {
+      assert.throws(
+        () => stepVenue.runVenueOfRow(waitFor.RETIRED_LOCAL_NARRATOR_VENUE),
+        (err) => err.code === 'legacy_venue_retired',
+      );
     });
     await assert.rejects(
       asr.transcribeAtVenue({
         runVenue: { where: 'crucible', server: 'mac' }, crucible: { server: 'local' },
         host: crucibleHost('local'),
         audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never2.vtt'),
-        legacyLocal: async () => { throw new Error('no'); },
       }),
       (err) => err.code === 'run_venue_disagrees',
     );

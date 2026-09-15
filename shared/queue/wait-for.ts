@@ -33,8 +33,8 @@
  * The vocabulary and the DECISION, as one pure function over facts the caller
  * has already gathered: the record's ranked list, what each row was already
  * assigned, and what each server last said. It performs no I/O, so the engine
- * can ask it inside a
- * synchronous pump and a keeper can drive every branch with no network.
+ * can ask it inside a synchronous pump and a keeper can drive every branch with
+ * no network.
  *
  * Every "no" it can answer is a SENTENCE THAT NAMES THE SERVER. A row that sits
  * at `queued` with no explanation is the thing `/v1/activity` and every named
@@ -171,10 +171,24 @@ export function holdBusy(server: string, line: string): string {
  *    would have been a silent default. So the field stays absent and says so.
  */
 export function holdRetiredVenue(): string {
-  return 'This book was assigned to the local narrator, which no longer exists: BookForge renders '
-    + 'on a Crucible server now, and the local spawn layer has been removed. Choose a server for '
-    + 'it, or Any, and queue it again — nothing here moves a half-rendered book onto a different '
-    + 'card on its own.';
+  return `Waiting: ${retiredVenueReason()}`;
+}
+
+/**
+ * WHY A ROW ASSIGNED TO THE DELETED NARRATOR GOES NOWHERE — one sentence, said
+ * by every door that reads a RAW `waitForResolved`.
+ *
+ * Three read one: admission ({@link decideWaitFor}), the venue conversion
+ * (`crucible/step-venue.ts`'s `runVenueOfRow`) and the AI provider block, plus
+ * the align door. Each would otherwise invent its own wording for one fact, and
+ * two of them would have read the string as a SERVER'S NAME and gone looking for
+ * a machine called "legacy-local-narrator" (crucible `docs/ARCHITECTURE.md` R1).
+ */
+export function retiredVenueReason(): string {
+  return 'this book was assigned to the local narrator, which no longer exists. BookForge renders '
+    + 'on a Crucible server now and the local spawn layer has been removed '
+    + '(docs/LEGACY-REMOVAL.md). Choose a server for it, or Any, and queue it again — nothing '
+    + 'here moves a half-rendered book onto a different card on its own.';
 }
 
 export function holdNoAnswer(): string {

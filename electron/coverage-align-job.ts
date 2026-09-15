@@ -676,9 +676,8 @@ async function runCoverageAlignOnCrucible(
   if (config.device !== 'gpu') {
     return fail(
       `crucible_align_cpu_row: this alignment was queued to run on the CPU beside the assembly, and `
-      + `its venue is crucible "${server}", which has only the card. Queue it on the GPU, or turn on `
-      + 'the legacy switch (Settings → Crucible Servers) to align with the local narrator. The rendered '
-      + 'audio is intact.',
+      + `its venue is crucible "${server}", which has only the card. Queue it on the GPU. The `
+      + 'rendered audio is intact.',
     );
   }
 

@@ -34,7 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer,
-  crucibleHost, legacyHost,
+  crucibleHost, noServerHost,
 } = require('./fake-crucible');
 
 const REROLL = path.join(REPO, 'dist', 'electron', 'crucible', 'reroll.js');
@@ -335,37 +335,46 @@ async function refusals() {
 
 async function venueDoor() {
   {
-    let localCalls = 0;
-    const log = [];
-    const outcome = await reroll.rerollAtVenue({
-      host: legacyHost(),
-      renderId: 'sess-1', ttsEngine: 'higgs', voiceId: 'mistborn', language: 'en',
-      chunks: CHUNKS, targetDir: freshScratch(), takes: 3,
-      // The local arm is the one that CAN spread the temperatures; the door
-      // carries them to it and they never reach the Crucible arm.
-      takeTemperatures: [0.4, 0.8, 1.0],
-      legacyLocal: async () => { localCalls += 1; },
-      onLog: (l) => log.push(l),
+    /*
+     * THE LOCAL NARRATOR ARM IS GONE — and it was the one that could spread the
+     * per-take temperatures, so its removal is the reason a Crucible re-roll
+     * varies only by the engine's own unseeded sampling (the owed sampling
+     * channel is ROLLOUT_PLAN B4, not a switch). This used to pin the legacy
+     * switch reaching `regenerateSentenceIndices`; that switch and the spawn
+     * behind it are deleted (docs/LEGACY-REMOVAL.md), so with nothing to place
+     * the pass on the door REFUSES BY NAME and re-rolls nothing here.
+     */
+    const targetDir = freshScratch();
+    let caught = null;
+    try {
+      await reroll.rerollAtVenue({
+        host: noServerHost(),
+        renderId: 'sess-1', ttsEngine: 'higgs', voiceId: 'mistborn', language: 'en',
+        chunks: CHUNKS, targetDir, takes: 3,
+      });
+    } catch (err) { caught = err; }
+    await check('with nothing enabled the door refuses by name and re-rolls nothing here', () => {
+      assert.ok(caught !== null, 'it must not have quietly succeeded');
+      assert.strictEqual(caught.code, 'no_enabled_server', caught.message);
+      assert.ok(!fs.existsSync(path.join(targetDir, 'take0')), 'nothing re-rolled locally instead');
     });
-    await check('the legacy switch re-rolls on the local narrator and says so', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(outcome.venue.where, 'legacy-local-narrator');
-      assert.strictEqual(outcome.crucible, undefined);
-      assert.ok(log.some((l) => /local narrator spawn/.test(l) && /decided here/.test(l)), log.join('\n'));
+    await check('the reroll door takes no local callback at all', () => {
+      const srcTs = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'reroll.ts'), 'utf-8');
+      assert.ok(!/legacyLocal/.test(srcTs),
+        'a `legacyLocal` option is a fallback wearing an option\'s hat');
     });
   }
   {
     const fake = await startFake('run');
     const server = registerFake(fake.url);
     const targetDir = freshScratch();
-    let localCalls = 0;
+    const localCalls = 0;
     let outcome;
     try {
       outcome = await reroll.rerollAtVenue({
         host: crucibleHost(server),
         renderId: 'sess-2', ttsEngine: 'higgs', voiceId: 'deathstalker', language: 'en',
         chunks: CHUNKS, targetDir, takes: 1,
-        legacyLocal: async () => { localCalls += 1; },
       });
     } finally {
       await fake.close();
@@ -392,7 +401,6 @@ async function venueDoor() {
         host: crucibleHost(otherName),
         renderId: 'sess-3', ttsEngine: 'higgs', voiceId: 'mistborn', language: 'en',
         chunks: CHUNKS, targetDir, takes: 1,
-        legacyLocal: async () => { throw new Error('must not run locally'); },
       });
     } finally {
       await mine.close();
@@ -411,7 +419,6 @@ async function venueDoor() {
         host: crucibleHost('local'),
         renderId: 'sess-4', ttsEngine: 'higgs', voiceId: 'mistborn', language: 'en',
         chunks: CHUNKS, targetDir: freshScratch(),
-        legacyLocal: async () => { throw new Error('no'); },
       }),
       (err) => err.code === 'run_venue_disagrees',
     );

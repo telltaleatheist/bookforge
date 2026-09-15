@@ -14,7 +14,9 @@ import {
   decideWhereGenerationRuns,
   type VenueHost,
 } from './generation-venue';
-import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import {
+  RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
+} from '../../shared/queue/wait-for';
 
 /**
  * The venue a run has ALREADY been given: the server its render went to
@@ -78,13 +80,7 @@ export function describeRunVenue(v: RunVenue): string {
 export function runVenueOfRow(waitForResolved: string | undefined): RunVenue | undefined {
   if (waitForResolved === undefined || waitForResolved === WAIT_FOR_ANY) return undefined;
   if (waitForResolved === RETIRED_LOCAL_NARRATOR_VENUE) {
-    throw new CrucibleVenueError(
-      'legacy_venue_retired',
-      'this run was assigned to the local narrator, which no longer exists: BookForge renders on '
-        + 'a Crucible server now and the local spawn layer has been removed '
-        + '(docs/LEGACY-REMOVAL.md). Nothing here moves a half-rendered book onto another card on '
-        + 'its own — choose a server for it and queue it again.',
-    );
+    throw new CrucibleVenueError('legacy_venue_retired', retiredVenueReason());
   }
   return { where: 'crucible', server: waitForResolved };
 }

@@ -547,9 +547,9 @@ export async function hostPrepRefusal(engine: NarratorEngineId): Promise<string 
     `machine in the tools environment — and that environment cannot run narrator's prep: ` +
     `${reason}. Interpreter: ${py.command}${py.args.length ? ' ' + py.args.join(' ') : ''}; ` +
     `narrator at ${pythonRoot}. Install narrator's text dependencies into it ` +
-    `(\`<that python> -m pip install -e ${pythonRoot}\`), or turn on "Render audiobooks with the ` +
-    `local narrator instead" in Settings → Crucible Servers to prep in the engine's own environment. ` +
-    `Nothing preps inside WSL for a render that does not run there.`
+    `(\`<that python> -m pip install -e ${pythonRoot}\`). There is no local narrator to prep with ` +
+    `instead (docs/LEGACY-REMOVAL.md), and nothing preps inside WSL for a render that does not ` +
+    `run there.`
   );
 }
 

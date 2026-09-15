@@ -64,7 +64,7 @@ const slots = require(path.join(REPO, 'dist', 'shared', 'queue', 'slot-sets.js')
 const bench = require(path.join(REPO, 'dist', 'shared', 'queue', 'bench.js'));
 const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
 
-const LEGACY = waitFor.LEGACY_LOCAL_NARRATOR;
+const LEGACY = slots.LONGFORM_ALIGN_SET;
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-slotsets-'));
 
 let passed = 0;
@@ -121,7 +121,7 @@ const factsOf = ({ servers = [], upstreams, occupied = [], jobs = [] }) => ({
   enabledServers: servers,
   upstreams: upstreams ?? unknownUpstreams(servers),
   occupied,
-  legacyCharged: slots.legacySetCharged({ jobs }),
+  alignerCharged: slots.longformAlignCharged({ jobs }),
 });
 
 test('a CPU step is work BookForge does itself, whatever its run says', () => {
@@ -230,12 +230,12 @@ test('an engine nobody has ASKED keeps its lane — not knowing is not knowing t
 
 test('a server the caller said NOTHING about is refused by name, never defaulted', () => {
   assert.throws(
-    () => slots.slotSets({ enabledServers: ['mac'], upstreams: {}, occupied: [], legacyCharged: false }),
+    () => slots.slotSets({ enabledServers: ['mac'], upstreams: {}, occupied: [], alignerCharged: false }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], occupied: [], legacyCharged: false }),
+    () => slots.slotSets({ enabledServers: [], occupied: [], alignerCharged: false }),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -244,17 +244,17 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
 test('a caller that said nothing about the LEGACY row is refused by name too', () => {
   assert.throws(
     () => slots.slotSets({ enabledServers: [], upstreams: {}, occupied: [] }),
-    /`legacyCharged` was not supplied/,
+    /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, occupied: [LEGACY], legacyCharged: false,
+      enabledServers: [], upstreams: {}, occupied: [LEGACY], alignerCharged: false,
     }),
-    /`occupied` says the legacy local narrator is holding something of ours/,
+    /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
     + 'pass would have drawn the row `retiring`, which is false of the one set that always '
-    + 'takes new work while the layer exists',
+    + 'takes new work until B7 is built',
   );
 });
 
@@ -326,33 +326,33 @@ test('EVERY GPU row that IS drawn is a registered server, bar the one named lega
     "BookForge's own work has no card — CPU only");
 });
 
-test('legacySetCharged reads the STEPS, so a finished one charges nothing', () => {
+test('longformAlignCharged reads the STEPS, so a finished one charges nothing', () => {
   const queued = jobOfSteps([epubAlignStep()]);
-  assert.strictEqual(slots.legacySetCharged({ jobs: [queued] }), true);
+  assert.strictEqual(slots.longformAlignCharged({ jobs: [queued] }), true);
   for (const status of ['done', 'failed', 'cancelled']) {
     assert.strictEqual(
-      slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status })])] }), false,
+      slots.longformAlignCharged({ jobs: [jobOfSteps([epubAlignStep({ status })])] }), false,
       `a ${status} step is history, not a plan — and it is what empties the row`);
   }
   assert.strictEqual(
-    slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'held' })])] }), true,
+    slots.longformAlignCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'held' })])] }), true,
     'a held step is still work that can run nowhere else; the lane must not appear at the '
     + 'instant Start is pressed');
   assert.strictEqual(
-    slots.legacySetCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'running' })])] }), true,
+    slots.longformAlignCharged({ jobs: [jobOfSteps([epubAlignStep({ status: 'running' })])] }), true,
     'and a running one charges it too, which is why the occupied pass never draws this row');
 });
 
 test('a travelling render charges no legacy row, and a CPU step charges none either', () => {
   const travelling = stepOf({ travels: true, status: 'queued' });
-  assert.strictEqual(slots.legacySetCharged({
+  assert.strictEqual(slots.longformAlignCharged({
     jobs: [jobOfSteps([travelling], { waitForResolved: 'mac' })],
   }), false, 'it goes to the Mac’s set, so nothing in-app is being driven');
-  assert.strictEqual(slots.legacySetCharged({
+  assert.strictEqual(slots.longformAlignCharged({
     jobs: [jobOfSteps([stepOf({ resource: 'cpu', status: 'queued' })])],
   }), false, 'work BookForge does itself is `local-work`, which is always there');
   const unrouted = stepOf({ travels: true, status: 'queued' });
-  assert.strictEqual(slots.legacySetCharged({ jobs: [jobOfSteps([unrouted])] }), false,
+  assert.strictEqual(slots.longformAlignCharged({ jobs: [jobOfSteps([unrouted])] }), false,
     'a row with no venue yet answers null, and null is not the legacy spawn');
 });
 
@@ -370,7 +370,7 @@ test('VIDEO ASSEMBLY IS NOT INFERENCE, so it charges local-work and draws no GPU
   });
   const job = jobOfSteps([video]);
   assert.strictEqual(slots.slotSetForStep(job, video), slots.LOCAL_WORK_SET);
-  assert.strictEqual(slots.legacySetCharged({ jobs: [job] }), false);
+  assert.strictEqual(slots.longformAlignCharged({ jobs: [job] }), false);
   const sets = slots.slotSets(factsOf({ servers: ['mac'], jobs: [job] }));
   assert.ok(!sets.some((s) => s.id === LEGACY),
     'a video mux must not make the bench draw a card nobody is using');
@@ -560,7 +560,7 @@ test('a queued epub-align draws the legacy lane BESIDE the servers, and it is em
   assert.deepStrictEqual(lanes.map((l) => l.setId), ['local', 'mac', LEGACY]);
   const legacy = lanes.find((l) => l.setId === LEGACY);
   assert.strictEqual(legacy.occupant, null, 'it is queued, not running');
-  assert.strictEqual(legacy.setLabel, 'the local narrator (legacy)',
+  assert.strictEqual(legacy.setLabel, 'the local long-form aligner',
     'the heading is unchanged: a SlotSet has a heading and nothing else, and inventing a '
     + 'second sentence field for one row is a change to what a bench row IS');
   assert.strictEqual(legacy.retiring, false);

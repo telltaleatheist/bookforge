@@ -490,9 +490,9 @@ export function narratorDoorOwedBeforeSubmit(server: string): string {
     + 'narrator has no items-in door, so the server would produce the model\'s items and nothing '
     + 'could turn them into coverage.json and the sentence VTT. BUILD OWED: '
     + '`narrator align --alignment <alignment.json>` (electron/crucible/align.ts header, shape (a); '
-    + 'docs/CRUCIBLE_ROLLOUT_PLAN.md §0b B5). Nothing was submitted and no card was taken. To align '
-    + 'now, turn on "Render audiobooks with the local narrator instead" in Settings → Crucible '
-    + 'Servers, which runs it here exactly as before.'
+    + 'docs/CRUCIBLE_ROLLOUT_PLAN.md §0b B5). Nothing was submitted and no card was taken. The '
+    + 'rendered audio is intact; there is no local narrator to align with instead '
+    + '(docs/LEGACY-REMOVAL.md), so this waits on that door.'
   );
 }
 
@@ -503,8 +503,8 @@ export function narratorDoorOwedMessage(alignmentPath: string): string {
     + 'and the sentence VTT — the item-to-word mapping, the derived scores, the gate and the cues are '
     + 'narrator\'s (python/narrator/align/, PHASE4-AUDIO.md §2) and it only aligns through its own '
     + 'worker today. BUILD OWED: `narrator align --alignment <alignment.json>` (electron/crucible/align.ts '
-    + 'header, shape (a)). Until it exists, the rendered audio is intact, this run wrote no coverage '
-    + 'report, and the legacy switch (Settings → Crucible Servers) aligns with the local narrator '
-    + 'exactly as before.'
+    + 'header, shape (a)). Until it exists, the rendered audio is intact and this run wrote no '
+    + 'coverage report. There is no local narrator to align with instead '
+    + '(docs/LEGACY-REMOVAL.md).'
   );
 }

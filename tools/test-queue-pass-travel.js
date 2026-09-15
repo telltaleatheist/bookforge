@@ -190,7 +190,7 @@ function passConfig(kind, ai) {
       enabledServers: ['mac'], upstreams: { mac: 'configured' }, occupied: [],
       // Nothing is queued in this check, so no in-app GPU row is drawn — which
       // is not what it is about either way.
-      legacyCharged: false,
+      alignerCharged: false,
     })
       .find((set) => set.id === slots.cloudLaneOf('mac'));
     // `configured` rather than `unknown`: an engine that ROUTES a class upstream
@@ -272,7 +272,6 @@ function passConfig(kind, ai) {
       for (const [assigned, why] of [
         [undefined, 'a row that was never assigned'],
         [waitFor.WAIT_FOR_ANY, '`any` is not a machine'],
-        [waitFor.LEGACY_LOCAL_NARRATOR, 'the legacy switch is on'],
       ]) {
         const result = await passes.runProcessingPass(
           'step-1',

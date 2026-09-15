@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, legacyHost,
+  crucibleHost, noServerHost,
 } = require('./fake-crucible');
 
 const DENOISE = path.join(REPO, 'dist', 'electron', 'crucible', 'denoise.js');
@@ -249,33 +249,40 @@ async function refusals() {
 
 async function venueDoor() {
   {
-    const log = [];
-    let local = 0;
+    /*
+     * THE LOCAL AUDIO-SEPARATOR ARM IS GONE. This used to pin the legacy switch
+     * reaching the resident `separator_worker.py` in the rvc-env; that switch
+     * and the spawn behind it are deleted (docs/LEGACY-REMOVAL.md). With
+     * nothing to place the pass on, the door REFUSES BY NAME and separates
+     * nothing — the one arm that remains is the remote one, and it is never
+     * called for a venue that could not be decided.
+     */
     let remote = 0;
-    const outcome = await denoise.denoiseAtVenue({
-      host: legacyHost(),
-      onLog: (l) => log.push(l),
-      legacyLocal: async () => { local += 1; return { dir: '/local/set' }; },
-      onCrucibleServer: async () => { remote += 1; return { dir: '/never' }; },
+    let caught = null;
+    try {
+      await denoise.denoiseAtVenue({
+        host: noServerHost(),
+        onCrucibleServer: async () => { remote += 1; return { dir: '/never' }; },
+      });
+    } catch (err) { caught = err; }
+    await check('with nothing enabled the door refuses by name and separates nothing here', () => {
+      assert.ok(caught !== null, 'it must not have quietly succeeded');
+      assert.strictEqual(caught.code, 'no_enabled_server', caught.message);
+      assert.strictEqual(remote, 0, 'and no server was asked to do it either');
     });
-    await check('the legacy switch runs the local audio-separator arm and says so', () => {
-      assert.strictEqual(local, 1);
-      assert.strictEqual(remote, 0);
-      assert.strictEqual(outcome.venue.where, 'legacy-local-narrator');
-      assert.deepStrictEqual(outcome.outcome, { dir: '/local/set' }, 'the arm\'s own result is carried through');
-      assert.ok(log.some((l) => /local audio-separator spawn/.test(l) && /decided here/.test(l)), log.join('\n'));
+    await check('the denoise door takes no local callback at all', () => {
+      const srcTs = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'denoise.ts'), 'utf-8');
+      assert.ok(!/legacyLocal/.test(srcTs),
+        'a `legacyLocal` option is a fallback wearing an option\'s hat');
     });
   }
   {
-    let local = 0;
     let named = null;
     const outcome = await denoise.denoiseAtVenue({
       host: crucibleHost('mac'),
-      legacyLocal: async () => { local += 1; return { dir: '/never' }; },
       onCrucibleServer: async (server) => { named = server; return { dir: '/remote/set' }; },
     });
-    await check('a routed server runs the remote arm with that server\'s name, never the local one', () => {
-      assert.strictEqual(local, 0);
+    await check('a routed server runs the remote arm with that server\'s name', () => {
       assert.strictEqual(named, 'mac');
       assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: 'mac', origin: 'decided here', because: 'the top-ranked server' });
       assert.deepStrictEqual(outcome.outcome, { dir: '/remote/set' });
@@ -288,7 +295,6 @@ async function venueDoor() {
       runVenue: { where: 'crucible', server: 'mac' }, runVenueSource: 'session_state.json',
       host: crucibleHost('local'),
       onLog: (l) => log.push(l),
-      legacyLocal: async () => { throw new Error('must not run locally'); },
       onCrucibleServer: async (server) => { named = server; return { dir: '/mac/set' }; },
     });
     await check('a run already resolved to one server never denoises on the top-ranked other', () => {
@@ -302,7 +308,6 @@ async function venueDoor() {
       denoise.denoiseAtVenue({
         runVenue: { where: 'crucible', server: 'mac' }, crucible: { server: 'local' },
         host: crucibleHost('local'),
-        legacyLocal: async () => { throw new Error('no'); },
         onCrucibleServer: async () => { throw new Error('no'); },
       }),
       (err) => err.code === 'run_venue_disagrees',
@@ -310,16 +315,20 @@ async function venueDoor() {
     await check('a caller naming a server the run did not go to is refused by name', () => {});
   }
   {
-    let local = 0;
-    const outcome = await denoise.denoiseAtVenue({
-      runVenue: { where: 'legacy-local-narrator' }, runVenueSource: 'session_state.json',
-      host: crucibleHost('never-asked'),
-      legacyLocal: async () => { local += 1; return { dir: '/local/set' }; },
-      onCrucibleServer: async () => { throw new Error('must not go remote'); },
-    });
-    await check('a run the legacy narrator rendered denoises locally without re-deciding', () => {
-      assert.strictEqual(local, 1);
-      assert.strictEqual(outcome.venue.origin, 'the run');
+    /*
+     * A RUN THE DELETED NARRATOR RENDERED IS REFUSED, NOT RE-DECIDED. It used
+     * to denoise locally without re-deciding; that run-venue shape no longer
+     * exists in the type, and the row's own string is turned away one level up
+     * by `runVenueOfRow`, because re-deciding would put the second half of a
+     * book on a different card (PHASE7-LANES §4.3).
+     */
+    const stepVenue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'step-venue.js'));
+    const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
+    await check('a run the deleted narrator rendered is refused by name, never denoised here', () => {
+      assert.throws(
+        () => stepVenue.runVenueOfRow(waitFor.RETIRED_LOCAL_NARRATOR_VENUE),
+        (err) => err.code === 'legacy_venue_retired',
+      );
     });
   }
 }

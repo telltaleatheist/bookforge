@@ -39,7 +39,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, legacyHost,
+  crucibleHost, noServerHost,
 } = require('./fake-crucible');
 
 const RVC = path.join(REPO, 'dist', 'electron', 'crucible', 'rvc.js');
@@ -334,34 +334,43 @@ async function refusals() {
 
 async function venueDoor() {
   {
-    let localCalls = 0;
-    const log = [];
+    /*
+     * THERE IS NO LOCAL URVC ARM LEFT. This used to pin the legacy switch
+     * reaching `enhanceSentences` and the rvc-env here; that switch and the
+     * spawn behind it are deleted (docs/LEGACY-REMOVAL.md). What has to be true
+     * now is what the old arm hid: with nothing to place the pass on, the door
+     * REFUSES BY NAME and converts nothing, rather than taking this machine's
+     * card for a set somebody routed elsewhere.
+     */
     const { src, out } = freshSet(['0.flac']);
-    const outcome = await rvc.convertSentencesAtVenue({
-      host: legacyHost(),
-      sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
-      legacyLocal: async () => { localCalls += 1; return { outputDir: out }; },
-      onLog: (l) => log.push(l),
+    let caught = null;
+    try {
+      await rvc.convertSentencesAtVenue({
+        host: noServerHost(),
+        sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
+      });
+    } catch (err) { caught = err; }
+    await check('with nothing enabled the door refuses by name and converts nothing here', () => {
+      assert.ok(caught !== null, 'it must not have quietly succeeded');
+      assert.strictEqual(caught.code, 'no_enabled_server', caught.message);
+      assert.ok(!fs.existsSync(path.join(out, '0.flac')), 'nothing converted locally instead');
     });
-    await check('the legacy switch routes to the local urvc spawn and says so', () => {
-      assert.strictEqual(localCalls, 1);
-      assert.strictEqual(outcome.venue.where, 'legacy-local-narrator');
-      assert.strictEqual(outcome.venue.origin, 'decided here');
-      assert.strictEqual(outcome.crucible, undefined);
-      assert.ok(log.some((l) => /local urvc spawn/.test(l) && /decided here/.test(l)), log.join('\n'));
+    await check('the rvc door takes no local callback at all', () => {
+      const srcTs = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'rvc.ts'), 'utf-8');
+      assert.ok(!/legacyLocal/.test(srcTs),
+        'a `legacyLocal` option is a fallback wearing an option\'s hat');
     });
   }
   {
     const fake = await startFake('run');
     const server = registerFake(fake.url);
     const { src, out } = freshSet(['0.flac', '1.flac']);
-    let localCalls = 0;
+    const localCalls = 0;
     let outcome;
     try {
       outcome = await rvc.convertSentencesAtVenue({
         host: crucibleHost(server),
         sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-mistborn', knobs: KNOBS,
-        legacyLocal: async () => { localCalls += 1; return { outputDir: out }; },
       });
     } finally {
       await fake.close();
@@ -387,7 +396,6 @@ async function venueDoor() {
         runVenue: { where: 'crucible', server: mineName }, runVenueSource: 'session_state.json',
         host: crucibleHost(otherName),
         sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
-        legacyLocal: async () => { throw new Error('must not run locally'); },
         onLog: (l) => log.push(l),
       });
     } finally {
@@ -409,7 +417,6 @@ async function venueDoor() {
         runVenue: { where: 'crucible', server: 'mac' }, crucible: { server: 'local' },
         host: crucibleHost('local'),
         sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
-        legacyLocal: async () => { throw new Error('no'); },
       }),
       (err) => err.code === 'run_venue_disagrees',
     );
@@ -417,18 +424,27 @@ async function venueDoor() {
   }
   {
     // The decision a caller already made is CARRIED, not re-asked — `rvc-job.ts`
-    // needs it before it can know whether the LOCAL engine's readiness matters.
-    let localCalls = 0;
+    // decides once, up front, so its own refusal names the venue it refused for.
+    const fake = await startFake('run');
+    const server = registerFake(fake.url);
     const { src, out } = freshSet(['0.flac']);
-    const outcome = await rvc.convertSentencesAtVenue({
-      decided: { where: 'legacy-local-narrator', origin: 'the run', because: 'decided up front' },
-      host: { view: () => { throw new Error('the decision was already made'); }, enabled: () => { throw new Error('no'); }, ping: async () => { throw new Error('no'); } },
-      sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
-      legacyLocal: async () => { localCalls += 1; return { outputDir: out }; },
-    });
+    let outcome;
+    try {
+      outcome = await rvc.convertSentencesAtVenue({
+        decided: { where: 'crucible', server, origin: 'the run', because: 'decided up front' },
+        host: {
+          view: () => { throw new Error('the decision was already made'); },
+          enabled: () => { throw new Error('no'); },
+          ping: async () => { throw new Error('no'); },
+        },
+        sentencesDir: src, outputDir: out, voiceId: 'rvc-voice-sigma', knobs: KNOBS,
+      });
+    } finally {
+      await fake.close();
+    }
     await check('a venue the caller already resolved is carried through, never asked again', () => {
-      assert.strictEqual(localCalls, 1);
       assert.strictEqual(outcome.venue.because, 'decided up front');
+      assert.strictEqual(outcome.venue.server, server);
     });
   }
 }

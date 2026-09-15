@@ -279,9 +279,16 @@ async function main() {
           assert.ok(err.message.includes(pages.CRUCIBLE_PAGES_NO_BACKEND), err.message);
           // The server's OWN reason, not a paraphrase of it.
           assert.ok(err.message.includes('mlx-darwin'), err.message);
-          // Both ways forward, or it is a dead end dressed as an explanation.
+          // BOTH WAYS FORWARD, or it is a dead end dressed as an explanation —
+          // and the second one CHANGED when the local page readers were deleted
+          // (docs/LEGACY-REMOVAL.md). It is no longer "turn the legacy switch
+          // on"; it is the TYPED ENDPOINT under Settings → AI → Reading pages,
+          // which survived that deletion because it is a deliberate choice of
+          // GPU and is asked before the venue decision at all.
           assert.ok(/PC Crucible/.test(err.message), err.message);
-          assert.ok(/local engines/.test(err.message), err.message);
+          assert.ok(/Reading pages/.test(err.message), err.message);
+          assert.ok(!/legacy|local engines/i.test(err.message),
+            `it still offers a switch that no longer exists: ${err.message}`);
           assert.ok(err.message.includes('MLX'), err.message);
           // And it must not read as a fault.
           assert.ok(!/\b(crash|unexpected|internal error)\b/i.test(err.message), err.message);
@@ -376,20 +383,50 @@ async function main() {
       ['enabled', 'models', 'ping', 'server', 'view']);
   });
 
-  // ── 8. The venue: one record, ONE legacy switch, no silent local run ───────
-  await check('the legacy switch routes to the LOCAL page readers and says so', async () => {
-    const where = await pages.decideWherePagesRun(scriptedHost({
-      view: () => ({
-        ranked: [{ name: 'local', enabled: true }],
-        newJobsWaitFor: 'top-ranked',
-        unknown: [],
-        legacyLocalRender: true,
-      }),
-    }));
-    assert.strictEqual(where.where, 'legacy-local-narrator');
-    assert.strictEqual(where.origin, 'decided here');
-    assert.ok(where.because.length > 0, 'the legacy venue arrived with no reason');
-  });
+  // ── 8. The venue: one record, no silent local run ─────────────────────────
+  await check('there are NO local page readers left to route to — it refuses by name',
+    async () => {
+      /*
+       * THIS CHECK USED TO DRIVE THE LEGACY SWITCH and assert it reached the
+       * local page readers — MLX on Apple silicon, the WSL vLLM server on
+       * Windows. Both went with the spawn layer (docs/LEGACY-REMOVAL.md), so
+       * what it pins now is that the decision has one kind of answer and one
+       * kind of refusal.
+       *
+       * What did NOT go is the TYPED endpoint in Settings → AI → Reading pages:
+       * it is a deliberate choice of GPU, it is asked BEFORE this decision, and
+       * section 10 below is where that precedence is pinned.
+       */
+      await assert.rejects(
+        () => pages.decideWherePagesRun(scriptedHost({
+          view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }),
+          enabled: () => {
+            // routing.ts's OWN refusal, which is what the real host throws.
+            const err = new Error('no Crucible server is available to the queue');
+            err.name = 'CrucibleRoutingError';
+            err.code = 'no_enabled_server';
+            throw err;
+          },
+        })),
+        (err) => {
+          assert.strictEqual(err.code, 'no_enabled_server');
+          return true;
+        });
+      // And a record left over from that era cannot re-open the door.
+      const stale = await pages.decideWherePagesRun(scriptedHost({
+        view: () => ({
+          ranked: [{ name: 'local', enabled: true }],
+          newJobsWaitFor: 'top-ranked',
+          unknown: [],
+          legacyLocalRender: true,
+        }),
+        enabled: () => [{ name: 'local', enabled: true }],
+      }));
+      assert.strictEqual(stale.where, 'crucible');
+      assert.strictEqual(stale.server, 'local');
+      assert.strictEqual(stale.origin, 'decided here');
+      assert.ok(stale.because.length > 0, 'the venue arrived with no reason');
+    });
 
   await check('top-ranked is taken WITHOUT a ping — a named machine is an instruction', async () => {
     let pinged = 0;
@@ -407,7 +444,6 @@ async function main() {
         ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
         newJobsWaitFor: 'any',
         unknown: [],
-        legacyLocalRender: false,
       }),
       ping: async (name) => (name === 'mac'
         ? { outcome: 'ok', message: 'ok' }
@@ -424,7 +460,6 @@ async function main() {
           ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
           newJobsWaitFor: 'any',
           unknown: [],
-          legacyLocalRender: false,
         }),
         ping: async (name) => ({ outcome: 'unreachable', message: `${name} said nothing` }),
       })),
@@ -440,7 +475,7 @@ async function main() {
 
   await check('a caller that names a server wins over the record', async () => {
     const where = await pages.decideWherePagesRun(scriptedHost({
-      view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: true }),
+      view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }),
     }), { server: 'mac' });
     assert.deepStrictEqual(
       { where: where.where, server: where.server }, { where: 'crucible', server: 'mac' });
@@ -458,8 +493,11 @@ async function main() {
     const said = pages.foundryTooOldForCruciblePages('1.2.0', 'local');
     assert.ok(said.includes('FOUNDRY_ENDPOINT_HEADERS'), said);
     assert.ok(said.includes(pages.FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES), said);
-    // A refusal with no way forward is what the no-band-aids rule is about.
-    assert.ok(said.includes('local engines'), said);
+    // A refusal with no way forward is what the no-band-aids rule is about —
+    // and the way forward is now the TYPED endpoint, not the deleted switch.
+    assert.ok(said.includes('Reading pages'), said);
+    assert.ok(!/legacy|local engines/i.test(said),
+      `it still offers a switch that no longer exists: ${said}`);
     assert.ok(/no page was sent without its credential/.test(said), said);
   });
 
@@ -472,7 +510,7 @@ async function main() {
   await check('a TYPED endpoint wins and the Crucible record is never consulted', async () => {
     let consulted = 0;
     const host = scriptedHost({
-      view: () => { consulted += 1; return { ranked: [], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: false }; },
+      view: () => { consulted += 1; return { ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }; },
       enabled: () => { consulted += 1; return []; },
       models: async () => { consulted += 1; return []; },
     });
@@ -490,7 +528,7 @@ async function main() {
     const host = scriptedHost({
       view: () => {
         consulted += 1;
-        return { ranked: [{ name: 'local', enabled: true }], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: true };
+        return { ranked: [{ name: 'local', enabled: true }], newJobsWaitFor: 'top-ranked', unknown: [] };
       },
     });
     await assert.rejects(() => convert.planVlmConversion({

@@ -260,9 +260,8 @@ export function foundryTooOldForCruciblePages(installed: string, server: string)
     + `landed after the v1.2.0 release this app installs — and both builds report "1.2.0", so the `
     + `floor is the next release (FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES, currently `
     + `${FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES}). Nothing ran, and no page was sent without its `
-    + 'credential. Until that release is cut: turn on "Run renders and text passes with the local '
-    + 'engines instead" in Settings → Crucible Servers, which reads the pages the way this machine '
-    + 'reads them today.'
+    + 'credential. Until that release is cut, type an endpoint under Settings → AI → Reading '
+    + 'pages: a typed endpoint is a deliberate choice of GPU and is asked before this decision.'
   );
 }
 
@@ -452,8 +451,8 @@ export async function resolveCruciblePageReader(
       + 'cuda-linux manifest on purpose (crucible models/dots-ocr.toml): Apple silicon already has '
       + 'a page reader in MLX, and a Crucible block with an unmeasured estimate would compete with '
       + 'a route that works. Send this conversion to a PC Crucible — rank one first in '
-      + 'Settings → Crucible Servers — or turn on "Run renders and text passes with the local '
-      + 'engines instead" there, which reads the pages on this machine the way it always has. '
+      + 'Settings → Crucible Servers — or type an endpoint under Settings → AI → Reading pages, '
+      + 'which is a deliberate choice of GPU and wins over Crucible routing. '
       + 'Nothing ran and no page was read.',
     );
   }

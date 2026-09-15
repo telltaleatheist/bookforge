@@ -1964,9 +1964,13 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
  * Orpheus is the one engine that ever needed the guest — vLLM CUDA graphs do
  * not capture on native Windows. Windows-only; always false elsewhere.
  *
- * DELETE-AFTER-PASS: every reader of this is the legacy local narrator spawn,
- * which goes behind `legacyLocalRender` after Owen's in-app pass. Orpheus is
- * deprecated (Owen, 2026-09-14) and Higgs is the one narration engine.
+ * DELETE WITH THE SPAWN LAYER: every reader of this is the legacy local
+ * narrator spawn. The SWITCH that gated it is already gone
+ * (docs/LEGACY-REMOVAL.md) and Orpheus is retired from both pickers (Owen,
+ * 2026-09-14; Higgs is the one narration engine), so nothing in the app reaches
+ * this any more. It is held, not dead: `orpheus-worker-pool.ts` and the spawn
+ * builders are the surviving record of tuning measured over months, and they go
+ * once Crucible's own `environment()` has been audited against them.
  */
 export function shouldUseWsl2ForOrpheus(): boolean {
   if (os.platform() !== 'win32') return false;

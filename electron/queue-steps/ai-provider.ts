@@ -26,7 +26,9 @@
  */
 import type { AIProviderConfig } from '../ai-bridge';
 import type { CrucibleTextAct } from '../crucible/text-acts';
-import { WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import {
+  RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
+} from '../../shared/queue/wait-for';
 
 /**
  * WHICH MACHINES AN AI STEP CAN RUN ON (crucible `docs/PHASE7-LANES.md` §4).
@@ -144,6 +146,12 @@ export function providerConfigOf(
             + 'not assigned one. Pick a server for the book on the queue page (or Any), or queue '
             + 'it against the bundled local model.',
         );
+      }
+      if (assignedVenue === RETIRED_LOCAL_NARRATOR_VENUE) {
+        // Read as a server's name it would send this act to a machine called
+        // "legacy-local-narrator". Refused by name instead, in the one wording
+        // every door that reads a raw `waitForResolved` uses.
+        throw new Error(`legacy_venue_retired: ${retiredVenueReason()}`);
       }
       return { provider: 'crucible', crucible: { server: assignedVenue, act } };
     }

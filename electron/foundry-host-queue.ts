@@ -226,8 +226,8 @@ export function hostedCrucibleTextActNotVendored(act: string, server: string): s
     + 'The fix is a RE-VENDOR of foundry-app/ at or past foundry e096734, where the window reads '
     + 'this app\'s registry (FoundryHost.servers(), which BookForge already offers) and places '
     + 'the act itself. Until then: BookForge\'s own Clean text door and the CLI clean routes DO '
-    + 'run on a Crucible, and "Run renders and text passes with the local engines instead" in '
-    + 'Settings → Crucible Servers keeps the hosted window working.'
+    + 'run on a Crucible; the hosted window has no other route, because the local text engines '
+    + 'it used to fall to are deleted (docs/LEGACY-REMOVAL.md).'
   );
 }
 

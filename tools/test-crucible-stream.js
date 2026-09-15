@@ -6,16 +6,19 @@
  *
  * `electron/crucible/stream.ts` puts a Crucible streaming session (PHASE3-TTS.md
  * section 7) behind the `StreamingEngine` interface `stream-scheduler.ts` and the
- * three streaming surfaces already drive, and a venue-routed facade in front of
- * both backends. It drives a FAKE Crucible — an in-process HTTP server speaking
+ * three streaming surfaces already drive, and a venue-routed facade that binds
+ * it to a server. It drives a FAKE Crucible — an in-process HTTP server speaking
  * the four stream routes and `/v1/voices` in the shapes the SDK actually parses —
  * because the real one needs a card, and tonight both cards are taken.
  *
  * What a fake can prove is exactly what would otherwise be found on a Sunday,
  * with the extension open, mid-article:
  *
- *  1. **The legacy switch routes to the local narrator and says so.** The one
- *     switch the render uses, reused; nothing else picks the local card.
+ *  1. **There is no local arm at all.** The facade used to choose between the
+ *     local narrator pool and a Crucible, and the legacy switch decided which.
+ *     That switch and the pool behind it are DELETED
+ *     (docs/LEGACY-REMOVAL.md), so a local pool is HANDED TO the facade here
+ *     and must never be reached: what the facade decides now is WHICH SERVER.
  *  2. **open / say / close, in that order and on the wire.** One session per
  *     voice, `bookforge` in the User-Agent, `say` per sentence in dispatch order,
  *     one DELETE on stop.
@@ -414,7 +417,16 @@ function engineFor(fake, selectedEngine = 'higgs') {
   });
 }
 
-/** A local pool that must never be started when the venue is a Crucible. */
+/**
+ * A local narrator pool, handed to the facade DELIBERATELY so that it can be
+ * proved unreachable.
+ *
+ * `VenueRoutedDeps` no longer declares a `local` member — the pool went with the
+ * legacy spawn layer (docs/LEGACY-REMOVAL.md) — so passing one is passing a key
+ * the facade does not know about. Every `local.calls.startSession === 0` below
+ * is therefore a check that no local arm has grown back: a facade that started
+ * reading `deps.local()` again would light all of them up at once.
+ */
 function localStub() {
   const calls = { startSession: 0, endSession: 0 };
   const listeners = new Set();
@@ -444,11 +456,20 @@ function localStub() {
   };
 }
 
-function venueHost({ legacy = false, waitFor = 'top-ranked', enabled = ['fake1'], noEnabled = false } = {}) {
+function venueHost({ staleLegacyKey = false, waitFor = 'top-ranked', enabled = ['fake1'], noEnabled = false } = {}) {
   const calls = { view: 0, enabled: 0, ping: [] };
   return {
     calls,
-    view() { calls.view += 1; return { legacyLocalRender: legacy, newJobsWaitFor: waitFor, servers: [] }; },
+    view() {
+      calls.view += 1;
+      // `staleLegacyKey` puts the RETIRED key back on the view, as a record
+      // written before 2026-09-15 would. Nothing reads it; that is the point.
+      return {
+        newJobsWaitFor: waitFor,
+        servers: [],
+        ...(staleLegacyKey ? { legacyLocalRender: true } : {}),
+      };
+    },
     enabled() {
       calls.enabled += 1;
       if (noEnabled) {
@@ -467,11 +488,13 @@ function facadeFor(fake, opts = {}) {
   const engine = engineFor(fake, opts.selectedEngine);
   const venue = venueHost(opts);
   const facade = streamMod.venueRoutedStreamingEngine({
+    // `local` is not part of VenueRoutedDeps any more. It is passed anyway, so
+    // that "the local pool was never started" is a real assertion rather than a
+    // tautology — see localStub().
     local: () => local,
     crucible: engine,
     crucibleEngine: engine,
     venue,
-    legacySwitchIsOn: () => opts.legacy === true,
   });
   return { facade, local, engine, venue };
 }
@@ -484,36 +507,49 @@ const SENTENCES = [
 const SETTINGS = { voice: 'mistborn', speed: 1.0 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. The legacy switch is the ONE way to the local narrator
+// 1. There is NO way to the local narrator — the facade picks a SERVER
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function legacyChecks() {
+async function noLocalArmChecks() {
   const fake = await startFakeCrucible();
   try {
-    const { facade, local, venue } = facadeFor(fake, { legacy: true });
-    await checkQuiet('the legacy switch routes startSession to the local narrator and says so', async () => {
-      logLines.length = 0;
-      const result = await facade.startSession();
-      assert.strictEqual(result.success, true);
-      assert.strictEqual(local.calls.startSession, 1, 'the local pool must have been started');
-      assert.strictEqual(fake.state.opens.length, 0, 'no Crucible session may be opened');
-      assert.strictEqual(fake.state.voicesAsked, 0, 'the Crucible must not even be asked for voices');
-      assert.strictEqual(venue.calls.view, 1, 'the decision reads the routing record once');
-      assert.ok(logLines.some((l) => /\[StreamVenue\].*legacy local-render switch is on/.test(l)),
-        `the log must name the legacy switch; got: ${logLines.join(' | ')}`);
-      assert.deepStrictEqual(facade.getAvailableVoices(), ['local-voice'],
-        'once bound local, the facade answers with the local catalog');
-    });
-    await checkQuiet('before anything starts, the legacy switch decides which catalog the pickers see', () => {
-      const { facade: cold } = facadeFor(fake, { legacy: true });
-      assert.deepStrictEqual(cold.getAvailableVoices(), ['local-voice']);
-      assert.strictEqual(cold.getEngineState(), 'stopped');
-      const { facade: coldCrucible } = facadeFor(fake, { legacy: false });
-      assert.deepStrictEqual(coldCrucible.getAvailableVoices(),
-        ['deathstalker', 'mistborn', 'owen', 'sigma', 'thirdreich', 'default'],
-        'with the switch off and nothing started, the pickers see every voice a Crucible can be asked for');
-      assert.strictEqual(coldCrucible.getEngineState(), 'stopped');
-    });
+    await checkQuiet('a RETIRED legacyLocalRender on the record changes nothing: it goes to the server',
+      async () => {
+        /*
+         * THIS CHECK USED TO DRIVE THE SWITCH and assert Listen spawned narrator
+         * here. The switch is gone and so is the pool (docs/LEGACY-REMOVAL.md),
+         * so a record that still carries the key must be indistinguishable from
+         * one that does not — otherwise a stale file on somebody's disk would
+         * silently take their card.
+         */
+        const { facade, local, venue } = facadeFor(fake, { staleLegacyKey: true });
+        logLines.length = 0;
+        const result = await facade.startSession();
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(local.calls.startSession, 0,
+          'the local pool must never be started — there is no arm that could');
+        assert.strictEqual(fake.state.voicesAsked, 1,
+          'the Crucible was asked for its catalog — the work went there, not here');
+        assert.strictEqual(venue.calls.view, 1, 'the decision reads the routing record once');
+        assert.ok(logLines.some((l) => /\[StreamVenue\] Listen goes to crucible "fake1"/.test(l)),
+          `the log must name the SERVER; got: ${logLines.join(' | ')}`);
+        assert.ok(!logLines.some((l) => /legacy/i.test(l)),
+          `nothing may still speak of a legacy venue; got: ${logLines.join(' | ')}`);
+        await facade.endSession();
+      });
+    await checkQuiet('before anything starts, the pickers see the CRUCIBLE catalog and nothing else',
+      () => {
+        for (const staleLegacyKey of [false, true]) {
+          const { facade: cold, local } = facadeFor(fake, { staleLegacyKey });
+          assert.deepStrictEqual(cold.getAvailableVoices(),
+            ['deathstalker', 'mistborn', 'owen', 'sigma', 'thirdreich', 'default'],
+            'with nothing started the pickers see every voice a Crucible can be asked for — '
+            + `staleLegacyKey: ${staleLegacyKey}`);
+          assert.strictEqual(cold.getEngineState(), 'stopped');
+          assert.strictEqual(local.calls.startSession, 0,
+            'and a sync question never starts anything, least of all a local pool');
+        }
+      });
   } finally {
     await fake.close();
   }
@@ -877,7 +913,7 @@ async function describeChecks() {
 
 (async () => {
   say('test-crucible-stream');
-  await legacyChecks();
+  await noLocalArmChecks();
   await happyPathChecks();
   await cancelChecks();
   await attachChecks();

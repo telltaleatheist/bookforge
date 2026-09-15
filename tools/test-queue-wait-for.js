@@ -100,7 +100,6 @@ function fakeModule(type, opts = {}) {
 function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
-    legacyLocalRender: initial.legacyLocalRender === true,
     localName: initial.localName === undefined ? 'local' : initial.localName,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
@@ -109,7 +108,6 @@ function fakeHost(initial) {
   state.host = {
     routing: () => ({
       ranked: state.ranked.map((row) => ({ ...row })),
-      legacyLocalRender: state.legacyLocalRender,
       localName: state.localName,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
@@ -510,26 +508,59 @@ test('the picker refuses a run with nothing that travels', async () => {
     /has no step that can run on a Crucible server/);
 });
 
-// ── The legacy switch ───────────────────────────────────────────────────────
+// ── The DELETED local narrator ──────────────────────────────────────────────
 
-test('the legacy switch renders here, and the row says where its work went', async () => {
+test('a row still assigned to the deleted narrator HOLDS, and is never re-decided', async () => {
+  /*
+   * THE SWITCH IS GONE (docs/LEGACY-REMOVAL.md) and so is the spawn behind it,
+   * but a queue file on disk can still carry the venue it wrote. Re-deciding
+   * would send a half-rendered book to a different card, which is exactly what
+   * PHASE7-LANES §4.3 forbids — so it holds, with a sentence naming the
+   * retirement, and the operator queues it again.
+   */
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({
-    ranked: TWO_SERVERS, defaultWaitFor: 'mac', legacyLocalRender: true,
-    reach: { mac: { reachable: true } },
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true } },
   });
-  await fresh('legacy', [gpu], host);
+  await fresh('retired-venue-seed', [gpu], host);
 
-  const job = engine.enqueue(narrate('Legacy'));
+  // A state file from the build that still had the switch, written by hand —
+  // its own directory, so the hand-written file is not racing the pending
+  // persist of the engine just configured on the other one.
+  const dir = path.join(SCRATCH, 'retired-venue');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'queue-engine.json'), JSON.stringify({
+    version: 1,
+    running: false,
+    jobs: [{
+      id: 'job_legacy', title: 'Rendered by the old narrator',
+      waitFor: 'mac',
+      waitForResolved: waitFor.RETIRED_LOCAL_NARRATOR_VENUE,
+      steps: [{
+        id: 'step_legacy', type: 'tts-conversion', label: 'Narrate', config: {},
+        parentStepId: 'source', sourceRef: { kind: 'epub', path: '/a.epub' },
+        resource: 'gpu', status: 'held', progress: {}, metrics: {},
+        addedAt: new Date().toISOString(),
+      }],
+      createdAt: new Date().toISOString(),
+    }],
+  }), 'utf-8');
+  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000 });
+
   engine.start();
   await settle();
-  assert.strictEqual(gpu.runs.length, 1);
-  assert.strictEqual(jobOf(job.id).waitForResolved, waitFor.LEGACY_LOCAL_NARRATOR,
-    'the venue is the legacy narrator, and that is what the row shows');
+  assert.strictEqual(gpu.runs.length, 0, 'nothing ran');
+  assert.match(
+    jobOf('job_legacy').steps[0].progress.admissionHold ?? '',
+    /the local narrator, which no longer exists/,
+  );
+  assert.strictEqual(jobOf('job_legacy').waitForResolved,
+    waitFor.RETIRED_LOCAL_NARRATOR_VENUE,
+    'and the row is not quietly re-pointed at a machine');
   assert.strictEqual(host.asked.length, 0, 'and no server was asked anything');
 });
 
-test('a book already assigned to a server ignores the legacy switch flipping on', async () => {
+test('a book already assigned to a server keeps that server', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
   const host = fakeHost({
     ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true } },
@@ -541,10 +572,10 @@ test('a book already assigned to a server ignores the legacy switch flipping on'
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
 
-  // It stops, the operator flips the legacy switch, and it is started again.
+  // It stops, the record changes under it, and it is started again.
   gpu.runs[0].reject(new Error('Stopped by the user.'));
   await settle();
-  host.legacyLocalRender = true;
+  host.ranked = [{ name: 'mac', enabled: false }, { name: 'local', enabled: true }];
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac',
@@ -697,7 +728,7 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
   const unknown = () => ({ kind: 'unknown' });
   assert.deepStrictEqual(
     waitFor.decideWaitFor({
-      waitFor: 'any', resolved: undefined, ranked, legacyLocalRender: false, state: unknown,
+      waitFor: 'any', resolved: undefined, ranked, state: unknown,
       gpuSlotTaken: () => null,
     }),
     { kind: 'ask', server: 'local', sentence: 'Checking whether local is reachable…' },

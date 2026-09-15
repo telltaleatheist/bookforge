@@ -186,11 +186,12 @@ const STEPS = {
     });
   });
 
-  await check('align does NOT refuse the legacy venue or an unassigned run', async () => {
+  await check('align does NOT refuse an unassigned run, and DOES refuse the retired venue',
+    async () => {
     const mod = STEPS.align();
     // It gets past the venue gate and fails on something else — the session, or
     // the language — which is what proves the gate let it through.
-    for (const resolved of [undefined, waitFor.LEGACY_LOCAL_NARRATOR, waitFor.WAIT_FOR_ANY]) {
+    for (const resolved of [undefined, waitFor.WAIT_FOR_ANY]) {
       const ctx = {
         stepId: 's1',
         step: { config: {}, label: 'Align' },
@@ -204,6 +205,18 @@ const STEPS = {
         return true;
       });
     }
+    // The DELETED local narrator is refused by its own name rather than read as
+    // a machine called "legacy-local-narrator" and refused as an unreachable one.
+    await assert.rejects(
+      () => mod.run({
+        stepId: 's1',
+        step: { config: {}, label: 'Align' },
+        job: { waitForResolved: waitFor.RETIRED_LOCAL_NARRATOR_VENUE },
+        input: { kind: 'audio-session' },
+        report: () => {},
+      }),
+      /^Error: legacy_venue_retired: /,
+    );
   });
 
   await check('the two align refusals share one code and say different things', () => {
@@ -221,23 +234,24 @@ const STEPS = {
 
   await check('runVenueOfRow reads all three shapes, and `any` is NOT a venue', () => {
     assert.deepStrictEqual(stepVenue.runVenueOfRow('mac'), { where: 'crucible', server: 'mac' });
-    assert.deepStrictEqual(stepVenue.runVenueOfRow(waitFor.LEGACY_LOCAL_NARRATOR),
-      { where: 'legacy-local-narrator' });
     assert.strictEqual(stepVenue.runVenueOfRow(undefined), undefined);
     assert.strictEqual(stepVenue.runVenueOfRow(waitFor.WAIT_FOR_ANY), undefined,
       '`any` means the row does not mind — handing it on as a venue would name a machine "any"');
+    // The third shape is the DELETED one, and it is a refusal rather than a
+    // venue: re-deciding would move a half-rendered book to another card.
+    assert.throws(
+      () => stepVenue.runVenueOfRow(waitFor.RETIRED_LOCAL_NARRATOR_VENUE),
+      (err) => err.code === 'legacy_venue_retired',
+    );
   });
 
   await check('two records of one venue are compared, and the comparison has one spelling', () => {
     const mac = { where: 'crucible', server: 'mac' };
     const local = { where: 'crucible', server: 'local' };
-    const legacy = { where: 'legacy-local-narrator' };
     assert.strictEqual(stepVenue.sameRunVenue(mac, { where: 'crucible', server: 'mac' }), true);
     assert.strictEqual(stepVenue.sameRunVenue(mac, local), false);
-    assert.strictEqual(stepVenue.sameRunVenue(mac, legacy), false);
-    assert.strictEqual(stepVenue.sameRunVenue(legacy, { where: 'legacy-local-narrator' }), true);
     assert.strictEqual(stepVenue.describeRunVenue(mac), 'crucible "mac"');
-    assert.strictEqual(stepVenue.describeRunVenue(legacy), 'the legacy local narrator');
+    assert.strictEqual(stepVenue.describeRunVenue(local), 'crucible "local"');
   });
 
   // ── 5. The AI provider block ─────────────────────────────────────────────
@@ -266,13 +280,17 @@ const STEPS = {
       for (const [assigned, why] of [
         [undefined, 'a row that was never assigned'],
         ['any', '`any` is not a machine'],
-        [waitFor.LEGACY_LOCAL_NARRATOR, 'the legacy switch is on'],
       ]) {
         assert.throws(() => aiProvider.providerConfigOf(config, 'clean', assigned), (err) => {
           assert.match(err.message, /^crucible_server_not_named: /, why);
           return true;
         }, why);
       }
+      // And the DELETED narrator is refused by ITS name, not read as a server.
+      assert.throws(
+        () => aiProvider.providerConfigOf(config, 'clean', waitFor.RETIRED_LOCAL_NARRATOR_VENUE),
+        /^Error: legacy_venue_retired: /,
+      );
     });
 
   await check('a provider this build REMOVED is refused by name, never re-pointed', () => {

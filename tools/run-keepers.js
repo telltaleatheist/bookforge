@@ -112,6 +112,19 @@ const SUITES = [
   // grep-and-delete pass aimed at the tab would silently take the hiss
   // separator and the RVC voice pass with it.
   'test-no-enhance-doors',
+  // And the legacy local-render layer's deletion, pinned the same way again
+  // (2026-09-15, docs/LEGACY-REMOVAL.md). `routing.legacyLocalRender` was the ONE
+  // switch that rendered on this machine instead of on a Crucible server, and
+  // every GPU door carried a `legacyLocal` arm beside its Crucible one. Both are
+  // gone, and a layer that size comes back one option at a time. Half this suite
+  // forbids: the field, the setter, the IPC channel, the five venue-arm
+  // spellings, the door option. The other half INSISTS — a record on disk that
+  // still carries the key must be READ and stripped rather than refused; an old
+  // queue row assigned to the deleted narrator must HOLD by name rather than be
+  // re-decided onto another card; the in-app GPU bench row and `epub-align`
+  // survive, because that act is UNMIGRATED and not legacy (ROLLOUT_PLAN §B7);
+  // and Orpheus stays NAMEABLE in the Listen picker.
+  'test-no-legacy-venue-doors',
   // The coverage policy is declared in two languages — narrator's
   // engine_profiles.py and shared/queue/coverage-policy.ts. It stopped deciding
   // whether a run aligns on 2026-09-07 (that is a stage of the run now), and

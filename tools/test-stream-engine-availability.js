@@ -15,15 +15,30 @@
  *
  * This session has already produced that bug twice by accident: a probe that
  * resolved differently from the launcher, and an orphan door whose accidental
- * guard I removed. So the rule is asserted rather than trusted: AVAILABILITY AND
- * THE SPAWN MUST AGREE.
+ * guard I removed. So the rule is asserted rather than trusted.
  *
- * ── It is host-independent, and it has to be ────────────────────────────────
+ * ── What that rule became, 2026-09-15 ──────────────────────────────────────
  *
- * The answer differs per platform — that is the entire point of the function — so
- * the keeper drives each PLATFORM as a fixture rather than reporting whatever this
- * machine happens to be. `process.platform` is forced and restored around each
- * case, exactly as `test-higgs-engine.js` does.
+ * It used to be AVAILABILITY AND THE LOCAL SPAWN MUST AGREE, driven per platform
+ * because the answer differed per platform. The local narrator spawn is DELETED
+ * (docs/LEGACY-REMOVAL.md): Listen is a Crucible streaming session, so "can this
+ * machine start vLLM-Omni" is not this app's question any more — the server's own
+ * capability and its `409` answer it, in its own words, when a session is opened.
+ * Re-asking here would be a second opinion about somebody else's card, and it
+ * would refuse a perfectly good Mac render because THIS box has no WSL.
+ *
+ * So the rule is now the narrower, true one: **availability claims exactly one
+ * thing, and it is a fact about this machine's own catalog** — whether a Higgs
+ * voice is installed. The keeper pins that it makes no platform, WSL or
+ * environment claim at all, because a claim about a machine that is not doing the
+ * work is the same broken promise in a new costume.
+ *
+ * ── And Orpheus is RETIRED, not dropped ────────────────────────────────────
+ *
+ * `tts-engine.json` outlives the code that wrote it, so a saved `"orpheus"` must
+ * still PARSE, must still have a name to show, and must migrate rather than
+ * throw — while being impossible to choose. Same treatment narration gave it in
+ * `shared/tts/engine-caps.ts`.
  */
 'use strict';
 const assert = require('assert');
@@ -90,9 +105,9 @@ function checkAsync(name, fn) {
 }
 
 const stream = require(path.join(DIST, 'streaming-engine.js'));
-const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));
-const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 const higgsModels = require(path.join(DIST, 'higgs-models.js'));
+const streamJs = fs.readFileSync(path.join(DIST, 'streaming-engine.js'), 'utf-8');
+const streamTs = fs.readFileSync(path.join(REPO, 'electron', 'streaming-engine.ts'), 'utf-8');
 
 function stub(mod, name, fn) {
   const d = Object.getOwnPropertyDescriptor(mod, name);
@@ -105,13 +120,18 @@ function stub(mod, name, fn) {
   };
 }
 
-/** Run `fn` with the machine described by `opts`, then put everything back. */
+/**
+ * Run `fn` with the machine described by `opts`, then put everything back.
+ *
+ * The WSL toggles used to be stubbed here too. They are not read any more — the
+ * engine runs on a Crucible server — and stubbing a function nobody calls is a
+ * fixture that quietly stops testing anything, so they are gone rather than
+ * carried.
+ */
 function onPlatform(opts, fn) {
   const platformDesc = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: opts.platform, configurable: true });
   const undo = [
-    stub(toolPaths, 'shouldUseWsl2ForHiggs', () => !!opts.wslHiggs),
-    stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => !!opts.wslOrpheus),
     stub(higgsModels, 'listRenderableHiggsModels', () => (opts.higgsVoices ?? ['default']).map((id) => ({ id }))),
   ];
   try {
@@ -126,12 +146,13 @@ const higgsOn = (platform, extra) =>
   onPlatform({ platform, ...extra }, () => stream.getAvailableEngines().find((e) => e.id === 'higgs'));
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log('both engines are always LISTED — availability is a field, not absence');
+console.log('ONE engine is listed — availability is a field, not absence');
 // ─────────────────────────────────────────────────────────────────────────────
-check('the list names orpheus and higgs, in that order', () => {
+check('the list names higgs, and only higgs', () => {
   const ids = stream.getAvailableEngines().map((e) => e.id);
-  assert.deepStrictEqual(ids, ['orpheus', 'higgs'],
-    'a delisted engine cannot be explained to the user; an unavailable one can');
+  assert.deepStrictEqual(ids, ['higgs'],
+    'a row for an engine nothing can run is a promise the build cannot keep — a '
+    + 'retired engine is nameable through streamEngineLabel instead');
 });
 check('every row carries a human name, and an unavailable one carries a reason', () => {
   for (const e of stream.getAvailableEngines()) {
@@ -144,115 +165,188 @@ check('every row carries a human name, and an unavailable one carries a reason',
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log('Higgs, per platform');
+console.log('Higgs availability claims ONE thing: a voice is installed');
 // ─────────────────────────────────────────────────────────────────────────────
-check('win32 + the WSL toggle ON + a voice installed  → available', () => {
-  const h = higgsOn('win32', { wslHiggs: true });
-  assert.strictEqual(h.available, true, h.reason);
-});
-check('win32 + the WSL toggle OFF → refused, naming the toggle', () => {
-  const h = higgsOn('win32', { wslHiggs: false });
-  assert.strictEqual(h.available, false);
-  assert.match(h.reason, /WSL2 for Higgs/,
-    'the refusal does not say what to turn on');
-});
 check('no voice installed → refused, whatever the platform', () => {
-  for (const platform of ['win32', 'darwin']) {
-    const h = higgsOn(platform, { wslHiggs: true, higgsVoices: [] });
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const h = higgsOn(platform, { higgsVoices: [] });
     assert.strictEqual(h.available, false, `${platform} offered Higgs with no voice`);
     // A voice whose artifact is missing renders in the model's own speaker, which
     // measures at 12% of the narrator's ECAPA ceiling — a different person.
     assert.match(h.reason, /voice/i);
   }
 });
-// REWRITTEN 2026-09-05, exactly as the case it replaces demanded. The old case
-// asserted `higgsMlxBackendPresent() === false` and that darwin therefore refused
-// by name ("v3's only backend is a vLLM-Omni server and there is no macOS build").
-// `feat/narrator-higgs-mlx` merged in bbe845b8 and the detector — which reads the
-// CONTENT under `engine/higgs/` rather than a hard-coded false — flipped by
-// itself, which is what it was built to do. So the Mac no longer refuses over the
-// BACKEND. What decides it now is the same thing that decides Orpheus there: the
-// `narrator-mlx` environment.
-//
-// The assertion has to stay host-independent (this keeper runs on Windows, where
-// that env is absent, and on a Mac where it may not be), so it pins the QUESTION
-// rather than the answer: whatever darwin says about Higgs, it must be about
-// narrator-mlx and never again about a missing backend.
-check('darwin → decided by narrator-mlx, no longer by a missing MLX backend', () => {
-  assert.strictEqual(spawnMod.higgsMlxBackendPresent(), true,
-    'the in-process MLX Higgs backend has disappeared from engine/higgs/ — if that '
-    + 'is deliberate, this case goes back to asserting darwin refuses by name');
-  const h = higgsOn('darwin', {});
-  if (h.available) {
-    // A Mac with the env: the spawn must be buildable. (The loop below asserts
-    // this for both platforms; stated here so the case reads as a whole.)
-    assert.doesNotThrow(() => spawnMod.buildNarratorSpawn({
-      engine: 'higgs', phase: 'serve', args: [], envExtras: {}, cwdHint: REPO,
-    }), 'darwin offers Higgs but the spawn cannot be built');
-  } else {
-    assert.match(h.reason, /narrator-mlx/,
-      'darwin refuses Higgs for something other than the narrator-mlx environment');
-    assert.doesNotMatch(h.reason, /vLLM-Omni|no macOS build/,
-      'darwin still refuses Higgs for want of a macOS backend — the MLX backend '
-      + 'has landed, so that reason is stale and would send a Mac user looking for '
-      + 'the wrong thing');
+
+check('a voice installed → available, on EVERY platform', () => {
+  // The platform rows this replaces refused Higgs on a Mac for want of a local
+  // vLLM-Omni build, and on Windows for want of the "WSL2 for Higgs" toggle. Both
+  // were questions about the LOCAL spawn, which is deleted: the engine runs on a
+  // Crucible server, which may be the Mac, the PC, or a box neither of them has
+  // met. Refusing here on THIS machine's platform would refuse a render that was
+  // never going to happen here.
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const h = higgsOn(platform, {});
+    assert.strictEqual(h.available, true, `${platform}: ${h.reason}`);
+  }
+});
+
+check('availability makes no platform, WSL or environment claim at all', () => {
+  // A source read, deliberately: the rows above prove the ANSWER is the same on
+  // three platforms, but that is also what a function with a stale claim and a
+  // lucky fixture looks like. This pins the absence of the question.
+  const body = streamTs.match(/function higgsAvailability\(\): EngineInfo \{[\s\S]*?\n\}\n/);
+  assert.ok(body, 'higgsAvailability is gone or renamed');
+  for (const claim of [
+    'shouldUseWsl2ForHiggs', 'shouldUseWsl2ForOrpheus',
+    'narratorNativePython', 'higgsMlxBackendPresent', 'process.platform',
+  ]) {
+    assert.ok(!body[0].includes(claim),
+      `higgsAvailability asks about ${claim} again — that is the local spawn's `
+      + 'question, and the local spawn is deleted. The server answers for itself.');
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log('availability and the spawn agree');
+console.log('Orpheus is RETIRED — nameable, never selectable');
+// ─────────────────────────────────────────────────────────────────────────────
+check('a retired id still has something true to show', () => {
+  assert.strictEqual(stream.streamEngineLabel('orpheus'), 'Orpheus (retired)');
+  assert.strictEqual(stream.streamEngineLabel('xtts'), 'XTTS (retired)');
+  assert.strictEqual(stream.streamEngineLabel('higgs'), 'Higgs');
+});
+
+check('each retired id carries a DATE and a reason, not just a label', () => {
+  // `RETIRED_STREAM_ENGINES` is module-private (nothing outside needs the record;
+  // `streamEngineLabel` is the door), so the record itself is read from source.
+  const map = streamTs.match(/const RETIRED_STREAM_ENGINES = new Map[\s\S]*?\n\]\);/);
+  assert.ok(map, 'the retirement record is gone or renamed');
+  for (const id of ['orpheus', 'xtts']) {
+    assert.ok(map[0].includes(`['${id}', {`), `${id} is no longer nameable at all`);
+  }
+  assert.match(map[0], /since: '2026-09-15'/, 'Orpheus has no retirement date');
+  assert.match(map[0], /docs\/LEGACY-REMOVAL\.md/,
+    'the Orpheus retirement does not say where the engine went');
+});
+
+checkAsync('selecting a retired engine is refused BY NAME, never quietly honoured', () => stream
+  .setSelectedEngineName('orpheus')
+  .then(
+    () => { throw new Error('a retired engine was accepted as a selection'); },
+    (err) => {
+      assert.match(err.message, /retired/i, `refused, but not as retired: ${err.message}`);
+      assert.match(err.message, /This build streams: higgs/,
+        'the refusal does not say what this build does stream');
+    },
+  ));
+
+check('a saved "orpheus" MIGRATES to higgs rather than throwing', () => {
+  /*
+   * A machine that listened on Orpheus last week has `"engine": "orpheus"` on
+   * disk. Throwing would leave Listen broken forever on exactly that machine —
+   * including from the Settings page that would repair it — so the saved value is
+   * migrated, loudly, and the file rewritten so the stale preference stops being
+   * re-read. An id nobody in this build ever wrote is still refused by name.
+   *
+   * The shipped body is lifted with its free variables rebound, the same way
+   * `setSelectedEngineName` is below: `selected` is a module-level cache, so
+   * calling the real one would answer from whatever an earlier row left there.
+   */
+  const src = streamJs.match(/function getSelectedEngineName\(\) \{[\s\S]*?\n\}\n/);
+  assert.ok(src, 'getSelectedEngineName is not in the compiled selector — did it move?');
+  const lift = (persisted) => {
+    const wrote = [];
+    const fn = eval(
+      `(function (isEngineName, RETIRED_STREAM_ENGINES, STREAM_ENGINE_NAMES,
+                  readPersisted, writePersisted) {
+         let selected = null;
+         ${src[0]}
+         return getSelectedEngineName;
+       })`,
+    )(
+      (v) => v === 'higgs',
+      new Map([['orpheus', { label: 'Orpheus', since: '2026-09-15', reason: 'gone.' }]]),
+      ['higgs'],
+      () => persisted,
+      (cfg) => wrote.push(cfg),
+    );
+    return { fn, wrote };
+  };
+
+  const orpheus = lift({ engine: 'orpheus', voices: { orpheus: 'deathstalker' } });
+  assert.strictEqual(orpheus.fn(), 'higgs', 'a saved orpheus did not migrate');
+  assert.deepStrictEqual(orpheus.wrote.map((c) => c.engine), ['higgs'],
+    'the stale preference was left on disk to be re-read every launch');
+  assert.deepStrictEqual(orpheus.wrote[0].voices, { orpheus: 'deathstalker' },
+    'the migration threw away the rest of the record');
+
+  assert.strictEqual(lift({}).fn(), 'higgs', 'a fresh install does not land on higgs');
+  assert.throws(() => lift({ engine: 'wurlitzer' }).fn(), /never had/,
+    'an id this build never wrote is a bug or a hand-edited file, and must not be '
+    + 'quietly read as higgs');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('nothing here promises a LOCAL spawn any more');
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// THE RULE THIS FILE EXISTS FOR. Twice this session an availability answer and a
-// spawn answer disagreed, and both times the symptom was a promise kept until the
-// moment it mattered.
-for (const [platform, opts] of [['win32', { wslHiggs: true }], ['darwin', {}]]) {
-  check(`${platform}: if Higgs says available, buildNarratorSpawn can build it`, () => {
-    onPlatform({ platform, ...opts }, () => {
-      const h = stream.getAvailableEngines().find((e) => e.id === 'higgs');
-      let built = null;
-      let refusal = null;
-      try {
-        built = spawnMod.buildNarratorSpawn({
-          engine: 'higgs', phase: 'serve', args: [],
-          envExtras: {}, cwdHint: REPO,
-        });
-      } catch (err) {
-        refusal = err instanceof Error ? err.message : String(err);
-      }
-      if (h.available) {
-        assert.ok(built, `Higgs is advertised available on ${platform} but the spawn refused: ${refusal}`);
-        return;
-      }
-      // THE UNAVAILABLE HALF. It used to assert `refusal || built`, which the
-      // try/catch above makes true by construction — one of the two is always set,
-      // so half this file's stated rule was a no-op, and on a Windows host the
-      // darwin row is the branch that takes it.
-      //
-      // The real rule: an engine the app refuses to OFFER must refuse to SPAWN, and
-      // for a reason a user can act on. A plan that builds anyway is availability and
-      // the launcher disagreeing, which is exactly what this file exists to catch.
-      assert.ok(!built,
-        `${platform} advertises Higgs as unavailable (${h.reason}) and yet builds a `
-        + 'spawn plan for it — the two answers disagree');
-      assert.ok(refusal && refusal.length > 20,
-        `the spawn refused with nothing usable: ${JSON.stringify(refusal)}`);
-    });
-  });
-}
+// THE RULE THIS FILE WAS BUILT FOR, and what became of it. Twice in one session an
+// availability answer and a `buildNarratorSpawn` answer disagreed, and both times
+// the symptom was a promise kept until the moment it mattered. Those rows drove
+// `buildNarratorSpawn` per platform and asserted the two agreed.
+//
+// They are gone because the promise is gone: `getActiveEngine()` is a Crucible
+// streaming session and never `buildNarratorSpawn`, so availability no longer makes
+// a claim a local spawn could contradict. Asserting agreement with a launcher
+// nothing calls would be a green row about a path with no users — the most
+// expensive kind of keeper, because it reads like coverage.
+//
+// What replaces it is the pair above: availability asks ONE thing (a voice is
+// installed) and is pinned to ask nothing else, and the selector is pinned never to
+// offer an id the pool cannot name. The agreement that matters now is between this
+// app and the SERVER, and it is pinned where the server can be faked —
+// `tools/test-crucible-stream.js`.
+check('the Listen facade reaches no local pool at all', () => {
+  const venue = streamTs.match(/const VENUE_ROUTED[\s\S]*?\}\);/);
+  assert.ok(venue, 'the venue-routed facade is gone or renamed');
+  assert.ok(!/\blocal:/.test(venue[0]),
+    'the facade has a local backend again — Listen is a Crucible session, and a '
+    + 'second backend here is the legacy switch growing back');
+  assert.ok(!/legacySwitchIsOn/.test(streamTs),
+    'the legacy local-render switch is being read again');
+});
 
-check('the pool and the selector agree on what an engine id is', () => {
-  // `orpheus-worker-pool.ts` declares its own `StreamEngineId` rather than
-  // importing `StreamEngineName` (the import would be a cycle). Two spellings of
-  // one union is a drift waiting to happen, so they are compared here.
+check('every id the selector can choose is one the pool knows, and the rest are retired', () => {
+  /*
+   * THEY USED TO BE COMPARED FOR EQUALITY, and are now compared for CONTAINMENT.
+   *
+   * `orpheus-worker-pool.ts` declares its own `StreamEngineId` rather than
+   * importing `StreamEngineName` (the import would be a cycle), and two spellings
+   * of one union is a drift waiting to happen. But they are no longer the same
+   * question: the pool is the HELD RECORD of the local narrator spawn — kept, not
+   * deleted, until its measured tuning has been audited against Crucible's own
+   * environment — so it still names `orpheus`, while the selector offers `higgs`.
+   *
+   * Two things would still be bugs, and both are asserted: a SELECTABLE id the
+   * pool has never heard of (nothing could serve it), and an id the pool names
+   * that the selector neither offers nor RETIRES (a saved value with nothing true
+   * to display).
+   */
   const poolSrc = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
-  const selSrc = fs.readFileSync(path.join(REPO, 'electron', 'streaming-engine.ts'), 'utf-8');
   const pool = poolSrc.match(/export type StreamEngineId = ([^;]+);/);
-  const sel = selSrc.match(/export type StreamEngineName = ([^;]+);/);
+  const sel = streamTs.match(/export type StreamEngineName = ([^;]+);/);
   assert.ok(pool && sel, 'one of the two unions is gone or renamed');
-  const norm = (t) => t.split('|').map((x) => x.trim()).sort().join('|');
-  assert.strictEqual(norm(pool[1]), norm(sel[1]),
-    `the pool streams ${pool[1]} and the selector offers ${sel[1]}`);
+  const ids = (t) => t.split('|').map((x) => x.trim().replace(/'/g, ''));
+  const poolIds = ids(pool[1]);
+  const selIds = ids(sel[1]);
+  for (const id of selIds) {
+    assert.ok(poolIds.includes(id),
+      `the selector offers ${id} and the pool streams ${pool[1]} — nothing could serve it`);
+  }
+  for (const id of poolIds.filter((x) => !selIds.includes(x))) {
+    assert.match(stream.streamEngineLabel(id), /\(retired\)$/,
+      `the pool still names ${id} and the selector neither offers nor retires it — `
+      + 'it would be a saved value with nothing true to display');
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -263,21 +357,28 @@ console.log('selection REFUSES rather than falling back');
 // free variables rebound, the same way the other keepers exercise module-private
 // code: what runs below is the shipped body, driven against a machine whose
 // availability list is missing an engine.
-const streamJs = fs.readFileSync(path.join(DIST, 'streaming-engine.js'), 'utf-8');
 const selectSrc = streamJs.match(/async function setSelectedEngineName\(name\) \{[\s\S]*?\n}\n/);
+/*
+ * Driven with a SECOND, INVENTED id (`shimmer`) beside the real one. With a
+ * single selectable engine there is nothing to omit from an availability list and
+ * nothing to switch away from, so the two rows below would both be vacuous — and a
+ * vacuous row is worse than no row, because it reads as coverage.
+ */
 function liftedSelect(availability) {
   assert.ok(selectSrc, 'setSelectedEngineName is not in the compiled selector — did it move?');
   return eval(
-    `(function (isEngineName, ENGINES, getSelectedEngineName, getAvailableEngines,
+    `(function (isEngineName, RETIRED_STREAM_ENGINES, STREAM_ENGINE_NAMES,
+                getSelectedEngineName, getAvailableEngines,
                 getActiveEngine, readPersisted, writePersisted, emitStreamConfigChanged) {
        let selected = null;   // the module-level binding the real body assigns to
        ${selectSrc[0]}
        return setSelectedEngineName;
      })`,
   )(
-    (v) => v === 'orpheus' || v === 'higgs',
-    { orpheus: {}, higgs: {} },
-    () => 'orpheus',
+    (v) => v === 'higgs' || v === 'shimmer',
+    new Map(),
+    ['higgs', 'shimmer'],
+    () => 'shimmer',
     () => availability,
     () => ({ endSession: async () => {} }),
     () => ({}),
@@ -288,10 +389,10 @@ function liftedSelect(availability) {
 
 checkAsync('an engine missing from getAvailableEngines() cannot be selected', () => {
   // `if (info && !info.available)` read "not in the availability list ⇒ allow it",
-  // so the one mistake the check exists to catch — an engine added to `ENGINES` and
-  // forgotten in `getAvailableEngines()` — was the case it waved through. The two
-  // lists are hand-maintained in one file; nothing but this makes them agree.
-  return liftedSelect([{ id: 'orpheus', name: 'Orpheus', available: true }])('higgs').then(
+  // so the one mistake the check exists to catch — a selectable engine forgotten in
+  // `getAvailableEngines()` — was the case it waved through. The two lists are
+  // hand-maintained in one file; nothing but this makes them agree.
+  return liftedSelect([{ id: 'shimmer', name: 'Shimmer', available: true }])('higgs').then(
     () => { throw new Error('selecting an engine with no availability row was accepted'); },
     (err) => {
       assert.match(err.message, /not in getAvailableEngines/i,
@@ -305,7 +406,7 @@ checkAsync('an engine that IS listed and available is still selectable', () => {
   // would have caught `isEngineName` returning `v === 'orpheus'` while every other
   // surface offered Higgs.
   return liftedSelect([
-    { id: 'orpheus', name: 'Orpheus', available: true },
+    { id: 'shimmer', name: 'Shimmer', available: true },
     { id: 'higgs', name: 'Higgs', available: true },
   ])('higgs');
 });
@@ -315,7 +416,7 @@ checkAsync('every listed engine is a NAME the selector knows', () => {
   // its own `isEngineName` and so is blind to this.
   //
   // `isEngineName` was a hand-written second copy of the engine list, and it went
-  // stale the moment Higgs was added: Higgs reached the union, `ENGINES`,
+  // stale the moment Higgs was added: Higgs reached the union,
   // `getAvailableEngines()`, the Settings picker and the extension's engine menu,
   // while this one function still read `v === 'orpheus'`. Selecting it failed with
   // "Unknown streaming engine: higgs. This build streams: orpheus, higgs." — a

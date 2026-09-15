@@ -251,21 +251,43 @@ function fakeNamer(serversModule) {
   };
 }
 
-/** A VenueHost that names one server as top-ranked with the legacy switch off. */
+/** A VenueHost that names one server as top-ranked. */
 function crucibleHost(serverName) {
   return {
-    view: () => ({ ranked: [{ name: serverName, enabled: true }], newJobsWaitFor: 'top-ranked', legacyLocalRender: false }),
+    view: () => ({ ranked: [{ name: serverName, enabled: true }], newJobsWaitFor: 'top-ranked' }),
     enabled: () => [{ name: serverName, enabled: true }],
     ping: async () => ({ outcome: 'ok', serverName: 'fake-crucible', apiVersion: 1 }),
   };
 }
 
-/** A VenueHost with the legacy switch ON: every door must go local and say so. */
-function legacyHost() {
+/**
+ * A VenueHost with NOTHING ENABLED — every door must refuse `no_enabled_server`
+ * BY NAME and touch no card.
+ *
+ * It replaces `legacyHost()`, which used to turn the legacy local-render switch
+ * on and assert that each door spawned here instead. That switch and the spawn
+ * layer behind it are DELETED (docs/LEGACY-REMOVAL.md), so the branch those
+ * suites were pinning is now the one thing that must NOT exist: with no server
+ * to place work on, the honest answer is a refusal naming the settings page,
+ * never a quiet local run.
+ *
+ * `no_enabled_server` is `routing.ts`'s own code and wording, reproduced here
+ * because a keeper drives this host with no record on disk.
+ */
+function noServerHost() {
+  const refuse = () => {
+    const err = new Error(
+      'no Crucible server is available to the queue: this machine has none, and none is '
+      + 'registered. Add one in Settings \u2192 Crucible Servers.',
+    );
+    err.name = 'CrucibleRoutingError';
+    err.code = 'no_enabled_server';
+    throw err;
+  };
   return {
-    view: () => ({ ranked: [{ name: 'local', enabled: true }], newJobsWaitFor: 'top-ranked', legacyLocalRender: true }),
-    enabled: () => { throw new Error('the legacy branch must not ask which servers are enabled'); },
-    ping: async () => { throw new Error('the legacy branch must not ping anybody'); },
+    view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }),
+    enabled: refuse,
+    ping: async () => { throw new Error('nothing enabled: there is nobody to ping'); },
   };
 }
 
@@ -829,7 +851,7 @@ function unknownLeaseRefusal(leaseId, why) {
 
 module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, legacyHost, send,
+  crucibleHost, noServerHost, send,
   leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
   settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
 };

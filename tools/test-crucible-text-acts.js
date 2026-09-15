@@ -138,7 +138,6 @@ function scriptedHost(over) {
       ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
       newJobsWaitFor: 'top-ranked',
       unknown: [],
-      legacyLocalRender: false,
     }),
     enabled: () => [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
     ping: async () => ({ outcome: 'ok', message: 'ok' }),
@@ -452,7 +451,13 @@ async function main() {
         // And it says what DOES work: a refusal with no way forward is what
         // the no-band-aids rule is about.
         assert.ok(err.message.includes('CLI clean routes'), err.message);
-        assert.ok(err.message.includes('local engines'), err.message);
+        // What it says the HOSTED window can do INSTEAD changed on 2026-09-15:
+        // the local text engines it used to fall to are deleted
+        // (docs/LEGACY-REMOVAL.md), so the honest sentence is that it has no
+        // other route until the re-vendor — not "turn the switch on".
+        assert.ok(/no other route/.test(err.message), err.message);
+        assert.ok(!/turn on|legacy switch/i.test(err.message),
+          `it still offers a switch that no longer exists: ${err.message}`);
         return true;
       });
     assert.strictEqual(asked, false, 'the server was asked for its models after the reach said no');
@@ -469,26 +474,55 @@ async function main() {
     }
   });
 
-  // ── 8. The venue: one record, one switch, no silent local run ──────────────
+  // ── 8. The venue: one record, no silent local run ──────────────────────────
   await check('the caller\'s named server wins, unconditionally', async () => {
     const where = await venue.decideWhereTextActRuns('mac', scriptedHost({
-      view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: true }),
+      view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }),
     }));
     assert.deepStrictEqual(where, { where: 'crucible', server: 'mac', because: 'the caller named it' });
   });
 
-  await check('the legacy switch routes to the LOCAL ENGINES and says which', async () => {
-    const where = await venue.decideWhereTextActRuns(undefined, scriptedHost({
-      view: () => ({
-        ranked: [{ name: 'local', enabled: true }],
-        newJobsWaitFor: 'top-ranked',
-        unknown: [],
-        legacyLocalRender: true,
-      }),
-    }));
-    assert.strictEqual(where.where, 'legacy-local-engines');
-    assert.strictEqual(where.because, 'the legacy local-engine switch is on');
-  });
+  await check('with nothing enabled there is NO local engine to fall to — it refuses by name',
+    async () => {
+      /*
+       * THIS CHECK USED TO DRIVE THE LEGACY SWITCH and assert it reached the
+       * local text engines. That switch and the llama-server arm behind it are
+       * DELETED (docs/LEGACY-REMOVAL.md; ROLLOUT_PLAN §A2 names the local text
+       * engines as part of that layer), so the branch it pinned is now the one
+       * outcome that must be impossible: quietly starting llama-server would
+       * take a card somebody else is using, clean a book with a model nobody
+       * chose, and report success.
+       */
+      await assert.rejects(
+        () => venue.decideWhereTextActRuns(undefined, scriptedHost({
+          view: () => ({ ranked: [], newJobsWaitFor: 'top-ranked', unknown: [] }),
+          enabled: () => {
+            // routing.ts's OWN refusal, which is what the real host throws.
+            const err = new Error('no Crucible server is available to the queue');
+            err.name = 'CrucibleRoutingError';
+            err.code = 'no_enabled_server';
+            throw err;
+          },
+        })),
+        (err) => {
+          assert.strictEqual(err.code, 'no_enabled_server');
+          return true;
+        });
+      // And a record left over from that era cannot re-open the door: the key is
+      // not read, so it has no effect on where a text act goes.
+      const stale = await venue.decideWhereTextActRuns(undefined, scriptedHost({
+        view: () => ({
+          ranked: [{ name: 'local', enabled: true }],
+          newJobsWaitFor: 'top-ranked',
+          unknown: [],
+          legacyLocalRender: true,
+        }),
+        enabled: () => [{ name: 'local', enabled: true }],
+      }));
+      assert.deepStrictEqual(stale,
+        { where: 'crucible', server: 'local', because: 'the top-ranked server' },
+        'a leftover legacyLocalRender changes nothing — it is not read');
+    });
 
   await check('top-ranked is taken WITHOUT a ping — a named machine is an instruction', async () => {
     let pinged = 0;
@@ -506,7 +540,6 @@ async function main() {
         ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
         newJobsWaitFor: 'any',
         unknown: [],
-        legacyLocalRender: false,
       }),
       ping: async (name) => (name === 'mac'
         ? { outcome: 'ok', message: 'ok' }
@@ -523,7 +556,6 @@ async function main() {
           ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
           newJobsWaitFor: 'any',
           unknown: [],
-          legacyLocalRender: false,
         }),
         ping: async (name) => ({ outcome: 'unreachable', message: `${name} said nothing` }),
       })),
@@ -531,8 +563,9 @@ async function main() {
         assert.strictEqual(err.code, 'no_reachable_server');
         assert.ok(err.message.includes('local'), err.message);
         assert.ok(err.message.includes('mac'), err.message);
-        // NO FALLBACK: the refusal must not read as "so it ran here".
-        assert.ok(err.message.includes('local engines'), err.message);
+        // NO FALLBACK: the refusal must say outright that there is nowhere else,
+        // rather than leaving a reader to hunt for a switch that would run it here.
+        assert.ok(err.message.includes('no local text engines to fall back to'), err.message);
         return true;
       });
   });
@@ -546,7 +579,10 @@ async function main() {
       });
   });
 
-  // ── 9. The local path is untouched when the switch is on ───────────────────
+  // ── 9. The LOCAL argv, which belongs to Foundry's own engine door ──────────
+  //
+  // Not the legacy text-act arm — that is gone. `runFoundry` still spawns an
+  // engine for the acts Foundry itself drives, and this is that argv.
   await check('the LOCAL argv is exactly what it was — settings endpoint, tag, no --model on empty', () => {
     const settings = {
       model: 'qwen3.5:9b-q8_0', endpoint: 'http://localhost:11434', keepWarmMinutes: 0, source: 'x',

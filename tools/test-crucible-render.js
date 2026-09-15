@@ -775,21 +775,32 @@ async function bridgeSeamChecks() {
       'the old caller-only question is gone: two ways to decide where a render runs is two answers');
   });
 
-  await check('the local narrator is reachable ONLY through the legacy switch', () => {
-    // The venue decision is the only thing that can send a render to narrator,
-    // and `legacy-local-narrator` is the only venue that does. A branch that
-    // fell back to the local path on a failure would be the silent downgrade
-    // crucible/render.ts refuses in its header.
+  await check('the local narrator is reachable by NO route at all', () => {
+    /*
+     * THIS CHECK USED TO COUNT THE ONE PRODUCER of `legacy-local-narrator` and
+     * refuse a second, because a second producer would have been a second
+     * fallback. The layer is DELETED (docs/LEGACY-REMOVAL.md), so what it counts
+     * now is ZERO: the venue decision is still the only thing that can place a
+     * render, and every answer it can give is a Crucible server. A branch that
+     * fell back to a local path on a failure would be the silent downgrade
+     * crucible/render.ts refuses in its header.
+     */
     assert.ok(/venue\.where === 'crucible'/.test(bridge),
       'the seam branches on the venue, not on a nullable server name');
-    assert.ok(/LEGACY local narrator/.test(bridge),
-      'a legacy render must say so on its log: it is a dated stopgap, not the normal path');
+    for (const file of ['generation-venue.ts', 'step-venue.ts']) {
+      const src = fs.readFileSync(path.join(REPO, 'electron', 'crucible', file), 'utf8');
+      assert.strictEqual((src.match(/where: 'legacy-local-narrator'/g) || []).length, 0,
+        `${file} produces no local venue: there is no such venue to produce`);
+    }
+    // And the TYPE is what makes that checkable rather than remembered — one
+    // member, so a new producer cannot be written without changing the union.
     const venueFile = fs.readFileSync(
       path.join(REPO, 'electron', 'crucible', 'generation-venue.ts'), 'utf8');
-    const venues = venueFile.match(/where: 'legacy-local-narrator'/g) || [];
-    assert.strictEqual(venues.length, 2,
-      'legacy-local-narrator appears twice in generation-venue.ts: the type and the ONE branch '
-      + 'that returns it (the legacy switch). A second producer would be a second fallback.');
+    const decl = venueFile.slice(venueFile.indexOf('export type GenerationVenue'));
+    const body = decl.slice(0, decl.indexOf('};') + 2);
+    assert.ok(/^export type GenerationVenue = \{/.test(body),
+      `GenerationVenue must be a single object type, not a union: ${body.slice(0, 120)}`);
+    assert.ok(!/\|\s*\{/.test(body), `GenerationVenue has a second arm: ${body}`);
   });
 
   await check('a Crucible failure is never retried by spawning narrator locally', () => {

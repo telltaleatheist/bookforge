@@ -15,7 +15,7 @@
  *   • an order naming a server that no longer exists is REPORTED, never pruned
  *   • "New jobs wait for: top-ranked | any" is one setting with two values
  *   • rankedServers / topRankedServer / defaultWaitFor refuse when nothing is enabled
- *   • the LEGACY local-narrator switch: one owner, absent = off, never a fallback
+ *   • the RETIRED `legacyLocalRender` key: stripped on read, never corrupt, never honoured
  *   • WHERE a render's generation step runs (electron/crucible/generation-venue.ts),
  *     driven over a scripted host — no record on disk, no registry, no network
  *
@@ -83,7 +83,7 @@ check('no file yet is the DEFAULT record, not a refusal: every server ranked in 
 check('with no servers at all the view is empty and says so by having nothing, not by inventing one', () => {
   const { store } = fresh();
   assert.deepStrictEqual(store.view([]), {
-    ranked: [], newJobsWaitFor: 'top-ranked', unknown: [], legacyLocalRender: false,
+    ranked: [], newJobsWaitFor: 'top-ranked', unknown: [],
   });
 });
 
@@ -96,7 +96,7 @@ check('setOrder writes the whole list and the view reads it back in that order',
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepStrictEqual(onDisk.order, ['mac', 'local', 'droplet']);
   // The list IS the rank: the record holds names in an order and nothing else.
-  assert.deepStrictEqual(Object.keys(onDisk).sort(), ['disabled', 'legacyLocalRender', 'newJobsWaitFor', 'order']);
+  assert.deepStrictEqual(Object.keys(onDisk).sort(), ['disabled', 'newJobsWaitFor', 'order']);
   assert.ok(onDisk.order.every((entry) => typeof entry === 'string'), 'an order entry is a name, not a {name, rank}');
 });
 
@@ -247,37 +247,84 @@ check('the record round-trips through a second store over the same file', () => 
   store.setNewJobsWaitFor('any', KNOWN);
   const reopened = new routing.Routing(file);
   assert.deepStrictEqual(reopened.read(), {
-    order: ['mac', 'droplet', 'local'], disabled: ['droplet'], newJobsWaitFor: 'any', legacyLocalRender: false,
+    order: ['mac', 'droplet', 'local'], disabled: ['droplet'], newJobsWaitFor: 'any',
   });
   assert.deepStrictEqual(enabled(reopened.view(KNOWN)), ['mac', 'local']);
 });
 
 check('the module-level doors exist for the queue that will use them', () => {
   for (const door of ['readRouting', 'setRoutingOrder', 'setServerEnabled', 'setNewJobsWaitFor',
-    'setLegacyLocalRender', 'forgetRoutingName', 'rankedServers', 'topRankedServer', 'defaultWaitFor',
+    'forgetRoutingName', 'rankedServers', 'topRankedServer', 'defaultWaitFor',
     'knownServers', 'routingPath']) {
     assert.strictEqual(typeof routing[door], 'function', `${door} is missing`);
   }
+  // And the SWITCH's door is gone with the layer it reached: a setter for a
+  // preference nothing reads would be a button that does nothing.
+  assert.strictEqual(routing.setLegacyLocalRender, undefined,
+    'the legacy local-render setter went with the spawn layer (docs/LEGACY-REMOVAL.md)');
 });
 
 // ── The legacy local narrator: one switch, and absent means off ──────────────
 
-check('the legacy local-render switch defaults OFF, persists, and is one boolean', () => {
-  const { store, file } = fresh();
-  assert.strictEqual(store.view(KNOWN).legacyLocalRender, false, 'no record = the server path');
-  assert.strictEqual(store.setLegacyLocalRender(true, KNOWN).legacyLocalRender, true);
-  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).legacyLocalRender, true);
-  assert.strictEqual(store.setLegacyLocalRender(false, KNOWN).legacyLocalRender, false);
-  refuses(() => store.setLegacyLocalRender('yes', KNOWN), 'invalid_legacy_local_render');
+// ── The RETIRED switch: stripped on read, said once, never honoured ──────
+
+check('a record still carrying legacyLocalRender is READ, not refused, and the key is dropped', () => {
+  /*
+   * THE OPERATOR'S RECORD IS NOT CORRUPT AND MUST NOT BRICK THE APP. The key
+   * was valid when it was written; the LAYER it turned on is gone
+   * (docs/LEGACY-REMOVAL.md), so there is nothing left for it to mean. Refusing
+   * the file would lose every other preference in it over a setting that no
+   * longer exists, so the key is simply not read — for `true` exactly as for
+   * `false`, because "honour it" is no longer one of the answers.
+   */
+  for (const value of [true, false, 'yes', 0, null]) {
+    const { store } = fresh({
+      order: ['mac'], disabled: ['droplet'], newJobsWaitFor: 'any', legacyLocalRender: value,
+    });
+    const record = store.read();
+    assert.deepStrictEqual(record, { order: ['mac'], disabled: ['droplet'], newJobsWaitFor: 'any' },
+      `legacyLocalRender: ${JSON.stringify(value)} is stripped, and the rest of the record survives`);
+    assert.strictEqual('legacyLocalRender' in store.view(KNOWN), false,
+      'and the view the settings row draws has no such field to bind a checkbox to');
+  }
 });
 
-check('a record written before the switch existed reads as OFF; a non-boolean is corrupt', () => {
-  // Absent is a MIGRATION, not a fallback: every record on disk today has no
-  // such key, and `false` is the behaviour those records described.
-  const before = fresh({ order: ['mac'], disabled: [], newJobsWaitFor: 'any' });
-  assert.strictEqual(before.store.view(KNOWN).legacyLocalRender, false);
-  const bad = fresh({ order: [], disabled: [], newJobsWaitFor: 'any', legacyLocalRender: 'true' });
-  refuses(() => bad.store.view(KNOWN), 'corrupt_routing');
+check('nothing REWRITES the record behind the operator, and the next write drops the key', () => {
+  // Not a migration: a silent rewrite is how a person loses the evidence of what
+  // they had asked for. The key stays on disk until a write of some OTHER
+  // preference happens to drop it, because `RoutingRecord` no longer has it.
+  const { store, file } = fresh({ order: ['mac'], disabled: [], newJobsWaitFor: 'any', legacyLocalRender: true });
+  store.view(KNOWN);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).legacyLocalRender, true,
+    'reading left the file exactly as the operator wrote it');
+  store.setNewJobsWaitFor('top-ranked', KNOWN);
+  assert.deepStrictEqual(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8'))).sort(),
+    ['disabled', 'newJobsWaitFor', 'order'], 'and a write of anything else carries it away');
+});
+
+check('the retired key is SAID, by name, and once per record', () => {
+  // A machine that was rendering locally yesterday now refuses `no_enabled_server`,
+  // and the operator is owed the sentence that connects the two.
+  const said = [];
+  const realLog = console.log;
+  console.log = (...args) => { said.push(args.join(' ')); };
+  try {
+    const { store } = fresh({ order: [], disabled: [], newJobsWaitFor: 'any', legacyLocalRender: true });
+    store.read();
+    store.read();
+    store.view(KNOWN);
+  } finally {
+    console.log = realLog;
+  }
+  const notes = said.filter((line) => /legacyLocalRender/.test(line));
+  assert.strictEqual(notes.length, 1, `said once per record, not per read: ${JSON.stringify(said)}`);
+  assert.match(notes[0], /RETIRED/);
+  assert.match(notes[0], /nothing here rewrites your record/);
+});
+
+check('a record that never had the key is unchanged by any of this', () => {
+  const { store } = fresh({ order: ['mac'], disabled: [], newJobsWaitFor: 'any' });
+  assert.deepStrictEqual(store.read(), { order: ['mac'], disabled: [], newJobsWaitFor: 'any' });
 });
 
 // ── WHERE a render's generation step runs ────────────────────────────────────
@@ -295,7 +342,6 @@ function venueHost(over) {
     ranked: RANKED,
     unknown: [],
     newJobsWaitFor: 'top-ranked',
-    legacyLocalRender: false,
     ...(over && over.view ? over.view : {}),
   };
   return {
@@ -335,8 +381,8 @@ async function rejects(fn, ErrorType, code) {
 const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, host);
 
 (async () => {
-  await acheck('the CALLER\'s server wins over everything, including the legacy switch', async () => {
-    const host = venueHost({ view: { legacyLocalRender: true, newJobsWaitFor: 'any' } });
+  await acheck('the CALLER\'s server wins over everything the record says', async () => {
+    const host = venueHost({ view: { newJobsWaitFor: 'any' } });
     assert.deepStrictEqual(await decide({ crucible: { server: ' mac ' } }, host),
       { where: 'crucible', server: 'mac', because: 'the caller named it' });
   });
@@ -348,7 +394,7 @@ const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, hos
     }
   });
 
-  await acheck('no caller, switch off, top-ranked: the top of the ENABLED list, unpinged', async () => {
+  await acheck('no caller, top-ranked: the top of the ENABLED list, unpinged', async () => {
     let pinged = 0;
     const host = venueHost({ ping: async () => { pinged += 1; return { outcome: 'unreachable', message: 'no' }; } });
     assert.deepStrictEqual(await decide(undefined, host),
@@ -384,7 +430,9 @@ const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, hos
     });
     const err = await rejects(() => decide(undefined, host), venue.CrucibleVenueError, 'no_reachable_server');
     assert.ok(/local \(unreachable/.test(err.message) && /mac \(unreachable/.test(err.message), err.message);
-    assert.ok(/local narrator/.test(err.message), 'the refusal names the switch that would run it here');
+    assert.ok(/no local narrator to fall back to/.test(err.message),
+      'the refusal says outright that there is nowhere else — it does not leave a reader hunting '
+      + 'for a switch that would have run it here');
   });
 
   await acheck('nothing enabled: routing\'s OWN refusal, by code, in both wait-for modes', async () => {
@@ -394,14 +442,39 @@ const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, hos
     }
   });
 
-  await acheck('the legacy switch is the ONLY way a render reaches the local narrator', async () => {
-    const on = venueHost({ view: { legacyLocalRender: true } });
-    assert.deepStrictEqual(await decide(undefined, on),
-      { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' });
-    // …and with it off, an unplaceable render throws instead of going local.
-    const off = venueHost({ view: { newJobsWaitFor: 'any' }, ping: async () => ({ outcome: 'refused', message: 'no' }) });
-    await rejects(() => decide(undefined, off), venue.CrucibleVenueError, 'no_reachable_server');
-  });
+  await acheck('there is NO way a render reaches the local narrator — every answer is a server',
+    async () => {
+      /*
+       * THE SWITCH USED TO BE THE ONE PRODUCER of a second kind of venue, and
+       * this check counted it. There is no second kind now
+       * (docs/LEGACY-REMOVAL.md), so what it counts is that every answer the
+       * decision can give is a Crucible server and every non-answer is a
+       * refusal: an unplaceable render FAILS rather than quietly taking this
+       * machine's card.
+       */
+      const answers = [
+        await decide({ crucible: { server: 'mac' } }, venueHost()),
+        await decide(undefined, venueHost()),
+        await decide(undefined, venueHost({ view: { newJobsWaitFor: 'any' } })),
+      ];
+      for (const answer of answers) {
+        assert.strictEqual(answer.where, 'crucible', JSON.stringify(answer));
+        assert.strictEqual(typeof answer.server, 'string');
+        assert.ok(answer.server.length > 0);
+      }
+      // A record with a leftover `legacyLocalRender: true` changes NOTHING: it
+      // is not read, so it cannot re-open the door it used to open.
+      const stale = venueHost({
+        view: { legacyLocalRender: true, ranked: [{ name: 'mac', enabled: false }] },
+      });
+      await rejects(() => decide(undefined, stale), routing.CrucibleRoutingError, 'no_enabled_server');
+      // …and with nothing reachable it throws instead of going local.
+      const unreachable = venueHost({
+        view: { newJobsWaitFor: 'any' },
+        ping: async () => ({ outcome: 'refused', message: 'no' }),
+      });
+      await rejects(() => decide(undefined, unreachable), venue.CrucibleVenueError, 'no_reachable_server');
+    });
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n${ran} checks, ${process.exitCode ? 'FAILING' : 'all passing'}`);

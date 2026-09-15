@@ -112,7 +112,7 @@ function snap(jobs, running = true, servers = []) {
       // Answered off these jobs with the scheduler's own function, exactly as
       // `currentSlotSets` answers it: the legacy row exists while something in
       // the queue can run nowhere else, and is absent otherwise.
-      legacyCharged: slots.legacySetCharged({ jobs }),
+      alignerCharged: slots.longformAlignCharged({ jobs }),
     }),
   };
 }

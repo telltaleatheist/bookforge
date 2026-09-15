@@ -655,8 +655,8 @@ export function resolveVlmRouteWithVenue(facts: {
       kind: 'refused',
       reason:
         `BookForge could not decide which machine reads these pages: ${facts.venueRefusal} `
-        + 'Either enable a Crucible server in Settings → Crucible Servers, or turn on "Run renders '
-        + 'and text passes with the local engines instead" there.',
+        + 'Enable a Crucible server in Settings → Crucible Servers, or type an endpoint under '
+        + 'Settings → AI → Reading pages. There is no local page reader to fall back to.',
     };
   }
   return resolveVlmRoute({

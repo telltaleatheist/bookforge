@@ -699,8 +699,11 @@ export class AddOnsPanelComponent implements OnInit {
    * chosen for somebody who had not asked, on exactly the machine that should
    * instead be told to hold a Crucible. One inference server per machine is the
    * rule (rollout §2 ruling 1) and these three packs are the local engines it
-   * replaces; every one of them is a DELETE-AFTER-PASS row hanging off
-   * `legacyLocalRender`.
+   * replaces. The SWITCH that used to gate them is already gone
+   * (docs/LEGACY-REMOVAL.md); the packs themselves go with the spawn layer,
+   * which is held until Crucible's own spawn environment has been audited
+   * against BookForge's (a 7x MLX batch-width knob was found missing on
+   * 2026-09-15).
    *
    * Nothing replaces it. A person who wants a local CUDA pack ticks it, which
    * is what every other row on this panel already requires.
