@@ -68,6 +68,7 @@ import { rankedServers, readRouting } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
 import { crucibleCapabilityWithRoutes } from './engine-settings';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
+import { resolveEngine } from './engine-resolve';
 import {
   crucibleChatBase,
   endpointHeadersEnv,
@@ -157,6 +158,36 @@ export interface TextVenueHost {
   ping(name: string): Promise<CruciblePingResult>;
   /** One server WITH its token: `local` from its config, a remote from the registry. */
   server(name: string): ResolvedServer;
+  /**
+   * THE ADDRESS THAT SERVES WORK FOR THIS NAME, which is not always the one
+   * registered under it.
+   *
+   * crucible `docs/PHASE17-ORCHESTRATOR.md`: a registered address may be an
+   * ORCHESTRATOR — backend kind `orchestrator`, ZERO job types, one engine
+   * managed, capability read through to it. A chat sent to one ends in
+   * `job_type_not_served`, so the endpoint a text act is handed must be the
+   * ENGINE's, reached by following `engine.url` once with the SAME token.
+   *
+   * Beside {@link server} rather than folded into it, because they answer two
+   * different questions and only one of them touches the network: `server` is
+   * the registry ROW (the name a person typed, and the token), and this is
+   * where that row's work goes. The token is unchanged across the hop, so the
+   * two are used together and neither is derivable from the other.
+   *
+   * REQUIRED, not optional. The two guesses available to a host that omitted
+   * it are "assume the registered address is the engine" — which is the defect
+   * — and "refuse every act", and neither is a thing to decide on a caller's
+   * behalf. A keeper that forgets it is refused by the compiler, exactly as
+   * `slotSets` refuses a caller that says nothing about `roles`.
+   *
+   * The real one goes through `crucible/engine-resolve.ts`, which is the ONE
+   * resolver: `info()` once, the SDK's `engineOf`, one hop, the second document
+   * read and refused by name if it is not an engine, and a cache that holds no
+   * token. The bench answers the same question from the same record, so the
+   * endpoint a chat is sent to and the row it is placed on cannot disagree
+   * about which process is the engine.
+   */
+  engineUrl(name: string): Promise<string>;
   /** `GET /v1/models` on that server. */
   models(name: string): Promise<ModelInfo[]>;
   /** Submit a `load-model` job and wait for it. Only ever called with `loadFirst`. */
@@ -188,6 +219,9 @@ export function processTextVenueHost(): TextVenueHost {
     enabled: rankedServers,
     ping: pingServer,
     server: getServer,
+    async engineUrl(name: string): Promise<string> {
+      return (await resolveEngine(getServer(name), CRUCIBLE_CLIENT_NAME)).url;
+    },
     async models(name: string): Promise<ModelInfo[]> {
       return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).models();
     },
@@ -484,7 +518,13 @@ export async function resolveCrucibleTextEngine(
     const upstreamMap = endpointHeaderMap(entry.token, act);
     return {
       server,
-      endpoint: crucibleChatBase(entry.url),
+      /*
+       * THE ENGINE'S ADDRESS, NOT THE REGISTERED ONE. An upstream-routed class
+       * is forwarded BY an engine — the orchestrator in front of one forwards
+       * nothing and serves no job type — so this hop is followed here too, and
+       * for the same reason as below. See `TextVenueHost.engineUrl`.
+       */
+      endpoint: crucibleChatBase(await host.engineUrl(server)),
       model,
       act,
       env: endpointHeadersEnv(entry.token, act),
@@ -532,7 +572,13 @@ export async function resolveCrucibleTextEngine(
   const map = endpointHeaderMap(entry.token, act);
   return {
     server,
-    endpoint: crucibleChatBase(entry.url),
+    /*
+     * THE ENGINE'S ADDRESS, NOT THE REGISTERED ONE — `TextVenueHost.engineUrl`.
+     * The token is `entry`'s and is deliberately unchanged: PHASE17 §6 follows
+     * the hop with the SAME token, which is why the row and the address are
+     * read from two doors rather than one.
+     */
+    endpoint: crucibleChatBase(await host.engineUrl(server)),
     model,
     act,
     env: endpointHeadersEnv(entry.token, act),

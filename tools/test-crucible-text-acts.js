@@ -142,6 +142,14 @@ function scriptedHost(over) {
     enabled: () => [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
     ping: async () => ({ outcome: 'ok', message: 'ok' }),
     server: (name) => ({ name, url: `http://127.0.0.1:7100`, token: TOKEN, source: 'local' }),
+    /*
+     * WHERE THE WORK ACTUALLY GOES — `TextVenueHost.engineUrl`, which the real
+     * host answers through `crucible/engine-resolve.ts` (PHASE17 §6: one hop,
+     * same token). Here it answers the registered address, because these checks
+     * are about the four acts and the credential rather than the relation; the
+     * ones that ARE about it script an orchestrator and assert the hop.
+     */
+    engineUrl: async () => 'http://127.0.0.1:7100',
     models: async () => [
       { id: 'qwen3.5-9b', resident: true, loadable: true },
       { id: 'qwen3.8-27b-4bit', resident: true, loadable: true },
@@ -391,6 +399,78 @@ async function main() {
     await venue.resolveCrucibleTextEngine(
       'simplify', 'mac', host, { headerReach: 'spawn', loadFirst: true });
     assert.deepStrictEqual(calls, [['mac', 'qwen3.8-27b-4bit']]);
+  });
+
+  // ── 5b. AN ORCHESTRATOR IS NOT WHERE A CHAT GOES ───────────────────────────
+  //
+  // crucible `docs/PHASE17-ORCHESTRATOR.md` §1: a registered address can be an
+  // orchestrator — zero job types, one engine managed, capability read through
+  // to it — and a chat sent to one ends in `job_type_not_served`. Measured on
+  // Owen's machine 2026-09-15: :7101 is the orchestrator, :7100 the engine it
+  // manages. Both call sites below follow the hop, and the TOKEN does not
+  // change across it (§6), so the header map is still the registry row's.
+
+  await check('THE ENDPOINT IS THE ENGINE\'S, not the registered address', async () => {
+    const asked = [];
+    const host = scriptedHost({
+      server: (name) => ({ name, url: 'http://127.0.0.1:7101', token: TOKEN, source: 'local' }),
+      engineUrl: async (name) => { asked.push(name); return 'http://127.0.0.1:7100'; },
+    });
+    const engine = await venue.resolveCrucibleTextEngine(
+      'clean', 'mac', host, { headerReach: 'spawn' });
+    assert.deepStrictEqual(asked, ['mac'], 'the hop is followed for THIS placement, by name');
+    assert.strictEqual(engine.endpoint, acts.crucibleChatBase('http://127.0.0.1:7100'),
+      'a chat aimed at the tray would be refused job_type_not_served by the engine\'s own door');
+    assert.ok(!engine.endpoint.includes('7101'),
+      'one address, one answer — the bench and this door agree which process is the engine');
+    assert.ok(engine.env.FOUNDRY_ENDPOINT_HEADERS.includes(TOKEN),
+      'and the SAME token travels across the hop, which is why the row and the address '
+      + 'are read from two doors rather than one');
+  });
+
+  await check('an UPSTREAM-routed class follows the hop too — an orchestrator forwards nothing', async () => {
+    const host = scriptedHost({
+      server: (name) => ({ name, url: 'http://127.0.0.1:7101', token: TOKEN, source: 'local' }),
+      engineUrl: async () => 'http://127.0.0.1:7100',
+      capability: async () => capabilityRecord([
+        { capability: 'clean', enabled: true, selected: 'anthropic/claude-sonnet-4' },
+        { capability: 'translate', enabled: true, selected: 'qwen3.8-27b-4bit' },
+        { capability: 'simplify', enabled: true, selected: 'qwen3.8-27b-4bit' },
+        { capability: 'analysis', enabled: true, selected: 'qwen3.8-27b-4bit' },
+      ]),
+    });
+    const engine = await venue.resolveCrucibleTextEngine(
+      'clean', 'mac', host, { headerReach: 'spawn' });
+    assert.strictEqual(engine.model, 'anthropic/claude-sonnet-4', 'this is the upstream arm');
+    assert.strictEqual(engine.endpoint, acts.crucibleChatBase('http://127.0.0.1:7100'),
+      'the forwarding is done BY an engine; the process in front of one forwards nothing');
+  });
+
+  await check('AN ENGINE THAT CANNOT BE RESOLVED REFUSES WITHOUT THE BEARER', async () => {
+    /*
+     * The resolver's own refusals — `crucible_orchestrator_has_no_engine`,
+     * `crucible_orchestrator_chain` — reach a person through this door, in a
+     * queue row and in a log. They name the ADDRESS, which is what somebody can
+     * act on, and never the credential.
+     */
+    const host = scriptedHost({
+      engineUrl: async () => {
+        throw new Error(
+          'crucible_orchestrator_has_no_engine: "mac" (http://127.0.0.1:7101) is a Crucible '
+          + 'orchestrator and manages no engine, so there is nothing there to do work.');
+      },
+    });
+    let message = null;
+    try {
+      await venue.resolveCrucibleTextEngine('clean', 'mac', host, { headerReach: 'spawn' });
+    } catch (err) {
+      message = err.message;
+    }
+    assert.ok(message !== null, 'it refuses rather than composing an endpoint it cannot reach');
+    assert.ok(message.includes('crucible_orchestrator_has_no_engine'), 'refused BY NAME');
+    assert.ok(!message.includes(TOKEN), `the refusal quoted the token: ${message}`);
+    assert.ok(!/bearer|authorization/i.test(message),
+      'nor does it name the header, which is how a token ends up quoted next');
   });
 
   // ── 6. A 409 is a WAIT, and it names the holder ────────────────────────────

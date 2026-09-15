@@ -166,6 +166,29 @@ async function startVenue() {
       ctx.send(res, 200, [modelRow(CRUCIBLE_CLEAN_MODEL, true)]);
       return true;
     }
+    /*
+     * `GET /v1/info`, BECAUSE THE ENDPOINT IS THE ENGINE'S AND NOT THE
+     * REGISTERED ADDRESS (crucible PHASE17 §6, `crucible/engine-resolve.ts`).
+     * A registered address can be an ORCHESTRATOR — zero job types, one engine
+     * managed — and a chat sent to one ends in `job_type_not_served`, so the
+     * door reads the role and follows at most one hop. This fake IS the engine,
+     * which is what `role: engine` says; the answer is cached for a minute, so
+     * this is one read for the whole run and not one per act.
+     */
+    if (ctx.url.pathname === '/v1/info' && req.method === 'GET') {
+      ctx.send(res, 200, {
+        server: { name: 'clean-door-fake', version: '0.6.0', api_version: 1 },
+        host: {
+          platform: 'linux', arch: 'x86_64', backend: 'cuda-linux',
+          gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 25757220864 },
+        },
+        job_types: ['llm'],
+        capabilities: [{ job_type: 'llm', models: [] }],
+        role: 'engine',
+        managed_by: null,
+      });
+      return true;
+    }
     if (await leases.handler(req, res, ctx)) return true;
     return settings.handle(req, res, ctx);
   });

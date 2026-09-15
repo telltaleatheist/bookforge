@@ -754,6 +754,10 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
       enabled: () => [{ name: 'mac', enabled: true }],
       ping: async () => ({ reachable: true }),
       server: () => ({ name: 'mac', url: 'http://mac:7100', token: 'test-token-abcd', source: 'registry' }),
+      // `TextVenueHost.engineUrl` — where the work goes, which is not always the
+      // registered address (PHASE17: an orchestrator serves no job type). This
+      // check is about the upstream arm, so the two are the same here.
+      engineUrl: async () => 'http://mac:7100',
       models: async () => { asked.models += 1; return []; },
       loadModel: async () => { asked.loads += 1; },
       capability: async () => ({
