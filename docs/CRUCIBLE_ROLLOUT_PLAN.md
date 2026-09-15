@@ -4,6 +4,114 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0g. MIDDAY 2026-09-15 — what Owen's own in-app pass found, and what it cost
+
+He ran the app. Every item below came from USING it, not from reading it, which is why they are
+here and not in 0f.
+
+**FIXED AND VERIFIED**
+- **v0.6.0's release was BROKEN and is now whole.** The tag's CI run finished `failure`: the Windows
+  host pack BUILT and then failed to upload, because the workflow selected the parts with
+  PowerShell `-Filter "*.part[0-9][0-9]"` — `-Filter` goes to the Win32 matching API, whose only
+  metacharacters are `*` and `?`, so a character class matched nothing and `gh release upload` got a
+  tag and no files. Worse, the manifest job declared `needs: [pack, host]` with a comment saying a
+  manifest without the host row leaves Windows refusing `pack_not_published` on a release that looks
+  complete — and then carried `if: always()`, publishing exactly that (12 rows, no host). BOTH fixed
+  in `.github/workflows/envpacks.yml` (crucible `1ddf6cb`): a `-match '\.part\d\d$'` regex plus an
+  explicit empty-list refusal, and `always()` narrowed to `!cancelled()` with the UPLOAD gated on a
+  merged-vs-`every_pack()` comparison. The pack was then built BY HAND from the tag's commit
+  (`git archive v0.6.0`, NOT a worktree — a worktree here is CRLF and `recipe_sha256` at that commit
+  hashes raw bytes, which would have disagreed with every other row) and uploaded; CI was NOT
+  re-dispatched, because that would clobber twelve already-correct packs whose hashes would differ for
+  tar-mtime reasons alone. VERIFIED INDEPENDENTLY: the published manifest now has **13 rows incl.
+  `host`/`llama-windows`**, and the URL `install.ps1` fetches returns **HTTP 200, 46,343,744 bytes**
+  matching the manifest's sha256. **The Windows "Set one up on this computer" one-liner now works.**
+  The workflow fix is COMMITTED AND NOT PUSHED — an unpushed workflow fix does nothing and the next
+  tag repeats the failure; it sits on top of crucible `3649c2c` + `205a3d7`.
+- **The 811-char sentence that refused his book.** Two different causes, not one: chunk 21 was 801
+  because the packer measured `spoken` (794) while the wire measures raw `len(text)` — the 7-char lead
+  `[break]` (fixed, `268c26e7`); chunk 68 was a genuine ONE-SENTENCE 811 chars. Owen ruled: split at
+  clause boundaries as a last resort. Built (`e5725653`): fires only for a single over-cap sentence,
+  tiers `;` → `:` → em/en dash → `,`, cuts NEAREST THE MIDDLE, recurses, boundary char stays with the
+  preceding piece, measured as the wire measures, printed at prep; no real boundary → refused
+  `sentence_over_cap_unsplittable` naming index and length. **His chunk 68 now packs 405 + 412 at the
+  third of its five semicolons**, and the real sentence (found in the Kershaw EPUB on `Z:`) is in the
+  test verbatim. Normal packing pinned unchanged by hashing the Mutineer corpus at three caps.
+- **Pack to the VENUE's band, never this machine's catalog** (`50b6747e`, `electron/crucible/voice-band.ts`):
+  ceiling = `safe_max_chars` else `max_chars`, never above `max_chars`; target = server's, else the
+  local catalog's CLAMPED; refusals `crucible_unknown_voice`, `crucible_voice_states_no_cap`,
+  `crucible_voice_states_no_pace`, `crucible_chunk_over_venue_cap`. The "RULING OWED" in `stream.ts` is
+  discharged. The arm question (Windows prep resolving `arm='wsl'` for a Mac render) no longer bites —
+  the venue band REPLACES the caps outright — and the stale comment claiming a refusal that does not
+  exist is corrected (`f1c11d4c`). `_targetCharsNote` → `_chunkLengthNote` on all four fine-tunes; the
+  "MLX 900" prose that cost a wrong diagnosis is gone (there was never a `targetChars` for a fine-tune).
+- **The bench's cloud lanes** (`8699d71d`): a server's `:cloud` lane is drawn only when that engine HAS
+  an upstream configured (read from `/v1/settings`, chosen over per-class `route` because an upstream is
+  a deliberate rare act and a route implies one); unknown keeps the lane.
+- **Crucible `POST /quit`** (`205a3d70`) — the orchestrator can be stopped without `/F`. Measured this
+  morning: `taskkill /PID` without `/F` reached NO quit path, wrote nothing, and the tray lived.
+  One implementation shared with the tray menu; per owner: `wsl-unit` releases the claim and lets the
+  hold go, `child` also stops its engine, `found` releases nothing. Answers BEFORE exiting (pinned).
+- **`recipe_sha256` no longer depends on line endings** (`3649c2c`): normalise CRLF→LF, not the git blob,
+  because recipes ship inside the wheel where there is no repo. It also collapsed a SECOND owner —
+  `envpack`'s manifest column and `jobenv`'s env stamp hashed independently; now one function.
+  v0.6.0's published manifest carries the LF digest and is unaffected, but BEFORE this fix a `--check`
+  on the Windows desk would have REFUSED a correct published pack.
+
+**FOUND BY HIM, BEING FIXED (agents in flight at compaction)**
+- **A CANCELLED JOB KEEPS RENDERING — the worst of the day.** He stopped a narration; the Mac kept
+  going. MEASURED: BookForge's remote-cancel fired correctly (`DELETE /v1/jobs/<id>` → `200 OK`); the
+  job stayed `running`, progress `0.427 → 0.438 → 0.449`, artifacts `38 → 39`; a hand-issued DELETE
+  answered `{"status": "cancelling"}` and ten seconds later it was still running. So the door ACCEPTS
+  the cancel, RECORDS `cancelling`, and nothing acts on it: the loop never observes it, the claim is
+  never released, the voice never comes off the card. It rendered 25 more chunks past his stop before
+  I killed it with `launchctl kickstart -k gui/501/com.crucible.serve`. Agent is tracing where the flag
+  is lost, making a cancel stop within one chunk, release the claim and settle the card the way a
+  FINISHED job does, and checking whether `asr`/`align`/`rvc`/`denoise`/`pages`/`llm` and the streaming
+  door share the hole. BookForge's side needs nothing — `render.ts`'s "A REMOTE RENDER IS CANCELLED ON
+  THE SERVER, not by hanging up" is correct and worked.
+- **THE MAC IS 6-10x SLOWER THAN IT WAS.** He measured 13-14 sentences/min where that machine has
+  historically done **80-130** (his number, for the Mac, NOT the PC's batched figure — I had that
+  backwards at first). So it is a REGRESSION, not an MLX ceiling. Symptoms: narrator at ~65% of ONE
+  core, load average 3 on a 20-core M1 Ultra, nothing saturated. Two suspects, both self-inflicted last
+  night: (1) the Mac's `install tts --build --force` rebuild at ~05:42 may have wiped site-packages
+  patches exactly as the identical command did on the PC — and the re-apply fix (`958ddab`) landed at
+  ~07:30, AFTER it; (2) we added `take` to `_mlx_batch_groups`' group key, so if anything now varies
+  per row a batch of 16 becomes 16 batches of 1 while looking healthy. Agent measuring on the freed Mac.
+- **Orpheus is still in the narration picker.** `shared/tts/engine-caps.ts:363` —
+  `SELECTABLE_ORDER = ['orpheus', 'higgs']`, Orpheus FIRST. Ruled deprecated 2026-09-14, never removed
+  from the one list that feeds `narrationEngineOrder()` → `selectableEngines()` → the modal's button
+  group. Being retired the way XTTS was (the file's own `RetiredTtsEngine` machinery: a retired engine
+  still PARSES and DISPLAYS so old records open, and can no longer be chosen), with the shipped presets
+  that name `ttsEngine: 'orpheus'` corrected rather than left to resolve to nothing.
+- **The bench's legacy GPU row.** Owen: one GPU slot per Crucible engine, two local CPU slots, nothing
+  else. `local` and `mac` are CORRECT (both are registered engines; `local` is this machine's WSL
+  engine, not an in-app path). The offender is `the local narrator (legacy)`, which has THREE tenants,
+  not one: `epub-align` (a local WhisperX spawn that auto-selects CUDA; Crucible has no long-form align
+  job — the `align-longform` spec is in §B7 and UNRULED), `video-assembly` (declares `resource: 'gpu'`
+  with no justification and no `machines()`), and any render while the legacy switch is on. Agent is
+  making the row appear ONLY when something in the snapshot charges it, and classifying
+  `video-assembly` honestly. Also fixing: `upstreamsByServer` is an IN-MEMORY Map, so every server reads
+  `unknown` at app start and draws phantom lanes until coordinated — persist it and read it per enabled
+  server at startup.
+
+**MEASURED AND WORTH KEEPING**
+- A narration run composes exactly `tts-conversion`, `rvc-enhancement`, `final-denoise`, `reassembly`.
+  No `generate-sentences`, so epub-align never runs during narration. `slotSetForStep` tests
+  `resource === 'cpu'` BEFORE travel, so a CPU step can never reach the legacy set; reassembly is CPU
+  unless its config carries an inline RVC pass, which the narration composer never sets.
+- **Prep always runs on THIS machine**, even for a Mac render (it reads the book off this disk), and it
+  does NOT touch the GPU: the three modules the prep probe imports load with torch absent and no CUDA
+  context. Owen's "is it using the local GPU" was the Windows desktop baseline (~2.6 GB: explorer,
+  start menu, an Edge WebView, the NVIDIA overlay — BookForge's own Electron window is part of it).
+
+**OWED FROM OWEN**
+push the crucible branch (the workflow fix is inert until then) · `align-longform`: build it or leave
+epub-align local · does `video-assembly` need the card · the HF storage wall (two Orpheus voices still
+only on WSL disk) · the linger ruling (a voice does not survive its render; ~30 s reload per standalone
+render on the Mac, ~138-145 s per render on the PC) · regenerate the WSL unit from HIS login shell
+(the on-disk one still has the unquoted PATH) · the in-app pass continues.
+
 ## 0f. THE MORNING OF 2026-09-15 — WHERE IT STANDS (read this first; 0e below is the evening before)
 
 **Owen's ask overnight:** "fully functional by morning. Including the crucible servers set up and
@@ -647,7 +755,26 @@ apps' doors.
   the settings door is `unknown` and KEEPS its lane — absence of knowledge is not absence of an
   upstream — and `SlotSetFacts.upstreams` refuses a server it was told nothing about by name.
   Bench today: one `[gpu]` per registered Crucible, no cloud lanes, `local-work [cpu][cpu]`,
-  and the one legacy `[gpu]` row B7 is about.
+  and the legacy `[gpu]` row B7 is about ONLY while something charges it (see A2).
+- **A6b. The record was in memory only, so `unknown` was every launch — FIXED 2026-09-15.**
+  Owen read the bench again and it still drew `mac — routed elsewhere · CPU ×2` while `local`'s
+  lane was correctly gone. Measured: the Mac's `GET /v1/settings` says
+  `upstreams {anthropic: false, openai: false, ollama: false}` with all four routes `local`, so
+  the RULE was right and the RECORD was empty — `upstreamsByServer` lived in a module-level
+  `Map`, `local` had been coordinated that session and the Mac had not, and `unknown` draws the
+  lane. Phantom lanes on every server were the steady state of a fresh launch. Two halves:
+  (1) the fact is written to `<userData>/crucible-upstreams.json` on every note and read back at
+  start (`loadCrucibleUpstreams`, called from main before the first bench), pruned wherever
+  routes are pruned so the two cannot diverge — its own file rather than `crucible-routing.json`
+  because that one is the operator's PREFERENCES and is refused when corrupt, while this is a
+  fact the app LEARNED and can re-learn by asking; (2) `readUpstreamsOnStart` asks every ENABLED
+  server one `GET /v1/settings` at start (`local` excepted — its coordination reads it on the
+  way past), which is the read coordination already makes as its fourth, at the one moment
+  nothing else was making it. No timer, no poll, nothing posted. `unknown → draw the lane`
+  stays the rule and is now momentary; the code says why that is conservatism rather than
+  necessity (a RUNNING routed row cannot be stranded — its venue IS the cloud lane and occupied
+  sets survive on the bench — and a QUEUED one is computable from the snapshot the way the
+  legacy row is). Three checks in `tools/test-crucible-coordinate.js`.
 - **A3. Only two step kinds travel.** `machines()` is declared by `tts-conversion.ts` (`any`)
   and `foundry-job.ts` (per config). Every other GPU step — `align.ts`, `rvc-enhancement.ts`,
   `final-denoise.ts`, `vlm-convert.ts`, `generate-sentences.ts` (asr), `translation.ts`,
