@@ -6,6 +6,30 @@ get up"*. This is the list, the order, and the honest state. It is updated at ea
 
 ## 0e. WHERE IT STANDS AT 19:40, 2026-09-14 (0d below is the BookForge half; read this first)
 
+**PHASE 16 STEPS 2-4, 2026-09-14 late evening.** Steps 2 and 3 are in
+(`9d2a85f3`, `a7f12592`, `0d372bce`, `c6a7897e`, `db775aa5`, `a818d328`): the Listen text path
+and the Listen client are `shared/listen-text/` and `shared/listen-client/`, compiled by the
+main process, the renderer and the extension's esbuild alike, and the browser extension now
+talks to a Crucible with **no BookForge in the path** — a registry of pasted connect codes with
+one selected server, Load/Unload as `load-voice`/`unload-voice` jobs, and one
+`POST /v1/tts/stream` session per read. `stream-scheduler.ts` and `electron/crucible/stream.ts`
+are adapters onto that shared code with their exported surfaces unchanged, so the 8766 relay,
+the reader bridge and the Play tab still run on it. Two keepers hold it:
+`test-listen-text-one-source` compares the two bundles' function bodies byte for byte (a split
+that differs by one character makes a resumed block splice one row's audio under another row's
+text, and nothing throws), and `test-extension-option-columns` pins both columns of the plan's
+table by name. **Owed:** (a) **a ruling on step 4** — moving the Listen client into the Angular
+renderer needs a bearer token there, and `electron/crucible/servers.ts` refuses to hand one out
+by design; the alternatives are a token door or an IPC byte pipe, which is a relay, and neither
+was chosen on a guess. (b) **Zero-shot is BLOCKED, not skipped** — `load-voice` has no
+`reference` field in PHASE3-TTS.md or the 0.6.0 SDK, and a `kind = "zeroshot"` voice is refused
+before any engine starts, at the load door as well as the render door, so the extension's clip
+picker cannot be built until narrator's load message carries clips. (c) **Step 6 has a
+conflict**: deleting `tts-api-server.ts` also deletes the tab recorder's only door; the
+`record.*` verbs need a home first, and the extension's BookForge host/port/token rows were kept
+for exactly that reason. (d) **Nothing was run on a card** — both were off limits — so the
+extension has never spoken: Owen's in-app pass is the first real read.
+
 **Landed today, evening:** Crucible Phase 15 contract (`crucible/docs/PHASE15-HOST.md`, §0–§8 incl.
 the AMENDED block: Windows IS the `llama-windows` backend; control is Windows's, data is the
 card's; §3.5a remove door; §3.10 llama-server child; §4.7 engine switch on the page; §4.6 Mac;
