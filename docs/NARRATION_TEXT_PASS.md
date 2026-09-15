@@ -1074,6 +1074,79 @@ originally claimed a false positive was: cheap.
 catch it. A missing entry in the canonical-name list only means one span is not
 protected — it is treated exactly as it was before this branch.
 
+### The book NAME is printed in full deterministically (2026-09-14) — the READING is still the model's
+
+Owen, 2026-09-14:
+
+> **"for ai cleanup, i want to deterministically expand bible book names. ex ->
+> exodus, tim. -> timothy. or at least tell the ai cleanup model to expand them
+> the rest of the way before going through TTS. it's a mess."**
+
+**This does not reopen the 2026-09-05 ruling, and it adds no table to the
+detector.** The two questions are different, and the whole design turns on
+keeping them apart:
+
+| question | who answers it | with what |
+|---|---|---|
+| *is this a reference?* | `scriptureSpans`, unchanged | the four kinds of evidence above — **no abbreviation table** |
+| *given that it is, what is the book's full name?* | `shared/listen-text/bible-books.ts` | a table of abbreviations, consulted **only inside a span the detector already claimed** |
+| *how is the whole reference read aloud?* | the **model**, unchanged | the prompt's measured form, over digits that are still digits |
+
+So the expansion is the **third named exception** to "deterministic text fixes
+are for Listen only" (the unspoken-glyph strip and the caps fold are the first
+two), and it earns it the same way: it fires only where it cannot be wrong.
+`Rev. 21:4` becomes `Revelation 21:4`; `Rev. Martin Luther King`, `Col.
+Sanders`, `Phil. was late`, `my ex.`, `Gen. Eisenhower`, `Ch. 3:7`, `Sec. 3:7`,
+`Act 3:2`, `Jan. 3:7` and `Widescreen 16:9` are untouched, because the detector
+never claimed them. **A missing entry in this table costs nothing** — the span
+is left exactly as it is and the model reads it as it does today — which is
+what makes a partial table of an open set safe here and unsafe as a *reading*.
+
+**The chapter and the verse stay as digits.** A detected span is closed to every
+rule so the model can read the reference whole, and half a reading is worse than
+none. The expansion is also required to leave a span the detector STILL
+recognizes — `Rom. 5:17` → `Romans 5:17` swaps evidence (a) for evidence (c) —
+or it would unprotect the digits it just renamed and the integer rule would read
+the verse with no pause in it. `tools/test-bible-books.js` §3 asserts that for
+all 63 aliases.
+
+**A volume number becomes an ordinal word** — `1 Pet. 3:7` → `First Peter 3:7`
+— because the prompt has asked the model for *First / Second / Third* since
+2026-09-05, and the two halves of one pass must not read the same reference two
+ways. `BOOK_ORDINAL_WORDS` is the one constant to change if Owen wants
+otherwise.
+
+**Fourteen abbreviations are refused by name** in the table's own comment, and
+they are the interesting half: `ch` (a chapter), `mr` (Mister), `kg`, `nb`,
+`pp`, `re`, `act`, `ti` (Timothy or Titus), `hb` (Habakkuk or Hebrews), `jud`
+(Jude, Judges or Judith), `jo`, `ph`, `am`, `is`. A token that is **already a
+full canonical name** is not an abbreviation at all and is never rewritten,
+which is what makes `John`, `Mark`, `Job`, `Ruth`, `Amos`, `Joel`, `Titus`,
+`Jude`, `James` and `Song` safe without listing them anywhere.
+
+**Where it runs:**
+
+| path | where | note |
+|---|---|---|
+| a BOOK | `prepareNarrationCopy` (`electron/parallel-tts-bridge.ts`), beside the caption cut and the `<sup>` strip | through `writeNarrationEpub`'s verified `rewrites`, which proves every edit landed or destroys the copy. The cut is now `.v3` |
+| a `.txt` | `normalizeTextNumbersFor`, beside the punctuation stage | so an audition measures the shipped pipeline |
+| LISTEN | `speakableListenText` stage 1.5 (`shared/listen-text/normalize.ts`) | before the number rules, so they protect a canonical name instead of an abbreviation |
+
+A book the cleanup model has already read has **nothing left here** — its
+references are words, and no span is found. What this actually reaches is the
+two cases the 2026-09-05 optional-cleanup ruling created, `unstamped` and
+`skipped-by-user`.
+
+**The model half** is one instruction, class 2b of
+`electron/prompts/tts-narration-text.txt`: the input may already carry the full
+name, any that are left are the model's to expand, and a book name is never
+abbreviated back. `tts-number-normalize.txt` was left alone — it has asked for
+all of this since 2026-09-05 and is vendored byte-for-byte by the
+orpheus-finetune side — and so were `tts-cleanup*.txt`, which are the
+scanner-damage pass and say "DO NOT expand abbreviations" on purpose.
+**A RE-VENDOR IS OWED**: Foundry runs `src/clean/prompts/tts-narration-text.txt`
+for a book, and it is this file's copy.
+
 ### The chapter-only decision
 
 `Gen. 3` is **not** detected, and that is a decision, not an oversight. Telling
