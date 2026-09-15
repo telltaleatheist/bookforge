@@ -453,15 +453,15 @@ class BudgetTest(unittest.TestCase):
             self.assertRegex(spoken(chunk.text), r'[.!?…]["\'’”»)\]]*$',
                              f'chunk does not end at a sentence: {chunk.text!r}')
 
-    def test_a_single_sentence_longer_than_the_budget_is_kept_whole(self):
-        """The policy never splits mid-sentence, so an impossible sentence is
-        emitted over budget and COUNTED rather than cut."""
+    def test_a_single_sentence_with_no_clause_boundary_is_refused_by_name(self):
+        """It used to be emitted over budget and counted. Owen's 2026-09-15
+        ruling made an over-cap sentence SPLIT at clause boundaries, and a
+        sentence with none of those has nowhere to be cut - so the book is
+        refused rather than cut mid-clause or truncated."""
         text = 'word ' * 200 + 'end.'
-        report = pp.pack_paragraphs([para(text, 0)], FakeBudget(100),
-                                    floor_chars=300)
-        self.assertEqual(len(report.chunks), 1)
-        self.assertGreater(report.chunks[0].chars, 100)
-        self.assertEqual(report.over_budget_sentences, 1)
+        with self.assertRaises(pp.SentenceOverCapUnsplittable) as caught:
+            pp.pack_paragraphs([para(text, 0)], FakeBudget(100), floor_chars=300)
+        self.assertIn('sentence_over_cap_unsplittable', str(caught.exception))
 
     def test_the_cap_comes_only_from_the_budget(self):
         for cap in (200, 430, 520, 600, 1500):
@@ -809,6 +809,205 @@ class SentenceSplitterTest(unittest.TestCase):
         source = open(module.__file__, encoding='utf-8').read()
         self.assertNotIn('import stanza', source)
         self.assertNotIn('stanza.Pipeline', source)
+
+
+# =============================================================================
+# THE LAST RESORT: a single sentence that alone exceeds the cap
+# =============================================================================
+
+#: OWEN'S CHUNK 68, VERBATIM. Working Towards the Fuhrer (Kershaw), the paragraph
+#: reading "Doctors who quickly suggest patients..." as it stands in the EPUB the
+#: 2026-09-15 render was prepped from - one sentence, five semicolons, 811
+#: characters. The Mac's Crucible states 800 for deathstalker, so
+#: `refuseChunksOverVenueCap` refused the WHOLE BOOK for this row
+#: ("index 68 is 811") and no cap could hold it. It is the fixture because it is
+#: the case, not a shape invented to resemble it. Its one non-ASCII character is
+#: the em dash it ends on, which is why the dash tier has to know a clause break
+#: from a number range.
+OWENS_CHUNK_68 = (
+    'Doctors who quickly suggest patients in mental hospitals for the '
+    '"euthanasia program," believing it will create a more "eugenically '
+    'healthy" population; lawyers and judges who eagerly help remove legal '
+    'protections to get rid of "criminals" and other unwanted people; '
+    'business leaders who want to profit from war preparations and, once war '
+    'starts, by seizing resources and using foreign slave labor; ambitious '
+    'technocrats and scientists who want to gain power and influence by '
+    'joining the push for technological progress; military leaders not in the'
+    ' Nazi party who want to build a strong army and bring back German '
+    'dominance in central Europe; and traditional conservatives who dislike '
+    'the Nazis but fear the Bolsheviks even more—each of these groups, in '
+    'their own way, supports the system through their actions.'
+)
+
+#: The venue that refused it: deathstalker on the Mac, `safe_max_chars` 800.
+HIGGS_DEATHSTALKER_800 = FakeBudget(800, chars_per_sec=0.0)
+
+
+class OverCapSentenceTest(unittest.TestCase):
+    """Owen's ruling of 2026-09-15, asserted.
+
+    A sentence that alone exceeds the cap is cut at clause boundaries, in
+    priority order, nearest the middle, keeping the book's punctuation - and when
+    no boundary yields pieces that fit, the book is refused by name.
+    """
+
+    def test_owens_chunk_68_is_the_shape_the_ruling_was_made_on(self):
+        self.assertEqual(len(OWENS_CHUNK_68), 811)
+        self.assertEqual(OWENS_CHUNK_68.count(';'), 5)
+        self.assertEqual(len(pp.split_sentences(OWENS_CHUNK_68)), 1,
+                         'it is ONE sentence: that is why no cap could hold it')
+
+    def test_owens_chunk_68_splits_at_the_semicolon_nearest_the_middle(self):
+        report = pp.pack_paragraphs([para(OWENS_CHUNK_68, 0)],
+                                    HIGGS_DEATHSTALKER_800, floor_chars=500)
+        self.assertEqual(report.sentences_clause_split, 1)
+        self.assertEqual(len(report.chunks), 2)
+        # THE WIRE'S MEASURE, which is what refused the book: `len(chunk.text)`,
+        # the lead `[break]` included (268c26e7).
+        self.assertEqual([c.written_chars for c in report.chunks], [405, 412])
+        for chunk in report.chunks:
+            self.assertLessEqual(chunk.written_chars, 800)
+        # The boundary character stays with the piece in front of it.
+        self.assertTrue(spoken(report.chunks[0].text).endswith('slave labor;'))
+        self.assertTrue(spoken(report.chunks[1].text).startswith('ambitious '))
+
+    def test_owens_chunk_68_loses_no_word_and_invents_no_punctuation(self):
+        report = pp.pack_paragraphs([para(OWENS_CHUNK_68, 0)],
+                                    HIGGS_DEATHSTALKER_800, floor_chars=500)
+        rejoined = ' '.join(spoken(c.text) for c in report.chunks)
+        self.assertEqual(rejoined, OWENS_CHUNK_68)
+
+    def test_the_split_is_reported_the_way_the_packer_reports_its_decisions(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            pp.pack_paragraphs([para(OWENS_CHUNK_68, 0)], HIGGS_DEATHSTALKER_800,
+                               floor_chars=500)
+        said = out.getvalue()
+        self.assertIn('chunk 0 of this document is ONE SENTENCE of 811 chars', said)
+        self.assertIn("cut at ';'", said)
+        self.assertIn('into 2 piece(s) of 398, 412 chars', said)
+
+    def test_a_sentence_with_no_boundary_at_all_is_refused_by_name(self):
+        text = 'word ' * 300 + 'end.'
+        with self.assertRaises(pp.SentenceOverCapUnsplittable) as caught:
+            pp.pack_paragraphs([para(text, 0)], HIGGS_DEATHSTALKER_800,
+                               floor_chars=500)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith('sentence_over_cap_unsplittable:'))
+        self.assertIn('chunk 0 of this document', message)
+        self.assertIn('1511 characters', message)   # 1504 + the lead [break]
+
+    def test_the_refusal_names_the_chunk_index_it_stopped_at(self):
+        """The index is the one Crucible's own refusal would name - the position
+        in THIS document's chunk list, counted as the chunks are emitted."""
+        blocks = [para('A first thought, complete and short enough.', 0),
+                  para('A second thought, also complete.', 1),
+                  para('word ' * 100 + 'end.', 2)]
+        with self.assertRaises(pp.SentenceOverCapUnsplittable) as caught:
+            pp.pack_paragraphs(blocks, FakeBudget(120), floor_chars=0)
+        self.assertIn('chunk 2 of this document', str(caught.exception))
+
+    def test_a_comma_is_used_only_when_nothing_stronger_exists(self):
+        """A sentence with only commas in it IS split at one - but the tier is
+        last, and the boundaries the split reports say which was used."""
+        clause = 'and then the long slow business of the morning went on, '
+        text = (clause * 20).strip().rstrip(',') + '.'
+        self.assertNotIn(';', text)
+        self.assertNotIn(':', text)
+        split = pp.split_over_cap_sentence(text, 300)
+        self.assertIsNotNone(split)
+        self.assertEqual(set(split.boundaries), {','})
+        for piece in split.pieces:
+            self.assertLessEqual(len(piece), 300)
+        self.assertEqual(' '.join(split.pieces), text)
+
+    def test_a_semicolon_beats_a_comma_that_sits_nearer_the_middle(self):
+        left = 'alpha ' * 40 + 'beta, gamma delta epsilon zeta eta theta iota'
+        right = 'kappa ' * 40 + 'lambda.'
+        text = left + '; ' + right
+        split = pp.split_over_cap_sentence(text, 300)
+        self.assertIsNotNone(split)
+        self.assertEqual(split.boundaries[0], ';',
+                         'the first cut is the strongest tier that works')
+        self.assertTrue(split.pieces[0].endswith(';'))
+
+    def test_a_colon_is_tried_before_a_dash_and_a_dash_before_a_comma(self):
+        for mark, tier in ((': ', ':'), (' — ', 'dash'), (', ', ',')):
+            text = ('alpha ' * 45).strip() + mark + ('beta ' * 45).strip() + '.'
+            split = pp.split_over_cap_sentence(text, 300)
+            self.assertIsNotNone(split, f'{tier} should cut this sentence')
+            self.assertEqual(split.boundaries, (tier,))
+
+    def test_a_number_range_dash_and_a_hyphen_are_not_clause_boundaries(self):
+        self.assertEqual(pp.clause_boundaries('iii. 1281–2 and on', 'dash'), [])
+        self.assertEqual(pp.clause_boundaries('a well-worn phrase', 'dash'), [])
+        self.assertEqual(len(pp.clause_boundaries('one—two', 'dash')), 1)
+
+    def test_a_colon_inside_a_token_is_not_a_boundary(self):
+        self.assertEqual(pp.clause_boundaries('Col. 2:1 says so', ':'), [])
+        self.assertEqual(len(pp.clause_boundaries('He said this: it is so', ':')), 1)
+
+    def test_the_cut_is_the_boundary_nearest_the_middle(self):
+        """Balanced halves, not one crumb. Three semicolons, and the middle one
+        is the cut even though the first would also produce a fitting pair."""
+        text = ('a' * 100 + '; ' + 'b' * 100 + '; ' + 'c' * 100 + '; '
+                + 'd' * 100 + '.')
+        split = pp.split_over_cap_sentence(text, 250)
+        self.assertIsNotNone(split)
+        self.assertEqual([len(p) for p in split.pieces], [203, 203])
+
+    def test_a_piece_still_over_the_budget_is_cut_again(self):
+        text = ('a' * 100 + '; ' + 'b' * 100 + '; ' + 'c' * 100 + '; '
+                + 'd' * 100 + '.')
+        split = pp.split_over_cap_sentence(text, 150)
+        self.assertIsNotNone(split)
+        self.assertEqual([len(p) for p in split.pieces], [101, 101, 101, 101])
+
+    def test_the_first_piece_pays_for_the_lead_marker_and_the_rest_do_not(self):
+        """The wire measures `len(chunk.text)`, so the piece carrying `[break]`
+        has seven fewer characters to spend. Asserted through the packer, which
+        is where the asymmetry is real."""
+        text = 'x' * 396 + '; ' + 'y' * 396 + '.'
+        self.assertEqual(len(text), 795)
+        report = pp.pack_paragraphs([para(text, 0)], FakeBudget(800),
+                                    floor_chars=500)
+        # 795 + 7 = 802 on the wire, so it must split even though the SPOKEN
+        # text is inside the cap.
+        self.assertEqual(report.sentences_clause_split, 1)
+        for chunk in report.chunks:
+            self.assertLessEqual(chunk.written_chars, 800)
+
+    def test_a_sentence_that_fits_is_never_touched(self):
+        text = 'One clause; another clause; a third clause.'
+        split = pp.split_over_cap_sentence(text, 800)
+        self.assertEqual(split.pieces, (text,))
+        self.assertEqual(split.boundaries, ())
+
+    def test_the_whole_measured_corpus_packs_EXACTLY_as_it_did_before(self):
+        """THE REGRESSION THE RULING MUST NOT COST. The split fires only for a
+        single over-cap sentence, and the measured corpus has none at any of the
+        three caps - so every chunk of it is byte-for-byte what it was before
+        `split_over_cap_sentence` existed. The digests were taken on
+        268c26e7 (the commit that made the lead `[break]` count) with this
+        function absent; a change to either number is a change to how ordinary
+        books are packed and has to be defended, not re-recorded."""
+        import hashlib
+        expected = {
+            430: '6b8ac864c6738531ca3e5e49a82dea2571d27391563c022b95c3faa19cbb877d',
+            520: '2aca8a8dac27050cedb543c6176885d3025db55c7c80c5436cb7079e70bc57d9',
+            600: 'abc2f237431d922468bad3471a5c547b9adcf17143e5835d684ca173d7e2545e',
+        }
+        for cap, digest in expected.items():
+            report = pp.pack_paragraphs(mutineer_shaped_blocks(),
+                                        FakeBudget(cap), floor_chars=300)
+            self.assertEqual(report.sentences_clause_split, 0,
+                             f'nothing in the corpus needs a clause cut at {cap}')
+            joined = '\n'.join(c.text for c in report.chunks)
+            self.assertEqual(
+                hashlib.sha256(joined.encode('utf-8')).hexdigest(), digest,
+                f'the pack of the measured corpus changed at cap {cap}')
 
 
 # =============================================================================

@@ -137,14 +137,25 @@ is ever split.
 
 ## Sentence splitting inside an over-budget paragraph
 
-Only ever at a SENTENCE boundary, never mid-sentence, and only when one paragraph
-exceeds the budget on its own - which for Orpheus (430-520 chars) is the p99 tail
-and for Higgs v3 is nothing at all. The splitter is a SECOND COPY of the parity
+At a SENTENCE boundary, and only when one paragraph exceeds the budget on its own
+- which for Orpheus (430-520 chars) is the p99 tail and for Higgs v3 is nothing at
+all. The splitter is a SECOND COPY of the parity
 packer's PASS 1 pattern, because `text/packer.py` may not be edited to share it;
 `tests/test_text_paragraph_packer.py` asserts the two agree, including the
 abbreviation guard ('Mr. Darcy' is one sentence) and the closing-quote rule
 ('"Are you sure?" she said.' ends at the quote). No stanza, exactly as PASS 1
 uses none.
+
+A SENTENCE THAT ALONE EXCEEDS THE CAP is the one case where this policy does cut
+inside a sentence, and it took a ruling: Owen, 2026-09-15, after his Working
+Towards the Fuhrer render was refused whole for chunk 68 - one semicolon-chained
+sentence of 811 characters against the venue's 800. "Split it, at clause
+boundaries, as a LAST RESORT." It fires ONLY for a single over-cap sentence, it
+cuts only at real boundaries (`;`, then `:`, then an em/en dash, then a comma),
+it cuts nearest the MIDDLE so the halves are balanced, it keeps the book's own
+punctuation, and when no boundary yields pieces that fit it REFUSES BY NAME
+(`SentenceOverCapUnsplittable`) rather than cutting mid-clause. See "THE LAST
+RESORT" below.
 """
 from __future__ import annotations
 
@@ -268,6 +279,10 @@ class PackReport:
     merges: int = 0
     dropped_join_tokens: int = 0
     over_budget_sentences: int = 0
+    #: Sentences that alone exceeded the cap and were cut at a clause boundary -
+    #: Owen's last resort, 2026-09-15. See `split_over_cap_sentence`. A book with
+    #: none of these is packed byte-for-byte as it was before that ruling.
+    sentences_clause_split: int = 0
     #: Chunks emitted LONGER THAN THE CAP because the caller asked for no split
     #: (`split_over_cap=False`). Unreachable on the default path, where an
     #: over-cap group is sentence-split instead.
@@ -756,6 +771,163 @@ def split_sentences(text: str) -> list:
 
 
 # =============================================================================
+# THE LAST RESORT: one SENTENCE that alone exceeds the cap
+# =============================================================================
+#
+# OWEN'S RULING, 2026-09-15: "split it, at clause boundaries, as a LAST RESORT."
+#
+# MEASURED, and it is what forced the ruling. Working Towards the Fuhrer, chunk
+# 68 of the document: ONE semicolon-chained sentence of 811 characters against
+# the 800-character ceiling the Mac's Crucible states for deathstalker. No cap
+# holds it - `pack_paragraphs` never splits mid-sentence, so the sentence was
+# emitted whole, `refuseChunksOverVenueCap` counted 811 > 800 and the WHOLE BOOK
+# was refused before a second of audio. "Never split a sentence" and "never ship
+# a chunk the engine will refuse" cannot both be kept for that sentence; the
+# ruling says which one gives.
+#
+# THE DISCIPLINE, exactly, because it is a last resort and not a shortening pass:
+#
+#   - IT FIRES ONLY when a single sentence, alone, exceeds the budget. A sentence
+#     that fits is packed exactly as it was before this existed - the corpus
+#     fingerprint in `tests/test_text_paragraph_packer.py` pins that.
+#   - BOUNDARIES IN PRIORITY ORDER, and only REAL ones: `;`, then `:`, then an
+#     em/en dash used as a clause break, then a comma ONLY when none of the three
+#     above yields pieces that all fit. A hyphen is not a dash and a dash inside
+#     a number range is not a clause break, so neither is a boundary.
+#   - NEAREST THE MIDDLE. Of the boundaries in a tier, the cut is the one closest
+#     to the sentence's midpoint, so the halves are balanced rather than one
+#     crumb; a half still over the budget is cut again the same way.
+#   - THE PUNCTUATION IS THE BOOK'S. The boundary character stays with the piece
+#     that PRECEDES it and nothing is added, removed or moved. A piece therefore
+#     ends in ';' or ',' rather than in a full stop, which is what the book says
+#     and is the only honest thing to hand the model.
+#   - MEASURED THE WAY THE WIRE MEASURES. The budget a piece is checked against is
+#     the one `emit_prose` will actually pay for it: the first piece of a group
+#     carries the lead `[break]` (and a heading's marker) and the rest do not -
+#     the reading commit 268c26e7 settled.
+#   - NO BOUNDARY, NO SPLIT, NO CUT. If nothing yields pieces that all fit, the
+#     book is REFUSED BY NAME (`SentenceOverCapUnsplittable`). Cutting mid-clause
+#     or truncating would ship a chunk nobody wrote.
+
+
+class SentenceOverCapUnsplittable(RuntimeError):
+    """One sentence is longer than any chunk may be and has no clause boundary
+    that would divide it into pieces that fit.
+
+    The message is prefixed `sentence_over_cap_unsplittable:` and names the
+    chunk index and its length, the same two facts Crucible's own refusal names
+    (`crucible_chunk_over_venue_cap`), so the two can be read against each other.
+    """
+
+
+#: THE TIERS, in the order they are tried. `'dash'` is the one that is not its
+#: own character: see `_CLAUSE_DASH_RE`.
+CLAUSE_TIERS = (';', ':', 'dash', ',')
+
+#: How a tier is spoken about in a log line and a refusal.
+CLAUSE_TIER_LABEL = {';': "';'", ':': "':'", 'dash': 'an em/en dash',
+                     ',': "','"}
+
+#: AN EM/EN DASH USED AS A CLAUSE BREAK. Spelled as escapes so this module stays
+#: ASCII on disk. Two things are excluded and both are measured shapes from the
+#: books this packer already reads: a dash between DIGITS is a range ('1281-2',
+#: 'pp. 51-2' - see `_CITATION_TAIL_RE`), and a dash beside another dash is a
+#: typographic rule rather than a break. A HYPHEN is not in the class at all: a
+#: hyphen joins a word, it does not end a clause.
+_CLAUSE_DASH_RE = re.compile('(?<![\\d\\u2013\\u2014-])[\\u2013\\u2014](?![\\d\\u2013\\u2014-])')
+
+
+def clause_boundaries(text: str, tier: str) -> list:
+    """Every place `tier` really breaks a clause in `text`.
+
+    A point is the index of the first character AFTER the boundary character, so
+    `text[:point]` keeps the boundary and `text[point:]` starts the next clause.
+    A point that would leave either side empty is not a boundary.
+    """
+    if tier == 'dash':
+        matches = _CLAUSE_DASH_RE.finditer(text)
+    else:
+        # FOLLOWED BY WHITESPACE, always. A ';' or ':' or ',' with a word right
+        # behind it is inside a token ('1:30', 'a,b' in a table cell), not a
+        # clause break the ear can hear.
+        matches = re.finditer(re.escape(tier) + r'(?=\s)', text)
+    points = []
+    for match in matches:
+        point = match.end()
+        if text[:point].strip() and text[point:].strip():
+            points.append(point)
+    return points
+
+
+@dataclass(frozen=True)
+class ClauseSplit:
+    """One over-cap sentence, cut at real clause boundaries."""
+    #: The pieces, in reading order. Rejoined with a space they are the
+    #: sentence's own words, in the book's order, with the book's punctuation.
+    pieces: tuple = ()
+    #: The tiers the cuts were made at, outermost cut first: `(';',)` for one
+    #: semicolon, `(';', ',')` when a half then needed a comma.
+    boundaries: tuple = ()
+
+
+def split_over_cap_sentence(sentence: str, budget: int,
+                            first_budget: int | None = None,
+                            tiers: Sequence[str] = CLAUSE_TIERS,
+                            _memo: dict | None = None):
+    """`sentence` cut into pieces that all fit, or `None` when none do.
+
+    `budget` is what every piece but the first may be; `first_budget` is what the
+    FIRST piece may be (it is the one that carries the chunk's lead `[break]`,
+    so it has fewer characters to spend). `None` means "the same as budget".
+
+    Returns a `ClauseSplit`, or `None` when no combination of real boundaries
+    divides the sentence into pieces that all fit - which is a REFUSAL for the
+    caller to name, never a licence to cut somewhere else.
+
+    The search is memoised on (piece, first budget, tier) because a comma-heavy
+    sentence that cannot be split would otherwise be explored combinatorially;
+    the answer for a given piece and budget cannot depend on how it was reached.
+    """
+    first = budget if first_budget is None else first_budget
+    memo = {} if _memo is None else _memo
+    text = (sentence or '').strip()
+    if not text:
+        return ClauseSplit()
+    key = (text, first, tuple(tiers))
+    if key in memo:
+        return memo[key]
+    memo[key] = None  # a cycle cannot happen (both halves are shorter), but a
+    #                   repeated sub-problem must not be recomputed.
+    if len(spoken(text)) <= first:
+        memo[key] = ClauseSplit(pieces=(text,))
+        return memo[key]
+    middle = len(text) / 2
+    for depth, tier in enumerate(tiers):
+        points = clause_boundaries(text, tier)
+        if not points:
+            continue
+        # NEAREST THE MIDDLE FIRST, then left-to-right for a tie, so the cut is
+        # balanced and the answer is deterministic. A point that cannot be made
+        # to work is not the end of the tier: the next-nearest boundary of the
+        # SAME kind is still a better cut than dropping to a weaker one, which is
+        # what "a comma ONLY if none of the above yields pieces that fit" means.
+        for point in sorted(points, key=lambda p: (abs(p - middle), p)):
+            left = split_over_cap_sentence(text[:point], budget, first,
+                                           tiers[depth:], memo)
+            if left is None:
+                continue
+            right = split_over_cap_sentence(text[point:], budget, budget,
+                                            tiers[depth:], memo)
+            if right is None:
+                continue
+            memo[key] = ClauseSplit(
+                pieces=left.pieces + right.pieces,
+                boundaries=(tier,) + left.boundaries + right.boundaries)
+            return memo[key]
+    return None
+
+
+# =============================================================================
 # Tier 1 - the pack
 # =============================================================================
 
@@ -867,10 +1039,15 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     carries the measurement. A caller that passes ITEM in `walls` anyway gets
     the old behaviour, marker and all.
 
-    OVER-BUDGET PARAGRAPHS are split at sentence boundaries and NEVER mid-
-    sentence. A single sentence longer than the cap is emitted whole and counted
-    in `over_budget_sentences`: splitting it would break the one rule this policy
-    exists to keep, and the engine's own guards are what catch it.
+    OVER-BUDGET PARAGRAPHS are split at sentence boundaries. A SINGLE SENTENCE
+    longer than the cap - which no arrangement of whole sentences can hold - is
+    then cut at CLAUSE boundaries, Owen's last resort of 2026-09-15: `;`, then
+    `:`, then an em/en dash, then a comma, nearest the middle, the book's
+    punctuation kept, counted in `sentences_clause_split` and printed. A sentence
+    with no such boundary is REFUSED BY NAME (`SentenceOverCapUnsplittable`),
+    because the two things left - cutting mid-clause and truncating - are both
+    audio nobody wrote. See "THE LAST RESORT" above for the measurement that
+    forced the ruling.
 
     `split_over_cap=False` TURNS THE CAP OFF AT PACKING TIME — the group is
     emitted whole however long it is, counted in `over_cap_chunks`, and printed.
@@ -993,6 +1170,40 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         # FIRST part carries the prefix, so only its budget pays for it.
         report.paragraphs_sentence_split += 1
         pieces = split_sentences(text)
+
+        # THE LAST RESORT, BEFORE THE FILL (Owen, 2026-09-15). A sentence that
+        # alone exceeds the budget is cut at clause boundaries, because no
+        # arrangement of whole sentences can hold it and the render door refuses
+        # the whole book for one over-long row. Every sentence that FITS goes
+        # through untouched, so this changes nothing about how a book without one
+        # is packed. See `split_over_cap_sentence` for the discipline; the
+        # refusal for a sentence with no usable boundary is raised below, in the
+        # emit loop, where the chunk INDEX is exact.
+        first_budget = cap - len(prefix)
+        expanded: list = []
+        for n, piece in enumerate(pieces):
+            budget_here = first_budget if n == 0 else cap
+            if len(spoken(piece)) <= budget_here:
+                expanded.append(piece)
+                continue
+            split = split_over_cap_sentence(piece, cap, first_budget=budget_here)
+            if split is None:
+                # Left whole. The emit loop refuses it by name and can say which
+                # chunk index it is, which this pre-pass cannot.
+                expanded.append(piece)
+                continue
+            report.sentences_clause_split += 1
+            print(f'pack_paragraphs: chunk {len(report.chunks)} of this document is ONE '
+                  f'SENTENCE of {len(spoken(piece))} chars against a {budget_here}-char '
+                  f'budget, so no chunk can hold it. LAST RESORT (Owen, 2026-09-15): cut '
+                  f'at '
+                  + ' then '.join(CLAUSE_TIER_LABEL[b] for b in split.boundaries)
+                  + f' into {len(split.pieces)} piece(s) of '
+                  + ', '.join(str(len(spoken(p))) for p in split.pieces)
+                  + f' chars: {spoken(piece)[:80]!r}...')
+            expanded.extend(split.pieces)
+        pieces = expanded
+
         parts: list = []
         for piece in pieces:
             limit = cap - len(prefix) if len(parts) <= 1 else cap
@@ -1003,11 +1214,25 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         for n, part in enumerate(parts):
             carried = len(prefix) if n == 0 else 0
             if carried + len(spoken(part)) > cap:
+                # NO BOUNDARY, SO NO CHUNK. The clause splitter above has already
+                # tried every real boundary in this sentence and none of them
+                # divides it into pieces that fit; the alternatives left are
+                # cutting mid-clause and truncating, and neither of those is a
+                # thing this packer may do. Refused by name, with the chunk index
+                # and the length - the two facts Crucible's own
+                # `crucible_chunk_over_venue_cap` names - so the two refusals read
+                # as one story rather than two.
                 report.over_budget_sentences += 1
-                print(f'pack_paragraphs: one SENTENCE is {len(spoken(part))} '
-                      f'chars against a {cap - carried}-char budget and is kept '
-                      f'whole - this policy never splits mid-sentence: '
-                      f'{spoken(part)[:80]!r}...')
+                raise SentenceOverCapUnsplittable(
+                    f'sentence_over_cap_unsplittable: chunk {len(report.chunks)} of this '
+                    f'document is ONE SENTENCE of {carried + len(spoken(part))} characters '
+                    f'(the lead marker included) against a {cap}-character cap, and it '
+                    f'carries no clause boundary - no ";", no ":", no em/en dash and no '
+                    f'comma - that divides it into pieces that fit. This packer never cuts '
+                    f'mid-clause and never truncates, so the book stops here rather than '
+                    f'rendering a chunk nobody wrote. Break the sentence in the text pass, '
+                    f'or render on a machine whose cap covers it. The sentence: '
+                    f'{spoken(part)!r}')
             report.chunks.append(Chunk(
                 text=f'{prefix if n == 0 else ""}{part}',
                 kind='prose',
