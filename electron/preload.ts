@@ -745,42 +745,6 @@ export interface CompletedAudiobook {
 }
 
 /**
- * What the Higgs doctor found. Mirrors electron/tool-paths' HiggsSetupResult.
- *
- * A LIST OF CHECKS, not a boolean plus a message. "The env exists, vllm-omni
- * imports, the sentinel-filter patch is missing" is a different problem from "there is
- * no WSL env", and the panel has to be able to say which — a single `valid: false`
- * with one string could not, and the patches in particular need naming because a
- * pip upgrade reverts them silently.
- *
- * TWO ARMS SHARE THIS SHAPE (electron/higgs-doctor.ts): the WSL/vLLM-Omni one and
- * the macOS in-process MLX one. `arm` says which was examined and `remedy` says
- * what to do about a failure ON THAT ARM — both travel from main because the
- * renderer must not decide them. The narration modal used to append "Set it up in
- * Settings → Higgs" to every failure, which on a Mac named a panel that offers
- * only the WSL installer.
- */
-export interface HiggsDoctorResult {
-  valid: boolean;
-  arm: 'wsl' | 'mlx' | 'none';
-  remedy: string;
-  checks: Array<{
-    id:
-      | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha' | 'profile-sha'
-      | 'narrator-deps'
-      | 'toggle'
-      | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
-      | 'platform';
-    label: string;
-    ok: boolean;
-    detail?: string;
-  }>;
-  /** True-but-not-pass/fail lines — which catalog voices this arm could load. */
-  notes?: string[];
-  envPrefix?: string;
-}
-
-/**
  * One Higgs catalog voice as `higgsModels.listCatalog` returns it — the
  * renderer-side mirror of electron/higgs-models' `HiggsModel` (this file must not
  * import from the main process).
@@ -842,33 +806,6 @@ export interface HiggsModelDto {
   /** The HF repo a checkpoint voice can be downloaded from, when the catalog names one. */
   source?: { type: 'hf'; ref: string };
   note?: string;
-}
-
-/**
- * One downloadable Orpheus voice as `orpheusModels.catalogList` returns it — the
- * renderer-side mirror of electron/orpheus-hf-catalog's OrpheusCatalogEntry (this file
- * must not import from the main process). Named as a DTO because it also travels back
- * the other way: `baseStatus`/`baseInstall` take the already-fetched list so the main
- * process doesn't re-fetch every source repo.
- */
-export interface OrpheusCatalogEntryDto {
-  repoId: string;
-  /** The LOCAL id this repo installs as — the voice's prompt token, not the repo name. */
-  id: string;
-  token: string;
-  label: string;
-  sampleRate: number;
-  private: boolean;
-  installed: boolean;
-  /** The local id it is actually installed under, when that differs from `id`. */
-  installedId?: string;
-  /** 'merged' = a full fine-tune; 'adapter' = a LoRA served on the shared base. */
-  artifact: 'merged' | 'adapter';
-  /** The shared base an adapter voice needs. Always present for artifact 'adapter'. */
-  base?: { id: string; ref: string; dir?: string };
-  /** Adapter voice whose shared base isn't installed yet (the install fetches it). */
-  needsBase?: boolean;
-  approxSizeBytes: number;
 }
 
 export interface ElectronAPI {
@@ -1239,63 +1176,6 @@ export interface ElectronAPI {
     /** The full catalog entries — voice ref, licence, measured caps — for the
      *  Settings → Higgs voices panel. */
     listCatalog: () => Promise<{ success: boolean; data?: HiggsModelDto[]; error?: string }>;
-    /** Is the serving stack usable? Every check reported, pass or fail. */
-    doctor: () => Promise<{ success: boolean; data?: HiggsDoctorResult; error?: string }>;
-    /** Build the WSL env (or, with `check`, probe without touching anything).
-     *  Long-running; output arrives on `onInstallProgress`. */
-    installEnv: (opts?: { check?: boolean }) =>
-      Promise<{ success: boolean; code?: number; output?: string; error?: string }>;
-    /** Is a checkpoint voice's directory staged on THIS arm (the guest's disk on
-     *  Windows)? Settings → Higgs asks once per page load. */
-    checkpointStatus: (id: string) => Promise<{
-      success: boolean;
-      data?: { id: string; arm: 'wsl' | 'darwin' | null; dir: string | null;
-               staged: boolean; source: string | null; reason: string | null };
-      error?: string;
-    }>;
-    /** Download a checkpoint voice from its catalog `source` (a private HF repo)
-     *  into this arm's directory. ~8.5 GB; progress on `onInstallProgress`. */
-    installCheckpoint: (id: string) =>
-      Promise<{ success: boolean; dest?: string; bytes?: number; error?: string }>;
-    /** Live installer/downloader output. Returns its own unsubscribe. */
-    onInstallProgress: (cb: (text: string) => void) => () => void;
-  };
-  orpheusModels: {
-    /** Folder-discovered custom Orpheus models (id = voice token = folder name).
-     *  `artifact` says how the voice is served: 'merged' (the full fine-tune in `dir`)
-     *  or 'adapter' (`dir` is the LoRA, served on the shared base). `baseMissing` is
-     *  set ONLY on an adapter voice whose base model isn't installed: it is installed
-     *  but cannot render, so a UI listing it must show it as unusable and say to
-     *  install the base. Every non-listing surface (job start, streaming load) throws
-     *  loudly for that same voice instead of receiving this flag. */
-    list: () => Promise<{ success: boolean; data?: Array<{ id: string; label: string; voice: string; dir: string; artifact: 'merged' | 'adapter'; baseDir?: string; base?: { id: string; ref: string; dir?: string }; baseMissing?: true }>; error?: string }>;
-    /** Downloadable voices, resolved from the user's Orpheus source repo list.
-     *  `artifact` is 'merged' (a full fine-tune) or 'adapter' (a LoRA needing the
-     *  shared base); `needsBase` marks an adapter whose base isn't installed yet. */
-    catalogList: () => Promise<{ success: boolean; data?: OrpheusCatalogEntryDto[]; error?: string }>;
-    /** Download + register a catalogue voice by its HF repo id. For an adapter voice
-     *  this also installs the shared base first if it's missing (progress arrives on
-     *  onInstallProgress). */
-    install: (repoId: string) => Promise<{ success: boolean; error?: string }>;
-    /** Status of the ONE shared base model all adapter voices ride on. Pass the
-     *  catalogue you already have from `catalogList` — which base is needed is a fact
-     *  about the catalogue, so omitting it makes the main process re-fetch every
-     *  source repo over HTTP a second time. */
-    baseStatus: (catalog?: OrpheusCatalogEntryDto[]) => Promise<{ success: boolean; data?: { base: { id: string; ref: string; dir?: string }; installed: boolean; verified: boolean; dir?: string; approxSizeBytes: number; required: boolean }; error?: string }>;
-    /** Install the shared base on its own (idempotent). Takes the already-fetched
-     *  catalogue for the same reason `baseStatus` does. */
-    baseInstall: (catalog?: OrpheusCatalogEntryDto[]) => Promise<{ success: boolean; error?: string; alreadyInstalled?: boolean }>;
-    /** Install progress: 'base' then 'voice', plus a macOS-only 'fuse' phase (see
-     *  orpheus-hf-catalog runFuse). Returns an unsubscribe fn. */
-    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => void) => () => void;
-    /** Unregister + delete an installed custom voice by id. */
-    remove: (id: string) => Promise<{ success: boolean; error?: string }>;
-    /** Get the user-managed Orpheus voice source repo ids (or built-in defaults). */
-    sourcesGet: () => Promise<{ success: boolean; data?: string[]; error?: string }>;
-    /** Add a source (HF repo id or URL); returns the normalized id + new list. */
-    sourcesAdd: (input: string) => Promise<{ success: boolean; error?: string; repoId?: string; sources?: string[] }>;
-    /** Remove a source repo id; returns the new list. */
-    sourcesRemove: (repoId: string) => Promise<{ success: boolean; data?: string[]; error?: string }>;
   };
   rvcVoices: {
     /** User-added RVC voice sources ({ url, name }). */
@@ -2877,58 +2757,29 @@ const electronAPI: ElectronAPI = {
     isFreshInstall: () =>
       ipcRenderer.invoke('runtime:is-fresh-install'),
   },
+  /*
+   * THE VOICE CATALOG, AND NOTHING THAT DOWNLOADS ONE.
+   *
+   * `list` is what the narration voice picker reads
+   * (`narration-voices.service.ts` → `higgsNarrationVoices`), and `listCatalog`
+   * is the Settings panel's fuller view of the same shipped file. Both read
+   * `electron/data/higgs-models.json`, which is DATA — it reads even when
+   * nothing else on this machine works.
+   *
+   * The doctor, the env installer and the two checkpoint-download doors are
+   * GONE with the local weights machinery (docs/LEGACY-REMOVAL.md). Weights are
+   * Crucible's: a voice is pulled on the server that will speak it
+   * (`crucible voices pull <id>`), not onto this disk.
+   *
+   * `orpheusModels` went whole with the retired engine. Its renderer caller
+   * already treats an absent API as "no custom voices" and keeps its shipped
+   * list, so nothing breaks by its going — see `loadOrpheus()` there.
+   */
   higgsModels: {
     list: () =>
       ipcRenderer.invoke('higgs:list-models'),
     listCatalog: () =>
       ipcRenderer.invoke('higgs:list-catalog'),
-    doctor: () =>
-      ipcRenderer.invoke('higgs:doctor'),
-    installEnv: (opts?: { check?: boolean }) =>
-      ipcRenderer.invoke('higgs:install-env', opts),
-    /** Is this checkpoint voice's directory staged on THIS arm? (asks the guest on WSL) */
-    checkpointStatus: (id: string) =>
-      ipcRenderer.invoke('higgs:checkpoint-status', id),
-    /** Download a checkpoint voice from its catalog `source` into this arm's directory.
-     *  Progress streams on the same 'higgs:install-progress' channel the env installer uses. */
-    installCheckpoint: (id: string) =>
-      ipcRenderer.invoke('higgs:install-checkpoint', id),
-    onInstallProgress: (cb: (text: string) => void) => {
-      const listener = (_e: unknown, text: string) => cb(text);
-      ipcRenderer.on('higgs:install-progress', listener);
-      return () => { ipcRenderer.removeListener('higgs:install-progress', listener); };
-    },
-  },
-  orpheusModels: {
-    list: () =>
-      ipcRenderer.invoke('orpheus:list-models'),
-    catalogList: () =>
-      ipcRenderer.invoke('orpheus:catalog-list'),
-    install: (repoId: string) =>
-      ipcRenderer.invoke('orpheus:catalog-install', repoId),
-    remove: (id: string) =>
-      ipcRenderer.invoke('orpheus:remove-model', id),
-    // The ONE shared base model every LoRA-adapter voice rides on. The catalogue the
-    // caller already has rides along so the main process doesn't re-fetch it.
-    baseStatus: (catalog?: OrpheusCatalogEntryDto[]) =>
-      ipcRenderer.invoke('orpheus:base-status', catalog),
-    baseInstall: (catalog?: OrpheusCatalogEntryDto[]) =>
-      ipcRenderer.invoke('orpheus:base-install', catalog),
-    // 'fuse' is the macOS-only third phase — see orpheus-hf-catalog runFuse.
-    onInstallProgress: (callback: (p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, p: { repoId: string; phase: 'base' | 'voice' | 'fuse'; message: string }) => callback(p);
-      ipcRenderer.on('orpheus:install-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('orpheus:install-progress', listener);
-      };
-    },
-    // User-managed voice sources (HF repo ids).
-    sourcesGet: () =>
-      ipcRenderer.invoke('orpheus:sources-get'),
-    sourcesAdd: (input: string) =>
-      ipcRenderer.invoke('orpheus:sources-add', input),
-    sourcesRemove: (repoId: string) =>
-      ipcRenderer.invoke('orpheus:sources-remove', repoId),
   },
   rvcVoices: {
     // User-added RVC voice sources ({ url, name }); installs flow through the

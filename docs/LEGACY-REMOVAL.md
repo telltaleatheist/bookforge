@@ -7,58 +7,51 @@ This is the removal order, what each deletion forces, and the refusal that repla
 arm. It is written before the first deletion so that a half-finished tree is still
 readable, and it is the record of the things that look legacy and stay.
 
-## STATE, 2026-09-15 evening
+## STATE, 2026-09-15 night — DONE
 
-**Stages 1-4 and 6 are DONE.** The switch, every venue arm, every `legacyLocal:`
-dependency arm, the Settings checkbox, the IPC, the Listen facade's local backend, and the
-keepers that pin all of it. Every act in the app is now *a Crucible server, or a named
-refusal*.
+**Every stage is complete.** The switch, every venue arm, every `legacyLocal:`
+dependency arm, the Settings checkbox, the IPC, the Listen facade's local backend, the
+keepers — and, with Owen's authorisation on the night of the 15th, THE SPAWN LAYER ITSELF.
 
-**Stage 5 — the spawn layer itself — is HELD, by instruction, and it is not a stall.** On
-2026-09-15 Crucible's `mlx-darwin` arm was found rendering ONE CHUNK AT A TIME because
-nothing set `NARRATOR_HIGGS3_MLX_BATCH`; BookForge's own spawn has set it to 64 since
-2026-09-05 (7x, measured). That is evidence Crucible may have been written fresh rather
-than carrying BookForge's proven spawn logic across, and the batch width may not be the
-only knob that got lost. So `orpheus-worker-pool.ts`, `narrator-spawn.ts`, `higgs-spawn.ts`,
-`higgs-models.ts`, `orpheus-models.ts`, `orpheus-hf-catalog.ts`, `tool-paths.ts`'s WSL keys
-and the WSL/worker halves of `parallel-tts-bridge.ts` and `reassembly-bridge.ts` are
-**THE SURVIVING RECORD** of tuning measured over months. Nothing in the app reaches them
-any more — they are unreachable, not live — and they are deleted once that audit says what
-Crucible is missing and it has been carried across.
+Owen, lifting the hold: *"is this legacy logic thats no longer necessary? remove it if it's
+legacy. its just taking up space. that being said, the user should be able to pick the
+engine (higgs) and the voice model. they can still do that right?"*
 
-**A SECOND HOLD, 2026-09-15 evening: `electron/scripts/higgs/`, and above all
-`serve_higgs_sgl.sh`.** Owen ruled that SGLang is the Higgs stack and that vllm-omni does
-not work for Higgs at all. Crucible's `cuda-linux` TTS env is on vllm-omni today and is
-being moved; **the SGLang launch script exists nowhere else** — narrator ships only
-`serve_higgs_v3.sh` and its certified yaml as package data. That launcher's defaults ARE
-the configuration (`HIGGS_SGL_CUDA_GRAPH_MAX_BS` defaulting to `HIGGS_MAX_NUM_SEQS`, the
-0.60 memory fraction, the 7500 max-new-tokens) and the measured reasoning in its header is
-what the port depends on. Nothing in that tree is deleted or rewritten here; it is released
-only when narrator ships its own copy.
+**They can, and it was verified by RUNNING rather than by reading.** The engine picker
+answers `["higgs"]` and the voice picker answers ten voices from
+`electron/data/higgs-models.json`. That is the boundary this deletion was not allowed to
+cross, and it did not: what went is the machinery that DOWNLOADED weights and SPAWNED
+processes, because weights are Crucible's now. The catalog is data and stays.
 
-**And a boundary, since it has moved twice: `python/narrator/` is narrator's OWN source
-and is not part of this layer.** Untouched.
+### What the hold was protecting, and why it could be lifted
 
-Two consequences of the first hold, both deliberate:
+The hold existed because Crucible's `mlx-darwin` arm was found rendering one chunk at a
+time for want of `NARRATOR_HIGGS3_MLX_BATCH`, which suggested it had been written fresh
+rather than carrying BookForge's proven spawn logic across. Four things closed that:
+narrator now SHIPS the SGLang launcher as package data, Crucible's `cuda-linux` recipe
+serves SGLang, the MLX tier table was transcribed into Crucible, and the reserved `local`
+server was deleted so there is no local venue left for a spawn to serve. The record was
+read out into this document's appendix first, in its own commit, before a byte was deleted.
 
-  - `electron/streaming-engine.ts` keeps `setServeEngineProbe` / `setPersistedVoiceProbe`
-    wired to the pool, labelled HELD. They start nothing; they are the half of the spawn
-    record that lives in that file, and unwiring them would remove a line of it before
-    anyone read it.
-  - The `else` halves behind `venue.where === 'crucible'` in `parallel-tts-bridge.ts` and
-    `reassembly-bridge.ts` are now UNREACHABLE (no venue can produce the legacy arm) but
-    still compile. They go with the rest of stage 5.
+### Files deleted
 
-## What is being removed
+`orpheus-worker-pool.ts`, `orpheus-models.ts`, `orpheus-hf-catalog.ts`, `higgs-spawn.ts`,
+`higgs-doctor.ts`, `higgs-hf-install.ts`, and all nine files of `electron/scripts/higgs/`.
 
-The layer `docs/CRUCIBLE_ROLLOUT_PLAN.md` §A2 names: *"the LEGACY SPAWN LAYER (WSL
-narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
-`routing.legacyLocalRender`. That layer is deleted after Owen's in-app pass."* The in-app
-pass happened (§0g). This is that deletion.
+### What was NOT deleted, and why
 
-After it, BookForge has **no local Python narrator and no local weight management**.
-Crucible owns both (`crucible/docs/PHASE15-HOST.md`; memory `crucible-phase15-one-door`).
-Every act that used to have a local arm is now **Crucible, or a named refusal**.
+  - **`narrator-spawn.ts` stays.** It was on the list, and deleting it would have broken
+    two things that are not legacy: `buildNarratorSpawn` builds the ASSEMBLY spawn, and
+    `narratorPythonRoot` is read by `whisperx-align-bridge.ts` — the `epub-align` keeper.
+    Only its WSL-crossing half goes.
+  - **Four modules were extracted rather than lost**, because what they held was not spawn
+    machinery: `streaming-contract.ts` (the shapes every Listen surface speaks, plus
+    `STREAM_RAMP_WIDTH` — the pool's own header named this split as the thing to do when a
+    second backend landed), `hf-token.ts` (a credential, not an Orpheus fact),
+    `orpheus-assembly-tuning.ts` (per-voice gaps and filters for sessions rendered by the
+    retired engine — audiobooks are never deleted and a re-cut must match the original),
+    and `higgsModelForJob` / `HIGGS_VOICE_FLAG` into `higgs-models.ts`, where they were
+    always catalog questions.
 
 ## The one keeper — `epub-align`
 

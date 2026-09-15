@@ -46,7 +46,7 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { streamScheduler } from './stream-scheduler';
 import { readerAudioStore } from './reader-audio-store';
-import { PlaySettings } from './orpheus-worker-pool';
+import { PlaySettings } from './streaming-contract';
 import {
   getActiveEngine,
   getSelectedEngineName,
@@ -258,11 +258,12 @@ export class ReaderStreamBridge {
     // Until 2026-09-11 this was one unconditional orpheusStreamMaxChars call
     // whose comment said there was no other streaming engine left. Higgs landed
     // on 2026-09-06 and the line kept resolving the ORPHEUS catalog's entry for a
-    // same-named voice — both catalogs ship a `deathstalker`.
+    // same-named voice — both catalogs ship a `deathstalker`. The Orpheus arm is
+    // now gone with the engine (docs/LEGACY-REMOVAL.md) and Higgs is the only
+    // thing this build streams, so the branch is gone with it.
     let sentences: string[];
-    if (getSelectedEngineName() === 'higgs') {
-      const { higgsPreflight } = await import('./higgs-spawn.js');
-      const { higgsVoiceCapsForModel } = await import('./higgs-models.js');
+    {
+      const { resolveHiggsModel, higgsVoiceCapsForModel } = await import('./higgs-models.js');
       const { packListenChunks, listenBandFromCaps, describeListenChunks } =
         await import('../shared/listen-text/chunks.js');
       let band;
@@ -275,7 +276,7 @@ export class ReaderStreamBridge {
         // which is exactly why it must not answer for another machine's.
         const stated = await getActiveEngine().statedChunkCaps?.(voice) ?? null;
         band = stated === null
-          ? listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)))
+          ? listenBandFromCaps(voice, higgsVoiceCapsForModel(resolveHiggsModel(voice)))
           : listenBandFromCaps(voice, stated);
       } catch (err) {
         this.send(ws, {
@@ -288,9 +289,6 @@ export class ReaderStreamBridge {
       const units = splitForTts(speakable, 'en', band.maxChars);
       sentences = packListenChunks(units, band);
       console.log(`[ReaderStream] Higgs Listen: ${describeListenChunks(units.length, sentences, band)}`);
-    } else {
-      const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
-      sentences = splitForTts(speakable, 'en', maxChars);
     }
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });

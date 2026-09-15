@@ -138,7 +138,7 @@ import type {
   StreamChunk,
   StreamResult,
   StreamWorkerConfig,
-} from '../orpheus-worker-pool';
+} from '../streaming-contract';
 import type { StreamEngineName, StreamingEngine } from '../streaming-engine';
 
 /**

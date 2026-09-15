@@ -30,7 +30,6 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { setPersistedVoiceProbe, setServeEngineProbe } from './orpheus-worker-pool';
 import {
   PlaySettings,
   AudioChunk,
@@ -39,7 +38,7 @@ import {
   StreamWorkerConfig,
   EngineState,
   LoadVoiceOptions,
-} from './orpheus-worker-pool';
+} from './streaming-contract';
 import { listRenderableHiggsModels } from './higgs-models';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 import { CrucibleStreamingEngine, venueRoutedStreamingEngine } from './crucible/stream';
@@ -302,31 +301,6 @@ export function getSelectedEngineName(): StreamEngineName {
   writePersisted({ ...cfg, engine: selected });
   return selected;
 }
-
-/*
- * ── HELD, NOT DEAD: the two probes the local narrator spawn reads ──────────
- *
- * Nothing in this build reaches the local worker pool any more — Listen is a
- * Crucible streaming session (see below) — so these registrations start nothing.
- * They stay because `buildSpawnPlan` in `orpheus-worker-pool.ts` reads them, and
- * that file is THE SURVIVING RECORD of narrator spawn tuning measured over
- * months (a 7x MLX batch-width knob Crucible was missing was found on
- * 2026-09-15). The spawn layer's deletion is held until that record has been
- * audited against Crucible's own `environment()`; this is the half of it that
- * lives here, and unwiring it would quietly remove a line of the record before
- * anyone read it.
- *
- * DELETE WITH THE POOL, and not before.
- *
- * What each says: WHICH ENGINE this spawn is for (the pool must not read
- * `tts-engine.json` itself — the import would be a cycle), and the voice the
- * user persisted for it, so a Higgs spawn — which is STARTED ON its voice —
- * comes up on the voice `loadVoice` is about to ask for rather than on the
- * catalog's first entry and then restarting. The second reads the file directly:
- * `getDefaultStreamVoice()` asks the pool, which is the caller here.
- */
-setServeEngineProbe(() => getSelectedEngineName());
-setPersistedVoiceProbe(() => readPersisted().voices?.[getSelectedEngineName()] ?? null);
 
 /**
  * Every caller reaches a pool through this facade, which exists for one reason:

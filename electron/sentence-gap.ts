@@ -31,7 +31,7 @@ import * as fs from 'fs';
 
 import { normalizeSentenceGaps } from './denoise-bridge';
 import { resolveSessionSentenceGap } from './reassembly-bridge';
-import { resolveOrpheusMinChunkGap } from './orpheus-models';
+import { resolveOrpheusMinChunkGap } from './orpheus-assembly-tuning';
 
 export interface SentenceGapPlan {
   /**

@@ -2932,3 +2932,42 @@ export function higgsNarrationVoices(userDataDir: string): {
       return { value: m.id, label: `${m.label} — ${suffix}`, unavailable: reason };
     });
 }
+
+/**
+ * THE CATALOG VOICE ONE JOB RENDERS IN — the one resolver every door shares.
+ *
+ * Moved here from `higgs-spawn.ts` when the local spawn layer was deleted
+ * (docs/LEGACY-REMOVAL.md); it was always a CATALOG question rather than a spawn
+ * one, and it sat there only because the spawn was its first caller.
+ *
+ * Sharing it is load-bearing. A render resolves its voice at several doors — the
+ * argv, the retake ladder, the Listen path, the Crucible render — and if one of
+ * them resolved the catalog voice while another resolved the per-run override,
+ * the two would disagree about which voice the book is in. narrator's reaction to
+ * a voice it was not given is NOT a crash: `load_voices` returns a map, the
+ * lookup misses, and a whole book renders in the base model's own speaker — a
+ * different person, measured at 12% of the narrator's ECAPA ceiling.
+ */
+export function higgsModelForJob(settings: {
+  fineTuned: string;
+  higgsOverride?: HiggsRenderOverride;
+}): HiggsModel {
+  return higgsModelForRender(settings.fineTuned, settings.higgsOverride);
+}
+
+/**
+ * THE FLAG THAT NAMES THE VOICE. **NOT `--fine_tuned`.**
+ *
+ * narrator's `compat/flags.py` accepts both and they are not interchangeable:
+ * `--fine_tuned` is an Orpheus voice TOKEN that rides in the prompt, while
+ * `--higgs_voice` is a CATALOG ID that indexes the voice document named by
+ * `NARRATOR_HIGGS_VOICES`. Passing an Orpheus-shaped voice arg to a Higgs worker
+ * would name a token the engine has no use for and leave the real voice unsaid —
+ * and narrator's reaction to a voice it was not given is not a crash: a whole
+ * book renders in the base model's own speaker.
+ *
+ * Moved here from `higgs-spawn.ts` with the rest of the catalog when the local
+ * spawn layer was deleted (docs/LEGACY-REMOVAL.md). It is still argv, but it is
+ * argv the SURVIVING prep door composes.
+ */
+export const HIGGS_VOICE_FLAG = '--higgs_voice';

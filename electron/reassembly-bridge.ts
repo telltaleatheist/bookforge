@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { narratorScratchRoot, wslToWindowsPath, buildToolsSpawnEnv } from './narrator-paths';
+import { narratorScratchRoot, wslToWindowsPath } from './narrator-paths';
 import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
@@ -20,7 +20,7 @@ import { normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { renderBesideRecordingFilename, registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
-import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
+import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import { resolveClosedSession } from './chapter-closer';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
@@ -1637,10 +1637,12 @@ export async function startReassembly(
     // is handed — a \\wsl$ UNC included — so the branch bought nothing and cost
     // the 9p mount. `buildWslAssemblyCommand` is deleted with it.
     //
-    // (The render path avoids the 9p mount a better way:
-    // `normalizeWslSessionToWindows` copies the session onto a Windows path after
-    // generation, INSIDE the guest, which is fast. This door reassembles a session
-    // that already exists and does not get to choose where it lives.)
+    // (The render path used to avoid the 9p mount a different way — a copy out
+    // of the guest after generation. Both that copy and the guest render are
+    // gone: a render's session is created host-native now, because the engine is
+    // on a Crucible server. This door still reassembles a session that already
+    // exists, which may be an OLD one on a \wsl$ path, and it does not get to
+    // choose where that lives.)
     const appArgs = [
       '--headless',
       '--ebook', epubPath,

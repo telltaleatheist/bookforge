@@ -35,7 +35,7 @@ import {
   PlaySettings,
   StreamChunk,
   STREAM_RAMP_WIDTH,
-} from './orpheus-worker-pool';
+} from './streaming-contract';
 import { getActiveEngine } from './streaming-engine';
 import {
   ListenSessions,

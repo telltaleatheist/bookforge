@@ -137,10 +137,6 @@ import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath, impliedExportDirOf } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
-// TYPE ONLY — the module itself stays behind the dynamic imports in the orpheus:* IPC
-// handlers (it pulls in the HF catalogue + WSL path machinery), so this import erases
-// completely at build time and costs nothing at startup.
-import type { OrpheusCatalogEntry } from './orpheus-hf-catalog';
 import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { getRenderCacheBaseDir } from './render-cache';
@@ -5263,11 +5259,15 @@ function setupIpcHandlers(): void {
   // The OS can't let an app delete itself, so the renderer then tells the user
   // to drag the app to the Trash (mac) / run the uninstaller (win).
   ipcMain.handle('app:remove-all-data', async () => {
-    // Stop the streaming engine first so the bundled env isn't locked.
+    // Close the Listen session first so nothing is mid-request against a server.
+    // It used to stop a LOCAL worker pool holding the bundled env open; that pool
+    // is deleted (docs/LEGACY-REMOVAL.md) and what is left is a Crucible
+    // streaming session, which holds no file on this disk — ending it is courtesy
+    // to the server, not a lock this delete has to break.
     try {
-      const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
-      await orpheusWorkerPool.endSession();
-    } catch { /* engine wasn't running */ }
+      const { crucibleListenEngine } = await import('./streaming-engine.js');
+      await crucibleListenEngine.endSession();
+    } catch { /* nothing was streaming */ }
 
     const dirSizeBytes = (p: string): number => {
       let total = 0;
@@ -7422,32 +7422,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ── Custom Orpheus voices (HF catalogue + local install) ──────────────────
-  // User-managed Orpheus voice SOURCES (HF repo ids). Defaults ship built-in.
-  ipcMain.handle('orpheus:sources-get', async () => {
-    try {
-      const { getOrpheusSources } = await import('./orpheus-hf-catalog.js');
-      return { success: true, data: getOrpheusSources() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-  ipcMain.handle('orpheus:sources-add', async (_event, input: string) => {
-    try {
-      const { addOrpheusSource } = await import('./orpheus-hf-catalog.js');
-      return addOrpheusSource(input);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-  ipcMain.handle('orpheus:sources-remove', async (_event, repoId: string) => {
-    try {
-      const { removeOrpheusSource } = await import('./orpheus-hf-catalog.js');
-      return { success: true, data: removeOrpheusSource(repoId) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // User-added RVC enhancement voice sources ({ url, name }). They join the
   // built-in RVC voices in the ComponentService catalog (rvcVoiceComponents).
@@ -7477,106 +7451,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('orpheus:catalog-list', async () => {
-    try {
-      // Refresh the WSL liveness cache first — the catalog listing does sync fs on a
-      // \\wsl$ models dir; a wedged VM would otherwise hang the main thread forever.
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { fetchOrpheusCatalog } = await import('./orpheus-hf-catalog.js');
-      return { success: true, data: await fetchOrpheusCatalog() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
-  // Status of the ONE shared base model every LoRA-adapter voice rides on. Same
-  // \\wsl$ sync-fs guard as catalog-list — resolving the base stats the models dir.
-  //
-  // `catalog` is the list the caller ALREADY fetched (the Settings panel always has
-  // one by the time it asks). Which base is needed is a fact about the catalogue, so
-  // without it this handler has to re-fetch every source repo — N × 2 HTTP round trips
-  // duplicating the ones catalog-list just made. Omitted only by a caller that has no
-  // catalogue yet, which then pays for its own fetch.
-  ipcMain.handle('orpheus:base-status', async (_event, catalog?: OrpheusCatalogEntry[]) => {
-    try {
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
-      return { success: true, data: await getOrpheusBaseStatus(catalog) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
-  // Install the shared base on its own (the "Base model" card in Settings / the
-  // first-run wizard). Installing a voice does this implicitly too; this exists so a
-  // user can pay the one-time 6.6 GB up front and then add 0.4 GB voices.
-  // Takes the caller's already-fetched catalogue for the same reason base-status does.
-  ipcMain.handle('orpheus:base-install', async (_event, catalog?: OrpheusCatalogEntry[]) => {
-    try {
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { installOrpheusBase, getOrpheusBaseStatus } = await import('./orpheus-hf-catalog.js');
-      const status = await getOrpheusBaseStatus(catalog);
-      const result = await installOrpheusBase(status.base);
-      // A newly installed base makes previously-unusable adapter voices resolvable —
-      // refresh the live voice list for the same reason a voice install does.
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
-  ipcMain.handle('orpheus:catalog-install', async (event, repoId: string) => {
-    try {
-      // Same \\wsl$ sync-fs guard as catalog-list (install writes the manifest there).
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { installOrpheusModel } = await import('./orpheus-hf-catalog.js');
-      // Two-phase progress (shared base, then the voice) rides its own channel, the
-      // same shape components:progress uses.
-      const result = await installOrpheusModel(repoId, (p) => {
-        if (!event.sender.isDestroyed()) event.sender.send('orpheus:install-progress', p);
-      });
-      // A RESIDENT streaming engine must forget what it knows about this
-      if (result?.success) {
-        // voice. The install just replaced the files under a path the engine has
-        // already registered, so without this a retrained voice keeps rendering from
-        // the previous training run — the engine's own cached copy — until the
-        // session is torn down. Forgetting it forces a fresh load, which is what
-        // makes the worker re-fingerprint the adapter.
-        if (result.id) {
-          const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
-          orpheusWorkerPool.forgetVoice(result.id);
-        }
-      }
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
-  ipcMain.handle('orpheus:remove-model', async (_event, id: string) => {
-    try {
-      // Same \\wsl$ sync-fs guard as catalog-list (remove rewrites the manifest +
-      // rm -rf's the model folder there).
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
-      const result = removeOrpheusModel(id);
-      // Drop the removed voice from a resident streaming engine's registration
-      // set — its files are gone, so any future request naming it must fail
-      // loudly at the load rather than be accepted on stale bookkeeping.
-      if (result?.success) {
-        const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
-        orpheusWorkerPool.forgetVoice(id);
-      }
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   ipcMain.handle('tool-paths:get-status', async () => {
     try {
@@ -9089,40 +8967,7 @@ function setupIpcHandlers(): void {
   // download, status, and removal are handled there (see rvc-voice-components.ts
   // + component-manager's fetchRvcVoice). No dedicated RVC-voice IPC remains.
 
-  // Folder-discovered custom Orpheus models (runtime/orpheus-models/<voice>/) —
-  // surfaced as extra Orpheus voices in the TTS dropdowns.
-  ipcMain.handle('orpheus:list-models', async () => {
-    try {
-      // Refresh the WSL liveness cache FIRST (async, 5s-bounded): the listing does
-      // sync fs on a \\wsl$ models dir, and against a wedged VM that would block the
-      // main thread forever (the white-screen bug). With a fresh probe the sync gate
-      // inside orpheus-models degrades to "no custom models" instead of hanging.
-      const { isWslAlive } = await import('./wsl-lifecycle.js');
-      await isWslAlive();
-      const { listOrpheusModels } = await import('./orpheus-models.js');
-      return { success: true, data: listOrpheusModels() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
-  // Is the Higgs stack usable ON THIS MACHINE? One round trip; every check
-  // reported pass or fail (see higgs-doctor.ts for why neither arm short-circuits).
-  //
-  // DISPATCHED BY PLATFORM, not hard-wired to WSL. This handler called
-  // `checkWslHiggsSetupAsync` directly until 2026-09-05, so on the Mac — where
-  // Higgs renders in-process on mlx-audio — the narration modal reported "WSL
-  // distribution" as the reason a perfectly good machine could not narrate.
-  ipcMain.handle('higgs:doctor', async () => {
-    try {
-      // ASYNC: this handler runs on the main thread and a sync probe blocks it
-      // for about a second against a cold VM.
-      const { higgsDoctor } = await import('./higgs-doctor.js');
-      return { success: true, data: await higgsDoctor() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   /**
    * Build the Higgs WSL environment. NEVER RUNS AUTOMATICALLY — it downloads many
@@ -9134,86 +8979,6 @@ function setupIpcHandlers(): void {
    * indistinguishable from a hang (the reason every other long install in this
    * app streams too).
    */
-  ipcMain.handle('higgs:install-env', async (event, opts?: { check?: boolean }) => {
-    try {
-      // WINDOWS ONLY, BY NAME. This installer builds the WSL vLLM-Omni env and
-      // nothing else; on a Mac (where Higgs is the in-process MLX backend) it
-      // would spawn `wsl.exe` and fail with ENOENT, which reads as a broken app
-      // rather than as a button that does not apply. The Settings panel hides it
-      // off the WSL arm; this is the door refusing on its own account.
-      if (process.platform !== 'win32') {
-        return {
-          success: false,
-          error: `The Higgs installer builds a WSL environment and only runs on Windows (this is `
-            + `${process.platform}). On macOS Higgs renders in-process on mlx-audio: create the `
-            + 'narrator-mlx environment from packaging/env/narrator-mlx.yml and put the base '
-            + 'weights in place — Settings → Higgs lists exactly what is missing.',
-        };
-      }
-      const {
-        getWslDistro, getWslCondaPath, getWslHiggsCondaEnv, higgsScriptsDir,
-      } = await import('./tool-paths.js');
-      const { windowsToWslPath } = await import('./narrator-paths.js');
-      const { spawn } = await import('child_process');
-
-      // Same resolution the other bundled scripts use: the app path in dev, the
-      // asarUnpack'd copy when packaged (a spawned bash cannot read app.asar).
-      // ASKED OF tool-paths.ts rather than repeated here — the doctor reads the
-      // launcher and the requirements list out of the SAME directory to build
-      // what it expects the env to hold, and two copies of "where do our scripts
-      // live" is how a doctor certifies a file the installer never deploys.
-      const scriptDir = higgsScriptsDir();
-      const { toUnpackedPath } = await import('./narrator-paths.js');
-      const scriptWsl = windowsToWslPath(toUnpackedPath(scriptDir));
-
-      const distro = getWslDistro();
-      const conda = getWslCondaPath();
-      // ── WHICH INSTALLER, AND WHICH ENV: THE CATALOG'S STACK DECIDES ────────
-      //
-      // The two stacks are two conda environments and two installers, and they
-      // are not variants of one: `install_higgs_env.sh` builds python 3.11 +
-      // vllm 0.28.0 and applies two site-packages patches, while
-      // `install_sglomni.sh` builds python 3.12 + torch 2.13.0+cu130 + sglang
-      // 0.5.18, makes the two flashinfer CUDA symlinks, and applies no patches
-      // (SGLang-Omni has its own stage processor and needs none).
-      //
-      // The env NAME follows the same rule the doctor and the spawn follow: the
-      // `wslHiggsCondaEnv` setting names the vllm-omni env, and the SGLang one is
-      // the catalog's `serving.sglang.condaEnvName`. All three read the same two
-      // values, so Install/Repair, the doctor, and the render cannot end up
-      // talking about different environments.
-      const { higgsServingSpec, higgsServingStack, higgsSglangFor } =
-        await import('./higgs-models.js');
-      const serving = higgsServingSpec();
-      const sglang = higgsServingStack(serving) === 'sglang-omni'
-        ? higgsSglangFor(serving) : null;
-      const envName = sglang ? sglang.condaEnvName : getWslHiggsCondaEnv();
-      const installer = sglang ? sglang.installScript : 'install_higgs_env.sh';
-      const bash =
-        `bash ${JSON.stringify(`${scriptWsl}/${installer}`)} ` +
-        `--env-name ${JSON.stringify(envName)} --conda ${JSON.stringify(conda)}` +
-        (opts?.check ? ' --check' : '');
-      const args = distro ? ['-d', distro, 'bash', '-lc', bash] : ['bash', '-lc', bash];
-
-      return await new Promise((resolve) => {
-        const proc = spawn('wsl.exe', args, { windowsHide: true });
-        const lines: string[] = [];
-        const emit = (chunk: Buffer) => {
-          const text = chunk.toString('utf8');
-          lines.push(text);
-          event.sender.send('higgs:install-progress', text);
-        };
-        proc.stdout.on('data', emit);
-        proc.stderr.on('data', emit);
-        proc.on('error', (err) => resolve({ success: false, error: err.message }));
-        proc.on('close', (code) =>
-          resolve({ success: code === 0, code, output: lines.join('') }),
-        );
-      });
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // The Higgs narration roster. Deliberately NOT the shape of the Orpheus handler
   // above: there is no folder discovery and no \\wsl$ models dir to touch, so no
@@ -9229,16 +8994,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // The full Higgs catalog entries, for the Settings → Higgs voices panel (the
-  // narration picker only needs value/label, above).
-  ipcMain.handle('higgs:checkpoint-status', async (_event, id: string) => {
-    try {
-      const { higgsCheckpointStatus } = await import('./higgs-hf-install.js');
-      return { success: true, data: await higgsCheckpointStatus(id) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   /**
    * Download a Higgs checkpoint voice from its catalog `source` into this arm's
@@ -9246,23 +9001,6 @@ function setupIpcHandlers(): void {
    * streams the downloader's progress on the same channel the env installer
    * uses (the panel already listens there).
    */
-  ipcMain.handle('higgs:install-checkpoint', async (event, id: string) => {
-    try {
-      const { installHiggsCheckpoint } = await import('./higgs-hf-install.js');
-      const result = await installHiggsCheckpoint(id, (text) => {
-        if (!event.sender.isDestroyed()) event.sender.send('higgs:install-progress', text);
-      });
-      if (result.success) {
-        // The narration picker and the Listen voice list read the disk now
-        // (refuseAbsentArtifact), so a fresh install shows up on their next read
-        // without a restart — nothing cached to invalidate.
-        event.sender.send('higgs:install-progress', `\nInstalled ${id} at ${result.dest}\n`);
-      }
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   ipcMain.handle('higgs:list-catalog', async () => {
     try {
@@ -13796,13 +13534,16 @@ app.on('before-quit', async (event) => {
     }
   });
 
-  // Kill the streaming worker pool so no Python — or the WSL vLLM process behind
-  // Orpheus — outlives the app.
+  // Close the Listen session so a server is not left holding a claim for a client
+  // that has gone. There is no local Python to outlive the app any more — the
+  // worker pool and the WSL vLLM behind it are deleted (docs/LEGACY-REMOVAL.md) —
+  // but a Crucible streaming session is state ON SOMEBODY ELSE'S MACHINE, and
+  // hanging up without ending it leaves a voice resident on their card.
   await quitStepWithDeadline('end streaming TTS sessions', 20_000, async () => {
     try {
-      const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
-      if (orpheusWorkerPool.isSessionActive()) {
-        await orpheusWorkerPool.endSession();
+      const { crucibleListenEngine } = await import('./streaming-engine.js');
+      if (crucibleListenEngine.isSessionActive()) {
+        await crucibleListenEngine.endSession();
       }
     } catch (err) {
       console.error('[MAIN] Failed to end stream TTS session:', err);

@@ -23,7 +23,7 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 
 import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
-import { getHfToken } from './orpheus-hf-catalog';
+import { getHfToken } from './hf-token';
 
 // ── Catalog ────────────────────────────────────────────────────────────────
 

@@ -689,7 +689,7 @@ function stageInGuest(
    * under bare node — die on the import rather than on anything it tests.
    * Required here, it is only reached by a real stage inside a real app.
    */
-  const { getHfToken } = require('./orpheus-hf-catalog') as typeof import('./orpheus-hf-catalog');
+  const { getHfToken } = require('./hf-token') as typeof import('./hf-token');
   const token = getHfToken();
   const bash = [
     // The token never appears on argv — higgs_download.py's rule. Both text repos

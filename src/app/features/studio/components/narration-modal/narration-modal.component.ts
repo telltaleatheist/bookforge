@@ -1096,11 +1096,6 @@ export class NarrationModalComponent {
      * the engine.
      */
     void this.components.ensureLoaded();
-    // Whether a Higgs run could start, asked once while the dialog is opening.
-    // Cheap when the answer is "no Higgs on this build" and a single WSL round
-    // trip otherwise, so it is not gated on the engine currently selected — the
-    // user may switch to Higgs after it has already answered.
-    void this.checkHiggsReady();
 
     /*
      * THE DOOR SETS THE PLAN.
@@ -1506,15 +1501,20 @@ export class NarrationModalComponent {
       return `${caps.displayName} was retired on ${caps.retired?.since} and cannot render this book. `
         + `${caps.retired?.reason ?? ''} Pick another engine on the Reading tab.`;
     }
-    // The Higgs environment, asked BEFORE the job is queued rather than an hour
-    // into it. `higgsReady` is a snapshot the dialog takes on open (see
-    // checkHiggsReady) — a live probe cannot run inside a computed, and the
-    // bridge re-checks at spawn time anyway, which is what catches an env that
-    // broke between queueing and starting.
-    if (this.narrate() && this.engine() === 'higgs') {
-      const why = this.higgsBlocked();
-      if (why) return why;
-    }
+    /*
+     * THE HIGGS ENVIRONMENT IS NOT THIS DIALOG'S QUESTION ANY MORE.
+     *
+     * It used to run the local doctor on open — a WSL round trip asking whether
+     * THIS machine's serving env was ready — and block the button on the answer.
+     * There is no local environment now (docs/LEGACY-REMOVAL.md): the engine runs
+     * on a Crucible server, and that server answers for itself through its
+     * capability record and its own named refusals at submit time. Asking here
+     * would be a second opinion about somebody else's card, and it would refuse a
+     * perfectly good Mac render because THIS box has no WSL.
+     *
+     * What did NOT move is the VOICE check below: which voices exist is this
+     * machine's catalog, and it is still answerable here.
+     */
     // NO VOICE, OR A VOICE THAT DOES NOT BELONG TO THIS ENGINE. The first is
     // what `selectEngine` leaves behind on purpose; the second is a saved
     // default or preset from another engine that the picker never touched.
@@ -1552,39 +1552,6 @@ export class NarrationModalComponent {
     }
     return null;
   });
-
-  /**
-   * Why a Higgs run cannot start, as of when this dialog opened. Null when it can,
-   * or when the check has not answered yet — an unanswered probe is not evidence
-   * of a broken environment, and blocking on it would make the button dead for as
-   * long as WSL takes to wake up. The bridge's own preflight is the real gate.
-   */
-  readonly higgsBlocked = signal<string | null>(null);
-
-  /**
-   * Ask main whether the Higgs stack is usable. Fire-and-forget from ngOnInit.
-   *
-   * THE REMEDY COMES FROM THE DOCTOR, and this method must not invent one. Higgs
-   * has two backends — the WSL vLLM-Omni server on Windows, the in-process MLX
-   * one on macOS — and until 2026-09-05 this line ended "Set it up in Settings →
-   * Higgs", which on a Mac points at a panel whose only button builds a WSL
-   * environment. Main knows which arm it examined; this dialog does not, and the
-   * moment it tried to it would be a second place to keep in step.
-   */
-  private async checkHiggsReady(): Promise<void> {
-    const api = (window as any).electron?.higgsModels;
-    if (!api?.doctor) return;
-    const res = await api.doctor();
-    if (!res?.success || !res.data) return;
-    const failed = (res.data.checks ?? []).filter((c: { ok: boolean }) => !c.ok);
-    this.higgsBlocked.set(
-      failed.length === 0
-        ? null
-        : 'The Higgs environment is not ready, so this run would fail as soon as it started: '
-          + failed.map((c: { label: string }) => c.label).join(', ')
-          + `. ${res.data.remedy} Or pick Orpheus on the Reading tab.`,
-    );
-  }
 
   /**
    * Why this dialog cannot queue anything AT ALL, or null.

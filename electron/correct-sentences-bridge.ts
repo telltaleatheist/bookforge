@@ -3,7 +3,7 @@
  *
  * Lets a user regenerate individual TTS sentences that sound wrong, audition a few
  * fresh takes in context, approve one, and reassemble. It reuses the SAME lightweight
- * e2a worker a normal book render uses (via parallel-tts-bridge.regenerateSentenceIndices),
+ * Crucible reroll job a normal book render's retakes use (crucible/reroll.ts),
  * so each regenerated FLAC is a true drop-in: identical engine/voice/model, and the
  * worker's own _save_audio applies the normal peak-normalize + inter-clip gaps. Because
  * sampling is unseeded, each take is a genuinely different reading of the same sentence —
@@ -35,10 +35,7 @@ import { promisify } from 'util';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { getBfpCachedSession } from './reassembly-bridge';
 import { readVttCueText } from './vtt-cue-text';
-import {
-  regenerateSentenceIndices,
-  ParallelTtsSettings,
-} from './parallel-tts-bridge';
+import { ParallelTtsSettings } from './parallel-tts-bridge';
 
 const execFileAsync = promisify(execFile);
 
@@ -621,7 +618,7 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   const { rerollAtVenue } = await import('./crucible/reroll.js');
   const { processVenueHost } = await import('./crucible/generation-venue.js');
   const { readSessionRunVenue } = await import('./coverage-align-job.js');
-  const { higgsModelForJob } = await import('./higgs-spawn.js');
+  const { higgsModelForJob } = await import('./higgs-models.js');
 
   let runVenue;
   try {
