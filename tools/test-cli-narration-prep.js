@@ -490,6 +490,50 @@ test('an UNSTAMPED book is NOT refused — the door says so, by case, and reads 
   assert.strictEqual(runner.calls.length, 0);
 });
 
+/**
+ * The door's THIRD deterministic fix, end to end on a real book.
+ *
+ * Owen, 2026-09-14: *"for ai cleanup, i want to deterministically expand bible
+ * book names. ex -> exodus, tim. -> timothy … it's a mess."* The rule itself is
+ * `tools/test-bible-books.js`; what is proved HERE is the wiring nothing else
+ * can prove — that the edits reach the file a render reads, through the
+ * verified writer, and that a book with no captions and no notes is copied for
+ * them alone (before this it passed through untouched, same bytes).
+ *
+ * The unstamped case is the one that matters: a book the cleanup model has
+ * already read has no abbreviation left to expand, so this is exactly the
+ * render Owen was listening to.
+ */
+test('the door prints the scripture book names in full, and leaves the lookalikes', async () => {
+  const book = await buildBook('door-scripture.epub', CHAPTER(
+    'He read 1 Pet. 3:7 aloud, and then Rom. 5:17. Col. Sanders said nothing, '
+    + 'Rev. King had already left, my ex. never called, and Ch. 3:7 of the manual '
+    + 'was wrong about all of it.'));
+  const runner = scriptedRunner({});
+  const prep = await bridge.prepareNarrationInput(book, 'test-epub-scripture', {
+    skipAssembly: true, numberRunner: runner, textCleanup: 'required',
+  });
+  assert.strictEqual(prep.cleanup, 'unstamped');
+  assert.notStrictEqual(prep.inputPath, book,
+    'a book with no captions and no notes is still copied when a book name must be expanded');
+
+  const chapter = await entryText(prep.inputPath, 'OEBPS/chapter-01.xhtml');
+  for (const spoken of ['First Peter 3:7', 'Romans 5:17']) {
+    assert.ok(chapter.includes(spoken),
+      `the narration copy does not say ${JSON.stringify(spoken)}:\n${chapter}`);
+  }
+  // THE HALF THAT MATTERS. Every one of these prints a token the table knows,
+  // and an audiobook saying "Revelation King" is worse than one saying "Rev.".
+  for (const printed of ['Col. Sanders', 'Rev. King', 'my ex.', 'Ch. 3:7']) {
+    assert.ok(chapter.includes(printed),
+      `the narration copy no longer prints ${JSON.stringify(printed)}:\n${chapter}`);
+  }
+  // The chapter and the verse are still digits — that reading is the model's,
+  // and the door asked no model anything.
+  assert.strictEqual(runner.calls.length, 0);
+  assert.strictEqual(prep.recordPath, null);
+});
+
 test('a door call that does not say whether cleanup is required is refused by name', async () => {
   const input = path.join(ROOT, 'door-unsaid.txt');
   fs.writeFileSync(input, 'Nothing numeric here.\n', 'utf8');
