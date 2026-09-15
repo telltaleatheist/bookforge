@@ -8,6 +8,17 @@
 > why, is in **`docs/XTTS_REMOVAL.md`**. Everything about the ENGINE MODEL below
 > — the two unions, the refusal-by-name, the Higgs catalog — is unchanged and
 > still current.
+>
+> **AND ORPHEUS JOINED THE RETIRED UNION ON 2026-09-14.** Owen: *"orpheus is
+> deprecated too but hasnt been removed yet. higgs is the frontier."* `TtsEngineId`
+> is now `'higgs'` alone and `SELECTABLE_ORDER` is `['higgs']`, so §1's table and
+> §2's rows that name Orpheus as a *choice* are history in the same way §2's "What
+> STAYS" table is. The MODEL is untouched — that is the point of it — and §1 below
+> is corrected in place. **Orpheus's CODE is all still here**: the WSL2 spawn, the
+> `orpheus` component, the fine-tune roster, the `orpheusModels` IPC. It was
+> removed from the choice, not from the build, and dies with the legacy e2a layer
+> after Owen's in-app pass. `tools/test-narration-engine-retirement.js` is the
+> keeper.
 
 Built 2026-09-04 on branch `feat/higgs-engine-option`, cut from `01a3799b`.
 
@@ -25,8 +36,9 @@ This is what was added, what it waits on, and what was deliberately left alone.
 retired engine has to stay nameable:
 
 ```ts
-type TtsEngineId      = 'orpheus' | 'higgs';          // can RENDER
-type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral';    // loads, displays, refused
+// As of 2026-09-14. Was `TtsEngineId = 'orpheus' | 'higgs'` when this was written.
+type TtsEngineId      = 'higgs';                                 // can RENDER
+type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral' | 'orpheus';   // loads, displays, refused
 type TTSEngine        = TtsEngineId | RetiredTtsEngine;
 ```
 
@@ -41,11 +53,21 @@ record field is typed `TTSEngine`; code about to queue work asks
 | `isTtsEngine(id)` | is this an id this build knows at all? (`xtts` → **true**) |
 | `isRunnableTtsEngine(id)` | can it render today? (`xtts` → **false**) |
 | `assertRunnableTtsEngine(id)` | narrow, or throw naming the engine and the date |
-| `engineDisplayName(id)` | `'XTTS (retired)'`, `'Orpheus'`, `'Higgs'` |
-| `narrationEngineOrder()` | `['orpheus', 'higgs']` — the picker's list |
+| `engineDisplayName(id)` | `'XTTS (retired)'`, `'Orpheus (retired)'`, `'Higgs'` |
+| `narrationEngineOrder()` | `['higgs']` — the picker's list |
 
-**The refusal never coerces.** Quietly substituting Orpheus for a record that
-says `xtts` renders a whole book in a voice nobody chose and reports success.
+**The refusal never coerces.** Quietly substituting Higgs for a record that says
+`xtts` or `orpheus` renders a whole book in a voice nobody chose and reports
+success. That got *sharper* when Orpheus was retired, not safer: with one
+runnable engine left, a coercion has an obvious target.
+
+**A stored PREFERENCE is the exception, and migrates loudly** —
+`resolveSavedTtsEngine` → `DEFAULT_TTS_ENGINE` (`'higgs'` since 2026-09-14), with
+the paired voice reset, a `console.error` naming what was stored, and the repair
+written back. Refusing a *default* is not free: it leaves the engine button group
+with nothing selected on the one page that could repair it. Since Orpheus was
+both the shipped default and the picker's first entry until it was retired,
+essentially every settings blob in existence now takes that path once.
 
 ---
 
@@ -55,10 +77,10 @@ says `xtts` renders a whole book in a voice nobody chose and reports success.
 
 | where | what changed |
 |---|---|
-| `shared/tts/engine-caps.ts` | `SELECTABLE_ORDER` is `['orpheus','higgs']`. Was `['xtts','f5','orpheus','voxtral']` and lived in the registry shim. |
+| `shared/tts/engine-caps.ts` | `SELECTABLE_ORDER` became `['orpheus','higgs']` here, from `['xtts','f5','orpheus','voxtral']` in the registry shim. **It is `['higgs']` as of 2026-09-14.** |
 | narration modal (`narration-modal.component.ts:323`) | reads `selectableEngines()` → the array above. **No template change was needed.** |
 | Settings → Pipeline Defaults (`pipeline-defaults-panel.component.ts:63`) | same source, same story. |
-| `settings.service.ts:84` | `DEFAULT_PIPELINE_DEFAULTS.ttsEngine` `'xtts'` → `'orpheus'`; `ttsVoice` `'ScarlettJohansson'` → `'leah'` (an XTTS clip name against an Orpheus default is a pair that cannot render). |
+| `settings.service.ts:84` | `DEFAULT_PIPELINE_DEFAULTS.ttsEngine` `'xtts'` → `'orpheus'`; `ttsVoice` `'ScarlettJohansson'` → `'leah'` (an XTTS clip name against an Orpheus default is a pair that cannot render). **Moved again 2026-09-14 → `'higgs'` / `'default'`, the same rule a third time**: the migration only repairs a STORED value, so a stale *shipped* default reaches a fresh machine unrepaired. |
 | Settings → TTS Server → Voice Engine | the XTTS button is `[disabled]` and labelled `XTTS (retired)`. |
 | `streaming-engine.ts:getAvailableEngines` | XTTS is reported `available: false` with the retirement reason. The Listen tab's `@for` over that list already renders an unavailable engine as disabled-with-a-tooltip, so **one edit retired it in both pickers**. |
 | `worker-config.service.ts:170` | the `engines` seed was `[{id:'xtts', available:true}]` — now a false statement, so it seeds `[]`. |
@@ -72,7 +94,8 @@ says `xtts` renders a whole book in a voice nobody chose and reports success.
 ### F5 and Voxtral
 
 Not retired by a decision — they fall out as a **consequence** of narrowing the
-picker to Orpheus and Higgs, and they are marked `retired` with exactly that
+picker (to Orpheus and Higgs then; to Higgs alone since 2026-09-14), and they are
+marked `retired` with exactly that
 reason so they do not vanish silently. Both were component-gated (`f5-env` /
 `voxtral-env`) so neither was visible on a machine that had not installed them.
 Their `getEnvPathForEngine` wiring is untouched. **Re-listing either is one line

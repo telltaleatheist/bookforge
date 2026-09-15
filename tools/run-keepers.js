@@ -573,6 +573,15 @@ const SUITES = [
   'test-legacy-migration',
   'test-legacy-bilingual-manifest',
   'test-retired-engine-settings',
+  // THE NARRATION PICKER OFFERS HIGGS AND ONLY HIGGS (2026-09-14). Beside the
+  // suite above rather than inside it because the question is different: that one
+  // is the general retired-id doctrine (load it, display it, refuse to run it),
+  // this one is the NARROWING — the picker's list, and the shipped defaults that
+  // had to move with it. It exists because Owen's "higgs is the frontier" ruling
+  // was written into every doc in the repo and into none of the code, so the
+  // narrate modal went on offering Orpheus FIRST for a month, and the only thing
+  // that caught it was Owen opening the dialog.
+  'test-narration-engine-retirement',
   'test-ipc-collision',
   'test-derivation-cache',
   'test-versions-page-data',

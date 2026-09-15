@@ -443,8 +443,10 @@ failure. The keepers that pin this (`tools/test-higgs-engine.js`,
 `test-coverage-policy-mirror.js`, `test-narration-chain.js`, `test-no-e2a-doors.js`) all
 KEEP.
 
-**Not selectable anywhere.** One list: `shared/tts/engine-caps.ts:361`
-`SELECTABLE_ORDER = ['orpheus','higgs']`. Both pickers read it through `selectableEngines`
+**Not selectable anywhere.** One list: `shared/tts/engine-caps.ts`
+`SELECTABLE_ORDER`, which was `['orpheus','higgs']` when this was written and is
+`['higgs']` since 2026-09-14 (Orpheus retired as a choice — its code stays until the
+legacy e2a layer goes). Both pickers read it through `selectableEngines`
 (narration modal `:911`, pipeline-defaults panel `:197`), so no `@for` can emit an XTTS
 card. `main.ts:7926` asserts again at job creation; `parallel-tts-bridge.ts:2573` asserts
 again at spawn.
