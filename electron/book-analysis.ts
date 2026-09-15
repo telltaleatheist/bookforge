@@ -15,7 +15,7 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import { extractChaptersFromEpub, type ChapterData } from './epub-processor.js';
-import { findBestBreakPoint } from './ai-bridge.js';
+import { aiCallServer, findBestBreakPoint } from './ai-bridge.js';
 import type { AIProviderConfig } from './ai-bridge.js';
 import {
   commitAudiobookAnalysisReport,
@@ -108,6 +108,20 @@ interface AnalysisAnalytics {
   requestAttempts?: number;
   flagsFound: number;
   model: string;
+  /**
+   * WHICH MACHINE ran it, by registry name — the other half of the question
+   * `model` answers, read off the same provider block by `aiCallServer`
+   * (electron/ai-bridge.ts). Owen, 2026-09-15: *"the analytics data should
+   * contain which crucible server was used"*.
+   *
+   * In practice always present on a record this build writes: an analysis
+   * REFUSES every provider but `crucible` (`analysisProviderRefusal`) and
+   * refuses a crucible block that names no server, so a run that reaches the
+   * record has a venue. Optional all the same, because every record written
+   * before 2026-09-15 has none, and that absence means "from before the field"
+   * — it is never repaired with a machine chosen now.
+   */
+  crucibleServer?: string;
 }
 
 interface AnalysisCheckpoint {
@@ -784,6 +798,10 @@ export async function analyzeBook(
         totalChunks: chunksProcessed,
         flagsFound: allFlags.length,
         model,
+        // WHICH MACHINE ran it, beside the model it ran. `undefined` keeps the
+        // field off the record where there is no server to name, rather than
+        // writing a null that a reader would have to tell apart from absent.
+        crucibleServer: aiCallServer(providerConfig) ?? undefined,
       },
     };
   } catch (err) {
@@ -1463,6 +1481,8 @@ export async function analyzeAudiobook(
         requestAttempts,
         flagsFound: allFlags.length,
         model,
+        // WHICH MACHINE ran it, beside the model it ran. See the field's docs.
+        crucibleServer: aiCallServer(providerConfig) ?? undefined,
       },
     };
   } catch (err) {

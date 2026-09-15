@@ -244,6 +244,43 @@ export interface AIProviderConfig {
   };
 }
 
+/**
+ * WHICH CRUCIBLE SERVER this provider block sends to, for the record a run
+ * files about itself. Owen, 2026-09-15: *"the analytics data should contain
+ * which crucible server was used"*.
+ *
+ * Every rate an AI job records — chars/min, chunks/min — is a property of the
+ * MACHINE as much as of the book, so two runs of the same book on two different
+ * cards are indistinguishable rows without this. One reader of the fact, for
+ * the reason `text-ai.ts`'s {@link import('./text-ai').aiCallModel} is one
+ * reader of the model name: three job types file it (cleanup, translation, book
+ * analysis) and three copies of the lookup is three places for a second
+ * spelling of "where did this run" to appear (crucible
+ * `docs/ARCHITECTURE.md` R1). It sits here rather than beside `aiCallModel`
+ * only because `text-ai.ts` imports THIS module for a value, and the reverse
+ * import would close a require cycle.
+ *
+ * It is the RESOLVED venue, never the request: `crucible.server` is what
+ * `providerConfigOf` (queue-steps/ai-provider.ts) stamped from the row's
+ * `waitForResolved` — the machine the queue actually placed this run on — and a
+ * run stays on the machine it started on (crucible `docs/PHASE7-LANES.md`
+ * §4.3), so there is exactly one answer per run and it is known by the time a
+ * record is written.
+ *
+ * `null` is a real answer and not a gap, exactly as it is for the model name: a
+ * block naming the bundled local llama names THIS process, which is no server,
+ * and a block naming a provider this build removed names nothing that exists.
+ * Neither is substituted with a server the operator happens to have configured
+ * now — that would put a machine nobody chose into a book's provenance record.
+ *
+ * The NAME is verbatim, whatever `<userData>/crucible-servers.json` calls that
+ * entry ("3090 Ti", "M1 Ultra"). No name is special-cased, and there is no
+ * display-label indirection: the operator named these machines.
+ */
+export function aiCallServer(config: AIProviderConfig): string | null {
+  return config.provider === 'crucible' ? config.crucible?.server ?? null : null;
+}
+
 export interface ProviderConnectionResult {
   available: boolean;
   error?: string;
@@ -3567,6 +3604,21 @@ export interface CleanupJobAnalytics {
   chunksPerMinute: number;
   charactersPerMinute: number;
   model: string;
+  /**
+   * The Crucible server this run went to, by registry name — see
+   * {@link aiCallServer}, and the rules at the top of
+   * `src/app/core/models/analytics.types.ts`.
+   *
+   * `model` has carried the server inside a composite display string
+   * (`crucible/<server>/<id>`) since before this field existed, for the same
+   * reason this field exists. That string is unchanged — old records are full
+   * of it and it is what the panel prints — and this is the same fact as its
+   * own field, so comparing two machines does not mean parsing a label.
+   *
+   * Absent on the bundled local arm and on the deterministic TTS-prep pass,
+   * which runs no model on any machine.
+   */
+  crucibleServer?: string;
   success: boolean;
   chaptersProcessed: number;
   copyrightChunksAffected: number;
@@ -4496,6 +4548,10 @@ async function cleanupEpubRun(
           chunksPerMinute: 0,
           charactersPerMinute: 0,
           model: 'none (deterministic TTS prep)',
+          // No `crucibleServer`, deliberately: this pass sends nothing to any
+          // machine, so it has no venue to name. Absent is the honest answer —
+          // recording the server the row was PLACED on would report a card that
+          // did no work for this record's (zero) figures.
           success: true,
           chaptersProcessed: ttsPrep.report.chaptersTransformed,
           copyrightChunksAffected: 0,
@@ -5632,6 +5688,12 @@ async function cleanupEpubRun(
       chunksPerMinute,
       charactersPerMinute,
       model: modelName,
+      // WHICH MACHINE produced the two rates above, as its own field rather
+      // than a substring of `modelName`. Null on the local arm — see
+      // aiCallServer — and `undefined` is how it stays off the record entirely,
+      // because absent already means "not known" and a null would be a second
+      // spelling of it.
+      crucibleServer: aiCallServer(config) ?? undefined,
       success: true,
       chaptersProcessed,
       copyrightChunksAffected: jobState.copyrightFallbackCount,

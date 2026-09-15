@@ -24,7 +24,7 @@ import * as fs from 'fs/promises';
 import { loadPrompt, PROMPTS } from './prompts.js';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { aiCallModel, callAI, LANGUAGE_NAMES } from './text-ai.js';
-import type { AIProviderConfig } from './ai-bridge';
+import { aiCallServer, type AIProviderConfig } from './ai-bridge.js';
 import { createEpubSink, openEpubSource } from './epub-container.js';
 import {
   EpubProcessor,
@@ -155,6 +155,16 @@ export interface TranslationJobAnalytics {
    * checkpoint below cannot disagree about which field a provider keeps it in.
    */
   model: string | null;
+  /**
+   * WHICH MACHINE ran it, by registry name — the other half of the same
+   * question `model` answers, read once off the same provider block by
+   * `aiCallServer` (electron/ai-bridge.ts). `undefined` where the block names
+   * no Crucible server (the bundled local arm is this process), and on every
+   * row written before 2026-09-15. Never repaired or defaulted: a sentences/min
+   * figure attributed to a machine that did not produce it is worse than one
+   * attributed to none.
+   */
+  crucibleServer?: string;
   sourceLang?: string;
   targetLang: string;
   /** 'bilingual' is a value only legacy rows on disk carry — that pipeline is gone. */
@@ -571,13 +581,18 @@ export async function runMonoTranslation(
    */
   const providerName = config.provider.provider;
   const modelName = aiCallModel(config.provider);
+  // The third reader of that one fact: WHICH MACHINE. Read here, beside the
+  // provider and the model, for the reason above — the analytics record files
+  // it and the log prints it, and two lookups is two places to drift.
+  const serverName = aiCallServer(config.provider);
   console.log(`[MONO-TRANSLATION] Starting job ${jobId}`);
   console.log(`[MONO-TRANSLATION] Config:`, {
     cleanedEpubPath: config.cleanedEpubPath,
     sourceLang: config.sourceLang,
     targetLang: config.targetLang,
     aiProvider: providerName,
-    aiModel: modelName
+    aiModel: modelName,
+    crucibleServer: serverName
   });
 
   const inputEpubPath = config.cleanedEpubPath;
@@ -925,6 +940,10 @@ export async function runMonoTranslation(
         sentencesPerMinute: tMinutes > 0 ? Math.round((totalParagraphs / tMinutes) * 10) / 10 : 0,
         provider: providerName,
         model: modelName,
+        // WHICH MACHINE produced `sentencesPerMinute` above. `undefined` keeps
+        // it off the record entirely on the local arm, where absent already
+        // means "not known".
+        crucibleServer: serverName ?? undefined,
         sourceLang: config.sourceLang,
         targetLang: config.targetLang,
         mode: 'mono',

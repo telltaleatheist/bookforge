@@ -2,6 +2,41 @@
  * Analytics Types for TTS and AI Cleanup Jobs
  */
 
+/*
+ * ── `crucibleServer`: WHERE THE WORK ACTUALLY RAN ───────────────────────────
+ *
+ * Owen, 2026-09-15: *"the analytics data should contain which crucible server
+ * was used"*. Every rate in these records — chars/min, chunks/min, chars per
+ * minute of cleanup — is a property of the MACHINE as much as of the book, and
+ * without the machine's name two runs of the same book on two different cards
+ * are indistinguishable rows. That is exactly the comparison the figures exist
+ * to support, so the venue is part of the measurement, not context around it.
+ *
+ * THREE RULES, the same three the counted figures in `TTSJobAnalytics` follow:
+ *
+ * 1. **It is the RESOLVED venue, never the request.** What a caller asked for
+ *    and where the job landed are two facts; this is the second one, read off
+ *    the decision the run was actually placed by (`GenerationVenue.server` for
+ *    a render, the provider block's `crucible.server` for a text pass). A run
+ *    is atomic — it finishes where it started — so there is exactly one answer
+ *    per record and it is known by the time the record is written.
+ *
+ * 2. **It is a registry NAME, verbatim.** Whatever
+ *    `<userData>/crucible-servers.json` calls that entry — "3090 Ti", "M1
+ *    Ultra" — is what goes in. No name is special-cased, nothing is normalised,
+ *    and there is no display-label indirection: the operator named these
+ *    machines and the record repeats them.
+ *
+ * 3. **Absent means it was not known, and is never repaired.** A record without
+ *    the field is a record written before the field existed, or a run whose
+ *    step genuinely had no Crucible venue (the bundled local llama arm; the
+ *    urvc spawn — see `RvcJobAnalytics`). Both are honest answers. A reader
+ *    must draw the absence as unknown and MUST NOT default it to a machine, to
+ *    "local", or to whichever server happens to be configured now — a guess
+ *    here would be indistinguishable from a recorded fact, which is the one
+ *    thing these records are built not to do.
+ */
+
 export interface TTSJobAnalytics {
   jobId: string;
   startedAt: string;
@@ -92,6 +127,14 @@ export interface TTSJobAnalytics {
   audioSecondsPerChar?: number;
   realtimeFactor?: number;
 
+  /**
+   * The Crucible server this render's generation step ran on, by registry name.
+   * See the three rules at the top of this file. Absent on every record written
+   * before 2026-09-15, and on a session that generated nothing (assembly-only),
+   * which has no venue to report.
+   */
+  crucibleServer?: string;
+
   // Settings used
   settings: {
     device: string;
@@ -177,6 +220,22 @@ export interface CleanupJobAnalytics {
   // Model info
   model: string;
 
+  /**
+   * The Crucible server this cleanup ran on, by registry name. See the three
+   * rules at the top of this file.
+   *
+   * `model` has carried the server inside a composite string
+   * (`crucible/<server>/<id>`) since before this field existed, for the same
+   * reason this field exists — a chars/min figure is unreadable next to another
+   * machine's. That string stays as it is (old records are full of it and it is
+   * what the panel prints); this is the same fact as its own field, so a reader
+   * comparing machines does not have to parse a display string to get one.
+   *
+   * Absent on the bundled local llama arm, which has no server, and on the
+   * deterministic TTS-prep pass, which runs no model at all.
+   */
+  crucibleServer?: string;
+
   // Outcome
   success: boolean;
   chaptersProcessed: number;
@@ -216,6 +275,23 @@ export interface RvcJobAnalytics {
   // Performance metrics
   sentencesPerMinute: number;
 
+  /*
+   * NO `crucibleServer` HERE, AND THAT IS THE MEASUREMENT, NOT AN OMISSION.
+   *
+   * The only thing that writes this record is the RVC pass inside a TTS session
+   * (`parallel-tts-bridge.ts`), and that pass runs `enhanceSentences`
+   * (`electron/rvc-bridge.ts`) — the local urvc spawn on THIS machine's card.
+   * It has no Crucible venue to report, so there is nothing to record and a
+   * field here would be permanently absent, which reads as "old record" and
+   * would be a lie about why.
+   *
+   * The Crucible `rvc` door (`electron/crucible/rvc.ts`, reached by the
+   * standalone `rvc-enhancement` queue step through `electron/rvc-job.ts`) DOES
+   * know its venue — it logs it — but it files no analytics record at all, so
+   * there is no row to put it on. Give that step a record and its venue goes on
+   * it; until then this interface has one producer and one honest answer.
+   */
+
   // RVC settings
   modelName: string;       // urvc voice-model folder name
   voiceLabel?: string;     // friendly label (e.g. "US Female 1")
@@ -247,6 +323,13 @@ export interface TranslationJobAnalytics {
   // before 2026-09-14, when those three left BookForge.
   provider: string;
   model: string;
+  /**
+   * The Crucible server this translation ran on, by registry name. See the
+   * three rules at the top of this file. Absent when `provider` is not
+   * 'crucible' — the bundled local arm has no server — and on every record
+   * written before 2026-09-15.
+   */
+  crucibleServer?: string;
   sourceLang?: string;
   targetLang: string;
   mode: 'mono' | 'bilingual';   // whole-book vs sentence-aligned

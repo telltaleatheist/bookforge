@@ -209,6 +209,17 @@ export function aiCallModel(config: AIProviderConfig): string | null {
   }
 }
 
+/*
+ * ITS PAIR, `aiCallServer`, LIVES IN `ai-bridge.ts`, NOT HERE.
+ *
+ * "Which model" and "which machine" are one question in two halves and belong
+ * side by side — but this file already imports `ai-bridge` for a VALUE
+ * (`crucibleChatOnce`), so putting the server reader here and importing it back
+ * would close a runtime require cycle between the two modules. The reader lives
+ * beside the type it reads instead, which is where `AIProviderConfig` is
+ * declared, and every caller of both imports one from each.
+ */
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sentence splitting — MOVED (Phase 16)
 // ─────────────────────────────────────────────────────────────────────────────

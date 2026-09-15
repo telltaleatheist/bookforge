@@ -129,6 +129,22 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
           <div class="stat-value">{{ job.totalChapters }}</div>
         </div>
 
+        <!-- WHICH MACHINE PRODUCED THE THROUGHPUT CARD ABOVE.
+             Every rate in this panel is a property of the card as much as of the
+             book, and nothing else here says which card: Device reads "AUTO"
+             and TTS Engine reads the engine the STEP was configured with, so
+             two runs of one book on two machines drew identical rows.
+             A conditional and not a placeholder: a record without the field is
+             one from before it existed, and drawing "unknown" (or worse, this
+             machine's current server) would put a venue into a run that never
+             recorded one. See analytics.types.ts's header. -->
+        @if (job.crucibleServer) {
+          <div class="stat-card">
+            <div class="stat-label">Server</div>
+            <div class="stat-value">{{ job.crucibleServer }}</div>
+          </div>
+        }
+
         <div class="stat-card">
           <div class="stat-label">Device</div>
           <div class="stat-value">{{ job.settings.device.toUpperCase() }}</div>

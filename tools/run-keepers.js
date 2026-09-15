@@ -144,6 +144,16 @@ const SUITES = [
   // assumes. Before it, a guard fire's only record was a WARN line in a shared
   // daily text file (ARCHITECTURE.md R4).
   'test-chunk-guard-ledger',
+  // WHICH MACHINE the figures came from. Owen ran one book on both cards on
+  // 2026-09-15 and the two records were indistinguishable — 89 chunks, 301
+  // sentences, 42,059 characters each, and nothing saying where. Every rate in
+  // a record is a property of the card as much as of the book, so this suite
+  // pins the venue onto the records that know it (TTS, cleanup, both analyses,
+  // translation), pins the absence as unrepairable on the ones that do not
+  // (RVC's local urvc spawn, the deterministic TTS-prep pass), and — with the
+  // reserved `local` identity being erased the same day — pins that no name is
+  // ever special-cased or mapped to a prettier one.
+  'test-analytics-venue',
   // The generation step on somebody else's card (rollout item 2.4), against a
   // FAKE Crucible — the real one needs the card. It pins the five things that
   // would otherwise be found at 3 a.m. on a real book: the whole book goes up

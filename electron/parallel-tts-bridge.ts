@@ -2982,6 +2982,23 @@ interface RvcJobAnalytics {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /*
+   * NO `crucibleServer`, UNLIKE THE TTS RECORD, AND IT IS A FINDING RATHER THAN
+   * AN OVERSIGHT (2026-09-15).
+   *
+   * The one producer of this record is the RVC pass inside a TTS session below,
+   * and it runs `enhanceSentences` — the LOCAL urvc spawn (`rvc-bridge.ts`), on
+   * this machine's card, whatever venue the render itself went to. It has no
+   * Crucible server, so it has no name to record, and a field that is absent on
+   * every row this code can write would read as "a record from before the
+   * field" and be a lie about why.
+   *
+   * The Crucible `rvc` door (`electron/crucible/rvc.ts`, reached by the
+   * standalone `rvc-enhancement` queue step through `electron/rvc-job.ts`) DOES
+   * resolve a venue and names it in its log — but it files no analytics record
+   * at all. Give that step a record and the venue goes on it; it is not this
+   * interface's to carry on its behalf.
+   */
 }
 
 interface ConversionSession {
@@ -7618,6 +7635,35 @@ function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, ended
 }
 
 /**
+ * WHERE THIS RENDER ACTUALLY RAN, for the record it files about itself.
+ *
+ * Owen, 2026-09-15: *"the analytics data should contain which crucible server
+ * was used"*. Every figure `measureThroughput` counts is a property of the
+ * MACHINE as much as of the book — the same book at 31,000 chars/min in WSL2
+ * and at a third of that on the Mac produces two rows that, without this, are
+ * indistinguishable. The comparison is the whole point of counting.
+ *
+ * It is the RESOLVED venue and not the request: `session.venue` is what
+ * `decideWhereGenerationRuns` answered and what `startCrucibleGeneration` was
+ * then handed, so it names the machine the chunks actually went to — including
+ * the case where the caller named nothing and the routing record picked. A run
+ * is atomic (crucible `docs/PHASE7-LANES.md` §4.3: a job stays on its machine),
+ * so there is one answer and it is settled long before this is read.
+ *
+ * `undefined` for a session with no venue — one that generates nothing, which
+ * is assembly-only (see `sessionNeedsGuestTeardown`). That is the honest
+ * answer: there was no rendering venue, so there is no name. It is NEVER
+ * substituted with the routing record's current pick, which would report the
+ * machine this run WOULD go to today as the machine it went to.
+ *
+ * No display-label indirection, and no name is special-cased: whatever
+ * `<userData>/crucible-servers.json` calls that entry is what is recorded.
+ */
+function renderVenueName(session: ConversionSession): string | undefined {
+  return session.venue?.server;
+}
+
+/**
  * The MLX batch decoding right now, or undefined when none is. Its retired rows
  * are what emitProgress folds into the chunk count; the object itself still rides
  * the wire for the surfaces that draw it.
@@ -8294,6 +8340,8 @@ function emitComplete(
     chunksPerMinuteOverall,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
     ...throughput,
+    // WHICH MACHINE produced every figure above. See renderVenueName.
+    crucibleServer: renderVenueName(session),
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
@@ -9784,6 +9832,9 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     chunksPerMinuteOverall,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
     ...throughput,
+    // WHICH MACHINE produced every figure above. A cancelled run measured real
+    // work on a real card, so its venue is as load-bearing as a finished one's.
+    crucibleServer: renderVenueName(session),
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
