@@ -13046,6 +13046,29 @@ app.whenReady().then(async () => {
    * and says nothing at all: a laptop that renders on the Mac is not a laptop
    * with a problem.
    */
+  /*
+   * ── WHAT THE LAST RUN LEARNED ABOUT UPSTREAMS, BEFORE ANY OF IT ──────────
+   *
+   * Read FIRST and synchronously: the bench is composed from this record
+   * (`shared/queue/slot-sets.ts`'s `SlotSetFacts.upstreams`), and an engine this
+   * app has never had an answer from is `unknown`, which draws a cloud lane. In
+   * memory only, that was true of every server on every launch — Owen's bench on
+   * 2026-09-15 drew `mac — routed elsewhere · CPU ×2` for a Mac with no upstream
+   * configured at all. One small file, so nothing waits for it.
+   *
+   * A corrupt file is REPORTED and not repaired: every engine is `unknown` for
+   * this launch, which is the behaviour the app had before the file existed, and
+   * the next settings read rewrites it.
+   */
+  try {
+    const { loadCrucibleUpstreams, CRUCIBLE_UPSTREAMS_FILE } = await import('./crucible/routes.js');
+    loadCrucibleUpstreams(path.join(app.getPath('userData'), CRUCIBLE_UPSTREAMS_FILE));
+  } catch (err) {
+    logger.warn('Could not read which Crucible engines have an upstream configured', {
+      error: (err as Error).message,
+    });
+  }
+
   void (async () => {
     try {
       const { coordinateLocalOnStart } = await import('./crucible/coordinate.js');
@@ -13055,6 +13078,29 @@ app.whenReady().then(async () => {
         : `Crucible coordination with "local" at startup: ${state.phase}`);
     } catch (err) {
       logger.warn('Could not coordinate with the Crucible on this machine at startup', {
+        error: (err as Error).message,
+      });
+    }
+
+    /*
+     * …AND THE ONE BENCH QUESTION OF EVERY OTHER ENABLED ENGINE.
+     *
+     * Coordination at start is `local`'s alone, so until now nothing ever asked
+     * a REMOTE whether it has an upstream until something happened to connect to
+     * it — which is why the record above was empty and the lanes were phantom.
+     * This is one `GET /v1/settings` each, once, with no timer: the same read
+     * coordination makes as its fourth, at the one moment there is no other
+     * occasion for it. A server that does not answer stays `unknown` and keeps
+     * its lane, and says so in the log.
+     */
+    try {
+      const { readUpstreamsOnStart } = await import('./crucible/coordinate.js');
+      const asked = await readUpstreamsOnStart();
+      if (asked.length > 0) {
+        logger.info(`Crucible upstreams read at startup for: ${asked.join(', ')}`);
+      }
+    } catch (err) {
+      logger.warn('Could not ask the registered Crucible servers about their upstreams', {
         error: (err as Error).message,
       });
     }

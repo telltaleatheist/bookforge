@@ -47,6 +47,7 @@
 'use strict';
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, settingsRoutes,
@@ -455,6 +456,139 @@ async function main() {
     // the two-owners defect the record exists as one module to avoid.
     routes.forgetCrucibleRoutes();
     assert.strictEqual(routes.crucibleUpstreamsOf('anything'), 'unknown');
+  });
+
+  await check('…and it is REMEMBERED across restarts, or `unknown` is every launch', async () => {
+    /*
+     * THE DEFECT, MEASURED 2026-09-15. Owen's bench drew
+     * `mac — routed elsewhere · CPU ×2` for a Mac whose `GET /v1/settings` says
+     * every upstream is unconfigured and whose four routes are `local`. The
+     * rule was right; the record was EMPTY. It lived in memory only, so after
+     * every app start every server was `unknown` until something happened to
+     * connect to it — `local` had been coordinated that session and the Mac had
+     * not — and `unknown` draws the lane. Phantom lanes were the steady state of
+     * a fresh launch, not a rare one.
+     *
+     * So the fact is written beside the routing record and read back at start.
+     * A restart is simulated the way a restart actually works: the module's
+     * memory is empty, and then the file is read.
+     */
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-upstreams-'));
+    const file = path.join(dir, 'crucible-upstreams.json');
+    const restart = () => {
+      // Unbind FIRST: a `forget` with the file bound would rewrite it, and what
+      // a restart does is lose the memory, not erase the record.
+      routes.unbindCrucibleUpstreamsFile();
+      routes.forgetCrucibleRoutes();
+      routes.loadCrucibleUpstreams(file);
+    };
+
+    try {
+      routes.unbindCrucibleUpstreamsFile();
+      routes.forgetCrucibleRoutes();
+      routes.loadCrucibleUpstreams(file);
+      assert.strictEqual(routes.crucibleUpstreamsOf('nobody'), 'unknown',
+        'a file that is not there is an app that has never asked anyone — not an empty answer');
+
+      coordinate.resetCoordinationForTests();
+      const bare = await startFake({});
+      let name;
+      try {
+        name = registerFake(bare.url);
+        await coordinate.coordinateServer(name, deps());
+        assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none');
+      } finally { await bare.close(); }
+
+      assert.ok(fs.existsSync(file), 'the answer was written the moment it was learned');
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf-8')).upstreams, { [name]: false });
+
+      restart();
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none',
+        'the next launch draws no lane for it WITHOUT asking — the engine is not even running '
+        + 'in this check any more, which is the whole point');
+
+      // A server that is forgotten is forgotten in the remembered half too: a
+      // name pruned from memory and answered from disk at the next launch is
+      // the two-owners defect this record exists as one module to avoid.
+      routes.forgetCrucibleRoutes(name);
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown');
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf-8')).upstreams, {});
+      restart();
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown',
+        'and it stays forgotten across the restart');
+
+      // A corrupt record is refused BY NAME and not repaired — and the cost is
+      // one launch of `unknown`, which is the behaviour before the file existed.
+      fs.writeFileSync(file, '{ not json', 'utf-8');
+      routes.unbindCrucibleUpstreamsFile();
+      assert.throws(() => routes.loadCrucibleUpstreams(file),
+        /^Error: crucible_upstreams_record_corrupt: /);
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown',
+        'every engine keeps its lane, which is what this app did before the file existed');
+      fs.writeFileSync(file, JSON.stringify({ upstreams: { mac: 'yes' } }), 'utf-8');
+      routes.unbindCrucibleUpstreamsFile();
+      assert.throws(() => routes.loadCrucibleUpstreams(file),
+        /crucible_upstreams_record_corrupt: .*"mac" is "yes"/s,
+        'an engine either has an upstream configured or it does not');
+    } finally {
+      routes.unbindCrucibleUpstreamsFile();
+      routes.forgetCrucibleRoutes();
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* scratch */ }
+    }
+  });
+
+  await check('EVERY ENABLED ENGINE IS ASKED AT START, not just the local one', async () => {
+    /*
+     * The other half of the same defect. Coordination is what reads this fact,
+     * and coordination at start is `local`'s alone (PHASE14 §4a: coordinating
+     * is what this app does when it CONNECTS to a machine) — so nothing ever
+     * asked a REMOTE until something happened to connect to it, and the record
+     * above had nothing to remember on the first launch after a server was
+     * added. One `GET /v1/settings` each, once, no timer.
+     */
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    routes.unbindCrucibleUpstreamsFile();
+    routes.forgetCrucibleRoutes();
+    coordinate.resetCoordinationForTests();
+
+    const withKey = await startFake({ settings: { upstreams: { openai: { key: 'sk-oai-9' } } } });
+    const bare = await startFake({});
+    try {
+      const a = registerFake(withKey.url);
+      const b = registerFake(bare.url);
+      const asked = await coordinate.readUpstreamsOnStart(() => ['local', a, b]);
+
+      assert.deepStrictEqual(asked, [a, b],
+        '`local` is skipped: the local coordination reads its settings on the way past, and two '
+        + 'GETs at once to a cold WSL guest is one more than the question needs');
+      assert.strictEqual(routes.crucibleUpstreamsOf(a), 'configured');
+      assert.strictEqual(routes.crucibleUpstreamsOf(b), 'none',
+        'and this is the row that used to be drawn as a phantom cloud lane');
+      assert.strictEqual(withKey.settings.reads, 1, 'once each, and nothing polls');
+      assert.strictEqual(bare.settings.reads, 1);
+      assert.strictEqual(withKey.seen.posts.length + bare.seen.posts.length, 0,
+        'this is a READ, not a coordination: nothing is posted to anybody at startup');
+    } finally {
+      await withKey.close();
+      await bare.close();
+      routes.forgetCrucibleRoutes();
+    }
+  });
+
+  await check('a server that does not answer stays UNKNOWN and keeps its lane', async () => {
+    // Absence of knowledge is not absence of an upstream. A `catch` that wrote
+    // `false` here would hide a lane an operator had just configured.
+    const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+    routes.unbindCrucibleUpstreamsFile();
+    routes.forgetCrucibleRoutes();
+    const dead = await startFake({});
+    const name = registerFake(dead.url);
+    await dead.close();
+    const asked = await coordinate.readUpstreamsOnStart(() => [name]);
+    assert.deepStrictEqual(asked, [name], 'it was asked, and the failure did not stop the sweep');
+    assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown');
+    routes.forgetCrucibleRoutes();
   });
 
   await check('the state it published is the state a screen would read', async () => {

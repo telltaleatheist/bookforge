@@ -263,6 +263,17 @@ function labelFor(id: string): string {
  *     ({@link QueueStep.venue}, written once by the pump). That is the record,
  *     and it outranks everything below it: a step already running on the Mac
  *     counts against the Mac even if the row has since been re-pointed.
+ *
+ *     THE STEP IS INDIVISIBLE, and this line is where that is enforced. Owen,
+ *     2026-09-15: *"The entire tts step goes to the other system. That includes
+ *     anything the step needs to do even if it's cpu."* A render prepares its
+ *     text, packs its chunks and writes its session as part of the one step, and
+ *     none of that is charged anywhere but the venue: the step holds ONE slot,
+ *     the venue's, for its whole duration. Asking `resource` before `venue`
+ *     would be the door through which a venued step's CPU half could land in
+ *     {@link LOCAL_WORK_SET} — this machine, which is not where it ran — so the
+ *     order is load-bearing twice over (the cloud lane is the other reason,
+ *     below).
  *  4. A GPU step whose module has NOT been taught to travel spawns on this
  *     machine, always — the legacy set, whatever its run says.
  *  5. A GPU step of a run already assigned follows the run (§4.4, one book one

@@ -416,6 +416,30 @@ test('a step placed on a cloud lane charges THAT lane, not local-work', () => {
     "this machine did nothing; charging it would be the bench blaming the wrong lane");
 });
 
+test('A VENUED STEP IS INDIVISIBLE: one slot, its venue\'s, whatever it does inside', () => {
+  /*
+   * Owen, 2026-09-15: *"The entire tts step goes to the other system. That
+   * includes anything the step needs to do even if it's cpu."* A render prepares
+   * its text, packs its chunks and writes its session inside the one step, and
+   * none of that may be charged to this machine — `slotSetForStep` reads the
+   * VENUE before the resource, which is what shuts that door.
+   */
+  const render = stepOf({ venue: 'mac', travels: true, resource: 'gpu' });
+  const job = jobOfSteps([render], { waitForResolved: 'mac' });
+  assert.strictEqual(slots.slotSetForStep(job, render), 'mac');
+  const counts = slots.slotSetOccupancy({ jobs: [job] });
+  assert.deepStrictEqual([...counts.keys()], ['mac'], 'ONE set is charged, and it is the venue');
+  assert.deepStrictEqual(counts.get('mac'), { gpu: 1, cpu: 0 });
+  assert.strictEqual(counts.get(slots.LOCAL_WORK_SET), undefined,
+    'no half of it is charged here; there is no separate prep step to re-charge either — '
+    + 'tts-conversion declares `gpu` for the whole run and prepares inside it');
+  // And the same step with the resource it would have had if anyone re-derived
+  // it mid-run still charges the venue, because the record outranks the kind.
+  const midRun = stepOf({ venue: 'mac', travels: true, resource: 'cpu' });
+  assert.strictEqual(slots.slotSetForStep(jobOfSteps([midRun], { waitForResolved: 'mac' }), midRun),
+    'mac', 'asking `resource` first is the door a venued step’s CPU half would fall through');
+});
+
 test('a plain CPU step still goes to local-work — it carries no venue', () => {
   const step = stepOf({ resource: 'cpu' });
   assert.strictEqual(slots.slotSetForStep(jobOfSteps([step]), step), slots.LOCAL_WORK_SET);

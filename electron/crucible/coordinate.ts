@@ -619,3 +619,62 @@ export async function coordinateLocalOnStart(
   if (!describeLocal().present) return null;
   return coordinateServer(LOCAL_SERVER_NAME, deps);
 }
+
+/**
+ * ASK EVERY OTHER ENABLED ENGINE THE ONE BENCH QUESTION, once, at start.
+ *
+ * ── The defect this closes ─────────────────────────────────────────────────
+ *
+ * The cloud lane is drawn for an engine that HAS an upstream or that nobody has
+ * asked (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`). "Nobody has
+ * asked" was the state of every server but `local` on every launch, because the
+ * only moment that read it was coordination and coordination at start is
+ * `local`'s alone — so the bench Owen looked at on 2026-09-15 drew
+ * `mac — routed elsewhere · CPU ×2` for a Mac with no upstream configured at
+ * all. `crucible/routes.ts` now REMEMBERS the answer across restarts, which
+ * makes the steady state right; this makes it CURRENT, for an upstream
+ * configured on that machine since this app last heard from it.
+ *
+ * ── Why this shape ────────────────────────────────────────────────────────
+ *
+ * It is one `GET /v1/settings` per enabled server, once, and no timer: exactly
+ * the read `coordinateServer` already makes as its fourth (`readUpstreamPresence`),
+ * called at the one moment there is no other occasion for it. Not a full
+ * coordination, because coordinating is what this app does when it CONNECTS to
+ * a machine (PHASE14 §4a) — posting module tasks to every registered Crucible
+ * at every launch would be a far bigger act than answering a bench row.
+ *
+ * `local` is skipped: {@link coordinateLocalOnStart} reads its settings on the
+ * way past, and two GETs at once to a cold WSL guest is one more than the
+ * question needs. A DISABLED server is skipped too, for the reason
+ * `coordinateServer` refuses one — a disabled engine takes no work, so it has no
+ * lane to be right or wrong about.
+ *
+ * Every failure is swallowed AND SAID, by the same line coordination uses: an
+ * engine that did not answer stays `unknown` and keeps its lane, because absence
+ * of knowledge is not absence of an upstream. Recording `false` on a timeout
+ * would be the fallback.
+ *
+ * Returns the names it asked, for the caller's log line. The server list is
+ * injected for the reason {@link CoordinateDeps} is: a keeper drives it with a
+ * scripted set rather than with this machine's registry.
+ */
+export async function readUpstreamsOnStart(
+  enabledServers: () => readonly string[] = () => rankedServers().map((row) => row.name),
+): Promise<string[]> {
+  let enabled: readonly string[];
+  try {
+    enabled = enabledServers();
+  } catch {
+    /*
+     * `rankedServers` refuses BY NAME when nothing is enabled, and that refusal
+     * is about placing work — it is the queue's to report when a row cannot be
+     * placed, not this one's at startup. With no enabled server there is no
+     * bench row to be wrong about either, so there is simply nothing to ask.
+     */
+    return [];
+  }
+  const asked = enabled.filter((name) => name !== LOCAL_SERVER_NAME);
+  await Promise.all(asked.map((name) => readUpstreamPresence(name)));
+  return asked;
+}
