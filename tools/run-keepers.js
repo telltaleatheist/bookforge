@@ -367,13 +367,21 @@ const SUITES = [
   // loader must refuse by the package's OWN code (`bootstrap_not_installed`)
   // carrying the command that clears it, the driven door must refuse as well as
   // the button being disabled, and both must wear ONE sentence. Beside it the
-  // plan is checked as a DOCUMENT somebody pastes into a shell — one
-  // `--enable-<type>` per job type, `install tts` naming its narrator engine,
-  // no `install denoise` (it shares the rvc env), one id per `models pull`, and
-  // the two commands needing elevation listed APART because this app cannot
-  // obtain it. Plus the three doors' states, and the card that must name the
-  // Crucible a run is going to rather than "this machine's GPU (WSL)".
+  // package is really vendored and really imported; Windows installs ONE way
+  // and it is the host's loopback door (driven over a scripted runner and a
+  // scripted door, so nothing spawns, downloads or elevates); the plan carries
+  // NO shell to paste, because that was a second copy of an installer the
+  // package owns; and the four doors' states, including the card that must
+  // name the Crucible a run is going to rather than "this machine's GPU (WSL)".
   'test-crucible-install-seam',
+  // ...and taking one off again. `crucible uninstall` is the ENGINE's verb;
+  // what is pinned here is that the door is LOCAL ONLY (`uninstall_not_local`
+  // for anything else — an engine is uninstalled on the machine it is on),
+  // that the weights are KEPT unless asked otherwise and that "kept" is
+  // reported with its size, that the dry run is the same plan the real run
+  // performs, and that an unreadable document is refused rather than drawn as
+  // an empty list that looks like success.
+  'test-crucible-uninstall',
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
