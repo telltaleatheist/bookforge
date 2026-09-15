@@ -25,12 +25,15 @@ import type { QueueJob as EngineJob, StepStatus } from '@shared/queue/engine-typ
 import { jobStatus } from '@shared/queue/engine-types';
 import {
   benchLanes,
+  benchSections,
   bookPlans,
   finishedSince,
   needsYou,
+  pendingPlans,
   startOfDay,
   upNext,
   type BenchLane,
+  type BenchSection,
   type BookPlan,
   type FailedRun,
   type FinishedRun,
@@ -84,6 +87,11 @@ export interface FailedView extends FailedRun {
 /** A book's plan, plus its cover. */
 export interface BookPlanView extends BookPlan {
   cover: string | null;
+}
+
+/** One heading's worth of bench, its lanes decorated. */
+export interface BenchSectionView extends Omit<BenchSection, 'lanes'> {
+  lanes: LaneView[];
 }
 
 /** The one-line summary under the shelf's cards. */
@@ -152,7 +160,17 @@ export class QueueTrayService {
    * queue waiting on a press.
    */
   private readonly stepStatuses = computed<string[]>(() =>
-    this.queue.snapshot().jobs.flatMap((job) => job.steps.map((step) => step.status)));
+    this.queue.snapshot().jobs
+      /*
+       * A STAGED BOOK IS NOT SOMETHING TO DO. Its steps are `held`, which is
+       * the state Start releases — but `release` refuses to sweep a staged run
+       * in (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`: Send to queue is the press
+       * that commits it), so counting one here would light up a Start button
+       * that then does nothing. A button that appears to do nothing is the
+       * failure this whole page exists to remove.
+       */
+      .filter((job) => job.pending !== true)
+      .flatMap((job) => job.steps.map((step) => step.status)));
 
   readonly anythingRunning = computed(() => this.stepStatuses().includes('running'));
 
@@ -161,25 +179,70 @@ export class QueueTrayService {
 
   // ── The bands ────────────────────────────────────────────────────────────
 
-  /** The three slots, always all three. */
+  /** Every slot of every machine, flat — what the tray's narrow panel draws. */
   readonly lanes = computed<LaneView[]>(() =>
-    benchLanes(this.queue.snapshot()).map((lane) => {
-      // The legacy row is the ETA adapter: JobEtaService measures against it.
-      const row = lane.occupant
-        ? this.queue.jobs().find(r => r.id === lane.occupant!.stepId) ?? null
-        : null;
-      const seconds = row ? this.eta.etaSeconds(row, stagesFor(row)) : null;
-      return {
-        ...lane,
-        cover: lane.occupant ? this.coverForJobId(lane.occupant.jobId) : null,
-        eta: seconds === null ? null : `${formatDuration(seconds)} left`,
-        speed: row ? this.eta.speedLabel(row) : null,
-        count: row?.totalChunksInJob
-          ? `${(row.chunksCompletedInJob ?? 0).toLocaleString()} / ${row.totalChunksInJob.toLocaleString()}`
-          : null,
-        elapsed: row && row.startedAt ? this.eta.elapsedDisplay(row) : null,
-      };
-    }));
+    benchLanes(this.queue.snapshot()).map((lane) => this.decorate(lane)));
+
+  /**
+   * THE SAME LANES, GROUPED — what the PAGE draws.
+   *
+   * Owen, 2026-09-15: *"they look kind of ugly clustered together randomly. and
+   * its hard to tell which slot im looking at unless i look closely at the
+   * names."* The grouping itself is `benchSections`, pure and keeper-driven;
+   * this adds the decoration only a renderer can (covers, measured ETAs), with
+   * the SAME `decorate` the flat list uses so a lane cannot read one way in the
+   * tray and another on the page.
+   *
+   * The tray keeps the flat list deliberately: 430 pixels has no room for three
+   * headings, and it draws the busy card rather than the bench.
+   */
+  readonly sections = computed<BenchSectionView[]>(() =>
+    benchSections(this.queue.snapshot()).map((section) => ({
+      ...section,
+      lanes: section.lanes.map((lane) => this.decorate(lane)),
+    })));
+
+  /** A bench lane with what only this side knows: the cover, and the measurements. */
+  private decorate(lane: BenchLane): LaneView {
+    // The legacy row is the ETA adapter: JobEtaService measures against it.
+    const row = lane.occupant
+      ? this.queue.jobs().find(r => r.id === lane.occupant!.stepId) ?? null
+      : null;
+    const seconds = row ? this.eta.etaSeconds(row, stagesFor(row)) : null;
+    return {
+      ...lane,
+      cover: lane.occupant ? this.coverForJobId(lane.occupant.jobId) : null,
+      eta: seconds === null ? null : `${formatDuration(seconds)} left`,
+      speed: row ? this.eta.speedLabel(row) : null,
+      count: row?.totalChunksInJob
+        ? `${(row.chunksCompletedInJob ?? 0).toLocaleString()} / ${row.totalChunksInJob.toLocaleString()}`
+        : null,
+      elapsed: row && row.startedAt ? this.eta.elapsedDisplay(row) : null,
+    };
+  }
+
+  /**
+   * THE QUEUE'S GPU DIAL, as main last published it.
+   *
+   * Read off the snapshot rather than held here: main owns the record, another
+   * window can turn the same dial, and a renderer with its own idea of where
+   * work is being steered is the duplicated fact this queue was rebuilt to
+   * remove.
+   */
+  readonly gpuDial = computed(() => this.queue.snapshot().gpuDial);
+
+  /**
+   * BOOKS THAT HAVE BEEN ADDED BUT NOT SENT — the Pending band.
+   *
+   * Same shape as {@link plans} and the same covers, because a pending item IS a
+   * book's plan; the only difference is which side of the Send-to-queue press it
+   * is on (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`).
+   */
+  readonly pending = computed<BookPlanView[]>(() =>
+    pendingPlans(this.queue.snapshot()).map(plan => ({
+      ...plan,
+      cover: this.coverForJobId(plan.jobIds[0]),
+    })));
 
   /** Failures, each with the sentence the engine wrote. */
   readonly failures = computed<FailedView[]>(() =>
@@ -223,6 +286,10 @@ export class QueueTrayService {
     const lanes = this.lanes();
     const snapshot = this.queue.snapshot();
     const live = snapshot.jobs.filter((job) => {
+      // A staged book is not in the queue yet, so the chip's count is not about
+      // it — `stepStatuses` above says why the same exclusion is load-bearing
+      // for the Start button.
+      if (job.pending === true) return false;
       const status = jobStatus(job);
       return status !== 'done' && status !== 'failed' && status !== 'cancelled';
     });
@@ -414,6 +481,23 @@ export class QueueTrayService {
   /** Release every run in a book's plan, in order. */
   async startPlan(plan: BookPlan): Promise<void> {
     for (const jobId of plan.jobIds) await this.queue.runJobStandalone(jobId);
+  }
+
+  /**
+   * Send a staged book into the live queue — every run of it, in order.
+   *
+   * Sequential and NOT wrapped in a catch, for `cancelPlan`'s reason: if the
+   * second run refuses, the caller says so and the first is genuinely in the
+   * queue. Swallowing it would leave the page claiming a book was sent while
+   * half of it was still staged.
+   */
+  async sendPlanToQueue(plan: BookPlan): Promise<void> {
+    for (const jobId of plan.jobIds) await this.queue.sendToQueue(jobId);
+  }
+
+  /** Turn the queue's GPU dial. See `QueueService.setGpuDial`. */
+  async setGpuDial(value: string): Promise<void> {
+    await this.queue.setGpuDial(value);
   }
 
   /**

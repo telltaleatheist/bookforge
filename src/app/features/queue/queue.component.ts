@@ -98,15 +98,57 @@ import type { BookPlanView } from './services/queue-tray.service';
         </section>
       }
 
-      <!-- ── On the bench ──────────────────────────────────────────────── -->
+      <!-- ── On the bench ──────────────────────────────────────────────────
+           GROUPED, not one flat grid (Owen, 2026-09-15: "they look kind of ugly
+           clustered together randomly. and its hard to tell which slot im
+           looking at unless i look closely at the names"). The sections and
+           their order come from benchSections, which is pure and keeper-driven
+           and never draws an empty heading; this draws them. The overall count
+           stays, because "3 of 6 in use" is the sentence somebody reads first. -->
       <section class="band">
         <header class="band-head">
           <h2>On the bench</h2>
           <span class="note">{{ busyLanes() }} of {{ tray.lanes().length }} slots in use</span>
         </header>
 
-        <div class="lanes">
-          @for (lane of tray.lanes(); track lane.setId + lane.resource + lane.index) {
+        @for (section of tray.sections(); track section.group) {
+        <div class="sect">
+          <div class="sect-head">
+            <h3>{{ section.heading }}</h3>
+            <span class="sect-note">{{ section.note }}</span>
+            <!--
+              THE QUEUE'S GPU DIAL, on the heading of the section it acts on.
+
+              docs/PENDING-QUEUE-AND-GPU-DIAL.md: "This is the section the dial
+              acts on." It is here rather than in the toolbar because a control
+              belongs on the thing it governs — and because a dial floating above
+              a page of books would read as being about the book you are looking
+              at, which is the per-item picker's job and a different question.
+
+              It DEFERS: a book naming a machine is never sent elsewhere by it,
+              a book on Any takes its machine, and a running job ignores it
+              entirely. So turning it can never take work off a card.
+            -->
+            @if (section.group === 'gpu') {
+              <label class="dial">
+                <span class="dial-word">Send work to</span>
+                <select
+                  [value]="tray.gpuDial()"
+                  (change)="chooseGpuDial($any($event.target).value)"
+                  title="Steer new runs at one machine. A book that names a server is never sent somewhere else — it waits until this agrees with it. Anything already running is unaffected."
+                >
+                  <option value="any">Any — let each book decide</option>
+                  @for (name of waitForChoices(); track name) {
+                    <option [value]="name">{{ name }}</option>
+                  }
+                </select>
+              </label>
+            }
+            <span class="sect-count">{{ section.inUse }} of {{ section.lanes.length }} in use</span>
+          </div>
+
+        <div class="lanes" [class.one-up]="section.lanes.length === 1">
+          @for (lane of section.lanes; track lane.setId + lane.resource + lane.index) {
             <article
               class="lcard"
               [class.gpu]="lane.resource === 'gpu'"
@@ -272,7 +314,95 @@ import type { BookPlanView } from './services/queue-tray.service';
             </article>
           }
         </div>
+        </div>
+        }
       </section>
+
+      <!-- ── Pending ───────────────────────────────────────────────────────
+           Adding a book stages it here: nothing about it is committed, its
+           server is chosen while that is still free, and Send to queue is the
+           press that commits it (docs/PENDING-QUEUE-AND-GPU-DIAL.md §1-§3).
+
+           Between the bench and Up next deliberately: it is what FEEDS the live
+           queue, and it reads down the page in the order the work moves. -->
+      @if (tray.pending().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Pending · {{ tray.pending().length }}</h2>
+            <span class="note">
+              Staged, not queued — choose a machine, then send
+            </span>
+          </header>
+
+          @for (plan of tray.pending(); track plan.key) {
+            <article class="card staged">
+              <div class="card-head">
+                @if (plan.cover) {
+                  <img class="cover" [src]="plan.cover" alt="" />
+                } @else {
+                  <span class="cover blank" aria-hidden="true"></span>
+                }
+                <div class="min">
+                  <h3>{{ plan.title }}</h3>
+                  <div class="sub">{{ pendingSummary(plan) }}</div>
+                </div>
+                <div class="acts">
+                  <!-- THE SERVER, chosen while nothing is committed. This is the
+                       whole reason Pending exists: the venue used to be decided
+                       at enqueue from a setting, with no moment to say otherwise. -->
+                  <label class="venue-pick">
+                    <span class="venue-word">Run on</span>
+                    <select
+                      [value]="waitForValue(plan)"
+                      (change)="chooseWaitFor(plan, $any($event.target).value)"
+                      title="Which Crucible server should this book render on? A named server is an instruction — it waits for that machine rather than being sent somewhere else."
+                    >
+                      @if (waitForValue(plan) === '') {
+                        <option value="">No server chosen</option>
+                      }
+                      @for (name of waitForChoices(); track name) {
+                        <option [value]="name">{{ name }}</option>
+                      }
+                      <option value="any">Let the queue decide</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="btn go"
+                    (click)="sendPlan(plan)"
+                    title="Put this book in the live queue. It starts when a machine it will accept is free."
+                  >▶ Send to queue</button>
+                  <button
+                    type="button"
+                    class="btn stop"
+                    (click)="cancelPlan(plan)"
+                    title="Discard this staged book. Nothing has been rendered for it."
+                  >✕ Discard</button>
+                </div>
+              </div>
+
+              <!-- The chain it WILL run, so the press is not a leap of faith.
+                   No per-step controls: nothing here has a queue position, a
+                   slot or a reason to be still beyond "not sent yet". -->
+              <div class="chain">
+                @for (step of plan.steps; track step.stepId) {
+                  <div class="cstep staged-step">
+                    <span class="spine" aria-hidden="true"></span>
+                    <span class="sdot held" aria-hidden="true"></span>
+                    <span class="cname plain">{{ step.label }}</span>
+                    <span class="cmid">
+                      <span class="why">
+                        <span class="dot" aria-hidden="true"></span>{{ step.reason?.sentence }}
+                      </span>
+                    </span>
+                    <span class="cright"></span>
+                  </div>
+                }
+              </div>
+            </article>
+          }
+        </section>
+      }
 
       <!-- ── Up next ───────────────────────────────────────────────────── -->
       <!-- The band IS the drop list, header included — a wide target, and no
@@ -465,7 +595,8 @@ import type { BookPlanView } from './services/queue-tray.service';
         </section>
       }
 
-      @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0) {
+      @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
+           && tray.pending().length === 0) {
         <section class="band">
           <div class="empty">
             <h2>Nothing is queued</h2>
@@ -621,6 +752,76 @@ import type { BookPlanView } from './services/queue-tray.service';
       border: 1px solid var(--border-subtle); background: var(--bg-input); color: var(--text-primary);
     }
     .venue { font-size: 12px; color: var(--text-muted); }
+
+    /* ── The bench's sections ──────────────────────────────────────────────
+       Owen, 2026-09-15: the slots "look kind of ugly clustered together
+       randomly. and its hard to tell which slot im looking at unless i look
+       closely at the names." The heading carries the name of the group and a
+       line saying what is in it, so the answer is above the cards rather than
+       inside them. */
+
+    .sect + .sect { margin-top: 16px; }
+
+    .sect-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .sect-head h3 {
+      margin: 0;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .sect-note { font-size: 0.6875rem; color: var(--text-muted); }
+
+    .sect-count {
+      margin-left: auto;
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* The GPU dial. Louder than the per-book picker — it governs the whole
+       queue — but still quiet enough not to compete with the cards below it. */
+    .dial { display: inline-flex; align-items: center; gap: 6px; }
+
+    .dial-word {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .dial select {
+      font: inherit;
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-input);
+      color: var(--text-primary);
+    }
+
+    /* A section with one lane must not stretch it across the whole page: the
+       GPU card is 1.7fr of three columns, and alone it would be six times the
+       width of the words in it. */
+    .lanes.one-up { grid-template-columns: minmax(0, 420px); }
+
+    /* ── Pending ───────────────────────────────────────────────────────────
+       Dashed, because nothing about a staged book is committed: it is a plan on
+       the bench, not work in the queue. Same card shape as Up next, so the
+       press between them is the only difference a reader has to hold. */
+
+    .card.staged { border-style: dashed; }
+
+    .cstep.staged-step { grid-template-columns: 16px minmax(0, 260px) 1fr; }
+
+    .cname.plain { color: var(--text-tertiary); cursor: default; }
 
     /* ── Reordering "Up next" ──────────────────────────────────────────────
        Styled after studio-list's list rows (the house precedent for CdkDrag):
@@ -1310,8 +1511,44 @@ export class QueueComponent {
       // Every run of the book, because the book is the unit the answer is about.
       for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
     } catch (err) {
+      /*
+       * THE EDIT LOST THE RACE, and the toast says so in main's own words —
+       * "X was taken by a GPU on mac before this change arrived … Nothing here
+       * has been altered." (docs/PENDING-QUEUE-AND-GPU-DIAL.md, "Mutability").
+       *
+       * The select is NOT reverted by hand here, and does not need to be: it is
+       * bound to the snapshot, so the next publication — which main sends on the
+       * same tick it refused — redraws it at the value the book actually has. A
+       * local revert would be this side guessing at a state main already owns.
+       */
       this.toasts.problem((err as Error)?.message || 'That server could not be chosen.');
     }
+  }
+
+  /**
+   * TURN THE QUEUE'S GPU DIAL.
+   *
+   * Refusals are said, not swallowed — the only one main can give is a server
+   * this machine does not have, which would mean the picker and the registry
+   * had come apart, and that is worth seeing rather than hiding.
+   */
+  async chooseGpuDial(value: string): Promise<void> {
+    try {
+      await this.tray.setGpuDial(value);
+    } catch (err) {
+      this.toasts.problem((err as Error)?.message || 'The GPU dial could not be turned.');
+    }
+  }
+
+  /** Send a staged book into the live queue. */
+  sendPlan(plan: BookPlan): void {
+    this.report(this.tray.sendPlanToQueue(plan));
+  }
+
+  /** "2 steps · waiting to be sent" — what a staged card says under its title. */
+  pendingSummary(plan: BookPlan): string {
+    const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
+    return `${count} · nothing committed yet`;
   }
 
   busyLanes(): number {
