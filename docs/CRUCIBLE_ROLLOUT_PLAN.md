@@ -4,6 +4,73 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0f. THE MORNING OF 2026-09-15 — WHERE IT STANDS (read this first; 0e below is the evening before)
+
+**Owen's ask overnight:** "fully functional by morning. Including the crucible servers set up and
+configured on Mac, windows, and wsl"; an uninstall route (he will uninstall PC+WSL and Mac and
+reinstall end to end as THE test); a CLI install route for a rented Linux GPU droplet; BookForge's
+and Foundry's setup/settings pages able to install AND configure it; and Phase 17 — the explicit
+**orchestrator / engine** relation (his words; never master/slave).
+
+**Landed, all committed, nothing pushed except BookForge's branch (Owen authorised; `origin` at
+e0c0ebe3+):**
+- **The button ran, measured** (crucible PHASE15-HOST.md §7.3/7b/7c/7.6): T1 SDKs 245+299 · T2 full
+  pytest green after 3 stale tests · T4 keepers green · **T6 dots under vLLM/WSL 73.1 s load, 4.5 s/page,
+  11 blocks** · **T7 llama-windows: dots 6.2 s load, 3.7 s/page, 11 blocks byte-identical to vLLM's;
+  qwen3.5-9b Q8 10.2 s load, 1.3 s/chunk** · T8 remove door · **T9 Mac asr 27 s, align 49 s** · T10
+  engine task. T5 skipped (no `C:\tmp\phase15-testrun\anthropic-key.txt`). Seven defects found on the
+  card and fixed the same night with tests (settlement race, Windows accelerator read, Windows guard
+  asks for ROOM, projector pin → `ggml-org/dots.ocr-GGUF` Q8 pair, engine-task endings named, T6 stage,
+  narrator HIGGS_ENV prefix regression).
+- **Takes + zero-shot proven on the Mac's card** (MLX arm, tts env rebuilt on narrator 95d11238):
+  take 1 ≠ take 0, take 0 == take 0 (seeded; per-take seed lane), take 2 refused `unknown_take`;
+  **first zero-shot render ever: 12.1 s audio in 9 s** with the owen-morgan clip + transcript. On the PC
+  the same two checks are OWED once the card is free (Training pc holds it until ~06:30; the tts venv
+  has narrator 95d11238 reinstalled `--no-deps`; the full `install tts --build --force` rebuild waits
+  for the card window because of the 13 GB VM cap).
+- **Servers:** WSL engine at crucible 53f40e2 on 7100 (`role: engine`), run tonight as a held process —
+  the unit's user bus has NO socket in this boot, so `systemctl --user` fails from every session; the
+  fix is `systemctl restart user@1000`, which would kill the trainer → done in the card window, then the
+  unit owns the server again. Linger enabled (`loginctl enable-linger telltale`, root). The WSL distro
+  terminates seconds after the last `wsl.exe` session even with units running → the orchestrator now
+  holds it open (c59dc9d); tonight a held `sleep infinity` does. **Windows orchestrator installed for
+  real**: `%LOCALAPPDATA%\Crucible\host\` (pack built locally — NO release publishes a host pack yet;
+  `install.ps1` cannot run until the windows-latest CI row publishes one: OWEN's release), tray pid
+  45504, one Startup `Crucible.lnk`, pairing file = the guest's line copied (§3.6). It runs the PRE-Phase-17
+  pack; rebuild + tray restart in the card window. **Mac** at 53f40e2-era 3184860, tts env rebuilt,
+  capability tts yes / pages no, doctor healthy, nothing resident.
+- **Phase 17** (crucible b14ea44…53f40e2, `docs/PHASE17-ORCHESTRATOR.md`): `role` per process,
+  `POST/DELETE /v1/peer/claim`, `GET /v1/peer`, `managed_by` on an engine, `engine{}` + capability
+  read-through on the orchestrator's door (:7101 now answers `/v1/ping` + `/v1/info`), `engine-restart`
+  task, `crucible host` = alias of `crucible orchestrator`; SDK `engineOf`; two defects fixed (the door's
+  bearer was the host's token; tray Restart did nothing).
+- **Uninstall + droplet install** (crucible `crucible uninstall --dry-run --json --purge-weights
+  --wsl-too`, `install.ps1 -Uninstall`, `install.sh --uninstall` and the Linux branch;
+  `docs/INSTALL-UNINSTALL.md`): weights KEPT by default; the token goes with config.toml so every app
+  re-pairs after Owen's round-trip; never run live yet (dry-run on the staged home: 19 steps, 17 GiB kept).
+- **BookForge doors** (0e3d9da6…e0c0ebe3 + the .cmd-spawn fix): "Set one up on this machine" was
+  hardcoded DEAD on every machine — now live through the host's loopback door (`@crucible/bootstrap`
+  vendored as a tarball); Settings → AI's write-through window shows refusal CODES; a fourth door in
+  Crucible Servers "Remove the engine from this computer" (local-only, dry-run first, weights kept);
+  `cli/pass.js` had been PERSISTING an Anthropic key in plaintext — refused by name. Foundry matched the
+  door word for word (their main d9bfb4b+). Keepers 159 green. SDK re-vendored four times tonight, last
+  `de666f5c` (sha 97da4118…).
+- **Also landed:** Enhance page deleted; extension → Crucible direct with clip picker; Bible
+  abbreviations; narrator sampling channel; coordinate shape matched with Foundry; Orpheus cleanup
+  (26 GiB; two voices wait on the HF storage ruling).
+
+**In the card window (Training pc's ONE "clear" message, ~06:30):** PC take-0/take-1 + zero-shot
+render through the WSL engine; `crucible install tts --narrator-engine higgs-v3 --build --force` in WSL;
+`systemctl restart user@1000` → unit owns the server; `envpack build host` → tray restart → the
+orchestrator claims the engine (`managed_by` set); T2 full pytest; then hand back to whoever needs it.
+
+**Owen, in the morning:** the in-app pass on both machines (first-run wizard, Settings → AI, Crucible
+Servers doors, the extension's Options + Load voice, a Listen, a render, Correct Sentences); the
+release that publishes the host pack (`./scripts/release.sh --branch feat/phase6-remote-render`,
+after `envpacks.yml`'s windows row runs); the HF storage choice; the linger ruling (a voice does not
+stay resident after a render — ~30 s reload per standalone render, measured on the Mac); then the
+uninstall-and-reinstall round trip on PC and Mac as the acceptance test.
+
 ## 0e. WHERE IT STANDS AT 19:40, 2026-09-14 (0d below is the BookForge half; read this first)
 
 **THE INSTALL/CONFIGURE/UNINSTALL PATH IS WALKED END TO END, 2026-09-15 (`0e3d9da6`,
