@@ -212,15 +212,21 @@ const ABBREVIATIONS: ReadonlyMap<string, string> = new Map(Object.entries({
  * still carry its abbreviating PERIOD — that period is what says "this is
  * short for something" — so a dotless "Phlm" is left alone.
  *
- * DELIBERATELY TINY, and the omissions are the point. "Zeph.", "Obad.",
- * "Matt.", "Isa.", "Jer." and "Josh." are all names people are actually
- * called, and a narrator saying "Joshua wrote back" where the book said
- * "Josh. wrote back" is exactly the class of error the LISTEN-only rule exists
- * to prevent. Adding one is a line here and a case in the negative corpus.
+ * THREE ENTRIES, AND THE OMISSIONS ARE THE POINT. Every candidate has to fail
+ * to be anything else, and almost all of them fail that:
+ *
+ *   Zeph. Obad. Ezek. Matt. Isa. Jer. Josh. Dan. Tim.
+ *       names people are actually called. A narrator saying "Joshua wrote
+ *       back" where the book said "Josh. wrote back" is the exact class of
+ *       error the Listen-only rule exists to prevent.
+ *   Eccles. Chron. Judg. Prov.
+ *       abbreviations of OTHER words — ecclesiastical, chronological,
+ *       judgment, provisional — and "Eccles" is a surname besides.
+ *
+ * Adding one is a line here and a row in the negative corpus that proves it
+ * was safe to add.
  */
-const BARE_ALIASES: ReadonlySet<string> = new Set([
-  'phlm', 'philem', 'eccles', 'ecclus', 'judg', 'ezek', 'chron',
-]);
+const BARE_ALIASES: ReadonlySet<string> = new Set(['phlm', 'philem', 'ecclus']);
 
 /**
  * The prefix of a detected span: an optional volume number, then the book
@@ -254,7 +260,11 @@ function fullName(token: string): string | null {
   // rewriting it to itself would be a rewrite the writer has to verify for
   // nothing. "Song", "John" and "Job" live here, which is why they are safe.
   if (CANONICAL_BOOK_NAMES.has(bare)) return null;
-  return ABBREVIATIONS.get(bare) ?? null;
+  // Spelled out rather than `?? null`: an absence here is the table SAYING it
+  // has no opinion about this token, which is the safe answer and the one this
+  // module is built to give often. It is not a missing value being covered for.
+  const name = ABBREVIATIONS.get(bare);
+  return name === undefined ? null : name;
 }
 
 /**
@@ -313,13 +323,16 @@ export function bibleReferenceRewrites(
     // Nothing printed short: a fully spelled book with no volume number in
     // front of it is already what the narrator says.
     if (name === null && ordinal === null) continue;
-    const spoken = name ?? token;
+    // `name === null` past the check above means the TOKEN is already the full
+    // name and only the volume number is printed short ("2 Corinthians"). Not a
+    // fallback: the two cases are named, and the third — neither short — left.
+    const spoken = name === null ? token : name;
     // The abbreviating period is CONSUMED here and only here: what follows it
     // inside a detected span is the chapter, so it can never have been ending a
     // sentence. (The bare case below is where that question is real.)
     const replace = ordinal === null ? spoken : `${ordinal} ${spoken}`;
     if (replace === whole) continue;
-    add(span.at, whole, replace, name ?? spoken);
+    add(span.at, whole, replace, spoken);
   }
 
   // ── 2. A bare dotted abbreviation that can be nothing else ──────────────

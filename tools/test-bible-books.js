@@ -107,7 +107,7 @@ const POSITIVE = [
   // dropped mid-sentence and KEPT where it is also the full stop.
   ['He read Phlm. at length.', 'He read Philemon at length.'],
   ['She read Phlm. The rain fell.', 'She read Philemon. The rain fell.'],
-  ['The whole of Ezek.', 'The whole of Ezekiel.'],
+  ['The whole of Ecclus.', 'The whole of Sirach.'],
 ];
 
 for (const [printed, spoken] of POSITIVE) {
@@ -160,12 +160,15 @@ const NEGATIVE = [
   'Fig. 3 was the reading.',
   // A DOTLESS bare abbreviation: the period is the evidence, and there is none.
   'Phlm was the file name.',
-  'Ezek walked in.',
-  // A bare dotted abbreviation that IS a name somebody is called, deliberately
-  // left out of the bare set.
+  'Ecclus was the file name.',
+  // A bare dotted abbreviation that IS a name somebody is called, or is short
+  // for some other word — both deliberately left out of the bare set.
   'Zeph. was the youngest.',
   'Obad. spoke first.',
+  'Ezek. walked in.',
   'Josh. and Matt. and Isa. and Jer. came together.',
+  'The Eccles. courts met; the Chron. order was kept; Judg. Harris presided.',
+  'Prov. no. 4 was the last.',
   // Full book names are already what the narrator says: nothing to expand, and
   // nothing that can go wrong.
   'Mark and John and Job and Ruth and Amos and Joel and Titus sat down.',
