@@ -224,6 +224,8 @@ retrieve and return the audio."*
 > `voice_kind_unsupported` refusal lifted, and a `load-voice` field to put them in. Until
 > then a clip store in the extension would be a file input wired to a refusal.
 
+**UNBLOCKED 2026-09-14 late (crucible `743dc1a`/`e342fee`/`d6f2786`, PHASE3-TTS.md §2–§7):** the load door now takes the clip — `POST /v1/jobs {type: "load-voice", model: "zeroshot", params: {reference: {data: <base64 WAV, no data: prefix>, transcript: <book-exact text of the clip>, name: <label>}}}`; SDK `loadVoice(voice, {reference})`; voices row `needs_reference` (SDK `needsReference`); refusals `reference_required` / `reference_not_allowed` / `reference_malformed` (not strict base64, not a readable WAV, blank transcript, over 30 s, over 32 MiB), all before the queue; the resident clip is reported on `GET /v1/activity` as `resident.reference = {name, sha256, seconds}` (null when a checkpoint voice is resident) and on the load job's `done`. Two corrections to the sketch above: **`transcript` is REQUIRED** (narrator refuses an empty one), so the extension's clip picker and BookForge's `refs/` entries each carry the clip's text; and the streaming door no longer refuses the zeroshot kind (it never loads). Still owed: the extension's clip store + picker (with the transcript field), BookForge's voice modal sending its four `zeroshot-*` refs through this door, and the first real MLX render with a clip.
+
 ## 5. Order of work
 
 1. Owen's ruling on §2 (takes are the spread) — RULED, see §2; narrator's sampling channel assigned. 2. `shared/listen-text/` + `shared/listen-client/`
