@@ -55,13 +55,25 @@
  *           hundreds or thousands of chat completions against one resident
  *           model, and between any two of them the card is unprotected.
  *
- *   DO NOT LEASE — `render.ts`, `asr.ts`, `align.ts`, `rvc.ts`, `denoise.ts`,
- *           `reroll.ts`. Their work is ONE job on the lane, and a job already
- *           holds everything a lease would hold: `/v1/activity` reports it
- *           `running`, and a second submission is refused `server_busy` naming
- *           it. Leasing around one of them would add a second claim on the same
- *           fact — and `tts` and `align` are in `EVICTS_THE_RESIDENT_MODEL`, so
- *           a lease taken around one would refuse the very job it was taken for.
+ *   LEASE — `denoise.ts`, and it is the rule above rather than an exception to
+ *           it. A denoise PASS is ~44 blocks and therefore ~44 `denoise` jobs,
+ *           and between any two of them nothing holds the card. Crucible keeps
+ *           the separator resident across jobs (`KIND_DENOISE`, 2026-09-15), so
+ *           a lease is what turns ~44 model loads into one — the same cost
+ *           BookForge's own `separator_worker.py` removed locally (bookforge
+ *           `019afa52`: "roughly a third of the pass"). It is taken after the
+ *           FIRST block, because a lease names what is already resident.
+ *
+ *   DO NOT LEASE — `render.ts`, `asr.ts`, `align.ts`, `rvc.ts`, `reroll.ts`.
+ *           Their work is ONE job on the lane, and a job already holds
+ *           everything a lease would hold: `/v1/activity` reports it `running`,
+ *           and a second submission is refused `server_busy` naming it. Leasing
+ *           around one of them would add a second claim on the same fact — and
+ *           `tts` and `align` are in `EVICTS_THE_RESIDENT_MODEL`, so a lease
+ *           taken around one would refuse the very job it was taken for. (An
+ *           `align.ts` that ever aligned chapter by chapter would move up to the
+ *           LEASE list for `denoise.ts`'s reason; today one job carries the
+ *           whole book's chunks.)
  *
  *   DO NOT LEASE — `stream.ts`. A streaming session holds the resident engine's
  *           exclusive CLAIM (`crucible/residency.py`, `refuse_if_claimed`), which
@@ -400,8 +412,18 @@ async function leaseRequest(
  * client that guessed at it would be the first thing to break when it lands, and
  * nothing in BookForge renders or aligns chapter by chapter through these doors
  * yet.
+ *
+ * A SEPARATOR IS THE ONE THAT LANDED (2026-09-15, Owen's ruling). It is the
+ * same shape as the aligner case above, except that the door really does send
+ * many jobs: a denoise pass is ~44 blocks and therefore ~44 `denoise` jobs, so
+ * `electron/crucible/denoise.ts` takes a `separator` lease after the first
+ * block and releases it in `dispose()`. Without it Crucible's resident
+ * separator (`KIND_DENOISE`) buys nothing, because the card is cleared the
+ * moment the last holder lets go and each block reloads a 913 MB checkpoint —
+ * the cost BookForge's own `separator_worker.py` removed on the local side
+ * (bookforge `019afa52`: "roughly a third of the pass").
  */
-export type CrucibleLeaseKind = 'model' | 'voice' | 'aligner';
+export type CrucibleLeaseKind = 'model' | 'voice' | 'aligner' | 'separator';
 
 /**
  * The one lease route, for every kind. The id is the ONLY thing on it — see

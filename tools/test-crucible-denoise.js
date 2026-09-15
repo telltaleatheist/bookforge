@@ -23,9 +23,10 @@
  *     refusal after the upload.
  *  5. Refusals by name: a server with no `denoise`, a model it does not have,
  *     `server_busy` with the holder's line.
- *  6. The venue door: the legacy switch runs the local arm and says so; a routed
- *     server runs the remote arm with that server's name; the run's venue beats
- *     the routing record; a caller naming a different server is refused.
+ *  6. The venue door: there is no local arm left to run (docs/LEGACY-REMOVAL.md);
+ *     a routed server runs the remote arm with that server's name; the run's
+ *     venue beats the routing record; a caller naming a different server is
+ *     refused.
  *
  * No GPU, no audio-separator, no network beyond 127.0.0.1.
  */
@@ -83,6 +84,31 @@ function startFake(behaviour) {
         job_types: ['echo', 'denoise'],
         capabilities,
       });
+      return true;
+    }
+
+    // THE LEASE. A pass is ~44 blocks and `crucible/settle.py` clears the card
+    // the moment the last holder lets go, so without one the resident separator
+    // is unloaded between every pair of blocks and each block reloads a 913 MB
+    // checkpoint — the exact cost `separator_worker.py` was written to remove.
+    const lease = /^\/v1\/models\/([^/]+)\/lease$/.exec(route);
+    if (lease && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.leases = state.leases || [];
+      state.leases.push({ subject: decodeURIComponent(lease[1]), act: body.act });
+      send(res, 201, {
+        lease_id: 'lease-1',
+        subject: decodeURIComponent(lease[1]),
+        kind: 'denoise',
+        act: body.act,
+        since: '2026-09-15T12:00:00Z',
+        expires_at: '2026-09-15T12:05:00Z',
+      });
+      return true;
+    }
+    if (/^\/v1\/leases\/[^/]+$/.test(route) && req.method === 'DELETE') {
+      state.leasesReleased = (state.leasesReleased || 0) + 1;
+      res.writeHead(204).end();
       return true;
     }
 
@@ -171,6 +197,30 @@ async function happyPath() {
     await sep.dispose();
     await fake.close();
   }
+  await check('a pass HOLDS the separator: one lease, named truthfully, released at the end', () => {
+    /*
+     * THE HALF OF THE RESIDENCY THAT IS THIS SIDE'S.
+     *
+     * Crucible holds the separator across jobs (KIND_DENOISE, 2026-09-15), but
+     * `crucible/settle.py` clears the card the moment the last holder lets go —
+     * and a pass is ~44 separate jobs. Without a lease open across them the
+     * card is cleared between every pair, each block reloads a 913 MB
+     * checkpoint, and the pass is ~a third slower with every job succeeding and
+     * every log clean. That is the exact cost `separator_worker.py` removed on
+     * the local side (bookforge `019afa52`) and the exact shape this whole
+     * campaign is about, so it is pinned rather than trusted.
+     */
+    assert.deepStrictEqual(fake.state.leases, [
+      { subject: denoise.CRUCIBLE_DENOISE_MODEL, act: 'denoise' },
+    ], 'a pass must take exactly one lease, on the separator, named `denoise`');
+    // Taken AFTER the first block, never in start(): a lease names what is
+    // already resident, and nothing is resident until a job has made it so.
+    assert.ok(log.some((line) => /holding denoise-roformer/.test(line)), log.join(' | '));
+    // And given back, or somebody else's card stays held for the lease's ttl
+    // over a pass that has finished.
+    assert.strictEqual(fake.state.leasesReleased, 1);
+  });
+
   await check('the capability question is asked once, in start(), before any block crosses', () => {
     assert.strictEqual(fake.state.infoAsked, 1);
     assert.ok(log.some((l) => /will be denoised on crucible/.test(l)), log.join('\n'));

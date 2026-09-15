@@ -540,7 +540,18 @@ const { check, summary } = makeChecker();
      * is one job on the lane — or a streaming session, which holds the resident
      * engine's claim outright — has no business importing this.
      */
-    const mustNot = ['render.ts', 'asr.ts', 'align.ts', 'rvc.ts', 'denoise.ts', 'reroll.ts', 'stream.ts'];
+    /*
+     * `denoise.ts` LEFT this list on 2026-09-15, and it is the one exception the
+     * rule always implied: the rule is about a door whose work is ONE job, and a
+     * denoise pass is ~44 of them. Crucible holds the separator across those jobs
+     * now (`KIND_DENOISE`), and `crucible/settle.py` clears the card the moment
+     * the last holder lets go — so between block 3 and block 4 there is no holder
+     * at all and the checkpoint is reloaded. The lease is what states "one more
+     * block is coming", which is a fact only the client has. `align.ts` stays on
+     * the list because one align job carries the whole book's chunks; if it ever
+     * aligns chapter by chapter it belongs here too, for the same reason.
+     */
+    const mustNot = ['render.ts', 'asr.ts', 'align.ts', 'rvc.ts', 'reroll.ts', 'stream.ts'];
     for (const name of mustNot) {
       const file = path.join(REPO, 'electron', 'crucible', name);
       const source = fs.readFileSync(file, 'utf8');
@@ -551,6 +562,23 @@ const { check, summary } = makeChecker();
       assert.match(source, /lease/i,
         `${name} says nothing about the lease; a reader asking "why not here?" must find the answer`);
     }
+  });
+
+  await check('the MANY-job door DOES lease, and says why', () => {
+    /*
+     * The other half of the rule above. A pass of ~44 denoise jobs against one
+     * resident separator is exactly what a lease is for, and the cost of losing
+     * it is measured: BookForge's own `separator_worker.py` (bookforge
+     * `019afa52`) replaced a per-block model load because it was *"roughly a
+     * third of the pass"*. A future edit that quietly drops the lease would put
+     * that back with every job succeeding and every log clean.
+     */
+    const source = fs.readFileSync(
+      path.join(REPO, 'electron', 'crucible', 'denoise.ts'), 'utf8');
+    assert.match(source, /from\s+['"]\.\/lease(?:\.js)?['"]/,
+      'denoise.ts must import ./lease — a pass is ~44 jobs and the card is cleared between them');
+    assert.match(source, /takeCrucibleLease/, 'denoise.ts must actually take one');
+    assert.match(source, /release\(\)/, 'and give it back, or it holds a card it has finished with');
   });
 
   await check('the KIND never reaches the wire — the server supplies it from the card', async () => {

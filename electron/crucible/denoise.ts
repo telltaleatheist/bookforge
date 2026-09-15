@@ -55,15 +55,28 @@
  * the offsets it is about to slice at are only safe if the block came back the
  * length it went up.
  *
- * **NO LEASE HERE.** This is ONE job on the lane, and a job already holds
- * everything a Crucible lease would hold — see `job.ts`'s header for the whole
- * argument, and `lease.ts` for the chat-shaped doors that do lease.
+ * ── A LEASE, BECAUSE A PASS IS MANY JOBS ───────────────────────────────────
+ *
+ * This file used to say "NO LEASE HERE. This is ONE job on the lane, and a job
+ * already holds everything a Crucible lease would hold." That is true of one
+ * job and false of a pass: a book is ~44 blocks and therefore ~44 jobs, and
+ * `crucible/settle.py` clears the card the moment the last holder lets go — so
+ * between block 3 and block 4 there is no holder at all. Since 2026-09-15
+ * Crucible holds the separator across jobs (Owen's ruling, `KIND_DENOISE`), and
+ * a lease is what keeps it there for the rest of the pass. Without one the
+ * residency buys nothing and every block reloads a 913 MB checkpoint, which is
+ * exactly the cost BookForge's own `separator_worker.py` was written to remove
+ * (bookforge `019afa52`: "roughly a third of the pass").
+ *
+ * See {@link crucibleBlockSeparator} for when it is taken and why it cannot be
+ * taken in `start()`.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { assertCrucibleModelOffered, runCrucibleJob } from './job';
+import { takeCrucibleLease, type CrucibleLease } from './lease';
 import type { VenueHost } from './generation-venue';
 import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
 
@@ -128,20 +141,67 @@ export interface CrucibleBlockSeparatorOptions {
  * crossed the wire is twenty minutes of ffmpeg for a named refusal that could
  * have arrived first.
  *
- * There is no residency to hold between blocks and none is asked for: each job
- * is its own admission, and if another client takes the lane between block 3 and
- * block 4 the refusal is `server_busy` with the holder's name, which is a real
- * answer. Nothing here waits or retries.
+ * The separator IS held between blocks, and holding it is this side's job as
+ * much as the server's — see the header. If another client takes the lane
+ * between block 3 and block 4 the refusal is `server_busy` with the holder's
+ * name, which is a real answer. Nothing here waits or retries.
  */
 export function crucibleBlockSeparator(options: CrucibleBlockSeparatorOptions): BlockSeparator {
   const { server } = options;
   const log = options.onLog ?? (() => undefined);
   let checked = false;
+  /*
+   * ── THE LEASE THAT MAKES THE RESIDENT SEPARATOR PAY OFF ────────────────────
+   *
+   * Crucible holds the separator across jobs since 2026-09-15 (Owen's ruling;
+   * `crucible/residency.py`, `KIND_DENOISE`). That is only half of it, and the
+   * other half is ours. `crucible/settle.py` clears the card the moment the last
+   * holder lets go, and says so in as many words: *"a run of chat completions
+   * with no lease open reloads its model … the fix is a lease at BookForge's
+   * door, never an exception here."* A book is ~44 blocks and ~44 jobs, so
+   * WITHOUT this the card is cleared between every pair of them and the
+   * residency buys exactly nothing.
+   *
+   * It is taken AFTER the first block rather than in `start()`, and that is not
+   * an optimisation — a lease never loads, it names what is ALREADY resident,
+   * and nothing is resident until a job has made it so. There is no
+   * `load-denoiser` door for the same reason there is no `load-aligner` one.
+   *
+   * A lease that cannot be taken is LOGGED AND NOT FATAL, and this is the one
+   * place in this file that is deliberate rather than a fallback: the pass is
+   * correct either way, and refusing a book because it would run slower would be
+   * this door inventing a reason to fail. What it must never do is run slower in
+   * silence, so the line says which happened.
+   */
+  let lease: CrucibleLease | null = null;
+  let leaseAttempted = false;
+
+  async function holdTheCard(): Promise<void> {
+    if (leaseAttempted) return;
+    leaseAttempted = true;
+    try {
+      lease = await takeCrucibleLease({
+        server,
+        kind: 'separator',
+        id: CRUCIBLE_DENOISE_MODEL,
+        act: 'denoise',
+        onLog: (line) => log(line),
+      });
+      log(`Final denoise: holding ${CRUCIBLE_DENOISE_MODEL} on crucible "${server}" for the `
+        + 'rest of the pass — one model load for the whole book, not one per block.');
+    } catch (err) {
+      lease = null;
+      log(`Final denoise: could not hold ${CRUCIBLE_DENOISE_MODEL} on crucible "${server}" `
+        + `(${err instanceof Error ? err.message : String(err)}). The pass will still be `
+        + 'correct, but the separator may be unloaded between blocks and each block would '
+        + 'then pay its own model load.');
+    }
+  }
 
   return {
     starting(blocks: number): string {
       return `Final denoise: ${blocks} block(s) will be denoised on crucible "${server}" — `
-        + 'one job each, nothing is loaded on this machine.';
+        + 'one job each, one model load for all of them, nothing is loaded on this machine.';
     },
 
     async start(_workDir: string, blocks: number): Promise<string> {
@@ -149,7 +209,7 @@ export function crucibleBlockSeparator(options: CrucibleBlockSeparatorOptions): 
       await assertCrucibleModelOffered(client, server, 'denoise', CRUCIBLE_DENOISE_MODEL);
       checked = true;
       return `Final denoise: crucible "${server}" offers ${CRUCIBLE_DENOISE_MODEL} — `
-        + `${blocks} block(s) will each be one job.`;
+        + `${blocks} block(s) will each be one job, against one resident separator.`;
     },
 
     async separate(inputPath: string, outDir: string): Promise<string> {
@@ -205,13 +265,25 @@ export function crucibleBlockSeparator(options: CrucibleBlockSeparatorOptions): 
       }
       log(`crucible "${server}" denoised ${name}: primary stem "${primary}" of `
         + `${outcome.artifacts.files.size} artifact(s)`);
+      // AFTER the first block, because a lease names what is already resident
+      // and this job is what made it so. Idempotent: every later block calls it
+      // and it does nothing.
+      await holdTheCard();
       return written.path;
     },
 
     async dispose(): Promise<void> {
-      // Nothing is held between blocks: each job is its own admission and the
-      // server owns the model's residency. Present so the caller's `finally`
-      // does not have to know which separator it has.
+      // GIVE THE CARD BACK. `release()` is idempotent and never throws, which is
+      // what lets this sit in the caller's `finally` beside a local separator
+      // that has a process to stop instead. Leaving it open would hold somebody
+      // else's card for the rest of the lease's ttl over a pass that has
+      // finished.
+      const held = lease;
+      lease = null;
+      if (held !== null) {
+        await held.release();
+        log(`Final denoise: released ${CRUCIBLE_DENOISE_MODEL} on crucible "${server}".`);
+      }
     },
   };
 }
