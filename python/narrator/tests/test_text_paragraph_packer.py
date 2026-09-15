@@ -180,6 +180,36 @@ class FloorTest(unittest.TestCase):
         for chunk in report.chunks:
             self.assertLessEqual(chunk.chars, 200)
 
+    def test_the_lead_token_counts_against_the_cap_because_the_wire_counts_it(self):
+        """Owen's Mac render, 2026-09-15, chunk 21 of 77: raw 801, spoken 794,
+        cap 800 - refused `chunk_too_long` before a second of audio, because
+        Crucible measures `len(chunk.text)` and this packer measured
+        `spoken(text)`. The `[break]` lead is 7 characters that ride in the
+        chunk, so they come out of the chunk's budget."""
+        # One paragraph of three sentences whose SPOKEN length lands just inside
+        # the cap: under the old rule it shipped as one 801-char chunk.
+        text = ' '.join(['w' * 260 + '.', 'x' * 260 + '.', 'y' * 268 + '.'])
+        report = pp.pack_paragraphs([para(text, 0)], FakeBudget(800), floor_chars=500)
+        for chunk in report.chunks:
+            # `len(chunk.text)` on purpose, not the `written_chars` property:
+            # the property is part of the same change, and a test that could
+            # only fail on a missing attribute would not be measuring the rule.
+            self.assertLessEqual(len(chunk.text), 800,
+                                 'the chunk as it travels must fit the cap')
+            self.assertEqual(chunk.written_chars, len(chunk.text))
+        self.assertTrue(report.chunks[0].text.startswith(pp.sml_token('break')),
+                        'and the lead token is still there - it was paid for, not dropped')
+
+    def test_a_merge_leaves_room_for_the_lead_token_too(self):
+        """Otherwise the merge builds a group that `emit_prose` then has to
+        sentence-split for the seven characters nobody counted."""
+        # 99 characters each: two of them are 199 spoken, which the old merge
+        # rule accepted against a 200-char cap and then wrote as 206.
+        blocks = [para('x' * 98 + '.', i) for i in range(20)]
+        report = pp.pack_paragraphs(blocks, FakeBudget(200), floor_chars=1000)
+        for chunk in report.chunks:
+            self.assertLessEqual(len(chunk.text), 200)
+
     def test_the_floor_is_configurable_and_zero_means_no_merging(self):
         blocks = [para('"One."', 0), para('"Two."', 1), para('"Three."', 2)]
         report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=0)

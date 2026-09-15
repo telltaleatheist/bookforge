@@ -247,6 +247,18 @@ class Chunk:
         """The length the budget bounds: the text the model will read."""
         return len(spoken(self.text))
 
+    @property
+    def written_chars(self) -> int:
+        """The length of the chunk AS IT TRAVELS - the lead `[break]` and any
+        `[heading]`/`[item]` marker included.
+
+        It is not the same number as `chars`, and the difference is what a
+        client is refused for: Crucible's render door measures `len(chunk.text)`
+        against the voice's cap certificate (crucible/jobs/tts/render.py), so a
+        794-char chunk with a 7-char lead is 801 on the wire. `pack_paragraphs`
+        bounds THIS number, and `chars` stays what the model reads."""
+        return len(self.text)
+
 
 @dataclass
 class PackReport:
@@ -890,6 +902,31 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         raise ValueError(f'floor_chars must be >= 0, got {floor_chars}')
     cap = effective_cap(budget, voice, audio_budget_s)
 
+    # THE LEAD TOKEN IS PART OF THE CHUNK, SO IT IS PART OF THE BUDGET.
+    #
+    # Hoisted out of `emit_prose` on 2026-09-15 for a measured reason. The cap
+    # was compared against `spoken(text)` - the markers stripped - while the
+    # chunk WRITTEN is `[break]` (7 chars), sometimes `[break][heading]` (16),
+    # and then that text. Whoever is handed the chunk measures what they are
+    # handed: Crucible's render door refuses on `len(chunk.text)`
+    # (crucible/jobs/tts/render.py), so a 794-char chunk shipped as 801 and the
+    # server refused the whole book. Owen's Mac render of 2026-09-15, chunk 21
+    # of 77: raw 801, spoken 794, cap 800.
+    #
+    # The fix is not a margin. The prefix is a KNOWN, exact number of characters
+    # that ride in the chunk, so it comes out of that chunk's budget - which
+    # costs at most 16 characters of prose and makes the cap bound the artifact
+    # rather than a reading of it. `spoken()` stays the measure of the FLOOR,
+    # which is about what the model reads.
+    lead = sml_token('break') if lead_break else ''
+
+    def prefix_for(group: list) -> str:
+        """The unspoken run this group's FIRST chunk will carry - the same rule
+        `emit_prose` emits by, asked here so the merge decision and the emit
+        agree about how much room is left."""
+        head = (group and HEADING in walls and group[0].kind == HEADING)
+        return f'{lead}{_marker_for(HEADING)}' if head else lead
+
     report = PackReport()
     run: list = []
 
@@ -917,7 +954,6 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         if not text:
             return
         indices = tuple(b.index for b in group)
-        lead = sml_token('break') if lead_break else ''
         if head is not None and len(group) == 1:
             # Alone: the standalone wall chunk, unchanged - never sentence-split,
             # because a heading over the cap was always emitted whole.
@@ -933,8 +969,10 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
             report.merges += 1
         report.dropped_join_tokens += dropped
 
-        if len(spoken(text)) <= cap:
-            report.chunks.append(Chunk(text=f'{lead}{marker}{text}', kind='prose',
+        # THE CHUNK AS IT WILL BE WRITTEN, prefix included - see `lead` above.
+        prefix = f'{lead}{marker}'
+        if len(prefix) + len(spoken(text)) <= cap:
+            report.chunks.append(Chunk(text=f'{prefix}{text}', kind='prose',
                                        blocks=indices,
                                        dropped_join_tokens=dropped))
             return
@@ -946,29 +984,32 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                   f'a {cap}-char cap and is kept WHOLE - the caller packs one chunk '
                   f'per source row, so the row is the chunk that was asked for; the '
                   f"engine's truncation guard answers for it at render time.")
-            report.chunks.append(Chunk(text=f'{lead}{marker}{text}', kind='prose',
+            report.chunks.append(Chunk(text=f'{prefix}{text}', kind='prose',
                                        blocks=indices,
                                        dropped_join_tokens=dropped))
             return
 
-        # Over budget: sentence-split, greedily filling to the cap.
+        # Over budget: sentence-split, greedily filling to the cap. Only the
+        # FIRST part carries the prefix, so only its budget pays for it.
         report.paragraphs_sentence_split += 1
         pieces = split_sentences(text)
         parts: list = []
         for piece in pieces:
-            if parts and len(spoken(parts[-1])) + 1 + len(spoken(piece)) <= cap:
+            limit = cap - len(prefix) if len(parts) <= 1 else cap
+            if parts and len(spoken(parts[-1])) + 1 + len(spoken(piece)) <= limit:
                 parts[-1] = parts[-1] + ' ' + piece
             else:
                 parts.append(piece)
         for n, part in enumerate(parts):
-            if len(spoken(part)) > cap:
+            carried = len(prefix) if n == 0 else 0
+            if carried + len(spoken(part)) > cap:
                 report.over_budget_sentences += 1
                 print(f'pack_paragraphs: one SENTENCE is {len(spoken(part))} '
-                      f'chars against a {cap}-char budget and is kept whole - '
-                      f'this policy never splits mid-sentence: '
+                      f'chars against a {cap - carried}-char budget and is kept '
+                      f'whole - this policy never splits mid-sentence: '
                       f'{spoken(part)[:80]!r}...')
             report.chunks.append(Chunk(
-                text=f'{lead if n == 0 else ""}{marker if n == 0 else ""}{part}',
+                text=f'{prefix if n == 0 else ""}{part}',
                 kind='prose',
                 blocks=indices, sentence_split=True,
                 dropped_join_tokens=dropped if n == 0 else 0))
@@ -1008,7 +1049,12 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
             # side, and a group that cannot reach the floor without breaking it
             # is emitted short, which is unavoidable rather than wrong.
             group_len = len(spoken(' '.join(b.text for b in group)))
-            merged_len = len(spoken(' '.join(b.text for b in group + [block])))
+            # The merged group's own lead token counts against the cap, exactly
+            # as it will when `emit_prose` writes it - otherwise a merge builds a
+            # group that then has to be sentence-split for the 7 characters
+            # nobody counted.
+            merged_len = (len(prefix_for(group))
+                          + len(spoken(' '.join(b.text for b in group + [block]))))
             if group_len < floor_chars and merged_len <= cap:
                 group.append(block)
                 continue
