@@ -208,8 +208,9 @@ function clientFor(url) {
 // The shipped catalog says 800 on both arms today, so a test built on it could
 // not tell "the venue's number" from "the same number twice". This voice states
 // 900 everywhere a voice can — cap, safe ceiling and target — which is exactly
-// the disagreement the ruling is about, and the one the `_targetCharsNote` in
-// electron/data/higgs-models.json still describes ("MLX 900").
+// the disagreement the ruling is about: the shape the catalog's own prose carried
+// until 2026-09-15, when `_targetCharsNote` still read "MLX 900" (it is
+// `_chunkLengthNote` now, and it says what the packer really reads).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LOCAL_900 = {

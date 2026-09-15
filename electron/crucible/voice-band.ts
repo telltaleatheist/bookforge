@@ -33,10 +33,12 @@
  *    states a target and which declares no band is refused by whoever needs one,
  *    by name, exactly as it is today; nothing here invents one.
  *  - **The local catalog is never consulted for the CEILING on a Crucible
- *    render.** The two disagree today: the catalog's `_targetCharsNote` still
- *    reads "MLX 900" while Owen's 2026-09-09 family ruling put every fine-tune
- *    at 800 and the Mac advertises 800. The engine wins — it is the thing that
- *    will refuse, and it is the thing that measured the weights it is holding.
+ *    render.** Not because the two happen to disagree — the catalog's prose said
+ *    "MLX 900" against the Mac's advertised 800 until 2026-09-15, and that has
+ *    been corrected (`_chunkLengthNote`) — but because only one of them can
+ *    refuse. The engine wins: it is the thing that will refuse, and it is the
+ *    thing that measured the weights it is holding. A catalog that agrees today
+ *    is still the wrong authority tomorrow.
  *  - **A voice the venue does not advertise, or a row with no `max_chars`, is
  *    refused by name before anything is packed.** `max_chars` is null exactly
  *    when `backendSupported` is false — this host has no backend block for that

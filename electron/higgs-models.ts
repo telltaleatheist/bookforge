@@ -2719,10 +2719,24 @@ export function higgsSpawnEnv(
   refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
   refuseUnstagedCheckpoint(model);
-  // The spawn's arm IS this machine's arm: `checkpointArmForSpawn` in
-  // higgs-spawn.ts derives it from `narratorRunsInWsl` and refuses the one case
-  // where they could differ (Windows with the WSL toggle off, which has no arm at
-  // all) before this is ever reached.
+  // THE SPAWN'S ARM IS THIS MACHINE'S ARM, and the two derivations agree by
+  // construction rather than by luck. `checkpointArmForSpawn` (higgs-spawn.ts)
+  // asks `narratorSpawnCrossesIntoWsl`: 'wsl' when the spawn enters the guest,
+  // and otherwise `higgsCheckpointArm()` — which is this function's own
+  // `thisMachineArm()`. Windows with the WSL toggle off is still the `wsl` arm,
+  // deliberately, because there is no native Windows Higgs arm to be; that case
+  // is refused by the doctor and by `narratorNativePython`, not here. (It was
+  // refused here once; `tools/test-serve-spawn-env.js`'s `higgs/native-win`
+  // snapshot caught that it replaced a better sentence with a worse one.)
+  //
+  // AND THE ARM IS NOT WHAT DECIDES A CRUCIBLE-BOUND BOOK'S CHUNK LENGTHS. For
+  // a prep whose render runs on a Crucible server the cap, band and pace come
+  // from `HiggsDocumentTarget.venueBand` and this arm's catalog block is not
+  // consulted for them at all (2026-09-15) — so the old "prepped on Windows,
+  // packed to the PC's `served` numbers, rendered on the Mac" gap is closed at
+  // the document, not by choosing a different arm here. What the arm still
+  // decides is the checkpoint PATH, the clips, the sampling and the chunk gap,
+  // which are about the weights and audio of whichever machine this is.
   const spawnArm = thisMachineArm();
   refuseOversizedReference(model, spawnArm);
   refuseUnmeasuredAdapter(model, spawnArm);
