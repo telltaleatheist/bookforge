@@ -30,6 +30,11 @@
  *      box drawing, emoji: the decoration a web page carries that no narrator
  *      reads and an LLM-TTS tries to pronounce.
  *   1. punctuation canonicalization (tts-punctuation) — quotes, ellipses, runs.
+ *   1.5 the scripture BOOK NAME, printed in full (bible-books) — "Rom. 5:17"
+ *      becomes "Romans 5:17", and only where the reference detector has
+ *      already claimed the span. BEFORE the number rules, so the rules see a
+ *      canonical name where they saw an abbreviation and protect it just the
+ *      same.
  *   2. the GUARANTEED number shapes (tts-number-rules) — clocks, pages, dates,
  *      money, percents, decades, ordinals, grouped and bare integers — with the
  *      one-segment contract, because Listen text has no element boundaries.
@@ -49,9 +54,13 @@
  * one thing the caps fold still needs to know is which caps words NOT to
  * title-case, and that is the shared list below.
  *
- * Scripture references with a book name ("Jeremiah 44:17-19") are the one shape
- * that stays as digits here: the rules close them for the MODEL, and Listen has
- * no model. That is a known gap, stated, not a fallback.
+ * Scripture references with a book name ("Jeremiah 44:17-19") keep their DIGITS
+ * here: the rules close them for the MODEL, and Listen has no model. That is a
+ * known gap, stated, not a fallback. What no longer stays short is the BOOK'S
+ * NAME — stage 1.5, `expandBibleReferences` (bible-books.ts), Owen's ruling of
+ * 2026-09-14 and the third named exception to the Listen-only rule. It expands
+ * a name only inside a reference the detector already claimed, so it closes the
+ * half of the gap that CANNOT be wrong and leaves the half that needs a reader.
  *
  * The `<sup>` reference numbers are NOT stripped here — by the time text is a
  * string, a superscript is just a digit glued to a word. They come out where
@@ -84,6 +93,10 @@
 import { canonicalizePunctuationText } from '../../electron/tts-punctuation.js';
 import { applyNumberRules } from '../../electron/tts-number-rules.js';
 import { expandNumbersEn } from '../../electron/number-expansion.js';
+// Stage 1.5, and the one stage of this file that lives beside it in shared/:
+// the scripture book name, printed in full. See its header for why it is a
+// deterministic exception and what stops it being wrong.
+import { expandBibleReferences } from './bible-books.js';
 // THE ONE ACRONYM LIST, narrator's file (python/narrator/text/caps_acronyms.json):
 // a relative import so tsc emits the JSON into dist beside the compiled module
 // and the packaged app carries it; narrator loads the same file standalone.
@@ -246,7 +259,7 @@ export function stripUnspokenGlyphs(text: string): string {
 export function speakableListenText(raw: string): string {
   const collapsed = stripUnspokenGlyphs(raw).replace(/\s+/g, ' ').trim();
   if (!collapsed) return '';
-  const punctuated = canonicalizePunctuationText(collapsed);
+  const punctuated = expandBibleReferences(canonicalizePunctuationText(collapsed));
   const ruled = applyNumberRules(punctuated, [punctuated.length]).text;
   return foldCapsRun(expandNumbersEn(ruled));
 }

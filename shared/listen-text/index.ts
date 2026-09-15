@@ -14,7 +14,8 @@
  * The order is fixed and all three walk it:
  *
  *   1. `speakableListenText` — the deterministic normalizer (glyph strip,
- *      punctuation canonicalization, number rules, number expansion, caps fold).
+ *      punctuation canonicalization, scripture book names, number rules,
+ *      number expansion, caps fold).
  *   2. `splitForTts` — sentences, capped at the voice's `maxChars`.
  *   3. `packListenChunks` — sentences packed into ramped rows, for an engine
  *      that renders one row at a time (Higgs, and every Crucible voice).
@@ -31,6 +32,13 @@ export {
   TTS_MAX_CHARS,
   type SplitGranularity,
 } from './segment.js';
+
+export {
+  BOOK_ORDINAL_WORDS,
+  bibleReferenceRewrites,
+  expandBibleReferences,
+  type BibleBookExpansion,
+} from './bible-books.js';
 
 export {
   CAPS_ACRONYMS,
