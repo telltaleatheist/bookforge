@@ -89,7 +89,13 @@ dependencies = [
 #   higgs-v3-server    vllm-omni 0.28.0 against torch 2.13.0+cu130. THE second
 #                      engine - it runs as a SERVER, and only the server needs
 #                      this group; narrator's v3 client is numpy + soundfile +
-#                      urllib.
+#                      urllib. NOT THE ONE OWEN RENDERS ON - see the next.
+#   higgs-v3-sgl       SGLang-Omni 0.1.4 against torch 2.13.0+cu130 on PYTHON
+#                      3.12. The SAME engine on its other serving stack, and the
+#                      one the shipped catalog selects: "we dont use vllm-omni.
+#                      we use sglang. vllm-omni doesnt work for higgs" (Owen,
+#                      2026-09-15). Mutually exclusive with the group above by
+#                      interpreter, not merely by resolver.
 #   higgs-v2-scaffold  transformers >= 5.3 against torch 2.6.0+cu124. NOT
 #                      SHIPPED - Higgs v2 was dropped 2026-09-04 and the code is
 #                      kept as interface scaffolding. Install it only to run that
@@ -202,6 +208,49 @@ higgs-v3-server = [
     "vllm-omni==0.28.0",
 ]
 
+# WSL `sglomni`: python 3.12, torch 2.13.0, sglang 0.5.18, sglang-omni 0.1.4,
+# flashinfer-python 0.6.17 + flashinfer-jit-cache 0.6.17+cu130.
+#
+# THE STACK OWEN RENDERS ON. "we dont use vllm-omni. we use sglang. vllm-omni
+# doesnt work for higgs" (2026-09-15), on the measurement in
+# `engine/higgs/sgl_served.py`'s header: the same 50 chunks, the same
+# checkpoint, one seed, at 16 in flight - vllm-omni 4 early stops, 13/50
+# damaged, 6 sustained voice switches, 10,752 chars/min; SGLang-Omni 0, 5/50, 0,
+# 26,666. The damage is vllm-omni's BATCHED TALKER and it is not fixable from
+# here.
+#
+# A FOURTH MUTUALLY EXCLUSIVE GROUP, and it is the furthest from the others: it
+# is the only one that is not python 3.11. `sglang-omni` pulls torch 2.13.0+cu130
+# and flashinfer against a 3.12 interpreter, and BookForge's own installer
+# (`electron/scripts/higgs/install_sglomni.sh`) builds it as a SEPARATE conda env
+# for that reason - "Never touches higgs3", in the campaign script's own words.
+#
+# EVERY VERSION HERE IS READ OFF THE WORKING `sglomni` ENV on owens-pc
+# (2026-09-15), not chosen - the same rule as every group above. They are the
+# versions the night-3 measurements were taken against.
+#
+# TWO THINGS pip CANNOT EXPRESS, and neither is a patch:
+#   * flashinfer JIT-builds its kernels with the CUDA 13 nvcc inside the pip
+#     wheel, and only once that directory looks like a toolkit -
+#     `lib64 -> lib` and `libcudart.so -> libcudart.so.13` inside
+#     `<env>/lib/python3.12/site-packages/nvidia/cu13`, which is also what
+#     CUDA_HOME must point at. `serve_higgs_sgl.sh` points at them;
+#     `install_sglomni.sh` creates them.
+#   * `flashinfer-jit-cache` comes from flashinfer's own per-CUDA index
+#     (https://flashinfer.ai/whl/cu130/) and is on no PyPI. Without it the
+#     server still starts and compiles its kernels at every cold start instead.
+#
+# NO SITE-PACKAGES PATCHES, unlike the group above: the sentinel filter and the
+# negative-token-id fix are edits to vllm/vllm_omni. SGLang-Omni has its own
+# stage processor and needs neither, which is a real difference between the
+# stacks rather than an omission.
+higgs-v3-sgl = [
+    "torch==2.13.0",
+    "sglang==0.5.18",
+    "sglang-omni==0.1.4",
+    "flashinfer-python==0.6.17",
+]
+
 [project.scripts]
 narrator = "narrator.cli:main"
 
@@ -216,10 +265,23 @@ narrator = ["**/*.md"]
 # `importlib.resources` when the caller names neither NARRATOR_HIGGS3_URL nor
 # NARRATOR_HIGGS3_SERVE_SCRIPT, and runs `bash <script>`.
 #
-# THE TWO FILES TRAVEL TOGETHER AND MUST LAND IN ONE DIRECTORY: the script's
-# HIGGS_DEPLOY_CONFIG defaults to `$(dirname "$0")/higgs_default_frames7500.yaml`,
-# the certified frames-7500 profile, and without it vllm-omni auto-discovers its
-# own profile whose stage-0 max_tokens is 2048 frames (81.92 s) and truncates
-# every long chunk. `launch/` is deliberately NOT a package - there is no python
-# in it - so the data belongs to `narrator.engine.higgs`.
+# THE vllm-omni PAIR TRAVELS TOGETHER AND MUST LAND IN ONE DIRECTORY: the
+# script's HIGGS_DEPLOY_CONFIG defaults to
+# `$(dirname "$0")/higgs_default_frames7500.yaml`, the certified frames-7500
+# profile, and without it vllm-omni auto-discovers its own profile whose stage-0
+# max_tokens is 2048 frames (81.92 s) and truncates every long chunk. `launch/`
+# is deliberately NOT a package - there is no python in it - so the data belongs
+# to `narrator.engine.higgs`.
+#
+# SINCE 2026-09-15 THE DIRECTORY ALSO HOLDS `serve_higgs_sgl.sh`, the SGLang-Omni
+# launcher, resolved by `engine/higgs/sgl_served.py:packaged_serve_script`. The
+# `launch/*.sh` glob already carried it, so this is a note rather than an edit -
+# but it is the file Owen's own renders go through ("we dont use vllm-omni. we
+# use sglang"), and until that day its only copy lived in electron/scripts/higgs/
+# where no other client of narrator could reach it.
+#
+# IT SHIPS ALONE, with no sibling, and that is a fact about the stack:
+# SGLang-Omni has no deploy profile at all - which is why sampling must ride on
+# every request there - so nothing reads its `$(dirname "$0")` and no second
+# file is invented to sit beside it.
 "narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml"]

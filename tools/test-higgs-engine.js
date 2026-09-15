@@ -1423,7 +1423,17 @@ check('the packaged launcher is canonical and electron/scripts/ is its copy', ()
   // normalised line endings would be blind to exactly the drift that matters.
   const packaged = path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'launch');
   const legacy = path.join(REPO, 'electron', 'scripts', 'higgs');
-  for (const name of ['serve_higgs_v3.sh', 'higgs_default_frames7500.yaml']) {
+  // serve_higgs_sgl.sh JOINED THE PAIR ON 2026-09-15, on Owen's ruling that
+  // "we dont use vllm-omni. we use sglang. vllm-omni doesnt work for higgs".
+  // It had the SAME defect the vllm-omni launcher had before 0eeb0267 — its
+  // only copy lived in this repo — and it had it for the stack the shipped
+  // catalog actually selects, so every non-BookForge client was locked out of
+  // the one stack that works. It ships ALONE, with no sibling: SGLang-Omni has
+  // no deploy profile (which is why sampling must ride on every request), so
+  // there is nothing for its `$(dirname "$0")` to find and nothing invented.
+  for (const name of [
+    'serve_higgs_v3.sh', 'higgs_default_frames7500.yaml', 'serve_higgs_sgl.sh',
+  ]) {
     const mine = fs.readFileSync(path.join(packaged, name));
     const theirs = fs.readFileSync(path.join(legacy, name));
     assert.ok(mine.equals(theirs),

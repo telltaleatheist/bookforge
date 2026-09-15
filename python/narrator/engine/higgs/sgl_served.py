@@ -80,8 +80,11 @@ silently wrong:
      it: a fact about the running process rather than a claim by the process
      asking.
 
-THE LAUNCH (`electron/scripts/higgs/serve_higgs_sgl.sh`, transcribed from
-`night3/sgl/serve_sgl.sh`):
+THE LAUNCH (`engine/higgs/launch/serve_higgs_sgl.sh`, narrator's OWN copy since
+2026-09-15 and shipped as package data; `electron/scripts/higgs/` holds the
+byte-identical copy BookForge's installer deploys, kept in step by
+`tools/test-higgs-engine.js` and dying with the legacy local render path. It is
+transcribed from `night3/sgl/serve_sgl.sh`):
 
     sgl-omni serve --model-path <merged dir> --model-name higgs-v3-ds
       --host <host> --port <port> --mem-fraction-static 0.60
@@ -98,6 +101,8 @@ carrying `lib64 -> lib` and `libcudart.so -> libcudart.so.13`. Healthy in ~110 s
 LICENCE is the model's, unchanged: Boson Higgs TTS 3 Research and
 Non-Commercial.
 """
+import contextlib
+import importlib.resources
 import json
 import math
 import os
@@ -132,7 +137,37 @@ MODELS_PATH = '/v1/models'
 #: Attach to an ALREADY-RUNNING SGLang-Omni server instead of launching one.
 BASE_URL_ENV = 'NARRATOR_HIGGS_SGL_URL'
 #: Where the launch script lives, in the filesystem the spawn will read it from.
+#: An OPERATOR'S OVERRIDE of narrator's own packaged launcher, exactly as
+#: `v3_served.SERVE_SCRIPT_ENV` is - see `packaged_serve_script`.
 SERVE_SCRIPT_ENV = 'NARRATOR_HIGGS_SGL_SERVE_SCRIPT'
+
+#: NARRATOR'S OWN SGLang LAUNCHER, shipped as package data beside the vllm-omni
+#: one (`[tool.setuptools.package-data]` "narrator.engine.higgs" =
+#: ["launch/*.sh", ...] in python/pyproject.toml, whose glob already carried it).
+#:
+#: WHY IT IS HERE AT ALL. Until 2026-09-15 this file had only the operator
+#: override above, so the only copy of the script lived in BookForge's
+#: `electron/scripts/higgs/` and any other client of narrator - Crucible first -
+#: had to be handed a path into a BookForge checkout or this stack could not
+#: start. That is precisely the dependency BookForge 0eeb0267 removed for
+#: `serve_higgs_v3.sh`, and it was still in place for the stack Owen actually
+#: renders on ("we dont use vllm-omni. we use sglang. vllm-omni doesnt work for
+#: higgs", 2026-09-15).
+#:
+#: ONE FILE, NOT TWO, and that is a fact about the stack rather than an
+#: omission. The vllm-omni launcher travels with `higgs_default_frames7500.yaml`
+#: because stage 0's `max_tokens` is a HARD per-render ceiling that only a
+#: deploy profile can raise. SGLang-Omni has no deploy profile at all - which is
+#: also why sampling must ride on every request here - so there is no sibling
+#: for `$(dirname "$0")` to find and none is invented.
+PACKAGED_SERVE_SCRIPT = 'serve_higgs_sgl.sh'
+
+#: WHERE THE LAUNCHER CAME FROM, reported on the ready path the way the
+#: vllm-omni arm reports its own (`v3_served.LAUNCHER_*`). Three modes, decided
+#: in the constructor and nowhere else.
+LAUNCHER_ATTACH = v3_served.LAUNCHER_ATTACH
+LAUNCHER_OPERATOR = v3_served.LAUNCHER_OPERATOR
+LAUNCHER_PACKAGED = v3_served.LAUNCHER_PACKAGED
 #: The WSL distro to run the launch script in, on Windows. Shared with the
 #: vllm-omni arm: one machine, one guest.
 WSL_DISTRO_ENV = v3_served.WSL_DISTRO_ENV
@@ -501,6 +536,58 @@ def _guest_form(path: str) -> str:
     return value.rstrip('/') or value
 
 
+#: Resolved once per process and KEPT, for `v3_served`'s reason stated one file
+#: over: `importlib.resources.as_file` is a context manager because a package
+#: may be a zip, in which case the path it yields is a temporary extraction that
+#: disappears on exit - and this path is handed to `bash` minutes later, from
+#: another method. So the ExitStack lives as long as the process does.
+_packaged_launch_script = None
+_packaged_launch_stack = None
+
+
+def packaged_serve_script() -> str:
+    """The absolute path of narrator's OWN `serve_higgs_sgl.sh`.
+
+    THE SAME RESOLUTION AS `v3_served.packaged_serve_script`, on the DIRECTORY
+    rather than on the file: this stack's script has no sibling to read, but the
+    directory is what `importlib.resources` can make real in one step, and one
+    mechanism for both launchers is one mechanism to get wrong.
+
+    A package built without the package-data entry fails HERE, naming the entry,
+    rather than two minutes into a launch as `bash: No such file`.
+    """
+    global _packaged_launch_script, _packaged_launch_stack
+    if _packaged_launch_script is not None:
+        return _packaged_launch_script
+    resource = importlib.resources.files(
+        v3_served.LAUNCH_PACKAGE).joinpath(v3_served.LAUNCH_DIR)
+    stack = contextlib.ExitStack()
+    try:
+        directory = stack.enter_context(importlib.resources.as_file(resource))
+    except Exception as exc:
+        stack.close()
+        raise ValueError(
+            f'Higgs SGLang-Omni: narrator\'s packaged launcher '
+            f'({v3_served.LAUNCH_PACKAGE}.{v3_served.LAUNCH_DIR}) could not be '
+            f'made into a real directory on this filesystem '
+            f'({type(exc).__name__}: {exc}). It is handed to bash, so it has to '
+            'be a path. Install narrator from a directory rather than a zip, or '
+            f'name your own script in {SERVE_SCRIPT_ENV}.') from exc
+    script = os.path.join(str(directory), PACKAGED_SERVE_SCRIPT)
+    if not os.path.isfile(script):
+        stack.close()
+        raise ValueError(
+            f'Higgs SGLang-Omni: narrator\'s packaged launcher directory '
+            f'{directory} is missing {PACKAGED_SERVE_SCRIPT}. It ships as '
+            'package data - [tool.setuptools.package-data] '
+            '"narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml"] in '
+            'python/pyproject.toml - and without it this stack cannot start at '
+            'all.')
+    _packaged_launch_stack = stack
+    _packaged_launch_script = script
+    return script
+
+
 class HiggsSglServedBackend(GuestOwnedServer):
     """`narrator.engine.protocol.ServedBackend` for Higgs v3 under SGLang-Omni.
 
@@ -523,16 +610,31 @@ class HiggsSglServedBackend(GuestOwnedServer):
     def __init__(self, base_url: str = None, serve_script: str = None,
                  wsl_distro: str = None, checkpoint_dir: str = None,
                  server_log: str = None, concurrency: int = None):
+        # THE LAUNCHER, IN THREE MODES, decided here and nowhere else - the
+        # vllm-omni arm's comment, and now its behaviour:
+        #
+        #   attach    a base_url (argument or BASE_URL_ENV) names a server
+        #             somebody else started. No launcher at all.
+        #   operator  a serve_script (argument or SERVE_SCRIPT_ENV) overrides
+        #             narrator's own. Refused when the path is not there.
+        #   packaged  neither: narrator runs ITS OWN script, the one that ships
+        #             in the package. See PACKAGED_SERVE_SCRIPT for why this is
+        #             a definition and not a fallback.
+        #
+        # THE THIRD MODE IS NEW ON 2026-09-15 and it is what this whole file
+        # lacked. Until then "neither is set" was a REFUSAL, so a client with no
+        # BookForge checkout could not start the stack Owen actually renders on.
         base_url = (base_url or os.environ.get(BASE_URL_ENV) or '').strip()
         serve_script = (serve_script
                         or os.environ.get(SERVE_SCRIPT_ENV) or '').strip()
-        if not base_url and not serve_script:
-            raise ValueError(
-                f'Higgs SGLang-Omni needs either {BASE_URL_ENV} (attach to a '
-                f'running sgl-omni server) or {SERVE_SCRIPT_ENV} (the path to '
-                'serve_higgs_sgl.sh, which narrator runs rather than '
-                'reimplementing - the CUDA_HOME and flashinfer workarounds live '
-                'in it). Neither is set.')
+        if base_url:
+            self.launcher_source = LAUNCHER_ATTACH
+        elif serve_script:
+            self.launcher_source = LAUNCHER_OPERATOR
+            v3_served._check_override_script(serve_script, SERVE_SCRIPT_ENV)
+        else:
+            self.launcher_source = LAUNCHER_PACKAGED
+            serve_script = packaged_serve_script()
         self.base_url = base_url or launch_base_url()
         self.serve_script = serve_script
         if concurrency is not None and int(concurrency) < 1:

@@ -34,6 +34,7 @@ replaces.
 """
 import json
 import os
+import pathlib
 import sys
 import threading
 import unittest
@@ -581,10 +582,36 @@ class LaunchTest(SglTestCase):
     """The launch wrapper, which is the same shape as the vllm-omni arm's and
     carries this stack's own knobs."""
 
+    def _launcher(self) -> str:
+        """A REAL launch script on this filesystem, created once per test.
+
+        `serve_script=` (and `NARRATOR_HIGGS_SGL_SERVE_SCRIPT` behind it) is an
+        OPERATOR'S OVERRIDE of narrator's own packaged launcher as of
+        2026-09-15, and a path that is not there is refused BY NAME rather than
+        quietly replaced by the packaged one - substituting it would start a
+        server with different flags and report success. So a test that wants
+        LAUNCH mode has to name a file that exists. The literal
+        `/campaign/serve_higgs_sgl.sh` these tests used to pass stopped being
+        nameable for exactly the reason `test_higgs_v3.a_launcher` records about
+        its own, one stack over and two days earlier.
+        """
+        existing = getattr(self, '_launcher_path', None)
+        if existing is not None:
+            return existing
+        import shutil as _shutil
+        import tempfile
+        directory = tempfile.mkdtemp(prefix='narrator-SGL-launcher-')
+        self.addCleanup(_shutil.rmtree, directory, True)
+        path = os.path.join(directory, 'serve_higgs_sgl.sh')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('#!/bin/bash\nexit 0\n')
+        os.chmod(path, 0o755)
+        self._launcher_path = path
+        return path
+
     def _backend(self):
-        script = ('/campaign/serve_higgs_sgl.sh' if sys.platform != 'win32'
-                  else r'C:\campaign\serve_higgs_sgl.sh')
-        return HiggsSglServedBackend(serve_script=script, wsl_distro='Ubuntu')
+        return HiggsSglServedBackend(serve_script=self._launcher(),
+                                     wsl_distro='Ubuntu')
 
     def test_the_wrapper_exports_this_stacks_knobs_and_the_owner_marker(self):
         backend = self._backend()
@@ -603,9 +630,7 @@ class LaunchTest(SglTestCase):
         self.assertIn(f'unset {sgl_served.SERVE_MODEL_DIR_ENV}', wrapper)
 
     def test_a_checkpoint_voice_exports_the_model_dir(self):
-        script = ('/campaign/serve_higgs_sgl.sh' if sys.platform != 'win32'
-                  else r'C:\campaign\serve_higgs_sgl.sh')
-        backend = HiggsSglServedBackend(serve_script=script,
+        backend = HiggsSglServedBackend(serve_script=self._launcher(),
                                         checkpoint_dir='/home/t/higgs_v3_merged/ds')
         wrapper = backend.launch_command()[-1]
         self.assertIn(f'{sgl_served.SERVE_MODEL_DIR_ENV}=/home/t/higgs_v3_merged/ds',
@@ -624,23 +649,63 @@ class LaunchTest(SglTestCase):
         with self.assertRaises(ValueError):
             backend.launch_command()
 
-    def test_neither_url_nor_script_is_REFUSED_by_name(self):
+    def test_neither_url_nor_script_RUNS_NARRATORS_OWN_LAUNCHER(self):
+        """THE THIRD MODE, new on 2026-09-15. Until then this was a REFUSAL
+        naming both variables, which meant the only way to start the stack Owen
+        actually renders on was to hand narrator a path into a BookForge
+        checkout — the exact lock-out 0eeb0267 removed for vllm-omni, still in
+        place for the stack that works.
+
+        The script it names is narrator's OWN, byte-identical to BookForge's
+        (`tools/test-higgs-engine.js` pins the pair), so a client with no
+        BookForge on disk launches the measured configuration."""
         state_env(self, sgl_served.BASE_URL_ENV, None)
         state_env(self, sgl_served.SERVE_SCRIPT_ENV, None)
+        backend = HiggsSglServedBackend()
+        self.assertEqual(backend.launcher_source, sgl_served.LAUNCHER_PACKAGED)
+        self.assertEqual(os.path.basename(backend.serve_script),
+                         sgl_served.PACKAGED_SERVE_SCRIPT)
+        self.assertTrue(os.path.isfile(backend.serve_script))
+
+    def test_the_packaged_launcher_is_the_one_that_ships(self):
+        """It is package data, resolved through importlib.resources, and it is
+        THIS stack's script rather than the vllm-omni one beside it. A launcher
+        mix-up is not a crash: each script refuses the other's HIGGS_STACK, but
+        only after a launch."""
+        script = sgl_served.packaged_serve_script()
+        self.assertTrue(os.path.isfile(script))
+        body = pathlib.Path(script).read_text(encoding='utf-8')
+        self.assertIn('sgl-omni', body)
+        self.assertIn('--tts_engine.factory.max_running_requests', body)
+        # ALONE, no sibling: SGLang-Omni has no deploy profile, so nothing here
+        # reads `$(dirname "$0")` and none is shipped to be found.
+        self.assertNotIn('HIGGS_DEPLOY_CONFIG', body)
+
+    def test_an_override_that_is_not_there_is_refused_by_THIS_stacks_name(self):
+        """The override is refused rather than silently replaced by the
+        packaged script, and the refusal names the variable the operator
+        actually set — not the vllm-omni arm's, whose check this shares."""
+        state_env(self, sgl_served.BASE_URL_ENV, None)
+        missing = os.path.join(self._launcher(), 'no', 'such.sh')
         with self.assertRaises(ValueError) as caught:
-            HiggsSglServedBackend()
-        self.assertIn(sgl_served.BASE_URL_ENV, str(caught.exception))
+            HiggsSglServedBackend(serve_script=missing)
         self.assertIn(sgl_served.SERVE_SCRIPT_ENV, str(caught.exception))
+        self.assertNotIn(v3_served.SERVE_SCRIPT_ENV, str(caught.exception))
 
     def test_the_attach_variable_is_this_stacks_OWN(self):
         """A stale NARRATOR_HIGGS3_URL must not point an SGLang engine at a
         vllm-omni server, which would answer /health and /v1/models in the right
-        shapes and then drop half the request body."""
+        shapes and then drop half the request body.
+
+        It no longer RAISES — with neither of this stack's variables set,
+        narrator launches its own server — so what is asserted is that the
+        other stack's url was not adopted as this one's."""
         state_env(self, sgl_served.BASE_URL_ENV, None)
         state_env(self, sgl_served.SERVE_SCRIPT_ENV, None)
         state_env(self, v3_served.BASE_URL_ENV, self.server.base_url)
-        with self.assertRaises(ValueError):
-            HiggsSglServedBackend()
+        backend = HiggsSglServedBackend()
+        self.assertEqual(backend.launcher_source, sgl_served.LAUNCHER_PACKAGED)
+        self.assertNotEqual(backend.base_url, self.server.base_url)
 
 
 # ---------------------------------------------------------------------------

@@ -465,9 +465,15 @@ def packaged_serve_script() -> str:
     return script
 
 
-def _check_override_script(path: str) -> None:
+def _check_override_script(path: str, variable: str) -> None:
     r"""An operator's launcher that is not there is a REFUSAL, not a reason to
     run narrator's own.
+
+    `variable` NAMES THE OVERRIDE THAT WAS SET, and it is a required argument
+    rather than this module's own constant because BOTH stacks use this check
+    (`sgl_served` since 2026-09-15) and each has its own variable. A refusal
+    about NARRATOR_HIGGS_SGL_SERVE_SCRIPT that printed NARRATOR_HIGGS3_
+    SERVE_SCRIPT would send a reader to unset a variable they never set.
 
     Somebody who named a script meant that script; substituting the packaged one
     would start a server with different flags, a different env prefix and
@@ -495,7 +501,7 @@ def _check_override_script(path: str) -> None:
             return
     if not os.path.isfile(path):
         raise ValueError(
-            f'Higgs v3: {SERVE_SCRIPT_ENV}={path!r} is not a file. That variable '
+            f'Higgs v3: {variable}={path!r} is not a file. That variable '
             "OVERRIDES narrator's own packaged launcher, so an unreadable path "
             'is refused rather than silently replaced by it - a server started '
             'from the wrong script is a render nobody can account for. Unset the '
@@ -1155,7 +1161,7 @@ class HiggsV3ServedBackend(GuestOwnedServer):
             self.launcher_source = LAUNCHER_ATTACH
         elif serve_script:
             self.launcher_source = LAUNCHER_OPERATOR
-            _check_override_script(serve_script)
+            _check_override_script(serve_script, SERVE_SCRIPT_ENV)
         else:
             self.launcher_source = LAUNCHER_PACKAGED
             serve_script = packaged_serve_script()
