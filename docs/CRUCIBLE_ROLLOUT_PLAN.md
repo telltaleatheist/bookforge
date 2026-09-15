@@ -744,6 +744,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 
 ## 3. Rulings owed (record here, do not guess)
 
+- **BIBLE BOOK ABBREVIATIONS BEFORE TTS (Owen, 2026-09-14 late, NOT BUILT):** "for ai cleanup, i want to deterministically expand bible book names. ex -> exodus, tim. -> timothy. or at least tell the ai cleanup model to expand them the rest of the way before going through TTS. it's a mess. you can pass this to foundry if they're better suited." Assessment: TTS preparation = BookForge's narration text pass (the ledger step). Two halves: deterministic when unambiguous (the 66-book table, fired only before a chapter:verse or after an ordinal — that is what separates "Ex." from "for example"), as a NAMED exception to the listen-deterministic-only rule, living in `shared/listen-text/`; the cleanup model's instruction finishes the rest (bare "Rev.", "Ps."). Ruling owed: ordinal spelling ("First Corinthians"); whether Foundry marks citations as structure. Memory `bible-book-abbreviation-expansion`.
 - **SERVICE DEFECT (found 2026-09-14 16:10 restarting the local server onto the page build):** the
   unit says `Restart=on-failure`, so a clean SIGTERM (an operator's, or a future self-reload) leaves
   the server DOWN, and the user manager's `/run/user/1000/systemd/private` had vanished so
