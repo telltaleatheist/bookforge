@@ -102,6 +102,10 @@ function fakeHost(initial) {
     ranked: initial.ranked ?? [],
     serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
+    // THE QUEUE'S GPU DIAL (docs/PENDING-QUEUE-AND-GPU-DIAL.md). `any` unless a
+    // test turns it, because `any` is the position in which the dial changes
+    // nothing — every pre-dial expectation in this file is an `any` expectation.
+    dial: initial.dial === undefined ? 'any' : initial.dial,
     reach: initial.reach ?? {},
     asked: [],
   };
@@ -111,6 +115,7 @@ function fakeHost(initial) {
       serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
+    dial: () => state.dial,
     async reach(name) {
       state.asked.push(name);
       const answer = state.reach[name];
@@ -152,6 +157,22 @@ function narrate(title, epub = '/a.epub') {
   };
 }
 
+/**
+ * Compose a run AND SEND IT to the live queue — the two presses a person makes.
+ *
+ * Adding a book STAGES it in Pending now (docs/PENDING-QUEUE-AND-GPU-DIAL.md
+ * §1): the pump skips a staged run whole, so every test below that is about what
+ * the scheduler does with a book has to send it first. A run with nothing that
+ * travels is never staged and passes straight through.
+ *
+ * The staging itself is pinned separately, in its own block at the end.
+ */
+function enqueueSent(spec) {
+  const job = engine.enqueue(spec);
+  if (job.pending === true) engine.sendToQueue(job.id);
+  return job;
+}
+
 const TWO_SERVERS = [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }];
 
 // ── The default is a setting, and it is written into the row ───────────────
@@ -161,7 +182,7 @@ test('"top-ranked" writes the top-ranked server\'s NAME onto the row', async () 
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('default-top', [gpu], host);
 
-  const job = engine.enqueue(narrate('Mistborn'));
+  const job = enqueueSent(narrate('Mistborn'));
   assert.strictEqual(jobOf(job.id).waitFor, 'local',
     'the row SAYS the machine it will use — no null, no inherited default');
   assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
@@ -173,7 +194,7 @@ test('"any" writes `any`, and it is the row\'s real value', async () => {
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'any' });
   await fresh('default-any', [gpu], host);
 
-  const job = engine.enqueue(narrate('Wool'));
+  const job = enqueueSent(narrate('Wool'));
   assert.strictEqual(jobOf(job.id).waitFor, 'any');
 });
 
@@ -188,7 +209,7 @@ test('nothing to name writes NOTHING — not a name, not `any`', async () => {
   });
   await fresh('default-none', [gpu], host);
 
-  const job = engine.enqueue(narrate('Nothing to name'));
+  const job = enqueueSent(narrate('Nothing to name'));
   assert.strictEqual(jobOf(job.id).waitFor, undefined);
 
   engine.start();
@@ -203,7 +224,7 @@ test('a run with nothing that travels gets no field at all', async () => {
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('no-travel-field', [cpu], host);
 
-  const job = engine.enqueue({
+  const job = enqueueSent({
     title: 'Assemble only',
     steps: [{
       type: 'reassembly', label: 'Assemble', config: {},
@@ -225,7 +246,7 @@ test('a row naming a DISABLED server holds and says which, and is never re-route
   });
   await fresh('named-disabled', [gpu], host);
 
-  const job = engine.enqueue(narrate('Deathstalker'));
+  const job = enqueueSent(narrate('Deathstalker'));
   engine.start();
   await settle();
 
@@ -247,7 +268,7 @@ test('a row naming an UNREACHABLE server holds and says which', async () => {
   });
   await fresh('named-unreachable', [gpu], host);
 
-  const job = engine.enqueue(narrate('Hellworld'));
+  const job = enqueueSent(narrate('Hellworld'));
   engine.start();
   await settle();
 
@@ -263,7 +284,7 @@ test('a row naming a server this machine does not have is refused by name', asyn
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'droplet' });
   await fresh('named-unknown', [gpu], host);
 
-  const job = engine.enqueue(narrate('Ghost server'));
+  const job = enqueueSent(narrate('Ghost server'));
   engine.start();
   await settle();
   assert.match(firstStep(job.id).progress.admissionHold,
@@ -279,7 +300,7 @@ test('a reachable named server runs, and the machine is written onto the row', a
   });
   await fresh('named-runs', [gpu], host);
 
-  const job = engine.enqueue(narrate('Sigma'));
+  const job = enqueueSent(narrate('Sigma'));
   engine.start();
   await settle();
 
@@ -301,7 +322,7 @@ test('`any` prefers RANK, not whichever answers first', async () => {
   });
   await fresh('any-rank', [gpu], host);
 
-  const job = engine.enqueue(narrate('Rank order'));
+  const job = enqueueSent(narrate('Rank order'));
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'local', 'the top of the list wins');
@@ -317,7 +338,7 @@ test('`any` skips a disabled one and takes the next that answers', async () => {
   });
   await fresh('any-skips', [gpu], host);
 
-  const job = engine.enqueue(narrate('Overflow'));
+  const job = enqueueSent(narrate('Overflow'));
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
@@ -335,7 +356,7 @@ test('`any` with none reachable holds and NAMES that', async () => {
   });
   await fresh('any-none', [gpu], host);
 
-  const job = engine.enqueue(narrate('Nobody home'));
+  const job = enqueueSent(narrate('Nobody home'));
   engine.start();
   await settle();
   assert.strictEqual(firstStep(job.id).progress.admissionHold,
@@ -351,7 +372,7 @@ test('`any` with nothing enabled says THAT, which is a different sentence', asyn
   });
   await fresh('any-none-enabled', [gpu], host);
 
-  const job = engine.enqueue(narrate('All off'));
+  const job = enqueueSent(narrate('All off'));
   engine.start();
   await settle();
   assert.match(firstStep(job.id).progress.admissionHold,
@@ -367,7 +388,7 @@ test('a busy server holds the row with the holder\'s line, and does not fail it'
   });
   await fresh('busy', [gpu], host);
 
-  const job = engine.enqueue(narrate('Behind Foundry'));
+  const job = enqueueSent(narrate('Behind Foundry'));
   engine.start();
   await settle();
   assert.strictEqual(firstStep(job.id).status, 'running');
@@ -396,7 +417,7 @@ test('the busy hold expires and the queue tries again on its own tick', async ()
   // would expire inside the settle that is meant to observe it standing.
   await fresh('busy-expiry', [gpu], host, { admissionRecheckMs: 1_000 });
 
-  const job = engine.enqueue(narrate('Retry'));
+  const job = enqueueSent(narrate('Retry'));
   engine.start();
   await settle();
   engine.noteStepBusy(firstStep(job.id).id, 'GPU busy: foundry.');
@@ -419,7 +440,7 @@ test('a queued row does NOT move when the drag-order changes', async () => {
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('rerank', [gpu], host);
 
-  const job = engine.enqueue(narrate('Frozen'));
+  const job = enqueueSent(narrate('Frozen'));
   assert.strictEqual(jobOf(job.id).waitFor, 'local');
 
   // The operator drags mac to the top. The record's DEFAULT changes with it.
@@ -438,9 +459,9 @@ test('disabling a server SURFACES the rows that name it — a count and one clic
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('surface', [gpu], host);
 
-  engine.enqueue(narrate('One', '/1.epub'));
-  engine.enqueue(narrate('Two', '/2.epub'));
-  engine.enqueue(narrate('Three', '/3.epub'));
+  enqueueSent(narrate('One', '/1.epub'));
+  enqueueSent(narrate('Two', '/2.epub'));
+  enqueueSent(narrate('Three', '/3.epub'));
 
   assert.deepStrictEqual(engine.waitForCounts(), { counts: { local: 3 }, unset: 0 },
     'the count the Servers row shows beside a switch somebody just turned off');
@@ -459,8 +480,8 @@ test('the bulk change reaches the rows that say NOTHING as well', async () => {
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: null });
   await fresh('bulk-unset', [gpu], host);
 
-  engine.enqueue(narrate('Silent one', '/1.epub'));
-  engine.enqueue(narrate('Silent two', '/2.epub'));
+  enqueueSent(narrate('Silent one', '/1.epub'));
+  enqueueSent(narrate('Silent two', '/2.epub'));
   assert.deepStrictEqual(engine.waitForCounts(), { counts: {}, unset: 2 });
 
   assert.strictEqual(engine.bulkWaitFor(null, 'any'), 2);
@@ -473,7 +494,7 @@ test('the picker refuses a server this machine does not have, by name', async ()
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('pick-unknown', [gpu], host);
-  const job = engine.enqueue(narrate('Pick'));
+  const job = enqueueSent(narrate('Pick'));
   assert.throws(() => engine.setWaitFor(job.id, 'droplet'),
     /"droplet" is not one of this machine's Crucible servers \(local, mac\)/);
   assert.strictEqual(jobOf(job.id).waitFor, 'local', 'and it changed nothing');
@@ -485,19 +506,36 @@ test('the picker refuses a book that has already been assigned (§4.3)', async (
     ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true } },
   });
   await fresh('pick-assigned', [gpu], host);
-  const job = engine.enqueue(narrate('Assigned'));
+  const job = enqueueSent(narrate('Assigned'));
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
-  assert.throws(() => engine.setWaitFor(job.id, 'local'),
-    /already running on mac, and a book finishes on the machine it started on/);
+  /*
+   * THE EDIT/ADMISSION RACE, SETTLED BY NAME — Owen's rule
+   * (docs/PENDING-QUEUE-AND-GPU-DIAL.md, "Mutability"): an edit that arrives
+   * after admission is REFUSED, naming the row and the server it went to, never
+   * silently applied to a running job and never silently dropped.
+   *
+   * All three halves are pinned: the CODE a caller can branch on, the ROW and
+   * the SERVER in the words, and the fact that the book did not move.
+   */
+  assert.throws(() => engine.setWaitFor(job.id, 'local'), (err) => {
+    assert.strictEqual(err.name, 'QueueRoutingRefusal');
+    assert.strictEqual(err.code, 'venue_fixed_at_admission');
+    assert.match(err.message, /Assigned/, 'the refusal names the row');
+    assert.match(err.message, /on mac/, 'and the server it went to');
+    assert.match(err.message, /Nothing here has been altered/);
+    return true;
+  });
+  assert.strictEqual(jobOf(job.id).waitFor, 'mac', 'and nothing was applied');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
 });
 
 test('the picker refuses a run with nothing that travels', async () => {
   const cpu = fakeModule('reassembly', { resource: () => 'cpu' });
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('pick-no-travel', [cpu], host);
-  const job = engine.enqueue({
+  const job = enqueueSent({
     title: 'Assemble only',
     steps: [{
       type: 'reassembly', label: 'Assemble', config: {},
@@ -567,7 +605,7 @@ test('a book already assigned to a server keeps that server', async () => {
   });
   await fresh('legacy-midbook', [gpu], host);
 
-  const job = engine.enqueue(narrate('Half rendered'));
+  const job = enqueueSent(narrate('Half rendered'));
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
@@ -589,7 +627,7 @@ test('a GPU step that does not travel is admitted exactly as it is today', async
   const host = fakeHost({ ranked: [], defaultWaitFor: null });
   await fresh('no-travel-admit', [vlm], host);
 
-  const job = engine.enqueue({
+  const job = enqueueSent({
     title: 'Read the pages',
     steps: [{
       type: 'vlm-convert', label: 'Read', config: {},
@@ -614,7 +652,7 @@ test('a REMOTE step is not held by this machine\'s GPU lock; a local one is', as
   await fresh('remote-skips-lock', [gpu], host);
   engine.setGpuLockProbe(() => 'orpheus fine-tune (pid 1234)');
 
-  const remote = engine.enqueue(narrate('On the Mac', '/mac.epub'));
+  const remote = enqueueSent(narrate('On the Mac', '/mac.epub'));
   engine.start();
   await settle();
   assert.strictEqual(gpu.runs.length, 1, 'the Mac render started');
@@ -624,7 +662,7 @@ test('a REMOTE step is not held by this machine\'s GPU lock; a local one is', as
   gpu.runs[0].resolve();
   await settle();
   host.defaultWaitFor = 'local';
-  const local = engine.enqueue(narrate('On this PC', '/pc.epub'));
+  const local = enqueueSent(narrate('On this PC', '/pc.epub'));
   engine.start();
   await settle();
   assert.strictEqual(gpu.runs.length, 1, 'nothing new started');
@@ -680,7 +718,7 @@ test('a queue with nothing to migrate reports nothing', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('migration-none', [gpu], host);
-  engine.enqueue(narrate('Fresh'));
+  enqueueSent(narrate('Fresh'));
   assert.strictEqual(engine.describeWaitForMigration(engine.snapshot().jobs), null);
 });
 
@@ -693,7 +731,7 @@ test('the book plan carries the answer, the venue, and whether it travels', asyn
   });
   await fresh('plan', [gpu], host);
 
-  const job = engine.enqueue(narrate('Drawn'));
+  const job = enqueueSent(narrate('Drawn'));
   let plan = bench.bookPlans(engine.snapshot())[0];
   assert.strictEqual(plan.travels, true, 'so the page draws a picker');
   assert.deepStrictEqual(plan.waitFor, ['any']);
@@ -710,7 +748,7 @@ test('a book of passes draws no picker', async () => {
   const cpu = fakeModule('reassembly', { resource: () => 'cpu' });
   const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'local' });
   await fresh('plan-no-travel', [cpu], host);
-  engine.enqueue({
+  enqueueSent({
     title: 'Assemble', steps: [{
       type: 'reassembly', label: 'Assemble', config: {},
       sourceRef: { kind: 'audio-session', path: '/s' },
@@ -728,7 +766,7 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
   const unknown = () => ({ kind: 'unknown' });
   assert.deepStrictEqual(
     waitFor.decideWaitFor({
-      waitFor: 'any', resolved: undefined, ranked, state: unknown,
+      waitFor: 'any', resolved: undefined, ranked, dial: 'any', state: unknown,
       gpuSlotTaken: () => null,
     }),
     { kind: 'ask', server: 'local', sentence: 'Checking whether local is reachable…' },
@@ -736,10 +774,278 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
   );
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// THE GPU DIAL — docs/PENDING-QUEUE-AND-GPU-DIAL.md
+// ────────────────────────────────────────────────────────────────────────────
+//
+// "The dial defers, it never overrides." Every row of Owen's precedence table is
+// driven here, on the pure function, because that table IS the feature: a dial
+// that quietly moved a book onto a different card would be the one outcome the
+// whole document rules out.
+
+/** The five facts `decideWaitFor` takes, with the boring ones filled in. */
+function facts(over) {
+  return {
+    waitFor: undefined,
+    resolved: undefined,
+    ranked: [{ name: '3090 Ti', enabled: true }, { name: 'M1 Ultra', enabled: true }],
+    dial: 'any',
+    state: () => ({ kind: 'ready' }),
+    gpuSlotTaken: () => null,
+    ...over,
+  };
+}
+
+test('PRECEDENCE: a named server + dial `any` runs on the NAMED one', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: '3090 Ti', dial: 'any' })),
+    { kind: 'run', server: '3090 Ti' },
+    'an explicit instruction is never second-guessed',
+  );
+});
+
+test('PRECEDENCE: `any` + a dial that names a server takes the DIAL\'s server', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: 'any', dial: 'M1 Ultra' })),
+    { kind: 'run', server: 'M1 Ultra' },
+  );
+});
+
+test('PRECEDENCE: the same server on both runs there', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: 'M1 Ultra', dial: 'M1 Ultra' })),
+    { kind: 'run', server: 'M1 Ultra' },
+  );
+});
+
+test('PRECEDENCE: a DIFFERENT server on each SITS — not failed, not re-routed', () => {
+  const verdict = waitFor.decideWaitFor(facts({ waitFor: '3090 Ti', dial: 'M1 Ultra' }));
+  assert.strictEqual(verdict.kind, 'hold', 'it waits; it is never sent to the other card');
+  // Owen's first parked sentence, verbatim in its first clause.
+  assert.ok(verdict.sentence.startsWith('Waiting for 3090 Ti — the queue is set to M1 Ultra.'),
+    `the sentence must name BOTH machines: ${verdict.sentence}`);
+  assert.match(verdict.sentence, /may be completely idle/,
+    'and say that the card it names may be doing nothing — the fix is a dial turn');
+  assert.ok(!/to become free/.test(verdict.sentence),
+    'it must NOT read as "the server is occupied" — that is a different cause');
+});
+
+test('PRECEDENCE: `any` on both is today\'s behaviour — the first that will take it', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: 'any', dial: 'any' })),
+    { kind: 'run', server: '3090 Ti' },
+  );
+});
+
+test('the dial NEVER shops: `any` + a busy dialled server waits on THAT machine', () => {
+  // The `any` loop would happily take the next server in rank order. With the
+  // dial set, there is no loop: the operator chose, and a choice that silently
+  // slid onto another card would not be a choice.
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    dial: 'M1 Ultra',
+    state: (name) => (name === 'M1 Ultra'
+      ? { kind: 'busy', line: 'Foundry is reading Mistborn.' }
+      : { kind: 'ready' }),
+  }));
+  assert.strictEqual(verdict.kind, 'hold');
+  assert.match(verdict.sentence, /M1 Ultra/);
+  assert.ok(!/3090 Ti/.test(verdict.sentence), 'the other card is not even considered');
+});
+
+test('THE THREE PARKED SENTENCES NAME THREE DIFFERENT CAUSES', () => {
+  const dialElsewhere = waitFor.decideWaitFor(
+    facts({ waitFor: '3090 Ti', dial: 'M1 Ultra' })).sentence;
+  const disabled = waitFor.decideWaitFor(facts({
+    waitFor: '3090 Ti',
+    dial: 'any',
+    ranked: [{ name: '3090 Ti', enabled: false }, { name: 'M1 Ultra', enabled: true }],
+  })).sentence;
+  const unreachable = waitFor.decideWaitFor(facts({
+    waitFor: '3090 Ti',
+    state: () => ({ kind: 'unreachable', detail: 'Nothing answered at 3090 Ti.' }),
+  })).sentence;
+
+  assert.match(dialElsewhere, /the queue is set to M1 Ultra/);
+  assert.match(disabled, /disabled/);
+  assert.match(unreachable, /unreachable/);
+  const all = [dialElsewhere, disabled, unreachable];
+  assert.strictEqual(new Set(all).size, 3, 'three causes, three sentences, never collapsed');
+  // Collapsing these would name the wrong cause, which is the failure shape this
+  // whole feature exists to close.
+  assert.ok(!/disabled/.test(dialElsewhere));
+  assert.ok(!/the queue is set to/.test(disabled));
+  assert.ok(!/the queue is set to/.test(unreachable));
+});
+
+test('a dial-chosen hold says to turn the DIAL, not to re-answer a book already on Any', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    dial: 'M1 Ultra',
+    ranked: [{ name: '3090 Ti', enabled: true }, { name: 'M1 Ultra', enabled: false }],
+  }));
+  assert.strictEqual(verdict.kind, 'hold');
+  assert.match(verdict.sentence, /turn the queue's GPU dial to Any/);
+  assert.ok(!/set this book to Any/.test(verdict.sentence),
+    'the book IS on Any — telling its operator to set it to Any is the wrong fix');
+});
+
+test('A RUNNING JOB IGNORES THE DIAL — an assigned row never re-reads it', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: 'any', resolved: '3090 Ti', dial: 'M1 Ultra' })),
+    { kind: 'run', server: '3090 Ti' },
+    'a job that started somewhere finishes there — turning the dial governs new runs only',
+  );
+});
+
+test('a caller that supplies NO dial is refused by name, never defaulted', () => {
+  const bare = facts({ waitFor: 'any' });
+  delete bare.dial;
+  assert.throws(() => waitFor.decideWaitFor(bare), /`dial` was not supplied/);
+});
+
+test('THE DIAL PARKS A ROW IN THE LIVE QUEUE, and either control frees it', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'mac',
+    dial: 'local',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('dial-park', [gpu], host);
+
+  const job = enqueueSent(narrate('Steered'));
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0, 'it is not sent to the dial\'s machine');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
+    'and nothing is assigned, so both controls are still live');
+  assert.match(firstStep(job.id).progress.admissionHold,
+    /Waiting for mac — the queue is set to local\./);
+
+  // Way out #1: move the BOOK. Same row, no cancel, no re-add.
+  engine.setWaitFor(job.id, 'local');
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1, 'it starts the moment the two agree');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'local');
+});
+
+test('…or the DIAL moves, and the parked row starts where IT asked to', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'mac',
+    dial: 'local',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('dial-turn', [gpu], host);
+
+  const job = enqueueSent(narrate('Steered too'));
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0);
+
+  host.dial = 'any';
+  engine.pump();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1);
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac',
+    'the dial deferred: the book went where IT named, not where the dial had been');
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// PENDING — adding a book stages it
+// ────────────────────────────────────────────────────────────────────────────
+
+test('adding a book STAGES it: nothing is committed and Start does not move it', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'mac',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('pending-stage', [gpu], host);
+
+  const job = engine.enqueue(narrate('Staged'));
+  assert.strictEqual(jobOf(job.id).pending, true);
+  assert.strictEqual(firstStep(job.id).status, 'held');
+
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0, 'the pump skips a staged run whole');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined, 'no venue is decided for it');
+  assert.strictEqual(firstStep(job.id).progress.admissionHold, undefined,
+    'and no admission sentence is written on it — it was never asked about');
+  assert.strictEqual(firstStep(job.id).status, 'held',
+    'the whole-queue Start does not sweep a staged book into the live queue');
+
+  // Its server is editable in Pending — that is what Pending is FOR.
+  engine.setWaitFor(job.id, 'local');
+  assert.strictEqual(jobOf(job.id).waitFor, 'local');
+
+  engine.sendToQueue(job.id);
+  await settle();
+  assert.strictEqual(jobOf(job.id).pending, undefined);
+  assert.strictEqual(gpu.runs.length, 1, 'Send to queue is the press that commits it');
+});
+
+test('Start pressed ON a staged book is REFUSED BY NAME, never a silent no-op', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'mac' });
+  await fresh('pending-start', [gpu], host);
+  const job = engine.enqueue(narrate('Staged too'));
+  assert.throws(() => engine.start({ jobId: job.id }), (err) => {
+    assert.strictEqual(err.code, 'still_pending');
+    assert.match(err.message, /Staged too is in Pending/);
+    assert.match(err.message, /Send to queue/);
+    return true;
+  });
+  assert.strictEqual(firstStep(job.id).status, 'held');
+});
+
+test('Send to queue on a run that is NOT staged is refused by name', async () => {
+  const cpu = fakeModule('reassembly', { resource: () => 'cpu' });
+  const host = fakeHost({ ranked: TWO_SERVERS, defaultWaitFor: 'mac' });
+  await fresh('pending-not', [cpu], host);
+  const job = engine.enqueue({
+    title: 'Assemble only',
+    steps: [{
+      type: 'reassembly', label: 'Assemble', config: {},
+      sourceRef: { kind: 'audio-session', path: '/s' },
+    }],
+  });
+  assert.strictEqual(jobOf(job.id).pending, undefined,
+    'a run with nothing that travels has no server to choose, so it is never staged');
+  assert.throws(() => engine.sendToQueue(job.id), (err) => {
+    assert.strictEqual(err.code, 'not_pending');
+    return true;
+  });
+});
+
+test('PENDING SURVIVES A RESTART — a staged book does not vanish, and does not run', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true } },
+  });
+  const dir = await fresh('pending-restart', [gpu], host);
+  const job = engine.enqueue(narrate('Overnight'));
+  engine.setWaitFor(job.id, 'local');
+  await engine.persist();
+
+  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000 });
+  const back = jobOf(job.id);
+  assert.ok(back !== undefined, 'a book staged but not sent must not vanish');
+  assert.strictEqual(back.pending, true, 'and it is still staged, not quietly queued');
+  assert.strictEqual(back.waitFor, 'local', 'with the server chosen for it intact');
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0);
+});
+
 test('a build with no routing host refuses out loud rather than taking the local card', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true });
   await fresh('no-host', [gpu], null);
-  const job = engine.enqueue(narrate('Unwired'));
+  const job = enqueueSent(narrate('Unwired'));
   engine.start();
   await settle();
   assert.strictEqual(gpu.runs.length, 0);

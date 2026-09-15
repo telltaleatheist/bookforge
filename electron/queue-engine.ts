@@ -65,6 +65,7 @@ import {
   jobStatus,
   RETIRED_JOB_TYPES,
   SOURCE_PARENT,
+  STAGED_JOB_TYPES,
   TERMINAL_STEP_STATUSES,
   type ArtifactKind,
   type ArtifactRef,
@@ -607,11 +608,37 @@ function currentSlotSets(): SlotSet[] {
   });
 }
 
+/**
+ * THE QUEUE'S GPU DIAL, for the snapshot.
+ *
+ * Asked on every snapshot rather than cached, for `currentSlotSets`'s reason: a
+ * dial turned a second ago — in this window or another one — must be on the page
+ * before the next pump.
+ *
+ * A build that wired no routing host, or a record that will not parse, answers
+ * `any`. That is NOT a fallback hiding a bug: this value is DECORATION here (the
+ * position the control draws), and the decision it belongs to is made in
+ * `crucibleAdmission`, which refuses BY NAME in both cases and puts the record's
+ * own repair sentence on every travelling row. Throwing here would take the
+ * whole snapshot — and with it the bench, the plans and the history — down over
+ * a knob.
+ */
+function currentGpuDial(): string {
+  const host = crucibleHost;
+  if (host === null) return WAIT_FOR_ANY;
+  try {
+    return host.dial();
+  } catch {
+    return WAIT_FOR_ANY;
+  }
+}
+
 export function snapshot(): QueueSnapshot {
   // A deep-enough copy: the mirror must not be able to reach back into the truth.
   return {
     running,
     slotSets: currentSlotSets(),
+    gpuDial: currentGpuDial(),
     ...(gpuThermal === null ? {} : { gpuThermal: { ...gpuThermal } }),
     jobs: jobs.map((job) => ({
       ...job,
@@ -693,6 +720,24 @@ let unsubscribeCrucibleRecord: (() => void) | null = null;
 function watchCrucibleRecord(): void {
   if (unsubscribeCrucibleRecord !== null) unsubscribeCrucibleRecord();
   unsubscribeCrucibleRecord = onCrucibleRecordChanged(() => { publish(); });
+}
+
+/**
+ * PUSH THE SNAPSHOT WITHOUT CHANGING THE QUEUE — for a fact the queue carries
+ * but does not own.
+ *
+ * The GPU dial is the one such fact today: it lives in its own record
+ * (`electron/crucible/gpu-dial.ts`), it rides on the snapshot so the page can
+ * draw the control, and turning it alters nothing in `jobs[]`. `changed()` would
+ * be wrong — it PERSISTS, and writing `queue-engine.json` because somebody moved
+ * a knob that is not in it is a file write for nothing, on the same main thread
+ * a render is reporting progress to.
+ *
+ * Same reason `watchCrucibleRecord` publishes rather than `changed()`s when the
+ * capability record learns something.
+ */
+export function publishSnapshot(): void {
+  publish();
 }
 
 function publish(): void {
@@ -1009,6 +1054,49 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
     if (wanted !== null) job.waitFor = wanted;
   }
 
+  /*
+   * ── ADDING A BOOK PUTS IT IN PENDING ────────────────────────────────────────
+   *
+   * Owen's ruling of 2026-09-15 (`docs/PENDING-QUEUE-AND-GPU-DIAL.md` §1): a
+   * book is STAGED before it runs, and Pending is where its server is chosen
+   * while nothing about it is committed. See {@link QueueJob.pending} for what
+   * that costs and what enforces it.
+   *
+   * ── Which runs, and why not all of them ─────────────────────────────────────
+   *
+   * The ones that carry a {@link STAGED_JOB_TYPES} step — a book being
+   * NARRATED. Its own note says why that is narrower than "every run that can
+   * travel", and the short of it is that a Foundry-ordered text act travels as
+   * well, and staging one would put a Send-to-queue gate in front of a button
+   * pressed in another application's window. Pending is where tonight's render
+   * waits while a person decides which card; it is not a second confirmation on
+   * every pass.
+   *
+   * It is deliberately NOT the same predicate that gates `waitFor` two lines
+   * above. Every staged run travels, so it always has a picker to draw, but the
+   * converse does not hold and treating them as one fact is exactly the mistake
+   * the keeper caught.
+   *
+   * ── `release: true` still means what it says ────────────────────────────────
+   *
+   * That flag is a caller stating THE PRESS WAS THE SCHEDULING DECISION (see
+   * {@link JobSpec.release}); staging such a run would be this engine overruling
+   * a caller that had already answered the question Pending is for. No door in
+   * the app passes it today, so today every added book stages.
+   *
+   * The steps are `held` either way — `held` is computed above from the
+   * three-way rule and a pending run is all-held by construction, because
+   * `spec.release !== true` is exactly the condition that makes `held` true
+   * whenever the queue is idle AND the condition that makes it true here.
+   * A pending run composed while the queue was MOVING is the one case where the
+   * two differ, and this settles it: the steps are forced held, because a staged
+   * book that started itself would be Pending in name only.
+   */
+  if (jobIsStageable(job) && spec.release !== true) {
+    job.pending = true;
+    for (const step of job.steps) step.status = 'held';
+  }
+
   jobs.push(job);
   changed();
   if (opts?.deferPump === true) setImmediate(() => pump());
@@ -1168,10 +1256,40 @@ export function start(target?: { jobId?: string; stepId?: string }): void {
   pump();
 }
 
-/** Held → queued, for one step, one job, or everything. */
+/**
+ * Held → queued, for one step, one job, or everything.
+ *
+ * ── A STAGED RUN IS NOT RELEASED, and which way it refuses depends on the ask ─
+ *
+ * A pending run's steps are `held` — that is what "nothing is committed" is made
+ * of — so without this they would be swept up by the whole-queue Start and land
+ * `queued` inside a run `pump` skips by name. The row would sit released,
+ * unclaimed, with nothing able to say why.
+ *
+ *  - UNTARGETED (the toolbar's Start): pending runs are simply not "what is
+ *    here". Start means *run what is in the queue*, and a staged book is not in
+ *    it yet; sweeping it in would make Send to queue a button that can be
+ *    bypassed by accident.
+ *  - TARGETED (Start pressed on one book or one step): REFUSED BY NAME. Silently
+ *    doing nothing to a book somebody pressed Start on is the failure this whole
+ *    page exists to remove.
+ */
 export function release(target?: { jobId?: string; stepId?: string }): void {
+  if (target?.jobId !== undefined || target?.stepId !== undefined) {
+    const owner = target.jobId !== undefined
+      ? jobs.find((job) => job.id === target.jobId)
+      : findStep(target.stepId as string)?.job;
+    if (owner !== undefined && isPending(owner)) {
+      throw new QueueRoutingRefusal(
+        'still_pending',
+        `${owner.title} is in Pending — it has not been sent to the queue, so there is nothing `
+        + 'here to start. Choose its server and press Send to queue.',
+      );
+    }
+  }
   const affected: QueueStep[] = [];
   for (const job of jobs) {
+    if (isPending(job)) continue;
     if (target?.jobId && job.id !== target.jobId) continue;
     for (const step of job.steps) {
       if (target?.stepId && step.id !== target.stepId) continue;
@@ -1403,25 +1521,85 @@ export function updateStepConfig(stepId: string, patch: Record<string, unknown>)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
+ * EVERY WAY A ROUTING EDIT CAN BE REFUSED, each with a name.
+ *
+ * Owen's rule (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`, "Mutability"): *"The edit
+ * and admission race, and the race must be settled by name. An edit that arrives
+ * after admission is REFUSED (naming the row and the server it went to), never
+ * silently applied to a running job and never silently dropped."*
+ *
+ * A bare `Error` would have carried the sentence and nothing a caller could
+ * branch on, so a surface wanting to say "this one lost the race, the others
+ * moved" would have had to read the prose. The CODE is what it reads; the
+ * message is still the whole sentence, and it is never swallowed.
+ */
+export type QueueRoutingRefusalCode =
+  /**
+   * THE RACE, and the only outcome it may have. A GPU took the row — the venue
+   * is written and the work is on a machine — so the answer is not a setting any
+   * more. The message names the row and the server it went to.
+   */
+  | 'venue_fixed_at_admission'
+  /** A name that is not one of this machine's Crucible servers. */
+  | 'unknown_server'
+  /** The run carries nothing that can run on a Crucible server. */
+  | 'not_travelling'
+  /** Send to queue was pressed on a run that is not in Pending. */
+  | 'not_pending'
+  /** Start was pressed on a run that IS in Pending. Send it to the queue first. */
+  | 'still_pending';
+
+export class QueueRoutingRefusal extends Error {
+  readonly code: QueueRoutingRefusalCode;
+
+  constructor(code: QueueRoutingRefusalCode, message: string) {
+    super(message);
+    this.name = 'QueueRoutingRefusal';
+    this.code = code;
+  }
+}
+
+/**
  * Point one book at a server, or at `any`.
  *
- * Editable while the row is QUEUED and refused once the book has been assigned
- * — §4.3, a job is atomic, so the machine a book started on is not a setting
- * any more. Refused by name for a server this machine does not have, because
+ * ── The boundary, and how the race is settled ───────────────────────────────
+ *
+ * Editable right up to the moment a GPU takes the row, and refused after. Owen,
+ * 2026-09-15: *"all the way up to the moment it's taken by a gpu. the moment
+ * it's taken, it's immutable. it's running and will have to be canceled and
+ * re-added to resolve it."*
+ *
+ * `waitForResolved` IS that moment, and since this build it is written at the
+ * instant the step LAUNCHES rather than when the pump decided which machine to
+ * try — see the assignment in `pump`. A row parked waiting for a card it has
+ * been pointed at is therefore still editable, which is what the ruling says and
+ * what the old ordering quietly denied.
+ *
+ * THE RACE CANNOT INTERLEAVE. Both halves run on main's one thread: `pump` is
+ * synchronous from the first `for` to the `void launch(...)` that writes the
+ * venue, and this door reads `waitForResolved` synchronously in the same loop.
+ * So either the edit is seen with the field absent — and it applies, and the
+ * pump that follows reads the new answer — or the field is set and the edit is
+ * REFUSED BY NAME. There is no third outcome and nothing is best-effort.
+ *
+ * Refused by name for a server this machine does not have, too, because
  * silently accepting it would produce a row that can only ever hold.
  */
 export function setWaitFor(jobId: string, value: string): void {
   const job = requireJob(jobId);
   if (!jobTravels(job)) {
-    throw new Error(
+    throw new QueueRoutingRefusal(
+      'not_travelling',
       `${job.title} has no step that can run on a Crucible server, so there is nothing for it to `
       + 'wait for. Only the narration step travels today.',
     );
   }
   if (job.waitForResolved !== undefined) {
-    throw new Error(
-      `${job.title} is already running on ${job.waitForResolved}, and a book finishes on the `
-      + 'machine it started on. Cancel it and queue it again to send it somewhere else.',
+    throw new QueueRoutingRefusal(
+      'venue_fixed_at_admission',
+      `${job.title} was taken by a GPU on ${job.waitForResolved} before this change arrived, and a `
+      + 'book finishes on the machine it started on. Nothing here has been altered. Cancel it and '
+      + 'queue it again to send it somewhere else.',
     );
   }
   if (value !== WAIT_FOR_ANY) {
@@ -1434,7 +1612,8 @@ export function setWaitFor(jobId: string, value: string): void {
     }
     const known = host.routing().ranked.map((row) => row.name);
     if (!known.includes(value)) {
-      throw new Error(
+      throw new QueueRoutingRefusal(
+        'unknown_server',
         `"${value}" is not one of this machine's Crucible servers `
         + `(${known.length === 0 ? 'there are none' : known.join(', ')}).`,
       );
@@ -1444,9 +1623,62 @@ export function setWaitFor(jobId: string, value: string): void {
   // The hold on its steps was about the OLD answer. Retiring it here rather
   // than leaving it for the next pump keeps the row from showing "waiting for
   // mac: disabled" one tick after the operator moved it off mac.
+  //
+  // AND SO IS THE VENUE A PARKED STEP WAS PENCILLED IN FOR. `pump` writes
+  // `step.venue` as soon as it has decided which machine to TRY — which is what
+  // lets the bench say "waiting for mac to become free" about a row behind a
+  // full slot — and that pencilling is now, by construction, a decision that can
+  // still be changed (see `assignRunVenue`: the run is not assigned until it
+  // launches). A stale one left here would have the bench naming the machine the
+  // operator has just moved the book OFF, for as long as it took the next pump
+  // to overwrite it. Only steps that have not started: a running or finished
+  // step's venue is history.
   for (const step of job.steps) {
-    if (step.status === 'queued') clearAdmissionHold(step);
+    if (step.status !== 'queued' && step.status !== 'waiting' && step.status !== 'held') continue;
+    clearAdmissionHold(step);
+    step.venue = undefined;
   }
+  changed();
+  pump();
+}
+
+/**
+ * IS THIS RUN STAGED RATHER THAN QUEUED — the one owner of the question, so the
+ * scheduler, the release door and the bench cannot come to disagree about it.
+ */
+function isPending(job: QueueJob): boolean {
+  return job.pending === true;
+}
+
+/**
+ * SEND A PENDING RUN INTO THE LIVE QUEUE — the press Owen's §3 names.
+ *
+ * Two things happen and they are one act: the run stops being staged, and its
+ * steps are released. Doing only the first would leave a book in the live queue
+ * that nothing claims; only the second would leave released steps inside a run
+ * `pump` skips by name, which is the invisible stall this flag exists to make
+ * impossible.
+ *
+ * `running` is NOT set here, deliberately. Send to queue says *where this book
+ * belongs*, not *start the card*: a queue that is paused stays paused and the
+ * book waits in it, which is the same thing Start has always meant. A queue that
+ * is already moving picks the book up on the pump below without another press.
+ *
+ * Refused by name for a run that is not pending, because the press would
+ * otherwise appear to work on a book that is already running — and "it did
+ * nothing" is indistinguishable from "it is broken".
+ */
+export function sendToQueue(jobId: string): void {
+  const job = requireJob(jobId);
+  if (!isPending(job)) {
+    throw new QueueRoutingRefusal(
+      'not_pending',
+      `${job.title} is not in Pending — it is already in the live queue. Nothing here has been `
+      + 'altered.',
+    );
+  }
+  job.pending = undefined;
+  release({ jobId });
   changed();
   pump();
 }
@@ -1728,6 +1960,23 @@ export interface CrucibleRoutingHost {
    * prevent, and writing `any` would be a silent default.
    */
   defaultWaitFor(): string | null;
+  /**
+   * THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
+   *
+   * A live lever the operator turns while work is moving, read on every
+   * admission pass rather than cached here, so a dial turned a second ago is in
+   * force on the next pump. It DEFERS and never overrides: the whole precedence
+   * table is on `GPU_DIAL_ANY` in `shared/queue/wait-for.ts`, and
+   * `decideWaitFor` is the one thing that applies it.
+   *
+   * Injected like the rest of this host, for the property this file keeps: no
+   * Electron, no registry, no file. `electron/crucible/gpu-dial.ts` is the
+   * record; `queue-ipc.ts` binds the two.
+   *
+   * It never answers `null`. A dial nobody has turned is `any`, which is a real
+   * setting and the one in which the dial changes nothing.
+   */
+  dial(): string;
   /** One unauthenticated reachability check. Never admission — the door decides. */
   reach(server: string): Promise<{ reachable: true } | { reachable: false; detail: string }>;
 }
@@ -1881,6 +2130,20 @@ function jobTravels(job: QueueJob): boolean {
   return job.steps.some((step) => step.travels === true);
 }
 
+/**
+ * IS THIS RUN A BOOK BEING ADDED — the one question Pending turns on.
+ *
+ * Both halves are required and each is a different fact. {@link
+ * STAGED_JOB_TYPES} says the act is a book's render rather than a pass ordered
+ * from somewhere else; `travels` says the module can actually be sent to a
+ * machine, so there is a server to choose in Pending at all. A render whose
+ * module had not been taught to travel would have nothing to decide there, and
+ * a Send-to-queue press over an empty picker is a press for nothing.
+ */
+function jobIsStageable(job: QueueJob): boolean {
+  return job.steps.some((step) => STAGED_JOB_TYPES.has(step.type) && step.travels === true);
+}
+
 function stepTravels(type: JobType, config: Record<string, unknown>): boolean {
   const mod = modules.get(type);
   if (!mod || mod.machines === undefined) return false;
@@ -1927,10 +2190,32 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     return { ok: false, reason: `Waiting: ${(err as Error)?.message || String(err)}` };
   }
 
+  /*
+   * THE DIAL, READ ON EVERY PASS AND NEVER CACHED HERE.
+   *
+   * It is a lever the operator turns while work is moving, so a value held from
+   * an earlier pump would mean a turn took effect whenever the queue next
+   * happened to change for some other reason. The record behind it is a small
+   * synchronous file read, memoised by the host for a few seconds
+   * (`queue-ipc.ts`), which is the same arrangement the routing view has.
+   *
+   * A HOST THAT CANNOT SAY IS REFUSED, not defaulted: assuming `any` would
+   * silently ignore a dial somebody set, and there is no honest second guess.
+   */
+  let dial: string;
+  try {
+    dial = host.dial();
+  } catch (err) {
+    // A corrupt dial record is refused by `crucible/gpu-dial.ts` in its own
+    // words, and those words carry the repair. Shown, never replaced.
+    return { ok: false, reason: `Waiting: ${(err as Error)?.message || String(err)}` };
+  }
+
   const verdict = decideWaitFor({
     waitFor: job.waitFor,
     resolved: job.waitForResolved,
     ranked: record.ranked,
+    dial,
     state: serverState,
     // OUR OWN bookkeeping, never the server's state: how many GPU steps
     // BookForge already has in flight there (crucible
@@ -2083,6 +2368,34 @@ function serversOnThisMachine(): readonly string[] {
 }
 
 /**
+ * THE MOMENT A BOOK IS TAKEN BY A GPU — the one place `waitForResolved` is
+ * written, and the boundary every routing edit is measured against.
+ *
+ * Owen, 2026-09-15: *"all the way up to the moment it's taken by a gpu. the
+ * moment it's taken, it's immutable."* This is that moment: it is called on the
+ * line before `launch`, on every path that reaches it, and nowhere else.
+ *
+ * §4.3 is unchanged and enforced here rather than merely described: the field is
+ * written ONCE and a second call over an already-assigned run is a no-op, so a
+ * later step of the same run cannot move the book even if the record, the dial
+ * or the operator has changed underneath it. A resume after a restart reads the
+ * same value off disk and goes back to the same machine.
+ *
+ * `server` is the SERVER, never a cloud lane: the lane is where one STEP was
+ * charged (`step.venue`), and the run was placed on the engine. They are two
+ * scopes of one record and the callers keep them apart.
+ *
+ * Non-travelling steps assign nothing. Their venue is this machine's in-app
+ * aligner, which is not a Crucible server and would be read as one by every door
+ * that takes `waitForResolved` for a server's name.
+ */
+function assignRunVenue(job: QueueJob, step: QueueStep, server: string): void {
+  if (step.travels !== true) return;
+  if (job.waitForResolved !== undefined) return;
+  job.waitForResolved = server;
+}
+
+/**
  * What is running in a set, as a phrase a sentence can carry — "narrating
  * Mistborn". Null when nothing is.
  *
@@ -2158,6 +2471,16 @@ export function pump(): void {
   }
 
   for (const job of jobs) {
+    /*
+     * A STAGED RUN IS SKIPPED WHOLE, and this is where "nothing about a pending
+     * item is committed" is actually enforced. No venue is decided for it, no
+     * slot is counted against it and no admission sentence is written on it, so
+     * turning the dial or re-pointing the book costs exactly nothing right up to
+     * the press that sends it. Its steps are `held` as well — belt and braces,
+     * because either one alone would be a rule somebody could delete without a
+     * test noticing.
+     */
+    if (isPending(job)) continue;
     for (const step of job.steps) {
       if (step.status !== 'queued') continue;
       const parent = parentOf(step);
@@ -2224,13 +2547,34 @@ export function pump(): void {
         }
 
         /*
-         * THE BOOK IS ASSIGNED, and it stays assigned (§4.3). Recorded HERE,
-         * before every check below, for two reasons: a row that then waits for
-         * a card is already pinned to the machine it will run on — which is the
-         * moment it was pinned before the slot sets existed — and the bench
-         * cannot say WHICH card a row is waiting for until the row says.
+         * ── THE BOOK IS NOT ASSIGNED HERE ANY MORE ─────────────────────────
+         *
+         * `job.waitForResolved = routed.venue` used to be written on this line,
+         * BEFORE every check below, so that a row waiting for a card was
+         * "already pinned to the machine it will run on" and the bench could say
+         * which card it was waiting for.
+         *
+         * Owen's ruling of 2026-09-15 (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`,
+         * "Mutability") moved the boundary: *"i should be able to switch either
+         * the queue item or the queue itself to resolve that. all the way up to
+         * the moment it's taken by a gpu."* A row that merely DECIDED which
+         * machine to try has not been taken by one — it may be sitting behind a
+         * full slot for an hour — and `setWaitFor` refuses every edit to a
+         * resolved row, so the old ordering made a book immutable long before a
+         * GPU had it. That is the ruling denied by an implementation detail.
+         *
+         * So the assignment is written at the one moment the ruling names: the
+         * instant the step LAUNCHES, on the two lines below that reach `launch`.
+         * §4.3 is untouched — once written it is never changed, a resume goes
+         * back to the same machine, and later steps of the run follow it.
+         *
+         * WHAT THAT COSTS, AND WHAT PAYS IT: `slotSetForStep` answers `null` for
+         * an unassigned travelling row, so the bench can no longer derive a
+         * "waiting for the card on X" sentence for one. It does not have to —
+         * the admission hold written a few lines down NAMES the machine and what
+         * is on it (`holdOurSlotTaken`), which is Owen's second parked sentence
+         * and strictly more than the bench could say.
          */
-        if (step.travels === true) job.waitForResolved = routed.venue;
 
         /*
          * ── DOES THIS ENGINE RUN THIS CLASS, OR FORWARD IT? ─────────────────
@@ -2316,6 +2660,7 @@ export function pump(): void {
             continue;
           }
           clearAdmissionHold(step);
+          assignRunVenue(job, step, routed.venue);
           void launch(job, step);
           continue;
         }
@@ -2363,6 +2708,7 @@ export function pump(): void {
 
         if (!routed.onThisMachine) {
           clearAdmissionHold(step);
+          assignRunVenue(job, step, routed.venue);
           void launch(job, step);
           continue;
         }
@@ -2388,6 +2734,7 @@ export function pump(): void {
         }
         // Admission passed and a slot is free, so this step launches on the next
         // line and `launch` blanks its progress wholesale. Nothing to clear.
+        assignRunVenue(job, step, routed.venue);
       }
       void launch(job, step);
     }

@@ -154,8 +154,18 @@ test('a full pool outranks a stale admission hold, and names what is holding it'
   const j = job([running, queued]);
   const r = reasonOf(snap([j]), j, queued);
   assert.strictEqual(r.kind, 'no-slot');
-  assert.match(r.sentence, /graphics card/);
+  // OWEN'S SECOND PARKED SENTENCE, pinned by its words
+  // (docs/PENDING-QUEUE-AND-GPU-DIAL.md): "The server is occupied: 'Waiting for
+  // the 3090 Ti to become free.' The dial matches, the card is working, and the
+  // fix is time." It must not read like the dial sentence (which would send a
+  // person to turn a knob at an idle card) and must not read like the disabled
+  // one (which would send them to a switch).
+  assert.match(r.sentence, /to become free/);
   assert.match(r.sentence, /Narrating Flashpoint of Revival/);
+  assert.ok(!/the queue is set to/.test(r.sentence),
+    'occupied is not the dial pointing elsewhere — three causes, three sentences');
+  assert.ok(!/disabled/.test(r.sentence),
+    'occupied is not disabled either');
   assert.ok(!/llama-training/.test(r.sentence), 'the stale hold must not be read out');
 });
 

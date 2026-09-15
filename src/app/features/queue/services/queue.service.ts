@@ -49,6 +49,7 @@ import type {
   StepStatus,
 } from '@shared/queue/engine-types';
 import { jobPercent, jobStatus, SOURCE_PARENT } from '@shared/queue/engine-types';
+import { GPU_DIAL_ANY } from '@shared/queue/wait-for';
 import type { PassJobResult, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
 import { passResultNotes } from '@shared/processing/pass-notes';
 import { buildConversionConfig, type VlmConvertJobConfig } from '../jobs/vlm-convert-job';
@@ -108,6 +109,10 @@ interface QueueBridge {
   updateStepConfig(stepId: string, patch: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
   /** Which Crucible server one book waits for — a name, or `any`. */
   setWaitFor(jobId: string, value: string): Promise<{ success: boolean; error?: string }>;
+  /** Turn the queue's GPU dial — `any`, or one server's name. */
+  setGpuDial(value: string): Promise<{ success: boolean; data?: { dial: string }; error?: string }>;
+  /** Move a staged book into the live queue. */
+  sendToQueue(jobId: string): Promise<{ success: boolean; error?: string }>;
   onChanged(cb: (snapshot: QueueSnapshot) => void): () => void;
   onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
   /** News about a run that never became one — see `QueueNotice`. */
@@ -311,9 +316,15 @@ export class QueueService {
    * (`shared/queue/slot-sets.ts`), and a renderer that invented a bench would
    * be drawing a card nobody has registered. The bench is simply empty for the
    * one tick before the first snapshot arrives.
+   *
+   * `gpuDial` is `any` for the same reason and it is not a guess either: `any`
+   * is the position of a dial nobody has turned, and it is the one position in
+   * which the dial changes nothing about where a book goes. Inventing a SERVER
+   * NAME here would draw a control claiming the queue was steering work at a
+   * machine, for the tick before main says otherwise.
    */
   private readonly _snapshot = signal<QueueSnapshot>({
-    jobs: [], running: false, slotSets: [],
+    jobs: [], running: false, slotSets: [], gpuDial: GPU_DIAL_ANY,
   });
 
   /**
@@ -776,6 +787,31 @@ export class QueueService {
     QueueService.settle(
       await this.requireBridge().setWaitFor(jobId, value),
       'Choosing a server for this book',
+    );
+  }
+
+  /**
+   * TURN THE QUEUE'S GPU DIAL.
+   *
+   * The value drawn in the control is the SNAPSHOT'S (`snapshot().gpuDial`),
+   * never a local copy this write sets optimistically: main owns the record, a
+   * second window can turn the same dial, and a renderer holding its own idea of
+   * where work is being steered is the duplicated fact this queue was rebuilt to
+   * remove. Main's refusal is thrown rather than swallowed, so a dial that did
+   * not move never looks as though it did.
+   */
+  async setGpuDial(value: string): Promise<void> {
+    QueueService.settle(
+      await this.requireBridge().setGpuDial(value),
+      "Turning the queue's GPU dial",
+    );
+  }
+
+  /** Move a staged book out of Pending and into the live queue. */
+  async sendToQueue(jobId: string): Promise<void> {
+    QueueService.settle(
+      await this.requireBridge().sendToQueue(jobId),
+      'Sending this book to the queue',
     );
   }
 

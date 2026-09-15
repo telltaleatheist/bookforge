@@ -130,6 +130,39 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
 ]);
 
 /**
+ * WHAT "ADDING A BOOK" MEANS, for the Pending band — and why it is this narrow.
+ *
+ * Owen's ruling of 2026-09-15 (`docs/PENDING-QUEUE-AND-GPU-DIAL.md` §1):
+ * *"Adding a book puts it in PENDING, not in the live queue."* A run that
+ * carries one of these is that act; a run that does not is not staged and
+ * behaves exactly as it did before.
+ *
+ * ── Why not simply "every run that can travel" ──────────────────────────────
+ *
+ * That was the first cut and it was wrong, and the keeper suite said so: a
+ * Foundry-ordered CLEAN TEXT act travels too (an AI class runs on a Crucible
+ * like everything else), and staging it put a "Send to queue" gate in front of a
+ * button pressed in ANOTHER APPLICATION'S window — where there is no Pending
+ * band to press it in. The same goes for a simplify or a translate pass ordered
+ * from the Process tab, and for the `foundry-export-landing` row a pending-export
+ * narrate hangs from.
+ *
+ * The distinction is not "does it travel" but WHAT THE PRESS MEANT. Ordering a
+ * text act means *do this now*: it is minutes of work, it was asked for in a
+ * window that is about something else, and the machine it lands on is not a
+ * decision anybody was making. Adding a BOOK means *here is tonight's render* —
+ * hours of one card, and which card is precisely the question Pending exists to
+ * hold the book still for. `tts-conversion` is that act, and it is the only one
+ * this app has.
+ *
+ * A SET rather than a comparison, for `PASS_JOB_TYPES`' reason: when a second
+ * long-form render act exists it joins the list here and nothing else moves.
+ */
+export const STAGED_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'tts-conversion',
+]);
+
+/**
  * What a step is doing.
  *
  * `held`   — composed, in the list, and released by nothing yet. The user has not
@@ -608,6 +641,46 @@ export interface QueueJob {
    */
   waitFor?: string;
   /**
+   * THIS RUN IS STAGED, NOT QUEUED — it is in Pending and nothing about it is
+   * committed.
+   *
+   * Owen's ruling of 2026-09-15 (`docs/PENDING-QUEUE-AND-GPU-DIAL.md` §1):
+   * *"Adding a book puts it in PENDING, not in the live queue. Nothing about a
+   * pending item is committed."* You choose its server there, and then press
+   * **Send to queue**.
+   *
+   * ── Why a flag on the run and not a second store ────────────────────────────
+   *
+   * Because a pending item IS a run — a title, a chain of steps, a `waitFor` —
+   * and the queue already persists exactly that, survives a restart with it, and
+   * refuses a chain that cannot read itself at the moment it is COMPOSED rather
+   * than an hour later. A parallel store of un-validated job specs would defer
+   * every one of those checks to the press, which is the "an hour later" failure
+   * this engine was built to remove. So Pending is a STATE of a run, the run is
+   * in `jobs[]` like every other, and `queue-engine.json` is what makes it
+   * survive the app closing (§"Persistence": *"A book staged but not sent must
+   * not vanish because the app closed"*).
+   *
+   * ── What "nothing is committed" means, enforced ─────────────────────────────
+   *
+   * Its steps are `held`, `pump` skips the whole run BY NAME, `release` will not
+   * release it, and nothing ever writes `waitForResolved` for it. So it holds no
+   * slot, names no venue, and turning the dial or re-pointing the book costs
+   * nothing.
+   *
+   * ── Which runs get it ───────────────────────────────────────────────────────
+   *
+   * The ones that carry a step which can TRAVEL — a book being narrated. A run
+   * of passes, assemblies and Foundry reads has no Crucible server to choose and
+   * no dial acting on it, so a Pending section for one would be a press that
+   * decides nothing (the same argument `waitFor` itself is gated by: §4.2.3's
+   * representable states).
+   *
+   * Absent means "in the live queue", which is every run written before this
+   * existed and every run that has been sent.
+   */
+  pending?: boolean;
+  /**
    * WHERE THIS BOOK'S GPU WORK WAS ACTUALLY SENT — a server's name. A queue
    * written before 2026-09-15 can also carry `legacy-local-narrator`, which is
    * refused by name rather than honoured (`shared/queue/wait-for.ts`).
@@ -698,6 +771,20 @@ export interface QueueSnapshot {
    * has its lane before the next pump.
    */
   slotSets: SlotSet[];
+  /**
+   * THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
+   *
+   * On the snapshot for the reason `slotSets` is: it comes from a record only
+   * main can read (`electron/crucible/gpu-dial.ts`), and the page draws the
+   * control that turns it. Composed on every snapshot rather than cached, so a
+   * dial turned in another window is on this one before the next pump.
+   *
+   * REQUIRED, and `any` when the record has never been written — that is the
+   * state of a dial nobody has turned, not a missing fact. What it MEANS is in
+   * `GPU_DIAL_ANY` (`shared/queue/wait-for.ts`), which is the only place the
+   * precedence table lives.
+   */
+  gpuDial: string;
 }
 
 /**

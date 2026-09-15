@@ -71,6 +71,16 @@ export type StillKind =
   | 'paused'
   | 'no-slot'
   | 'admission'
+  /**
+   * STAGED, NOT QUEUED — the run is in Pending and has not been sent
+   * ({@link QueueJob.pending}).
+   *
+   * Its own kind rather than `held`, because the two are different states with
+   * different gestures: `held` is *in the queue, press Start*, and this is *not
+   * in the queue yet, choose a server and press Send to queue*. Collapsing them
+   * would put a Start button on a row Start refuses by name.
+   */
+  | 'pending'
   | 'held'
   | 'stopped'
   | 'ready';
@@ -87,9 +97,32 @@ export interface StillReason {
  * The machine is in the sentence because there is one card per slot set now: a
  * row told "waiting for the graphics card" while a second machine's card sat
  * idle would be a true sentence that reads as a false one.
+ *
+ * ── The GPU wording is OWEN'S SECOND PARKED SENTENCE ────────────────────────
+ *
+ * `docs/PENDING-QUEUE-AND-GPU-DIAL.md`, "A parked row says what would unblock it
+ * — three different sentences": *"The server is occupied: 'Waiting for the 3090
+ * Ti to become free.' The dial matches, the card is working, and the fix is
+ * time."* It used to read "waiting for the graphics card on 3090 Ti", which is
+ * the same fact said less plainly; the point of the three sentences is that a
+ * reader can tell this state from *"the queue is set to M1 Ultra"* (a dial turn
+ * fixes it, and the card may be idle) and from *"disabled"* (a switch fixes it)
+ * at a glance, and "to become free" is what says the machine is BUSY.
+ *
+ * The article is left off the label rather than written into the sentence: the
+ * labels are "3090 Ti", "the local long-form aligner" and "M1 Ultra — routed
+ * elsewhere", and a hard-coded "the" would read as "the the local long-form
+ * aligner" on the one row that already carries its own.
+ *
+ * THIS IS THE ONLY OWNER OF THAT SENTENCE. The scheduler deliberately says
+ * nothing when a venue's slot is full (`queue-engine.ts`, the `gpuSlotHolder`
+ * branch RETIRES its hold there): the bench reads `step.venue` — pencilled in as
+ * soon as the pump knows which machine it is trying — so it can always speak,
+ * and two sentences for one fact is the shape crucible `docs/ARCHITECTURE.md` R1
+ * forbids.
  */
 function poolWord(resource: StepResource, setId: string, setLabel: string): string {
-  if (resource === 'gpu') return `the graphics card on ${setLabel}`;
+  if (resource === 'gpu') return `${setLabel} to become free`;
   /*
    * A CLOUD LANE IS A `cpu` SET AND IT IS NOT THIS MACHINE'S CPU.
    *
@@ -162,6 +195,19 @@ export function stillReason(
   }
   if (TERMINAL_STEP_STATUSES.has(step.status)) {
     throw new Error(`${step.label} has already finished, so it is not waiting for anything.`);
+  }
+
+  /*
+   * STAGED OUTRANKS EVERY OTHER REASON, because it is the only one that is true
+   * of the WHOLE RUN rather than of this step. A pending run's steps are all
+   * `held`, so without this the first of them would read "Held — you haven't
+   * started it" (which invites a press Start refuses) and the rest would read
+   * "Held — behind Narrate" (which names a queue position the run has not got
+   * yet). Asked before the parent, before the pool and before admission, none of
+   * which is even consulted for a run the pump skips.
+   */
+  if (job.pending === true) {
+    return { kind: 'pending', sentence: 'Pending — not sent to the queue yet.' };
   }
 
   if (step.status === 'held') {
@@ -482,6 +528,101 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
   return lanes;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// The bench, GROUPED
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * WHICH GROUP A LANE BELONGS TO.
+ *
+ * Owen, 2026-09-15: *"im not a fan of how the slots are laid out. maybe we
+ * should have a local cpu slot section and a gpu slot section. they look kind of
+ * ugly clustered together randomly. and its hard to tell which slot im looking
+ * at unless i look closely at the names."*
+ *
+ * `gpu` — the Crucible engines' cards, one row per engine. **This is the
+ *   section the dial acts on**, which is why it is first and why the dial is
+ *   drawn on its heading rather than in the toolbar: the control sits on the
+ *   thing it governs.
+ * `cpu` — what BookForge does itself: `local-work`'s two slots.
+ * `cloud` — an engine's upstream lane, which is neither.
+ *
+ * ── Why `cloud` exists when the ruling named two sections ───────────────────
+ *
+ * The ruling defines the two by their TENANTS ("the Crucible engines", "the two
+ * `local-work` slots") and then places the aligner row "with the section its
+ * resource says it is" — GPU, which is where {@link laneGroup} puts it. A cloud
+ * lane (`<server>:cloud`, crucible PHASE15 §5.3) is a `cpu` lane that belongs to
+ * neither tenant: it holds no card, and it is emphatically not BookForge itself
+ * — the work is on somebody's API and the engine is forwarding it. Filing it
+ * under "BookForge itself" would be a heading that lies about what is in it,
+ * which is the failure this whole document is about. It is drawn only when such
+ * a lane exists, which is the ruling's own rule for empty sections.
+ */
+export type BenchGroup = 'gpu' | 'cpu' | 'cloud';
+
+function laneGroup(lane: BenchLane): BenchGroup {
+  if (lane.resource === 'gpu') return 'gpu';
+  return serverOfCloudLane(lane.setId) === null ? 'cpu' : 'cloud';
+}
+
+/** One heading's worth of bench. */
+export interface BenchSection {
+  group: BenchGroup;
+  /** The heading, as the user reads it. */
+  heading: string;
+  /** The one line under it saying what the group IS. */
+  note: string;
+  lanes: BenchLane[];
+  /** How many of this section's lanes hold something. */
+  inUse: number;
+}
+
+const SECTION_ORDER: readonly BenchGroup[] = ['gpu', 'cpu', 'cloud'];
+
+const SECTION_WORDS: Readonly<Record<BenchGroup, { heading: string; note: string }>> = {
+  gpu: {
+    heading: 'GPU — the Crucible engines',
+    note: 'One card per registered engine. This is what the queue’s GPU dial steers.',
+  },
+  cpu: {
+    heading: 'CPU — BookForge itself',
+    note: 'Assembly, muxing, exports — work this machine does and never sends anywhere.',
+  },
+  cloud: {
+    heading: 'Routed elsewhere',
+    note: 'An engine forwarding a request to its upstream. No card is held by it.',
+  },
+};
+
+/**
+ * THE BENCH IN GROUPS, in a fixed order, with EMPTY SECTIONS ABSENT.
+ *
+ * A heading with nothing under it is worse than nothing — Owen's own rule in the
+ * same paragraph — so a machine with no Crucible server draws no GPU section at
+ * all rather than an empty one captioned as though a card ought to be there.
+ *
+ * The lanes themselves are untouched and in {@link benchLanes}' order: this
+ * groups them, it does not re-derive them. The overall "N of M slots in use"
+ * stays the page's, computed off the same list.
+ */
+export function benchSections(snapshot: QueueSnapshot): BenchSection[] {
+  const lanes = benchLanes(snapshot);
+  const sections: BenchSection[] = [];
+  for (const group of SECTION_ORDER) {
+    const mine = lanes.filter((lane) => laneGroup(lane) === group);
+    if (mine.length === 0) continue;
+    sections.push({
+      group,
+      heading: SECTION_WORDS[group].heading,
+      note: SECTION_WORDS[group].note,
+      lanes: mine,
+      inUse: mine.filter((lane) => lane.occupant !== null).length,
+    });
+  }
+  return sections;
+}
+
 /**
  * Does this slot set run on the machine BookForge is on?
  *
@@ -689,6 +830,10 @@ export function needsYou(snapshot: QueueSnapshot): FailedRun[] {
 export function upNext(snapshot: QueueSnapshot): StillStep[] {
   const rows: StillStep[] = [];
   for (const job of snapshot.jobs) {
+    // A staged run is not "up next": it is not in the queue at all until it is
+    // sent, and the tray's flat list has no room to say the difference. The
+    // chip counts it separately; the page draws it in its own band.
+    if (job.pending === true) continue;
     for (const step of job.steps) {
       if (step.status === 'running' || TERMINAL_STEP_STATUSES.has(step.status)) continue;
       const reason = stillReason(snapshot, job, step);
@@ -722,9 +867,36 @@ export function upNext(snapshot: QueueSnapshot): StillStep[] {
  * to, which is the fact the chain is for.
  */
 export function bookPlans(snapshot: QueueSnapshot): BookPlan[] {
+  return plansOf(snapshot, false);
+}
+
+/**
+ * THE PENDING BAND — books that have been ADDED but not sent.
+ *
+ * `docs/PENDING-QUEUE-AND-GPU-DIAL.md` §1-§3: adding a book stages it, its
+ * server is chosen there while nothing is committed, and **Send to queue** moves
+ * it into the live queue.
+ *
+ * The same shape as {@link bookPlans} and the same grouping, deliberately: a
+ * pending item IS a book's plan — the chain it will run, and the one answer to
+ * "which machine" that every step of it follows — and a second vocabulary for
+ * the same object is what would make the two bands disagree about what a book
+ * is. The only difference is which side of the press it is on, and that is the
+ * one argument this pair takes.
+ *
+ * `travels` is true of every row here by construction (only a run that can
+ * travel is ever staged, see {@link QueueJob.pending}), so the picker is always
+ * drawn — which is the whole point of the band.
+ */
+export function pendingPlans(snapshot: QueueSnapshot): BookPlan[] {
+  return plansOf(snapshot, true);
+}
+
+function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
   const byKey = new Map<string, BookPlan>();
 
   for (const job of snapshot.jobs) {
+    if ((job.pending === true) !== pending) continue;
     if (!isLive(job)) continue;
     // Runs about the same project are one book's work. A run about no project
     // is its own group: nothing else can be said to belong with it.

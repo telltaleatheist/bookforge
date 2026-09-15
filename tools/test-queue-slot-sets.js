@@ -695,7 +695,9 @@ test('a row waiting for a card is told WHICH card', () => {
   const other = jobOfSteps([queued], { id: 'j2', title: 'Wool', waitForResolved: 'mac' });
   const reason = bench.stillReason(snapOf([job, other], ['local', 'mac']), other, queued);
   assert.strictEqual(reason.kind, 'no-slot');
-  assert.match(reason.sentence, /graphics card on mac/);
+  // Owen's "the server is occupied" sentence, which NAMES the machine:
+  // "Waiting for mac to become free" (docs/PENDING-QUEUE-AND-GPU-DIAL.md).
+  assert.match(reason.sentence, /mac to become free/);
   assert.match(reason.sentence, /Narrating Mistborn/);
 });
 
@@ -765,6 +767,7 @@ function fakeHost(initial) {
     legacyLocalRender: initial.legacyLocalRender === true,
     serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
+    dial: initial.dial === undefined ? 'any' : initial.dial,
     reach: initial.reach ?? {},
   };
   state.host = {
@@ -774,6 +777,10 @@ function fakeHost(initial) {
       serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
+    // The queue's GPU dial. `any` here throughout: this suite is about CAPACITY
+    // — which machine has which slots and who is holding them — and the dial
+    // decides ROUTING, which test-queue-wait-for.js drives every row of.
+    dial: () => state.dial,
     async reach(name) {
       const answer = state.reach[name];
       if (answer === undefined) return { reachable: false, detail: `Nothing answered at ${name}.` };
@@ -781,6 +788,20 @@ function fakeHost(initial) {
     },
   };
   return state;
+}
+
+/**
+ * Compose a run AND SEND IT — the two presses a person makes.
+ *
+ * Adding a book stages it in Pending now (docs/PENDING-QUEUE-AND-GPU-DIAL.md
+ * §1), and a staged run is skipped by the pump whole, so every test here that
+ * is about what the SCHEDULER does with a book has to get it into the live queue
+ * first. Runs that cannot travel are never staged and pass straight through.
+ */
+function enqueueSent(spec) {
+  const job = engine.enqueue(spec);
+  if (job.pending === true) engine.sendToQueue(job.id);
+  return job;
 }
 
 async function fresh(name, mods, host) {
@@ -815,8 +836,8 @@ test('TWO BOOKS RENDER ON TWO MACHINES AT ONCE — the whole reason for a second
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
   await fresh('two-machines', [gpu], host);
 
-  const a = engine.enqueue(narrate('Mistborn', 'local'));
-  const b = engine.enqueue(narrate('Wool', 'mac'));
+  const a = enqueueSent(narrate('Mistborn', 'local'));
+  const b = enqueueSent(narrate('Wool', 'mac'));
   engine.start();
   await settle(40);
 
@@ -830,8 +851,8 @@ test('TWO BOOKS FOR ONE MACHINE TAKE TURNS — the second waits on the slot, not
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('one-machine', [gpu], host);
 
-  const a = engine.enqueue(narrate('Mistborn', 'mac'));
-  const b = engine.enqueue(narrate('Wool', 'mac'));
+  const a = enqueueSent(narrate('Mistborn', 'mac'));
+  const b = enqueueSent(narrate('Wool', 'mac'));
   engine.start();
   await settle(40);
 
@@ -840,7 +861,9 @@ test('TWO BOOKS FOR ONE MACHINE TAKE TURNS — the second waits on the slot, not
   const second = snap.jobs.find((j) => j.id === b.id);
   const reason = bench.stillReason(snap, second, second.steps[0]);
   assert.strictEqual(reason.kind, 'no-slot');
-  assert.match(reason.sentence, /graphics card on mac/);
+  // Owen's "the server is occupied" sentence, which NAMES the machine:
+  // "Waiting for mac to become free" (docs/PENDING-QUEUE-AND-GPU-DIAL.md).
+  assert.match(reason.sentence, /mac to become free/);
 
   gpu.runs[0].resolve({ kind: 'epub', path: '/out/a' });
   await settle(40);
@@ -852,8 +875,8 @@ test('`any` skips a machine we are already using and takes the next in rank orde
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
   await fresh('any-skips', [gpu], host);
 
-  engine.enqueue(narrate('Mistborn', 'any'));
-  const b = engine.enqueue(narrate('Wool', 'any'));
+  enqueueSent(narrate('Mistborn', 'any'));
+  const b = enqueueSent(narrate('Wool', 'any'));
   engine.start();
   await settle(40);
 
@@ -867,9 +890,9 @@ test('`any` with every slot of ours full holds, and names what is on each', asyn
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
   await fresh('any-full', [gpu], host);
 
-  engine.enqueue(narrate('Mistborn', 'any'));
-  engine.enqueue(narrate('Wool', 'any'));
-  const c = engine.enqueue(narrate('Elantris', 'any'));
+  enqueueSent(narrate('Mistborn', 'any'));
+  enqueueSent(narrate('Wool', 'any'));
+  const c = enqueueSent(narrate('Elantris', 'any'));
   engine.start();
   await settle(40);
 
@@ -885,13 +908,13 @@ test('a DISABLED server finishes what it has and takes nothing new', async () =>
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('disable-midrun', [gpu], host);
 
-  const a = engine.enqueue(narrate('Mistborn', 'mac'));
+  const a = enqueueSent(narrate('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1);
 
   host.ranked = [{ name: 'local', enabled: true }, { name: 'mac', enabled: false }];
-  const b = engine.enqueue(narrate('Wool', 'mac'));
+  const b = enqueueSent(narrate('Wool', 'mac'));
   await settle(40);
 
   assert.strictEqual(gpu.runs.length, 1, 'no new claim goes to a disabled server');
@@ -987,8 +1010,8 @@ test('the legacy spawn keeps ONE card, and a step that cannot travel waits for i
     reach: REACHABLE });
   await fresh('legacy-one-card', [gpu, local], host);
 
-  engine.enqueue(narrate('Mistborn'));
-  engine.enqueue({
+  enqueueSent(narrate('Mistborn'));
+  enqueueSent({
     title: 'Enhance',
     steps: [{
       type: 'rvc-enhancement', label: 'Enhance', config: {},
@@ -1018,7 +1041,7 @@ test('THE BENCH AND THE PUMP AGREE: the row appears with the step and goes with 
   assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
     'nothing is queued, so BookForge advertises no in-app card at all');
 
-  engine.enqueue({
+  enqueueSent({
     title: 'Enhance',
     steps: [{
       type: 'rvc-enhancement', label: 'Enhance', config: {},
@@ -1048,14 +1071,14 @@ test('the local Crucible and the legacy spawn never run on the card together', a
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'local', reach: REACHABLE });
   await fresh('one-card-two-venues', [gpu, local], host);
 
-  engine.enqueue({
+  enqueueSent({
     title: 'Enhance',
     steps: [{
       type: 'rvc-enhancement', label: 'Enhance', config: {},
       sourceRef: { kind: 'audio-session', path: '/s' },
     }],
   });
-  const b = engine.enqueue(narrate('Mistborn', 'local'));
+  const b = enqueueSent(narrate('Mistborn', 'local'));
   engine.start();
   await settle(40);
 
@@ -1076,9 +1099,9 @@ test('a CPU step never waits for a card, however busy every machine is', async (
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
   await fresh('cpu-unblocked', [gpu, cpu], host);
 
-  engine.enqueue(narrate('Mistborn', 'any'));
-  engine.enqueue(narrate('Wool', 'any'));
-  engine.enqueue({
+  enqueueSent(narrate('Mistborn', 'any'));
+  enqueueSent(narrate('Wool', 'any'));
+  enqueueSent({
     title: 'Assemble',
     steps: [{
       type: 'reassembly', label: 'Assemble', config: {},
@@ -1097,7 +1120,7 @@ test('a step records the venue it was admitted to, and the bench reads it', asyn
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('step-venue', [gpu], host);
 
-  const a = engine.enqueue(narrate('Mistborn', 'mac'));
+  const a = enqueueSent(narrate('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(jobById(a.id).steps[0].venue, 'mac');
@@ -1136,7 +1159,7 @@ test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', as
   routes.forgetCrucibleRoutes();
   routes.noteCrucibleRoutes('mac', { translate: 'upstream', clean: 'local' });
 
-  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
   await settle(40);
 
@@ -1146,7 +1169,7 @@ test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', as
   assert.strictEqual(ai.runs.length, 1);
 
   // …and the Mac's GPU slot is untouched, so a render admits beside it.
-  const b = engine.enqueue(narrate('Wool', 'mac'));
+  const b = enqueueSent(narrate('Wool', 'mac'));
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1,
     'a routed-upstream translation must not block a render on the same engine');
@@ -1170,12 +1193,12 @@ test("a render HOLDING the engine's card does not block a routed translation", a
   routes.forgetCrucibleRoutes();
   routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
-  engine.enqueue(narrate('Mistborn', 'mac'));
+  enqueueSent(narrate('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1, "the render took the Mac's card");
 
-  const b = engine.enqueue(translatePass('Wool', 'mac'));
+  const b = enqueueSent(translatePass('Wool', 'mac'));
   await settle(40);
   assert.strictEqual(ai.runs.length, 1,
     'the routed translation waited for a card it was never going to touch');
@@ -1190,9 +1213,9 @@ test('the cloud lane is TWO wide, and a third routed row waits for it', async ()
   routes.forgetCrucibleRoutes();
   routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
-  engine.enqueue(translatePass('One', 'mac'));
-  engine.enqueue(translatePass('Two', 'mac'));
-  const third = engine.enqueue(translatePass('Three', 'mac'));
+  enqueueSent(translatePass('One', 'mac'));
+  enqueueSent(translatePass('Two', 'mac'));
+  const third = enqueueSent(translatePass('Three', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(ai.runs.length, 2, "CLOUD_LANE_SLOTS is the queue's own appetite, and it is 2");
@@ -1211,7 +1234,7 @@ test('a class the engine runs LOCALLY still takes its GPU slot', async () => {
   routes.forgetCrucibleRoutes();
   routes.noteCrucibleRoutes('mac', { translate: 'local' });
 
-  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   const step = jobById(a.id).steps[0];
@@ -1233,7 +1256,7 @@ test('an engine whose routes nobody has read yet is a WAIT, never a guess', asyn
   await fresh('unknown-route', [ai], host);
   routes.forgetCrucibleRoutes();
 
-  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
   await settle(40);
 
@@ -1263,7 +1286,7 @@ test('a RESTART does not split the venue from the resource it was placed with', 
   routes.forgetCrucibleRoutes();
   routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
-  const a = engine.enqueue(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
@@ -1292,7 +1315,7 @@ test('a step with no capability class is untouched by any of this', async () => 
   await fresh('no-class', [gpu], host);
   routes.forgetCrucibleRoutes();
 
-  const a = engine.enqueue(narrate('Mistborn', 'mac'));
+  const a = enqueueSent(narrate('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1);

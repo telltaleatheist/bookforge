@@ -32,6 +32,7 @@ import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { serversOnThisMachine } from './crucible/servers';
 import { readRouting } from './crucible/routing';
+import { readGpuDial, setGpuDial } from './crucible/gpu-dial';
 import { pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
@@ -78,6 +79,35 @@ function forgetRoutingCache(): void {
   routingCache = null;
 }
 
+/**
+ * THE GPU DIAL, memoised on the same cadence and for the same reason.
+ *
+ * `readGpuDial()` is a synchronous read of a two-line file under `<userData>`,
+ * and the scheduler asks for it once per travelling row on every pump pass. The
+ * staleness is bounded the same way: admission re-asks on its own 15 s tick, and
+ * the door below that TURNS the dial drops the memo immediately, so a knob
+ * turned on the queue page is in force on the very next pump rather than up to
+ * ten seconds later.
+ *
+ * Kept separate from `routingCache` because they are separate records with
+ * separate lifetimes (`electron/crucible/gpu-dial.ts` says why), and one memo
+ * over two files would make turning the dial re-read the rank order.
+ */
+const DIAL_CACHE_MS = 10_000;
+let dialCache: { at: number; dial: string } | null = null;
+
+function cachedGpuDial(): string {
+  const now = Date.now();
+  if (dialCache !== null && now - dialCache.at < DIAL_CACHE_MS) return dialCache.dial;
+  const dial = readGpuDial();
+  dialCache = { at: now, dial };
+  return dial;
+}
+
+function forgetDialCache(): void {
+  dialCache = null;
+}
+
 function crucibleRoutingHost(): engine.CrucibleRoutingHost {
   return {
     routing() {
@@ -105,6 +135,9 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       // the alternatives would be a routing decision nobody made. See
       // `CrucibleRoutingHost.defaultWaitFor`.
       return top === undefined ? null : top.name;
+    },
+    dial() {
+      return cachedGpuDial();
     },
     async reach(server: string) {
       const pong = await pingServer(server);
@@ -275,6 +308,39 @@ export function registerQueueIpc(): void {
     try {
       forgetRoutingCache();
       return { success: true, data: { moved: engine.bulkWaitFor(from, to) } };
+    } catch (err) { return refused(err); }
+  });
+
+  // ── Pending, and the GPU dial (docs/PENDING-QUEUE-AND-GPU-DIAL.md) ─────────
+
+  /**
+   * TURN THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
+   *
+   * The memo is dropped BEFORE the write and the pump, so the very next
+   * admission pass reads the new value rather than a cached old one. Refused by
+   * name for a server this machine does not have.
+   *
+   * A pump follows because turning the dial can UNPARK a row — a book naming
+   * the machine the dial has just been turned to starts now, not on the 15 s
+   * admission tick. Nothing is ever taken off a card by it: a running job
+   * ignores the dial.
+   */
+  ipcMain.handle('jobs:set-gpu-dial', (_event, value: string) => {
+    try {
+      forgetDialCache();
+      const dial = setGpuDial(value);
+      forgetDialCache();
+      engine.pump();
+      engine.publishSnapshot();
+      return { success: true, data: { dial } };
+    } catch (err) { return refused(err); }
+  });
+
+  /** Move a staged book into the live queue. Refused by name for one that is not staged. */
+  ipcMain.handle('jobs:send-to-queue', (_event, jobId: string) => {
+    try {
+      engine.sendToQueue(jobId);
+      return { success: true };
     } catch (err) { return refused(err); }
   });
 }

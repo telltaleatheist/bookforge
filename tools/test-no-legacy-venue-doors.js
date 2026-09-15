@@ -256,6 +256,9 @@ check('the retired venue is still NAMEABLE, so an old queue row can be told what
     waitFor: 'mac',
     resolved: waitFor.RETIRED_LOCAL_NARRATOR_VENUE,
     ranked: [{ name: 'mac', enabled: true }],
+    // The queue's GPU dial, on `any`: an ASSIGNED row never consults it anyway
+    // (a running job ignores the dial), and this check is about the retirement.
+    dial: waitFor.GPU_DIAL_ANY,
     state: () => ({ kind: 'ready' }),
     gpuSlotTaken: () => null,
   });

@@ -200,6 +200,9 @@ async function fresh(name) {
   engine.setCrucibleRoutingHost({
     routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'hostq',
+    // The queue's GPU dial, on `any` — this suite is about the SEAM, and `any`
+    // is the position in which the dial changes nothing about where a row goes.
+    dial: () => 'any',
     reach: async () => ({ reachable: true }),
   });
   const dir = path.join(SCRATCH, name);
