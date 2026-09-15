@@ -484,6 +484,14 @@ const SUITES = [
   'test-prompt-examples',
   'test-narration-text-two-family',
   'test-tts-number-rules',
+  // The THIRD named exception to "deterministic text fixes are for Listen only"
+  // (Owen, 2026-09-14: "i want to deterministically expand bible book names …
+  // it's a mess"). Its negative corpus is the feature: "Rev. Martin Luther
+  // King", "Col. Sanders", "my ex.", "Ch. 3:7" and "Act 3:2" all print a token
+  // the table knows and must come out byte for byte. Also the invariant that
+  // makes it safe — every name it produces is STILL detected as a reference, so
+  // renaming the book cannot unprotect the digits.
+  'test-bible-books',
   'test-tts-number-normalizer',
   'test-cli-narration-prep',
   // The wire, per CLI command: the adapter requires the COMPILED bridge and
