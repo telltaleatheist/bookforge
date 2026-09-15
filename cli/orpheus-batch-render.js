@@ -28,8 +28,10 @@
  * that stays true: what changes is that this door will now build the one-chapter
  * book the text describes, content-addressed under
  * <tmpdir>/bookforge-cli-inputs/, and print its path so the run is reproducible.
- * Raw text STREAMED is still the streaming adapter's (orpheus-stream.js /
- * `--mode streaming`) — that is the Listen path, which takes blocks, not books.
+ * Raw text STREAMED used to be the streaming adapter's (orpheus-stream.js /
+ * `--mode streaming`). Both are deleted with BookForge's 8766 speak relay
+ * (Phase 16 step 8), so this door is the only one the CLI has: an external
+ * client's Listen path is a Crucible streaming session now.
  *
  * `--as-chunks` makes each paragraph/row exactly ONE generation chunk
  * (`settings.sentencePerParagraph`, narrator's `--sentence_per_paragraph`), which

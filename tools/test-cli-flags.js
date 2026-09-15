@@ -192,17 +192,30 @@ check('--as-chunks with an .epub input is refused by name', () => {
     '--as-chunks');
 });
 
-// ── 7. HIGGS STREAMS, AND THE WRAPPER NO LONGER SAYS OTHERWISE ──────────────
-check('--engine higgs --mode streaming is no longer refused at the wrapper', () => {
+// ── 7. THE DELETED SPEAK RELAY IS REFUSED BY NAME, NOT BY ARGPARSE ──────────
+//
+// `--mode streaming` drove BookForge's 8766 speak relay (cli/orpheus-stream.js ->
+// tts-api-server's handleSpeak -> the stream scheduler), and Phase 16 step 8
+// deleted that relay: the extension is a Crucible client now. A script that still
+// passes the flag must be told WHAT HAPPENED and where speech went — an argparse
+// "invalid choice", or worse a silently ignored flag, says only that the flag is
+// wrong. Same for --read-ahead, which bounded that relay's read-ahead window and
+// has no meaning in a render.
+check('--mode streaming is refused, naming the deleted relay and the door that replaced it', () => {
   const res = run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--mode', 'streaming',
     '--input', TXT, '--out', OUT, '--dry-run');
-  expectAccepted('higgs streaming', res);
-  assert.ok(/spawn:.*orpheus-stream\.js/.test(res.out),
-    `the streaming adapter is the spawn target\n${res.out.slice(0, 700)}`);
-  assert.ok(res.out.includes('--engine higgs'),
-    'and the engine rides to it, so a mismatch with the selection is refused there');
-  assert.ok(!res.out.includes('no streaming path'),
-    'the retired "v3 has no streaming path" refusal is gone');
+  expectRefused('streaming mode', res, '--mode', 'relay', '/v1/tts/stream');
+  assert.ok(!/invalid choice/.test(res.out),
+    `refused by name, not by argparse's generic choices message\n${res.out.slice(0, 700)}`);
+  assert.ok(!/spawn:/.test(res.out),
+    `and nothing is spawned for it\n${res.out.slice(0, 700)}`);
+});
+
+check('--read-ahead is refused by name rather than silently doing nothing', () => {
+  expectRefused('read-ahead',
+    run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--read-ahead', '2',
+      '--input', TXT, '--out', OUT, '--dry-run'),
+    '--read-ahead', '--max-chunks');
 });
 
 // ── 8. THE MAC ARM'S KNOBS REACH THE ENV THE BRIDGE READS ───────────────────

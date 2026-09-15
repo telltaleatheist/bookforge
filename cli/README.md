@@ -42,7 +42,7 @@ removed (found while deriving the map, 2026-09-12):
 
 | flag | what happens |
 |---|---|
-| `--voice-token` | refused in `--mode streaming`, and in `--mode tts` it reaches **no adapter** — `cmd_tts` never puts it on the argv, though its help says "tts mode only". Use `--model-dir`, or a settings-file voice alias (which carries the token). |
+| `--voice-token` | reaches **no adapter** — `cmd_tts` never puts it on the argv, though its help says "tts mode only". (It used to be refused by name in `--mode streaming`; that mode is gone, so nothing refuses it anywhere now.) Use `--model-dir`, or a settings-file voice alias (which carries the token). |
 | `--family` on `--narration-text` | its help says `--pass/--narration-text`, but only `cmd_pass` reads it; a project with two chains cannot be steered from this door. |
 | the `ORPHEUS_*` env seams on `--assemble` | `--tier`, `--sentence-gap`, `--max-chars`, `--temperature`, `--top-p`, `--min-p`, `--rep-penalty`, `--models-dir`, `--orpheus-install`, `--conda-env` and `--engine` all still reach the spawn env of a run that **renders nothing**. `--assemble`'s render-choice refusals (`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`) stop at those five. |
 
@@ -78,15 +78,16 @@ tsc-only build with *"Failed to load built-in RVC voice assets"*. Run
 `npm run build:electron` once (it copies `electron/data`, `electron/prompts` and the
 python scripts), or copy `electron/data` into `dist/electron/` by hand.
 
-## Two render paths
+## One render path
 
 | `--mode`      | Path | What it exercises |
 |---------------|------|-------------------|
-| `tts` (default) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
-| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → `narrator.serve``. Either engine, whichever is SELECTED | **the path shipped in the app** |
+| `tts` (default, and the only one) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
 
-**The narration prep runs first, automatically.** Both render paths call
-`prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hand it
+`--mode streaming` is **deleted** — see **Streaming: where it went** at the bottom.
+
+**The narration prep runs first, automatically.** The render path calls
+`prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hands it
 the result, so a `--tts` audition reads its numbers as words exactly as the shipped
 audiobook does. One line says what happened:
 
@@ -98,10 +99,9 @@ audiobook does. One line says what happened:
 The `.edits.json` beside that copy is the record of every proposed edit and its
 disposition — run `--prep` on the same input to print its path and the tally, or just
 read the file next to the copy the line names. A second run on the same input reuses
-the copy (`copy reused: yes`) and makes no model call. `--mode streaming` is the Listen
-path and does not prep — it speaks the blocks as given, like a web page.
+the copy (`copy reused: yes`) and makes no model call.
 
-In `tts` mode the per-sentence FLACs (with their inter-clip gaps already baked in by
+The per-sentence FLACs (with their inter-clip gaps already baked in by
 `orpheus.py _save_audio`) are concatenated in numeric order into a **bare WAV** — good
 for a quick voice test, but it has no chapters, cover, or metadata. For the **full
 audiobook** the app actually ships (`.m4b` with chapters/cover/metadata), use
@@ -120,13 +120,6 @@ python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
 # Force a memory tier and a custom gap:
 python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out sample.wav \
     --tier fast --sentence-gap 0.75 --keep-sentences
-
-# Streaming path instead (BLOCKS: paragraphs separated by blank lines — block 1 is
-# the one "play" was pressed on, the rest are read ahead, exactly as on a web page):
-python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt
-
-# Only read two blocks ahead, to see the batch shapes that makes:
-python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt --read-ahead 2
 
 # See exactly what would run, touch no GPU — it also PACKS the input book and
 # prints the settings object, so a text/jsonl render is reproducible before it runs:
@@ -164,8 +157,8 @@ no reserved name for a server on this computer: it is a registry entry like any 
 - **Cancelling cancels the remote job.** Ctrl+C, or Stop in the app, sends
   `DELETE /v1/jobs/<id>` — dropping the connection would leave that server rendering
   the rest of the book. The chunks already downloaded stay on disk.
-- **`--mode streaming` refuses it.** A Crucible streaming session is a different door
-  with different rules, and it is not wired yet.
+- **It is the RENDER door only.** A Crucible streaming session (`POST /v1/tts/stream`)
+  is a different door with different rules, and no BookForge command drives it.
 
 **Where a `--tts` run keeps its sessions.** narrator has no default sessions root
 — every spawn carries a `--session_dir` derived from the one that was stated — so
@@ -181,11 +174,6 @@ it. (`--audiobook` takes no `--library`: the project's own path is
 `<library>/projects/<slug>`, so it derives the root and refuses the flag. Until
 2026-09-12 the batch adapter stated nothing at all, which is why every `--tts` run
 on the Mac died before prep with *"No narrator scratch root has been stated."*)
-
-**Both engines render and both stream.** `--engine higgs --mode streaming` was
-refused here until 2026-09-12, on a claim ("v3 has no windowed decode") that
-per-row Higgs streaming made obsolete on 2026-09-05. The refusal is gone; see
-**Choosing the model** below for what `--engine` means on the streaming door.
 
 ## Choosing the model: any checkpoint, any sampling, any input
 
@@ -335,30 +323,13 @@ python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
   `1933` reaches the worker as `1933`. Drop `--as-chunks` (or pass neither
   cleanup flag) to measure the shipped path, where the digits *are* read as words.
 
-### Streaming: `--engine` is an assertion, not a switch
-
-A `speak` names a catalog **voice**; the engine is fixed for the resident pool by
-`NARRATOR_ENGINE` when it spawns, so the selection is a persisted app setting
-(`tts-engine.json` in userData), read through
-`streaming-engine.getSelectedEngineName()`.
-
-**This CLI will not rewrite it.** `setSelectedEngineName` is the only setter and it
-persists (and ends the live session on the way), so a CLI run that flipped it would
-silently change the user's Listen engine — whether the server is ours or the
-running app's. So `--engine` on `--mode streaming` says which engine you believe
-is selected, and a **mismatch is refused by name**, pointing at Settings → Listen.
-Speaking in the other engine would be the worst available outcome: audio that is
-fine, in the wrong voice, with nothing saying so.
-
 ### Refused by name, on the render doors
 
 `--assemble` refuses every one of these (`--checkpoint-dir`, `--safe-band`,
 `--top-k`, `--batch-width`, `--mem-budget-gb`, plus the input flags) because it
 renders nothing; `--audiobook` refuses `--max-chunks`, `--as-chunks` and `--title`
-because it narrates the project's recorded book; `--mode streaming` refuses
-`--checkpoint-dir`, `--safe-band`, `--as-chunks`, `--max-chunks`, `--top-k`,
-`--title` and (on Higgs) the sampling flags, because a speak carries no override.
-Every one of those is a message naming the flag and the door that does want it.
+because it narrates the project's recorded book. Every one of those is a message
+naming the flag and the door that does want it.
 
 ## Full audiobook (M4B) — `--audiobook`
 
@@ -709,10 +680,11 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
 - `--project <dir>` — **`--audiobook` only**: the BookForge project; output lands in
   `<project>/output/<Title>. <Author>.m4b` (required for `--audiobook`).
 - `--language <code>` — default `en`.
-- `--mode {tts,streaming}` — render path for `--tts`; default `tts`. Both engines work
-  on both paths; on `streaming`, `--engine` asserts the persisted selection rather than
-  changing it.
-- `--read-ahead <n>` — streaming only: how many following blocks to read ahead. Default is every remaining block, which is what the extension does on a page.
+- `--mode <name>` — render path for `--tts`; `tts` is the default and the only value.
+  `streaming` is **refused by name** (see **Streaming: where it went** below).
+- `--read-ahead <n>` — **gone**: it bounded the deleted streaming relay's read-ahead
+  window. Still on the parser so a script that passes it is told so; cap a run with
+  `--max-chunks`.
 
 **Customization**
 - `--tier {auto,extreme,fast,moderate,light}` — force the GPU memory tier
@@ -1576,36 +1548,25 @@ surface the pipeline touches — if a module reaches an unstubbed API it throws 
 naming it, which is the signal to add exactly that (no blanket catch-all, no fallbacks).
 
 
-## Streaming: what `--mode streaming` actually drives
+## Streaming: where it went
 
-`--mode streaming` is not a reimplementation of the Listen path — it **is** the Listen
-path. `cli/orpheus-stream.js` starts the app's real `ttsApiServer` (headlessly, via
-`cli/electron-stub.js`) and then speaks the protocol in `docs/TTS_API.md` to it, frame
-for frame, the way the BookForge Reader extension does: one preempting `speak` for the
-block you pressed play on, then a background `speak` per following block.
+`--mode streaming` and its adapter `cli/orpheus-stream.js` are **deleted** (Phase 16
+step 8 — `docs/EXTENSION-TO-CRUCIBLE-PLAN.md`). The whole premise of that mode was
+that it started BookForge's real `ttsApiServer` and spoke the 8766 WebSocket protocol
+to it *exactly as the BookForge Reader extension does*. Both halves of that stopped
+being true on the same day: the speak half of that socket (`speak`, `engine.*`,
+`config.*`, `playhead`, `cancel` and their events) is gone, and the extension is a
+Crucible client now. Only the tab recorder (`hello` + `record.*` + the binary PCM
+frames) still lives on that port.
 
-If BookForge is already running it attaches to that server instead of starting a second
-one — driving the live app is more faithful, not less, and the port is busy either way.
+**Nothing in this CLI replaces it.** Speech for an external client is a Crucible
+streaming session — `POST /v1/tts/stream`, a different door with different rules (one
+session at a time per server, and the voice must already be resident). Drive Crucible
+directly for that. Inside the app, what is left of the Listen path is the `stream:*`
+IPC the Streaming tab uses and `electron/reader-stream-bridge.ts` for the iPhone
+reader; neither has a CLI door.
 
-It prints the timing table that matters for streaming work — when each block finished
-generating, when it would actually play, and whether the reader would have been made to
-wait:
-
-```
-block rows  complete   audio     plays      stall
-   1    1       54s   10.9s      54s        -
-   2    3     55.4s   26.9s    64.9s        -
-   3    1     36.6s    6.7s    91.8s        -
-...
-first word at 54s
-no stalls — continuous flow
-```
-
-A block completing *out of order* costs nothing — the client assembles by index. A
-**stall** is the only real defect: the next block in reading order was not ready when
-the previous one finished playing.
-
-The older `cli/orpheus-render.js` still exists and still calls the worker pool's
-per-sentence API directly. That skips `stream-scheduler` and the pool's batching
-entirely, so it cannot reproduce anything that lives there — which was every streaming
-defect found on 2026-08-31. Prefer `--mode streaming`.
+`--mode streaming` is refused **by name** rather than removed from the parser, so a
+script that still passes it is told what happened instead of meeting an argparse
+"invalid choice". `--read-ahead`, which bounded that relay's read-ahead window, is
+refused the same way.

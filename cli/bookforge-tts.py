@@ -89,7 +89,6 @@ for _stream in (sys.stdout, sys.stderr):
 
 REPO_ROOT = Path(__file__).resolve().parent.parent          # cli/ -> bookforge root
 NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
-ORPHEUS_STREAM = REPO_ROOT / "cli" / "orpheus-stream.js"        # streaming path (Listen/extension)
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door: cut + numbers
@@ -290,10 +289,8 @@ def _higgs_override(args, door):
     """Build `ParallelTtsSettings.higgsOverride` (or None) and refuse every
     cross-engine flag BY NAME.
 
-    `door` is 'tts' or 'audiobook' — the two render doors. Streaming and
-    --assemble refuse these flags outright (see their own blocks): a speak binds a
-    catalog voice with no per-request checkpoint seam, and an assembly renders
-    nothing.
+    `door` is 'tts' or 'audiobook' — the two render doors. --assemble refuses
+    these flags outright (see its own block): an assembly renders nothing.
 
     NOTHING HERE VALIDATES A VALUE. The bridge resolves the base `fineTuned` voice
     from the catalog and refuses a band or a cap it cannot honour, by name. A
@@ -423,15 +420,9 @@ def _mlx_tuning_env(args, env):
 def cmd_tts(args):
     """Render text -> wav through BookForge's REAL pipeline.
 
-    --mode tts (default): the audiobook/batch path (parallel-tts-bridge ->
-        renderRangeHeadless -> e2a prep packs ~300-char chunks -> worker.py). This is
-        the path Owen ships with.
-    --mode streaming: the Listen/extension path — the app's tts-api-server driven
-    over its own WebSocket protocol, so the run goes through handleSpeak, splitForTts,
-    the stream scheduler and the pool's batch ladder exactly as pressing play does.
-    Input is BLOCKS (paragraphs separated by blank lines); block 1 is the one played
-    and the rest are read ahead. (was: orpheus-worker-pool, one sentence per vLLM
-        sequence, no packing).
+    --mode tts (default, and now the only mode): the audiobook/batch path
+        (parallel-tts-bridge -> renderRangeHeadless -> e2a prep packs ~300-char
+        chunks -> worker.py). This is the path Owen ships with.
     """
     # HIGGS IS WIRED FOR --mode tts. The batch adapter hands `ttsEngine` to the
     # SAME `renderRangeHeadless` the app calls, and the bridge routes a Higgs job
@@ -440,112 +431,57 @@ def cmd_tts(args):
     # path rather than carrying a second copy of the routing.
     _require(args.engine in ("orpheus", "higgs"),
              f"--engine '{args.engine}' not wired (use 'orpheus' or 'higgs')")
-    _require(args.mode in ("tts", "streaming"),
-             f"--mode '{args.mode}' invalid (use 'tts' or 'streaming')")
-    # HIGGS STREAMS. The refusal that stood here — "v3 is a served endpoint with
-    # no windowed decode" — was written before per-row Higgs streaming shipped on
-    # 2026-09-05; `tts-api-server.handleSpeak` has bound a Higgs voice ever since,
-    # and `streaming-engine`'s ENGINES map offers it to the Settings picker and the
-    # extension's engine menu. A CLI that refused the path the app ships was the
-    # one door that could not reproduce a Listen defect on it. Lifted 2026-09-12.
+    # --mode streaming IS REFUSED BY NAME, NOT BY ARGPARSE. `choices` would answer a
+    # script that still passes it with "invalid choice", which says the flag is
+    # wrong rather than what happened to the path behind it. What happened: that
+    # mode drove BookForge's 8766 speak relay, and the relay is gone.
+    _require(args.mode == "tts",
+             f"--mode '{args.mode}': --mode streaming drove BookForge's 8766 speak relay "
+             "(cli/orpheus-stream.js -> tts-api-server's handleSpeak -> the stream "
+             "scheduler). That relay is DELETED (Phase 16, "
+             "docs/EXTENSION-TO-CRUCIBLE-PLAN.md step 8): speech for an external client "
+             "is a Crucible streaming session now, POST /v1/tts/stream — a different "
+             "door with different rules. Use --mode tts, or drive Crucible directly.")
+    # --read-ahead BELONGED TO THAT RELAY AND TO NOTHING ELSE. It bounded how many
+    # following blocks the extension read ahead of the one being played; a render
+    # reads the whole book and has no such window. The flag stays on the parser so
+    # a script that passes it is TOLD, instead of meeting an "unrecognized
+    # arguments" line that names no reason.
+    _require(args.read_ahead is None,
+             "--read-ahead bounded how many blocks the deleted streaming relay read "
+             "ahead of the one playing; a render has no read-ahead — it renders every "
+             "chunk. Use --max-chunks to cap a run.")
     _require(bool(args.voice), "--voice <id> is required for --tts")
     _require(bool(args.out), "--out <file.wav> is required for --tts")
-    if args.mode == "tts":
-        # ── WHAT A RENDER MAY READ (Owen, 2026-09-12) ────────────────────────
-        #
-        # It was EPUB-only, by his 2026-09-05 ruling. He OVERRODE that on
-        # 2026-09-12: *"it should also let me run renders on anything, up to and
-        # including test chunks."* So a `.txt`/`.md` (paragraphs separated by
-        # blank lines), a `.jsonl` (one chunk per row) and a `--text` literal are
-        # render inputs now — packed into a real one-chapter EPUB by the app's own
-        # writer in the adapter, so the render path still reads exactly one format.
-        _require(bool(args.input) or bool(args.text),
-                 "--tts needs --input <book.epub|passage.txt|chunks.jsonl> or --text <str>")
-        _require(not (args.input and args.text),
-                 "--input and --text both name what to render; pass one")
-        if args.input:
-            ext = Path(str(args.input)).suffix.lower()
-            _require(ext in (".epub", ".txt", ".md", ".jsonl"),
-                     f"--tts reads .epub (a book), .txt/.md (paragraphs separated by blank "
-                     f"lines) or .jsonl (one chunk per row); '{ext or args.input}' is none of them")
-            _require(not (args.as_chunks and ext == ".epub"),
-                     "--as-chunks makes each paragraph ONE generation chunk; an EPUB is chunked "
-                     "by the app's own packer, which is what an EPUB render measures. Use a "
-                     ".txt/.md/.jsonl input (or --text), or drop --as-chunks.")
-    else:
-        _require(bool(args.input or args.text), "--input <file> or --text <str> is required")
+    # ── WHAT A RENDER MAY READ (Owen, 2026-09-12) ────────────────────────────
+    #
+    # It was EPUB-only, by his 2026-09-05 ruling. He OVERRODE that on 2026-09-12:
+    # *"it should also let me run renders on anything, up to and including test
+    # chunks."* So a `.txt`/`.md` (paragraphs separated by blank lines), a
+    # `.jsonl` (one chunk per row) and a `--text` literal are render inputs now —
+    # packed into a real one-chapter EPUB by the app's own writer in the adapter,
+    # so the render path still reads exactly one format.
+    _require(bool(args.input) or bool(args.text),
+             "--tts needs --input <book.epub|passage.txt|chunks.jsonl> or --text <str>")
+    _require(not (args.input and args.text),
+             "--input and --text both name what to render; pass one")
+    if args.input:
+        ext = Path(str(args.input)).suffix.lower()
+        _require(ext in (".epub", ".txt", ".md", ".jsonl"),
+                 f"--tts reads .epub (a book), .txt/.md (paragraphs separated by blank "
+                 f"lines) or .jsonl (one chunk per row); '{ext or args.input}' is none of them")
+        _require(not (args.as_chunks and ext == ".epub"),
+                 "--as-chunks makes each paragraph ONE generation chunk; an EPUB is chunked "
+                 "by the app's own packer, which is what an EPUB render measures. Use a "
+                 ".txt/.md/.jsonl input (or --text), or drop --as-chunks.")
     _require(bool(shutil.which("node")), "node not found on PATH")
 
-    if args.mode == "tts":
-        # Audiobook/batch path: the compiled bridge must expose renderRangeHeadless.
-        _require(ORPHEUS_BATCH.is_file(), f"missing engine adapter {ORPHEUS_BATCH}")
-        _require((REPO_ROOT / "dist" / "electron" / "parallel-tts-bridge.js").is_file(),
-                 "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
-                 "(dist/electron/parallel-tts-bridge.js missing)")
-        adapter = ORPHEUS_BATCH
-    else:
-        # Streaming path.
-        _require(ORPHEUS_STREAM.is_file(), f"missing engine adapter {ORPHEUS_STREAM}")
-        _require((REPO_ROOT / "dist" / "electron" / "tts-api-server.js").is_file(),
-                 "BookForge is not built — run `npm run build:electron` first "
-                 "(dist/electron/tts-api-server.js missing)")
-        adapter = ORPHEUS_STREAM
-
-    # Streaming mode has no packing/prep: --model-dir and --language are simply not
-    # consumed there. Refuse rather than silently ignore (NO FALLBACKS).
-    if args.mode == "streaming":
-        _require(not args.model_dir,
-                 "--model-dir is not supported in --mode streaming (registered voices only)")
-        _require((args.language or "en") == "en",
-                 "--language is not supported in --mode streaming")
-        # THE OVERRIDE SEAM IS THE RENDER PATH'S. A `speak` names a catalog VOICE
-        # and the pool is already resident when it arrives — there is no
-        # per-request checkpoint, band or cap to hand it. Each of these is refused
-        # by name rather than accepted and dropped.
-        _require(not args.checkpoint_dir,
-                 "--checkpoint-dir is not supported in --mode streaming: a speak binds a "
-                 "catalog voice and there is no per-request checkpoint seam. Use --mode tts.")
-        _require(not args.safe_band,
-                 "--safe-band is the tts path's chunk band; streaming packs with the voice's "
-                 "own cap (splitForTts)")
-        _require(not args.as_chunks,
-                 "--as-chunks is a generation-chunk choice on the tts path; streaming speaks "
-                 "blocks — one block per paragraph already")
-        _require(args.max_chunks is None,
-                 "--max-chunks caps the tts path's generation; streaming reads blocks — use "
-                 "--read-ahead to bound how many")
-        _require(args.top_k is None,
-                 "--top-k rides the Higgs voice document on the tts path; a streaming speak "
-                 "carries no sampling override")
-        _require(not (args.engine == "higgs" and any(
-                     v is not None for v in (args.temperature, args.top_p,
-                                             args.min_p, args.rep_penalty))),
-                 "--temperature/--top-p/--min-p/--rep-penalty are Orpheus's env seams; on a "
-                 "Higgs run sampling rides the voice document, which a streaming speak does "
-                 "not carry. Use --mode tts, or set them in the voice.")
-        _require(not args.title,
-                 "--title names the book a text input is packed as; streaming speaks blocks "
-                 "and packs nothing")
-        # Streaming keeps no session on disk — the pool answers sentence by
-        # sentence over the socket — so there is no tmp to point at.
-        _require(not args.library,
-                 "--library names where a RENDER keeps its sessions and narration cuts; "
-                 "streaming writes neither. Use --mode tts.")
-        # The streaming adapter drives the app's REAL path (tts-api-server -> stream
-        # scheduler -> pool), and over that protocol a speak names a VOICE — there is no
-        # per-request prompt-token seam to hand this to. Refuse rather than ignore.
-        _require(not args.voice_token,
-                 "--voice-token is not supported in --mode streaming (the app path binds a "
-                 "voice by id; use --voice)")
-        # A Crucible render job and a Crucible streaming session are two doors
-        # (POST /v1/jobs vs POST /v1/tts/stream) with different rules — the
-        # session refuses a voice that is not already resident, and one session
-        # at a time per server. Rollout item 2.4 wires the RENDER door only, so
-        # this is refused by name rather than accepted and dropped.
-        _require(not args.crucible_server,
-                 "--crucible-server renders the generation step of a BATCH run on a Crucible "
-                 "(--mode tts). The Listen path is a Crucible STREAMING session, a different "
-                 "door with different rules, and it is not wired yet.")
+    # Audiobook/batch path: the compiled bridge must expose renderRangeHeadless.
+    _require(ORPHEUS_BATCH.is_file(), f"missing engine adapter {ORPHEUS_BATCH}")
+    _require((REPO_ROOT / "dist" / "electron" / "parallel-tts-bridge.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/parallel-tts-bridge.js missing)")
+    adapter = ORPHEUS_BATCH
 
     # Resolve relative paths against the USER'S cwd — the node adapter runs with
     # cwd=REPO_ROOT, so a bare 'sample.wav' would otherwise land inside the repo (and a
@@ -556,10 +492,7 @@ def cmd_tts(args):
     cmd = ["node", "--require", str(NODE_STUB), str(adapter),
            "--voice", args.voice, "--out", out_path]
     # The batch adapter defaults to orpheus; naming it is what lets --engine higgs
-    # reach the bridge. The STREAMING adapter takes it too since 2026-09-12 — not
-    # to select an engine (that choice is persisted in tts-engine.json and is the
-    # app's to manage) but so a mismatch with the engine actually selected is
-    # refused by name instead of speaking in the other one.
+    # reach the bridge.
     cmd += ["--engine", args.engine]
     if input_path:
         cmd += ["--input", input_path]
@@ -571,38 +504,31 @@ def cmd_tts(args):
         cmd += ["--model-dir", args.model_dir]
     # The Higgs checkpoint/sampling/band override — ONE JSON argument, so both
     # render adapters parse it with the one shared parser (cli/higgs-override.js).
-    override = _higgs_override(args, door="tts") if args.mode == "tts" else None
+    override = _higgs_override(args, door="tts")
     if override:
         cmd += ["--higgs-override", json.dumps(override, sort_keys=True)]
-    if args.mode == "tts" and args.as_chunks:
+    if args.as_chunks:
         cmd += ["--as-chunks"]
-    if args.mode == "tts" and args.max_chunks is not None:
+    if args.max_chunks is not None:
         cmd += ["--max-chunks", str(args.max_chunks)]
-    if args.mode == "tts" and args.title:
+    if args.title:
         cmd += ["--title", args.title]
     # WHERE THE SESSIONS GO. The batch adapter has no project to derive a library
     # from, so it resolves the one main recorded (userData/library-root.json) and
     # refuses when there is none; this flag overrides that for one run.
-    if args.mode == "tts" and args.library:
+    if args.library:
         cmd += ["--library", str(_user_path(args.library))]
-    if args.mode == "tts" and args.skip_text_cleanup:
+    if args.skip_text_cleanup:
         cmd += ["--skip-text-cleanup"]
     # Rollout item 2.4: the generation step on a Crucible server. Set on the SAME
     # ParallelTtsSettings object the app's narration job will carry (2.2), so the
     # CLI mirrors the app's code path instead of gaining a second door.
-    # --mode streaming is refused above: a streaming session is a different
-    # Crucible door (POST /v1/tts/stream) and is not wired here.
-    if args.mode == "tts" and args.crucible_server:
+    if args.crucible_server:
         cmd += ["--crucible-server", args.crucible_server]
-    if args.mode == "tts" and args.keep_sentences:
+    if args.keep_sentences:
         cmd += ["--keep-sentences"]
-    if args.mode == "tts" and args.keep_session:
+    if args.keep_session:
         cmd += ["--keep-session"]
-    # Streaming-only: how many following blocks are read ahead, which is what decides
-    # the batch shapes the scheduler forms. Default (omitted) = every remaining block,
-    # exactly what the extension does on a page.
-    if args.mode == "streaming" and args.read_ahead is not None:
-        cmd += ["--read-ahead", str(args.read_ahead)]
 
     # Customization delivered through the process env — the compiled pipeline reads these
     # seams (mirrors how the app's persisted settings feed the same code paths).
@@ -634,7 +560,7 @@ def cmd_tts(args):
     mlx_keys = _mlx_tuning_env(args, env)
 
     if args.dry_run:
-        print(f"[bookforge-tts] DRY RUN — mode={args.mode}, no GPU touched")
+        print("[bookforge-tts] DRY RUN — no GPU touched")
         print("  spawn:", " ".join(cmd))
         print("  higgs override:", json.dumps(override, sort_keys=True) if override else "(none)")
         overrides = {k: env[k] for k in (
@@ -648,23 +574,18 @@ def cmd_tts(args):
         #
         # Echoing the argv cannot say what book a text input became or how many
         # chunks that is, and those are the two facts a text/jsonl render turns
-        # on. So in `--mode tts` the dry run is handed to the adapter, which packs
-        # the input book (CPU, a few kB, content-addressed) and prints the
-        # resolved settings, then stops BEFORE the narration door and the bridge —
-        # the two steps that load a model or take the card.
+        # on. So the dry run is handed to the adapter, which packs the input book
+        # (CPU, a few kB, content-addressed) and prints the resolved settings,
+        # then stops BEFORE the narration door and the bridge — the two steps that
+        # load a model or take the card.
         #
-        # Streaming gets the printed spawn and nothing else: that adapter's only
-        # move is to start (or attach to) the real server, which is not a dry run
-        # by any reading.
-        if args.mode != "tts":
-            return 0
-        # FLUSH FIRST. The child inherits this stdout, and python buffers when it
+        # FLUSH FIRST: the child inherits this stdout, and python buffers when it
         # is a pipe — so without this the adapter's lines print BEFORE the spawn
         # they came from, which reads as though the order were the other way round.
         sys.stdout.flush()
         return subprocess.call(cmd + ["--dry-run"], cwd=str(REPO_ROOT), env=env)
 
-    print(f"[bookforge-tts] tts/{args.engine} mode={args.mode} ->", " ".join(cmd), flush=True)
+    print(f"[bookforge-tts] tts/{args.engine} ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
@@ -2069,11 +1990,11 @@ COMMAND_FLAGS = {
         "usage": "bookforge-tts --tts --voice ID (--input FILE | --text STR) --out FILE [options]",
         "doc": """Render a book, a passage, or bare test chunks to a WAV — the app's own render path.
 
---mode tts (default) is the AUDIOBOOK/BATCH path: parallel-tts-bridge ->
+--mode tts (the only mode) is the AUDIOBOOK/BATCH path: parallel-tts-bridge ->
 renderRangeHeadless -> the prep packs the chunks -> the worker (or, with
---crucible-server, a Crucible). --mode streaming is the LISTEN path: the app's real
-tts-api-server over the protocol in docs/TTS_API.md, so the run goes through
-handleSpeak, splitForTts and the pool's batch ladder exactly as pressing play does.
+--crucible-server, a Crucible). --mode streaming drove the 8766 speak relay and is
+refused by name: that relay is deleted, and speech for an external client is a
+Crucible streaming session (POST /v1/tts/stream).
 The narration prep runs first, automatically (see --prep). The per-sentence FLACs are
 flat-concatenated into a BARE WAV — no chapters, cover or metadata; use --audiobook for
 the book the app ships.""",
@@ -2083,25 +2004,22 @@ the book the app ships.""",
             "--note", "--models-dir", "--tier", "--sentence-gap", "--temperature", "--top-p",
             "--min-p", "--top-k", "--rep-penalty", "--safe-band", "--max-chars",
             "--batch-width", "--mem-budget-gb", "--as-chunks", "--max-chunks",
-            "--keep-sentences", "--keep-session", "--read-ahead", "--skip-text-cleanup",
+            "--keep-sentences", "--keep-session", "--skip-text-cleanup",
             "--orpheus-install", "--conda-env", "--crucible-server",
         ],
         "refuses": [
-            ("--crucible-server", "in --mode streaming: that is Crucible's streaming door, not wired"),
+            ("--mode", "'streaming' drove the DELETED 8766 speak relay; speech for an "
+                       "external client is a Crucible session (POST /v1/tts/stream)"),
+            ("--read-ahead", "it bounded that relay's read-ahead; a render has none"),
             ("--model-dir", "on --engine higgs: a Higgs checkpoint is --checkpoint-dir"),
-            ("--checkpoint-dir", "orpheus names --model-dir; streaming has no per-request seam"),
+            ("--checkpoint-dir", "on --engine orpheus: that engine names it --model-dir"),
             ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
             ("--min-p", "on --engine higgs: narrator's v3 engines have no min_p knob"),
             ("--rep-penalty", "on --engine higgs: no repetition-penalty knob"),
-            ("--safe-band", "orpheus packs to --max-chars; streaming packs to the voice's cap"),
+            ("--safe-band", "on --engine orpheus: it packs to --max-chars"),
             ("--batch-width", "orpheus sizes its batch from --tier; Windows uses HIGGS_MAX_NUM_SEQS"),
             ("--mem-budget-gb", "same as --batch-width: Higgs on the Mac only"),
-            ("--as-chunks", "with an .epub the app's packer chunks it; a stream block is a paragraph"),
-            ("--max-chunks", "in --mode streaming: bound the blocks with --read-ahead"),
-            ("--title", "in --mode streaming: it names a packed book, and streaming packs nothing"),
-            ("--library", "in --mode streaming: no session and no narration cut is written"),
-            ("--language", "in --mode streaming: only 'en' (that path packs and preps nothing)"),
-            ("--voice-token", "streaming binds a voice by id; in tts mode it reaches NO adapter"),
+            ("--as-chunks", "with an .epub input: the app's own packer chunks a book"),
         ],
         "examples": [
             'bookforge-tts --tts --voice zac --input book.epub --out sample.wav',
@@ -2115,9 +2033,6 @@ the book the app ships.""",
             '# the GENERATION step on a Crucible server (the FLACs come back over HTTP):\n'
             'bookforge-tts --tts --engine higgs --voice mistborn --input book.epub --out mb.wav \\\n'
             '    --crucible-server mac',
-            '# the Listen path, reading only two blocks ahead:\n'
-            'bookforge-tts --tts --mode streaming --voice deathstalker --input article.txt \\\n'
-            '    --out listen.wav --read-ahead 2',
         ],
     },
     "audiobook": {
@@ -3021,10 +2936,10 @@ def _flag_registry():
     p.add_argument("--input", help="what to render (--tts): an .epub (a book), a .txt/.md "
                    "(paragraphs separated by blank lines) or a .jsonl (one chunk per row) — the "
                    "last two are packed into a one-chapter EPUB by the app's own writer; "
-                   "text file to stream (--tts --mode streaming); EPUB override (--audiobook); "
-                   "the .epub or .txt to prep (--prep)", metavar="FILE")
+                   "EPUB override (--audiobook); the .epub or .txt to prep (--prep)",
+                   metavar="FILE")
     p.add_argument("--text", help="literal text to render (--tts: packed into a one-chapter "
-                   "EPUB, paragraphs separated by blank lines) or to stream (--mode streaming)",
+                   "EPUB, paragraphs separated by blank lines)",
                    metavar="STR")
     p.add_argument("--title", dest="title",
                    help="--tts with a text/jsonl input: the title the packed one-chapter EPUB "
@@ -3038,12 +2953,17 @@ def _flag_registry():
                    "--generate-epub: the project whose PDF is read into its book. "
                    "--prep: the project whose book is prepped (same 'Latest' resolution)",
                    metavar="DIR")
-    p.add_argument("--mode", default="tts", choices=["tts", "streaming"],
-                   help="render path: 'tts' = audiobook/batch (default, the shipped path), "
-                        "'streaming' = Listen (one sentence per vLLM sequence)")
+    # NO `choices` HERE, DELIBERATELY. 'streaming' was the second value until the
+    # 8766 speak relay was deleted, and argparse's "invalid choice" would answer a
+    # script that still passes it by describing the flag as mistyped. cmd_tts
+    # refuses it by name instead, and says where speech went.
+    p.add_argument("--mode", default="tts",
+                   help="render path: 'tts' = audiobook/batch, the shipped path and the only "
+                        "one. 'streaming' drove the deleted 8766 speak relay and is refused "
+                        "by name", metavar="NAME")
     p.add_argument("--read-ahead", dest="read_ahead", type=int, default=None,
-                   help="streaming: how many following blocks to read ahead "
-                        "(default: all of them, as the extension does)", metavar="N")
+                   help="GONE: it bounded the deleted streaming relay's read-ahead. A render "
+                        "has none — cap a run with --max-chunks. Refused by name", metavar="N")
     p.add_argument("--as-chunks", dest="as_chunks", action="store_true",
                    help="--tts with a .txt/.md/.jsonl (or --text) input: render each paragraph/row "
                         "as exactly ONE generation chunk (settings.sentencePerParagraph → "
@@ -3088,9 +3008,9 @@ def _flag_registry():
     p.add_argument("--engine", default="higgs",
                    help="TTS engine (default higgs). Higgs is the one engine that renders; "
                         "orpheus is retired as a choice since 2026-09-14 and is refused by name "
-                        "by the render door, though its spawn layer is still in the build. Both "
-                        "still stream (--mode streaming). The ARM is chosen by the platform "
-                        "inside the bridge — Mac MLX, Windows/WSL SGLang — never by a flag here.",
+                        "by the render door, though its spawn layer is still in the build. The "
+                        "ARM is chosen by the platform inside the bridge — Mac MLX, Windows/WSL "
+                        "SGLang — never by a flag here.",
                    metavar="NAME")
     p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)",
                    metavar="ID")
