@@ -646,16 +646,24 @@ export async function planVlmConversion(
     crucible = await resolveCruciblePageReader(venue.server, pagesHost);
     route = {
       kind: 'endpoint',
-      // `concurrency: 0` is foundry's own default of twelve pages in flight,
-      // which PHASE3-VLM.md §4 makes a REQUIREMENT of the manifest rather than
-      // a preference: `--max-num-seqs` on `dots-ocr` is 16 so that twelve can
-      // actually be in flight. Setting a number here would freeze this build's
-      // copy of somebody else's GPU property.
-      endpoint: { url: crucible.endpoint, model: crucible.model, concurrency: 0 },
+      // THE WIDTH IS THE BACKEND'S, and `resolveCruciblePageReader` is where
+      // the two are paired (`PAGE_CONCURRENCY_BY_BACKEND`). `0` — what a
+      // `cuda-linux` server resolves to — is foundry's own measured default of
+      // twelve pages in flight, which PHASE3-VLM.md §4 makes a REQUIREMENT of
+      // the manifest rather than a preference: `--max-num-seqs` on `dots-ocr`
+      // is 16 so that twelve can actually be in flight, and freezing a copy of
+      // that number here would be this build holding somebody else's GPU
+      // property. A `llama-windows` server resolves to 1, because its manifest
+      // serves `--parallel 1` and eleven of twelve would be queue wait recorded
+      // as work. Neither number is chosen here and there is no default.
+      endpoint: { url: crucible.endpoint, model: crucible.model, concurrency: crucible.concurrency },
     };
     venueDecision =
       `Reading the pages on crucible "${crucible.server}" (${crucible.model}`
-      + `${crucible.fingerprint === null ? '' : ` @ ${crucible.fingerprint}`}) — `
+      + `${crucible.fingerprint === null ? '' : ` @ ${crucible.fingerprint}`}) on `
+      + `${crucible.backend}, ${crucible.concurrency === 0
+        ? 'at the engine\'s own twelve pages in flight'
+        : `${crucible.concurrency} page(s) in flight`} — `
       + `${venue.origin}: ${venue.because}. Headers: ${crucible.maskedHeaders}`;
   }
   if (route.kind === 'refused') throw new Error(`${route.reason} Nothing was converted.`);

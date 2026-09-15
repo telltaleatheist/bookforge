@@ -284,6 +284,13 @@ export type CruciblePagesErrorCode =
   | 'crucible_pages_no_backend'
   /** The manifest is served here and does not take pictures. */
   | 'crucible_pages_model_not_image_capable'
+  /**
+   * The server named a backend this build has no page-reading width for. NOT
+   * defaulted: {@link PAGE_CONCURRENCY_BY_BACKEND} is a pairing between what a
+   * backend ADMITS and what the engine SENDS, and a backend nobody has paired
+   * would be twelve requests against an unknown number of slots.
+   */
+  | 'crucible_pages_unknown_backend'
   /** Nothing is serving it. The operator's job, never a page read's. */
   | 'crucible_pages_model_not_resident'
   /**
@@ -320,6 +327,51 @@ export class CruciblePagesError extends Error {
  */
 export const CRUCIBLE_PAGES_NO_BACKEND = 'page reading is the PC\'s';
 
+/**
+ * ── HOW MANY PAGES THIS BUILD SENDS AT ONCE, PER BACKEND ───────────────────
+ *
+ * The engine's own default is twelve in flight, and it is MEASURED: foundry's
+ * `src/vlm/endpoint.ts` `DEFAULT_VLM_CONCURRENCY = 12`, walked over 18,202
+ * pages — *"at twelve in flight the lag costs ZERO accepted pages, and at
+ * twenty-four it costs two"*. `band.ts`'s three knobs (`BAND_MARGIN` 4,
+ * `BAND_FLOOR` 2000, `RETRY_RISE` 2) were all chosen against a lag of twelve
+ * and the file says raising it invalidates all three. So twelve is not this
+ * app's number to hold a copy of — **0 means "say nothing and let the engine's
+ * measured default stand"**, which is what a vLLM backend gets.
+ *
+ * `llama-windows` is the exception, and the pairing is the whole point of this
+ * table. Crucible serves `dots-ocr` there with `--parallel 1`
+ * (`crucible/models/dots-ocr.toml`, *"Foundry's working launcher verbatim"*),
+ * so eleven of twelve would sit in llama-server's queue. Foundry ALREADY pairs
+ * those two on its own local route and says why — `foundry-app/electron/
+ * page-reader.ts` `PAGE_READER_CONCURRENCY = 1`:
+ *
+ *   *"llama-server with one slot does not [run twelve at once]: eleven of the
+ *   twelve would sit in its queue, and every page's recorded `seconds` — which
+ *   is banked, and which is what anybody measuring this server will read —
+ *   would be its wait rather than its work. Sending one at a time makes the
+ *   number honest. It also makes the adaptive token band STRICTLY safer."*
+ *
+ * That pairing was enforced on the local route and lost on the Crucible route,
+ * which is how a backend added on 2026-09-15 came to be sent twelve. This table
+ * is the pairing, in the one place that knows which backend answered.
+ *
+ * NO DEFAULT. A backend absent from this table is refused by name
+ * (`crucible_pages_unknown_backend`), because guessing here is guessing how
+ * many slots somebody else's server has.
+ */
+export const PAGE_CONCURRENCY_BY_BACKEND: Readonly<Record<string, number>> = {
+  /** vLLM, `--max-num-seqs 16` on the manifest so that twelve can be in flight. */
+  'cuda-linux': 0,
+  /** llama.cpp, `--parallel 1` on the manifest. One slot, one request. */
+  'llama-windows': 1,
+  /*
+   * `mlx-darwin` is deliberately absent and is NOT a hole: `dots-ocr` has no
+   * mlx-darwin block, so a Mac is already refused by `crucible_pages_no_backend`
+   * several checks earlier and never reaches this table.
+   */
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The host: everything this decision reads from the world
 // ─────────────────────────────────────────────────────────────────────────────
@@ -334,6 +386,14 @@ export interface PagesVenueHost extends VenueHost {
   server(name: string): ResolvedServer;
   /** `GET /v1/models` on that server. */
   models(name: string): Promise<ModelInfo[]>;
+  /**
+   * `GET /v1/info` → `host.backend` on that server: `cuda-linux`,
+   * `mlx-darwin` or `llama-windows`. It is what decides how many pages this
+   * build sends at once ({@link PAGE_CONCURRENCY_BY_BACKEND}), and it is asked
+   * rather than inferred from the model row — `backendSupported` is a boolean
+   * about the manifest and says nothing about how many slots the engine has.
+   */
+  backend(name: string): Promise<string>;
 }
 
 /** The real one: the app's routing record, the real registry and real HTTP. */
@@ -346,6 +406,9 @@ export function processPagesVenueHost(): PagesVenueHost {
     server: getServer,
     async models(name: string): Promise<ModelInfo[]> {
       return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).models();
+    },
+    async backend(name: string): Promise<string> {
+      return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).info()).host.backend;
     },
   };
 }
@@ -406,6 +469,15 @@ export interface CruciblePageReader {
   maskedHeaders: string;
   /** What the server's row said it is, for the run's record. `null` on a host with no block. */
   fingerprint: string | null;
+  /** The backend that answered: `cuda-linux` or `llama-windows`. For the record, and for {@link concurrency}. */
+  backend: string;
+  /**
+   * `--vlm-concurrency`: how many pages the engine may hold in flight against
+   * THIS server. `0` means "send nothing and let foundry's measured default of
+   * twelve stand"; a positive number is a pairing with what the backend admits.
+   * Derived from {@link PAGE_CONCURRENCY_BY_BACKEND}, never guessed.
+   */
+  concurrency: number;
 }
 
 /**
@@ -490,6 +562,31 @@ export async function resolveCruciblePageReader(
     );
   }
 
+  /*
+   * ── THE WIDTH, PAIRED WITH THE BACKEND THAT ANSWERED ──────────────────────
+   *
+   * Last, because it is the only check that costs a second request, and every
+   * refusal above is cheaper and more final. See
+   * {@link PAGE_CONCURRENCY_BY_BACKEND}: `cuda-linux` serves `--max-num-seqs 16`
+   * and gets the engine's measured twelve; `llama-windows` serves
+   * `--parallel 1` and gets one, so a page's banked `seconds` is its work and
+   * not its wait in llama-server's queue.
+   */
+  const backend = await host.backend(server);
+  const concurrency = PAGE_CONCURRENCY_BY_BACKEND[backend];
+  if (concurrency === undefined) {
+    throw new CruciblePagesError(
+      'crucible_pages_unknown_backend',
+      `crucible "${server}" serves "${model}" on backend "${backend}", and this build has no page `
+      + `width paired with it (it knows: ${Object.keys(PAGE_CONCURRENCY_BY_BACKEND).join(', ')}). `
+      + 'How many pages may be in flight is a pairing with how many the engine ADMITS — twelve '
+      + 'against vLLM\'s 16 slots, one against llama.cpp\'s single slot — so guessing it here would '
+      + 'be guessing how many slots that server has, and every page\'s recorded time would be its '
+      + 'queue wait rather than its work. Add the backend to PAGE_CONCURRENCY_BY_BACKEND with the '
+      + 'admission width its manifest serves. Nothing ran and no page was read.',
+    );
+  }
+
   const entry = host.server(server);
   return {
     server,
@@ -499,6 +596,8 @@ export async function resolveCruciblePageReader(
     env: pagesEndpointHeadersEnv(entry.token),
     maskedHeaders: maskEndpointHeaders(pagesEndpointHeaderMap(entry.token)),
     fingerprint: row.fingerprint,
+    backend,
+    concurrency,
   };
 }
 

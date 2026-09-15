@@ -121,6 +121,10 @@ function scriptedHost(over) {
     ping: async () => ({ outcome: 'ok', message: 'ok' }),
     server: (name) => ({ name, url: URL, token: TOKEN, source: 'local' }),
     models: async () => [row(), { id: 'qwen3.5-9b', modalities: ['text'], backendSupported: true, installed: true, resident: false, loadable: true, fingerprint: null }],
+    // `GET /v1/info` → `host.backend`. The default is the one backend that
+    // actually serves dots-ocr through vLLM today; the llama.cpp arm is scripted
+    // where it is tested.
+    backend: async () => 'cuda-linux',
   }, over || {});
 }
 
@@ -235,6 +239,55 @@ async function main() {
     const map = JSON.parse(reader.env.FOUNDRY_ENDPOINT_HEADERS);
     assert.strictEqual(map['X-Crucible-Act'], 'pages');
     assert.strictEqual(map.Authorization, `Bearer ${TOKEN}`);
+    // The backend that answered, and the width paired with it. A vLLM server
+    // serves --max-num-seqs 16, so this build says nothing and the engine's
+    // own measured twelve stands.
+    assert.strictEqual(reader.backend, 'cuda-linux');
+    assert.strictEqual(reader.concurrency, 0);
+  });
+
+  // ── 4b. THE WIDTH IS PAIRED WITH THE BACKEND, never assumed ────────────────
+  //
+  // The regression this pins: `llama-windows` was added on 2026-09-15 serving
+  // `dots-ocr` with `--parallel 1`, and this side went on sending twelve. Eleven
+  // of them sit in llama-server's queue, and every page's banked `seconds`
+  // becomes its wait instead of its work. Foundry pairs the same two numbers on
+  // its own local route (foundry-app/electron/page-reader.ts,
+  // PAGE_READER_CONCURRENCY = 1); this is that pairing on the Crucible route.
+  await check('a llama-windows Crucible is sent ONE page at a time, matching --parallel 1',
+    async () => {
+      const windows = await pages.resolveCruciblePageReader(
+        'pc', scriptedHost({ backend: async () => 'llama-windows' }));
+      assert.strictEqual(windows.backend, 'llama-windows');
+      assert.strictEqual(windows.concurrency, 1);
+      const line = conversion.vlmEndpointArgs(
+        { url: windows.endpoint, model: windows.model, concurrency: windows.concurrency },
+      ).join(' ');
+      assert.ok(line.includes('--vlm-concurrency 1'), line);
+    });
+
+  await check('the two known backends are exactly the two manifests dots-ocr has blocks for', () => {
+    assert.deepStrictEqual(
+      Object.keys(pages.PAGE_CONCURRENCY_BY_BACKEND).sort(),
+      ['cuda-linux', 'llama-windows'],
+    );
+    // mlx-darwin is absent ON PURPOSE: dots-ocr has no mlx-darwin block, so a
+    // Mac is refused by crucible_pages_no_backend long before the table is read.
+    assert.strictEqual(pages.PAGE_CONCURRENCY_BY_BACKEND['mlx-darwin'], undefined);
+  });
+
+  await check('a backend with no paired width is refused BY NAME, never sent twelve', async () => {
+    await assert.rejects(
+      () => pages.resolveCruciblePageReader(
+        'odd', scriptedHost({ backend: async () => 'rocm-linux' })),
+      (err) => {
+        assert.strictEqual(err.code, 'crucible_pages_unknown_backend');
+        assert.ok(err.message.includes('rocm-linux'), err.message);
+        // It must name what it DOES know, so the fix is one line and obvious.
+        assert.ok(err.message.includes('cuda-linux'), err.message);
+        assert.ok(err.message.includes('llama-windows'), err.message);
+        return true;
+      });
   });
 
   await check('the foundry argv carries the endpoint and the model, and NOT the token', () => {
@@ -378,9 +431,12 @@ async function main() {
       `electron/crucible/pages.ts exports something that can load a model: ${surface}. A load `
       + 'EVICTS whatever is resident, and on a shared server that is somebody else\'s book.');
     // And the host interface it asks the world through offers no loader either.
+    // `backend` is `GET /v1/info` — a read, like `models` and `ping`; it is what
+    // pairs the pages-in-flight width with the engine's admission width
+    // (PAGE_CONCURRENCY_BY_BACKEND) and it changes nothing on the server.
     assert.deepStrictEqual(
       Object.keys(pages.processPagesVenueHost()).sort(),
-      ['enabled', 'models', 'ping', 'server', 'view']);
+      ['backend', 'enabled', 'models', 'ping', 'server', 'view']);
   });
 
   // ── 8. The venue: one record, no silent local run ─────────────────────────
