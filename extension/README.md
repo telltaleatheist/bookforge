@@ -1,14 +1,39 @@
 # BookForge Reader
 
-A Chrome (MV3) extension that reads web pages aloud through BookForge's local
-streaming TTS engine. Click the toolbar icon to drop a small play button beside
-each readable block on the page; click one to start listening, with local
-pause / seek / speed and auto-advance through the article.
+A Chrome (MV3) extension that reads web pages aloud through a **Crucible**
+inference server. Click the toolbar icon to drop a small play button beside each
+readable block on the page; click one to start listening, with local pause /
+seek / speed and auto-advance through the article.
 
-This is a personal-use, sideloaded extension. It talks to BookForge over the
-WebSocket TTS API documented in [`../docs/TTS_API.md`](../docs/TTS_API.md) — read
-that for the wire protocol. The design notes for this extension live in
+This is a personal-use, sideloaded extension. The design notes live in
 [`PLAN.md`](PLAN.md).
+
+## It talks to a Crucible, not to BookForge (Phase 16)
+
+Speech comes straight from a Crucible: the offscreen document opens a
+`POST /v1/tts/stream` session, says one row per packed sentence-chunk and plays
+the frames as they arrive. **BookForge does not have to be running to read a
+page.** The plan is
+[`../docs/EXTENSION-TO-CRUCIBLE-PLAN.md`](../docs/EXTENSION-TO-CRUCIBLE-PLAN.md);
+the wire it speaks is crucible's `docs/PHASE3-TTS.md` §7.
+
+Three consequences worth knowing before you open the Options page:
+
+- **You connect by pasting a connect code.** A `crucible://…` line from that
+  server's operator page (or BookForge's Settings → Crucible) goes into
+  Options; the extension keeps a registry of them and reads from the ONE you
+  select. Chrome will ask for permission to reach that address — it has to,
+  and nothing will work until you say yes.
+- **Load voice is a job on that server.** The popup's one button is Load /
+  Unload, not Start / Stop: a streaming session never loads a voice, so the
+  voice has to be resident before a page can be read. It is unloaded again
+  after the idle window you pick, because a voice on a card is a card nobody
+  else can use.
+- **The tab recorder still needs BookForge.** It hands raw PCM to a machine
+  with a filesystem and BookForge's ffmpeg writes the FLAC, so the recorder's
+  own host/port/token rows are still in Options, labelled for what they are.
+  That half still speaks the WebSocket API in
+  [`../docs/TTS_API.md`](../docs/TTS_API.md).
 
 ## Build
 
@@ -22,23 +47,36 @@ npm run watch       # rebuild on change (restart it if you edit static/)
 npm run package     # build:dist + zip → bookforge-reader-<version>.zip
 ```
 
-## Auth (no token for local use)
+## Auth
 
-The extension has a pinned identity (a `key` in `manifest.json` → a stable
-extension id). BookForge's TTS API trusts a WebSocket whose **Origin** is exactly
-this extension — a value the browser sets and webpages cannot forge — so a
-**local** connection needs no token. A token is only required for a **LAN**
-server (host other than `127.0.0.1`), entered in Options. The private key for the
-id lives in `.crx-key.pem` (git-ignored) and is only needed to pack a `.crx`
-later.
+**Speech**: a Crucible's bearer token, carried in the connect code you paste in
+Options and kept in `chrome.storage.local`. There is no anonymous mode and no
+localhost exception — a Crucible authenticates every route but `/v1/ping`.
+Chrome also has to be given permission to reach that server's origin; the
+manifest asks for none up front (the set of servers is yours, and is not
+knowable at packaging time) and the Options page requests one origin at a time
+from your click.
+
+**Recording**: BookForge's TTS API, unchanged. The extension has a pinned
+identity (a `key` in `manifest.json` → a stable extension id), and that API
+trusts a WebSocket whose **Origin** is exactly this extension — a value the
+browser sets and webpages cannot forge — so a **local** connection needs no
+token. A token is only required for a **LAN** BookForge (host other than
+`127.0.0.1`), entered in Options. The private key for the id lives in
+`.crx-key.pem` (git-ignored) and is only needed to pack a `.crx` later.
 
 ## Install (unpacked)
 
-1. Launch BookForge at least once (so the TTS API server is running).
-2. In Chrome: `chrome://extensions` → enable **Developer mode** → **Load
+1. In Chrome: `chrome://extensions` → enable **Developer mode** → **Load
    unpacked** → select `extension/dist`.
-3. Click the toolbar icon → **Start TTS server**. No token to paste — it just
-   connects. (Only enter a token in Options when pointing at a LAN server.)
+2. Options → paste a `crucible://…` connect code → **Add server**, and allow
+   the permission prompt. Press **Test**: it should name the server, its
+   backend, and whatever is on its card.
+3. Click the toolbar icon, pick a voice, press **Load voice**. That puts the
+   voice on that server's card; **Unload** gives the card back, and so does the
+   idle window.
+4. For tab recording only: launch BookForge as well, and check the BookForge
+   host/port rows near the bottom of Options.
 
 ## Distribute
 
@@ -57,8 +95,11 @@ not under a wrapper folder).
 ## Use
 
 - Click the **BookForge Reader** toolbar icon to open the popup. From there:
-  - **Start / Stop TTS server** — brings the engine up (~1 minute cold start) or
-    shuts it down to free its RAM. The dot shows connection + engine state.
+  - **Load voice / Unload** — puts the picked voice on the selected Crucible's
+    card (~1 minute cold), or takes it off. The dot shows which server and what
+    is resident on it. If something else holds that card, the popup says WHO,
+    from `/v1/activity`, and offers no way to take it: preempting another
+    client is an explicit act through the engine, never a second press here.
   - **Show controls on page** — injects the reader controls into the current tab
     (re-click to hide).
   - The **queue** — the currently-playing item plus everything upcoming; remove a

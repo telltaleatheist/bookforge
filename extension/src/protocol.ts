@@ -1,123 +1,61 @@
 /**
- * Wire protocol for the BookForge TTS API server (docs/TTS_API.md).
+ * Wire protocol for the BookForge TTS API server (docs/TTS_API.md) — WHAT IS
+ * LEFT OF IT.
  *
  * WebSocket, JSON text frames only. Client messages carry an `action`; server
- * messages carry a `type`. Audio is base64 PCM16 (signed 16-bit LE), 24 kHz mono.
+ * messages carry a `type`.
+ *
+ * ── Speech left this file in Phase 16 ───────────────────────────────────────
+ *
+ * The extension used to say `speak` here and get `chunk` / `done` /
+ * `complete` back, with `engine.start`, `engine.stop`, `engine.restart` and
+ * `config.get/set` for the engine's lifecycle. All of that is a Crucible's now
+ * (`src/crucible.ts`, `src/offscreen.ts`; the map is
+ * docs/EXTENSION-TO-CRUCIBLE-PLAN.md §1) and is deleted from this file rather
+ * than left as vocabulary nothing speaks:
+ *
+ *   speak / chunk / done / failed / complete / cancelled / playhead / cancel
+ *   engine.start / engine.stop / engine.restart
+ *   config.get / config.set  (and `ServerConfig`, `EngineInfo`)
+ *   SpeakSettings, EngineState, PROTOCOL_VERSION
+ *
+ * ── What is still here, and why ─────────────────────────────────────────────
+ *
+ * TAB RECORDING. The recorder captures a tab's audio and BookForge's ffmpeg
+ * writes the FLAC, so the recorder needs a machine with a filesystem and this
+ * socket is how it reaches one. That is why the Options page still carries a
+ * BookForge host/port/token row beside the Crucible server picker: they are two
+ * different servers doing two different jobs.
+ *
+ * KNOWN CONFLICT, stated rather than discovered later: the plan's step 6
+ * deletes `electron/tts-api-server.ts` and the 8766 relay once the extension is
+ * direct — and tab recording is the half of that server nothing has replaced.
+ * The `record.*` verbs below have to land somewhere before that deletion.
  */
 
-export const PROTOCOL_VERSION = 1;
 export const DEFAULT_PORT = 8766;
 export const DEFAULT_HOST = '127.0.0.1';
+
+/**
+ * The one sample rate the player is built around: 24 kHz mono PCM16.
+ *
+ * Every Crucible voice states its own rate (`VoiceInfo.sampleRate`, and the
+ * session repeats it), and every voice in today's catalog says 24000 — which
+ * the SDK's own comment calls "exactly the kind of coincidence that becomes a
+ * hard-coded number if it is not written down". So it is written down here, and
+ * `offscreen.ts` CHECKS the open session against it and refuses by name rather
+ * than playing a 44.1 kHz voice at 0.54x and calling it a bug in the model.
+ */
 export const SAMPLE_RATE = 24000;
 /** Bytes per second of PCM16 mono @ 24 kHz: 24000 samples × 2 bytes. */
 export const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-
-export type EngineState = 'stopped' | 'starting' | 'running';
-
-/** A speak's optional sampling/voice knobs. All fields optional. */
-export interface SpeakSettings {
-  voice?: string;
-  speed?: number;
-  temperature?: number;
-  topP?: number;
-  repetitionPenalty?: number;
-}
-
-/**
- * The server's tunable engine topology. Multiple workers are an opt-in capability
- * (`enabled`) the user turns on inside BookForge — when off, the engine always
- * runs one worker. When on, `count` (1–4) is the knob; CUDA still runs one worker
- * regardless (autoregressive decode serializes on the GPU). Worker-count changes
- * are persisted server-side and take effect on the next engine start, so the
- * client pairs them with an `engine.restart` to apply them now.
- */
-export interface ServerConfig {
-  /** Multi-worker capability toggle, set inside BookForge (off ⇒ always 1 worker) */
-  enabled: boolean;
-  /** The chosen 1–4 count (remembered even while disabled) */
-  count: number;
-  defaultCount: number;
-  minWorkers: number;
-  maxWorkers: number;
-  /** null until the engine first probes torch (non-mac); mac is always 'cpu' */
-  device: 'cpu' | 'cuda' | null;
-  /** workers the active device will actually run: count on CPU when enabled, else 1
-   *  (the GPU serializes autoregressive decode). The knob is moot on CUDA. */
-  deviceWorkers: number;
-  /** workers currently alive — 0 when the engine is stopped */
-  activeWorkers: number;
-  /** minutes of inactivity before the engine shuts itself down (0 = never) */
-  idleMinutes?: number;
-  /** the windows the server offers, so every client shows the same ladder */
-  idleChoices?: number[];
-}
-
-/**
- * One streaming engine the server knows about.
- *
- * BOTH ENGINES ARE ALWAYS LISTED; `available` and `reason` carry whether this
- * machine can actually run one. The extension does not decide that and must not
- * guess at it — Higgs needs a platform backend, its environment and an installed
- * voice, and the server is the only side that can see all three.
- */
-export interface EngineInfo {
-  id: string;
-  name: string;
-  available: boolean;
-  reason?: string;
-}
 
 // ─── Client → server ────────────────────────────────────────────────────────
 
 export type ClientAction =
   | { action: 'hello'; token: string }
-  | { action: 'status' }
-  | { action: 'engine.start'; voice?: string }
-  | { action: 'engine.stop' }
-  // Restart the pool to apply a new worker count and/or warm a voice. When
-  // `cpuWorkers` is present the server persists it before bringing the pool back.
-  | { action: 'engine.restart'; engine?: string; voice?: string; cpuWorkers?: number }
-  // Read or persist engine config without restarting. A voice given while the
-  // engine is running is warmed immediately; cpuWorkers only takes effect on the
-  // next start (use engine.restart to apply now).
-  | { action: 'config.get' }
-  | { action: 'config.set'; engine?: string; cpuWorkers?: number; voice?: string; idleMinutes?: number }
-  // preempt (default true) cancels OTHER CLIENTS' sessions so this block takes
-  // over the audio output — our own read-ahead survives, so pressing play never
-  // discards audio we already rendered. background (default false) generates a
-  // read-ahead block at low pool priority alongside the playing one. Prefetch
-  // sends {preempt:false, background:true} so upcoming blocks generate
-  // concurrently and keep every worker busy even when each block is a
-  // one-sentence paragraph.
-  //
-  // settings.voice is always sent and is binding: the server loads exactly that
-  // voice or fails the request. startSentence resumes a partly-rendered block —
-  // we still hold the earlier sentences' audio, so only the tail is generated.
-  //
-  // fastStart is the "Buffer before playing" switch turned OFF (Owen's ruling of
-  // 2026-09-04). The server then emits each sentence of THIS session as several
-  // 'chunk' events while it is still generating, so playback can begin on about a
-  // second of audio instead of on a cushion deep enough to guarantee no hole. Same
-  // event shape as always — just more of them, sooner — so nothing downstream of
-  // the socket has to know. Sent only on the FOREGROUND speak: read-ahead has
-  // nobody waiting on its first second, and the server ignores the flag on a
-  // background session regardless.
-  | {
-      action: 'speak';
-      requestId: string;
-      text: string;
-      settings?: SpeakSettings;
-      preempt?: boolean;
-      background?: boolean;
-      startSentence?: number;
-      fastStart?: boolean;
-    }
-  | { action: 'playhead'; requestId: string; sentenceIndex: number }
-  | { action: 'cancel'; requestId: string }
-  // ── Tab recording (docs/TAB_RECORDER.md). These ride the same socket as
-  // speech and never touch the stream scheduler: recording while listening is
-  // legal in both directions. The PCM itself goes as BINARY frames, which are
-  // legal only between record.started and record.stop/cancel.
+  // ── Tab recording (docs/TAB_RECORDER.md). The PCM itself goes as BINARY
+  // frames, which are legal only between record.started and record.stop/cancel.
   | {
       action: 'record.start';
       recordId: string;
@@ -140,95 +78,19 @@ export type ClientAction =
 
 // ─── Server → client ──────────────────────────────────────────────────────────
 
+/**
+ * The reply to `hello`. Its speech fields (state, voices, currentVoice, config,
+ * engine, engines) are still SENT by the server and deliberately not declared
+ * here: the extension no longer reads a single one of them, and a field a
+ * client does not read is a field that can drift without anyone noticing.
+ */
 export interface HelloEvent {
   type: 'hello';
   version: number;
-  state: EngineState;
-  serviceMode: boolean;
-  voices: string[];
-  currentVoice: string | null;
-  config: ServerConfig;
-  /** The selected engine, and every engine the server knows about. Optional
-   *  because an older server does not send them; a client that finds them absent
-   *  simply shows no chooser. */
-  engine?: string;
-  engines?: EngineInfo[];
-}
-
-export interface StatusEvent {
-  type: 'status';
-  state: EngineState;
-  serviceMode: boolean;
-  voices: string[];
-  currentVoice: string | null;
-  config: ServerConfig;
-  engine?: string;
-  engines?: EngineInfo[];
-}
-
-/** Reply to config.get / config.set / engine.restart. */
-export interface ConfigEvent {
-  type: 'config';
-  config: ServerConfig;
-  voices: string[];
-  currentVoice: string | null;
-  engine?: string;
-  engines?: EngineInfo[];
-}
-
-export interface StateEvent {
-  type: 'state';
-  state: EngineState;
-  serviceMode: boolean;
-}
-
-export interface SpeakingEvent {
-  type: 'speaking';
-  requestId: string;
-  sentences: string[];
-  /** echo of the speak's startSentence — the index generation actually begins at,
-   *  so a resuming client can check its cached prefix against this segmentation */
-  startSentence?: number;
-}
-
-export interface ChunkEvent {
-  type: 'chunk';
-  requestId: string;
-  sentenceIndex: number;
-  seq: number;
-  /** base64-encoded PCM16 */
-  data: string;
-  duration: number;
-  sampleRate: number;
-}
-
-export interface DoneEvent {
-  type: 'done';
-  requestId: string;
-  sentenceIndex: number;
-  duration: number;
-}
-
-export interface FailedEvent {
-  type: 'failed';
-  requestId: string;
-  sentenceIndex: number;
-  error: string;
-}
-
-export interface CompleteEvent {
-  type: 'complete';
-  requestId: string;
-}
-
-export interface CancelledEvent {
-  type: 'cancelled';
-  requestId: string;
 }
 
 export interface ErrorEvent {
   type: 'error';
-  requestId?: string;
   /** present when the failure belongs to a recording rather than a speak */
   recordId?: string;
   message: string;
@@ -268,15 +130,6 @@ export interface RecordCancelledEvent {
 
 export type ServerEvent =
   | HelloEvent
-  | StatusEvent
-  | StateEvent
-  | ConfigEvent
-  | SpeakingEvent
-  | ChunkEvent
-  | DoneEvent
-  | FailedEvent
-  | CompleteEvent
-  | CancelledEvent
   | ErrorEvent
   | RecordStartedEvent
   | RecordProgressEvent
@@ -285,15 +138,3 @@ export type ServerEvent =
 
 /** WebSocket close code the server uses for any auth failure. */
 export const CLOSE_AUTH = 4401;
-
-/**
- * Decode a base64 PCM16 chunk into raw little-endian bytes. The browser has no
- * Buffer, so this is the atob → Uint8Array half of the doc's decode recipe; the
- * Int16→Float32 half happens at playback time inside the WAV blob assembly.
- */
-export function decodeBase64(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}

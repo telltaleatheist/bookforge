@@ -14,11 +14,16 @@ rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist', { recursive: true });
 cpSync('static', 'dist', { recursive: true });
 
-// Bake the local TTS API token (and host/port) into the build so the extension
+// Bake the local TTS API token (and host/port) into the build so the RECORDER
 // connects without the user pasting it each time. Read from the app's userData
 // tts-api.json — same file the options page tells you to copy from. dist/ is
 // gitignored, so the token never lands in source control. Defaults to empty when
 // the app hasn't been run yet (extension then behaves as before: enter it once).
+//
+// SPEECH IS NOT BAKED and never will be. Since Phase 16 the extension reads
+// from a Crucible chosen by the user, whose bearer token arrives in a connect
+// code pasted into Options — there is no address to guess at build time and no
+// secret of anyone else's to put in a bundle.
 function appConfigDir() {
   if (process.platform === 'win32') {
     return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'bookforge-app');

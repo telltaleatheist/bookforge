@@ -21,12 +21,12 @@ import {
   SetVoiceCmd,
   SetIdleCmd,
   PutSettingsCmd,
-  RestartEngineCmd,
   QueueItem,
   QueueSnapshot,
   UiState,
   loadSettings
 } from './messages';
+import { selectedServer } from './servers';
 
 let activeTabId: number | null = null;
 let latestSnapshot: QueueSnapshot | null = null;
@@ -97,6 +97,16 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
   if (raw.cmd === 'put-settings') {
     void chrome.storage.local.set((raw as PutSettingsCmd).patch);
     return;
+  }
+  // …and it cannot read the Crucible registry either, which is where the
+  // selected server's TOKEN lives. Handing the entry over the runtime bus keeps
+  // one reader of that storage key.
+  if ((raw as { cmd?: string }).cmd === 'get-server') {
+    selectedServer().then(sendResponse, (err: unknown) => {
+      console.error('[BFR] reading the Crucible registry:', err);
+      sendResponse(null);
+    });
+    return true; // keep the channel open for the async response
   }
 
   switch (raw.cmd) {
@@ -169,20 +179,17 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       void sendToOffscreen({ ...c, target: 'offscreen' });
       return;
     }
-    case 'engine':
-      void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: (raw as EngineCmd).op });
+    case 'engine': {
+      const c = raw as EngineCmd;
+      void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: c.op, voice: c.voice });
       return;
+    }
     case 'set-voice':
       void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice });
       return;
     case 'set-idle':
       void sendToOffscreen({ target: 'offscreen', cmd: 'set-idle', minutes: (raw as SetIdleCmd).minutes });
       return;
-    case 'restart-engine': {
-      const c = raw as RestartEngineCmd;
-      void sendToOffscreen({ target: 'offscreen', cmd: 'restart-engine', engine: c.engine, cpuWorkers: c.cpuWorkers, voice: c.voice });
-      return;
-    }
     case 'queue': {
       const q = raw as QueueOpCmd;
       void sendToOffscreen({ target: 'offscreen', cmd: 'queue', op: q.op, id: q.id });
@@ -343,6 +350,23 @@ function relaySnapshot(snapshot: QueueSnapshot): void {
 // 'close' (not 'stop') because the page the audio belongs to is gone: this is the
 // point where rendered audio is actually freed. A plain Stop keeps it, so that
 // pressing play again on the same page never re-renders.
+
+// ─── The Options page changed which Crucible is selected ──────────────────────
+//
+// The offscreen document cannot watch chrome.storage, and a reading session
+// that outlived its server's selection would keep speaking from a machine the
+// user just deselected. Background is the context that can see the change, so
+// it is the one that tells it.
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (!('crucibleServers' in changes) && !('crucibleSelected' in changes)) return;
+  // Only if one is already up. `sendToOffscreen` would CREATE the document, and
+  // a server picked in Options is not a reason to spin up an audio player.
+  void chrome.offscreen.hasDocument().then((exists) => {
+    if (exists) void sendToOffscreen({ target: 'offscreen', cmd: 'server-changed' });
+  });
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === activeTabId) { void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' }); activeTabId = null; }

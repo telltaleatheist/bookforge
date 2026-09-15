@@ -7,19 +7,24 @@
       :root { color-scheme: light dark; }
       body {
         font: 14px/1.5 system-ui, sans-serif;
-        max-width: 540px;
+        max-width: 620px;
         margin: 32px auto;
         padding: 0 20px;
       }
       h1 { font-size: 18px; margin-bottom: 4px; }
+      h2 {
+        font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;
+        opacity: 0.6; margin: 26px 0 0;
+      }
       p.sub { margin-top: 0; opacity: 0.7; }
       .field { margin: 16px 0; }
       label { display: block; font-weight: 600; margin-bottom: 4px; }
-      input[type="text"], input[type="password"], input[type="number"], select {
+      input[type="text"], input[type="password"], input[type="number"], select, textarea {
         width: 100%; padding: 7px 9px; box-sizing: border-box;
         border: 1px solid #8888; border-radius: 6px; background: transparent; color: inherit;
         font: inherit;
       }
+      textarea { font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
       input[type="number"] { width: 120px; }
       .row { display: flex; gap: 16px; align-items: flex-end; }
       .checkbox { display: flex; align-items: center; gap: 8px; }
@@ -28,6 +33,9 @@
         padding: 8px 14px; border-radius: 6px; border: 1px solid #8888;
         background: #4f7cff; color: #fff; font: inherit; cursor: pointer;
       }
+      button.quiet { background: transparent; color: inherit; }
+      button.danger { background: transparent; color: #d23b3b; border-color: #d23b3b88; }
+      button:disabled { opacity: 0.5; cursor: default; }
       .result { margin-left: 10px; font-weight: 600; }
       .result.good { color: #1a9d4b; }
       .result.bad { color: #d23b3b; }
@@ -35,16 +43,94 @@
       .hint { font-size: 12px; opacity: 0.65; margin-top: 4px; }
       code { background: #8881; padding: 1px 5px; border-radius: 4px; }
       #saved { color: #1a9d4b; font-size: 12px; margin-left: 8px; }
+      /* The server registry */
+      .servers { margin: 10px 0 0; border: 1px solid #8884; border-radius: 8px; }
+      .servers:empty { display: none; }
+      .server {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-bottom: 1px solid #8883;
+      }
+      .server:last-child { border-bottom: none; }
+      .server input[type="radio"] { width: auto; margin: 0; }
+      .server .who { flex: 1; min-width: 0; }
+      .server .name { font-weight: 600; }
+      .server .where { font-size: 12px; opacity: 0.65; word-break: break-all; }
+      .server .say { font-size: 12px; margin-top: 3px; }
+      .server .say.good { color: #1a9d4b; }
+      .server .say.bad { color: #d23b3b; }
+      .server button { padding: 5px 10px; font-size: 12px; }
+      .empty { padding: 14px 12px; opacity: 0.7; font-size: 13px; }
     </style>
   </head>
   <body>
     <h1>BookForge Reader</h1>
-    <p class="sub">Reads web pages aloud through your local BookForge TTS engine.</p>
+    <p class="sub">Reads web pages aloud through a Crucible inference server.</p>
 
-    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Server</h2>
+    <h2>Crucible servers</h2>
+    <p class="hint">Speech comes straight from a Crucible — BookForge does not have to be running.
+      Copy a connect code from that server's operator page (<strong>Copy connect code</strong>), or
+      from BookForge's <strong>Settings → Crucible</strong>, and paste it here. One server is
+      selected at a time; everything this extension reads aloud goes to that one.</p>
+
+    <div id="servers" class="servers"></div>
+
+    <div class="field">
+      <label for="pairing">Add a server</label>
+      <textarea id="pairing" rows="2" placeholder="crucible://…"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="add">Add server</button>
+        <span id="addResult" class="result"></span>
+      </div>
+      <p class="hint">The code carries the server's name, its address and its token. Chrome asks for
+        permission to reach that address the first time — that prompt is the extension asking to talk
+        to your own machine, and reading will not work without it.</p>
+    </div>
+
+    <h2>Voice</h2>
+    <div class="field">
+      <label for="voice">Voice</label>
+      <select id="voice"></select>
+      <p class="hint" id="voiceHint">Pick a server first. The list comes from that server, and each
+        voice brings its own engine — there is nothing else to choose.</p>
+    </div>
+
+    <div class="field">
+      <label for="idleMinutes">Unload the voice after</label>
+      <select id="idleMinutes"></select>
+      <p class="hint">A voice on a card is a card nobody else can use. When this long passes with
+        nothing read, the extension unloads it. Loading it again costs the wait once.</p>
+    </div>
+
+    <h2>Playback</h2>
+    <div class="field">
+      <div class="checkbox">
+        <!-- checked in the markup so the first paint matches the DEFAULT; the
+             stored value overwrites it as soon as settings load. -->
+        <input id="bufferBeforePlaying" type="checkbox" checked />
+        <label for="bufferBeforePlaying" style="font-weight:600;margin:0">Buffer before playing</label>
+      </div>
+      <p class="hint">On: a paragraph waits until enough of it has arrived to play straight through,
+        so the read never stops mid-sentence — at the cost of a wait before the first word.<br />
+        Off (<strong>fast start</strong>): audio starts after about a second, played as it arrives.
+        First words come almost immediately; if the server falls behind, playback can pause mid-read
+        until it catches up.</p>
+    </div>
+
+    <div class="field">
+      <label for="rate">Speed</label>
+      <select id="rate"></select>
+      <p class="hint">How fast the audio is PLAYED, pitch preserved. It is not a request to the
+        server: nothing in Crucible's speech wire carries a speaking rate, and a voice speaks at the
+        pace it was trained at.</p>
+    </div>
+
+    <h2>Tab recorder</h2>
+    <p class="hint">Recording captures a tab's audio and hands the raw samples to <strong>BookForge</strong>,
+      whose ffmpeg writes the FLAC — so it needs the app running, and its own address below. This is
+      NOT the speech server.</p>
     <div class="row">
       <div class="field" style="flex:1">
-        <label for="host">Host</label>
+        <label for="host">BookForge host</label>
         <input id="host" type="text" placeholder="127.0.0.1" />
       </div>
       <div class="field">
@@ -52,22 +138,17 @@
         <input id="port" type="number" placeholder="8766" />
       </div>
     </div>
-    <p class="hint">Leave host as <code>127.0.0.1</code> for a local BookForge — no token needed, it
-      just works. To listen to another machine on your network, set that machine's BookForge server to
-      listen on <code>0.0.0.0</code>, then enter its IP below and the token from that machine. (Automatic
-      discovery of servers on the network is planned for a later release.)</p>
 
     <div class="field">
-      <label for="token">Token <span style="font-weight:400;opacity:0.6">— only for LAN servers</span></label>
+      <label for="token">Token <span style="font-weight:400;opacity:0.6">— only for LAN</span></label>
       <input id="token" type="password" placeholder="leave blank for a local BookForge" />
       <p class="hint">A local BookForge needs <strong>no token</strong> — this extension is trusted
-        automatically. Only fill this in when connecting to BookForge on <em>another</em> machine; find
+        automatically. Only fill this in when recording to BookForge on <em>another</em> machine; find
         it in that machine's config:<br />
         macOS: <code>~/Library/Application Support/bookforge-app/tts-api.json</code><br />
         Windows: <code>%APPDATA%/bookforge-app/tts-api.json</code></p>
     </div>
 
-    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Recorder</h2>
     <div class="field">
       <label for="recordingsDir">Save recordings to</label>
       <input id="recordingsDir" type="text" placeholder="~/Downloads" />
@@ -77,30 +158,9 @@
         <code>&lt;page title&gt;-&lt;timestamp&gt;.flac</code> with a <code>.json</code> sidecar.</p>
     </div>
 
-    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Playback</h2>
     <div class="field">
-      <div class="checkbox">
-        <!-- checked in the markup so the first paint matches the DEFAULT; the
-             stored value overwrites it as soon as settings load. -->
-        <input id="bufferBeforePlaying" type="checkbox" checked />
-        <label for="bufferBeforePlaying" style="font-weight:600;margin:0">Buffer before playing</label>
-      </div>
-      <p class="hint">On (recommended): a paragraph waits until enough of it is rendered to play
-        straight through, so the read never stops mid-sentence. On Orpheus that is roughly half a
-        minute before the first word.<br />
-        Off (<strong>fast start</strong>): audio starts after about a second, streamed while it is
-        still being generated. First words come almost immediately; if the engine falls behind,
-        playback can pause mid-read until it catches up.</p>
-    </div>
-
-    <div class="field">
-      <button id="test">Test connection</button>
-      <span id="testResult" class="result"></span>
       <span id="saved"></span>
     </div>
-
-    <p class="hint">Voice and CPU worker count live in the toolbar popup, under
-      <strong>Engine settings</strong> — click the BookForge Reader icon to change them.</p>
 
     <script src="options.js"></script>
   </body>

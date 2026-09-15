@@ -6,16 +6,25 @@
  * and each listener ignores foreign ones. Direct hops aren't possible between
  * content and offscreen (or content and popup), so background relays.
  *
- * Ownership: the offscreen document owns the WebSocket, the player, AND the play
- * queue. It broadcasts a QueueSnapshot on every change (mirrored to
- * chrome.storage.session for the popup) and background tailors a per-tab UiState
- * down to the content script.
+ * Ownership: the offscreen document owns the Crucible streaming session, the
+ * recorder's WebSocket, the player, AND the play queue. It broadcasts a
+ * QueueSnapshot on every change and background tailors a per-tab UiState down
+ * to the content script.
  */
 
-import { EngineInfo, EngineState, ServerConfig } from './protocol';
 import { DEFAULT_RECORDINGS_DIR, RECORDER } from '../../shared/audio/tab-recording';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
+
+/**
+ * What the voice engine on the selected Crucible is doing, as the extension
+ * can see it.
+ *
+ * `stopped` = nothing is resident there, `starting` = a load-voice job is in
+ * flight, `running` = the voice is on the card. It is NOT a process this
+ * extension owns — "engine up" is `/v1/info`'s resident voice (plan §0).
+ */
+export type EngineState = 'stopped' | 'starting' | 'running';
 
 // ─── Playback ─────────────────────────────────────────────────────────────────
 
@@ -120,6 +129,63 @@ export const IDLE_RECORDING: RecordingStatus = {
   silenceRemaining: RECORDER.SILENCE_STOP_SECONDS
 };
 
+// ─── The Crucible the extension is reading from ───────────────────────────────
+
+/**
+ * One voice the selected server has a manifest for, as the pickers draw it.
+ *
+ * `engine` is on the row because that is the multi-engine door (plan §4a): a
+ * picker shows an engine COLUMN only when the list carries more than one, and
+ * never an engine selector — a voice implies its engine, so there is nothing to
+ * choose apart from a voice and nothing to remove when the next engine lands.
+ */
+export interface VoiceRow {
+  id: string;
+  display: string;
+  /** The `narratorEngine` the server puts on the row, e.g. `higgs-v3`. */
+  engine: string;
+  /** Could it be made resident right now? */
+  loadable: boolean;
+  /** Why not, in the server's words; null when it is loadable. */
+  reason: string | null;
+  /** Is it the voice on the card at this moment? */
+  resident: boolean;
+}
+
+/** The selected server and what is on its card. Replaces the old ServerConfig. */
+export interface EngineStatus {
+  /** The name the server is registered under here, or null when none is picked. */
+  server: string | null;
+  /** The server's own address, for the popup's one-line "reading from" note. */
+  url: string | null;
+  /** `cuda-linux` / `mlx-darwin`, once probed. Never a client's choice. */
+  backend: string | null;
+  /** The voice (or model) resident on that server right now, or null. */
+  resident: string | null;
+  /** `tts`, `llm`, … — what KIND of thing holds the card. */
+  residentKind: string | null;
+  /** A load or unload job is in flight from this extension. */
+  busy: 'loading' | 'unloading' | null;
+  /** The job's latest `warming` line, or a refusal, for the popup. */
+  note: string | null;
+  /** Who else holds the engine there, from `/v1/activity`, after a refusal. */
+  holder: string | null;
+  /** Minutes of no reading before this extension posts an unload (0 = never). */
+  idleMinutes: number;
+}
+
+export const NO_ENGINE: EngineStatus = {
+  server: null,
+  url: null,
+  backend: null,
+  resident: null,
+  residentKind: null,
+  busy: null,
+  note: null,
+  holder: null,
+  idleMinutes: 0,
+};
+
 // ─── Queue ────────────────────────────────────────────────────────────────────
 
 export type ItemSource = 'block' | 'selection';
@@ -150,22 +216,21 @@ export interface QueueSnapshot {
   playback: PlaybackStatus;
   /** progress across the whole run (finished + current + upcoming) */
   run: RunProgress;
-  /** why the socket isn't connected (no token / bad token / unreachable) */
+  /** why the extension is not talking to a Crucible (none selected, unreachable,
+   *  token rejected) — always the server's own words, never a retry hint */
   connectionError?: string;
-  /** voices the engine can use (catalog-sourced — present even while stopped) */
+  /** voice ids the selected server advertises — for the in-page toolbar picker */
   voices: string[];
-  /** the voice every speak is sent with — the one the picker shows. Never a guess:
-   *  the engine is loaded with exactly this or the request fails. */
+  /** the same list with the engine, the residency and the reason on each row */
+  voiceRows: VoiceRow[];
+  /** the voice a read will be spoken in — which is the RESIDENT one, because a
+   *  streaming session never loads (PHASE3-TTS.md §6). The popup's Load button
+   *  is what makes a different voice resident. */
   currentVoice: string | null;
-  /** a voice switch is in flight (the engine is loading that model) */
+  /** a load-voice job for this voice is in flight */
   switchingVoice: string | null;
-  /** engine topology (CPU worker count, device); null before the first connect */
-  config: ServerConfig | null;
-  /** the selected streaming engine, and every engine the server knows about with
-   *  whether THIS machine can run it. Optional: an older server sends neither, and
-   *  a client that finds them absent simply shows no chooser. */
-  engine?: string;
-  engines?: EngineInfo[];
+  /** the selected Crucible and what is on its card */
+  engine: EngineStatus;
   /** ids of every queue item whose audio is fully rendered and replayable */
   renderedItemIds: string[];
   /** the tab recording, when there is (or was) one. Optional so every existing
@@ -243,10 +308,21 @@ export interface TransportCmd {
 
 // ─── popup → background ───────────────────────────────────────────────────────
 
+/**
+ * Make the picked voice resident on the selected Crucible, or take it off.
+ *
+ * `load` is `POST /v1/jobs {type:"load-voice", …}` and `unload` is
+ * `{type:"unload-voice"}` — they were `engine.start` / `engine.stop` on
+ * BookForge's socket until Phase 16, and they are not the same act: nothing
+ * here starts or stops a process. `engine.restart` had no replacement and is
+ * gone (one engine; worker counts are server tuning).
+ */
 export interface EngineCmd {
   target: 'background';
   cmd: 'engine';
-  op: 'start' | 'stop';
+  op: 'load' | 'unload';
+  /** op:'load' — which voice. Omitted means "whatever the picker shows". */
+  voice?: string;
 }
 
 export interface QueueOpCmd {
@@ -307,23 +383,21 @@ export interface PutSettingsCmd {
   patch: Partial<Settings>;
 }
 
-/** How long the engine may sit idle before shutting itself down (0 = never).
- *  Server-side setting, so it's shared with the app rather than stored here. */
+/**
+ * How long after the last row this extension waits before it posts an unload
+ * (0 = never).
+ *
+ * A CLIENT TIMER since Phase 16, not a server setting. It used to be
+ * `config.set {idleMinutes}` on BookForge's socket, which persisted it in the
+ * app and applied it to the app's own pool. A Crucible's residency is the
+ * operator's and its idle rule is the server's; what an extension can honestly
+ * say is "I am done with it", and that is an unload job on a timer this
+ * extension owns. Stored in chrome.storage.local like every other setting.
+ */
 export interface SetIdleCmd {
   target: 'background';
   cmd: 'set-idle';
   minutes: number;
-}
-
-/** Restart the engine to apply a new worker count and/or warm a voice. */
-export interface RestartEngineCmd {
-  target: 'background';
-  cmd: 'restart-engine';
-  /** switch the streaming engine as part of the restart. A switch sends no voice:
-   *  a voice belongs to one engine's catalog and means nothing in the other's. */
-  engine?: string;
-  cpuWorkers?: number;
-  voice?: string;
 }
 
 // ─── background → offscreen ───────────────────────────────────────────────────
@@ -341,12 +415,14 @@ export interface PlaySequenceCmd {
   items: QueueItem[];
 }
 
-export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'start' | 'stop'; }
+export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'load' | 'unload'; voice?: string; }
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
 export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
 export interface SetIdleOffscreenCmd { target: 'offscreen'; cmd: 'set-idle'; minutes: number; }
-export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; engine?: string; cpuWorkers?: number; voice?: string; }
+/** The Options page changed the registry or the selection: drop the session and
+ *  re-read. Sent by background, which is the context that can watch storage. */
+export interface ServerChangedOffscreenCmd { target: 'offscreen'; cmd: 'server-changed'; }
 
 // ─── offscreen → background ───────────────────────────────────────────────────
 
@@ -391,7 +467,6 @@ export type RuntimeMessage =
   | QueueOpCmd
   | SyncCmd
   | SetVoiceCmd
-  | RestartEngineCmd
   | PlayItemCmd
   | PlaySequenceCmd
   | EngineOffscreenCmd
@@ -399,7 +474,7 @@ export type RuntimeMessage =
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
   | SetIdleOffscreenCmd
-  | RestartEngineOffscreenCmd
+  | ServerChangedOffscreenCmd
   | SnapshotMsg
   | UiMsg
   | ToggleUiMsg
@@ -408,13 +483,26 @@ export type RuntimeMessage =
 // ─── persisted settings (chrome.storage.local) ────────────────────────────────
 
 export interface Settings {
+  /**
+   * BookForge's tab-recording socket — NOT the speech server.
+   *
+   * Speech goes to a Crucible chosen in Options (`src/servers.ts`,
+   * `chrome.storage.local`'s own keys). These three are what the RECORDER
+   * needs: it hands raw PCM to a machine with a filesystem, and BookForge's
+   * ffmpeg writes the FLAC. See protocol.ts's header for the conflict this
+   * leaves in the plan's step 6.
+   */
   host: string;
   port: number;
   token: string;
-  /** the chosen voice — the single source of truth every picker writes and every
-   *  speak sends. '' only until the first connect tells us what the engine has;
-   *  we adopt that immediately, so it is never '' in steady state. */
+  /** The voice the popup's Load button will make resident, and the one the
+   *  pickers show. '' until the first read of the selected server's voices. */
   voice: string;
+  /**
+   * Minutes of no reading before this extension posts an unload-voice job to
+   * the selected server (0 = never). A CLIENT timer — see SetIdleCmd.
+   */
+  idleMinutes: number;
   rate: number;
   /** output gain: 1 = normal, >1 amplifies above system volume (Web Audio) */
   volume: number;
@@ -434,12 +522,17 @@ export interface Settings {
    * work, we'll switch it back." Switching back is this one default — and a value
    * a person has toggled in the popup lives in chrome.storage and wins over it.
    *
-   * OFF is FAST START (Owen's ruling of 2026-09-04): the speak carries
-   * `fastStart:true`, the server streams each sentence in sub-sentence chunks as it
-   * generates, and the player starts on about a second of audio. Stalls become
-   * possible — that is the trade, and the switch is how you take the other side of
-   * it. He wanted to try both on Windows (vLLM) and the Mac (MLX) without moving
-   * anything around, so it is a setting, not a build.
+   * OFF is FAST START (Owen's ruling of 2026-09-04): the player starts on about
+   * a second of audio. Stalls become possible — that is the trade, and the
+   * switch is how you take the other side of it. He wanted to try both on
+   * Windows (vLLM) and the Mac (MLX) without moving anything around, so it is a
+   * setting, not a build.
+   *
+   * SINCE PHASE 16 IT IS PURELY A CLIENT GATE, and the plan says why (§0):
+   * Crucible's streaming door ALWAYS emits sub-sentence frames — fast start is
+   * the door's native shape — so there is no `fastStart:true` to send any more.
+   * What the switch picks is whether this extension holds those frames back
+   * until a row is whole (and a cushion has built) or plays them as they land.
    */
   bufferBeforePlaying: boolean;
 }
@@ -455,6 +548,12 @@ export const DEFAULT_SETTINGS: Settings = {
   port: typeof __BFR_PORT__ === 'number' ? __BFR_PORT__ : 8766,
   token: typeof __BFR_TOKEN__ === 'string' ? __BFR_TOKEN__ : '',
   voice: '',
+  // 15 minutes: long enough that closing one article and opening another does
+  // not pay for a load twice, short enough that a card is not held overnight by
+  // a browser nobody is listening to. Owen's rule (2026-09-14) is that a model
+  // is unloaded when we are done with it, every time; this is how an extension
+  // that cannot know when you are done says so.
+  idleMinutes: 15,
   rate: 1,
   volume: 1,
   recordSpeed: 1,

@@ -1,10 +1,37 @@
 /**
- * Offscreen document — owns the WebSocket, the protocol state machine, PCM
- * assembly, the audio player, the LRU cache, AND the play queue. MV3 service
- * workers can't hold an AudioContext/<audio> and get killed when idle, so all of
- * that lives here. One offscreen document serves every tab (matching the
- * server's single global session). Background relays commands in and broadcasts
- * the queue snapshot out.
+ * Offscreen document — owns the Crucible streaming session, the recorder's
+ * WebSocket, PCM assembly, the audio player, the LRU cache, AND the play queue.
+ * MV3 service workers can't hold an AudioContext/<audio> and get killed when
+ * idle, so all of that lives here. One offscreen document serves every tab
+ * (matching a Crucible's single streaming session). Background relays commands
+ * in and broadcasts the queue snapshot out.
+ *
+ * ── Phase 16: speech comes straight from a Crucible ─────────────────────────
+ *
+ * Until now this document opened a WebSocket to BookForge on 8766, sent
+ * `speak {text}`, and let the app segment the paragraph, schedule the rows and
+ * relay them on from a Crucible. BookForge is out of that path
+ * (docs/EXTENSION-TO-CRUCIBLE-PLAN.md): this document
+ *
+ *   - picks the Crucible the user selected in Options (`src/servers.ts`),
+ *   - normalizes, segments and packs the paragraph ITSELF, with the app's own
+ *     code (`shared/listen-text/` — one source, bundled twice),
+ *   - schedules its own read-ahead with the app's own policy
+ *     (`shared/listen-client/session-policy.ts`),
+ *   - and speaks the rows on one `POST /v1/tts/stream` session
+ *     (`shared/listen-client/crucible-rows.ts`).
+ *
+ * It lives HERE and not in the service worker because an SSE stream cannot
+ * survive the worker's 30-second idle kill, and because the audio is here.
+ *
+ * THE SESSION NEVER LOADS A VOICE. PHASE3-TTS.md §6: a render job may load its
+ * voice; a stream may not. So the voice a page is read in is the voice RESIDENT
+ * on the selected server, the popup's Load button is what makes one resident,
+ * and a read with nothing resident is refused by name rather than quietly
+ * loading whatever the picker was showing onto somebody else's card.
+ *
+ * The WebSocket that is left is the tab recorder's, and only that: it needs a
+ * machine with a filesystem to write the FLAC. See protocol.ts.
  *
  * Queue model: one `current` item plays; `upcoming` items follow. ▶ moves an
  * item to current and plays immediately (preempting); ＋ appends to upcoming;
@@ -16,16 +43,13 @@
  * blob is rebuilt only at sentence boundaries, so swaps are inaudible.
  */
 
+import type { CrucibleClient, TtsStreamSession, VoiceInfo } from '@crucible/client';
 import {
   BYTES_PER_SECOND,
   CLOSE_AUTH,
-  EngineInfo,
-  EngineState,
-  ServerConfig,
+  SAMPLE_RATE,
   ServerEvent,
-  ClientAction,
-  SpeakSettings,
-  decodeBase64
+  ClientAction
 } from './protocol';
 import {
   RECORDER,
@@ -38,6 +62,32 @@ import {
   speedGuardRefusal
 } from '../../shared/audio/tab-recording';
 import {
+  listenBandFromCaps,
+  packListenChunks,
+  speakableListenText,
+  splitForTts,
+  type ListenChunkBand
+} from '../../shared/listen-text/index';
+import {
+  CRUCIBLE_STREAM_IN_FLIGHT,
+  CRUCIBLE_STREAM_RAMP_WIDTH,
+  CrucibleRowSession,
+  ListenSessions,
+  type ListenChunk,
+  type ListenGeneratorPort
+} from '../../shared/listen-client/index';
+import {
+  NO_SERVER_SELECTED,
+  clientFor,
+  type ServerEntry
+} from './servers';
+import {
+  describeHolder,
+  describeRefusal,
+  loadVoice as loadVoiceJob,
+  unloadVoice as unloadVoiceJob
+} from './crucible';
+import {
   PlaybackStatus,
   QueueItem,
   QueueSnapshot,
@@ -49,12 +99,15 @@ import {
   RecordingStatus,
   IDLE_RECORDING,
   EngineOffscreenCmd,
+  EngineState,
+  EngineStatus,
   QueueOffscreenCmd,
   SyncOffscreenCmd,
   SetVoiceOffscreenCmd,
   SetIdleOffscreenCmd,
-  RestartEngineOffscreenCmd,
+  ServerChangedOffscreenCmd,
   Settings,
+  VoiceRow,
   DEFAULT_SETTINGS
 } from './messages';
 
@@ -81,7 +134,7 @@ type OffscreenMessage =
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
   | SetIdleOffscreenCmd
-  | RestartEngineOffscreenCmd;
+  | ServerChangedOffscreenCmd;
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
@@ -601,80 +654,96 @@ let playSeq = 0;
 let reqCounter = 0;
 const cacheKeyByRequest = new Map<string, string>();
 
-// ─── WebSocket ────────────────────────────────────────────────────────────────
+// ─── The Crucible this document reads from ────────────────────────────────────
+//
+// One selected server, one streaming session, one resident voice. Everything
+// below is what used to be a WebSocket to BookForge on 8766.
 
-let ws: WebSocket | null = null;
-let authed = false;
-let connectPromise: Promise<void> | null = null;
-let engineState: EngineState = 'stopped';
-let connectionError: string | null = null; // why we're not connected (for the popup)
-// Engine catalog/topology mirrored from hello/status/config events, surfaced in the
-// snapshot so the popup can render the voice + worker-count controls.
+/** The registry entry the user selected in Options, re-read on every change. */
+let server: ServerEntry | null = null;
+/** A client bound to it. Null whenever `server` is. */
+let client: CrucibleClient | null = null;
+/** `GET /v1/voices` from that server, as the pickers draw them. */
+let voiceRows: VoiceRow[] = [];
+/** Voice ids only — what the in-page toolbar's picker shows. */
 let voices: string[] = [];
-let serverVoice: string | null = null; // what the engine reports it has loaded
-let serverConfig: ServerConfig | null = null;
-// The engine selection, mirrored the same way the voice list is. The extension
-// never DECIDES availability — Higgs needs a platform backend, an environment and
-// an installed voice, and the server is the only side that can see all three.
-let serverEngine: string | null = null;
-let serverEngines: EngineInfo[] = [];
+/** The voice on that server's card right now, as the server last reported it. */
+let serverVoice: string | null = null;
+/** What KIND of thing holds the card (`tts`, `llm`, …), or null. */
+let residentKind: string | null = null;
+/** The server's backend word (`cuda-linux` / `mlx-darwin`), once probed. */
+let backend: string | null = null;
+/** A load or unload job this extension started. */
+let engineBusy: 'loading' | 'unloading' | null = null;
+/** The job's latest line, or the refusal that ended it. */
+let engineNote: string | null = null;
+/** Who else holds the engine there, from `/v1/activity`, after a refusal. */
+let engineHolder: string | null = null;
+/** Why nothing can be read right now, in the server's own words. */
+let connectionError: string | null = null;
 
-// ─── The chosen voice ─────────────────────────────────────────────────────────
-//
-// One value decides what speaks: whatever the picker shows. It is sent EXPLICITLY
-// on every speak — never omitted — because a speak without a voice lets the server
-// fall back to whatever model it happens to have warm, which is how a block ends
-// up read by a narrator nobody selected.
-//
-// BookForge OWNS this value; we mirror it. Every hello/status/config carries the
-// engine's effective voice (loaded model, else the app's persisted default), and
-// adoptServerVoice() takes it verbatim — so what the extension shows is what the
-// app shows, always. Our stored copy is only a pre-connect placeholder (so the
-// pickers aren't blank for the first few hundred ms) and a record of the last
-// switch WE made; it never outranks the engine. Anything else and the picker
-// reads 'thirdreich' while the model in memory is deathstalker.
-let chosenVoice: string | null = null;
-let switchingVoice: string | null = null;
-// Resolvers waiting for the engine to confirm it loaded `switchingVoice`.
-let voiceWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
-// Bumped per switch, so an earlier switch that's still awaiting confirmation can
-// tell it has been superseded and bow out instead of restarting playback late.
-let voiceSwitchToken = 0;
-// A voice load can be a whole model swap on Orpheus; give it room, and let the
-// user hit stop meanwhile.
-const VOICE_SWITCH_TIMEOUT_MS = 200_000;
+/** The open streaming session and the band its voice packs to. */
+interface LiveStream {
+  readonly session: TtsStreamSession;
+  readonly rows: CrucibleRowSession;
+  /** The voice it speaks. One session, one voice. */
+  readonly voice: string;
+  /** The length band rows are packed to, from that voice's own `maxChars`. */
+  readonly band: ListenChunkBand;
+}
+let live: LiveStream | null = null;
+/** One session at a time, and one attempt to open it at a time. */
+let opening: Promise<LiveStream | null> | null = null;
 
-function sameVoice(a: string | null, b: string | null): boolean {
-  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+/** The engine state the popup and the page draw. */
+function engineState(): EngineState {
+  if (engineBusy === 'loading') return 'starting';
+  return serverVoice !== null && residentKind === 'tts' ? 'running' : 'stopped';
 }
 
-/** The voice to speak with, or null if we've never heard from the engine. */
-function voiceForSpeak(): string | null {
-  return chosenVoice ?? serverVoice;
+/** Everything the snapshot says about the selected Crucible. */
+function engineStatus(): EngineStatus {
+  return {
+    server: server?.name ?? null,
+    url: server?.url ?? null,
+    backend,
+    resident: serverVoice,
+    residentKind,
+    busy: engineBusy,
+    note: engineNote,
+    holder: engineHolder,
+    idleMinutes,
+  };
+}
+
+function isConnected(): boolean {
+  return client !== null && connectionError === null;
 }
 
 /**
- * Adopt the engine's voice — unconditionally. The server reports its EFFECTIVE
- * voice on every hello/status/config (the loaded model when one is warm, else the
- * app's persisted default), and that is the truth both pickers must show. A local
- * value never wins: a stored choice from a previous session, or a switch that
- * failed or timed out, is exactly how the extension came to advertise a narrator
- * the engine had never loaded.
+ * The voice a read will be spoken in.
  *
- * The ONE exception is a switch we asked for that is still loading: the engine
- * still reports the outgoing model, so keep showing the incoming one until it
- * confirms (noteVoiceConfirmation) or gives up (handleSetVoice's failure path,
- * which clears switchingVoice and lets the next event snap us back to reality).
+ * THE RESIDENT ONE, and nothing else. A streaming session never loads
+ * (PHASE3-TTS.md §6), so what the picker is showing is only ever what the
+ * popup's Load button WOULD make resident — reading in it before it is on the
+ * card would be reading in a voice the server does not have.
  */
-function adoptServerVoice(): void {
-  if (!serverVoice) return;
-  if (switchingVoice && !sameVoice(serverVoice, switchingVoice)) return;
-  if (sameVoice(chosenVoice, serverVoice)) return;
-  if (chosenVoice) {
-    console.log(`[BFR] engine is loaded with '${serverVoice}' — adopting it (was showing '${chosenVoice}')`);
-  }
-  chosenVoice = serverVoice;
-  persistVoice(serverVoice);
+function voiceForSpeak(): string | null {
+  return residentKind === 'tts' ? serverVoice : null;
+}
+
+/** The picker's own choice, which Load acts on. Persisted; may not be resident. */
+let chosenVoice: string | null = null;
+/** A load-voice job for this voice is in flight. */
+let switchingVoice: string | null = null;
+/** Bumped per voice switch, so an earlier one that is still loading can tell it
+ *  has been superseded and bow out instead of restarting playback late. */
+let voiceSwitchToken = 0;
+/** Minutes of no reading before this extension unloads (0 = never). */
+let idleMinutes = DEFAULT_SETTINGS.idleMinutes;
+
+function sameVoice(a: string | null, b: string | null): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
 }
 
 function persistVoice(voice: string): void {
@@ -683,14 +752,342 @@ function persistVoice(voice: string): void {
     .catch(() => { /* background asleep; storage is re-read on next start */ });
 }
 
-/** Settle the pending voice switch once the engine confirms (or fails). */
-function resolveVoiceWait(err?: Error): void {
-  const waiters = voiceWaiters;
-  voiceWaiters = [];
-  for (const w of waiters) { if (err) w.reject(err); else w.resolve(); }
+/**
+ * Ask background which Crucible is selected (an offscreen document cannot read
+ * chrome.storage), and bind a client to it.
+ *
+ * NOTHING IS GUESSED. No selection is not "use the first one" and not "use
+ * localhost": it is a named state the popup and the page both show, with the
+ * one sentence that says how to fix it.
+ */
+async function bindServer(): Promise<boolean> {
+  let entry: ServerEntry | null;
+  try {
+    entry = await chrome.runtime.sendMessage({ target: 'background', cmd: 'get-server' }) as ServerEntry | null;
+  } catch {
+    connectionError = 'The extension\'s background page is not answering; reload the extension.';
+    return false;
+  }
+  if (entry === null || entry === undefined) {
+    server = null;
+    client = null;
+    backend = null;
+    voiceRows = [];
+    voices = [];
+    serverVoice = null;
+    residentKind = null;
+    connectionError = NO_SERVER_SELECTED;
+    return false;
+  }
+  if (server === null || server.name !== entry.name || server.url !== entry.url
+      || server.token !== entry.token) {
+    server = entry;
+    client = clientFor(entry);
+    backend = null;
+    voiceRows = [];
+    voices = [];
+    serverVoice = null;
+    residentKind = null;
+  }
+  connectionError = null;
+  return true;
 }
 
-function isConnected(): boolean {
+/**
+ * Read the selected server: what it runs on, which voices it has, and what is
+ * on its card. Every refusal is the server's own, by name, and nothing is
+ * retried — an unreachable Crucible is not a slow one.
+ */
+async function refreshServer(): Promise<boolean> {
+  if (!(await bindServer())) return false;
+  const bound = client;
+  const named = server;
+  if (bound === null || named === null) return false;
+  try {
+    const info = await bound.info();
+    backend = info.host.backend;
+    if (!info.jobTypes.includes('tts')) {
+      connectionError = `Crucible "${named.name}" does not serve speech (its job types are `
+        + `${info.jobTypes.join(', ') || 'none'}). Pick a server that does, in Options.`;
+      return false;
+    }
+    const health = await bound.health();
+    residentKind = health.residentKind;
+    serverVoice = health.residentKind === 'tts' ? (health.residentModels[0] ?? null) : null;
+    const rows = await bound.voices();
+    voiceCaps.clear();
+    for (const v of rows) voiceCaps.set(v.id, v.maxChars);
+    voiceRows = rows.map((v: VoiceInfo): VoiceRow => ({
+      id: v.id,
+      display: v.display,
+      engine: v.narratorEngine,
+      loadable: v.loadable,
+      reason: v.reason,
+      resident: v.resident,
+    }));
+    voices = voiceRows.map((v) => v.id);
+    // The picker adopts the resident voice, exactly as it used to adopt the
+    // app's: what is on the card is the truth, and a stored choice that names
+    // something else is a choice, not a claim about the server.
+    if (serverVoice !== null && !switchingVoice) chosenVoice = serverVoice;
+    if (chosenVoice === null && voices.length > 0) chosenVoice = voices[0];
+    connectionError = null;
+    return true;
+  } catch (err) {
+    connectionError = describeRefusal(err, named.name);
+    return false;
+  }
+}
+
+/**
+ * The band one row of this voice may occupy, from the SERVER's own cap.
+ *
+ * `VoiceInfo.maxChars` is the (voice, backend) cap certificate, in CHARACTERS
+ * — nothing in `tts` carries a token cap on the wire. A voice whose row does
+ * not state one is refused by name rather than packed to a number from
+ * somewhere else: both catalogs ship a `deathstalker`, and the other engine's
+ * number for this voice would be a real number for the wrong engine.
+ */
+function bandFor(voice: string): ListenChunkBand {
+  if (!voiceRows.some((v) => v.id === voice)) {
+    throw new Error(`Crucible "${server?.name ?? '?'}" does not list a voice called "${voice}".`);
+  }
+  if (!voiceCaps.has(voice)) {
+    throw new Error(`No length cap was read for "${voice}" — refresh the server in the popup.`);
+  }
+  // `listenBandFromCaps` refuses a voice that declares no cap BY NAME. There is
+  // no `safeMaxChars` on the wire: the server's `maxChars` IS the cap
+  // certificate for this (voice, backend), and there is no local catalog to
+  // reach for instead — both catalogs ship a `deathstalker`.
+  return listenBandFromCaps(voice, { maxChars: voiceCaps.get(voice) ?? null });
+}
+
+/** `VoiceInfo.maxChars` per voice, beside the rows the pickers draw. */
+const voiceCaps = new Map<string, number | null>();
+
+/**
+ * Open the streaming session, or say why not.
+ *
+ * It does NOT load. `voice_not_resident` comes back naming what IS resident,
+ * and this turns it into "press Load voice" — never into a load-voice job on a
+ * card somebody else may be using.
+ */
+async function ensureStream(): Promise<LiveStream | null> {
+  if (live !== null) return live;
+  if (opening !== null) return opening;
+  opening = (async (): Promise<LiveStream | null> => {
+    if (!(await refreshServer())) return null;
+    const bound = client;
+    const named = server;
+    if (bound === null || named === null) return null;
+    const voice = voiceForSpeak();
+    if (voice === null) {
+      connectionError = `Nothing is loaded on Crucible "${named.name}". Open this extension's `
+        + 'popup and press "Load voice" — a reading session never loads one itself.';
+      return null;
+    }
+    let band: ListenChunkBand;
+    try {
+      band = bandFor(voice);
+    } catch (err) {
+      connectionError = err instanceof Error ? err.message : String(err);
+      return null;
+    }
+    let session: TtsStreamSession;
+    try {
+      session = await bound.stream({ voice, language: LISTEN_LANGUAGE });
+    } catch (err) {
+      connectionError = describeRefusal(err, named.name);
+      await noteHolder();
+      return null;
+    }
+    if (session.sampleRate !== SAMPLE_RATE) {
+      // The player's byte arithmetic, its WAV header and its cache are all
+      // 24 kHz. A voice at another rate would play at the wrong speed and
+      // sound like a broken model; it is refused by name instead.
+      await session.close().catch(() => { /* already gone */ });
+      connectionError = `Voice "${voice}" on Crucible "${named.name}" produces `
+        + `${session.sampleRate} Hz audio, and this extension's player is built for `
+        + `${SAMPLE_RATE} Hz. Refusing to read rather than play it at the wrong speed.`;
+      return null;
+    }
+    const rows = new CrucibleRowSession(session, {
+      warn: (line: string) => console.warn('[BFR]', line),
+    });
+    const opened: LiveStream = { session, rows, voice, band };
+    live = opened;
+    connectionError = null;
+    console.log(`[BFR] reading from ${named.name}: ${voice} → ${session.fingerprint}, `
+      + `${session.sampleRate} Hz, ${session.backend}`);
+    // One reader for the session's frames, for as long as it lives.
+    void rows.run().then((reason) => {
+      if (live === opened) live = null;
+      console.log(`[BFR] session ${session.sessionId} ended: ${reason}`);
+      broadcast();
+    });
+    return opened;
+  })();
+  try { return await opening; } finally { opening = null; }
+}
+
+/** Close the session (and free the voice's claim) without unloading the voice. */
+async function closeStream(reason: string): Promise<void> {
+  const open = live;
+  if (open === null) return;
+  live = null;
+  try {
+    await open.rows.close(reason);
+  } catch (err) {
+    console.warn('[BFR] closing the reading session:', err);
+  }
+}
+
+/** After a refusal, say WHO holds the engine — never take it from them. */
+async function noteHolder(): Promise<void> {
+  const bound = client;
+  if (bound === null) { engineHolder = null; return; }
+  try {
+    engineHolder = describeHolder(await bound.activity());
+  } catch {
+    // The holder line is a courtesy; a server that will not answer /v1/activity
+    // has already failed the thing the caller actually asked for.
+    engineHolder = null;
+  }
+}
+
+/**
+ * The language every row is spoken in.
+ *
+ * The same literal the app's three Listen surfaces use
+ * (`electron/crucible/stream.ts`'s `LISTEN_LANGUAGE`). The extension has no
+ * per-page language today; when it grows one, this is the field it fills.
+ */
+const LISTEN_LANGUAGE = 'en';
+
+// ─── The read-ahead policy, on the app's own code ─────────────────────────────
+
+/** What a row's settings carry. A session speaks one voice, so this is a check. */
+interface ReadSettings { voice: string }
+
+/**
+ * PCM16 samples as the little-endian bytes the player's WAV blob wants.
+ *
+ * Written a sample at a time through a DataView rather than by viewing the
+ * Int16Array's buffer: that view is the HOST's byte order, and a WAV file's is
+ * always little-endian. Every browser this extension runs in is little-endian
+ * today, which is exactly why the assumption would never be caught.
+ */
+function pcm16ToBytes(pcm: Int16Array): Uint8Array {
+  const bytes = new Uint8Array(pcm.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < pcm.length; i++) view.setInt16(i * 2, pcm[i], true);
+  return bytes;
+}
+
+/**
+ * The generator the shared session policy dispatches to: one Crucible row per
+ * sentence-chunk, on the open session.
+ */
+const crucibleGenerator: ListenGeneratorPort<Uint8Array, ReadSettings> = {
+  isReady: () => live !== null,
+  concurrency: () => ({ cap: CRUCIBLE_STREAM_IN_FLIGHT, batching: true }),
+  rampWidth: () => CRUCIBLE_STREAM_RAMP_WIDTH,
+  abandonStaleBatch: () => { live?.rows.cancelStale(); },
+  generate: async (text, sentenceIndex, settings, _priority, isStale, onChunk) => {
+    const open = live;
+    if (open === null) return { success: false, error: 'the reading session is closed' };
+    if (settings.voice !== '' && !sameVoice(settings.voice, open.voice)) {
+      // A session speaks ONE voice. Rendering in whatever is loaded would be
+      // the wrong narrator delivered as a success.
+      return {
+        success: false,
+        error: `the reading session speaks '${open.voice}', not the requested '${settings.voice}'`,
+      };
+    }
+    rowCounter += 1;
+    const id = `r${rowCounter}`;
+    let outcome;
+    try {
+      outcome = await open.rows.say(text, {
+        id,
+        isCancelled: isStale,
+        onChunk: onChunk === undefined
+          ? undefined
+          : (chunk) => onChunk({
+              seq: chunk.seq,
+              data: pcm16ToBytes(chunk.pcm),
+              duration: chunk.seconds,
+              sampleRate: chunk.sampleRate,
+            } satisfies ListenChunk<Uint8Array>),
+      });
+    } catch (err) {
+      return { success: false, error: describeRefusal(err, server?.name ?? '?') };
+    }
+    if (!outcome.success) return { success: false, error: outcome.error };
+    if (outcome.streamed === true) {
+      return { success: true, streamed: true, duration: outcome.seconds ?? 0 };
+    }
+    console.debug('[BFR] row', id, 'sentence', sentenceIndex, 'done');
+    return {
+      success: true,
+      audio: {
+        data: pcm16ToBytes(outcome.pcm as Int16Array),
+        duration: outcome.seconds ?? 0,
+        sampleRate: open.rows.sampleRate,
+      },
+    };
+  },
+};
+
+/** Row ids are unique per session; the counter simply never repeats one. */
+let rowCounter = 0;
+
+/**
+ * THE SAME READ-AHEAD POLICY THE APP RUNS — read-ahead window, background
+ * prefetch, preempt, playhead, first-wave ramp (shared/listen-client).
+ *
+ * Its events are the five the old socket sent, with one difference: `data` is
+ * raw PCM16 bytes rather than base64, because there is no socket to put them
+ * on any more.
+ */
+const listen = new ListenSessions<Uint8Array, ReadSettings>(
+  crucibleGenerator,
+  () => { /* every session passes its own sink */ },
+  (line) => console.log('[BFR listen]', line),
+);
+
+/** One scheduler event, as this document's handlers read it. */
+type ListenEvent = {
+  kind: 'chunk' | 'done' | 'failed' | 'complete' | 'cancelled';
+  requestId: string;
+  sentenceIndex?: number;
+  seq?: number;
+  data?: Uint8Array;
+  duration?: number;
+  error?: string;
+};
+
+/** Route a session's events to the player or to its read-ahead accumulator. */
+function sinkFor(requestId: string): (event: Record<string, unknown>) => void {
+  return (event) => {
+    const e = event as unknown as ListenEvent;
+    const prefetch = prefetches.get(requestId);
+    if (prefetch) { handlePrefetchEvent(prefetch, e); return; }
+    handleListenEvent(e);
+  };
+}
+
+// ─── The recorder's socket ────────────────────────────────────────────────────
+//
+// BookForge's 8766, and ONLY for tab recording: capture hands raw PCM to a
+// machine with a filesystem and its ffmpeg writes the FLAC. Speech does not
+// come through here any more (see this file's header).
+
+let ws: WebSocket | null = null;
+let authed = false;
+let connectPromise: Promise<void> | null = null;
+
+function recorderSocketOpen(): boolean {
   return !!(ws && ws.readyState === WebSocket.OPEN && authed);
 }
 
@@ -701,11 +1098,11 @@ function isConnected(): boolean {
  * would have worked a beat later. A rejected token is NOT retried — that won't fix
  * itself.
  */
-async function ensureConnected(): Promise<void> {
+async function ensureRecorderSocket(): Promise<void> {
   const backoff = [0, 400, 1200];
   let lastError: Error | null = null;
   for (const wait of backoff) {
-    if (isConnected()) return;
+    if (recorderSocketOpen()) return;
     if (wait) await new Promise((r) => setTimeout(r, wait));
     try {
       await connectOnce();
@@ -719,7 +1116,7 @@ async function ensureConnected(): Promise<void> {
 }
 
 async function connectOnce(): Promise<void> {
-  if (isConnected()) return;
+  if (recorderSocketOpen()) return;
   if (connectPromise) return connectPromise;
 
   connectPromise = (async () => {
@@ -751,16 +1148,8 @@ async function connectOnce(): Promise<void> {
         if (msg.type === 'hello') {
           authed = true;
           socketAuthed = true;
-          engineState = msg.state;
-          voices = msg.voices;
-          serverVoice = msg.currentVoice;
-          adoptServerVoice();
-          serverConfig = msg.config;
-          serverEngine = msg.engine ?? null;
-          serverEngines = msg.engines ?? [];
-          connectionError = null;
           clearTimeout(timeout);
-          console.log('[BFR] connected; engine', msg.state, '| voices', msg.voices.length);
+          console.log('[BFR] recorder socket up');
           resolve();
         }
         handleServerEvent(msg);
@@ -798,149 +1187,92 @@ function sendBinary(pcm: ArrayBuffer): void {
 }
 
 function onSocketClosed(): void {
-  engineState = 'stopped';
   // The server finalizes a recording when our socket goes away (the file is
   // complete up to the last frame it received), so this is done-with-warning, not
   // an error — but no record.done can reach us, so we conclude it ourselves.
   if (recordId) noteRecordingLostSocket();
-  // The socket is gone, so every in-flight read-ahead session is now unreachable and
-  // will never receive a terminal event. Forget them (no cancel — there's no socket
-  // to send it on) so isPrefetchingItem() stops reporting them forever and
-  // fillPrefetch() can regenerate on reconnect, and so adoptPrefetchFor() can't adopt
-  // a dead, never-completing session. COMPLETED blocks already live in the cache
-  // (readyAhead), so those stay valid and are left untouched.
-  for (const requestId of [...prefetches.keys()]) forgetPrefetch(requestId);
-  if (session && !session.generationDone) {
-    finishGeneration(false, 'Connection to BookForge lost');
-    afterData();
-  }
   broadcast();
 }
 
-// ─── Server events ────────────────────────────────────────────────────────────
+// ─── Events ───────────────────────────────────────────────────────────────────
 
+/**
+ * The recorder socket's events. Speech no longer arrives here — it comes out of
+ * the shared session policy's sink (`handleListenEvent`) — so this is the
+ * recorder's half of the old protocol and nothing else.
+ */
 function handleServerEvent(msg: ServerEvent): void {
-  // Recording events are keyed by recordId, not requestId, and must be answered
-  // BEFORE the read-ahead routing below (which keys on requestId) or the player's
-  // error handler (which would treat a recording failure as a speak failure).
   if (msg.type.startsWith('record.')) { handleRecordEvent(msg); return; }
-  if (msg.type === 'error' && msg.recordId !== undefined) { failRecording(msg.message); return; }
-  // Events for a read-ahead session accumulate quietly and never touch the player
-  // or the broadcast — the UI still reflects the currently-playing item.
-  if ('requestId' in msg && msg.requestId !== undefined) {
-    const entry = prefetches.get(msg.requestId);
-    if (entry) { handlePrefetchEvent(entry, msg); return; }
+  if (msg.type === 'error') {
+    // Every error left on this socket belongs to a recording, because a
+    // recording is the only thing this socket carries any more.
+    failRecording(msg.message);
   }
-  switch (msg.type) {
-    case 'state':
-      engineState = msg.state;
-      // 'running' is the first moment the engine CAN generate — the server only
-      // reports it once a voice is actually warm. Everything before it was engine
-      // boot and a model load, which are not this session's generation: restart the
-      // rate/gap clock here so a cold start doesn't inflate the buffer the start
-      // gate demands (it sizes that buffer to cover the next silence, and the next
-      // silence is one warm batch, not a model load).
-      if (msg.state === 'running' && session && session.firstArrivalAt === null) {
-        session.genStartedAt = Date.now();
-      }
-      if (!started && session) preState = msg.state === 'running' ? 'buffering' : 'starting-engine';
-      broadcast();
-      return;
-    case 'status':
-      engineState = msg.state;
-      voices = msg.voices;
-      serverVoice = msg.currentVoice;
-      adoptServerVoice();
-      serverConfig = msg.config;
-      serverEngine = msg.engine ?? serverEngine;
-      serverEngines = msg.engines ?? serverEngines;
-      noteVoiceConfirmation();
-      broadcast();
-      return;
-    case 'config':
-      voices = msg.voices;
-      serverVoice = msg.currentVoice;
-      adoptServerVoice();
-      serverConfig = msg.config;
-      serverEngine = msg.engine ?? serverEngine;
-      serverEngines = msg.engines ?? serverEngines;
-      noteVoiceConfirmation();
-      broadcast();
-      return;
-    case 'speaking':
-      if (!session || msg.requestId !== session.requestId) return;
-      // A resumed session splices new audio onto a cached prefix, so the server's
-      // segmentation has to be the one that prefix was rendered against. It always
-      // is (same text in, same split out) — but if it ever isn't, the splice would
-      // be silently wrong, so restart the block clean instead.
-      if (session.resumeFrom > 0 && !sameSentences(session.sentences, msg.sentences)) {
-        console.warn('[BFR] segmentation changed under a resumed block — re-rendering it whole');
-        void restartCurrentFromScratch();
-        return;
-      }
-      session.initSlots(msg.sentences);
-      broadcast();
-      return;
+}
+
+/**
+ * One event from the read-ahead policy for the session being PLAYED.
+ *
+ * The same five kinds the old socket sent, and the same handling — only `data`
+ * changed, from base64 to the PCM16 bytes the row layer already decoded. The
+ * sixth, `speaking`, is gone: this document does its own segmentation now, so
+ * it knows the sentences before the first row goes out (see `startCurrent`).
+ */
+function handleListenEvent(msg: ListenEvent): void {
+  if (!session || msg.requestId !== session.requestId) return;
+  switch (msg.kind) {
     case 'chunk':
-      if (!session || msg.requestId !== session.requestId) return;
-      session.addChunk(msg.sentenceIndex, msg.seq, decodeBase64(msg.data));
+      session.addChunk(msg.sentenceIndex as number, msg.seq as number, msg.data as Uint8Array);
       session.drain();
       afterData();
       return;
     case 'done':
-      if (!session || msg.requestId !== session.requestId) return;
-      session.markDone(msg.sentenceIndex);
+      session.markDone(msg.sentenceIndex as number);
       session.drain();
       afterData();
       return;
     case 'failed':
-      if (!session || msg.requestId !== session.requestId) return;
-      session.markFailed(msg.sentenceIndex);
+      // A row the server refused. Named on the console — its text is simply not
+      // spoken, and the block plays on around the hole rather than stopping.
+      console.warn('[BFR] row', msg.sentenceIndex, 'failed:', msg.error);
+      session.markFailed(msg.sentenceIndex as number);
       session.drain();
       afterData();
       return;
     case 'complete':
-      if (!session || msg.requestId !== session.requestId) return;
       finishGeneration(true);
       retainSession(session, sessionItem);
       afterData();
       fillPrefetch(); // current done — top up the read-ahead pipeline
+      noteReadActivity();
       return;
     case 'cancelled':
-      if (!session || msg.requestId !== session.requestId) return;
       // Keep what it managed to render: the next play resumes from there rather
       // than paying to synthesize these sentences again.
       retainSession(session, sessionItem);
-      // …unless WE cancelled it, which is what a voice switch does before asking the
-      // engine to load. Blaming another client for our own cancel put a false note on
-      // screen for the whole load.
-      finishGeneration(false, switchingVoice ? undefined : 'Playback was taken over by another BookForge client');
+      if (cancellingOwn.has(msg.requestId)) {
+        // OUR OWN cancel, and the caller is about to install something in this
+        // session's place. Concluding here would advance the queue past the
+        // block that is being restarted — see `cancellingOwn`.
+        finishGeneration(false);
+        return;
+      }
+      finishGeneration(false, switchingVoice ? undefined : 'The reading session was closed');
       concludeIfIdle();
       broadcast();
       return;
-    case 'error':
-      if (session && msg.requestId !== undefined && msg.requestId !== session.requestId) return;
-      if (session) retainSession(session, sessionItem);
-      errorMsg = msg.message || 'TTS error';
-      if (session) { finishGeneration(false); concludeIfIdle(); }
-      // An error while switching voices must not leave the switch hanging.
-      if (switchingVoice) { switchingVoice = null; resolveVoiceWait(new Error(errorMsg)); }
-      broadcast();
-      return;
   }
+}
+
+/** The whole block failed before a row went out: say so where the player looks. */
+function failCurrentRead(message: string): void {
+  errorMsg = message;
+  if (session) { retainSession(session, sessionItem); finishGeneration(false); concludeIfIdle(); }
+  broadcast();
 }
 
 function sameSentences(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((s, i) => s === b[i]);
-}
-
-/** The engine reported its loaded voice; settle any switch waiting on it. */
-function noteVoiceConfirmation(): void {
-  if (!switchingVoice) return;
-  if (sameVoice(serverVoice, switchingVoice)) {
-    switchingVoice = null;
-    resolveVoiceWait();
-  }
 }
 
 function finishGeneration(success: boolean, note?: string): void {
@@ -1158,9 +1490,27 @@ function purgeAll(): void {
   broadcast();
 }
 
+/**
+ * Request ids this document is cancelling ITSELF, right now.
+ *
+ * THE TIMING CHANGED WITH THE WIRE AND THIS IS WHAT IT COSTS. A cancel used to
+ * go out on a socket and its `cancelled` event came back a round trip later —
+ * by which time `resetPlayer()` had run and the handler's `requestId !==
+ * session.requestId` guard dropped it. The shared policy calls the sink
+ * SYNCHRONOUSLY, so the event now lands while the outgoing session is still
+ * installed, and `concludeIfIdle()` would advance the queue past the very
+ * block the caller is about to start.
+ *
+ * So a cancel we asked for is marked as ours for the length of the call, and
+ * its event is recorded and then let go.
+ */
+const cancellingOwn = new Set<string>();
+
 function cancelGeneration(): void {
-  if (session && !session.generationDone && isConnected()) {
-    send({ action: 'cancel', requestId: session.requestId });
+  if (session && !session.generationDone) {
+    const id = session.requestId;
+    cancellingOwn.add(id);
+    try { listen.stop(id); } finally { cancellingOwn.delete(id); }
   }
   // Whatever it rendered before being cancelled is kept, so resuming this block
   // generates only the sentences that were never reached. Credited to the session's
@@ -1188,12 +1538,19 @@ function resetPlayer(): void {
 
 // ─── Read-ahead (concurrent prefetch of upcoming blocks) ───────────────────────
 
-/** How many read-ahead blocks to generate at once. Sized to the engine's worker
- *  count so even one-sentence blocks keep every worker busy; the playing block is
- *  served first (the server runs read-ahead at low priority), so this is just the
- *  fan-out that fills the spare workers. Falls back to 4 before config arrives. */
+/**
+ * How many read-ahead BLOCKS may be generating at once.
+ *
+ * It was the server's `deviceWorkers` — the app's local pool's topology — which
+ * an extension talking straight to a Crucible cannot see and has no business
+ * knowing: the server's batch width is engine tuning it does not publish. What
+ * a client owns is its read-ahead DEPTH, and that is
+ * `CRUCIBLE_STREAM_IN_FLIGHT` rows spread across the blocks in flight. The
+ * blocks interleave inside the one session anyway (the shared policy dispatches
+ * them into the same row budget), so this is just the fan-out.
+ */
 function prefetchConcurrency(): number {
-  return Math.max(1, serverConfig?.deviceWorkers ?? 4);
+  return CRUCIBLE_STREAM_IN_FLIGHT;
 }
 
 function isPrefetchingItem(id: string): boolean {
@@ -1203,23 +1560,12 @@ function isPrefetchingItem(id: string): boolean {
 }
 
 /** Accumulate a read-ahead session's audio without disturbing current playback. */
-function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: ServerEvent): void {
+function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: ListenEvent): void {
   const { session: s, item } = entry;
-  switch (msg.type) {
-    case 'speaking':
-      if (s.resumeFrom > 0 && !sameSentences(s.sentences, msg.sentences)) {
-        // Can't splice onto a prefix rendered against a different split — drop the
-        // stale partial and let the next fillPrefetch render this block whole.
-        const key = cacheKeyByRequest.get(s.requestId);
-        if (key) { cache.delete(key); forgetRendered(key); }
-        dropPrefetchByRequest(s.requestId);
-        return;
-      }
-      s.initSlots(msg.sentences);
-      return;
-    case 'chunk': s.addChunk(msg.sentenceIndex, msg.seq, decodeBase64(msg.data)); s.drain(); return;
-    case 'done': s.markDone(msg.sentenceIndex); s.drain(); return;
-    case 'failed': s.markFailed(msg.sentenceIndex); s.drain(); return;
+  switch (msg.kind) {
+    case 'chunk': s.addChunk(msg.sentenceIndex as number, msg.seq as number, msg.data as Uint8Array); s.drain(); return;
+    case 'done': s.markDone(msg.sentenceIndex as number); s.drain(); return;
+    case 'failed': s.markFailed(msg.sentenceIndex as number); s.drain(); return;
     case 'complete':
       s.generationDone = true;
       s.complete = true;
@@ -1233,9 +1579,8 @@ function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: 
       broadcast(); // the page marks this block as rendered
       return;
     case 'cancelled':
-    case 'error':
-      // Cancelled or failed before we adopted it. Keep whatever it rendered so the
-      // next attempt resumes from there instead of starting the block over.
+      // Cancelled before we adopted it. Keep whatever it rendered so the next
+      // attempt resumes from there instead of starting the block over.
       retainSession(s, item);
       dropPrefetchByRequest(s.requestId);
       return;
@@ -1264,18 +1609,40 @@ function fillPrefetch(): void {
   }
 }
 
+/**
+ * A block of page text, as ROWS a Crucible will be handed.
+ *
+ * The app's own three stages, in the app's own order, from the app's own code
+ * (`shared/listen-text/` — one source, bundled twice; the keeper
+ * `tools/test-listen-text-one-source.js` proves it is not a copy):
+ *
+ *   1. the deterministic normalizer — glyph strip, punctuation, number rules,
+ *      number expansion, caps fold;
+ *   2. sentences, capped at THIS voice's `maxChars` (the server's own cap
+ *      certificate, in characters);
+ *   3. ramped chunks: a short opener so the first word is fast, widening to the
+ *      band so the model reads whole paragraphs and the seams go away.
+ *
+ * It is DETERMINISTIC, and that is load-bearing: a partly-cached block is
+ * resumed by index into this list, so the same text must produce the same rows
+ * forever or one row's audio ends up under another row's text.
+ */
+function rowsFor(text: string, band: ListenChunkBand): string[] {
+  const speakable = speakableListenText(text);
+  if (speakable === '') return [];
+  return packListenChunks(splitForTts(speakable, LISTEN_LANGUAGE, band.maxChars), band);
+}
+
 async function startPrefetch(item: QueueItem): Promise<void> {
   const seq = playSeq;
   startingItems.add(item.id); // synchronous reservation (closed in finally)
   try {
-    // As in startCurrent: a read-ahead block is rendered with a binding voice too,
-    // so it must not go out on the pre-connect placeholder.
-    if (serverVoice === null) {
-      try { await ensureConnected(); } catch { return; }
-      if (seq !== playSeq) return;
-    }
-    const voice = voiceForSpeak();
-    const key = await cacheKeyFor(voice ?? '', item.text);
+    // A read-ahead block is spoken by the SAME session as the playing one, so
+    // it needs the session open before it can be keyed or sent.
+    const open = await ensureStream();
+    if (open === null || seq !== playSeq) return;
+    const voice = open.voice;
+    const key = await cacheKeyFor(voice, item.text);
     // Re-validate after the awaits: still the same playback context, the target still
     // queued, and not already cached or in flight on another session.
     if (seq !== playSeq) return;
@@ -1283,34 +1650,31 @@ async function startPrefetch(item: QueueItem): Promise<void> {
     if (hit?.complete) { markRendered(item, key, hit.bytes / BYTES_PER_SECOND, true); return; }
     if (!upcoming.some((u) => u.id === item.id)) return;
     if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
-    try { await ensureConnected(); } catch { return; }
-    if (seq !== playSeq || !upcoming.some((u) => u.id === item.id)) return;
-    if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
 
+    const rows = rowsFor(item.text, open.band);
+    if (rows.length === 0) return;
     // A partial hit means an earlier pass rendered part of this block. Pick up
-    // where it stopped rather than paying for those sentences twice.
+    // where it stopped rather than paying for those sentences twice — and only
+    // when the split it was rendered against is the one we just computed,
+    // because splicing onto a prefix cut differently is silently wrong audio.
+    const usable = hit && (hit.complete || sameSentences(hit.sentences, rows)) ? hit : undefined;
+    if (hit && usable === undefined) { cache.delete(key); forgetRendered(key); }
     const requestId = `${item.id}#pf${++reqCounter}`;
-    const s = hit ? sessionFromCache(requestId, hit) : new Session(requestId);
+    const s = usable ? sessionFromCache(requestId, usable) : new Session(requestId);
+    s.initSlots(rows);
     prefetches.set(s.requestId, { session: s, item });
     cacheKeyByRequest.set(s.requestId, key);
-    const speakSettings: SpeakSettings = { speed: 1.0 };
-    if (voice) speakSettings.voice = voice;
-    console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars',
-      s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
+    console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars →', rows.length, 'rows',
+      s.resumeFrom > 0 ? `| resuming at row ${s.resumeFrom}` : '');
     // Rate baseline, as in startCurrent: a read-ahead session that is later adopted
     // brings its measured rate with it, so the gate judges it on real evidence.
     s.genStartedAt = Date.now();
     s.baseSeconds = s.seconds;
-    // preempt:false so it coexists with the playing block; background:true so the
-    // server batches it at low pool priority behind what's actually being heard.
-    send({
-      action: 'speak',
-      requestId: s.requestId,
-      text: item.text,
-      settings: speakSettings,
+    // preempt:false so it coexists with the playing block; priority:false so the
+    // shared policy treats it as background read-ahead behind what is being heard.
+    listen.start(rows, s.resumeFrom, { voice }, s.requestId, sinkFor(s.requestId), {
       preempt: false,
-      background: true,
-      startSentence: s.resumeFrom
+      priority: false,
     });
   } finally {
     startingItems.delete(item.id);
@@ -1318,8 +1682,8 @@ async function startPrefetch(item: QueueItem): Promise<void> {
   }
 }
 
-/** Remove a read-ahead session's bookkeeping WITHOUT sending a cancel — for when the
- *  socket is gone (nothing to send it on) or the server already ended the session. */
+/** Remove a read-ahead session's bookkeeping WITHOUT cancelling it — for when
+ *  the session is already gone and there is nothing to cancel. */
 function forgetPrefetch(requestId: string): void {
   cacheKeyByRequest.delete(requestId);
   prefetches.delete(requestId);
@@ -1329,7 +1693,7 @@ function forgetPrefetch(requestId: string): void {
 function dropPrefetchByRequest(requestId: string): void {
   const entry = prefetches.get(requestId);
   if (!entry) return;
-  if (!entry.session.generationDone && isConnected()) send({ action: 'cancel', requestId });
+  if (!entry.session.generationDone) listen.stop(requestId);
   forgetPrefetch(requestId);
 }
 
@@ -1392,14 +1756,12 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   session = s;
   sessionItem = item;
 
-  // Tell the server this session is now the playing one so it lifts it from LOW
-  // (background) to playing priority. Server-side promotion normally rides on a
-  // playhead report, but reportPlayhead() is gated on started && !paused — which can't
-  // happen until audio buffers at LOW priority (a block-boundary stall). playhead:0 is
-  // safe: the server only advances the playhead when the reported index is greater.
-  if (!s.generationDone && isConnected()) {
-    send({ action: 'playhead', requestId: s.requestId, sentenceIndex: 0 });
-  }
+  // Tell the policy this session is now the playing one so it lifts it from
+  // background to playing priority. Promotion normally rides on a playhead
+  // report, but reportPlayhead() is gated on started && !paused — which can't
+  // happen until audio buffers at background priority (a block-boundary stall).
+  // Index 0 is safe: the policy only advances a playhead that moves forward.
+  if (!s.generationDone) listen.reportPlayhead(s.requestId, 0);
 
   ensureStatusTicker();
   preState = 'buffering';
@@ -1417,15 +1779,16 @@ function adoptPrefetchFor(item: QueueItem): boolean {
  * Three ways this can go, in order of preference — the first that applies wins,
  * and only the last one costs any synthesis:
  *   1. the block is fully cached  → replay it, no server contact at all
- *   2. it's partly cached         → speak from `startSentence`, keeping the prefix
+ *   2. it's partly cached         → speak from the first un-rendered row
  *   3. nothing held               → speak it whole
  *
- * @param preempt true for a user-initiated play — takes the audio output over from
- *   other clients (our OWN read-ahead is deliberately left running; cancelling it
- *   would throw away audio we've already rendered). false when advancing within a
- *   run.
+ * @param _userInitiated true for a play the user asked for, false when
+ *   advancing within a run. It used to be `preempt` and to travel on the wire;
+ *   see the note beside the `listen.start` below for why nothing preempts any
+ *   more. Kept as an argument because the call sites say something true with
+ *   it and a future take-over gesture is where it would be read.
  */
-async function startCurrent(preempt: boolean): Promise<void> {
+async function startCurrent(_userInitiated: boolean): Promise<void> {
   const item = current;
   if (!item) return;
   const seq = ++playSeq;
@@ -1444,20 +1807,20 @@ async function startCurrent(preempt: boolean): Promise<void> {
   ensureStatusTicker();
   broadcast();
 
-  // Never speak on an UNCONFIRMED voice. Before the first hello, all we have is the
-  // placeholder from storage — and settings.voice is BINDING: the server loads
-  // exactly what we send. Sending a stale placeholder doesn't just mislabel the
-  // read, it drags the engine off the model the user chose in the app and reads the
-  // page in the wrong narrator. Connecting first costs nothing here: the cache is
-  // this document's own, so a doc that has never connected has nothing cached to
-  // replay either.
-  if (serverVoice === null) {
-    try { await ensureConnected(); } catch { /* reported by the connect below */ }
-    if (seq !== playSeq) return;
+  // THE VOICE IS THE RESIDENT ONE, and the session has to exist before this
+  // block can even be keyed: the cache key is (voice, text), and a streaming
+  // session never loads a voice (PHASE3-TTS.md §6). Opening it first is what
+  // turns "nothing is loaded over there" into a sentence on screen instead of
+  // a paragraph read in whatever the server happened to have warm.
+  preState = 'starting-engine';
+  const open = await ensureStream();
+  if (seq !== playSeq) return;
+  if (open === null) {
+    failCurrentRead(connectionError ?? 'No Crucible is ready to read this.');
+    return;
   }
-
-  const voice = voiceForSpeak();
-  const key = await cacheKeyFor(voice ?? '', item.text);
+  const voice = open.voice;
+  const key = await cacheKeyFor(voice, item.text);
   if (seq !== playSeq) return;
 
   const cached = cacheGet(key);
@@ -1474,81 +1837,75 @@ async function startCurrent(preempt: boolean): Promise<void> {
     return;
   }
 
-  // Partly cached (an earlier pass was interrupted) — keep those sentences and ask
-  // only for the rest.
-  const s = cached ? sessionFromCache(`${item.id}#${++reqCounter}`, cached) : new Session(`${item.id}#${++reqCounter}`);
+  // The rows this block becomes, computed HERE — the extension segments and
+  // packs its own text now (`rowsFor`), so it knows the whole shape before the
+  // first row goes out and never has to wait for a `speaking` echo.
+  const rows = rowsFor(item.text, open.band);
+  if (rows.length === 0) {
+    failCurrentRead('There is nothing speakable in this block.');
+    return;
+  }
+  // Partly cached (an earlier pass was interrupted) — keep those rows and ask
+  // only for the rest, and ONLY when the prefix was rendered against this same
+  // split. Splicing new audio onto a differently-cut prefix is silently wrong.
+  const usable = cached && sameSentences(cached.sentences, rows) ? cached : undefined;
+  if (cached && usable === undefined) { cache.delete(key); forgetRendered(key); }
+  const s = usable ? sessionFromCache(`${item.id}#${++reqCounter}`, usable) : new Session(`${item.id}#${++reqCounter}`);
+  s.initSlots(rows);
   session = s;
   sessionItem = item;
   cacheKeyByRequest.set(s.requestId, key);
 
-  try {
-    await ensureConnected();
-  } catch (err) {
-    if (seq !== playSeq) return;
-    console.warn('[BFR] connect failed:', (err as Error).message);
-    errorMsg = connectErrorMessage((err as Error).message);
-    finishGeneration(false);
-    broadcast();
-    return;
-  }
-  if (seq !== playSeq) return;
-
-  const speakSettings: SpeakSettings = { speed: 1.0 };
-  if (voice) speakSettings.voice = voice;
-  preState = engineState === 'running' ? 'buffering' : 'starting-engine';
-  // "Buffer before playing" OFF ⇒ fast start (Owen 2026-09-04): ask the server to
-  // stream this block's sentences sub-sentence, and judge it with the fast gate.
-  // Recorded on the session, not consulted globally, so flipping the switch never
-  // re-judges a session already generating under the other bargain. Only the
-  // FOREGROUND block — startPrefetch deliberately never sets it.
+  preState = 'buffering';
+  // "Buffer before playing" OFF ⇒ fast start (Owen 2026-09-04). Crucible's door
+  // ALWAYS emits sub-sentence frames, so this no longer asks the server for
+  // anything: it decides whether THIS document hands them to the player as they
+  // land or holds each row until it is whole. Recorded on the session, not
+  // consulted globally, so flipping the switch never re-judges a session already
+  // generating under the other bargain. Only the FOREGROUND block —
+  // startPrefetch deliberately never sets it.
   s.fastStart = settings.bufferBeforePlaying === false;
-  console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars',
+  console.log('[BFR] read', s.requestId, '|', item.text.length, 'chars →', rows.length, 'rows',
     s.fastStart ? '| fast start' : '',
-    s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
+    s.resumeFrom > 0 ? `| resuming at row ${s.resumeFrom}` : '');
   // Generation starts NOW: everything already in `segments` is a cached prefix, so
   // the adaptive start gate measures the rate from here (see startThresholdSeconds).
   s.genStartedAt = Date.now();
   s.baseSeconds = s.seconds;
-  // The playing block is foreground (background:false) so it's served before
-  // read-ahead. preempt takes over from OTHER clients only — the server spares our
-  // own sessions, so the read-ahead we already paid for survives.
-  send({
-    action: 'speak',
-    requestId: s.requestId,
-    text: item.text,
-    settings: speakSettings,
-    preempt,
-    background: false,
-    startSentence: s.resumeFrom,
-    ...(s.fastStart ? { fastStart: true } : {})
+  noteReadActivity();
+  /*
+   * NEVER `preempt: true`, and the reason changed with the wire.
+   *
+   * On BookForge's socket, `preempt` meant "cancel the OTHER CLIENTS' sessions"
+   * — the app's scheduler deliberately spared this client's own read-ahead,
+   * because that is audio already paid for. There are no other clients on this
+   * policy: it is this document's alone, so `preempt: true` here would cancel
+   * exactly the read-ahead the old flag protected. The outgoing playing session
+   * is already stopped by `cancelGeneration()` at the top of this function.
+   *
+   * And preempting ACROSS clients is not a flag any more either. A second
+   * client's session on that server is refused by name (`stream_session_open`),
+   * and taking it over is an explicit act through the engine — never something
+   * a play button does quietly (plan §1).
+   */
+  listen.start(rows, s.resumeFrom, { voice }, s.requestId, sinkFor(s.requestId), {
+    preempt: false,
+    priority: true,
+    fastStart: s.fastStart,
   });
   broadcast();
-  fillPrefetch(); // generate upcoming blocks alongside this one (sent after, so it's served first)
+  fillPrefetch(); // generate upcoming blocks alongside this one (started after, so it goes first)
 }
 
 /**
- * The cached prefix a resumed block was splicing onto turned out not to match the
- * server's segmentation. Drop it and render the block whole under a fresh id (the
- * old request is cancelled, so its late events are ignored).
+ * Why the RECORDER's socket would not open. Speech does not come through here;
+ * its refusals are the server's own words (`describeRefusal`).
  */
-async function restartCurrentFromScratch(): Promise<void> {
-  const s = session;
-  const item = current;
-  if (!s || !item) return;
-  const key = cacheKeyByRequest.get(s.requestId);
-  if (key) { cache.delete(key); forgetRendered(key); }
-  if (isConnected()) send({ action: 'cancel', requestId: s.requestId });
-  cacheKeyByRequest.delete(s.requestId);
-  session = null;
-  sessionItem = null;
-  await startCurrent(false);
-}
-
 function connectErrorMessage(code: string): string {
   switch (code) {
-    case 'NO_TOKEN': return 'No token configured — open options and paste the token.';
-    case 'BAD_TOKEN': return 'BookForge rejected the token — check it in options.';
-    default: return "Can't reach BookForge — is the app running?";
+    case 'NO_TOKEN': return 'No token configured — open Options and paste BookForge\'s recorder token.';
+    case 'BAD_TOKEN': return 'BookForge rejected the recorder token — check it in Options.';
+    default: return "Can't reach BookForge — is the app running? (Recording needs it; reading does not.)";
   }
 }
 
@@ -1906,46 +2263,119 @@ function focusRunItem(index: number, offsetSeconds: number, itemLength: number):
   void startCurrent(false);
 }
 
-// ─── Engine control ───────────────────────────────────────────────────────────
+// ─── Engine control: load and unload a voice on the selected Crucible ─────────
+//
+// These two were `engine.start` / `engine.stop` on BookForge's socket and they
+// are NOT the same act: nothing here starts or stops a process. Loading makes
+// a voice resident on somebody's card; unloading gives the card back. Owen's
+// rule (2026-09-14): a model is unloaded when we are done with it, every time.
 
-async function handleEngine(op: 'start' | 'stop'): Promise<void> {
-  if (op === 'start') {
-    try { await ensureConnected(); } catch (err) {
-      connectionError = connectErrorMessage((err as Error).message);
-      broadcast();
-      return;
-    }
-    const voice = voiceForSpeak();
-    send(voice ? { action: 'engine.start', voice } : { action: 'engine.start' });
+/**
+ * Make the picked voice resident, then open the reading session on it.
+ *
+ * Refusals are the SERVER's, by name, and none of them is retried or worked
+ * around: `env_missing`, `not_installed`, `insufficient_vram`, `server_busy`,
+ * `leased`, `engine_in_use`. When the card is held by someone else the popup
+ * is told WHO, from `/v1/activity` — and nothing takes it from them.
+ */
+async function handleEngine(op: 'load' | 'unload', requested?: string): Promise<void> {
+  if (op === 'load') await loadPickedVoice(requested ?? chosenVoice);
+  else await unloadResidentVoice();
+}
+
+async function loadPickedVoice(voice: string | null): Promise<void> {
+  if (!(await refreshServer())) { broadcast(); return; }
+  const bound = client;
+  const named = server;
+  if (bound === null || named === null) { broadcast(); return; }
+  if (!voice) {
+    engineNote = 'Pick a voice first — this extension will not choose one for you.';
     broadcast();
-  } else {
-    if (isConnected()) send({ action: 'engine.stop' });
+    return;
+  }
+  if (sameVoice(voice, serverVoice) && residentKind === 'tts') {
+    // Already on the card. Opening the session is the rest of what Load means.
+    await ensureStream();
+    broadcast();
+    return;
+  }
+  // Our own session holds the resident voice's claim, so it has to go before
+  // the card can be re-pointed — otherwise the load is refused by our own
+  // reading session.
+  await closeStream(`loading ${voice}`);
+  engineBusy = 'loading';
+  engineNote = null;
+  engineHolder = null;
+  switchingVoice = voice;
+  broadcast();
+  try {
+    await loadVoiceJob(bound, voice, (line) => { engineNote = line; broadcast(); });
+    engineNote = null;
+  } catch (err) {
+    engineNote = describeRefusal(err, named.name);
+    await noteHolder();
+    return;
+  } finally {
+    engineBusy = null;
+    switchingVoice = null;
+    await refreshServer();
+    broadcast();
+  }
+  noteReadActivity();
+}
+
+async function unloadResidentVoice(): Promise<void> {
+  if (!(await refreshServer())) { broadcast(); return; }
+  const bound = client;
+  const named = server;
+  if (bound === null || named === null) { broadcast(); return; }
+  if (residentKind !== 'tts' || serverVoice === null) {
+    // A card holding a MODEL is not this extension's to clear: whatever put a
+    // language model there is using it, and evicting it to tidy up after a web
+    // page would be taking somebody else's work off the card.
+    engineNote = residentKind === null
+      ? `Nothing is loaded on Crucible "${named.name}".`
+      : `Crucible "${named.name}" is holding a ${residentKind}, not a voice. This extension `
+        + 'only unloads voices it asked for.';
+    broadcast();
+    return;
+  }
+  const voice = serverVoice;
+  await closeStream('unloading the voice');
+  cancelGeneration();
+  dropAllPrefetch();
+  engineBusy = 'unloading';
+  engineNote = null;
+  broadcast();
+  try {
+    await unloadVoiceJob(bound, voice, (line) => { engineNote = line; broadcast(); });
+    engineNote = null;
+  } catch (err) {
+    engineNote = describeRefusal(err, named.name);
+  } finally {
+    engineBusy = null;
+    await refreshServer();
+    broadcast();
   }
 }
 
 /**
- * Switch the voice — and mean it. On Orpheus a voice IS a model, so this stops
- * everything in flight, tells the engine to load it, and WAITS for the engine to
- * confirm that model is what's loaded before a single word is spoken. Only then
- * does whatever was playing restart, in the new voice, from the sentence the
- * listener had reached.
+ * Pick a different voice — which on a Crucible means: stop reading, close the
+ * session, load the new voice, and pick the read back up where it was.
  *
- * WHERE they had reached is snapshotted HERE, at the moment they asked — never read
- * again after the engine confirms. The wait can be long (a load queues behind
- * whatever the serial worker is rendering) and the player does not sit still through
- * it: the buffer drains, the <audio> element reloads, and both of those made a
- * later reading answer "sentence 0". The block is snapshotted too, so a confirmation
- * arriving after the queue moved on cannot paste this position onto another
- * paragraph. See resumeCharForSwitch.
+ * WHERE they had reached is snapshotted HERE, at the moment they asked — never
+ * read again after the load confirms. The wait can be long and the player does
+ * not sit still through it: the buffer drains, the <audio> element reloads, and
+ * both of those made a later reading answer "sentence 0". The block is
+ * snapshotted too, so a confirmation arriving after the queue moved on cannot
+ * paste this position onto another paragraph. See resumeCharForSwitch.
  *
- * The old voice's audio stays in the cache under its own key — switch back and it
- * replays instantly instead of being rendered again.
+ * The old voice's audio stays in the cache under its own key — switch back and
+ * it replays instantly instead of being rendered again.
  */
 async function handleSetVoice(voice: string): Promise<void> {
   if (!voice || sameVoice(voice, chosenVoice)) return;
   const token = ++voiceSwitchToken;
-  // A switch already waiting is now moot — let it go without it reporting an error.
-  resolveVoiceWait();
 
   // Where to pick the read back up: the character offset of the sentence being read.
   // (Counting characters, not sentences — startChar is resolved back through
@@ -1955,7 +2385,7 @@ async function handleSetVoice(voice: string): Promise<void> {
   const resumeItem = current;
 
   // Marked as switching FIRST: it is what stops the queue advancing past this block
-  // while generation is cancelled and the engine loads (concludeCurrent), and what
+  // while generation is cancelled and the voice loads (concludeCurrent), and what
   // tells the incoming 'cancelled' event that this cancel was ours.
   switchingVoice = voice;
   // Nothing may keep generating in the outgoing voice.
@@ -1966,42 +2396,18 @@ async function handleSetVoice(voice: string): Promise<void> {
   persistVoice(voice);
   broadcast();
 
-  try { await ensureConnected(); } catch (err) {
-    if (token !== voiceSwitchToken) return;
-    switchingVoice = null;
-    connectionError = connectErrorMessage((err as Error).message);
-    resolveVoiceWait(err as Error);
+  await loadPickedVoice(voice);
+  if (token !== voiceSwitchToken) return; // a newer switch owns the card now
+  if (!sameVoice(serverVoice, voice)) {
+    // The load did not take. `engineNote` already carries the server's words;
+    // the pickers snap back to what is actually resident on the next refresh.
+    errorMsg = engineNote ?? `Crucible "${server?.name ?? '?'}" did not load "${voice}".`;
     broadcast();
     return;
   }
 
-  const confirmed = new Promise<void>((resolve, reject) => {
-    voiceWaiters.push({ resolve, reject });
-    setTimeout(() => {
-      if (switchingVoice === voice && token === voiceSwitchToken) {
-        switchingVoice = null;
-        resolveVoiceWait(new Error(`Timed out loading voice '${voice}'`));
-      }
-    }, VOICE_SWITCH_TIMEOUT_MS);
-  });
-  send({ action: 'config.set', voice });
-
-  try {
-    await confirmed;
-  } catch (err) {
-    if (token !== voiceSwitchToken) return;
-    errorMsg = (err as Error).message;
-    // The switch did NOT take, so we are now showing a voice the engine isn't
-    // holding. Ask for the truth and let adoptServerVoice snap the pickers back —
-    // switchingVoice is already cleared, so nothing blocks the adoption.
-    if (isConnected()) send({ action: 'status' });
-    broadcast();
-    return;
-  }
-  if (token !== voiceSwitchToken) return; // a newer switch owns the engine now
-
-  // Confirmed loaded. Pick the read back up where it was, now in the new voice.
-  // The position belongs to the block it was measured in: if `current` is somehow no
+  // Loaded. Pick the read back up where it was, now in the new voice. The
+  // position belongs to the block it was measured in: if `current` is somehow no
   // longer that block, restart it from its own beginning rather than dropping the
   // listener into an arbitrary point of a paragraph they have not heard.
   if (current) {
@@ -2016,34 +2422,62 @@ async function handleSetVoice(voice: string): Promise<void> {
   }
 }
 
-/** Persist the idle-shutdown window server-side. Applies to the running engine on
- *  its next sweep, so nothing needs restarting. */
-async function handleSetIdle(minutes: number): Promise<void> {
-  try { await ensureConnected(); } catch (err) {
-    connectionError = connectErrorMessage((err as Error).message);
-    broadcast();
-    return;
-  }
-  send({ action: 'config.set', idleMinutes: minutes });
+// ─── The idle unload ──────────────────────────────────────────────────────────
+//
+// A CLIENT TIMER, and the honest version of what `config.set {idleMinutes}`
+// used to be. A Crucible's residency is the operator's and its own idle rule is
+// the server's; what this extension can truthfully say is "I am finished with
+// it", and that is an unload job on a timer it owns. Every row that lands and
+// every transport action pushes the timer out; nothing else does, so a browser
+// left open on an article overnight gives the card back.
+
+let idleTimer: number | null = null;
+
+/** Something was read. Restart the idle countdown. */
+function noteReadActivity(): void {
+  if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+  if (idleMinutes <= 0) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    void idleUnload();
+  }, idleMinutes * 60_000) as unknown as number;
 }
 
-/** Restart the engine to apply a worker count and/or warm a voice. The server
- *  replies with 'state' pushes then a final 'status', refreshing the snapshot. */
-async function handleRestart(cpuWorkers?: number, voice?: string, engine?: string): Promise<void> {
-  try { await ensureConnected(); } catch (err) {
-    connectionError = connectErrorMessage((err as Error).message);
-    broadcast();
-    return;
-  }
-  send({ action: 'engine.restart', engine: engine || undefined, voice: voice || undefined, cpuWorkers });
+/** The window elapsed with nothing read. Give the card back. */
+async function idleUnload(): Promise<void> {
+  if (session && !session.generationDone) { noteReadActivity(); return; }
+  if (prefetches.size > 0) { noteReadActivity(); return; }
+  if (live === null && (serverVoice === null || residentKind !== 'tts')) return;
+  console.log(`[BFR] ${idleMinutes} minutes with nothing read — unloading the voice`);
+  await unloadResidentVoice();
+}
+
+/** Persist the idle window and restart the countdown on it. */
+async function handleSetIdle(minutes: number): Promise<void> {
+  idleMinutes = Math.max(0, Math.floor(minutes));
+  chrome.runtime
+    .sendMessage({ target: 'background', cmd: 'put-settings', patch: { idleMinutes } })
+    .catch(() => { /* background asleep; storage is re-read on next start */ });
+  noteReadActivity();
+  broadcast();
+}
+
+/** The Options page changed the registry or the selection. */
+async function handleServerChanged(): Promise<void> {
+  await closeStream('the selected Crucible changed');
+  cancelGeneration();
+  dropAllPrefetch();
+  forgetAllRendered();
+  server = null;
+  client = null;
+  await refreshServer();
   broadcast();
 }
 
 async function doSync(): Promise<void> {
-  // Refresh engine state for the popup; don't start anything.
-  broadcast(); // instant: confirm the pipe works while we (re)connect
-  try { await ensureConnected(); }
-  catch (err) { connectionError = connectErrorMessage((err as Error).message); }
+  // Refresh what the popup draws; don't load anything and don't start reading.
+  broadcast(); // instant: confirm the pipe works while we ask the server
+  await refreshServer();
   broadcast();
 }
 
@@ -2141,7 +2575,7 @@ async function startRecording(cmd: RecordCmd): Promise<void> {
   // The socket first: capturing a tab and then discovering BookForge is down
   // would mute nothing but waste the gesture.
   try {
-    await ensureConnected();
+    await ensureRecorderSocket();
   } catch (err) {
     failRecording(connectErrorMessage((err as Error).message));
     return;
@@ -2327,7 +2761,7 @@ async function stopRecording(warning?: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 80));
 
   teardownCapture();
-  if (id && isConnected()) {
+  if (id && recorderSocketOpen()) {
     send({ action: 'record.stop', recordId: id });
   } else {
     // No socket: the server already finalized on our disconnect.
@@ -2347,7 +2781,7 @@ async function discardRecording(error?: string): Promise<void> {
   recPendingBytes = 0;
   recWatch = null;
   recordingTicker(false);
-  if (id && isConnected()) send({ action: 'record.cancel', recordId: id });
+  if (id && recorderSocketOpen()) send({ action: 'record.cancel', recordId: id });
   recording = error
     ? { ...IDLE_RECORDING, state: 'error', title: recording.title, error }
     : { ...IDLE_RECORDING };
@@ -2365,7 +2799,7 @@ function failRecording(message: string): void {
   recPendingBytes = 0;
   recWatch = null;
   recordingTicker(false);
-  if (id && isConnected()) send({ action: 'record.cancel', recordId: id });
+  if (id && recorderSocketOpen()) send({ action: 'record.cancel', recordId: id });
   recording = {
     ...IDLE_RECORDING,
     state: 'error',
@@ -2514,11 +2948,10 @@ function resumeCharForSwitch(): number {
 
 function reportPlayhead(): void {
   if (!session || !started || audio.paused || session.generationDone) return;
-  if (!isConnected()) return;
   const idx = session.sentenceAt(audio.currentTime);
   if (idx !== lastReportedSentence) {
     lastReportedSentence = idx;
-    send({ action: 'playhead', requestId: session.requestId, sentenceIndex: idx });
+    listen.reportPlayhead(session.requestId, idx);
   }
 }
 
@@ -2572,20 +3005,21 @@ function broadcast(): void {
   if (current && session?.complete) rendered.push(current.id);
   const snapshot: QueueSnapshot = {
     connected: isConnected(),
-    engineState,
+    engineState: engineState(),
     current,
     upcoming,
     playback: currentStatus(),
     run: runProgress(),
     connectionError: connectionError ?? undefined,
     voices,
-    // The picker shows what we WILL speak with, not what the engine happens to
-    // have warm — those are the same thing by construction now.
-    currentVoice: voiceForSpeak(),
+    voiceRows,
+    // The voice a read will actually be spoken in: the RESIDENT one. What the
+    // picker is showing is `chosenVoice`, which is what Load would make
+    // resident — the two differ exactly while nothing (or something else) is on
+    // the card, and saying so is the point.
+    currentVoice: voiceForSpeak() ?? chosenVoice,
     switchingVoice,
-    config: serverConfig,
-    engine: serverEngine ?? undefined,
-    engines: serverEngines.length ? serverEngines : undefined,
+    engine: engineStatus(),
     renderedItemIds: rendered,
     recording
   };
@@ -2613,10 +3047,10 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'enqueue': enqueue(msg.item); break;
     case 'transport': handleTransport(msg); break;
     case 'record': void handleRecord(msg); break;
-    case 'engine': void handleEngine(msg.op); break;
+    case 'engine': void handleEngine(msg.op, msg.voice); break;
     case 'set-voice': void handleSetVoice(msg.voice); break;
     case 'set-idle': void handleSetIdle(msg.minutes); break;
-    case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice, msg.engine); break;
+    case 'server-changed': void handleServerChanged(); break;
     case 'queue':
       if (msg.op === 'remove' && msg.id) removeFromQueue(msg.id);
       else if (msg.op === 'clear') clearUpcoming();
@@ -2626,11 +3060,13 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
   }
 });
 
-// Seed the chosen voice from storage before anything can speak, so the very first
-// request already carries the voice the pickers are showing rather than leaving
-// the server to pick one.
+// Seed the picker's voice and the idle window from storage before anything can
+// happen, so the pickers are not blank for the first few hundred milliseconds
+// and the countdown is the one the user chose.
 void getSettings().then((s) => {
-  if (!chosenVoice && s.voice) { chosenVoice = s.voice; broadcast(); }
+  if (!chosenVoice && s.voice) chosenVoice = s.voice;
+  idleMinutes = s.idleMinutes;
+  broadcast();
 });
 
 // Emit an initial snapshot so an already-open popup gets immediate state.

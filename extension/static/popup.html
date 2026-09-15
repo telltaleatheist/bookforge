@@ -105,29 +105,25 @@
       <span class="text" id="statusText">Checking…</span>
     </div>
 
-    <!-- Engine above voice, because a voice belongs to an engine: the list below
-         is whatever the SELECTED engine offers, and switching engines replaces it.
-         An engine this machine cannot run is shown disabled with the server's own
-         reason as its title, never hidden — "Higgs (needs WSL2)" is something you
-         can act on; a missing row is not. -->
-    <div class="field">
-      <label for="engine">Engine</label>
-      <select id="engine"></select>
-    </div>
+    <!-- NO ENGINE SELECTOR. A voice implies its engine (plan §4a): every row of
+         the server's /v1/voices names its own narratorEngine, so the list below
+         shows the engine as a COLUMN when it spans more than one and there is
+         nothing to pick apart from a voice. -->
 
-    <!-- Voice sits directly above the start button: starting the server loads a
-         model, so you should be able to see WHICH one before you press it. -->
+    <!-- Voice sits directly above the Load button: loading puts this voice on
+         somebody's card, so you should be able to see WHICH one before you press. -->
     <div class="field">
       <label for="voice">Voice</label>
       <select id="voice"></select>
     </div>
     <div class="row">
-      <button id="server" class="primary">Start TTS server</button>
+      <button id="server" class="primary">Load voice</button>
     </div>
-    <!-- The engine holds several GB while warm, so it releases itself after a
-         spell with nothing to do. How long that is, is the user's call. -->
+    <!-- A voice on a card is a card nobody else can use, so this extension gives
+         it back after a spell with nothing read. How long that is, is the user's
+         call — and the timer is THIS extension's, not the server's. -->
     <div class="field">
-      <label for="idle">Shut down after</label>
+      <label for="idle">Unload after</label>
       <select id="idle"></select>
     </div>
     <div class="row">
@@ -183,20 +179,13 @@
       <div class="msg hidden" id="recMsg"></div>
     </div>
 
-    <details class="engine" id="engine">
-      <summary>Engine settings</summary>
-      <div class="field">
-        <label for="workers">CPU workers</label>
-        <div class="wrow">
-          <input id="workers" type="number" min="1" max="4" step="1" />
-          <button id="applyEngine">Restart to apply</button>
-        </div>
-        <div class="note" id="engineNote"></div>
-      </div>
-    </details>
+    <!-- WHERE this is reading from, and what is on that card. No CPU worker
+         count (XTTS-only; XTTS is gone) and no generation device (always the
+         Crucible's own) — see the plan's dropped column. -->
+    <div class="note" id="engineNote"></div>
 
     <div class="links">
-      <a href="#" id="openOptions">Options &amp; server settings</a>
+      <a href="#" id="openOptions">Options &amp; servers</a>
     </div>
 
     <script src="popup.js"></script>

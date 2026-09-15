@@ -1601,18 +1601,24 @@ function toggleUi(show?: boolean): void {
 }
 
 /**
- * Bringing up the reader is the user saying they are about to listen, so warm the
- * engine NOW — while they pick a paragraph — instead of at the moment they press
- * play. On Orpheus a voice is a whole finetune, and loading it cold is the single
+ * Bringing up the reader is the user saying they are about to listen, so load
+ * the voice NOW — while they pick a paragraph — instead of at the moment they
+ * press play. A voice is a whole fine-tune, and loading it cold is the single
  * biggest term in time-to-first-sentence (tens of seconds, ahead of the first
- * batch's own depth). Acted on once per show, and only from a stopped engine:
- * 'starting' is already warming and 'running' has nothing to do.
+ * batch's own depth). Acted on once per show, and only when nothing is on the
+ * card: 'starting' is already loading and 'running' has nothing to do.
+ *
+ * SINCE PHASE 16 THIS PUTS A VOICE ON SOMEBODY'S CARD, which is a bigger act
+ * than warming a local process — and it is still the right one, because the
+ * alternative is the listener waiting through the load after they press play.
+ * It is refused by name if that card is busy, and the refusal reaches the
+ * popup with the holder's name; nothing here takes it from anyone.
  */
 let prewarmPending = false;
 function maybePrewarm(ui: UiState): void {
   if (!prewarmPending || !ui.connected) return;
   prewarmPending = false;
-  if (ui.engineState === 'stopped') send({ target: 'background', cmd: 'engine', op: 'start' });
+  if (ui.engineState === 'stopped') send({ target: 'background', cmd: 'engine', op: 'load' });
 }
 
 function requestSync(): void {

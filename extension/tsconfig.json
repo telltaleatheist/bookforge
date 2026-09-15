@@ -6,7 +6,14 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
+    // `shared/listen-text/normalize.ts` imports narrator's ONE acronym list
+    // (python/narrator/text/caps_acronyms.json) — the same file narrator reads
+    // and the app compiles in. esbuild loads JSON natively; tsc needs telling.
+    "resolveJsonModule": true,
     "types": ["chrome"]
   },
-  "include": ["src"]
+  // src/ plus the platform-neutral layer it bundles. `shared/**` is reached by
+  // import anyway; naming it here is so a file added there that this extension
+  // uses cannot be type-checked by the app's program alone.
+  "include": ["src", "../shared/listen-text", "../shared/listen-client"]
 }

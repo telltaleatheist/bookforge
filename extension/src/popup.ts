@@ -1,24 +1,39 @@
 /**
- * Toolbar popup — the remote: which voice, TTS-server start/stop, "show controls
- * on page", and basic transport.
+ * Toolbar popup — the remote: which voice, Load / Unload on the selected
+ * Crucible, "show controls on page", basic transport, and the tab recorder.
  *
- * The voice sits directly above the start button on purpose: starting the server
- * loads a model (on Orpheus a custom voice IS a model), so you can see what you're
- * about to start before you press it.
+ * The voice sits directly above the Load button on purpose: loading puts that
+ * voice on somebody's card, so you can see which one before you press it.
+ *
+ * ── Phase 16 ───────────────────────────────────────────────────────────────
+ *
+ * The one button was "Start / Stop TTS server" and it started a process inside
+ * BookForge. It is "Load voice / Unload" now (plan §0): a `load-voice` job on
+ * the Crucible selected in Options, with the job's own events driving the
+ * button's state, and "engine up" is that server's RESIDENT voice rather than
+ * anything this extension owns.
+ *
+ * Gone with it: the engine selector (a voice implies its engine — §4a), the CPU
+ * worker count (XTTS-only, and XTTS is removed) and "Restart to apply" (there
+ * is no process here to restart).
+ *
+ * PREEMPT IS NEVER SILENT. When the card is held by someone else the refusal
+ * says WHO, from /v1/activity, and this popup offers no way to take it — that
+ * is an explicit act through the engine, not a second press of Load.
  *
  * It renders the QueueSnapshot the offscreen player broadcasts; commands go up
  * through the background relay. On open it pokes a 'sync' so the offscreen doc
- * refreshes engine state (and connects if needed). The queue itself is no longer
- * surfaced — reading is driven from the page's own controls now.
+ * re-reads the server. The queue itself is no longer surfaced — reading is
+ * driven from the page's own controls now.
  */
 
-import type { EngineInfo } from './protocol';
 import {
   IDLE_RECORDING,
   PlaybackStatus,
   QueueSnapshot,
   RecordingStatus,
   RuntimeMessage,
+  VoiceRow,
   loadSettings
 } from './messages';
 import {
@@ -44,9 +59,6 @@ const voiceEl = $('voice') as HTMLSelectElement;
 const idleEl = $('idle') as HTMLSelectElement;
 const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
 const bufferNote = $('bufferNote') as HTMLDivElement;
-const workersEl = $('workers') as HTMLInputElement;
-const engineEl = $('engine') as HTMLSelectElement;
-const applyEngineBtn = $('applyEngine') as HTMLButtonElement;
 const engineNote = $('engineNote') as HTMLDivElement;
 const recStartBtn = $('recStart') as HTMLButtonElement;
 const recStopBtn = $('recStop') as HTMLButtonElement;
@@ -74,37 +86,46 @@ function send(msg: RuntimeMessage): void {
 
 function render(): void {
   const connected = snapshot?.connected ?? false;
-  const engine = snapshot?.engineState ?? 'stopped';
+  const state = snapshot?.engineState ?? 'stopped';
+  const engine = snapshot?.engine ?? null;
+  const where = engine?.server ?? null;
 
-  // Connection / engine indicator
+  // Which Crucible, and what is on its card.
   if (!connected) {
     dot.className = 'dot off';
-    // snapshot present but not connected ⇒ mid-connect; null ⇒ still waiting on the player
+    // snapshot present but not connected ⇒ mid-read of the server; null ⇒ still
+    // waiting on the offscreen player to come up.
     statusText.textContent = snapshot ? (snapshot.connectionError ?? 'Connecting…') : 'Checking…';
-  } else if (engine === 'running') {
+  } else if (state === 'running') {
     dot.className = 'dot on';
-    statusText.textContent = 'TTS server running';
-  } else if (engine === 'starting') {
+    statusText.textContent = `${engine?.resident} loaded on ${where}`;
+  } else if (state === 'starting') {
     dot.className = 'dot warn';
-    statusText.textContent = 'TTS server starting…';
+    statusText.textContent = `Loading on ${where}…`;
   } else {
     dot.className = 'dot warn';
-    statusText.textContent = 'Connected — server stopped';
+    statusText.textContent = `${where} — nothing loaded`;
   }
 
-  // Server start/stop button
-  if (engine === 'running') {
-    serverBtn.textContent = 'Stop TTS server';
+  // Load / Unload
+  if (engine?.busy === 'unloading') {
+    serverBtn.textContent = 'Unloading…';
+    serverBtn.className = 'danger';
+    serverBtn.disabled = true;
+  } else if (state === 'running') {
+    serverBtn.textContent = 'Unload';
     serverBtn.className = 'danger';
     serverBtn.disabled = false;
-  } else if (engine === 'starting') {
-    serverBtn.textContent = 'Starting…';
+  } else if (state === 'starting') {
+    serverBtn.textContent = 'Loading…';
     serverBtn.className = 'primary';
     serverBtn.disabled = true;
   } else {
-    serverBtn.textContent = 'Start TTS server';
+    serverBtn.textContent = 'Load voice';
     serverBtn.className = 'primary';
-    serverBtn.disabled = false;
+    // Nothing to load onto: say so with the button rather than with a failure
+    // after the press.
+    serverBtn.disabled = !connected;
   }
 
   setPlayPause(snapshot?.playback.state ?? 'idle', !!snapshot?.playback.paused, !!snapshot?.current);
@@ -289,49 +310,46 @@ recDiscardBtn.addEventListener('click', () => {
 // tab and captures the same way).
 void activeTab().then((tab) => { recorderTab = tab ?? null; renderRecorder(); });
 
-// ─── Engine settings (voice + CPU workers) ─────────────────────────────────────
+// ─── The voice, and what is on the card ───────────────────────────────────────
 
-// The voice the extension uses for every speak (chrome.storage `voice`); '' means
-// "use whatever the engine has loaded". Loaded once, then owned by the dropdown.
+// The voice the Load button will make resident (chrome.storage `voice`).
+// Loaded once, then owned by the dropdown.
 let selectedVoice = '';
 // Rebuild the <option>s only when the voice list actually changes (null = never
 // built yet) so a 300 ms snapshot tick can't reset the dropdown mid-interaction.
 let voicesSig: string | null = null;
-// True between "Restart to apply" and the engine coming back up, so the note shows
-// progress instead of the restimed live topology.
-let restarting = false;
 
-// The engine list, rebuilt only when it actually changes — same reason the voice
-// list is: a 300 ms snapshot tick must not reset a dropdown mid-interaction.
-let enginesSig: string | null = null;
-
-function buildEngineOptions(engines: EngineInfo[], current: string | null): void {
-  engineEl.textContent = '';
-  for (const e of engines) {
-    const o = document.createElement('option');
-    o.value = e.id;
-    // The reason rides in the label as well as the tooltip. A popup is 300px wide
-    // and a title attribute is invisible on a touchpad; "Higgs (unavailable)" at
-    // least says why the click did nothing.
-    o.textContent = e.available ? e.name : `${e.name} (unavailable)`;
-    o.disabled = !e.available;
-    if (e.reason) o.title = e.reason;
-    engineEl.appendChild(o);
-  }
-  if (current) engineEl.value = current;
-}
-
-function buildVoiceOptions(voices: string[]): void {
-  // Keep the saved voice selectable even if the engine hasn't reported voices yet.
-  const list = selectedVoice && !voices.includes(selectedVoice) ? [selectedVoice, ...voices] : voices;
+/**
+ * THE ENGINE IS A COLUMN, NEVER A SELECTOR (plan §4a).
+ *
+ * Every `/v1/voices` row names its own `narratorEngine`. A voice implies its
+ * engine, so no client ever picks an engine apart from a voice — which is why
+ * the engine `<select>` and its "Restart to apply" are deleted rather than
+ * hidden, and why the next voice engine costs this file nothing. The engine
+ * appears in the label only when the list actually spans more than one.
+ */
+function buildVoiceOptions(rows: VoiceRow[]): void {
+  const engines = new Set(rows.map((v) => v.engine));
   voiceEl.textContent = '';
+  // Keep the saved voice selectable even if the server has not answered yet.
+  if (selectedVoice && !rows.some((v) => v.id === selectedVoice)) {
+    const o = document.createElement('option');
+    o.value = selectedVoice;
+    o.textContent = selectedVoice;
+    voiceEl.appendChild(o);
+  }
   // No "engine default" entry on purpose: it meant "send no voice and let the
   // server pick", which is exactly how a block ended up read by a model the user
   // never chose. The listed voice is the voice.
-  for (const v of list) {
+  for (const v of rows) {
     const o = document.createElement('option');
-    o.value = v;
-    o.textContent = v;
+    o.value = v.id;
+    o.textContent = engines.size > 1 ? `${v.display} — ${v.engine}` : v.display;
+    // A voice that cannot be loaded on that host stays VISIBLE and disabled with
+    // the server's own reason as its title: "not installed" is something you can
+    // act on, a missing row is not.
+    o.disabled = !v.loadable && !v.resident;
+    if (v.reason) o.title = v.reason;
     voiceEl.appendChild(o);
   }
   voiceEl.value = selectedVoice;
@@ -339,73 +357,38 @@ function buildVoiceOptions(voices: string[]): void {
 
 function renderEngine(): void {
   const s = snapshot;
-  const voices = s?.voices ?? [];
-  const config = s?.config ?? null;
+  const rows = s?.voiceRows ?? [];
+  const engine = s?.engine ?? null;
   const connected = !!s?.connected;
 
-  // The engine chooser is only drawn when the server advertises one — an older
-  // server sends no `engines`, and a chooser with nothing in it is worse than none.
-  const engines = s?.engines ?? [];
-  // `classList.toggle('hidden', ...)`, like every other row in this file. This line
-  // used `toggleAttribute('hidden')` — a second mechanism for one job, three lines
-  // from `workersEl.closest('.field')?.classList.toggle('hidden', ...)`.
-  //
-  // Both work TODAY only because `.field` declares no `display` of its own, so the
-  // attribute's UA default is not overridden. The popup styles `.field.hidden`
-  // explicitly; the day someone gives `.field` a `display: flex`, the attribute
-  // silently stops hiding anything and the class keeps working.
-  engineEl.parentElement?.classList.toggle('hidden', engines.length === 0);
-  const eSig = engines.map((e) => `${e.id}:${e.available}`).join('|') + `|${s?.engine ?? ''}`;
-  if (eSig !== enginesSig) { enginesSig = eSig; buildEngineOptions(engines, s?.engine ?? null); }
-  engineEl.disabled = !connected || restarting;
+  const sig = rows.map((v) => `${v.id}:${v.engine}:${v.loadable}:${v.resident}`).join('|');
+  if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(rows); }
 
-  const sig = voices.join('|');
-  if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(voices); }
-
-  // Mirror the server's current voice (the shared default) so the popup stays in
-  // lockstep with the app Settings + in-page pickers — any of them changing it
-  // broadcasts a fresh snapshot. Don't clobber while the dropdown is open.
+  // Mirror the resident voice so the popup stays in lockstep with whatever the
+  // server is actually holding. Don't clobber while the dropdown is open.
   const cv = s?.currentVoice ?? null;
   if (cv && cv !== selectedVoice && document.activeElement !== voiceEl) {
     selectedVoice = cv;
     try { void chrome.storage.local.set({ voice: selectedVoice }); } catch { /* orphaned context */ }
-    if (!voices.includes(cv)) buildVoiceOptions(voices); else voiceEl.value = cv;
+    if (!rows.some((v) => v.id === cv)) buildVoiceOptions(rows); else voiceEl.value = cv;
   }
-
-  const cuda = config?.device === 'cuda';
-  // Multiple workers are an opt-in capability set inside BookForge. When off (or
-  // on CUDA, where it's moot), the worker control is hidden — there's nothing to
-  // tune, the engine runs a single worker.
-  const tunable = !!config && config.enabled && !cuda;
-  if (config) {
-    workersEl.min = String(config.minWorkers);
-    workersEl.max = String(config.maxWorkers);
-    if (document.activeElement !== workersEl) {
-      workersEl.value = String(tunable ? config.count : config.deviceWorkers);
-    }
-  }
-  workersEl.disabled = !tunable;
-  // Hide the whole worker row when there's nothing to tune.
-  workersEl.closest('.field')?.classList.toggle('hidden', !!config && !tunable);
-  applyEngineBtn.disabled = !connected || !tunable || restarting;
   voiceEl.disabled = !connected;
 
-  if (s?.switchingVoice) { setNote(`Loading ${s.switchingVoice}… (a custom voice is a whole model)`, ''); return; }
-  if (restarting) {
-    if (s?.engineState === 'running') { restarting = false; setNote('Restarted ✓', 'good'); }
-    else { setNote('Restarting engine… (can take ~a minute)', ''); return; }
+  // The note, in order of what a person needs to know first.
+  if (!connected) { setNote(s?.connectionError ?? 'Pick a Crucible in Options.', 'bad'); return; }
+  if (engine?.holder) { setNote(engine.holder, 'bad'); return; }
+  if (engine?.note) { setNote(engine.note, engine.busy ? '' : 'bad'); return; }
+  if (s?.switchingVoice) { setNote(`Loading ${s.switchingVoice}…`, ''); return; }
+  if (engine?.residentKind && engine.residentKind !== 'tts') {
+    setNote(`${engine.server} is holding a ${engine.residentKind}, not a voice. Loading a voice `
+      + 'here would take the card from whatever put it there.', 'bad');
+    return;
   }
-  if (!connected) { setNote(s?.connectionError ?? 'Connect to BookForge to configure the engine.', ''); return; }
-  if (!config) { setNote('', ''); return; }
-  const device = config.device ? config.device.toUpperCase() : 'engine';
-  const active = config.activeWorkers > 0 ? `${config.activeWorkers} running` : 'engine stopped';
   setNote(
-    cuda
-      ? `${device}: one worker (the GPU serializes decode). ${active}.`
-      : !config.enabled
-        ? `${device}: single worker. ${active}. Enable multiple workers in BookForge if your machine benefits (mainly Apple Silicon).`
-        : `${device}: ${config.count} configured, ${active}. Range ${config.minWorkers}–${config.maxWorkers}. More is faster but uses more memory.`,
-    ''
+    engine?.resident
+      ? `${engine.resident} on ${engine.server} (${engine.backend ?? 'backend unknown'}).`
+      : `${engine?.server ?? 'No server'} — nothing loaded. Press Load voice.`,
+    '',
   );
 }
 
@@ -414,12 +397,15 @@ function setNote(text: string, cls: '' | 'good' | 'bad'): void {
   engineNote.className = cls ? `note ${cls}` : 'note';
 }
 
-// ─── Idle shutdown ────────────────────────────────────────────────────────────
+// ─── The idle unload ──────────────────────────────────────────────────────────
+//
+// THIS EXTENSION'S TIMER, not the server's. A Crucible's residency is the
+// operator's and its own idle rule is the server's; what a client can honestly
+// say is "I am finished with it", and this is how long it waits before saying
+// so. It used to be `config.set {idleMinutes}` against BookForge's own pool.
 
-// Rebuilt only when the server offers a different ladder (it sends the choices so
-// the app and the extension can't drift apart).
-const DEFAULT_IDLE_CHOICES = [5, 10, 15, 30, 60, 0];
-let idleSig = '';
+const IDLE_CHOICES = [5, 10, 15, 30, 60, 120, 0];
+let idleBuilt = false;
 
 function idleLabel(minutes: number): string {
   if (minutes === 0) return 'Never';
@@ -428,21 +414,17 @@ function idleLabel(minutes: number): string {
 }
 
 function renderIdle(): void {
-  const config = snapshot?.config;
-  const choices = config?.idleChoices?.length ? config.idleChoices : DEFAULT_IDLE_CHOICES;
-  const sig = choices.join('|');
-  if (sig !== idleSig) {
-    idleSig = sig;
+  if (!idleBuilt) {
+    idleBuilt = true;
     idleEl.textContent = '';
-    for (const m of choices) {
+    for (const m of IDLE_CHOICES) {
       const o = document.createElement('option');
       o.value = String(m);
       o.textContent = idleLabel(m);
       idleEl.appendChild(o);
     }
   }
-  idleEl.disabled = !snapshot?.connected;
-  const current = config?.idleMinutes;
+  const current = snapshot?.engine.idleMinutes;
   if (typeof current === 'number' && document.activeElement !== idleEl) {
     idleEl.value = String(current);
   }
@@ -457,14 +439,18 @@ idleEl.addEventListener('change', () => {
 // The same switch as the one on the Options page, on the same chrome.storage key —
 // duplicated because Owen's ruling of 2026-09-04 is that this is a thing you try
 // mid-read, and the popup is what is already open when you decide the wait is too
-// long. It takes effect on the NEXT block that starts generating: a session was
-// launched with (or without) fastStart on the wire and the server cannot change
-// its mind about a batch already in flight.
+// long. It takes effect on the NEXT block that starts: a block already generating
+// was judged under the bargain it started with, and the gate cannot change its
+// mind about audio already in the buffer.
+//
+// SINCE PHASE 16 IT ASKS THE SERVER FOR NOTHING. Crucible's streaming door
+// always emits sub-sentence frames; the switch picks whether this extension
+// plays them as they land or holds each row until it is whole.
 
 function renderBuffering(): void {
   bufferNote.textContent = bufferEl.checked
     ? 'Waits for a cushion, then plays through without gaps.'
-    : 'Fast start: plays after ~1s. May pause if the engine falls behind.';
+    : 'Fast start: plays after ~1s. May pause if the server falls behind.';
 }
 
 bufferEl.addEventListener('change', () => {
@@ -473,45 +459,13 @@ bufferEl.addEventListener('change', () => {
 });
 
 voiceEl.addEventListener('change', () => {
-  // Picking a voice IS the instruction to use it: generation stops, the engine
-  // loads that model, and playback restarts in it once the engine confirms. No
-  // confirmation prompt — the user just told us what they want.
+  // Picking a voice IS the instruction to use it: generation stops, the server
+  // is asked to make that voice resident, and playback restarts in it once it
+  // is. No confirmation prompt — the user just told us what they want.
   selectedVoice = voiceEl.value;
   void chrome.storage.local.set({ voice: selectedVoice });
   send({ target: 'background', cmd: 'set-voice', voice: selectedVoice });
-  if (!restarting) setNote(`Loading ${selectedVoice}…`, '');
-});
-
-engineEl.addEventListener('change', () => {
-  // AN ENGINE SWITCH IS A RESTART, always. The two engines are one resident
-  // process whose engine was fixed by NARRATOR_ENGINE when it was spawned, so a
-  // selection that did not restart would leave the old engine answering while
-  // every picker showed the new one — audio that is fine, in the wrong voice, with
-  // nothing saying so.
-  //
-  // The voice is deliberately NOT sent along: it belongs to the OUTGOING engine's
-  // catalog and means nothing in the incoming one. The server picks that engine's
-  // own default and reports it back, and the voice list redraws from the `config`
-  // reply.
-  const engine = engineEl.value;
-  if (!engine || engine === snapshot?.engine) return;
-  restarting = true;
-  engineEl.disabled = true;
-  applyEngineBtn.disabled = true;
-  setNote(`Switching to ${engine}\u2026 (can take ~a minute)`, '');
-  send({ target: 'background', cmd: 'restart-engine', engine });
-});
-
-applyEngineBtn.addEventListener('click', () => {
-  const config = snapshot?.config;
-  const min = config?.minWorkers ?? 1;
-  const max = config?.maxWorkers ?? 4;
-  const cpuWorkers = Math.min(max, Math.max(min, Math.round(Number(workersEl.value) || min)));
-  workersEl.value = String(cpuWorkers);
-  restarting = true;
-  applyEngineBtn.disabled = true;
-  setNote('Restarting engine… (can take ~a minute)', '');
-  send({ target: 'background', cmd: 'restart-engine', cpuWorkers, voice: selectedVoice || undefined });
+  setNote(`Loading ${selectedVoice}…`, '');
 });
 
 const LOADING_STATES = new Set<PlaybackStatus['state']>(['connecting', 'starting-engine', 'buffering']);
@@ -555,8 +509,11 @@ function playbackBadge(): string {
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 serverBtn.addEventListener('click', () => {
-  const op = snapshot?.engineState === 'running' ? 'stop' : 'start';
-  send({ target: 'background', cmd: 'engine', op });
+  // Load makes the PICKED voice resident; Unload gives the card back. Neither
+  // starts or stops a process, and neither takes the card from anyone: a
+  // refusal names the holder and stops there.
+  const op = snapshot?.engineState === 'running' ? 'unload' : 'load';
+  send({ target: 'background', cmd: 'engine', op, voice: selectedVoice || undefined });
 });
 
 toggleUiBtn.addEventListener('click', async () => {
