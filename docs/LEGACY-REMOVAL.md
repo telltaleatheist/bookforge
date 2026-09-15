@@ -258,6 +258,10 @@ reimplementation never sees it.
 **Crucible owns all of this now.** Where a row below disagrees with what a Crucible recipe
 does, the row is the MEASUREMENT and the recipe is the thing to check.
 
+**The full read-out is the appendix at the end of this file.** What follows here is the
+summary; the appendix is every number, incident, argument and protocol rule the deleted
+files held, in the five categories a reimplementation loses in.
+
 ### 1. The environment a narrator spawn was given — the highest-risk loss
 
 **Serving (`higgsSpawnEnv`, `serve_higgs_sgl.sh`, `serve_higgs_v3.sh`).** These are the
@@ -342,3 +346,399 @@ and a Crucible `doctor` that collapses them into one "not ready" loses that.
 `epub-align` is the one that was found before starting. Anything else that turns out to
 have no Crucible equivalent is REPORTED and left standing, with the reason — not deleted,
 and not given a stopgap.
+
+# Appendix: the spawn layer's full record
+
+The section above is the summary. This is the READ-OUT — everything the deleted files
+said that is not derivable from code, in the five categories a reimplementation loses in.
+It is long on purpose. The 7x MLX regression cost a day because one number lived in one
+header; every number below is that shape.
+
+**How to use it:** where a row disagrees with what a Crucible recipe does, THE ROW IS THE
+MEASUREMENT and the recipe is the thing to check.
+
+## A. The serving environment, verbatim
+
+### `serve_higgs_v3.sh` — the vllm-omni stack
+
+`HIGGS_ENV` is **REQUIRED, exit 5**. It had a default of `$HOME/anaconda3/envs/higgs3`
+until 2026-09-13; that is one machine's conda layout, so a caller who forgot it got a
+server from a directory nobody named.
+
+| Variable | Default | Why |
+| --- | --- | --- |
+| `HIGGS_PORT` / `HIGGS_HOST` | `8095` / `127.0.0.1` | |
+| `HIGGS_GPU_MEM_UTIL` | `0.35` | Stage 0 (talker). A fraction of the WHOLE card, and it is the KV budget ON TOP of weights — not a cap on the stage. |
+| `HIGGS_CODEC_GPU_MEM_UTIL` | `0.10` | Stage 1 (codec decoder); no KV cache. |
+| `HIGGS_MAX_MODEL_LEN` | `8192` | Stage 0 ONLY — applying it globally clamped the codec stage, whose profile value is 65536. |
+| `HIGGS_MAX_NUM_SEQS` | `16` | |
+| `HIGGS_DEPLOY_CONFIG` | `$(dirname $0)/higgs_default_frames7500.yaml` | **`${VAR-...}`, not `${VAR:-...}`, deliberately:** unset = take the certified profile; set-but-EMPTY = vllm-omni's own auto-discovered profile, chosen on purpose. That distinction is the only way the auto profile stays reachable. |
+| `HIGGS_MODEL_DIR` | unset → HF cache snapshot | Set-but-missing is **exit 2, never a fallback to base** — "it is a different speaker". |
+
+Exported unconditionally: `CUDA_HOME=$HIGGS_ENV/lib/python3.11/site-packages/nvidia/cu13`,
+`CUDA_PATH`, `PATH=$CUDA_HOME/bin:$HIGGS_ENV/bin:$PATH`,
+`LD_LIBRARY_PATH=$CUDA_HOME/lib:...`, `VLLM_USE_FLASHINFER_SAMPLER=0`,
+`VLLM_ATTENTION_BACKEND=${...:-FLASH_ATTN}`, `VLLM_DISABLE_FLASHINFER_PREFILL=1`,
+`TORCH_CUDA_ARCH_LIST=${...:-8.6}`.
+
+Argv: `vllm-omni serve $MODEL --served-model-name higgs-v3 --trust-remote-code
+--stage-overrides $STAGE_OVERRIDES --attention-backend $VLLM_ATTENTION_BACKEND
+[--deploy-config ...] --omni`, where `STAGE_OVERRIDES` is
+`{"0":{"gpu_memory_utilization":…,"max_num_seqs":…,"max_model_len":…,"attention_backend":…},
+"1":{"gpu_memory_utilization":…,"max_num_seqs":…}}`.
+
+A bare profile NAME is refused (exit 4): `config_factory._load_user_deploy_config` joins a
+bare name to the deploy dir **without appending `.yaml`** (measured 2026-09-05).
+
+### `serve_higgs_sgl.sh` — the sglang-omni stack
+
+| Variable | Default | Why |
+| --- | --- | --- |
+| `HIGGS_SGL_ENV` | `$HOME/anaconda3/envs/sglomni` | Cannot share `higgs3`: python 3.12 + torch 2.13.0+cu130 + sglang 0.5.18 + sglang-omni 0.1.4 + flashinfer 0.6.17 vs python 3.11 + vllm-omni 0.28.0. Installing either into the other's env replaces the resolver's answer for torch and breaks both. |
+| `HIGGS_SGL_PORT` | `8200` | So a server on this stack can never be confused with vllm-omni's 8095. |
+| `HIGGS_SGL_MEM_FRACTION` | `0.60` | ONE fraction for the whole engine, unlike vllm-omni's two stages. Measured: holds ~19 GB of a 24.5 GB card at 16 in flight; CUDA graphs captured on sm_86 (prefill + decode + **150 codec graphs**); health at **~110 s**. |
+| `HIGGS_MAX_NUM_SEQS` | `16` | The SAME variable as the other launcher — server admission width AND narrator's batch width, one number so they cannot disagree. |
+| `HIGGS_SGL_CUDA_GRAPH_MAX_BS` | `$HIGGS_MAX_NUM_SEQS` | Separate because it is a **capture budget**, not a scheduling limit; graphs cost VRAM at startup. The catalog ships them equal. |
+| `HIGGS_SGL_MAX_NEW_TOKENS` | `7500` | Applied as `min(request, this)`. **Not the real per-request ceiling** — that is the hard-coded 4096-token context (prompt + max_new_tokens), which narrator sizes against via `sgl_served.frame_cap`. |
+
+`HIGGS_MODEL_DIR` here is **the only identity this server has**: sglang-omni's `/v1/models`
+answers `ModelCard(id=model_name, root=model_name)` — the served name in both fields, never
+the path — so narrator reads `HIGGS_MODEL_DIR` back out of `/proc/<pid>/environ`. It must be
+EXPORTED, not merely used.
+
+`--model-name higgs-v3-ds` is deliberately different from vllm-omni's `higgs-v3`: it is the
+`model` field of every request and the id `/v1/models` reports, so a leftover server on the
+wrong port is caught before a book renders against it.
+
+### Every narrator spawn, both arms
+
+`PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, `PYTHONPATH=<narratorPythonRoot()>` —
+**not `pip install -e`**: `-m` resolves the module before any of its code runs, so narrator
+cannot bootstrap its own `sys.path`. `NARRATOR_ENGINE` is set only when an engine is named,
+and BookForge's id and narrator's differ on purpose: `orpheus` → `"orpheus"`,
+`higgs` → **`"higgs-v3"`**.
+
+Native arm adds `NARRATOR_SESSIONS_ROOT` (**omitted, never substituted, when its volume is
+not mounted**; it was `E2A_TMP_DIR` until Phase 6 and narrator refuses that old name BY
+NAME), `CONDA_PREFIX`, and a `PATH` prepended with ffmpeg's directory — a packaged app
+launched from Finder/Explorer inherits a minimal PATH and narrator's assembly shells out.
+
+**Nothing crosses the WSL boundary unless written into the `export` line** — never
+`process.env` wholesale, and explicitly never the old `forwardKeys` allowlist, on the
+argument that *"an allowlist is a list of variables somebody remembered, and the ones that
+matter are the ones nobody did."* Guest shape:
+`export K='v' … && cd ~ && '<conda>' run --no-capture-output -n '<env>' python -u -m <module> '<arg>' …`
+under `wsl.exe -d <distro> bash -c`. `cd ~` because cwd must EXIST inside the guest — a
+translated Windows path may not be mounted.
+
+### The Listen server and the Higgs doors
+
+`VLLM_USE_V1=0` — streaming applies per-request logits processors (the EOS boost), a
+**V0-only** feature; without it a future vLLM bump breaks ONLY streaming.
+`ORPHEUS_DISABLE_EAGER=1` on the WSL arm turns CUDA graphs on and is "the whole reason
+Orpheus uses WSL". `ORPHEUS_MLX_CACHE_LIMIT_GB` bounds the freed-buffer cache for the
+**resident** server — unbounded it balloons to tens of GB and STAYS, which is worse for a
+pinned process than for a batch worker.
+
+`--fake-engine` is an **argv flag rather than an env var precisely so a spawn cannot enable
+the sine-tone stand-in by forwarding `process.env`.**
+
+`NARRATOR_HIGGS_VOICES` names a voice document written PER RUN, because a v3 server is
+*started on* its voice. `NARRATOR_SENTENCE_GAP` is **prep-door only** and overrides
+`text.gaps.classify_gap`'s hardcoded **0.6 s** floor; Higgs is `pads=false`, so every chunk
+join IS that number plus the model's own tail, and the catalog's `injectS` is already net of
+the tail. A voice with no `chunkGap` sets nothing and is byte-identical to before.
+
+`NARRATOR_HIGGS3_MLX_BATCH` — narrator's Higgs MLX backend **renders one row at a time
+unless asked (default 1)**. The serve door takes the pool's ceiling PASSED IN and **refuses
+by name if not supplied** rather than defaulting to the worker's width — "the inert-knob
+failure in its quietest form". This is the 7x.
+
+`--higgs_voice` is **NOT `--fine_tuned`**: the latter is an Orpheus voice TOKEN riding in the
+prompt, the former a CATALOG ID indexing the voices document. Engine-id near-misses
+(`higgs`, `higgs-v2`, `higgs_v3`) are refused BY NAME; no spawn site may pass
+`settings.ttsEngine` through — it must pass `narratorEngineId()`.
+
+## B. The measurements
+
+**The stage-fraction ladder** (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0, 2026-09-05):
+
+| talker + codec | Result |
+| --- | --- |
+| `0.60 + 0.25` | 24,274 MiB in use, WDDM paging into shared system RAM, render fell ~8 → ~2 chunks/min |
+| `0.55 + 0.15` | 24.0 GB — still paging |
+| **`0.35 + 0.10`** | **18.7–19.2 GB, 11,387–11,584 chars/min across three runs at 16 concurrent. Shipped.** |
+
+At 0.35+0.10, **32 concurrent filled the card and stalled** — the other half of why
+`HIGGS_MAX_NUM_SEQS` is 16.
+
+**The stack bake-off** (2026-09-05; same 50 packed chunks, same checkpoint, same sampling,
+one seed) — this is the measurement behind Owen's SGLang ruling:
+
+| Stack | Early stops | Damaged | Voice switches | Throughput |
+| --- | --- | --- | --- | --- |
+| vllm-omni 0.28.0 @16 | 4 | 13/50 | 6 | 10,752 chars/min |
+| **SGLang-Omni 0.1.4 @16** | **0** | **5/50** | **0** | **26,666 chars/min** |
+
+vllm-omni's batched talker corrupts the newest batch row; SGLang-Omni does not.
+
+**`max_tokens: 2048` in the auto-discovered deploy profile is an 81.92 s hard ceiling on
+every render**, and the served speech endpoint **ignores a per-request `max_tokens`** — no
+request parameter can raise it. 7500 frames = 300 s. That is what the certified profile buys.
+
+**Hashes that are the identity of a measurement**, not decoration:
+`higgs_default_frames7500.yaml` sha256 `24d288f193eaa8c5c10387d890b648949b88e8d357a3779e8c9487f9d38c7481`
+(pinned to LF in `.gitattributes` — a CRLF checkout parses identically as YAML and is no
+longer the file any cap certificate was measured against). Sentinel patch: pristine
+`higgs_audio_v3.py` `376ca5647773cb191634b266b03bfefe490c080ef9f75aed045f1f31c9a19fb4`,
+v2 output `0b36f650…`, v3 output `3cb29e6a735b026972d78844c7b05859aca481a1a5f9dfeb195f213f870375a8`.
+**The check to repeat before trusting any future number: measure `.orig` FIRST — if it is
+not `376ca564…` the package moved and both patched hashes describe a file that no longer
+exists.**
+
+**`HIGGS_MLX_AUDIO_VERSION = 0.4.8` is exact, not a floor:** 0.5.1 cannot render Orpheus at
+all, 0.3.x drags mlx-lm below the batched fast path, 0.4.8 is the one release that renders
+both engines.
+
+**Listen batch width — three different numbers for three different reasons.**
+`STREAM_BATCH_CEILING_DEFAULT = 16` (M1 Ultra 64 GB, deathstalker, ~135-char sentences):
+realtime factor 4 → 0.84x (loses to playback), 8 → 1.53x, 12 → 2.15x, 16 → 2.80x. The
+physics: **a row decodes at ~17–20 steps/s regardless of width**, so a batch takes ~30–43 s
+wall at ANY width — width buys aggregate throughput, not latency, and narrow is the worst of
+both worlds (same wait, a quarter of the cushion). On darwin the ceiling is the machine's
+MLX tier width, not 16: measured 12.4 sent/min at 16, 22.8 at 48, 27–29 at 96 — pinning the
+resident server at 16 while the audiobook path ran 96 is **why read-ahead could not stay
+ahead of playback**.
+
+`STREAM_RAMP_WIDTH = 8` is flat and deliberately not the ceiling (measured 2026-08-31):
+12.7 chars/s at 1 row, 30–33 at 8, 41.8 at 32 — but a batch is ATOMIC to the listener, so
+width 8 → ~48 s wall / ~75 s audio, width 16 → ~83 s / ~150 s, width 32 → ~150 s wall. A
+doubling ladder (8→16→32) starved a ~75 s buffer with a ~150 s batch and **stopped playback
+dead mid-article on its first real article.** 8 is the smallest width that clearly beats
+speech rate.
+
+`HIGGS_STREAM_BATCH_WIDTH = 1` (measured 2026-09-11, deathstalker/MLX/M1 Ultra): solo rows
+of 65/116/197/319 chars → 1.8/2.1/2.1/2.0x realtime; a 4-row group is **exactly as fast as
+four solo rows back to back**. Width buys Higgs nothing at Listen depths, and what a group
+COSTS is atomicity — measured, a 7.5 s opener landed at 3.6 s while rows 1–3 landed at
+13.0–13.9 s, **a ~2 s hole after the first sentence and ~8 s at paragraph length.** This one
+number is simultaneously the scheduler's in-flight depth, the pool's dispatch width,
+`NARRATOR_HIGGS3_MLX_BATCH` on the serve door, and the extension's `deviceWorkers`.
+
+**Warming every width measured 176 s of a 184 s load**, which is why only width 1, the ramp
+width and the full width were pre-warmed. A lazy MLX compile is **~10 s once per unseen
+batch shape** (mlx-lm 0.31.3 right-pads batch prefills). A first load's discarded warm-up
+renders cost **~40 s** against the same ~10 s absorbed by the first real batch — which is
+what `LoadVoiceOptions.warm` decides.
+
+**`FLUSH_GRACE_MS = 25`** — the extension sends the playing speak and its read-ahead speaks
+as separate WebSocket messages a few ms apart; a 0 ms flush races them and a ramp-fill row
+that misses it **waits out the entire ~28 s batch it existed to ride**. Against 20–40 s
+renders, 25 ms is noise.
+
+**`FALLBACK_SAMPLE_RATE = 24000`** — both shipping engines are 24 kHz, so this changes
+nothing today; the guard exists because every duration is `bytes / (rate * 2)`, so a 44.1 kHz
+engine read as 24 kHz would report every sentence at **~1.8x its real length** and the
+scheduler would run the buffer dry while insisting it was ahead.
+
+**Timeouts, each a diagnosis rather than a budget:** load 15 s warm / 180 s cold (a
+registration is a dict write; a construction pays ~6 GB + graph capture), worker `ready`
+120 s, batch 180 s, stream 120 s, guest exit 5 s after `quit`, guest destroy grace 20 s,
+`taskkill /F /T` 5 s, `hostPrepRefusal` probe 60 s, `PROBE_TIMEOUT_MS` 10 min ("a wedge
+detector, not a budget"). Higgs cold start ~55 s warm, up to ~300 s cold.
+
+**Orpheus specifics worth keeping:** merged vs base+adapter are the same weights — verified
+2026-08-09 by range-reading the deployed checkpoints, **28.3 M sampled elements per voice,
+zero differing**. `merged` is the default because a warm LoRA switch still waits ~20–30 s
+while the LoRA path costs **~10–20% more GEMMs on every token**. `ORPHEUS_STREAM_MAX_CHARS
+= 450` deliberately above the batch default of 350; the "450 fails everywhere" verdict was
+reached against a fleet including rohan-v2, since proven a broken training recipe —
+deathstalker/owen/thirdreich were **0/126** on the chunks that broke it. vLLM 0.7.3 applies
+repetition penalty over the WHOLE sequence and locks an EOS-weak fine-tune into an infinite
+silence-frame loop at 1.1; 1.15 breaks it, 1.2+ overshoots to early-EOS; **MLX's 20-token
+window renders clean at 1.1 and must not inherit the higher value.** `eosFloor 0.55` is the
+measured line between honest fast reads (≥0.75 of expected) and truncations (0.3–0.6).
+`minChunkGap` measured over **1151 chunks of The Mysterious Stranger**: median 0.81 s,
+p10 0.39 s, min 0.00 s.
+
+## B2. OWED NEXT — `electron/orpheus-memory.ts`, not yet harvested
+
+It was not on the deletion list and it holds the TIER TABLES every number above is sized
+against — `VLLM_TIERS` (`extreme: capMB 18432, marginMB 1024, ceiling 0.95, vllmBatch 96`)
+and the MLX tiers (`extreme: batchSize 64, cacheLimitGB 8, memBudgetGB 42`;
+`fast: 72/8/34`; `moderate: 48/6/22`; `light: 24/3/13`). Those are what
+`ORPHEUS_MLX_CACHE_LIMIT_GB`, `ORPHEUS_MLX_MEM_BUDGET_GB`, `ORPHEUS_GPU_MEM_UTIL` and
+`NARRATOR_HIGGS3_MLX_BATCH` are filled from, so they are the same class of fact as the 7x.
+**Harvest this file before it goes**, whether or not it is deleted in the same pass.
+
+## C. Incidents
+
+- **2026-09-14 — a Crucible-bound prep was sent into the guest.** `narratorRunsInWsl`
+  answers for the ENGINE, and the engine's env is a guest env, so a render going to a
+  Crucible server still wrote its session to ext4 and had to be copied back. The copy is
+  where it died: the library is on a network drive and the guest's `/mnt/z` was a stale,
+  root-owned mount point (measured that night: `test -d` yes, `mountpoint -q` no).
+- **2026-09-06 — a whole article failed in one second.** Each prefetch speak arriving during
+  the ~40 s cold load saw no voice loaded and **restarted the worker that was loading it**.
+  Fix: join an in-flight load BEFORE any teardown.
+- **2026-09-06 — every cold Higgs start spawned twice**, because the test was
+  `currentVoice !== wantHiggs`, true of a freshly spawned worker.
+- **2026-09-06 — cold Listen loaded the wrong checkpoint twice.** With nothing loaded,
+  `getDefaultVoice()` answered the catalog's FIRST renderable voice (the zero-shot base), so
+  every cold start loaded the base, was told the user wanted deathstalker, and restarted —
+  two checkpoint loads in series in front of the first sentence, for a voice nobody asked
+  for. That is what `setPersistedVoiceProbe` exists for.
+- **2026-09-05 — `ModuleNotFoundError: No module named 'bs4'`.** The installer installed
+  vllm-omni and nothing else; narrator reaches the env over `PYTHONPATH`, never pip, so
+  nothing ever resolved its dependency list there. **`regex` is the same shape and its
+  pyproject declaration is STILL OWED** — six `narrator/text/*.py` modules import it at
+  module scope and it is not in `python/pyproject.toml`.
+- **The launcher "only if absent" bug.** The env's copy became a snapshot of the day it was
+  built; every later fix shipped in the repo and was read by nobody, while the doctor's
+  `test -x` reported the stale copy as ok.
+- **`patch_vllm.py` patched from `.orig` instead of the live file**, so after a pip upgrade
+  it **wrote old content back over the new site-packages file** — and the doctor's marker
+  grep then certified stale code as patched, all-green, silently.
+- **The chunk-tail "electronic syllable".** v1 kept upstream's order (substitute, then trim),
+  so by the time the identity trim ran every sentinel was already code 0. **397 of 401
+  requests** logged the warning.
+- **The doctor certified an env by recognising a sentence** — the staleness marker was a
+  fragment of a warning FORMAT STRING, so re-wording the warning would report a correctly
+  patched env as stale.
+- **narrator's own proof grepped the server's LOG FILE**, making vLLM's log formatter an API,
+  and carried a v1 expectation so it passed both on an empty log and on a log full of the
+  exact lines the patch exists to eliminate.
+- **2026-08-03 — the `\\wsl$` LX-symlink.** Over the 9p mount Windows surfaces a WSL-native
+  symlink as a reparse point it refuses to resolve: `readdir` on the parent reports
+  `isSymbolicLink()`, while stat/readdir/readlink of the link itself fail **ENOENT, ENOENT,
+  EISDIR**. Hence the `unverifiable` state, and it is win32-only — anywhere else an
+  unstattable symlink is simply broken.
+- **The half-downloaded base.** Two shards, so a download killed between them satisfies
+  "config.json + at least one .safetensors" and reads as INSTALLED. Fix: when
+  `model.safetensors.index.json` exists, EVERY shard it names must be present and non-empty.
+- **A Higgs checkpoint without `generation_config.json`** samples the untruncated codebook
+  tail — top_k disabled, prompts over ~600 chars derail into babble (2026-09-05).
+- **The Mac's phantom WSL diagnosis.** One doctor answered every platform, so a Mac that
+  renders Higgs fine displayed *"The Higgs environment is not ready … : WSL distribution."*
+  The mirror bug: `higgsEnvironmentRefusal` returned `null` on darwin having checked
+  **nothing** — an unchecked pass that lets a job start and fail an hour in.
+- **The WSL kill pattern went stale at the cut-over.** Nothing FAILS when a kill pattern goes
+  stale: the sweep reports success, matches nothing, and leaves ~6 GB of VRAM held — the
+  exact shape that wedges the VM.
+- **A microtask flush shipped every streaming batch one row short**, because the queue is
+  refilled from promise continuations and a microtask flush runs before them. It must be a
+  macrotask.
+- **Worker death left `currentVoice` set**, so the next load short-circuited "already
+  loaded", the fresh worker never received one, and every generation failed "Model not
+  loaded" until the user restarted.
+- **`serveEngineProbe` used to default to `() => 'orpheus'`**, turning a dropped registration
+  into "a Higgs selection rendering an entire session in Orpheus, silently, with the app
+  reporting Higgs throughout."
+
+## D. Why this and not that
+
+- **A phase with no engine is not a phase with a default engine.** Assembly/resume/list are
+  engine-agnostic; naming an engine on one is refused rather than ignored, because "ignored"
+  would silently route an assembly into a 6 GB vLLM env.
+- **`align` is engine-refused yet can still cross into the guest.** It is ABOUT an engine but
+  does not RUN one; the post-render alignment runs BEFORE the session is normalised, so the
+  audio is still on ext4 and the qwen3 env is a WSL env. A NAME is passed rather than an
+  engine, because naming an engine would resolve `narrator-mlx` on the Mac — the render's
+  env, with no aligner in it.
+- **`onHost` uses the TOOLS env, not "the engine's native env"** — on Windows there is no
+  native engine env at all. **RULING OWED:** on macOS this moves a Crucible-venue prep out of
+  `narrator-mlx` into the tools env, which is unmeasured for `regex` / `iso639-lang`.
+- **`hostPrepRefusal` measures rather than infers** — it imports the exact modules the prep
+  door imports, with the same PYTHONPATH, BEFORE the job holds a GPU lease.
+- **One worker, always.** vLLM and MLX both saturate the single GPU and batch internally;
+  extra processes duplicate ~6 GB and fight over the device.
+- **The backend is ASKED, not derived** — deriving from `process.platform` would be a second
+  implementation free to drift. **Unknown is not a waiver**: every consumer treats `null` as
+  "not vLLM", because per-request voices and mixed-voice batches are vLLM-only.
+- **A batch may only be cancelled when EVERY remaining row is stale** — one batch mixes
+  sessions, and a row with no `isCancelled` predicate counts as LIVE.
+- **`canServeVoicePerRequest` is a waiver, so unknown means exclusive.** On MLX a mismatched
+  row does not produce a wrong voice, it produces a FAILED one.
+- **An unknown voice id is rejected loudly** — the Python worker's allowlist would silently
+  downgrade it to the default voice: wrong voice, no error.
+- **Teardown discipline:** cooperative `quit` on stdin first (breaks the loop → normal exit →
+  atexit CUDA cleanup releases the GPU from INSIDE the guest), then SIGTERM, then VM
+  terminate. **NEVER SIGKILL in the guest** — force-killing a process kernel-stuck in a dxg
+  GPU wait is what wedges the VM. **Never taskkill the `wsl.exe` wrapper while the guest
+  process is alive.** **No global `pkill vllm`** — it used to hit batch workers too.
+- **Step DOWN a memory tier rather than refusing.** The whole tier mechanism is
+  **Orpheus-only** — it sizes vLLM's `gpu_memory_utilization`, a knob Higgs does not have.
+- **Sentinel filtering by TOKEN IDENTITY, never position.** `0 is a valid codec code`, so
+  substituting a sentinel with 0 converts it into real sound; codebook c is delayed by c
+  positions, so sentinels smear across the last **Q−1 = 7** frames and trimming one leaves
+  ~6 frames of garbage. **No fade is added** — that would be a content-domain fix for a
+  token-domain defect.
+- **The deploy profile is a FILE, not a site-packages edit** — a pip upgrade reverts a write
+  silently, and a file **can be hashed**, which is what training certificates bind to.
+- **Both patches must be re-applied after any pip upgrade**, which is why the doctor greps
+  markers on EVERY check. Without `patch_vllm.py` every voice-clone request returns HTTP 400;
+  without `patch_sentinel_filter.py` every chunk ends with **~240 ms of audible garbage**.
+- **`grep -qF` (fixed string) for `[:, :-1]`** — as a basic regular expression that is a
+  bracket expression matching one character, and would match nearly every line.
+- **`python*` is globbed and deduped by REAL path** — conda ships a `lib/python3.1 →
+  python3.11` symlink, so a naive count refuses a normal env.
+- **The Orpheus install id is the card's `orpheus_token`, not the repo short name** — the
+  catalog is keyed by id, so an install under the wrong name renders with no eosBoost,
+  repPenalty, maxCharsPerSec or sentenceGap: the untuned configuration whose runaways those
+  caps exist to prevent.
+- **`DEFAULT_ORPHEUS_BASE` is emphatically not a fallback.** Serving a LoRA on the wrong base
+  produces "confident, fluent, WRONG audio with no error anywhere".
+- **Every sync fs call is WSL-gated** — the models dir is typically a `\\wsl$` UNC path, and
+  when the VM is wedged a sync touch blocks the Electron main thread forever and the app
+  white-screens.
+- **`.fusework` and `.previous` are excluded by LOCATION, not content** — both hold a
+  complete valid model shape mid-run.
+- **Why a doctor is a separate probe:** ONE round trip (a doctor that takes five seconds is a
+  doctor nobody runs); EVERY check reports pass or fail, never short-circuiting, and **a
+  missing line is a failure, not a pass**; the remedy travels with the result; and it asks
+  **the spawn's own resolution functions**, so a green doctor cannot be describing a
+  different environment from the one the render will use.
+
+## E. The JSON-lines protocol with `python -m narrator.serve`
+
+One JSON object per line on stdin; stdout read with `readline`, `crlfDelay: Infinity`. **A
+line not starting with `{` is not an error** — it is logged truncated to 120 chars and
+skipped, so engine chatter cannot break the stream.
+
+The worker is **strictly serial**, enforced pool-side by a two-tier queue (priority = the
+playing session; normal = read-ahead), so two sessions never clobber the one stdin pipe.
+
+Commands: `load {action,id,voice,modelDir?,adapterDir?,baseDir?,caps,warm}`,
+`generate {action,text,language,stream,voice?}`, `generate_batch {action,items:[{i,text,voice?,stream?}]}`,
+`cancel`, `stop`, `quit`. `load` carries BOTH `id` (catalog) and `voice` (prompt token) so
+the worker can refuse a load whose token another id already claimed. `warm` is sent
+explicitly on every load so the worker never infers intent from an absent field. A Higgs
+`load` carries the voice name and nothing else — narrator refuses `modelDir`, `baseDir`,
+`adapterDir` and `caps` field by field, though an **empty `caps` object IS accepted** as the
+"no catalog tuning" signal.
+
+Responses: `ready`, `status`, `loaded`, `audio`, `chunk`, `done`, `error`, `stopped`,
+`batch_item`, `batch_chunk`, `batch_done`. **`ready` is a probe** emitted before any model
+loads; **`loaded` is ground truth** from the engine that actually built (carries `engine`,
+`backend`, `sampleRate`, `pads`, `edgeFadeMs`) and CORRECTS the startup probe.
+
+Batch identity is the caller-supplied `i`. A row with `streamed: true` on its `batch_item`
+carries **no `data`** — every byte already went out as `batch_chunk`s — and a caller must not
+read missing audio as failure. **A `batch_chunk` whose index has no sink is a protocol break,
+not a race to swallow.**
+
+**The taint mechanism is part of the contract.** A timed-out generate or load leaves the
+worker still rendering; dispatching new work would cross-wire late results (a stale
+`batch_item {i:0}` resolving index 0 of the NEXT batch, or a late `loaded` resolving the next
+load — both match on `sentenceIndex === -1`). The worker is tainted until the stale TERMINAL
+message arrives and is discarded; **`loaded` must be in that list** or a timed-out load
+leaves the worker refusing all work forever. `chunk` does not clear a taint. Sentinel
+indices: `-1` = a load, `-2` = a stream.
+
+Per-message `sampleRate` wins where present; `loaded`'s fills in otherwise.
+
+**Exit codes are documented diagnoses:** `2` = bad arguments (a BookForge bug, so the message
+says so and does not tell the user to reinstall), `3` = no engine could load — and narrator
+**deliberately prints no `ready`** in that case, the alternative being a worker that looks
+alive and answers "Model not loaded" to every generate. Restarting on either is pointless:
+same argv, same env, same exit.
