@@ -579,7 +579,6 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
    * the failure mode of the missing one is a card held against nothing.
    */
   const doors = [
-    ['electron/narration-clean-text.ts', false],
     ['cli/clean-step.js', true],
     ['cli/clean-lines-step.js', false],
   ];
@@ -595,6 +594,42 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
         `${rel} sends a REQUEST, so it must name the served model on it`);
     }
   }
+  /*
+   * ── NOR IS THE BARE-EPUB CLEAN DOOR, SINCE 2026-09-15 ──────────────────────
+   *
+   * `electron/narration-clean-text.ts` was the FIRST entry in that list. It
+   * brought this machine's vLLM up when Foundry's settings endpoint happened to
+   * be the server this machine owns, and bracketed the run.
+   *
+   * That branch is now unreachable, and provably so rather than by inspection:
+   * `decideWhereTextActRuns` returns `where: 'crucible'` or THROWS —
+   * `TextActVenue` has exactly one member, and the throw's own words are *"there
+   * are no local text engines to fall back to: a text act runs on a Crucible
+   * server or not at all."* So `textServerRoute(settings.endpoint)` was asked
+   * about an endpoint the run does not use, and `route.manage` could never be
+   * true. The whole bracket came out.
+   *
+   * THE SERVER ITSELF STAYS, and that is the distinction this block exists to
+   * hold: the two CLI doors above still drive it, `stopTextServer` is still what
+   * main calls on quit, and `TEXT_SERVER_PROTECT_RE` is still read by the TTS
+   * bridge. What died is one door's bracket, not `electron/text-server.ts`.
+   *
+   * Pinned as an ABSENCE for the same reason as the block below: what is relied
+   * on is that nothing calls these again, and the thing that would undo it is a
+   * line copied back from one of the doors above.
+   */
+  const bareEpub = fs.readFileSync(
+    path.join(REPO, 'electron/narration-clean-text.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  for (const banned of ['ensureTextServer', 'noteTextQueueBusy', 'noteTextQueueIdle',
+    'textServerRoute', 'profileForKind']) {
+    assert.ok(!new RegExp(banned).test(bareEpub),
+      `electron/narration-clean-text.ts calls ${banned} again. A clean act runs on a Crucible `
+      + 'server, which may be another machine; starting a 19 GB model on THIS card for work '
+      + 'routed to the Mac is the wrong path, not a slow one. See the block at that call site.');
+  }
+
   /*
    * ── THE HOSTED QUEUE STEP IS NOT A DOOR ANY MORE, AND MUST NOT BECOME ONE ──
    *

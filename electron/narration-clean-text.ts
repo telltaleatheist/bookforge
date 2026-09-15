@@ -634,25 +634,33 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
    * here, before the receipt is cleared and before anything is spawned, because
    * a refusal must cost no work.
    *
-   * With the switch on, `venue` is the local engines and everything below is
-   * exactly what it was: Foundry's settings endpoint, and BookForge's own text
-   * server bracketed around the run when that endpoint is ours.
+   * THERE IS NO OTHER ANSWER. `decideWhereTextActRuns` returns `where: 'crucible'`
+   * or THROWS — `TextActVenue` has one member, and its own words are *"there are
+   * no local text engines to fall back to: a text act runs on a Crucible server or
+   * not at all."* So `crucible` below is never null, and the local-engine half of
+   * this function (Foundry's settings endpoint, and BookForge's own text server
+   * bracketed around the run) was DELETED on 2026-09-15 rather than left as a
+   * branch nothing can reach.
+   *
+   * `electron/text-server.ts` itself STAYS. The two CLI clean doors
+   * (`cli/clean-step.js`, `cli/clean-lines-step.js`) drive it directly rather than
+   * through here, `stopTextServer` is what main calls on quit, and
+   * `TEXT_SERVER_PROTECT_RE` is read by the TTS bridge. What died is this door's
+   * bracket, not the server.
    */
   const {
     decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost, withCrucibleTextActLease,
   } = await import('./crucible/text-venue.js');
   const venueHost = processTextVenueHost();
   const venue = await decideWhereTextActRuns(opts.crucibleServer, venueHost);
-  const crucible = venue.where === 'crucible'
-    ? await resolveCrucibleTextEngine(
-      'clean',
-      venue.server,
-      venueHost,
-      // `spawn`: THIS door owns the spawn and hands `runFoundry` an explicit
-      // `env` below, so the credential reaches that child and no other.
-      { headerReach: 'spawn', ...(opts.loadFirst === true ? { loadFirst: true } : {}) },
-    )
-    : null;
+  const crucible = await resolveCrucibleTextEngine(
+    'clean',
+    venue.server,
+    venueHost,
+    // `spawn`: THIS door owns the spawn and hands `runFoundry` an explicit
+    // `env` below, so the credential reaches that child and no other.
+    { headerReach: 'spawn', ...(opts.loadFirst === true ? { loadFirst: true } : {}) },
+  );
 
   // A stale sidecar from a previous run at this name would be read back as this
   // run's receipt if the engine died before writing its own. Removed first, so
@@ -662,135 +670,73 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
   await fs.mkdir(path.dirname(outPath), { recursive: true });
 
   const args = cleanTextArgs(
-    epubPath, outPath, settings,
-    crucible === null ? undefined : { endpoint: crucible.endpoint, model: crucible.model },
+    epubPath, outPath, settings, { endpoint: crucible.endpoint, model: crucible.model },
   );
   console.log(
     `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — `
-    + (crucible === null
-      ? settings.source
-      // The header map is rendered by the ONE function that can: the credential
-      // is `Bearer ****<last 4>`. Nothing else in this file may print it.
-      : `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}, `
-        + `headers ${crucible.maskedHeaders}`));
+    // The header map is rendered by the ONE function that can: the credential
+    // is `Bearer ****<last 4>`. Nothing else in this file may print it.
+    + `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}, `
+    + `headers ${crucible.maskedHeaders}`);
 
   /*
-   * ── THE TEXT SERVER'S BRACKET, AND IT LIVES HERE ────────────────────────────
+   * NOTHING IS STARTED OR STOPPED FOR THIS RUN, and there is no longer a branch
+   * in which something would be.
    *
-   * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
-   * Foundry never starts a server; BookForge does. This door is the ONE place a
-   * bare-EPUB cleanup spawns the engine — `electron/processing-passes.ts` and
-   * `cli/narration-text-step.js` both call `cleanTextEpub` rather than composing
-   * their own line — so the bracket goes around THIS spawn and nowhere else.
-   * Two copies of a server lifetime is one that leaks a card.
+   * The arbiter and the text-server bracket that used to sit here existed
+   * because Foundry never starts a server and BookForge's own had to be brought
+   * up for it. A Crucible is a service that is already running, owned by nobody
+   * here, and starting llama-server beside it would put two models on one card —
+   * so the bracket was already inert on every Crucible run. Since
+   * `decideWhereTextActRuns` has no other answer, "every run" is every run, and
+   * the whole of it came out on 2026-09-15: the lazy `require('./text-server.js')`,
+   * `textServerRoute`, `ensureTextServer`, the `bracketed` flag and the
+   * `noteTextQueueBusy`/`noteTextQueueIdle` pair.
    *
-   * Only under vLLM, and only when the endpoint is the server this machine
-   * manages: any other URL is somebody else's, used exactly as given
-   * (`textServerRoute` says which, in a sentence fit for a log).
-   *
-   * `noteTextQueueIdle` is in the `finally` on purpose. A failed cleanup must
-   * hand the card back exactly as a finished one does, or a refused book leaves
-   * twenty gigabytes reserved against nothing.
+   * What went with it, and is not owed anywhere else: `keepWarmMinutes` was read
+   * ONLY by the idle note, and the queue-busy signal it raised was about a card
+   * this run does not touch.
    */
-  /*
-   * `require`, NOT `await import` — this module's own rule, stated at
-   * `cleanTextEngineSettings` above: under `module: NodeNext` tsc PRESERVES a
-   * dynamic `import()` in a CommonJS emit (verified in the compiled output), so it
-   * goes through Node's ESM loader and past `Module._load` — which is what
-   * `cli/electron-stub.js` overrides. The arbiter reaches `require('electron')`
-   * lazily (its launcher-path resolver, and the HF token on a stage), and the CLI
-   * doors that call this function run under that stub.
-   *
-   * It is NOT about module identity, which was measured rather than assumed: an
-   * `import()` of a CommonJS file shares the require cache, so both spellings give
-   * ONE instance — and one instance is what matters here, because this module
-   * holds which server is up and who holds the card.
-   *
-   * Lazy rather than at the top of the file because the arbiter reaches WSL and
-   * the GPU, and a cleanup against somebody else's endpoint must not load any of
-   * that — which is why `textServerRoute` is asked before anything is started.
-   */
-  const { ensureTextServer, noteTextQueueBusy, noteTextQueueIdle, profileForKind, textServerRoute } =
-    require('./text-server.js') as typeof import('./text-server.js');
-  let bracketed = false;
-  /*
-   * THE GATE IS THE ENDPOINT, NOT A SERVER KIND. This asked
-   * `settings.server === 'vllm'` first and `textServerRoute` second, which was
-   * two questions where there is one. Foundry `646e8a1` deleted the server kind
-   * and `CleanTextEngineSettings` lost the field with it; what is left is the
-   * question that was always the real one, and it is strictly better at it — a
-   * machine set to `ollama` whose URL is BookForge's own text server used to be
-   * skipped in silence and is now served.
-   */
-  /*
-   * NOTHING IS STARTED OR STOPPED FOR A CRUCIBLE RUN. The arbiter exists
-   * because Foundry never starts a server and BookForge's own text server has
-   * to be brought up for it; a Crucible is a service that is already running,
-   * owned by nobody here, and starting llama-server beside it would put two
-   * models on one card. `route` is not even asked: the settings endpoint is not
-   * the endpoint this run uses.
-   */
-  const route = crucible === null
-    ? textServerRoute(settings.endpoint)
-    : { manage: false as const, note: `[crucible] the ${crucible.act} act runs on "${crucible.server}" `
-        + `(${crucible.endpoint}); BookForge starts and stops nothing for this run.` };
-  if (route.manage) {
-    noteTextQueueBusy();
-    bracketed = true;
-    const profile = profileForKind('clean');
-    const up = await ensureTextServer(profile.id, (line) => {
-      console.log(`[NARRATION-TEXT] ${line}`);
-      opts.onProgress?.(0, 0, line);
-    });
-    console.log(`[NARRATION-TEXT] the text server is serving ${up.servedName} at ${up.url}`);
-  } else {
-    console.log(`[NARRATION-TEXT] ${route.note}`);
-  }
+  console.log(
+    `[NARRATION-TEXT] [crucible] the ${crucible.act} act runs on "${crucible.server}" `
+    + `(${crucible.endpoint}); BookForge starts and stops nothing for this run.`);
 
-  let result;
-  try {
+  /*
+   * ── ONE LEASE FOR THE WHOLE CLEAN ───────────────────────────────────────
+   *
+   * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+   * them. Every time."* A Crucible now unloads the resident model the moment no
+   * job, no lease, no streaming session and no chat hold it — and this engine's
+   * work arrives there as hundreds of ordinary chat completions, each of which
+   * holds nothing. Without the lease the model would be unloaded and reloaded
+   * between blocks of one book. It is taken around THIS spawn because this spawn
+   * is exactly the span in which this app intends more requests.
+   *
+   * Unconditional since 2026-09-15. It used to be the second arm of a ternary
+   * whose first arm was a local run that leased nothing; there is no local run.
+   */
+  const spawnEngine = (): ReturnType<typeof runFoundry> => runFoundry(args, {
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     /*
-     * ── ONE LEASE FOR THE WHOLE CLEAN, AND ONLY ON A CRUCIBLE ────────────────
-     *
-     * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
-     * them. Every time."* A Crucible now unloads the resident model the moment no
-     * job, no lease, no streaming session and no chat hold it — and this engine's
-     * work arrives there as hundreds of ordinary chat completions, each of which
-     * holds nothing. Without the lease the model would be unloaded and reloaded
-     * between blocks of one book. It is taken around THIS spawn because this spawn
-     * is exactly the span in which this app intends more requests.
-     *
-     * A local run leases nothing: there is no server to tell, and the text-server
-     * bracket above is what holds that card.
+     * THE CREDENTIAL, ON THIS CHILD AND NO OTHER. `runFoundry` merges this
+     * over the inherited environment for one spawn, which is the contract's
+     * "stripped from the environment of any child that does not need it"
+     * made mechanical (crucible docs/PHASE7-LANES.md §7.1(B)).
      */
-    const spawnEngine = (): ReturnType<typeof runFoundry> => runFoundry(args, {
-      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-      /*
-       * THE CREDENTIAL, ON THIS CHILD AND NO OTHER. `runFoundry` merges this
-       * over the inherited environment for one spawn, which is the contract's
-       * "stripped from the environment of any child that does not need it"
-       * made mechanical (crucible docs/PHASE7-LANES.md §7.1(B)). A local run
-       * passes nothing, so the variable does not exist for it.
-       */
-      ...(crucible === null ? {} : { env: crucible.env }),
-      onProgress: (line) => {
-        const counted = parseCleanTextProgress(line);
-        if (counted !== null) {
-          opts.onProgress?.(counted.done, counted.total, 'Cleaning the text');
-          return;
-        }
-        // Everything else the engine says goes to the log verbatim: its refusals
-        // name a block and a reason, and summarising them here would lose the one
-        // thing a person reviewing a cleanup needs.
-        console.log(`[NARRATION-TEXT] ${line}`);
-      },
-    });
-    result = crucible === null
-      ? await spawnEngine()
-      : await withCrucibleTextActLease(crucible, spawnEngine);
-  } finally {
-    if (bracketed) noteTextQueueIdle(settings.keepWarmMinutes);
-  }
+    env: crucible.env,
+    onProgress: (line) => {
+      const counted = parseCleanTextProgress(line);
+      if (counted !== null) {
+        opts.onProgress?.(counted.done, counted.total, 'Cleaning the text');
+        return;
+      }
+      // Everything else the engine says goes to the log verbatim: its refusals
+      // name a block and a reason, and summarising them here would lose the one
+      // thing a person reviewing a cleanup needs.
+      console.log(`[NARRATION-TEXT] ${line}`);
+    },
+  });
+  const result = await withCrucibleTextActLease(crucible, spawnEngine);
 
   if (result.code !== 0) {
     throw new Error(
