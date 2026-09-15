@@ -34,6 +34,9 @@ import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 // used, like every other crucible door here: a render that never asks must not
 // pull the registry (and its bearer tokens) into the process.
 import type { GenerationVenue } from './crucible/generation-venue';
+// Relative, never `@shared/*`: that alias resolves at compile time and breaks the
+// main process at RUNTIME (memory `shared-alias-runtime-trap`).
+import { serversOnThisMachine } from './crucible/servers';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -6165,6 +6168,44 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   const deviceArg = resolveTtsDeviceArg(
     session.config.settings.device, session.config.settings.ttsEngine);
   if (deviceArg === 'CPU') return;
+
+  /*
+   * ── A RENDER ON ANOTHER MACHINE HOLDS NO CARD HERE ────────────────────────
+   *
+   * `resolveTtsDeviceArg` above answers from THIS box's hardware — is CUDA
+   * installed here, is this an arm64 Mac — and knows nothing about where the
+   * render is going. Every render goes to a Crucible server now
+   * (`GenerationVenue` has one member), and that server may be the Mac. So on a
+   * machine with CUDA present, a Mac-bound book resolved to `CUDA`, took this
+   * card's lease for the whole render, and evicted the resident Ollama models to
+   * "free VRAM for TTS" that would never touch this card. AI cleanup and
+   * epub-align then queued behind a render happening somewhere else.
+   *
+   * Nothing errored and nothing logged it, which is the shape this project keeps
+   * paying for: the lock was held correctly, for a job that did not want it.
+   *
+   * THE TEST IS WHICH SERVER, NOT WHETHER CRUCIBLE. A Crucible server can BE
+   * this machine — the WSL engine on the PC is one — and that render does use
+   * this card, so it must still take the lease. `serversOnThisMachine()` is the
+   * same fact `shared/queue/slot-sets.ts` already uses to decide which bench
+   * rows belong here; asking it twice in two ways is how the two would come to
+   * disagree.
+   *
+   * `sessionRunsInWsl` is the precedent for the shape: it gates on the venue so
+   * a Crucible session "is never torn down in a guest it never entered". Same
+   * rule, different resource — never hold a card it never touches.
+   *
+   * A session with NO venue keeps the old behaviour deliberately. That is an
+   * assembly-only run or a path that has not resolved one, and "I do not know
+   * where this is going" must not be read as "it is going elsewhere".
+   */
+  const venueServer = session.venue?.server;
+  if (venueServer !== undefined && !serversOnThisMachine().includes(venueServer)) {
+    console.log(
+      `[PARALLEL-TTS] Job ${jobId} renders on crucible "${venueServer}", which is not this `
+      + 'machine — taking no GPU lock here and evicting nothing.');
+    return;
+  }
 
   const held = gpuHolder();
   if (held) {

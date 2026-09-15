@@ -601,6 +601,20 @@ const SUITES = [
   // no checkout to walk into. Present-in-the-checkout is not the requirement;
   // copied-into-dist is.
   'test-build-copies',
+  // A RENDER ON ANOTHER MACHINE HOLDS NO CARD HERE. `acquireGpuForJob` took this
+  // machine's GPU lease for EVERY render until 2026-09-15, including ones bound
+  // for the Mac: resolveTtsDeviceArg answers from this box's hardware and knows
+  // nothing about the venue. The lock was held correctly, for a job that did not
+  // want it — AI cleanup and epub-align queued behind a render happening
+  // somewhere else, and the Ollama models were evicted to free VRAM nothing here
+  // would use. Nothing errored and nothing logged it.
+  //
+  // The gate tests WHICH server, never merely whether the venue is crucible: a
+  // Crucible server can BE this machine (the WSL engine on the PC), and that
+  // render does use this card. Pinned because `GenerationVenue` has one member,
+  // so the wrong spelling is now always true and would skip the lease for local
+  // renders too.
+  'test-gpu-lease-venue',
   // WHERE EACH STEP OF A BOOK RUNS. §4.4 — every step of one book runs on the
   // machine the book was assigned — and the failure is SILENT by construction:
   // §4's safety default is that an undeclared step does not travel, so a
