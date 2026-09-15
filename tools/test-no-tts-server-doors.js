@@ -350,6 +350,15 @@ check('KEPT: the Streaming tab, in the main process, on the scheduler', () => {
   if (!/streamScheduler/.test(code(read('electron', 'reader-stream-bridge.ts')))) {
     throw new Error('the phone\u2019s reader bridge no longer drives the scheduler in-process');
   }
+  // \u2026and the tab has the popup's one button. Plan \u00a70: "the tab's process buttons
+  // are the extension's popup buttons". This is also the hole the nav-rail
+  // button left: Generate pins a RESIDENT engine, and without an explicit Unload
+  // the tab can take the card and never give it back except on the idle timer.
+  if (!/Load voice/.test(tab) || !/toggleEngine/.test(tab)) {
+    throw new Error('the Streaming tab lost Load voice / Unload. It is the surface that holds a '
+      + 'voice resident, so it is the surface that must be able to release one \u2014 the nav rail\u2019s '
+      + 'button, which used to be the only door, is deleted.');
+  }
 });
 
 check('KEPT OUT: src/app/core/listen/ is not created', () => {
