@@ -6,6 +6,70 @@ get up"*. This is the list, the order, and the honest state. It is updated at ea
 
 ## 0e. WHERE IT STANDS AT 19:40, 2026-09-14 (0d below is the BookForge half; read this first)
 
+**THE INSTALL/CONFIGURE/UNINSTALL PATH IS WALKED END TO END, 2026-09-15 (`0e3d9da6`,
+`c255746d`, `3172156b`).** Owen: *"let's make sure bookforge's and foundry's settings and setup
+pages are capable of installing and configuring it."* Step by step, with a keeper each.
+
+**Step 1 — first run, no server.** Already true and now actually reachable. The setup step
+(`app-crucible-doors mode="probing"`) shows ONE of three faces from `crucible:host-install-plan`;
+the local read is `local.ts`, pairing file FIRST. The gap was the third face: **the install
+button was disabled on every machine** because `DRIVEN_INSTALL_AVAILABLE` was a hardcoded
+`false` over a hand-transcribed `@crucible/bootstrap` surface. The package is now vendored
+(`vendor/crucible-bootstrap-0.6.0.tgz`, `npm pack` of `sdk/bootstrap`, the same stopgap shape as
+the client tarball, note in `package.json`), the types are IMPORTED — two had already drifted,
+`install()` having gained `release`/`home`/`bind`/`onHostEvent`/`fetchImpl` and lost
+`wheel`/`condaRoots` — and `loadBootstrap()` does the real `await import`. On Windows the door is
+the HOST's and nothing else (§4.3): no host → `host_not_installed` carrying the package's own
+`hostInstallCommand()`; a host → `POST /install` on 7101, events relayed. New IPC event
+`crucible:install-progress` carries `step` / `progress` (bytes) / `state` (the 4c code BY NAME) /
+`line` / `done` / `failed`, drawn as three signals in the doors component. The plan stops printing
+a shell sequence — those eight conda-and-wheel lines were a second description of an install
+PHASE14 §4a says cannot differ, and they HAD: `CRUCIBLE_WHEEL`, `MAC_CONDA_ROOTS` and the plan's
+`wheel` field are deleted, `steps` is read from `installSteps()` and carries no commands.
+Keeper: `test-crucible-install-seam` (42), rewritten to guard the opposite failure — a live
+button over an absent installer — over a scripted runner and a scripted host door.
+
+**Step 2 — Settings → Engine.** Already true (`e8ef901b`, `87770b0e`): the write-through window
+is Settings → **AI** (`app-ai-setup-wizard`, section id `ai`), with **Where each job runs** (one
+select per llm class) and **Accounts this engine can send work to** (three cards, key write-only,
+`keyHint` verbatim, Test before Save), all through the real SDK. One gap, fixed: the refusals were
+rendered as `message` alone, so `route_bad_model`, `route_upstream_unconfigured`, `upstream_in_use`,
+`unknown_upstream` and `upstream_bad_field` reached a person with no name on them. The code is
+drawn beside the sentence now, in all four places, as every other Crucible panel already does.
+"Open Crucible" is **Open engine console** (crucible-words rule 3) and the servers panel's
+Select/Remove/Test is rank-order + enable + the wait-for radio, deliberately.
+
+**Step 3 — uninstall.** New. `crucible uninstall` is the ENGINE's verb; `electron/crucible/
+uninstall.ts` finds the CLI that owns the local server, runs `--dry-run --json`, shows it, then
+runs the same plan. **LOCAL ONLY** (ruling taken with Foundry so both apps draw one door):
+`uninstall_not_local` for anything else, at the door as well as the button. Weights KEPT unless
+asked; `keep` is a reported RESULT with its size. `--wsl-too` refused where it means nothing;
+nothing defaulted out of the document; a CLI predating the verb is `uninstall_not_available`.
+Settings → Crucible Servers gains door 4, **Remove the engine from this computer**, with
+**Show me what would go** before **Remove it**. Keeper: `test-crucible-uninstall` (23).
+TODO: built to `crucible/uninstall.py`'s `Plan.to_dict()` and its parser's flags, read while that
+side was in flight — `docs/INSTALL-UNINSTALL.md` will own the contract.
+
+**Step 4 — the Anthropic key passes THROUGH and is stored nowhere.** True in
+`electron/`/`shared/`/`src/` since `ec24f361`. Not true in `cli/`, which
+`test-no-cloud-doors.js` never walked: `ai-clean.js` built `{claude:{apiKey}}` configs,
+`pass.js` wrote `claudeApiKey` into a PERSISTED pass record (queue.json and the book ledger — a
+plaintext credential with no expiry), `bookforge-tts.py` exported `BOOKFORGE_AI_API_KEY` into the
+child. All refused by name now, flags left declared so a stale script gets a sentence rather than
+"unrecognized arguments". The keeper grows a `cli/` walker and six checks built on "looking is not
+using": a read is banned when the value is BOUND, and the two files allowed to look must throw
+about what they see.
+
+**Gates:** `npx tsc -p tsconfig.electron.json` 0, `npx tsc --noEmit -p .` 0, `npx ng build` 0,
+`node tools/run-keepers.js` **159 suites, 0 failing** (1 skipped: `test-quire`, no
+`BOOKFORGE_KA_EPUB`). Every new row verified in `dist/renderer`.
+
+**One live READ, nothing else.** `%LOCALAPPDATA%\Crucible\pairing` EXISTS — the Windows host
+agent has written it — and `GET /v1/ping` on 7100 answers
+`{"crucible":true,"name":"crucible@owens-pc-wsl","api_version":1}`. So step 1's first door is live
+on this machine right now. **No install was run**: it would fight the host agent and the WSL
+server holding the card. Everything else was driven over injected runners and a fake host door.
+
 **PHASE 16 STEPS 2-4, 2026-09-14 late evening.** Steps 2 and 3 are in
 (`9d2a85f3`, `a7f12592`, `0d372bce`, `c6a7897e`, `db775aa5`, `a818d328`): the Listen text path
 and the Listen client are `shared/listen-text/` and `shared/listen-client/`, compiled by the
