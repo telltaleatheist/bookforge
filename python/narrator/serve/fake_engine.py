@@ -431,6 +431,21 @@ class FakeHiggsEngine(FakeEngine):
     #:    caller handed in for that index; a half renders at 1.0.
     RATE_ENV = 'NARRATOR_FAKE_HIGGS_RATE'
 
+    #: Milliseconds of REAL time one `render_audio` costs. Default 0, because a
+    #: fake that is slow by default makes every suite slow.
+    #:
+    #: It exists for exactly the reason `STREAM_ROW_SECONDS` above exists, one
+    #: arm along: a 'cancel' written to stdin behind a `generate_batch` needs
+    #: somewhere to LAND. The guarded arm retires a whole batch of sine waves in
+    #: microseconds, so without this a cancel test on that arm would prove only
+    #: that a batch nobody interrupted completes - which is what shipped, and
+    #: what let `_emit_guarded_batch` reach production with no cancel check at
+    #: all (see `serve/worker.py`, 2026-09-15).
+    #:
+    #: Paid per TAKE and not per chunk, deliberately: a re-roll and a split half
+    #: are renders, and the worst case a cancel waits out is one take.
+    ROW_MS_ENV = 'NARRATOR_FAKE_HIGGS_ROW_MS'
+
     #: THE FAKE'S OWN BAND, and it is not the real one - measured, not assumed.
     #:
     #: `audio_for` renders HIGGS_FRAMES_PER_CHAR = 0.34 frames per character at
@@ -641,6 +656,9 @@ class FakeHiggsEngine(FakeEngine):
         # 0.7 in take 2's lane" has to be able to see that all of its takes did.
         self._record_render(index, text, self._sampling_for(sampling), take,
                             self._request_seed(seed, index, take))
+        row_ms = (os.environ.get(self.ROW_MS_ENV) or '').strip()
+        if row_ms:
+            time.sleep(float(row_ms) / 1000.0)
         audio = self.audio_for(text)
         rate = self._rate_for(index, text)
         if rate == 1.0:

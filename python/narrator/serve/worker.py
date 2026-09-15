@@ -1629,6 +1629,13 @@ class OrpheusStreamServer:
         joined (`truncation.join_parts`) before the chunk retires, so a split shows
         up only as `parts: 2` on the verdict. Returning two rows would push the
         ladder's private business into every consumer - PHASE6 section 5.
+
+        CANCELLABLE, BETWEEN CHUNKS (2026-09-15). `self._is_cancelled()` is read
+        before the driver is started and again after every chunk it retires; on
+        a cancel the generator is CLOSED, which abandons the ladder, and the
+        rows never rendered are labelled by generate_batch's own sweep. See the
+        check itself for the worst case, for why nothing is plumbed into
+        `render_audio`, and for what it cost to have been missing.
         """
         orph = self.orph
         by_index = {}     # ladder index -> the item that asked for it
@@ -1694,9 +1701,15 @@ class OrpheusStreamServer:
         if not plan_rows:
             return
 
-        for index, audio, verdict in orph.render_many(plan_rows,
-                                                      sampling_by_index=rungs,
-                                                      take_by_index=takes):
+        if self._is_cancelled():
+            # Nothing has been asked of the driver yet, so a cancel that landed
+            # while the rows were being resolved costs no render at all. The
+            # `finally` sweep in generate_batch labels every row 'cancelled'.
+            return
+
+        driver = orph.render_many(plan_rows, sampling_by_index=rungs,
+                                  take_by_index=takes)
+        for index, audio, verdict in driver:
             it = by_index.pop(index, None)
             if it is None:
                 # The driver yielded an index this batch never asked for (or asked
@@ -1713,6 +1726,46 @@ class OrpheusStreamServer:
                 it,
                 None if audio is None or len(audio) == 0 else finalize_audio(audio),
                 guard=verdict)
+            if self._is_cancelled():
+                # CANCELLABLE, BETWEEN CHUNKS. `render_many` is a generator, so
+                # closing it is the whole of the stop: `break` drops the last
+                # reference, GeneratorExit unwinds `_render_many_serial` - whose
+                # docstring already names GeneratorExit as one of the three
+                # things that must unwind rather than be caught - and no further
+                # take is ever issued. Nothing is plumbed into the ladder, which
+                # is deliberate: a `should_stop` inside `render_audio` would make
+                # a stopped take look like a FAILED one to `GuardPlan`, and the
+                # ladder would spend a retake on the very chunk the cancel is
+                # abandoning.
+                #
+                # WORST CASE IS ONE RENDER IN FLIGHT - one chunk's take, ~20s on
+                # MLX, and up to one retake rung behind it if the ladder was
+                # part-way up a chunk when the flag flipped. Interrupting inside
+                # a chunk would mean teaching GuardPlan the difference between a
+                # take that failed and a take that was stopped, which PHASE6
+                # section 8 says has to be re-measured against the Mistborn
+                # pause map. Not worth it for twenty seconds.
+                #
+                # WHY THIS WAS MISSING (measured on the Mac, 2026-09-15). Every
+                # other arm here has had it since the reader thread landed -
+                # _generate_batch_mlx_ordered breaks between groups,
+                # _generate_batch_streaming hands should_stop to the engine -
+                # but this arm was written on 2026-09-13 for the guarded ruling
+                # and never grew one. It is the ONLY arm Crucible's render door
+                # drives, so a cancelled render of `thirdreich` kept going for
+                # eleven minutes after the DELETE, holding narrator's wire, the
+                # claim and the card.
+                #
+                # The rows never rendered are answered 'cancelled' by
+                # generate_batch's `finally` sweep, and batch_done still fires
+                # last: one answer per requested item, cancel or not.
+                #
+                # CLOSED EXPLICITLY rather than left to the refcount: the frame
+                # holding `driver` lives until this method returns, and "the
+                # ladder stops the moment the flag is read" is the claim, not
+                # "shortly afterwards, on this interpreter".
+                driver.close()
+                break
 
     def _generate_batch_mlx_ordered(self, items, language: str):
         """MLX read-ahead in READING ORDER, in groups of up to ORPHEUS_STREAM_BATCH.

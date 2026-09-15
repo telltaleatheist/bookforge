@@ -38,6 +38,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -699,6 +700,71 @@ class GuardedBatchTest(_WorkerCase):
         self.assertNotIn('data', by_i[1])
         self.assertNotIn('guard', by_i[1])
         self.assertIn('someone-else', by_i[1]['message'])
+
+    def test_a_cancel_stops_the_guarded_ladder_between_chunks(self):
+        """THE HOLE OWEN HIT, and the reason this test exists at all.
+
+        Measured on the Mac Studio, 2026-09-15: a Crucible `tts` job rendering
+        `thirdreich` was cancelled at chunk 38 of 89. Crucible's door recorded
+        `cancelling` and sent `{"action": "cancel"}`; this worker's reader thread
+        set the flag, as it always did - and `_emit_guarded_batch` never read it.
+        The ladder ran on for eleven more minutes, holding narrator's wire, the
+        job's claim on the card, and the voice on it. Every OTHER batch arm here
+        has been cancellable since the reader thread landed
+        (`test_cancel_DURING_a_batch_still_closes_it` covers the streamed one);
+        the guarded arm is the only one Crucible's render door drives, and it was
+        written on 2026-09-13 without a check.
+
+        What must hold is what holds for every other arm: one message per row
+        exactly once, 'batch_done' last, abandoned rows carrying 'cancelled', and
+        the rows that DID render still carrying real audio - a cancel stops work,
+        it does not retract what was already delivered.
+
+        NARRATOR_FAKE_HIGGS_ROW_MS is what gives the cancel somewhere to land: the
+        fake retires a batch of sine waves faster than the pipe round-trip, which
+        is exactly why a guarded cancel test could not have failed before.
+        """
+        self.w.close()
+        env = dict(self.WORKER_ENV)
+        env['NARRATOR_FAKE_HIGGS_ROW_MS'] = '120'
+        self.w = Worker(extra_env=env)
+
+        self._ready()
+        self._load('deathstalker')
+        n = 12
+        items = [{'i': i, 'text': f'Sentence number {i} of a chapter being rendered.'}
+                 for i in range(n)]
+        self.w.send(action='generate_batch', items=items)
+        # LONG ENOUGH THAT THE LADDER IS ALREADY RUNNING, and that is the whole
+        # point of the delay: a cancel written immediately behind the batch is
+        # caught by the check BEFORE the driver is started, which is a different
+        # (and much easier) path. Two or three rows in, with nine still to go, is
+        # where the between-chunks check is the only thing that can stop it.
+        time.sleep(0.3)
+        self.w.send(action='cancel')
+
+        by_i = self._assert_batch_closed(self.w.read_until('batch_done'),
+                                         list(range(n)))
+        cancelled = [i for i, m in by_i.items() if m.get('message') == 'cancelled']
+        rendered = [i for i in by_i if i not in cancelled]
+        self.assertTrue(cancelled,
+                        'the cancel must have abandoned at least one row; before '
+                        'the fix every row rendered and this list was empty')
+        self.assertTrue(rendered,
+                        'the ladder must have been RUNNING when the cancel landed - '
+                        'if nothing rendered, the pre-driver check stopped it and '
+                        'the between-chunks one is untested')
+        for i, m in by_i.items():
+            if i in cancelled:
+                self.assertNotIn('data', m, m)
+                self.assertNotIn('guard', m, m)
+            else:
+                self.assertIn('data', m, m)
+                self.assertIsNotNone(m.get('guard'), m)
+        # The cancel is still acknowledged, in arrival order, after the batch it
+        # aborted - which is what lets the NEXT batch render (the flag is cleared
+        # only where it is dequeued).
+        self.assertEqual(self.w.read_until('stopped')[-1]['type'], 'stopped')
 
 
 class VoiceCapsResetTest(unittest.TestCase):
