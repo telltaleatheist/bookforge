@@ -92,3 +92,44 @@ use" stays. A section with no rows is not drawn — an empty heading is worse th
 
 This is deliberately folded into the Pending/dial build rather than done separately: both
 rework the same component, and two passes over one file is how two agents collide.
+
+## The voice picker is grouped by server, and a voice can LOCK the server
+
+Owen, 2026-09-15: *"maybe we should make the dropdown show voices in sections. one section
+per crucible server. for servers that have the same registered voices, the same by model
+name, it lists it in a section that includes shared voices. if the user picks a voice that
+exists on the 3090 but not on m1 ultra, the server selection is locked to the 3090. if they
+choose a voice that both servers have, they can pick which server they want to use on the
+queue for that specific job/task."*
+
+This INVERTS today's dependency. The voice list is currently a local catalog
+(`electron/data/higgs-models.json` → `narration-voices.service.ts`) while the render goes to
+a selected server — so the picker can offer a voice the venue cannot serve, and the failure
+arrives at render time as a refusal rather than as an option that was never there.
+
+**The sections.** A voice is identified ACROSS servers by its model name. Group each voice by
+the exact SET of servers that serve it:
+
+- Voices every enabled server has → one shared section.
+- Voices unique to one server → that server's own section, named by the server ("3090 Ti",
+  "M1 Ultra").
+- With three or more servers a voice may be on a subset; the section is named by that subset.
+  The rule is the same one: **the section is the set of machines that can render it.**
+
+**The lock.** Choosing a voice that only one server serves **pins the venue to that server**,
+and the queue-item server picker is locked to it — not defaulted to it. Choosing a shared
+voice leaves the picker free across exactly the servers in that voice's set.
+
+**How it composes with the dial** (no new rule needed — the existing precedence covers it):
+a locked item names a server, so if the dial names a different one the row **parks** with the
+dial sentence, exactly as any other named row does. The lock is an instruction like any
+other; it is simply one the voice made rather than the operator.
+
+**Source of truth.** The list must come from each server's own `GET /v1/voices`, not the local
+catalog. `electron/crucible/voice-band.ts` already reads that endpoint for chunk packing, so
+the read exists and has an owner.
+
+**Owed a ruling:** what an UNREACHABLE or disabled server contributes. Its voices cannot be
+listed from it, and showing a stale set invites picking a voice that cannot be rendered —
+while hiding it silently removes a machine the operator knows they have. Say which, by name,
+rather than defaulting.
