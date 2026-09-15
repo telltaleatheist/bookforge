@@ -47,8 +47,9 @@ import {
   type StepStatus,
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
-import { serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf } from './slot-sets';
-import { LONGFORM_ALIGN_SET } from './slot-sets';
+import {
+  LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf,
+} from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Why a row is still
