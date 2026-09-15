@@ -393,6 +393,21 @@ const SUITES = [
   // the right one has to stay absent, which is the half that rots, because a
   // dropped control comes back one helpful commit at a time.
   'test-extension-option-columns',
+  // THE ZERO-SHOT CLIP, through both clients and the module they share. A
+  // `zeroshot` voice is the base weights plus somebody's recording, so the
+  // failure this pins is the quietest one in the whole pipeline: a clone
+  // conditioned on the wrong clip, or on no transcript, is a whole book in a
+  // subtly wrong voice REPORTED AS SUCCESS. It executes
+  // `shared/crucible/voice-reference.ts` (the RIFF/WAVE, 30-second, 32 MiB
+  // and blank-transcript refusals, in the server's own words, before a
+  // megabyte crosses a tailnet), source-pins the extension's picker and
+  // refusal the way the suite above does, drives BookForge's four
+  // `zeroshot-*` rows through a real socket to a fake Crucible to prove the
+  // catalog's BOOK-EXACT transcript is what lands in `params.reference`, and
+  // carries ONE tripwire: the 0.6.0 SDK drops `resident.reference` from
+  // `/v1/activity`, so both clients read that one field themselves, and the
+  // day it is modelled the check goes red naming the two functions to delete.
+  'test-zeroshot-reference',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',
