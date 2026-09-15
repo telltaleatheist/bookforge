@@ -307,22 +307,23 @@ const SUITES = [
   // a key is write-only both ways, one PUT configures an upstream AND routes to
   // it, a Test does not store what it tested, and a `llama-windows` engine
   // answers for the five WSL-only classes with ONE sentence so a screen says it
-  // once. Section 4 carries a TRIPWIRE that asserts a defect on purpose: the
-  // vendored SDK refuses a capability document in which no row carries `route`,
-  // where §3.3 says such a server predates the field and reads as all-local.
-  // That is being fixed in the SDK and is deliberately NOT worked around here —
-  // the check pins the wrong behaviour, in the open, with the instruction to
-  // invert it when the re-pack lands.
+  // once. Section 4's TRIPWIRE — which asserted, on purpose, that the vendored
+  // SDK refused a capability document in which no row carries `route` — FIRED
+  // on 2026-09-14 and is now the plain check §3.3 always described: such a
+  // server predates the field and every class on it is local. Nothing in
+  // BookForge changed for it, which is the dividend of never having worked the
+  // defect around.
   'test-crucible-settings-seam',
-  // THE CONNECT CODE ON THIS MACHINE, and the two places BookForge's reader and
-  // the SDK's do not agree. Split out of the seam suite when the Phase 15 SDK
-  // shipped and that seam was deleted: `electron/crucible/pairing-file.ts` did
-  // NOT go with it, because the SDK's reader is async (a packaging rule of
-  // theirs) while `readLocalServer` is synchronous (an architectural constraint
-  // of ours), and because the SDK's path rule omits the Windows case PHASE15
-  // §3.6's table pins. Section 3 of this suite asserts both disagreements
-  // EXPLICITLY rather than leaving them in a comment — the day either ends,
-  // the check goes red and says what to delete.
+  // THE CONNECT CODE ON THIS MACHINE, and the one thing BookForge's reader
+  // still does differently from the SDK's. Split out of the seam suite when the
+  // Phase 15 SDK shipped and that seam was deleted:
+  // `electron/crucible/pairing-file.ts` did NOT go with it, because the SDK's
+  // reader is async (a packaging rule of theirs) while `readLocalServer` is
+  // synchronous (an architectural constraint of ours). Its OTHER two reasons —
+  // the SDK's path rule omitting PHASE15 §3.6's Windows case, and an empty file
+  // reading as "no engine" — were asserted here as tripwires, fired on the
+  // 0.6.0 re-pack, and are now agreement checks: one rule, executed twice, with
+  // the composed path and both refusals compared side by side.
   'test-crucible-pairing-file',
   // PHASE 15 §5.2, the half of it that reaches a person: "settings are the
   // engine's; the app draws a window". The suite above proves the wire; this

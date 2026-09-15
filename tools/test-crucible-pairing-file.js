@@ -1,6 +1,6 @@
 /**
- * THE CONNECT CODE ON THIS MACHINE — and the two places BookForge's reader and
- * the SDK's do not agree.
+ * THE CONNECT CODE ON THIS MACHINE — and the one thing left that BookForge's
+ * reader does differently from the SDK's.
  *
  * crucible `docs/PHASE15-HOST.md` §3.6 and §5.1. These checks used to live in
  * `test-crucible-settings-seam.js`, which was a suite about a stand-in for an
@@ -9,17 +9,27 @@
  * two reasons its header sets out in full, and a reader that survives its own
  * seam needs a suite of its own saying why.
  *
- * ── THE PART THAT MATTERS: SECTION 3 ──────────────────────────────────────
+ * ── SECTION 3 WAS TWO TRIPWIRES. BOTH FIRED, AND THIS IS WHAT THEY BECAME ──
  *
  * Checks 1 and 2 are the ordinary thing — our reader does what §3.6 says.
- * Section 3 is the point of the file: it asserts, EXPLICITLY, where our reader
- * and `@crucible/client`'s `cruciblePairingPath` DISAGREE.
+ * Section 3 used to assert, EXPLICITLY, where our reader and
+ * `@crucible/client`'s disagreed: the Windows path, and what an empty file
+ * means. Two implementations of one rule is the defect the contract exists to
+ * prevent, so the disagreements were stated rather than hidden behind a
+ * comment, in order to go red the day the SDK adopted them.
  *
- * Two implementations of one rule is the defect the contract exists to
- * prevent, and this suite does not hide it behind a comment. It states it, so
- * that the day the SDK adopts the Windows case the check goes red and says
- * what to do — and so that until then nobody reads our extra branch as an
- * oversight and "tidies" it away.
+ * They went red on 2026-09-14, against the 0.6.0 re-pack (`1a1fb892`). The SDK
+ * carries §3.6's Windows case and refuses an empty file, and it refuses a
+ * multi-line one, which ours did not. So the divergences are gone: ours took
+ * the SDK's line rule whole, IMPORTS the three constants the path is composed
+ * of, and section 3 is now a plain AGREEMENT check on both.
+ *
+ * ONE reason for this file's existence survives, and it is the first one: the
+ * SDK's reader is async (a packaging rule of theirs — its imports are
+ * assembled at run time) and `readLocalServer` is synchronous (an
+ * architectural constraint of ours — `readRouting()` runs inside the queue's
+ * synchronous pump). This is that one rule executed twice, not read twice, and
+ * check 3.1 is the tripwire for the day even that ends.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -143,7 +153,7 @@ console.log('the connect code on this machine');
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 3. WHERE WE AND THE SDK DISAGREE — stated, not hidden
+  // 3. WE AND THE SDK, COMPARED — one rule, executed twice
   // ───────────────────────────────────────────────────────────────────────────
 
   const sdk = require('@crucible/client');
@@ -172,76 +182,90 @@ console.log('the connect code on this machine');
     assert.strictEqual(sdk.PAIRING_FILE, pairingFile.PAIRING_FILE_NAME);
   });
 
-  await check('WE DISAGREE ON WINDOWS — a known SDK defect, and this is its tripwire', async () => {
+  await check('WE AGREE ON WINDOWS — the tripwire fired and this is what it became', async () => {
     /*
      * §3.6's table: on Windows the file is `%LOCALAPPDATA%\\Crucible\\pairing`,
      * because the thing that writes a Windows-side copy is `crucible host` and
      * that is already its per-machine root (`wsl\\`, `downloads\\`, `host\\`).
-     * `cruciblePairingPath` implements `$CRUCIBLE_HOME`, else
-     * `~/.crucible/pairing`, on every platform.
      *
-     * The Crucible side confirmed this on 2026-09-14 as a DEFECT IN THE SDK
-     * rather than a question about the contract — Foundry measured the same
-     * thing against Owen's live server — and a re-packed tarball is coming.
-     * BookForge does not work around it: it follows the DOC, because the doc
-     * is the owner of every name on the wire (PHASE15's preamble), and the
-     * instruction is to read the path from the SDK once it is fixed.
+     * Until the 0.6.0 re-pack (`1a1fb892`) `cruciblePairingPath` implemented
+     * `$CRUCIBLE_HOME`, else `~/.crucible/pairing`, on EVERY platform, and
+     * this check asserted the disagreement in the open so that the re-vendor
+     * would turn it red rather than leave our extra branch as dead code
+     * nobody dared remove. It went red on 2026-09-14. THE SDK CARRIES §3.6'S
+     * WINDOWS CASE NOW, so there is one rule again and this is the agreement
+     * check it turned into.
      *
-     * The disagreement is asserted here so that the re-vendor turns this red
-     * and says what to delete, instead of quietly leaving our extra branch as
-     * dead code nobody dares remove.
-     *
-     * It is not load-bearing yet: on Windows the writer is `crucible host`,
-     * which does not exist, so there is no file at either path and the
-     * `config.toml`-through-`wsl.exe` door is the live one. It becomes
-     * load-bearing the moment the host ships.
+     * What is compared is the composed PATH, not the sentence — and
+     * `pairing-file.ts` imports the three names it composes out of (the env
+     * var, the file name, the Windows directory) from the SDK, so the only
+     * thing left that could drift is the shape of the composition, which is
+     * exactly what this asserts.
      */
+    assert.strictEqual(pairingFile.CRUCIBLE_HOME_ENV, sdk.CRUCIBLE_HOME_ENV);
+    assert.strictEqual(pairingFile.PAIRING_FILE_NAME, sdk.PAIRING_FILE);
+    assert.strictEqual(pairingFile.WINDOWS_HOME_DIRNAME, sdk.WINDOWS_HOME_DIRNAME);
+
     if (process.platform !== 'win32') {
-      console.log('        (not on win32 — the SDK default cannot be compared here)');
+      // `cruciblePairingPath()` reads `process.platform` itself, so the win32
+      // default is only comparable ON win32. Said out loud rather than
+      // silently skipped.
+      console.log('        (not on win32 — the SDK\'s default path cannot be compared here)');
       return;
     }
-    const os = require('os');
-    const sdkDefault = await sdk.cruciblePairingPath();
-    assert.strictEqual(sdkDefault, path.join(os.homedir(), '.crucible', 'pairing'),
-      'the SDK no longer resolves ~/.crucible on Windows — read its pairing-file.js before '
-      + 'trusting anything below');
-
     const localAppData = process.env['LOCALAPPDATA'];
     assert.ok(localAppData, 'this machine has no LOCALAPPDATA, so the comparison cannot be made');
     const ours = pairingFile.cruciblePairingFilePath(pairingFile.processPairingFileHost());
-    assert.strictEqual(ours, path.join(localAppData, 'Crucible', 'pairing'));
-
-    assert.notStrictEqual(ours, sdkDefault,
-      'THE SDK HAS BEEN FIXED — which is the thing this check was waiting for.\n'
-      + '        Do this: take the Windows path FROM the SDK rather than composing it here '
-      + '(cruciblePairingPath), delete reason TWO from '
-      + 'electron/crucible/pairing-file.ts\'s header, and delete this check.\n'
-      + '        If reason ONE has also gone (the SDK grew a synchronous reader, or '
-      + 'readLocalServer became async), delete the whole file and await the SDK instead.');
+    assert.strictEqual(ours, path.join(localAppData, sdk.WINDOWS_HOME_DIRNAME, sdk.PAIRING_FILE));
+    assert.strictEqual(await sdk.cruciblePairingPath(), ours,
+      'the SDK and this reader compose DIFFERENT Windows paths again. Read its '
+      + 'pairing-file.js: one of the two has moved, and two readers of one file that '
+      + 'look in different places is the defect PHASE15 §3.6 exists to prevent.');
   });
 
-  await check('an EMPTY file: we throw, the SDK answers null — the third divergence', async () => {
+  await check('an EMPTY file and a MULTI-LINE file: both refuse, on both sides', async () => {
     /*
-     * Ours throws `pairing_file_empty`; the SDK returns `null`. We keep ours,
-     * and the reason is the SDK's OWN argument applied consistently: its
-     * header says a malformed file must throw "because a line somebody's
+     * The third divergence, also over. Ours threw `pairing_file_empty` where
+     * the SDK answered `null`, and ours was right for the SDK's OWN stated
+     * reason — a malformed file must throw "because a line somebody's
      * installer wrote badly is a broken install, and answering 'there is no
-     * server here' would send the user to install a second one". A
-     * zero-length file is an interrupted write, which is the same broken
-     * install; answering `null` sends the same user to the same wrong place.
+     * server here' would send the user to install a second one"; a zero-length
+     * file is the same broken install. The re-pack applies that argument to
+     * the empty file, and adds the case ours did not have: MORE THAN ONE line,
+     * where picking one would be guessing at a bearer token.
      *
-     * Small, and recorded because two readers of one file that disagree about
-     * what a case MEANS is worth a line even when the case is rare.
+     * So this reader took the SDK's line rule whole (split, trim, drop blanks,
+     * then exactly one), and what is checked here is that both sides refuse
+     * both files — ours by its own code, the SDK by throwing at all.
      */
     let caught = null;
     try { pairingFile.readCruciblePairingFile(hostWith({ readFile: () => '' })); } catch (e) { caught = e; }
     assert.strictEqual(caught && caught.code, 'pairing_file_empty');
 
-    const src = fs.readFileSync(
-      path.join(REPO, 'node_modules', '@crucible', 'client', 'dist', 'esm', 'pairing-file.js'),
-      'utf-8');
-    assert.ok(/if \(line === ''\)\s*\n?\s*return null;/.test(src),
-      'the SDK no longer answers null for an empty file — re-read it; the divergence may be over');
+    const two = 'crucible://a@127.0.0.1:7100/#tok-aaaaaaaaaa\n'
+      + 'crucible://b@127.0.0.1:7101/#tok-bbbbbbbbbb\n';
+    caught = null;
+    try { pairingFile.readCruciblePairingFile(hostWith({ readFile: () => two })); } catch (e) { caught = e; }
+    assert.strictEqual(caught && caught.code, 'pairing_file_multiline',
+      'a two-line pairing file was read rather than refused — which line is the server\'s?');
+    assert.ok(caught.message.includes('2 lines'), caught.message);
+    assert.ok(!caught.message.includes('tok-'), 'a refusal never carries a token');
+
+    // The SDK's half, read against a real directory it is pointed at with
+    // $CRUCIBLE_HOME — no network, no server, two tiny files.
+    const os = require('os');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-pairing-'));
+    try {
+      fs.writeFileSync(path.join(home, sdk.PAIRING_FILE), '\n  \n');
+      await assert.rejects(() => sdk.readPairingFile(home), /empty|one line/i,
+        'the SDK answers for an empty file instead of refusing — the divergence is back, '
+        + 'and it is now OURS that is the odd one out');
+      fs.writeFileSync(path.join(home, sdk.PAIRING_FILE), two);
+      await assert.rejects(() => sdk.readPairingFile(home), /exactly one/i,
+        'the SDK reads a two-line pairing file — re-read its line rule before trusting ours');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   console.log(`\nthe connect code on this machine: ${failures === 0 ? 'all clear' : `${failures} failing`}`);

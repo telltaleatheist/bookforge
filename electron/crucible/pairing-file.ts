@@ -10,8 +10,9 @@
  * ── WHY THIS IS NOT `@crucible/client`'s `readPairingFile` ─────────────────
  *
  * The SDK grew one on 2026-09-14 and this file did NOT go with the rest of the
- * seam it belonged to (`settings-wire.ts`, deleted the same day). Two reasons,
- * both dated, and each names the condition that ends it.
+ * seam it belonged to (`settings-wire.ts`, deleted the same day). There were
+ * TWO reasons. **Reason two is gone** — see below — and ONE remains, dated,
+ * with the condition that ends it.
  *
  * **1. The SDK's is ASYNC and this read is on a SYNCHRONOUS path.** The SDK's
  * own header says why it is async, and the reason is a packaging rule rather
@@ -33,31 +34,28 @@
  * **ENDS WHEN:** the local-server resolution becomes async, or the SDK grows a
  * synchronous variant. Then this file is deleted and the callers await.
  *
- * **2. The SDK's path rule does not carry the Windows case the contract pins
- * — A KNOWN SDK DEFECT, being fixed.** §3.6's table is explicit: on Windows
- * the file is `%LOCALAPPDATA%\Crucible\pairing`, beside `wsl\`,
- * `downloads\` and `host\`, because the thing that writes a Windows-side
- * copy is `crucible host` and that is its per-machine root.
- * `cruciblePairingPath` implements `$CRUCIBLE_HOME`, else `~/.crucible/pairing`,
- * on **every** platform.
+ * **2. ~~The SDK's path rule does not carry the Windows case~~ — SETTLED
+ * 2026-09-14, and this is what it settled to.** It used to be a real
+ * divergence: §3.6's table pins `%LOCALAPPDATA%\Crucible\pairing` on Windows,
+ * and `cruciblePairingPath` implemented `$CRUCIBLE_HOME`, else
+ * `~/.crucible/pairing`, on every platform. BookForge followed the DOC and
+ * refused to work around the SDK, and `tools/test-crucible-pairing-file.js`
+ * asserted the disagreement in the open so the re-vendor would turn it red.
  *
- * Confirmed by the Crucible side on 2026-09-14 (Foundry measured the same
- * thing against Owen's live server) as a defect in the SDK rather than a
- * question about the contract, and a re-packed tarball is coming. **So this
- * is not BookForge's to settle and BookForge does not work around it**: the
- * doc is the owner of the name (PHASE15's preamble), this file implements the
- * DOC, and the instruction from the Crucible side is to read the path from
- * the SDK once it is fixed.
+ * The re-vendor (`1a1fb892`) fixed it. The SDK's rule is now §3.6's rule —
+ * `$CRUCIBLE_HOME`, else on win32 `%LOCALAPPDATA%\<WINDOWS_HOME_DIRNAME>\`
+ * with `LOCALAPPDATA` unset REFUSED rather than assembled from a username,
+ * else `~/.crucible/` — and the empty-file case agrees too (it throws, where
+ * it used to answer `null`). **So there is exactly ONE rule left in this
+ * file: the sync-ness.**
  *
- * `tools/test-crucible-pairing-file.js` asserts the disagreement EXPLICITLY
- * rather than leaving it in a comment, so that the re-vendor turns it red and
- * says what to delete instead of quietly making our extra branch dead code.
- *
- * It is not load-bearing meanwhile — on Windows the writer is `crucible host`,
- * which does not exist yet, so there is no file at either path and the
- * `config.toml`-through-`wsl.exe` door is the live one (§3.6 dates that door
- * too). It becomes load-bearing the moment the host ships, and then whichever
- * of the two is wrong finds nothing and offers to install a second engine.
+ * Which means this file is no longer a second OPINION, only a second
+ * EXECUTION, and the three names it composes the path out of are IMPORTED
+ * from the SDK rather than re-spelled here (`CRUCIBLE_HOME_ENV`,
+ * `PAIRING_FILE`, `WINDOWS_HOME_DIRNAME`). The keeper's section 3 stopped
+ * being a tripwire and is now a plain agreement check: it compares the path
+ * THIS composes against the one `cruciblePairingPath()` returns, and the
+ * empty-file and multi-line refusals against the SDK's own.
  *
  * ── `null` IS THE ANSWER, NOT A GAP ────────────────────────────────────────
  *
@@ -67,18 +65,33 @@
  * is not broken. A file that EXISTS and is not a connect code is a different
  * thing and throws: something wrote where the engine keeps its credential, and
  * reading that as "no engine" would send somebody to install a second one over
- * the top of one that is already running.
+ * the top of one that is already running. The SDK argues it in exactly those
+ * words, and applies it to the empty file and the multi-line file as well —
+ * both of which this reader now refuses by name for the same reason.
  */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { parsePairing, type Pairing } from '@crucible/client';
+import {
+  CRUCIBLE_HOME_ENV as SDK_CRUCIBLE_HOME_ENV,
+  PAIRING_FILE as SDK_PAIRING_FILE,
+  WINDOWS_HOME_DIRNAME as SDK_WINDOWS_HOME_DIRNAME,
+  parsePairing,
+  type Pairing,
+} from '@crucible/client';
 
-/** How `crucible_home()` names its override, verbatim. */
-export const CRUCIBLE_HOME_ENV = 'CRUCIBLE_HOME';
+/**
+ * How `crucible_home()` names its override, verbatim — THE SDK'S CONSTANT,
+ * re-exported rather than re-typed. A string spelled twice is a fact with two
+ * owners (crucible `docs/ARCHITECTURE.md` R1), and the SDK is the owner.
+ */
+export const CRUCIBLE_HOME_ENV = SDK_CRUCIBLE_HOME_ENV;
 
-/** The file's own name inside that home. One line, trailing newline. */
-export const PAIRING_FILE_NAME = 'pairing';
+/** The file's own name inside that home. One line, trailing newline. The SDK's. */
+export const PAIRING_FILE_NAME = SDK_PAIRING_FILE;
+
+/** `%LOCALAPPDATA%\Crucible` — the Windows home's directory name. The SDK's. */
+export const WINDOWS_HOME_DIRNAME = SDK_WINDOWS_HOME_DIRNAME;
 
 /** Why a pairing file could not be read, when the reason is not "there is none". */
 export type CruciblePairingFileErrorCode =
@@ -88,6 +101,13 @@ export type CruciblePairingFileErrorCode =
   | 'pairing_file_unreadable'
   /** The file is there and has nothing in it: an interrupted write. */
   | 'pairing_file_empty'
+  /**
+   * The file holds more than one non-blank line, so which one the server wrote
+   * is a guess — and a guessed bearer token is an auth error nobody can
+   * explain. The SDK refuses this too (`crucible/pairing.py` writes exactly
+   * one line, so a second one is something else appending).
+   */
+  | 'pairing_file_multiline'
   /** The file is there and is not a `crucible://` line. */
   | 'pairing_file_invalid';
 
@@ -148,6 +168,11 @@ export function processPairingFileHost(): PairingFileHost {
  * (`wsl\`, `downloads\`, `host\`). `LOCALAPPDATA` unset is REFUSED by name,
  * exactly as `sdk/bootstrap/src/distro.ts` refuses it, rather than assembled
  * from a username.
+ *
+ * THE SDK'S `cruciblePairingPath()` NOW COMPOSES THE SAME PATH out of the same
+ * three constants, which this file imports from it. This is the synchronous
+ * execution of that one rule, not a second reading of it, and the keeper
+ * compares the two answers rather than trusting the sentence.
  */
 export function cruciblePairingFilePath(host: PairingFileHost): string {
   const override = host.env[CRUCIBLE_HOME_ENV];
@@ -161,7 +186,7 @@ export function cruciblePairingFilePath(host: PairingFileHost): string {
           + 'written a connect code. Paste one instead, or set CRUCIBLE_HOME.',
       );
     }
-    return path.join(local, 'Crucible', PAIRING_FILE_NAME);
+    return path.join(local, WINDOWS_HOME_DIRNAME, PAIRING_FILE_NAME);
   }
   return path.join(host.homedir, '.crucible', PAIRING_FILE_NAME);
 }
@@ -185,16 +210,29 @@ export function readCruciblePairingFile(
   const file = cruciblePairingFilePath(host);
   const text = host.readFile(file);
   if (text === null) return null;
-  const line = text.trim();
-  if (line === '') {
+  /*
+   * THE SDK'S LINE RULE, EXACTLY: split, trim, drop the blanks, and then the
+   * file holds one line or it is a defect. Zero lines is an interrupted write;
+   * two or more is something OTHER than `crucible init` appending to the file,
+   * and picking one of them would be guessing at a bearer token.
+   */
+  const lines = text.split(/\r?\n/).map((each) => each.trim()).filter((each) => each !== '');
+  if (lines.length === 0) {
     throw new CruciblePairingFileError(
       'pairing_file_empty',
       `${file} is empty. The engine writes one connect code with a trailing newline, so an empty `
         + 'file is an interrupted write — run `crucible token --url` on that machine again.',
     );
   }
+  if (lines.length > 1) {
+    throw new CruciblePairingFileError(
+      'pairing_file_multiline',
+      `${file} holds ${lines.length} lines and a pairing file holds exactly one. Something other `
+        + 'than `crucible init` has written to it; delete it and re-run `crucible token --url`.',
+    );
+  }
   try {
-    return { pairing: parsePairing(line), file };
+    return { pairing: parsePairing(lines[0]!), file };
   } catch (err) {
     /*
      * `parsePairing` is the ONE parser of this format (PHASE13 §2.1) and its
