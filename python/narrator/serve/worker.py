@@ -1621,7 +1621,9 @@ class OrpheusStreamServer:
         RETIREMENT ORDER, NOT READING ORDER. `render_many` yields as the ladder
         decides, so a chunk that re-rolled lands after its neighbours. That is
         already this wire's contract - clients assemble by index, see
-        _generate_batch_mlx_ordered and docs/TTS_API.md - and the three guarantees
+        _generate_batch_mlx_ordered (docs/TTS_API.md said so too and was deleted
+        with BookForge's speak relay; no doc replaced that sentence, so the code
+        is the statement) - and the three guarantees
         the pool depends on are untouched: one batch_item per requested `i`,
         exactly once, then batch_done last, always.
 
@@ -1777,7 +1779,8 @@ class OrpheusStreamServer:
         shortest at ~70% of its depth - so the earliest sentences of a 30-43s batch
         reach the client ~12s sooner. Rows therefore arrive in RETIREMENT order, not
         reading order; the wire protocol is explicitly out-of-order (clients assemble
-        by sentence index - see docs/TTS_API.md). One bad group fails only its own
+        by sentence index - stated in _generate_batch_mlx_ordered above, since
+        docs/TTS_API.md is gone). One bad group fails only its own
         items; every item is emitted exactly once; batch_done always fires last.
 
         MLX renders ONE voice - see _reject_per_request_voice - so every item is

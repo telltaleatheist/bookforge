@@ -2,8 +2,9 @@
 
 How the TTS system works end-to-end, and where to look when it misbehaves.
 Written 2026-07-12 after a full-system bug hunt; file:line references are
-accurate as of that date. Companion doc: `docs/TTS_API.md` (the tab recorder's
-WebSocket protocol on port 8766), `docs/ORPHEUS_SETUP.md` (install).
+accurate as of that date. Companion doc: `docs/TAB_RECORDER.md` (all that is
+left on port 8766 — the tab recorder's WebSocket protocol; `docs/TTS_API.md` was
+deleted with the speak relay in Phase 16), `docs/ORPHEUS_SETUP.md` (install).
 
 ---
 
