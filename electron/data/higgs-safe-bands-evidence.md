@@ -427,3 +427,59 @@ CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to th
 CLIFF MARGIN:
   - the bin BELOW the floor (600) fails 7.5% - the floor sits on a cliff; a higher floor with a safe bin under it is worth a slightly worse bound
   - the bin ABOVE the cap (1100) fails 7.1% - expected, that is the cap doing its job
+
+
+### mistborn - ladder chart (512 renders, pace 13.3 chars/s, /mnt/e/training/_campaigns/2026-09-13-mistborn-ha-rvcbed/screen_mb_ha_rvcbed1/ladder/mb_ha_rvcbed1_5803)
+
+```
+RUNG CURVE (target size +/-12%; modes = which failures, not just how many)
+  rung     n    fail   95% hi   modes
+    100    32     28%      45%   cov 1, long 8
+    200    32     12%      28%   cov 4
+    300    32      0%      11%   -
+    400    32      6%      20%   cov 2
+    500    32      0%      11%   -
+    600    32      9%      24%   cov 3, short 1
+    700    32      3%      16%   cov 1, short 1
+    800    32      6%      20%   cov 2
+    900    32      6%      20%   cov 2
+   1000    32      6%      20%   cov 2, short 1
+   1100    32      9%      24%   cov 3
+   1200    32     12%      28%   cov 3, long 1, short 2
+   1300    32     31%      49%   cov 10, short 3
+   1400    32     34%      52%   cov 6, long 5, short 2
+   1500    32     59%      74%   cov 11, long 8, short 8
+   1600    32     50%      66%   cov 13, long 3, short 9
+
+CHARACTER SPREAD (actual chars - this is what the packer emits, and what sets the band)
+  chars          n    fail   95% hi   modes
+      0-100     12   41.7%    68.0%   cov 1, long 4
+    100-200     36   19.4%    35.0%   cov 3, long 4
+    200-300     40    2.5%    12.9%   cov 1
+    300-400     36    2.8%    14.2%   cov 1
+    400-500     28    3.6%    17.7%   cov 1
+    500-600     32    6.2%    20.1%   cov 2, short 1
+    600-700     40    5.0%    16.5%   cov 2, short 1
+    700-800     32   12.5%    28.1%   cov 4
+    800-900     32    0.0%    10.7%   -
+    900-1000    48    6.2%    16.8%   cov 3, short 1
+   1000-1100    36   13.9%    28.7%   cov 5, short 2
+   1100-1200    24   20.8%    40.5%   cov 4, long 1, short 2
+   1200-1300    40   30.0%    45.4%   cov 9, long 3, short 1
+   1300-1400    40   50.0%    64.8%   cov 10, long 10, short 6
+   1400-1500    24   66.7%    82.0%   cov 14, long 2, short 12
+   1500-1600    12   33.3%    60.9%   cov 3, long 1, short 1
+
+CLEANEST UNBROKEN BANDS (contiguous bins, ranked by 95%% upper bound; ties to the wider)
+    200-700      7/176  =   4.0%  95% hi   8.0%  width 500
+    200-1000    14/288  =   4.9%  95% hi   8.0%  width 800
+    200-900     11/240  =   4.6%  95% hi   8.0%  width 700
+    200-500      3/104  =   2.9%  95% hi   8.1%  width 300
+    200-600      5/136  =   3.7%  95% hi   8.3%  width 400
+```
+
+**BAND 200-700** - 7/176 = 4.0% (95% hi 8.0%), the cleanest unbroken run of bins.
+
+CLIFF MARGIN:
+  - the bin BELOW the floor (200) fails 19.4% - the floor sits on a cliff; a higher floor with a safe bin under it is worth a slightly worse bound
+  - the bin ABOVE the cap (700) fails 12.5% - expected, that is the cap doing its job
