@@ -3849,11 +3849,15 @@ export class BookshelfServer {
    * THIS machine reads as 4 hours on a phone whose clock drifted, and the reader
    * has no way to tell which number lied.
    *
-   * Each step's `config` is the one thing dropped. It is the job type's verbatim
-   * configuration and carries credentials — `claudeApiKey` / `openaiApiKey` live
-   * there (see queue-steps/ai-provider.ts) — and nothing on the page reads it:
-   * no function in bench.ts touches `config`. Serving it would put an API key on
-   * the wire to satisfy nobody.
+   * Each step's `config` is the one thing dropped, and nothing on the page
+   * reads it: no function in bench.ts touches `config`. It USED to carry
+   * credentials (`claudeApiKey` / `openaiApiKey`) and that was the reason
+   * given here; those fields were deleted from the pass records on 2026-09-14
+   * when every cloud account moved into the Crucible engine's own config
+   * (crucible PHASE15-HOST.md section 0), so there is no key to leak any more.
+   * The dropping stays, for the plainer reason: a job type's verbatim
+   * configuration is not something a phone's bench has any use for, and a
+   * record written before that deletion still has the two fields on disk.
    *
    * In-memory only, on purpose: this server shares the desktop app's main
    * thread, so a handler that walked disk or read covers here would freeze the

@@ -354,7 +354,17 @@ import {
           <p class="muted">{{ settingsIntroWords }}</p>
 
           @if (panelRefusal(); as refusal) {
-            <p class="vlm-status bad">{{ refusedLeadWords }} {{ refusal.message }}</p>
+            <!--
+              THE CODE IS ON THE SCREEN, and that is the correction (2026-09-15).
+              This panel showed refusal.message alone, so route_bad_model,
+              route_upstream_unconfigured, upstream_in_use, unknown_upstream and
+              upstream_bad_field reached a person as prose with no name on it —
+              and "refused by name" is only true where the name is visible. The
+              other Crucible panels in this app already draw it this way.
+            -->
+            <p class="vlm-status bad">
+              {{ refusedLeadWords }} <span class="code">{{ refusal.code }}</span> {{ refusal.message }}
+            </p>
           }
 
           @if (engineSettings(); as doc) {
@@ -406,8 +416,8 @@ import {
                    is what the dotted path is for (§3.2): routes.translate
                    belongs under the translate row, not at the top of a page
                    with four rows on it. -->
-              @if (refusalFor('routes.' + act); as message) {
-                <p class="vlm-status bad">{{ message }}</p>
+              @if (refusalFor('routes.' + act); as r) {
+                <p class="vlm-status bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
               }
             }
 
@@ -463,8 +473,8 @@ import {
                 @if (testedWordsFor(name); as line) {
                   <p class="act-model">{{ line }}</p>
                 }
-                @if (refusalForUpstream(name); as message) {
-                  <p class="vlm-status bad">{{ message }}</p>
+                @if (refusalForUpstream(name); as r) {
+                  <p class="vlm-status bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
                 }
               </div>
             }
@@ -537,8 +547,8 @@ import {
                         (click)="connectAndRoute(act)"
                       >{{ offerButton(act) }}</desktop-button>
                     </div>
-                    @if (refusalFor('routes.' + act); as message) {
-                      <p class="vlm-status bad">{{ message }}</p>
+                    @if (refusalFor('routes.' + act); as r) {
+                      <p class="vlm-status bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
                     }
                   }
                 </div>
@@ -1038,7 +1048,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly panelRefusal = signal<CrucibleEngineSettingsRefusal | null>(null);
 
   /** Dotted path → the engine's sentence about that control. */
-  readonly fieldRefusals = signal<Record<string, string>>({});
+  readonly fieldRefusals = signal<Record<string, { code: string; message: string }>>({});
 
   /**
    * WHAT IS TYPED IN A CREDENTIAL BOX, PER ACCOUNT, AND ONLY UNTIL THE NEXT
@@ -1138,11 +1148,21 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       this.panelRefusal.set({ ...refusal, message });
       return;
     }
-    this.fieldRefusals.update((map) => ({ ...map, [refusal.field as string]: message }));
+    this.fieldRefusals.update((map) => ({
+      ...map,
+      [refusal.field as string]: { code: refusal.code, message },
+    }));
   }
 
-  /** The sentence for one dotted path, or undefined. Drawn under that control. */
-  refusalFor(field: string): string | undefined {
+  /**
+   * The refusal for one dotted path, or undefined. Drawn under that control.
+   *
+   * CODE AND SENTENCE, not just the sentence. §3.2's names are the contract
+   * between this app and the engine, and a person who reads
+   * `route_upstream_unconfigured` on their screen can be told what it means by
+   * somebody who has never seen this build.
+   */
+  refusalFor(field: string): { code: string; message: string } | undefined {
     return this.fieldRefusals()[field];
   }
 
@@ -1152,10 +1172,10 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
    * same card, and a refusal about one that appeared nowhere because it was
    * spelled as the other would be a silent no.
    */
-  refusalForUpstream(name: CrucibleUpstreamName): string | undefined {
+  refusalForUpstream(name: CrucibleUpstreamName): { code: string; message: string } | undefined {
     const map = this.fieldRefusals();
-    for (const [field, message] of Object.entries(map)) {
-      if (field === `upstreams.${name}` || field.startsWith(`upstreams.${name}.`)) return message;
+    for (const [field, refusal] of Object.entries(map)) {
+      if (field === `upstreams.${name}` || field.startsWith(`upstreams.${name}.`)) return refusal;
     }
     return undefined;
   }
@@ -1491,9 +1511,19 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
     const model = this.offerModel(act).trim();
     if (model.length === 0) {
+      /*
+       * NOT A REFUSAL FROM THE ENGINE — the engine was never asked. Nobody
+       * typed a model id, so this app is the one saying no, and it says so
+       * under its own name rather than borrowing one of §3.2's: a person who
+       * searched for `route_bad_model` because they saw it here would find a
+       * refusal about a slash, which is not what happened.
+       */
       this.fieldRefusals.update((map) => ({
         ...map,
-        [`routes.${act}`]: `${upstreamTestedWords(name, models)} ${nameAModelWords(name)}`,
+        [`routes.${act}`]: {
+          code: 'no_model_named',
+          message: `${upstreamTestedWords(name, models)} ${nameAModelWords(name)}`,
+        },
       }));
       return;
     }

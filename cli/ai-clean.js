@@ -12,7 +12,7 @@
  *
  * Run via the electron shim:
  *   node --require ./cli/electron-stub.js cli/ai-clean.js \
- *        --input book.epub --provider claude --model claude-sonnet-4-... [--simplify --mode learner]
+ *        --input book.epub --provider local [--simplify --mode learner]
  *   node --require ./cli/electron-stub.js cli/ai-clean.js \
  *        --input book.epub --provider crucible --server mac --model qwen3.5-9b --stages ocr
  *
@@ -21,8 +21,22 @@
  * entry in this machine's registry, --model a model that must ALREADY be
  * resident there: the run refuses by name rather than loading one.
  *
- * The API key is read from BOOKFORGE_AI_API_KEY (env) so it never lands in argv.
- * No fallbacks: a missing key/model/provider or a failed job throws with a naming message.
+ * THERE IS NO API KEY HERE ANY MORE (2026-09-15, crucible docs/PHASE15-HOST.md
+ * section 0 and section 5.3). A cloud account belongs to the ENGINE: its key
+ * lives in that Crucible's own config.toml, its routes are set through
+ * `PUT /v1/settings`, and an app - the desktop one and this file alike - sends
+ * `capability.selected` to a server and holds no credential at all. So
+ * `--api-key`, BOOKFORGE_AI_API_KEY and the two provider env vars are gone,
+ * and so are the `claude`, `openai` and `ollama` providers: `ai-bridge` deleted
+ * those branches on 2026-09-14, and a CLI that still composed configs for them
+ * was reading keys off a machine to hand them to a door that no longer exists.
+ *
+ * To run a pass through Anthropic today: configure the account ONCE on the
+ * Crucible (BookForge -> Settings -> AI, or the engine's own console), route
+ * the class to it, and run this file with `--provider crucible --server <name>
+ * --model <the routed id>`.
+ *
+ * No fallbacks: a missing model/provider or a failed job throws with a naming message.
  */
 'use strict';
 const fs = require('fs');
@@ -42,7 +56,7 @@ function parseArgs(argv) {
   return a;
 }
 
-function buildProviderConfig(provider, model, apiKey, ollamaUrl, crucibleServer) {
+function buildProviderConfig(provider, model, crucibleServer) {
   switch (provider) {
     case 'crucible':
       // A Crucible server runs the model; BookForge only sends the chunk. Neither
@@ -53,22 +67,27 @@ function buildProviderConfig(provider, model, apiKey, ollamaUrl, crucibleServer)
       if (!crucibleServer) throw new Error("provider 'crucible' needs --server <name> (a registered server: bookforge-tts --crucible-list)");
       if (!model) throw new Error("provider 'crucible' needs --model <id> (e.g. qwen3.5-9b)");
       return { provider, crucible: { server: crucibleServer, model } };
-    case 'claude':
-      if (!apiKey) throw new Error("provider 'claude' needs an API key (--api-key / BOOKFORGE_AI_API_KEY / ANTHROPIC_API_KEY)");
-      if (!model) throw new Error("provider 'claude' needs --model (e.g. claude-sonnet-4-5)");
-      return { provider, claude: { apiKey, model } };
-    case 'openai':
-      if (!apiKey) throw new Error("provider 'openai' needs an API key (--api-key / BOOKFORGE_AI_API_KEY / OPENAI_API_KEY)");
-      if (!model) throw new Error("provider 'openai' needs --model (e.g. gpt-4o)");
-      return { provider, openai: { apiKey, model } };
-    case 'ollama':
-      // Default base URL + model match ai-bridge constants; --ollama-url / OLLAMA_BASE_URL override.
-      return { provider, ollama: { baseUrl: ollamaUrl || 'http://localhost:11434', model: model || 'cogito:14b' } };
     case 'local':
       // Bundled llama.cpp; the active model is resolved inside llama-bridge (active-model.json).
       return { provider, local: { model: model || undefined } };
+    // THE THREE DELETED PROVIDERS ARE REFUSED BY NAME rather than left out of
+    // the switch. Somebody with a shell script from last month must be told
+    // what happened to their flag and where the thing it named went, not
+    // handed "unknown provider" about a word they have used for a year.
+    case 'claude':
+    case 'openai':
+      throw new Error(
+        `provider '${provider}' is gone: a cloud account belongs to the ENGINE now, not to an app `
+        + '(crucible PHASE15-HOST.md section 0). Configure the account on the Crucible once - '
+        + "BookForge Settings -> AI, or the engine's own console - route the class to it, then "
+        + 'run --provider crucible --server <name> --model <the routed id>. No key is typed here.');
+    case 'ollama':
+      throw new Error(
+        "provider 'ollama' is gone: an Ollama server is an UPSTREAM of a Crucible now, configured "
+        + 'on the engine and routed to per class. Run --provider crucible --server <name> '
+        + '--model <the routed id>.');
     default:
-      throw new Error(`unknown --provider '${provider}' (claude|openai|ollama|local|crucible)`);
+      throw new Error(`unknown --provider '${provider}' (crucible|local)`);
   }
 }
 
@@ -77,7 +96,7 @@ async function main() {
 
   if (!args.input) throw new Error('--input <file.epub> is required');
   if (!fs.existsSync(args.input)) throw new Error(`input epub not found: ${args.input}`);
-  if (!args.provider) throw new Error('--provider <claude|openai|ollama|local|crucible> is required');
+  if (!args.provider) throw new Error('--provider <crucible|local> is required');
   // --server belongs to ONE provider. Accepting it elsewhere and dropping it is
   // the failure mode the flags keeper exists to end: a run that silently went to
   // the local machine reads as a measurement of the remote one.
@@ -85,14 +104,19 @@ async function main() {
     throw new Error(`--server names a registered Crucible server and applies to --provider crucible only (got provider '${args.provider}')`);
   }
 
-  // Key precedence matches the error messages: --api-key, then the CLI-wrapper env,
-  // then the conventional provider envs (so driving this file directly also works).
-  const apiKey = args['api-key']
-    || process.env.BOOKFORGE_AI_API_KEY
-    || (args.provider === 'claude' ? process.env.ANTHROPIC_API_KEY : undefined)
-    || (args.provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
-  const config = buildProviderConfig(args.provider, args.model, apiKey,
-    args['ollama-url'] || process.env.OLLAMA_BASE_URL,
+  // NO KEY IS READ HERE, and the two flags that used to carry one are REFUSED
+  // rather than ignored: a flag that is silently dropped is a choice somebody
+  // made that did not happen, and this particular choice was "send my book to
+  // Anthropic", which must never quietly become "send it somewhere else".
+  for (const gone of ['api-key', 'ollama-url']) {
+    if (args[gone] !== undefined) {
+      throw new Error(
+        `--${gone} is gone: a cloud or Ollama account belongs to the Crucible engine, not to this `
+        + 'app (crucible PHASE15-HOST.md section 0). Configure it once on the engine and route the '
+        + 'class to it; this file then sends nothing but the chunk and the model id.');
+    }
+  }
+  const config = buildProviderConfig(args.provider, args.model,
     args.server === true ? '' : args.server);
 
   // Options mirror the app's cleanupEpub option surface exactly.

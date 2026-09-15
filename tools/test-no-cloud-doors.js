@@ -84,6 +84,45 @@ function sources() {
   return out;
 }
 
+/**
+ * THE CLI, WHICH THIS SUITE DID NOT LOOK AT FOR A DAY (added 2026-09-15).
+ *
+ * `sources()` walks `.ts` under three directories, and `cli/` is JavaScript
+ * and Python. So the deletion of 2026-09-14 was pinned everywhere except the
+ * place that was still reading keys: `cli/ai-clean.js` built
+ * `{claude: {apiKey}}` configs for an `AIProvider` that no longer has a
+ * `claude` arm, `cli/pass.js` wrote `params.claudeApiKey` into a record that
+ * is PERSISTED into queue.json and the book's ledger, and
+ * `cli/bookforge-tts.py` exported `BOOKFORGE_AI_API_KEY` into the child's
+ * environment. Live key-reading code aimed at a deleted door, and a plaintext
+ * credential on disk.
+ *
+ * Comments are NOT stripped here, and that is deliberate: the three files now
+ * explain the deletion at length and name the very things they must not do, so
+ * the checks below look for CODE shapes (an assignment, an env read, a config
+ * block) rather than for the words.
+ */
+function cliSources() {
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === 'dist' || e.name === '__pycache__') continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(js|mjs|cjs|py)$/.test(e.name)) {
+        out.push({
+          file: path.relative(REPO, p).replace(/\\/g, '/'),
+          code: fs.readFileSync(p, 'utf-8'),
+        });
+      }
+    }
+  };
+  walk(path.join(REPO, 'cli'));
+  return out;
+}
+
+const CLI_FILES = cliSources();
+
 const FILES = sources();
 
 /** Which files still contain `needle`, as repo-relative paths. */
@@ -364,6 +403,115 @@ check('the three vendor names appear only as the engine\'s upstream list', () =>
     assert.ok(!/fetch\(|apiKey/.test(src.code),
       `${file} does more than LABEL a retired provider now — it acts on one.`);
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. The CLI holds no key either
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Memory `cli-must-mirror-app-code-path`: the CLI runs the app's own bridges,
+// so a provider the app deleted is a provider the CLI cannot reach. What it
+// COULD still do until 2026-09-15 was read a key off the machine and put it in
+// a persisted record on the way to a door that was not there.
+
+check('no CLI file ASSIGNS a cloud key anywhere', () => {
+  const offenders = [];
+  for (const f of CLI_FILES) {
+    // An assignment or an object property, not a mention: these files argue
+    // about the deletion by name and must be allowed to.
+    if (/\b(claudeApiKey|openaiApiKey|anthropicApiKey)\s*[:=][^=]/.test(f.code)) offenders.push(f.file);
+  }
+  assert.strictEqual(offenders.length, 0,
+    `these CLI files still set a key field: ${offenders.join(', ')}. A pass params record is `
+    + 'PERSISTED into queue.json and the book ledger, so a key that reaches one is a plaintext '
+    + 'credential on disk with no expiry.');
+});
+
+check('no CLI file BINDS a cloud key read from the environment', () => {
+  /*
+   * LOOKING IS NOT USING, and the difference is whether the value is BOUND.
+   *
+   * `cli/pass.js` and `cli/bookforge-tts.py` both TEST for these variables so
+   * they can refuse by name — a person with BOOKFORGE_AI_API_KEY still
+   * exported is told the app has nowhere to put it, rather than having it
+   * silently ignored. That read is a guard. What is banned is a read whose
+   * value goes into a variable, a property, an argument or a return, because
+   * that is a key on its way somewhere.
+   */
+  const KEYS = '(BOOKFORGE_AI_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY)';
+  const bindings = [
+    // const key = process.env.X    /    params.key = process.env.X
+    new RegExp(`[=:]\\s*process\\.env\\.${KEYS}\\b`),
+    new RegExp(`[=:]\\s*process\\.env\\[['"]${KEYS}['"]\\]`),
+    // key = os.environ.get("X")    /    return os.environ.get("X")
+    new RegExp(`[=:]\\s*os\\.environ\\.get\\(\\s*['"]${KEYS}['"]`),
+    new RegExp(`return\\s+os\\.environ\\.get\\(\\s*['"]${KEYS}['"]`),
+    // ... || process.env.X — the old precedence chain
+    new RegExp(`\\|\\|\\s*process\\.env\\.${KEYS}\\b`),
+  ];
+  const offenders = [];
+  for (const f of CLI_FILES) {
+    if (bindings.some((re) => re.test(f.code))) offenders.push(f.file);
+  }
+  assert.strictEqual(offenders.length, 0,
+    `these CLI files still source a key from the environment: ${offenders.join(', ')}. The key `
+    + "lives in the Crucible engine's own config.toml (crucible PHASE15-HOST.md section 0).");
+});
+
+check('and the two that LOOK do it only to refuse by name', () => {
+  // The other half of the rule above: a file allowed to test for the variable
+  // must actually throw about it, or the test is a read with no consequence.
+  for (const file of ['cli/pass.js', 'cli/bookforge-tts.py']) {
+    const f = CLI_FILES.find((x) => x.file === file);
+    assert.ok(f, `${file} is gone`);
+    if (!/BOOKFORGE_AI_API_KEY/.test(f.code)) continue;
+    assert.ok(
+      /(throw new Error|_require\(False)/.test(f.code),
+      `${file} reads BOOKFORGE_AI_API_KEY and does not refuse about it`,
+    );
+  }
+});
+
+check('nothing EXPORTS a key into a child process', () => {
+  const offenders = [];
+  for (const f of CLI_FILES) {
+    if (/env\[["']BOOKFORGE_AI_API_KEY["']\]\s*=/.test(f.code)) offenders.push(f.file);
+    if (/env\.BOOKFORGE_AI_API_KEY\s*=/.test(f.code)) offenders.push(f.file);
+  }
+  assert.strictEqual(offenders.length, 0,
+    `these CLI files hand a key to a child: ${offenders.join(', ')}.`);
+});
+
+check('the CLI offers the same two providers the app has, and no more', () => {
+  const aiClean = CLI_FILES.find((f) => f.file === 'cli/ai-clean.js');
+  const pass = CLI_FILES.find((f) => f.file === 'cli/pass.js');
+  assert.ok(aiClean && pass, 'cli/ai-clean.js or cli/pass.js is gone');
+  assert.ok(
+    /PROVIDERS = \['crucible', 'local'\]/.test(pass.code),
+    "cli/pass.js's provider list is not the two `PassAiProvider` allows",
+  );
+  // A DELETED PROVIDER IS REFUSED BY NAME, never merely absent: somebody with
+  // a shell script from last month is owed the sentence that says where the
+  // thing they named went, not "unknown provider" about a word they have used
+  // for a year.
+  for (const gone of ['claude', 'openai', 'ollama']) {
+    assert.ok(
+      aiClean.code.includes(`'${gone}'`) || aiClean.code.includes(`case '${gone}':`),
+      `cli/ai-clean.js does not mention ${gone} at all — it must REFUSE it by name`,
+    );
+  }
+  assert.ok(
+    /is gone: a cloud account belongs to the ENGINE/.test(aiClean.code),
+    'cli/ai-clean.js does not say where a cloud account went',
+  );
+});
+
+check('no CLI file composes a vendor endpoint', () => {
+  const offenders = [];
+  for (const f of CLI_FILES) {
+    if (/api\.anthropic\.com|api\.openai\.com|anthropic-version/.test(f.code)) offenders.push(f.file);
+  }
+  assert.strictEqual(offenders.length, 0, `these CLI files talk to a vendor: ${offenders.join(', ')}.`);
 });
 
 console.log(`\nno cloud doors: ${failures === 0 ? 'all clear' : `${failures} failing`}`);

@@ -1143,15 +1143,61 @@ def cmd_clean(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+# -----------------------------------------------------------------------------
+# THE CLOUD KEY IS THE ENGINE'S, AND THIS FILE REFUSES TO CARRY ONE (2026-09-15)
+# -----------------------------------------------------------------------------
+#
+# crucible docs/PHASE15-HOST.md section 0: a cloud account belongs to the
+# Crucible engine. Its key lives in that engine's own config.toml (mode 0600,
+# beside the bearer token), its routes are set through `PUT /v1/settings`, and
+# an app - the desktop one and this wrapper alike - sends `capability.selected`
+# to a server and holds no credential at all. `ai-bridge` deleted the `claude`,
+# `openai` and `ollama` branches on 2026-09-14 and `pass-types.ts` deleted
+# `claudeApiKey`/`openaiApiKey` from the persisted pass records the same day -
+# and a pass record is written into queue.json and into a book's ledger, so a
+# key that reached one was a plaintext credential on disk with no expiry.
+#
+# So `--api-key`, `--ollama-url`, ANTHROPIC_API_KEY, OPENAI_API_KEY and
+# BOOKFORGE_AI_API_KEY are REFUSED here - refused, not dropped, and the flags
+# stay declared so a person running last month's script reads a sentence about
+# where their account went rather than "unrecognized arguments".
+RETIRED_AI_PROVIDERS = ("claude", "openai", "ollama")
+
+_ROUTE_IT = (
+    "Configure the account ONCE on the Crucible engine - BookForge Settings -> AI, or the "
+    "engine's own console - route the class to it, then use --provider crucible --server "
+    "<name> --model <the routed id>. No key is typed into this app."
+)
+
+
+def _refuse_retired_ai_flags(args):
+    """One place, called by both AI doors, so the two cannot disagree."""
+    if getattr(args, "api_key", None):
+        _require(False, "--api-key is gone: a cloud account belongs to the Crucible engine, "
+                        "not to this app (crucible PHASE15-HOST.md section 0). " + _ROUTE_IT)
+    if getattr(args, "ollama_url", None):
+        _require(False, "--ollama-url is gone: an Ollama server is an UPSTREAM of a Crucible "
+                        "now, configured on the engine and routed to per class. " + _ROUTE_IT)
+    for env_name in ("BOOKFORGE_AI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        if os.environ.get(env_name):
+            _require(False, f"{env_name} is set and this app has nowhere to put it any more. "
+                            f"Unset it so nothing is handing a credential to a door that was "
+                            f"deleted. " + _ROUTE_IT)
+    provider = getattr(args, "provider", None)
+    if provider in RETIRED_AI_PROVIDERS:
+        _require(False, f"--provider {provider} is gone. " + _ROUTE_IT)
+
+
 def _run_ai(args, simplify):
     """Drive BookForge's REAL AI pipeline (aiBridge.cleanupEpub) headlessly — same
     chunking, prompts, num_ctx/think/keep_alive, safeguards, diff-cache + checkpoint as
-    the app. Simplify is the same call with simplifyForChildren + a mode. The API key
-    goes through the process env (BOOKFORGE_AI_API_KEY), never argv."""
+    the app. Simplify is the same call with simplifyForChildren + a mode. NO KEY
+    travels with it: see the block above this function."""
     _require(bool(args.input), "--input <file.epub> is required for --ai-cleanup/--ai-simplify")
-    _require(bool(args.provider), "--provider <claude|openai|ollama|local|crucible> is required")
-    _require(args.provider in ("claude", "openai", "ollama", "local", "crucible"),
-             f"--provider '{args.provider}' invalid (claude|openai|ollama|local|crucible)")
+    _refuse_retired_ai_flags(args)
+    _require(bool(args.provider), "--provider <crucible|local> is required")
+    _require(args.provider in ("local", "crucible"),
+             f"--provider '{args.provider}' invalid (crucible|local)")
     # --server belongs to ONE provider. Accepted anywhere else it would be a flag
     # that looked set and was dropped, which is the failure this CLI's whole flag
     # discipline exists to end.
@@ -1178,15 +1224,6 @@ def _run_ai(args, simplify):
                   and not (REPO_ROOT / "dist" / "electron" / "crucible" / "servers.js").is_file()),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
              "(dist/electron/crucible/servers.js missing)")
-
-    # API key for cloud providers: --api-key wins, else the conventional env var. The
-    # electron code does NOT read these envs itself — the CLI sources the key and hands
-    # it to the pipeline (as the app's renderer does).
-    api_key = args.api_key
-    if not api_key and args.provider == "claude":
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key and args.provider == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY")
 
     _require(not (args.test_chunks and not args.test_mode),
              "--test-chunks requires --test-mode")
@@ -1240,23 +1277,17 @@ def _run_ai(args, simplify):
         if args.no_cleanup:
             cmd += ["--no-cleanup"]
 
+    # NOTHING SECRET GOES THROUGH THIS ENV any more - see the block above _run_ai.
     env = os.environ.copy()
-    if api_key:
-        env["BOOKFORGE_AI_API_KEY"] = api_key
 
     if args.dry_run:
         kind = "simplify" if simplify else "cleanup"
         print(f"[bookforge-tts] DRY RUN — ai {kind}, provider={args.provider}, no job run")
-        print("  spawn:", " ".join(cmd))   # api key is in env, not argv
-        print("  api key:", "set" if api_key else "(none — required for cloud; ok for ollama/local)")
+        print("  spawn:", " ".join(cmd))
         return 0
 
     # Real-run preconditions (a dry-run above skips these).
     _require(Path(args.input).is_file(), f"input epub not found: {args.input}")
-    if args.provider in ("claude", "openai"):
-        env_name = "ANTHROPIC_API_KEY" if args.provider == "claude" else "OPENAI_API_KEY"
-        _require(bool(api_key), f"provider '{args.provider}' needs an API key (--api-key or {env_name})")
-        _require(bool(args.model), f"provider '{args.provider}' needs --model (e.g. claude-sonnet-4-5 / gpt-4o)")
 
     print(f"[bookforge-tts] ai {'simplify' if simplify else 'cleanup'} ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
@@ -1703,19 +1734,13 @@ def cmd_pass(args):
     if args.family:
         cmd += ["--family", args.family]
 
-    api_key = args.api_key
     if args.kind in ("simplify", "translate"):
+        _refuse_retired_ai_flags(args)
         _require(bool(args.provider), f"--kind {args.kind} needs --provider")
         _require(bool(args.model), f"--kind {args.kind} needs --model")
         cmd += ["--provider", args.provider, "--model", args.model]
-        if args.ollama_url:
-            cmd += ["--ollama-url", args.ollama_url]
         if args.custom_instructions:
             cmd += ["--custom-instructions", args.custom_instructions]
-        if not api_key and args.provider == "claude":
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key and args.provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY")
     if args.kind == "simplify":
         _require(bool(args.simplify_mode),
                  "--kind simplify needs --simplify-mode <dejargon|destiffen|learner>")
@@ -1733,25 +1758,13 @@ def cmd_pass(args):
             _require(tp.is_file(), f"--translation-prompt file not found: {args.translation_prompt}")
             cmd += ["--translation-prompt", str(tp)]
 
-    # The key goes through the process env, never argv — same rule as --ai-cleanup.
+    # NOTHING SECRET GOES THROUGH THIS ENV any more - see the block above _run_ai.
     env = os.environ.copy()
-    if api_key:
-        env["BOOKFORGE_AI_API_KEY"] = api_key
 
     if args.dry_run:
         print(f"[bookforge-tts] DRY RUN — {args.kind} pass, no job run")
         print("  spawn:", " ".join(cmd))
-        # footnote-refs calls no model at all, so an api-key line there would be
-        # a fact about a thing this pass does not have.
-        if args.kind in ("simplify", "translate"):
-            print("  api key:", "set" if api_key
-                  else "(none — required for cloud; ok for ollama/local)")
         return 0
-
-    if args.kind in ("simplify", "translate") and args.provider in ("claude", "openai"):
-        env_name = "ANTHROPIC_API_KEY" if args.provider == "claude" else "OPENAI_API_KEY"
-        _require(bool(api_key),
-                 f"provider '{args.provider}' needs an API key (--api-key or {env_name})")
 
     print(f"[bookforge-tts] {args.kind} pass ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
@@ -2511,15 +2524,15 @@ other provider.""",
                          "exists to end"),
         ],
         "examples": [
-            '# a SCANNED book with a cloud provider (key from ANTHROPIC_API_KEY):\n'
-            'bookforge-tts --ai-cleanup --input book.epub --provider claude \\\n'
-            '    --model claude-sonnet-4-5 --stages both --output-dir ./out',
+            '# a SCANNED book, routed to a cloud account ON THE ENGINE (Settings -> AI):\n'
+            'bookforge-tts --ai-cleanup --input book.epub --provider crucible \\\n'
+            '    --server mac --model anthropic/claude-sonnet-5 --stages both --output-dir ./out',
             "# somebody else's GPU (make the model resident first — see the doc above):\n"
             'bookforge-tts --ai-cleanup --input book.epub --provider crucible \\\n'
             '    --server mac --model qwen3.5-9b --stages ocr --output-dir ./out',
             '# a born-digital epub — the deterministic prep only, seconds, no model pass:\n'
-            'bookforge-tts --ai-cleanup --input book.epub --provider ollama \\\n'
-            '    --model cogito:14b --stages tts --output-dir ./out',
+            'bookforge-tts --ai-cleanup --input book.epub --provider local \\\n'
+            '    --stages tts --output-dir ./out',
             '# repair scanner damage and STOP (repaired.epub), first 3 chunks as a test:\n'
             'bookforge-tts --ai-cleanup --input book.epub --provider ollama --model cogito:14b \\\n'
             '    --stages ocr --test-mode --test-chunks 3',
@@ -3520,11 +3533,17 @@ def _flag_registry():
                         "own; crucible takes a Crucible model id such as qwen3.5-9b). Also the "
                         "model --crucible-load / --crucible-unload / --crucible-chat act on",
                    metavar="NAME")
+    # THE TWO RETIRED FLAGS STAY DECLARED SO THEY CAN BE REFUSED BY NAME. An
+    # argparse that had simply forgotten them would answer "unrecognized
+    # arguments", which tells a person their spelling is wrong rather than that
+    # the thing they named moved into the engine (crucible PHASE15 section 0).
     p.add_argument("--api-key", dest="api_key",
-                   help="cloud API key (else ANTHROPIC_API_KEY/OPENAI_API_KEY env). Passed via env, not argv",
+                   help="GONE: a cloud key lives in the Crucible engine's config, never here. "
+                        "Route the class to the account in Settings -> AI instead",
                    metavar="KEY")
     p.add_argument("--ollama-url", dest="ollama_url",
-                   help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)",
+                   help="GONE: an Ollama server is an upstream of a Crucible now, configured on "
+                        "the engine and routed to per class",
                    metavar="URL")
 
     return p

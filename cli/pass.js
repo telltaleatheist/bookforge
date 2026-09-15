@@ -40,7 +40,18 @@ const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
 const { runProjectPass } = require('./processing-pass-step.js');
 
 const KINDS = ['simplify', 'translate', 'footnote-refs'];
-const PROVIDERS = ['ollama', 'claude', 'openai', 'local'];
+/*
+ * TWO PROVIDERS, AND THE SAME TWO THE APP HAS (2026-09-15).
+ *
+ * `shared/processing/pass-types.ts` says `PassAiProvider = 'crucible' |
+ * 'local'`; this list said `ollama | claude | openai | local`, which is three
+ * words the pass records cannot hold and one it can. The three retired ones
+ * are refused BY NAME below rather than dropped from the list, because a
+ * person running last month's script is owed the sentence that says where
+ * their account went.
+ */
+const PROVIDERS = ['crucible', 'local'];
+const RETIRED_PROVIDERS = ['ollama', 'claude', 'openai'];
 const MODES = ['dejargon', 'destiffen', 'learner'];
 
 function parseArgs(argv) {
@@ -57,25 +68,47 @@ function parseArgs(argv) {
   return a;
 }
 
-/** The provider half of a SimplifyPassParams / TranslatePassParams, built the way
- *  the app's own dialog builds it: the key travels in the process env, never argv. */
+/**
+ * The provider half of a SimplifyPassParams / TranslatePassParams.
+ *
+ * NO KEY TRAVELS THROUGH HERE ANY MORE, and the reason is stronger than
+ * tidiness: a pass params record is PERSISTED — into queue.json and into the
+ * book's ledger — so a key written here was a plaintext credential on disk
+ * with an indefinite life. crucible PHASE15-HOST.md section 0 moved every
+ * cloud account into the engine's own config.toml, and `pass-types.ts` deleted
+ * `claudeApiKey` and `openaiApiKey` from both records on 2026-09-14. This file
+ * kept writing them: fields nothing read, into a file that keeps them.
+ *
+ * A cloud account is now reached by ROUTING a class to it on the Crucible
+ * (BookForge -> Settings -> AI) and running the pass with
+ * `--provider crucible --model <the routed id>`. Which server is this app's
+ * routing answer, not a flag: `providerConfigOf` resolves it per act.
+ */
 function providerParams(args) {
   const provider = args.provider;
+  if (RETIRED_PROVIDERS.includes(provider)) {
+    throw new Error(
+      `--provider ${provider} is gone: a cloud or Ollama account belongs to the Crucible engine `
+      + 'now, not to this app (crucible PHASE15-HOST.md section 0). Configure it once on the '
+      + 'engine, route the class to it, then run --provider crucible --model <the routed id>.');
+  }
   if (!PROVIDERS.includes(provider)) {
     throw new Error(`--provider must be one of ${PROVIDERS.join('|')} (got: ${provider ?? 'none'})`);
   }
   if (!args.model) throw new Error('--model <name> is required for this pass');
+  // REFUSED, NOT IGNORED: a flag silently dropped is a choice that did not happen.
+  if (args['ollama-url'] !== undefined) {
+    throw new Error(
+      '--ollama-url is gone: an Ollama server is an UPSTREAM of a Crucible now, configured on the '
+      + 'engine and routed to per class.');
+  }
+  if (process.env.BOOKFORGE_AI_API_KEY) {
+    throw new Error(
+      'BOOKFORGE_AI_API_KEY is set and this app no longer has anywhere to put it. A key lives in '
+      + "the Crucible engine's own config.toml, written through Settings -> AI; unset the "
+      + 'variable so nothing is passing a credential to a door that deleted it.');
+  }
   const params = { aiProvider: provider, aiModel: args.model };
-  if (args['ollama-url']) params.ollamaBaseUrl = args['ollama-url'];
-  const key = process.env.BOOKFORGE_AI_API_KEY;
-  if (provider === 'claude') {
-    if (!key) throw new Error('provider claude needs an API key (BOOKFORGE_AI_API_KEY in the env)');
-    params.claudeApiKey = key;
-  }
-  if (provider === 'openai') {
-    if (!key) throw new Error('provider openai needs an API key (BOOKFORGE_AI_API_KEY in the env)');
-    params.openaiApiKey = key;
-  }
   if (args['custom-instructions']) params.customInstructions = args['custom-instructions'];
   return params;
 }
