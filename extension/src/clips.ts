@@ -86,7 +86,22 @@ function open(): Promise<IDBDatabase> {
   });
 }
 
-function run<T>(store: IDBObjectStore, request: IDBRequest<T>): Promise<T> {
+/**
+ * One IDBRequest as a promise.
+ *
+ * NOT called `run`, and the reason is not style. Every module esbuild bundles
+ * into `offscreen.js` shares one top-level scope, so a top-level `run` here
+ * collides with `foldCapsRun`'s own `let run = 0` in
+ * `shared/listen-text/normalize.ts` and esbuild renames the LOCAL one to
+ * `run2`. Nothing breaks — but `tools/test-listen-text-one-source.js` compares
+ * the shipped bundle's function bodies against a second bundle of the shared
+ * source BYTE FOR BYTE, and a renamed local is a byte difference. That keeper's
+ * header names this exact collision and prescribes this exact fix: rename the
+ * colliding TOP-LEVEL symbol in the extension's own source, because licensing
+ * `X` ≡ `X<digits>` there would also license a genuine paste that happened to
+ * be numbered.
+ */
+function awaitRequest<T>(store: IDBObjectStore, request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error(
@@ -120,7 +135,7 @@ function summaryOf(clip: StoredClip): ClipSummary {
 
 /** Every clip in this browser, oldest first. */
 export async function listClips(): Promise<ClipSummary[]> {
-  const all = await withStore('readonly', (s) => run(s, s.getAll() as IDBRequest<StoredClip[]>));
+  const all = await withStore('readonly', (s) => awaitRequest(s, s.getAll() as IDBRequest<StoredClip[]>));
   return all
     .slice()
     .sort((a, b) => a.added.localeCompare(b.added))
@@ -129,7 +144,7 @@ export async function listClips(): Promise<ClipSummary[]> {
 
 /** One clip by id, or null — null is "it was removed", not an error. */
 export async function findClip(id: string): Promise<ClipSummary | null> {
-  const got = await withStore('readonly', (s) => run(s, s.get(id) as IDBRequest<StoredClip | undefined>));
+  const got = await withStore('readonly', (s) => awaitRequest(s, s.get(id) as IDBRequest<StoredClip | undefined>));
   return got === undefined ? null : summaryOf(got);
 }
 
@@ -171,13 +186,13 @@ export async function addClip(input: {
     added: new Date().toISOString(),
     bytes,
   };
-  await withStore('readwrite', (s) => run(s, s.put(clip)));
+  await withStore('readwrite', (s) => awaitRequest(s, s.put(clip)));
   return summaryOf(clip);
 }
 
 /** Forget a clip. Removing one that is not there is not an error. */
 export async function removeClip(id: string): Promise<void> {
-  await withStore('readwrite', (s) => run(s, s.delete(id)));
+  await withStore('readwrite', (s) => awaitRequest(s, s.delete(id)));
 }
 
 /**
@@ -193,7 +208,7 @@ export async function referenceFor(id: string): Promise<{
   transcript: string;
   name: string;
 }> {
-  const stored = await withStore('readonly', (s) => run(s, s.get(id) as IDBRequest<StoredClip | undefined>));
+  const stored = await withStore('readonly', (s) => awaitRequest(s, s.get(id) as IDBRequest<StoredClip | undefined>));
   if (stored === undefined) {
     throw new VoiceReferenceRefused(
       'reference_required',
