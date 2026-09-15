@@ -30,10 +30,10 @@ the assertions read it back. What is recorded is the sampling the render
 actually RAN at, not the sampling that was asked for, which is the only version
 of the question worth asking.
 
-THE SEED IS WHAT MAKES A TAKE VISIBLE AT ALL. A rung may change the seed and
-nothing else (`[[voice.takes]]` permits a rung that declares no sampling
-override), so the fake records the seed it actually drew at beside the sampling
-it actually ran under, and `TakeOnTheWireTest` asserts on that. The lane
+THE SEED IS WHAT MAKES A TAKE VISIBLE AT ALL. On this wire a rung may change
+the seed and nothing else - `take: 3` with no `sampling` is a legal item - so
+the fake records the seed it actually drew at beside the sampling it actually
+ran under, and `TakeOnTheWireTest` asserts on that. The lane
 arithmetic and its disjointness from the guard's own re-roll seeds are
 `TakeSeedLaneTest`, against `engine/higgs/truncation.py:TAKE_SEED_STRIDE`.
 
@@ -626,9 +626,12 @@ class TakeOnTheWireTest(_SamplingWorkerCase):
                          {7: 1234 + 7 + truncation.TAKE_SEED_STRIDE})
 
     def test_a_take_with_NO_sampling_override_is_still_a_different_draw(self):
-        """The two halves are independent, and this is why the take had to
-        exist at all: `[[voice.takes]]` may declare a rung with no sampling
-        change, and until 2026-09-15 that rendered take 0 byte for byte."""
+        """The two halves are independent on this wire, and this is why the
+        take had to exist at all: an item may ask for a different DRAW and
+        nothing else, and until 2026-09-15 there was no way to say it - such a
+        row rendered take 0 byte for byte. (Crucible's own ladder document
+        still refuses a rung that declares no numbers; that rule was written
+        when this was impossible, and relaxing it is Crucible's call.)"""
         self.batch([{'i': 2, 'text': 'A chunk on a rung that changes no '
                                      'numbers at all.', 'take': 4}])
         rows = self.rendered()

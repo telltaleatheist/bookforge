@@ -66,9 +66,16 @@ that produced the problem, and the seed is one of them.
 So an item carries `take: N` (a whole number, absent = 0) BESIDE `sampling`,
 and the engine renders the row in take N's own seed lane
 (`engine/higgs/truncation.py:in_take_lane`, `TAKE_SEED_STRIDE`). The two facts
-are independent on purpose: take N with an EMPTY rung - a ladder whose rung N
-declares no sampling override, which `[[voice.takes]]` permits - is still a
-different draw, because the lane moved even though the numbers did not.
+are INDEPENDENT on this wire: `take: 3` with no `sampling` at all is a legal
+item and renders a draw take 0 never made, which is the whole point and is
+something no sampling could express.
+
+(Crucible's own ladder document still refuses a rung above 0 that declares no
+numbers - `voices.py:_check_takes`: "a rung that is the same sampling as the
+one below it is a different DRAW, which is what a re-roll is for". That rule
+was written when narrator had no take seed and a different draw was the one
+thing a rung could NOT ask for. This channel makes such a rung expressible;
+whether to allow it is Crucible's ruling, not narrator's.)
 
   take_malformed      the item's `take` is not a whole number >= 0, or is
                       beyond `MAX_TAKE`. Refused, never rounded or clamped.
