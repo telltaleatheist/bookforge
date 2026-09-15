@@ -52,9 +52,38 @@
  *     <server>:cloud       [ cpu ] [ cpu ]     ONLY if it has an upstream
  *     local-work           [ cpu ] [ cpu ]     CPU slots stay local
  *
- * — and no more. The legacy set below, and its GPU slot, are DELETED with the
- * legacy local spawn layer after Owen's in-app pass; that is one subtraction
- * from this file, and nothing added here depends on the legacy set existing.
+ * — and no more. Owen again, 2026-09-15: *"without a crucible server, there is
+ * no gpu slot, because bookforge shouldnt know how to drive gpu work in-app …
+ * even if that server is just a local windows install with no wsl engine."*
+ *
+ * The legacy set below is the one row that is not yet that, and THIS FILE USED
+ * TO SAY IT WAS ONE SUBTRACTION AWAY. Measured 2026-09-15, it is not: three
+ * different things send GPU work there, and only the first is the legacy spawn
+ * layer.
+ *
+ *  1. **Any render at all while `legacyLocalRender` is on** — the dated switch,
+ *     which does go with that layer after Owen's in-app pass.
+ *  2. **`generate-sentences` with `method: 'epub-align'`** — the whole-audiobook
+ *     forced alignment (`electron/whisperx-align-bridge.ts`,
+ *     `electron/scripts/align_audiobook.py`). It is not a Crucible job because
+ *     Crucible has no job of that SHAPE, not because nobody wired it: the
+ *     `align` job takes `chunks:[{index,text}]` and one audio input PER chunk,
+ *     which is a caller that ALREADY KNOWS which audio goes with which text —
+ *     and discovering that (a rough transcript of the whole m4b, then a coarse
+ *     DTW of the ebook's sentences onto it) is this act's middle stage and most
+ *     of its cost. `align-longform` is a Crucible job type that does not exist;
+ *     it is written up as a ruling in `docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7.
+ *  3. **`video-assembly`** — subtitle frames drawn in a hidden BrowserWindow and
+ *     muxed by ffmpeg. Not inference at all, so not a job type Crucible would
+ *     ever grow. Whether it is really GPU work, or a `cpu` step declared `gpu`
+ *     since before any of this, is a question nobody has measured.
+ *
+ * So the row stays, and it stays for a stated reason rather than as a leftover:
+ * deleting it would leave those steps charging a set with no slots, and
+ * {@link slotsOf} answers 0 for a set that is not on the bench, so the
+ * scheduler would simply never launch them. `tools/test-queue-slot-sets.js`
+ * pins the SHAPE instead — every GPU row is a registered server, bar this one
+ * named exception — so a new in-app GPU venue has to come past that check.
  *
  * ── The correction, and it is the whole of what makes this safe ─────────────
  *
@@ -422,9 +451,14 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * narrator spawn. It does not decide whether that spawn layer exists: a GPU
    * step whose module has not been taught to travel spawns on this machine
    * whatever the switch says, and with no set to charge it to the scheduler
-   * would find nought slots and never launch it. So the set exists for as long
-   * as the layer does — it is deleted with it, after Owen's in-app pass
-   * (docs/CRUCIBLE_ROLLOUT_PLAN.md §0b A2).
+   * would find nought slots and never launch it.
+   *
+   * AND THE SWITCH IS NOT THE LAST TENANT EITHER — see the header's list,
+   * measured 2026-09-15: `generate-sentences`'s `epub-align` method and
+   * `video-assembly` both come here, and neither goes away with the legacy
+   * layer. So this row outlives that layer, and what removes it is §B7 (a
+   * Crucible `align-longform` job type, Owen's ruling) plus an answer about
+   * whether a video mux is GPU work at all.
    *
    * Its gpu slot is ONE, which is what keeps the stopgap behaving exactly as it
    * did under the old global number.

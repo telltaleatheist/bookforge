@@ -63,6 +63,30 @@ export const generateSentencesStep: StepModule = {
    * a local aligner, and Crucible has no job type for it. Declaring `any` for
    * that method would hand it a machine that cannot see the book.
    *
+   * ── "NO JOB TYPE FOR IT" IS A SHAPE, NOT AN OMISSION (measured 2026-09-15) ─
+   *
+   * Crucible's `align` job is
+   * `{type:"align", model:"qwen3-aligner", params:{language, chunks:[{index,text}]},
+   * inputs:{"<index>.flac":{blob_id}}}` — one audio input PER chunk, matched by
+   * index. That is a caller who ALREADY KNOWS which seconds of audio go with
+   * which sentences, which is true of a render (narrator wrote the chunks) and
+   * is exactly what this act has to DISCOVER. `align_audiobook.py`'s stages are
+   * `transcribe` (faster-whisper over the whole m4b, CPU env) → `coarse-align`
+   * (a DTW of the ebook's sentences onto that rough transcript, which is what
+   * produces the chunk spans) → `align` (Qwen3 per chunk, on the card) →
+   * whisper-authority gate, monotonic clamps, drift correction, silence snap,
+   * `write`. Only the third stage has the shape Crucible offers, and the two
+   * before it are most of the wall clock and all of the knowledge.
+   *
+   * So this cannot be flipped to `any` by routing it through
+   * `electron/crucible/align.ts`; it needs a Crucible job of a different shape
+   * (`align-longform`), which is a RULING in `docs/CRUCIBLE_ROLLOUT_PLAN.md`
+   * §B7 and not something to invent here. `electron/crucible/align.ts`'s own
+   * header already says the same thing from the other side: *"that bridge keeps
+   * its local CPU spawn until it is deleted, not moved."* Until then this
+   * method is one of the reasons the bench still draws a legacy GPU row
+   * (`shared/queue/slot-sets.ts`).
+   *
    * Asked of the CONFIG rather than answered unconditionally because the two
    * methods are one row type, and §4's safety default is per step: a step that
    * has not been taught to travel does not travel.

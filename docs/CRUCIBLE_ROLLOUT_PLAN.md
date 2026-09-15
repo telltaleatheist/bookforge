@@ -622,6 +622,24 @@ apps' doors.
   (WSL narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
   `routing.legacyLocalRender`. That layer is deleted after Owen's in-app pass (~250 GB of envs
   with it). Until then both paths exist and the switch decides. **DELETE after the pass.**
+  **CORRECTED 2026-09-15:** the switch is not the last tenant of the legacy GPU row.
+  `generate-sentences` with `method: 'epub-align'` and `video-assembly` both charge it and
+  neither goes away with that layer — see **B7**, which is what actually empties the row.
+- **A6. The bench's cloud lanes — FIXED 2026-09-15 (`8699d71d`).** Owen read the bench and it
+  did not match §0d's ruling: nine rows, four of them cloud lanes on engines that can never
+  fill one (nothing routes upstream on either server today, and no upstream is configured).
+  The lane was drawn unconditionally for every enabled server, and the argument for that was
+  about the per-class ROUTE flickering between pumps — kept, and raised one level. A lane is
+  now drawn when the ENGINE HAS AN UPSTREAM CONFIGURED AT ALL (`GET /v1/settings`'s
+  `upstreams[*].configured`, read at coordination as a fourth read and again out of every
+  settings write's own answer, held beside the routes in `electron/crucible/routes.ts`).
+  Configuring an upstream is deliberate and rare, so it does not flicker; it is what the lane
+  MEANS; and it is implied by any route at all, since the server refuses
+  `route_upstream_unconfigured`. An engine that has not been asked, did not answer, or predates
+  the settings door is `unknown` and KEEPS its lane — absence of knowledge is not absence of an
+  upstream — and `SlotSetFacts.upstreams` refuses a server it was told nothing about by name.
+  Bench today: one `[gpu]` per registered Crucible, no cloud lanes, `local-work [cpu][cpu]`,
+  and the one legacy `[gpu]` row B7 is about.
 - **A3. Only two step kinds travel.** `machines()` is declared by `tts-conversion.ts` (`any`)
   and `foundry-job.ts` (per config). Every other GPU step — `align.ts`, `rvc-enhancement.ts`,
   `final-denoise.ts`, `vlm-convert.ts`, `generate-sentences.ts` (asr), `translation.ts`,
@@ -670,6 +688,58 @@ apps' doors.
 - **B5. Narrator's items-in door** — a remote ALIGN cannot finish without it. **BUILD (narrator).**
 - **B6. Narrator into its own repo** — a friend cannot `crucible install tts` against a
   private BookForge sha. **RULING.**
+- **B7. `align-longform` — the job type that would empty the bench's last in-app GPU row.
+  RULING (do not build on a guess).** Raised 2026-09-15 when Owen read the bench: *"without a
+  crucible server, there is no gpu slot, because bookforge shouldnt know how to drive gpu work
+  in-app."* One step still does, and it is not the legacy narrator: `generate-sentences` with
+  `method: 'epub-align'` (`electron/whisperx-align-bridge.ts` → `electron/scripts/align_audiobook.py`).
+
+  **Why it cannot use the `align` job we already have.** That job is
+  `{type:"align", model:"qwen3-aligner", params:{language, chunks:[{index,text}]},
+  inputs:{"<index>.flac":{blob_id}}}` — one audio input PER chunk, matched by index, i.e. a
+  caller who already knows which seconds of audio hold which sentences. True of a render
+  (narrator wrote the chunks); it is precisely what this act must DISCOVER. The script's stages
+  are `transcribe` (faster-whisper over the whole m4b, CPU env, ~40 min on a long book) →
+  `coarse-align` (DTW of the ebook's sentences onto that rough transcript — this is what
+  produces the chunk spans) → `align` (Qwen3 per chunk, on the card, 229–395x realtime) →
+  whisper-authority gate + monotonic clamps + drift correction + silence snap → `write`. Only
+  the third stage has the shape Crucible offers. Slicing locally and sending ~1,000 chunks of a
+  16 h book would move the cheap stage and keep the expensive ones. `electron/crucible/align.ts`'s
+  header already rules the same way from the other side: *"that bridge keeps its local CPU spawn
+  until it is deleted, not moved."*
+
+  **What the job would take, if Owen says build it.**
+  - `type: "align-longform"`, `model: "qwen3-aligner"` (the same weights; the difference is the
+    orchestration, not the model).
+  - `inputs`: ONE — the audiobook, `audio.m4b` (or a 16 kHz mono wav the client already has to
+    make). No per-chunk inputs; the server slices. The EPUB never crosses: it is the client's
+    book, and the sentences it extracted are text.
+  - `params`: `{language, sentences:[{index, text, kind}], rough_model, chunk_s, hole_min_s,
+    snap_silence_s, silence_source}` — `kind` because headings are already stamped at extraction
+    and the classifier must not re-infer; the rest are the script's own arguments, which the app
+    states rather than defaults today.
+  - Result: the same VTT the script writes, plus its report — `alignment.vtt` and
+    `align-report.json` as artifacts, with per-stage progress events (`transcribe`,
+    `coarse-align`, `align`, `write`) so the stacked stage bars keep working.
+  - Refusals it must make BY NAME, all of which the script already makes locally: a language
+    qwen3 was not trained on (`qwen3_language_unsupported`, refused BEFORE the pool, not after a
+    book's worth of bad cues); no sentences (`no_sentences`); a silence scan that produced
+    nothing (`silence_map_empty` — the script treats this as a FAILED RUN, because edges placed
+    with no silence map are the pre-2026-09-06 build under a new label); and an audio input the
+    backend cannot decode.
+  - It needs BOTH stacks on the server — `faster_whisper` for the rough stage and `qwen_asr` for
+    the align stage — which on this PC are two separate envs today and would be one Crucible
+    engine's problem instead of BookForge's.
+
+  **Until it exists, the bench keeps one GPU row that is not a registered server.** It is not
+  only this step: `video-assembly` declares `resource: 'gpu'` with no `machines()` at all and
+  draws its frames in a hidden BrowserWindow, which is not inference and will never be a
+  Crucible job (open question of its own: has anyone measured that it needs the card?), and any
+  render at all takes that row while `legacyLocalRender` is on. Deleting the row without moving
+  the work would leave those steps charging a set with no slots — `slotsOf` answers 0 for a set
+  that is not on the bench — so the scheduler would never launch them.
+  `tools/test-queue-slot-sets.js` pins the shape instead: every GPU row is a registered server,
+  bar this one named exception.
 
 ### C. Install and stocking — phase 13, in flight
 
