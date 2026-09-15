@@ -310,13 +310,19 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
   // never shipped: it did not emit EOS and ran to the token cap on 29% of probe renders, caused by
   // RETAINED post-chunk pauses (slice_vtt --tail-s 4.0). Re-sliced at 0.25 s and retrained -> 0/24
   // runaway. Field notes 4n.53/4n.54. ds_v5_prod (ckpt-1102) held this slot from 2026-09-07.
-  // PROMOTED 2026-09-11 to ds_v7_930_prod (ckpt-930, the run's last checkpoint) by temper's PAUSE SCREEN:
-  // every ds_v7 checkpoint rendered in the 500-600 band, 930 = 0 defects and pausing score 87/100 against the
-  // corpus, while ckpt-744 (lowest loss) scored 45 with 3.5x the corpus's rate of pauses over 2 s. Owen's rule:
-  // the latest CLEAN checkpoint wins (the voice settles in the later epochs). Band 600-800 held, not re-laddered.
+  // PROMOTED 2026-09-15 to ds_v8_rvcbed1_3658_prod (ckpt-3658, the run's last checkpoint), superseding
+  // ds_v7_930_prod which held this slot from 2026-09-11. FIVE books through RVC with an own-source bed (Marked
+  // Man dialogue excluded, 3000 Degrees, Leadership Pipeline, McKinley, Celebration of Discipline), 38.4 h,
+  // holdout 3.5285 against ds_v7's 3.8395. The screen rendered every checkpoint in the 500-600 band: 19 of 31
+  // clean, 3658 = 0 defects, pausing score 90.9 against ds_v7's 87.1, and Owen's rule takes the LATEST clean one.
+  // BAND 500-800 IS A RULING, not the failure curve: band_chart named 400-1000 on failures alone, but the median
+  // LONGEST pause climbs with chunk length (1.38 s at 500 chars, 1.54 at 800, 1.68 at 900-999), so prosody
+  // degrades before defects appear. Owen ruled 500-800 on 2026-09-14. Re-pooled by ACTUAL character count it is
+  // the joint best available: 3/120 = 2.50%, against the ladder's own 700-1100 at 5.49% on this checkpoint.
+  // Evidence: orpheus-finetune field notes 4n.72/4n.72b/4n.72d and _campaigns/_reports/ds_v8_rvcbed1_band.html.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.voice.checkpoint.wsl,
-    '/home/telltale/higgs_v3_merged/ds_v7_930_prod');
+    '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod');
   assert.ok(m._checkpointDirNote, 'nothing says why this is not the higgs-models convention');
 });
 
@@ -335,7 +341,7 @@ check('deathstalker is staged on BOTH arms, each in that arm\'s own shape', () =
   //           directory that exists on exactly one machine.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.voice.checkpoint.darwin,
-    'runtime/higgs-models/ds_v7_930_prod');
+    'runtime/higgs-models/ds_v8_rvcbed1_3658_prod');
   assert.ok(m.voice.checkpoint.wsl.startsWith('/'), 'the wsl path is not absolute');
   assert.ok(!m.voice.checkpoint.darwin.startsWith('/'),
     'the darwin path is absolute — it would name one machine only');
@@ -470,7 +476,10 @@ check('the deathstalker served cap is 800 BY RULING — and both older records s
   // A fine-tune declares a BAND; the point target is gone from every fine-tune arm.
   assert.strictEqual(m.backends.served.targetChars, undefined,
     'a fine-tune must not carry a point target any more - it declares a safe band');
-  assert.strictEqual(m.backends.served.safeMinChars, 600, 'deathstalker floor');
+  // FLOOR 500 from 2026-09-15 (was 600). The 600 came from the ds_v5 corpus's INTERQUARTILE RANGE, which is
+  // the one method higgs-safe-bands' own README forbids ("a rule derived from the corpus p25 was wrong in
+  // production within a day"). 500 is measured from a 512-render sweep of the checkpoint that ships.
+  assert.strictEqual(m.backends.served.safeMinChars, 500, 'deathstalker floor');
   assert.strictEqual(m.backends.served.safeMaxChars, 800, 'deathstalker cap');
   const note = m.backends.served._maxCharsNote;
   assert.match(note, /OWEN'S RULING \(2026-09-09\)/, 'the note does not say the cap is a ruling');
@@ -2949,14 +2958,15 @@ if (skipWhy) {
     assert.strictEqual(got.name, 'deathstalker');
     assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
     assert.strictEqual(got.checkpoint,
-      '/home/telltale/higgs_v3_merged/ds_v7_930_prod');
+      '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod');
     assert.strictEqual(got.max_chars, 800, "narrator did not get Owen's 2026-09-09 ceiling");
     // Owen, 2026-09-09: the point target is retired; a fine-tune ships a BAND, and
     // this asserts the packer's floor and cap where they LAND, not only where they
     // are written.
     assert.strictEqual(got.target_chars, null,
       'a fine-tune must no longer carry a point target');
-    assert.strictEqual(got.safe_min_chars, 600,
+    assert.strictEqual(got.safe_min_chars, 500,   // 2026-09-15: floor 600 -> 500 with the ds_v8 promotion
+
       'narrator did not get the packer FLOOR that rides beside the cap');
     assert.strictEqual(got.safe_max_chars, 800,
       'narrator did not get the packer CAP');
@@ -2977,7 +2987,7 @@ if (skipWhy) {
     // this keeper runs on both hosts — the derivation is what is under test, not
     // which slash the machine running it prefers.
     assert.strictEqual(macGot.checkpoint.replace(/\\/g, '/'),
-      '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_v7_930_prod');
+      '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_v8_rvcbed1_3658_prod');
     // Both arms carry 800 by the ruling, not by inheritance; the checkpoint
     // asserted above is what proves this is the darwin document.
     assert.strictEqual(macGot.max_chars, 800,
@@ -3099,8 +3109,8 @@ check('an override DERIVES from the base voice: id names both, kind is checkpoin
   assert.deepStrictEqual(m.voice.checkpoint, { wsl: '/home/telltale/higgs_v3_merged/ds_v8_1200_test' });
   // The CATALOG is untouched: a later resolve must not see the override.
   assert.deepStrictEqual(higgs.resolveHiggsModel('deathstalker').voice.checkpoint, {
-    wsl: '/home/telltale/higgs_v3_merged/ds_v7_930_prod',
-    darwin: 'runtime/higgs-models/ds_v7_930_prod',
+    wsl: '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod',
+    darwin: 'runtime/higgs-models/ds_v8_rvcbed1_3658_prod',
   });
 });
 
@@ -3273,8 +3283,8 @@ onArm('darwin', () => {
     assert.strictEqual(m.id, 'deathstalker+override');
     assert.strictEqual(m.kind, 'checkpoint');
     assert.deepStrictEqual(m.voice.checkpoint, {
-      wsl: '/home/telltale/higgs_v3_merged/ds_v7_930_prod',
-      darwin: 'runtime/higgs-models/ds_v7_930_prod',
+      wsl: '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod',
+      darwin: 'runtime/higgs-models/ds_v8_rvcbed1_3658_prod',
     });
     assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(m).sampling,
       { temperature: 0.8, topP: 0.95, topK: 20 });
