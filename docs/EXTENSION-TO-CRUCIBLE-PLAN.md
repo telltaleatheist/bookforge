@@ -140,7 +140,7 @@ until narrator carries it) — that is BookForge's `python/narrator`, not Crucib
 | denoise (hiss separator) | `denoise` job | through Crucible |
 | page reading (PDF) | `pages` via Foundry | through Crucible |
 | cleanup / narration text pass / number normalization / simplify / translate / analysis | `llm` (routes) | through Crucible |
-| zero-shot Higgs clips | `load-voice` with a reference clip | door exists; MLX arm never exercised |
+| zero-shot Higgs clips | `load-voice` with a reference clip | **through Crucible in both clients** (`6dc3569`, `3e8e722`); MLX arm still never exercised with a real clip |
 | **Enhance tab (Resemble-Enhance CFM on MPS/CUDA)** | — | **DELETED (b299ba09, 2026-09-14)** — the ruling (Owen: *"drop and remove the enhance page and the corresponding crucible route. it's unnecessary"*) is carried out end to end. Gone: the page and its feature folder, the `/enhance` route and rail entry, `enhance-bridge.ts`, `components/resemble-env.ts` and its catalog row, the fourteen `enhance:*` IPC channels across main/preload/`electron.service.ts`, the `enhance.*` block in `tool-paths.ts`, the three python scripts only that bridge ran, the `resemble_enhance` ClipForge engine stub, and `AUDIO_ENHANCEMENT.md`. NO `enhance` job type is ever built. `denoise` (the hiss separator) STAYS with all four consumers — `chapter-closer.ts`, `clipforge-chain.ts`, `coverage-align-job.ts`, `denoise-job.ts` — as does RVC voice enhancement; `tools/test-no-enhance-doors.js` (7799933c) pins both halves. |
 | RVC *training* (urvc), ClipForge studio | local | training is outside Crucible by design; ClipForge is CPU |
 
@@ -224,7 +224,9 @@ retrieve and return the audio."*
 > `voice_kind_unsupported` refusal lifted, and a `load-voice` field to put them in. Until
 > then a clip store in the extension would be a file input wired to a refusal.
 
-**UNBLOCKED 2026-09-14 late (crucible `743dc1a`/`e342fee`/`d6f2786`, PHASE3-TTS.md §2–§7):** the load door now takes the clip — `POST /v1/jobs {type: "load-voice", model: "zeroshot", params: {reference: {data: <base64 WAV, no data: prefix>, transcript: <book-exact text of the clip>, name: <label>}}}`; SDK `loadVoice(voice, {reference})`; voices row `needs_reference` (SDK `needsReference`); refusals `reference_required` / `reference_not_allowed` / `reference_malformed` (not strict base64, not a readable WAV, blank transcript, over 30 s, over 32 MiB), all before the queue; the resident clip is reported on `GET /v1/activity` as `resident.reference = {name, sha256, seconds}` (null when a checkpoint voice is resident) and on the load job's `done`. Two corrections to the sketch above: **`transcript` is REQUIRED** (narrator refuses an empty one), so the extension's clip picker and BookForge's `refs/` entries each carry the clip's text; and the streaming door no longer refuses the zeroshot kind (it never loads). Still owed: the extension's clip store + picker (with the transcript field), BookForge's voice modal sending its four `zeroshot-*` refs through this door, and the first real MLX render with a clip.
+**UNBLOCKED 2026-09-14 late (crucible `743dc1a`/`e342fee`/`d6f2786`, PHASE3-TTS.md §2–§7):** the load door now takes the clip — `POST /v1/jobs {type: "load-voice", model: "zeroshot", params: {reference: {data: <base64 WAV, no data: prefix>, transcript: <book-exact text of the clip>, name: <label>}}}`; SDK `loadVoice(voice, {reference})`; voices row `needs_reference` (SDK `needsReference`); refusals `reference_required` / `reference_not_allowed` / `reference_malformed` (not strict base64, not a readable WAV, blank transcript, over 30 s, over 32 MiB), all before the queue; the resident clip is reported on `GET /v1/activity` as `resident.reference = {name, sha256, seconds}` (null when a checkpoint voice is resident) and on the load job's `done`. Two corrections to the sketch above: **`transcript` is REQUIRED** (narrator refuses an empty one), so the extension's clip picker and BookForge's `refs/` entries each carry the clip's text; and the streaming door no longer refuses the zeroshot kind (it never loads).
+
+**BOTH CLIENTS ARE THROUGH IT, 2026-09-14 (`6dc3569`, `3e8e722`, `b4682ff`).** See §5's status block for what each side got. **Still owed: the first real MLX render with a clip** (a measured run on the Mac, which the button's T9 does not cover) — and one surface that turned out not to exist, recorded here rather than invented: **BookForge has no "which voice is resident" read in the narration modal at all** (`grep resident src/app/features/studio/components/narration-modal/` is empty; the app's only residency display is Settings → Crucible's servers panel, which lists `residentModels`). `electron/crucible/probe.ts`'s `residentClipOn` is the main-process half, built and pinned, so whichever surface grows the read shows the clip name with one call — but no Angular panel was invented to hold it.
 
 ## 5. Order of work
 
@@ -266,9 +268,39 @@ the extension carries every one of them.
   client gate, with `fastStart` off the wire entirely. `db775aa5` is the two keepers —
   `test-listen-text-one-source` (the two bundles' function bodies, byte for byte) and
   `test-extension-option-columns` (both columns of §0's table, by name).
-  - **NOT built: the zero-shot clip store (§4b).** See the contract gap recorded there: there is
-    no `reference` field on `load-voice`, and a `kind = "zeroshot"` voice is refused before any
-    engine starts. Nothing was invented to work around it.
+  - **The zero-shot clip store — BUILT, 2026-09-14 (`6dc3569`).** The contract gap recorded in
+    §4b closed (`743dc1a`), and the store that was "a file input wired to a refusal" is now a
+    real one. `extension/src/clips.ts` keeps WAV bytes, a short name and the BOOK-EXACT
+    transcript in IndexedDB — not `chrome.storage.local`, because a 15-second wav is ~1.4 MB and
+    base64 in a settings object that three contexts re-parse on every `loadSettings()` is a hot
+    path somebody later breaks; the CHOICE (`zeroshotClipId`) is a settings key, beside the voice
+    it qualifies. Options grows the section (file input, required transcript, name, a list with
+    Remove that shows each transcript — the half of a clip you cannot hear); the popup grows the
+    picker UNDER the voice, shown only for a row whose `needsReference` is true and with no
+    default. Picking a clip goes through the same door a voice switch does, because it is one.
+    **The popup also says WHICH clip is on the card** (`/v1/activity`'s `resident.reference`), so
+    two clients contending for one `zeroshot` id can tell whose recording is up.
+  - **Refused by name, early, in the server's own words.** `shared/crucible/voice-reference.ts`
+    is ONE module bundled into the extension by esbuild and compiled into the app by tsc (the
+    `shared/listen-text/` pattern): it reads the wav's own header and answers
+    `reference_malformed` for a non-RIFF/WAVE file, a clip over narrator's 30 s, one over
+    32 MiB, or a blank transcript, and the UI answers `reference_required` when a cloned voice
+    has none picked. A 40 MB upload the server will refuse is a defect, not a fallback. Nothing
+    is trimmed, converted or transcribed, and the server's own `reference_malformed` is surfaced
+    VERBATIM because it carries the number to act on.
+  - **BookForge's four `zeroshot-*` rows go through the same door** (`3e8e722`).
+    `electron/crucible/voice-load.ts` is the one place a `zeroshot-*` id becomes `zeroshot`: it
+    reads the wav from `<userData>/runtime/higgs-models/refs/` and the transcript from the SAME
+    catalog row — **all four already had one**, book-exact, in
+    `electron/data/higgs-models.json`'s `voice.clips[0].transcript` since 2026-09-06, so nothing
+    had to be invented or transcribed. `probe.ts` gains `loadHiggsVoiceOn` (the third operator
+    verb, beside `loadModelOn`/`unloadModelOn`) and `residentClipOn`. `render.ts`'s table still
+    refuses the four ON PURPOSE and is unchanged: the RENDER door has no clip channel.
+  - **One SDK gap, named not worked around.** The 0.6.0 SDK's activity shaper builds `resident`
+    out of four fields and drops `reference`, so both clients read that ONE field with their own
+    `fetch` (everything else is still `activity()`'s). `tools/test-zeroshot-reference.js`
+    (`b4682ff`, 24 checks) carries the tripwire that names both functions to delete the day the
+    SDK models it — the discipline that expired the capability-route tripwire the same evening.
   - **Deliberately KEPT: BookForge's host/port/token rows in Options**, relabelled for what they
     are — and step 6 is now SPLIT so they stay for good: the recorder's endpoint outlives the
     speak relay. Removing those rows would break a working feature to satisfy a table.
