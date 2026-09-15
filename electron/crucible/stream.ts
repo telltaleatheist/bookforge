@@ -109,6 +109,7 @@ import {
 } from '@crucible/client';
 import type { CrucibleClient, StreamRowDone, TtsStreamSession, VoiceInfo } from '@crucible/client';
 import {
+  CRUCIBLE_STREAM_IN_FLIGHT as SHARED_STREAM_IN_FLIGHT,
   CRUCIBLE_STREAM_TAKE as SHARED_STREAM_TAKE,
   CrucibleRowSession,
   type CrucibleRowChunk,
@@ -117,7 +118,6 @@ import { CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE, CrucibleRenderRefused, crucibleVoice
 import { decideWhereGenerationRuns, type VenueHost } from './generation-venue';
 import { recordCrucibleStreamRow, takeChunkGuards } from '../chunk-guard-ledger';
 import { IdleWatch } from '../stream-idle';
-import { STREAM_RAMP_WIDTH } from '../orpheus-worker-pool';
 import type {
   AudioChunk,
   EngineState,
@@ -151,15 +151,16 @@ export const CRUCIBLE_STREAM_TAKE = SHARED_STREAM_TAKE;
 /**
  * How many rows the scheduler may hold in flight against a session.
  *
- * The server batches (its width is engine tuning: `higgs-v3` 1, `orpheus` 8,
- * `crucible/ttsstream.py`'s `STREAM_BATCH_WIDTH`), so this is the CLIENT's
- * read-ahead depth, not a batch width: rows said and not yet done. It is the
- * ramp width the local path already dispatches — the narrowest width measured
- * to beat speech rate — so the scheduler's first wave is the same size on both
- * backends, and a per-row cancel of a pending row on the server is `dropped`
- * at no cost.
+ * SHARED since Phase 16 (`shared/listen-client/crucible-rows.ts`), because the
+ * browser extension holds rows against a session of its own now and this is a
+ * client's read-ahead depth rather than anything about the local pool. It is
+ * still the same number as the local path's `STREAM_RAMP_WIDTH` — the
+ * narrowest width measured to beat speech rate — and the two are compared by
+ * `tools/test-listen-text-one-source.js` rather than trusted, because the
+ * shared file cannot import the narrator pool without dragging Electron into a
+ * browser bundle.
  */
-export const CRUCIBLE_STREAM_IN_FLIGHT = STREAM_RAMP_WIDTH;
+export const CRUCIBLE_STREAM_IN_FLIGHT = SHARED_STREAM_IN_FLIGHT;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The refusal vocabulary

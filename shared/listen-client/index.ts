@@ -36,6 +36,8 @@ export {
 } from './session-policy.js';
 
 export {
+  CRUCIBLE_STREAM_IN_FLIGHT,
+  CRUCIBLE_STREAM_RAMP_WIDTH,
   CRUCIBLE_STREAM_TAKE,
   CrucibleRowSession,
   type CrucibleRowChunk,

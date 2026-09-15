@@ -55,6 +55,35 @@ import type { StreamEvent, StreamRowDone, TtsStreamSession } from '@crucible/cli
  */
 export const CRUCIBLE_STREAM_TAKE = 0;
 
+/**
+ * How many rows a client may hold in flight against one Crucible session.
+ *
+ * The SERVER batches, and its width is engine tuning it does not publish
+ * (`crucible/ttsstream.py`'s `STREAM_BATCH_WIDTH`: `higgs-v3` 1, `orpheus` 8),
+ * so this is the CLIENT's read-ahead depth — rows said and not yet done — and
+ * not a batch width. A per-row cancel of a pending row costs the server
+ * nothing (`dropped`), so overshooting here is cheap and undershooting is a
+ * gap in the listener's ear.
+ *
+ * Eight, because that is the local narrator pool's `STREAM_RAMP_WIDTH`
+ * (electron/orpheus-worker-pool.ts) — the narrowest width MEASURED to beat
+ * speech rate — and the scheduler's first wave should be the same size
+ * whichever backend answers. The two are not one import because that module is
+ * the narrator pool and would drag Electron into a browser bundle; they are
+ * one number, and `tools/test-listen-text-one-source.js` compares them.
+ */
+export const CRUCIBLE_STREAM_IN_FLIGHT = 8;
+
+/**
+ * The first wave's width for the session being listened to — see
+ * `ListenStartOptions` and the essay in `electron/stream-scheduler.ts`.
+ *
+ * The same as the depth above on a Crucible: the server decides its own batch
+ * width, so there is no narrower first wave to ask for, and the ramp exists in
+ * the policy for the local pool's sake.
+ */
+export const CRUCIBLE_STREAM_RAMP_WIDTH = CRUCIBLE_STREAM_IN_FLIGHT;
+
 /** One sub-row chunk, as it leaves this layer. */
 export interface CrucibleRowChunk {
   readonly seq: number;
