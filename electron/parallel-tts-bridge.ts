@@ -8521,7 +8521,7 @@ export async function prepareNarrationInput(
   // Loudly, in both places, because e2a has no number transform of its own
   // (permanently disabled, 2026-09-02): a book read as printed is one whose
   // "1933" the voice must guess at, and that must never be a silent outcome.
-  const cut = await cutCaptionsAndNotes(inputPath, jobId);
+  const cut = await prepareNarrationCopy(inputPath, jobId);
 
   if (opts.textCleanup === 'skipped') {
     const line = `narration text cleanup SKIPPED by the user for this run — numbers and `
@@ -8600,30 +8600,86 @@ async function narrationTextGate(bookPath: string): Promise<NarrationTextGate> {
   return gate.narrationTextGate(bookPath);
 }
 
-/** The caption/footnote cut — the first half of the door. */
-async function cutCaptionsAndNotes(epubPath: string, jobId: string): Promise<string> {
-  const { readEpubConversionUnits, writeNarrationEpub } = await import('./epub-processor.js');
+/**
+ * THE DETERMINISTIC HALF OF THE DOOR — the caption/footnote cut, the reference
+ * markers, and the scripture book names printed in full.
+ *
+ * ── Why a third thing lives here ────────────────────────────────────────────
+ *
+ * Owen, 2026-09-14: *"for ai cleanup, i want to deterministically expand bible
+ * book names. ex -> exodus, tim. -> timothy. or at least tell the ai cleanup
+ * model to expand them the rest of the way before going through TTS. it's a
+ * mess."*
+ *
+ * A book's text is the CLEANUP MODEL's to change — that is the standing rule,
+ * and the reason a rule that is wrong about a book is worse than a model that
+ * is slow about one. Three fixes are exceptions to it, and all three are here
+ * or in the packer for the same reason: they fire only where they CANNOT be
+ * wrong. The unspoken-glyph strip and the caps fold are the first two
+ * (python/narrator/text/paragraph_packer.py, mirrored for Listen in
+ * shared/listen-text/normalize.ts); the `<sup>` reference-marker strip is this
+ * door's own. `expandBibleReferences` is the third, and it is narrower than
+ * any of them: it expands a book NAME only inside a span
+ * `scriptureSpans` has already claimed as a reference on evidence that was
+ * measured against Owen's must-NOT list. The chapter and the verse stay as
+ * digits, because reading those is the model's job and half a reading is worse
+ * than none.
+ *
+ * A BOOK THE CLEANUP MODEL ALREADY READ HAS NOTHING LEFT HERE: its references
+ * are words and this pass finds no span. So what this actually reaches is the
+ * two cases the ruling of 2026-09-05 created — `unstamped` and
+ * `skipped-by-user` — where the render goes ahead on printed text and the log
+ * says so. That is where "it's a mess" was heard.
+ *
+ * ── Why through the EPUB writer ─────────────────────────────────────────────
+ *
+ * `writeNarrationEpub` re-opens the copy it wrote and proves every rewrite
+ * landed in the file, or destroys the output. A splice into the zip by hand
+ * would be a second, unproven way to change a narration copy, and the one
+ * verified door already exists because the number pass needed exactly this.
+ */
+async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<string> {
+  const { readEpubConversionUnits, readNarrationNumberTargets, writeNarrationEpub } =
+    await import('./epub-processor.js');
+  const { selectNumberTargets } = await import('./tts-number-normalizer.js');
+  const { bibleReferenceRewrites } = await import('../shared/listen-text/bible-books.js');
 
   const units = await readEpubConversionUnits(epubPath);
   const captions = units.filter((u) => u.category === 'caption').length;
   const footnotes = units.filter((u) => u.category === 'footnote').length;
-  if (captions === 0 && footnotes === 0) return epubPath;
+
+  // The book's own text, in the keys the writer applies an edit by. Read
+  // through the SAME walk the writer uses (`readNarrationNumberTargets` says
+  // why), and filtered by the SAME selection the number pass uses, so a caption
+  // this door is about to remove is not also rewritten and a code listing is
+  // left as the author set it.
+  const rewrites = new Map<string, ReturnType<typeof bibleReferenceRewrites>>();
+  let expandedSpans = 0;
+  for (const target of selectNumberTargets(await readNarrationNumberTargets(epubPath),
+    'every-block')) {
+    const edits = bibleReferenceRewrites(target.text, target.segments);
+    if (edits.length === 0) continue;
+    rewrites.set(target.key, edits);
+    expandedSpans += edits.length;
+  }
+
+  if (captions === 0 && footnotes === 0 && expandedSpans === 0) return epubPath;
 
   const bytes = await fs.readFile(epubPath);
   const sha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
   const cutDir = path.join(narratorScratchRoot(), 'narration-cuts');
-  // `.v2`: the rule grew (footnote asides out, sup markers stripped — Owen's
-  // 2026-08-30 ruling), so a v1 cut on disk describes a rule this door no
-  // longer applies and must not be reused.
-  const cutPath = path.join(cutDir, `${sha16}.v2.tts.epub`);
+  // `.v3`: the rule grew again (the scripture book names, 2026-09-14), so a v2
+  // cut on disk describes a rule this door no longer applies and must not be
+  // reused. (`.v2` was the footnote asides and the sup markers, 2026-08-30.)
+  const cutPath = path.join(cutDir, `${sha16}.v3.tts.epub`);
 
   try {
     await fs.access(cutPath);
     // Same source sha ⇒ the same cut, made by this same rule. Reused so a
     // resubmission of a half-finished render preps against the identical file.
     console.log(
-      `[PARALLEL-TTS] ${captions} caption(s) and ${footnotes} note(s) excluded from narration `
-      + `(cut on disk reused): ${cutPath}`);
+      `[PARALLEL-TTS] ${captions} caption(s) and ${footnotes} note(s) excluded from narration, `
+      + `${expandedSpans} scripture book name(s) printed in full (cut on disk reused): ${cutPath}`);
     return cutPath;
   } catch { /* not cut yet */ }
 
@@ -8639,16 +8695,19 @@ async function cutCaptionsAndNotes(epubPath: string, jobId: string): Promise<str
     // numbers should never make it to TTS. They aren't read in a real
     // audiobook."* A digits-only <sup> that survived the compile is exactly one.
     stripSupMarkers: true,
+    rewrites,
   });
   await fs.rename(staging, cutPath);
   await logger.log('INFO', jobId,
     `${written.excludedCaptions} caption(s), ${written.excludedFootnotes} note(s) and `
-    + `${written.removedSupMarkers} reference number(s) excluded from the narration`, {
+    + `${written.removedSupMarkers} reference number(s) excluded from the narration; `
+    + `${written.rewrittenSpans} scripture book name(s) printed in full`, {
       cutPath, source: epubPath,
     });
   console.log(
     `[PARALLEL-TTS] excluded from narration: ${written.excludedCaptions} caption(s), `
-    + `${written.excludedFootnotes} note(s), ${written.removedSupMarkers} reference number(s) — `
+    + `${written.excludedFootnotes} note(s), ${written.removedSupMarkers} reference number(s); `
+    + `${written.rewrittenSpans} scripture book name(s) printed in full — `
     + `the book keeps them; the cut is ${cutPath}`);
   return cutPath;
 }
@@ -8669,6 +8728,7 @@ async function normalizeTextNumbersFor(
   const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
   const { normalizeTextBlocks, splitTextBlocks } = await import('./tts-number-normalizer.js');
   const { canonicalizePunctuationText } = await import('./tts-punctuation.js');
+  const { expandBibleReferences } = await import('../shared/listen-text/bible-books.js');
 
   const runner = await narrationNumberRunner(opts);
   // Punctuation FIRST, exactly as the book pass runs it — a `.txt` has no
@@ -8676,8 +8736,12 @@ async function normalizeTextNumbersFor(
   // gets the same canonical ellipsis and the same quotes the shipped audiobook
   // has. An audition that measured a different pipeline than it claims to is the
   // whole reason this path exists.
+  //
+  // …and then the scripture book names, for the same reason: the book path's
+  // copy gets them in `prepareNarrationCopy` above, so an audition that did not
+  // would be measuring a pipeline the shipped audiobook does not run.
   const blocks = splitTextBlocks(await fs.readFile(inputPath, 'utf8'))
-    .map((block) => canonicalizePunctuationText(block));
+    .map((block) => expandBibleReferences(canonicalizePunctuationText(block)));
   const outcome = await normalizeTextBlocks(blocks, runner, {
     systemPrompt: await loadNumberNormalizePrompt(),
     outDir: narrationCutsDir(),
