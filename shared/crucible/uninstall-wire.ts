@@ -37,6 +37,19 @@ export type CrucibleUninstallRefusalCode =
   | 'uninstall_not_available'
   /** win32, and `LOCALAPPDATA` is not in the environment. Never assembled from a username. */
   | 'uninstall_no_localappdata'
+  /**
+   * win32, and a token cannot be carried through the command processor.
+   *
+   * The host's CLI is a `.cmd`, which Node refuses to spawn without a shell
+   * since the CVE-2024-27980 fix, so it is run as
+   * `cmd.exe /d /s /c ""<program>" "<arg>""` with every token quoted
+   * (`electron/crucible/host-runner.ts`). A token containing a quote or a
+   * percent sign cannot survive that form: a quote is indistinguishable from
+   * the end of a token, and a percent sign is expanded as cmd reads the line.
+   * Either would make a path into a DIFFERENT path, and this command deletes
+   * directories — so it is refused rather than escaped.
+   */
+  | 'uninstall_bad_path'
   /** win32, the config was read through WSL, and no distro is named in this app's settings. */
   | 'uninstall_no_distro'
   /** A config path with no directory in it, so the Crucible home cannot be read out of it. */

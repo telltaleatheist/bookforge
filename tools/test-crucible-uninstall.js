@@ -45,6 +45,15 @@
  * its parser declares (`--dry-run`, `--purge-weights`, `--wsl-too`, `--json`),
  * read at 2026-09-15 while that side was being written.
  *
+ * **AND THE REAL RUNNER SPAWNS A `.cmd` THE ONLY WAY NODE STILL ALLOWS.** The
+ * injected runners above prove the LOGIC; section 7 proves the SPAWN. Node has
+ * refused a `.cmd` or `.bat` target without a shell since the CVE-2024-27980
+ * fix — it throws EINVAL before the process exists — and on Windows the CLI
+ * that owns the engine is `%LOCALAPPDATA%\Crucible\host\crucible.cmd`.
+ * Measured by Foundry on this same PC, on Electron 33's Node. So the real
+ * runner is BookForge's (`electron/crucible/host-runner.ts`), and what is
+ * pinned is the argv it builds, not a mock's.
+ *
  * TODO(crucible): `docs/INSTALL-UNINSTALL.md` will own this contract and had
  * not landed when this was written. Check the shape below against it when it
  * does, and delete this note.
@@ -66,6 +75,7 @@ if (!fs.existsSync(MODULE)) {
 }
 const uninstall = require(MODULE);
 const { CrucibleLocalError } = require(path.join(REPO, 'dist', 'electron', 'crucible', 'local.js'));
+const hostRunner = require(path.join(REPO, 'dist', 'electron', 'crucible', 'host-runner.js'));
 
 let ran = 0;
 function check(name, fn) {
@@ -461,6 +471,120 @@ check('anything unnamed is uninstall_failed, in the error\'s own words', () => {
 // 6. The door is drawn where the ruling says, and nowhere else
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. The REAL runner, which is the one that meets a .cmd
+// ─────────────────────────────────────────────────────────────────────────────
+
+check('a .cmd target goes through cmd.exe /d /s /c, with every token quoted', () => {
+  const plan = hostRunner.crucibleSpawnPlan([HOST_CLI, 'uninstall', '--json', '--dry-run'], 'win32');
+  assert.strictEqual(
+    plan.program, 'cmd.exe',
+    'the host CLI is spawned directly. Node throws EINVAL on a .cmd with no shell since the '
+    + 'CVE-2024-27980 fix, so the first real press would have failed with nothing on screen '
+    + 'about batch files.',
+  );
+  assert.deepStrictEqual(plan.args.slice(0, 3), ['/d', '/s', '/c'],
+    '/d skips AutoRun (whose output would land in the JSON this app parses) and /s makes the '
+    + "quoting ONE rule rather than cmd's legacy heuristics");
+  // The whole line in an OUTER pair, every token in its own INNER pair: after
+  // /s strips the outer two, cmd sees a quoted program and quoted arguments,
+  // and no token can be re-split on a space or read as an operator.
+  assert.strictEqual(
+    plan.args[3],
+    `""${HOST_CLI}" "uninstall" "--json" "--dry-run""`,
+    `the line is not the outer/inner quoted form: ${plan.args[3]}`,
+  );
+  assert.strictEqual(
+    plan.verbatim, true,
+    'libuv would escape the quotes this line is MADE of, and cmd.exe would receive literal '
+    + 'backslash-quote pairs',
+  );
+});
+
+check('a .bat target too, and a NON-.cmd target is left exactly alone', () => {
+  const bat = hostRunner.crucibleSpawnPlan(['C:\\x\\crucible.BAT', 'uninstall'], 'win32');
+  assert.strictEqual(bat.program, 'cmd.exe', 'the extension test is case-sensitive');
+
+  // THE FIX IS FOR ONE TARGET, not a new spawn policy for every target.
+  // wsl.exe, a guest binary and a Mac's console script keep the package's own
+  // spawn, which is what its WSL UTF-16 handling and its refusals are written
+  // against.
+  for (const [argv, platform] of [
+    [['wsl.exe', '-d', 'crucible', '--exec', '/home/t/.crucible/server/bin/crucible', 'uninstall'], 'win32'],
+    [[SERVER_CLI, 'uninstall', '--json'], 'darwin'],
+    [[SERVER_CLI, 'uninstall', '--json'], 'linux'],
+    // A .cmd on a Mac is a file with an odd name, not a batch script.
+    [['/opt/weird.cmd', 'uninstall'], 'darwin'],
+  ]) {
+    const plan = hostRunner.crucibleSpawnPlan(argv, platform);
+    assert.strictEqual(plan.program, argv[0], `${platform}: ${argv[0]} was rewritten`);
+    assert.deepStrictEqual(plan.args, argv.slice(1));
+    assert.strictEqual(plan.verbatim, false);
+    assert.ok(!plan.args.includes('/c'), `${platform}: a cmd.exe flag reached a non-cmd target`);
+  }
+});
+
+check('a quote or a percent sign in the path is refused BY NAME, never escaped', () => {
+  for (const bad of [
+    'C:\\Users\\od"d\\AppData\\Local\\Crucible\\host\\crucible.cmd',
+    'C:\\Users\\%USERNAME%\\AppData\\Local\\Crucible\\host\\crucible.cmd',
+    // A line break MID-PATH. Deliberately not one appended after `.cmd`:
+    // that string does not END in `.cmd`, so it is not a batch target at all
+    // and never reaches the command processor — which is the extension test
+    // doing its job, not the quoting rule doing its job.
+    'C:\\Users\\t\\Cru\nible\\host\\crucible.cmd',
+  ]) {
+    let caught = null;
+    try { hostRunner.crucibleSpawnPlan([bad, 'uninstall'], 'win32'); } catch (err) { caught = err; }
+    assert.ok(caught, `a path this form cannot carry was escaped instead of refused: ${bad}`);
+    assert.strictEqual(caught.code, 'uninstall_bad_path', bad);
+    assert.ok(
+      caught.message.startsWith('uninstall_bad_path: '),
+      `the code is not in the sentence: ${caught.message}`,
+    );
+  }
+  // A path with a SPACE is fine — that is what the quoting is for, and
+  // refusing it would lock out every machine with a space in its user name.
+  const spaced = 'C:\\Users\\Owen Morgan\\AppData\\Local\\Crucible\\host\\crucible.cmd';
+  const plan = hostRunner.crucibleSpawnPlan([spaced, 'uninstall'], 'win32');
+  assert.strictEqual(plan.args[3], `""${spaced}" "uninstall""`);
+});
+
+check('the uninstall doors in main.ts use the HARDENED runner, not the package\'s', () => {
+  const main = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
+  const doors = main.slice(main.indexOf("ipcMain.handle('crucible:host-uninstall-plan'"));
+  const body = doors.slice(0, doors.indexOf('// ── THE OPERATOR DOOR'));
+  const hardened = (body.match(/crucibleProcessRunner\(\)/g) || []).length;
+  assert.strictEqual(hardened, 2, 'one of the two uninstall doors still builds its own runner');
+  assert.ok(
+    !/processRunner\(\)/.test(body.replace(/crucibleProcessRunner\(\)/g, '')),
+    "an uninstall door still calls the package's processRunner(), which throws EINVAL on the "
+    + "host's .cmd",
+  );
+});
+
+check('the INSTALL door spawns no .cmd today, and shares the runner anyway', () => {
+  // On win32 `install()` reaches the host over HTTP and only ever calls
+  // fileExists/readFile on the entry point — the `.cmd` appears as the TEXT of
+  // a `host_not_installed` refusal and nothing else. Pinned so that the day
+  // the package starts spawning it, this says so rather than EINVAL does.
+  const install = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'install.ts'), 'utf-8');
+  assert.ok(
+    !/spawn\w*\([^)]*\.cmd/.test(install),
+    'electron/crucible/install.ts spawns a .cmd directly',
+  );
+  const main = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
+  assert.ok(
+    /driveCrucibleInstall\(options, crucibleProcessRunner\(\)\)/.test(main),
+    'the install door does not share the hardened runner — two runners that differ in a way '
+    + 'nobody would notice until the package started spawning the host entry point',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. The door
+// ─────────────────────────────────────────────────────────────────────────────
+
 check('the settings door exists, is local-only, and says what it keeps', () => {
   const doors = fs.readFileSync(
     path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-doors.component.ts'),
@@ -483,6 +607,39 @@ check('the settings door exists, is local-only, and says what it keeps', () => {
   // THE DRY RUN IS SHOWN FIRST. `Remove it` only appears inside a block that
   // already has a plan on screen.
   assert.ok(doors.includes('Show me what would go'), 'there is no dry run before the real one');
+});
+
+check('changing a checkbox is CLEAR-ONLY — no automatic re-run (ruling, both apps)', () => {
+  /*
+   * THE RULING, 2026-09-15, taken with Foundry so the two apps behave the
+   * same: ticking "also delete the models" or "also remove the WSL2 engine"
+   * CLEARS the plan on screen and the person presses "Show me what would go"
+   * again. It does NOT re-run the dry run for them.
+   *
+   * Two reasons. A dry run walks six weight directories measuring them, so a
+   * checkbox that kicked one off makes a click feel like a hang. And a plan
+   * that reappeared by itself, subtly different, under a live "Remove it"
+   * button is the exact shape of somebody pressing Remove against numbers
+   * they had not read.
+   */
+  const doors = fs.readFileSync(
+    path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-doors.component.ts'),
+    'utf-8',
+  );
+  const matches = doors.match(/\(change\)="[^"]*"/g) || [];
+  const boxes = matches.filter((m) => /uninstallPlan/.test(m));
+  assert.strictEqual(boxes.length, 2, 'the two uninstall checkboxes do not both act on the plan');
+  for (const handler of boxes) {
+    assert.strictEqual(
+      handler, '(change)="uninstallPlan.set(null)"',
+      `a checkbox does more than clear the plan: ${handler}. Clear-only is the ruling.`,
+    );
+  }
+  // And "Remove it" is only reachable with a plan on screen.
+  assert.ok(
+    /@if \(uninstallPlan\(\); as u\) \{\s*@if \(u\.dryRun\) \{/.test(doors),
+    'the Remove button is not gated behind a dry-run plan',
+  );
 });
 
 check('the renderer reaches it through the two named channels and nothing else', () => {

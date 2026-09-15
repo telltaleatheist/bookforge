@@ -8168,7 +8168,16 @@ function setupIpcHandlers(): void {
           },
         },
       );
-      const result = await driveCrucibleInstall(options);
+      /*
+       * THE SAME RUNNER, THOUGH THE INSTALL DOES NOT NEED IT TODAY. On win32
+       * `install()` reaches the host over HTTP and only ever calls
+       * `fileExists` and `readFile` on the `.cmd` — it never spawns it (the
+       * keeper pins that). Handing it the hardened runner anyway means this
+       * app has ONE runner rather than two that differ in a way nobody would
+       * notice until the package started spawning the host's entry point.
+       */
+      const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
+      const result = await driveCrucibleInstall(options, crucibleProcessRunner());
       send({
         kind: 'done',
         server: result.server,
@@ -8210,11 +8219,18 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const { crucibleUninstall } = await import('./crucible/uninstall.js');
-      const { processRunner } = await import('@crucible/bootstrap');
+      /*
+       * `crucibleProcessRunner`, NOT the package's `processRunner`. On Windows
+       * the CLI that owns the engine is `%LOCALAPPDATA%\Crucible\host\
+       * crucible.cmd`, and Node has refused to spawn a `.cmd` without a shell
+       * since the CVE-2024-27980 fix: the package's runner throws EINVAL
+       * before the process exists. Measured by Foundry on this PC.
+       */
+      const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
       const plan = await crucibleUninstall(
         server,
         { dryRun: true, purgeWeights: options.purgeWeights, wslToo: options.wslToo },
-        processRunner(),
+        crucibleProcessRunner(),
       );
       return { success: true, data: plan };
     } catch (err) {
@@ -8240,11 +8256,12 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const { crucibleUninstall } = await import('./crucible/uninstall.js');
-      const { processRunner } = await import('@crucible/bootstrap');
+      // The same hardened runner as the dry run above — see its note there.
+      const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
       const plan = await crucibleUninstall(
         server,
         { dryRun: false, purgeWeights: options.purgeWeights, wslToo: options.wslToo },
-        processRunner(),
+        crucibleProcessRunner(),
         (line, stream) => {
           if (!event.sender.isDestroyed()) {
             event.sender.send('crucible:uninstall-progress', { stream, text: line });
