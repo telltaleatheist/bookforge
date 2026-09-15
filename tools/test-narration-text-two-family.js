@@ -170,6 +170,7 @@ const processingPasses = require(path.join(DIST, 'electron', 'processing-passes.
 const narrationTextDoor = require(path.join(DIST, 'electron', 'narration-clean-text.js'));
 const queueEngine = require(path.join(DIST, 'electron', 'queue-engine.js'));
 const { narrationTextStep } = require(path.join(DIST, 'electron', 'queue-steps', 'pass.js'));
+const crucibleRoutes = require(path.join(DIST, 'electron', 'crucible', 'routes.js'));
 
 manifestService.setLibraryBasePath(ROOT);
 
@@ -426,20 +427,39 @@ test('a chained narration reads the copy the PASS named, through the real queue'
   queueEngine.setGpuLockProbe(() => null);
   queueEngine.setGpuHolderProbe(() => null);
   /*
-   * THE ROUTING RECORD, WITH THE LEGACY SWITCH ON.
+   * THE ROUTING RECORD, WITH ONE SERVER NAMED.
    *
    * The narration text cleanup is the `clean` act and it TRAVELS as of
-   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue now resolves
-   * a venue for this row before it will start — and a build that cannot say
-   * where a book runs parks the row by name rather than quietly taking this
-   * machine's card. Wired as the app wires it, with the one legacy switch on,
-   * which is what sends the act to the local engines: the same answer this
-   * suite always assumed, now stated rather than implied.
+   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue resolves a
+   * venue for this row before it will start — and a build that cannot say where
+   * a book runs parks the row by name rather than quietly taking this machine's
+   * card.
+   *
+   * This suite used to answer that with the legacy local-render switch, which
+   * sent the act to the local engines. That switch and that arm are DELETED
+   * (docs/LEGACY-REMOVAL.md), so there is one answer left and the row needs a
+   * server to be admitted at all. It is never dialled: `cleanTextEpub` is
+   * stubbed at the top of this file, because what these two checks are about is
+   * WHICH FILE the chained narration reads — not where the cleanup ran.
    */
   queueEngine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
-    defaultWaitFor: () => null,
-    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+    routing: () => ({ ranked: [{ name: 'twofam', enabled: true }], localName: null }),
+    defaultWaitFor: () => 'twofam',
+    reach: async () => ({ reachable: true }),
+  });
+  /*
+   * AND WHERE THAT ENGINE RUNS THE `clean` CLASS — card, not cloud.
+   *
+   * `narration-text` declares `crucibleClass: 'clean'`, so the pump asks
+   * `crucibleRouteOf` whether the engine forwards that class upstream, and
+   * `unknown` is a WAIT rather than a guess: the row holds with "BookForge has
+   * not yet read where "twofam" runs clean work". In the app that record is
+   * filled by coordination on every connect; here it is written through the
+   * SAME door coordination uses, so the suite wires the fact rather than
+   * stubbing the question away.
+   */
+  crucibleRoutes.noteCrucibleRoutes('twofam', {
+    clean: 'local', translate: 'local', simplify: 'local', analysis: 'local',
   });
   await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state') });
 
@@ -527,20 +547,39 @@ test('a follow-on carrying a STALE sourceRef still reads the pass\'s artifact', 
   queueEngine.setGpuLockProbe(() => null);
   queueEngine.setGpuHolderProbe(() => null);
   /*
-   * THE ROUTING RECORD, WITH THE LEGACY SWITCH ON.
+   * THE ROUTING RECORD, WITH ONE SERVER NAMED.
    *
    * The narration text cleanup is the `clean` act and it TRAVELS as of
-   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue now resolves
-   * a venue for this row before it will start — and a build that cannot say
-   * where a book runs parks the row by name rather than quietly taking this
-   * machine's card. Wired as the app wires it, with the one legacy switch on,
-   * which is what sends the act to the local engines: the same answer this
-   * suite always assumed, now stated rather than implied.
+   * 2026-09-14 (`queue-steps/pass.ts`, rollout §3), so the queue resolves a
+   * venue for this row before it will start — and a build that cannot say where
+   * a book runs parks the row by name rather than quietly taking this machine's
+   * card.
+   *
+   * This suite used to answer that with the legacy local-render switch, which
+   * sent the act to the local engines. That switch and that arm are DELETED
+   * (docs/LEGACY-REMOVAL.md), so there is one answer left and the row needs a
+   * server to be admitted at all. It is never dialled: `cleanTextEpub` is
+   * stubbed at the top of this file, because what these two checks are about is
+   * WHICH FILE the chained narration reads — not where the cleanup ran.
    */
   queueEngine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
-    defaultWaitFor: () => null,
-    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+    routing: () => ({ ranked: [{ name: 'twofam', enabled: true }], localName: null }),
+    defaultWaitFor: () => 'twofam',
+    reach: async () => ({ reachable: true }),
+  });
+  /*
+   * AND WHERE THAT ENGINE RUNS THE `clean` CLASS — card, not cloud.
+   *
+   * `narration-text` declares `crucibleClass: 'clean'`, so the pump asks
+   * `crucibleRouteOf` whether the engine forwards that class upstream, and
+   * `unknown` is a WAIT rather than a guess: the row holds with "BookForge has
+   * not yet read where "twofam" runs clean work". In the app that record is
+   * filled by coordination on every connect; here it is written through the
+   * SAME door coordination uses, so the suite wires the fact rather than
+   * stubbing the question away.
+   */
+  crucibleRoutes.noteCrucibleRoutes('twofam', {
+    clean: 'local', translate: 'local', simplify: 'local', analysis: 'local',
   });
   await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state-sourceref') });
 

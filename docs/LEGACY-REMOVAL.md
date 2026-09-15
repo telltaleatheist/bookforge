@@ -26,7 +26,20 @@ and the WSL/worker halves of `parallel-tts-bridge.ts` and `reassembly-bridge.ts`
 any more — they are unreachable, not live — and they are deleted once that audit says what
 Crucible is missing and it has been carried across.
 
-Two consequences of the hold, both deliberate:
+**A SECOND HOLD, 2026-09-15 evening: `electron/scripts/higgs/`, and above all
+`serve_higgs_sgl.sh`.** Owen ruled that SGLang is the Higgs stack and that vllm-omni does
+not work for Higgs at all. Crucible's `cuda-linux` TTS env is on vllm-omni today and is
+being moved; **the SGLang launch script exists nowhere else** — narrator ships only
+`serve_higgs_v3.sh` and its certified yaml as package data. That launcher's defaults ARE
+the configuration (`HIGGS_SGL_CUDA_GRAPH_MAX_BS` defaulting to `HIGGS_MAX_NUM_SEQS`, the
+0.60 memory fraction, the 7500 max-new-tokens) and the measured reasoning in its header is
+what the port depends on. Nothing in that tree is deleted or rewritten here; it is released
+only when narrator ships its own copy.
+
+**And a boundary, since it has moved twice: `python/narrator/` is narrator's OWN source
+and is not part of this layer.** Untouched.
+
+Two consequences of the first hold, both deliberate:
 
   - `electron/streaming-engine.ts` keeps `setServeEngineProbe` / `setPersistedVoiceProbe`
     wired to the pool, labelled HELD. They start nothing; they are the half of the spawn

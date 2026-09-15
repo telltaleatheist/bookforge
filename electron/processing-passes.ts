@@ -1067,11 +1067,12 @@ async function runNarrationTextPass(
    * exists to prevent, one door along.
    *
    * `runVenueOfRow` is the ONE reader of `waitForResolved`'s three shapes. A
-   * crucible venue is named; the legacy marker and "never assigned" both hand
-   * `undefined` down, which is the caller saying *I did not name one* — and
-   * `decideWhereTextActRuns` then reads the record, where the legacy switch is
-   * the thing that sends it local. That is deliberately not a second place the
-   * legacy switch is interpreted.
+   * crucible venue is named; "never assigned" and `any` hand `undefined` down,
+   * which is the caller saying *I did not name one*, and
+   * `decideWhereTextActRuns` then reads the record. The third shape is an OLD
+   * row assigned to the deleted local narrator, and that one throws
+   * `legacy_venue_retired` rather than being read as a server's name — the
+   * refusal has one owner, and this is not a second place it is interpreted.
    */
   /*
    * REQUIRED LAZILY, and this module's own rule about that is worth keeping:

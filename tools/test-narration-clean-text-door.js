@@ -91,18 +91,35 @@ if (process.platform === 'win32') process.env.APPDATA = FAKE_APPDATA;
 else if (process.platform === 'darwin') process.env.HOME = FAKE_APPDATA;
 else process.env.XDG_CONFIG_HOME = FAKE_APPDATA;
 process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
-// THE VENUE IS STATED, once, for this whole keeper. Since 2.6 every text act
-// asks where it runs, and this file is about the LOCAL engine door: what the
-// binary refuses, what it admits, and what this app does with either answer.
-// A temp userData has no registered Crucible, so without this every check
-// would meet "no Crucible server is available to the queue" — a true sentence
-// about a machine nobody configured, and not the question asked here. The
-// legacy switch is the SAME one an operator flips in Settings, so the keeper
-// NAMES its venue rather than stubbing the decision; the Crucible venue is
-// tools/test-crucible-text-acts.js's subject.
+/*
+ * THE VENUE IS STATED, once, for this whole keeper.
+ *
+ * Since 2.6 every text act asks where it runs, and this file is about what the
+ * ENGINE does — what the binary refuses, what it admits, and what this app does
+ * with either answer. It used to state its venue by turning the legacy
+ * local-render switch on. That switch and the local text-engine arm behind it
+ * are DELETED (docs/LEGACY-REMOVAL.md), so the act goes to a Crucible server or
+ * is refused by name — and a temp userData has none, which would make every
+ * check below meet "no Crucible server is available to the queue": a true
+ * sentence about a machine nobody configured, and not the question asked here.
+ *
+ * So the keeper brings its OWN server: a fake Crucible on loopback, named
+ * through the PAIRING FILE (crucible `docs/PHASE15-HOST.md` §3.6 — the
+ * contract's own first way to find the server on this machine, read with no
+ * WSL and no `wsl.exe` spawn). `$CRUCIBLE_HOME` points that read at a directory
+ * of ours, so nothing here touches whatever Crucible is running on this box.
+ * The registry is deliberately NOT used: it refuses a loopback entry by name,
+ * because the local server has one owner and a copied token goes stale.
+ *
+ * The VENUE DECISION itself is `tools/test-crucible-text-acts.js`'s subject;
+ * what this file needs from it is only that it answers.
+ */
+const CRUCIBLE_HOME = path.join(ROOT, 'crucible-home');
+fs.mkdirSync(CRUCIBLE_HOME, { recursive: true });
+process.env.CRUCIBLE_HOME = CRUCIBLE_HOME;
 fs.writeFileSync(
   path.join(FAKE_APPDATA, 'BookForge', 'crucible-routing.json'),
-  JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: true }, null, 2),
+  JSON.stringify({ order: ['local'], disabled: [], newJobsWaitFor: 'top-ranked' }, null, 2),
   'utf8');
 // The binary this run uses, stated: `ensureFoundryPath` returns it without
 // touching the component registry, which is not mounted here.
@@ -116,6 +133,49 @@ const hostQueue = require(path.join(DIST, 'foundry-host-queue.js'));
 const { foundryVersionAtLeast } = require(path.join(REPO, 'dist', 'shared', 'vlm', 'readings-bank.js'));
 const { NARRATION_TEXT_FAILSAFE_NOTICE } =
   require(path.join(REPO, 'dist', 'shared', 'processing', 'narration-text-notice.js'));
+
+const { startFakeCrucible, settingsRoutes, leaseRoutes } =
+  require(path.join(REPO, 'tools', 'fake-crucible.js'));
+
+/** What the fake names for the `clean` class — `settingsRoutes`' own default. */
+const CRUCIBLE_CLEAN_MODEL = 'qwen3.5-9b';
+
+/** One `GET /v1/models` row in the shape the SDK's `readModelInfo` requires. */
+function modelRow(id, resident) {
+  return {
+    id, family: 'qwen3.5', params_b: 9, revision: 'abc1234', fingerprint: `${id}@abc1234`,
+    modalities: ['text'], backend_supported: true, installed: true, resident,
+    loadable: true, reason: null, memory_bytes_estimate: 19000000000,
+    context_default: 32768, max_model_len: 32768,
+  };
+}
+
+/**
+ * Start the keeper's own Crucible and write the pairing line that names it.
+ *
+ * Called from the runner, before the first check: the port is only known once
+ * the socket is listening, and `readCruciblePairingFile` reads the file at CALL
+ * time, so the file can be written after the door module has been required.
+ */
+async function startVenue() {
+  const settings = settingsRoutes({});
+  const leases = leaseRoutes();
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    if (ctx.url.pathname === '/v1/models' && req.method === 'GET') {
+      // A BARE ARRAY — `models()` asks `asArray` of the body itself.
+      ctx.send(res, 200, [modelRow(CRUCIBLE_CLEAN_MODEL, true)]);
+      return true;
+    }
+    if (await leases.handler(req, res, ctx)) return true;
+    return settings.handle(req, res, ctx);
+  });
+  const { port } = new URL(fake.url);
+  fs.writeFileSync(
+    path.join(CRUCIBLE_HOME, 'pairing'),
+    `crucible://clean-door-fake@127.0.0.1:${port}/#test-token-abcd\n`,
+    'utf8');
+  return fake;
+}
 
 let passed = 0;
 const failures = [];
@@ -522,18 +582,30 @@ test('`foundry epub-stamp` makes a book this door can clean', () => {
     'the stamped book carries the categories clean-text admits a book by');
 });
 
-test('a STAMPED book is ADMITTED, and the run reaches the model the settings named', async () => {
+test('a STAMPED book is ADMITTED, and the run dials the VENUE\'s endpoint', async () => {
   /*
-   * THE WHOLE RUN, OVER A REAL STAMPED BOOK, WITH NO MODEL ANYWHERE — the
-   * endpoint is a port nothing listens on, so the engine admits the book, walks
-   * its stamped blocks, runs the punctuation stage, and then cannot reach the
-   * model. Everything this app is responsible for has happened by then: the
-   * floor, the settings, the argv, the spawn, the progress plumbing, and the
-   * engine's own sentence carried back out.
+   * THE WHOLE RUN, OVER A REAL STAMPED BOOK, WITH NO MODEL BEHIND THE ENDPOINT
+   * — the fake Crucible serves capability and residency but not the OpenAI
+   * door, so the engine admits the book, walks its stamped blocks, runs the
+   * punctuation stage, and then cannot reach a model. Everything this app is
+   * responsible for has happened by then: the floor, the venue, the argv, the
+   * spawn, the progress plumbing, and the engine's own sentence carried back
+   * out.
    *
    * Deterministic, and that is why it is the gate rather than the live leg
-   * below: a connection refused takes milliseconds and depends on nothing that
-   * is running on the machine.
+   * below: a 404 from a socket we own takes milliseconds and depends on nothing
+   * that is running on the machine.
+   *
+   * ── WHAT THE APP-SETTINGS WRITE IS FOR NOW ───────────────────────────────
+   *
+   * It used to NAME the endpoint and the model this run would use, because the
+   * act ran on the local text engines. That arm is deleted
+   * (docs/LEGACY-REMOVAL.md) and the answer belongs to the SERVER — crucible
+   * `docs/PHASE15-HOST.md` §5.3, *"the cleanup door sends `capability.selected`
+   * … and nothing else"*. So the same write is kept for the opposite reason: a
+   * dead port and a model that does not exist are set HERE, and neither may
+   * appear on the line. If app-settings ever reached the spawn again, this is
+   * the check that says so.
    */
   writeAppSettings({ cleanTextModel: 'nothing-is-here:0b', ollamaUrl: 'http://127.0.0.1:1' });
   const printed = path.join(ROOT, 'admitted.epub');
@@ -551,23 +623,44 @@ test('a STAMPED book is ADMITTED, and the run reaches the model the settings nam
         `a stamped book must be ADMITTED, not refused: ${err.message}`);
       assert.ok(/punctuation \(s1\)/.test(err.message),
         `stage 1 must have run over the book's blocks: ${err.message}`);
-      // THE ENDPOINT, AND NOT THE MODEL, and that is the engine's shape rather
-      // than a gap here: it probes the listing before it ever names a tag, so a
-      // dead endpoint is reported without one. What model a run asks for is
-      // proved by the settings case above and by the live leg below.
-      assert.ok(/127\.0\.0\.1:1/.test(err.message),
-        `the endpoint the settings named must be the one it dialled: ${err.message}`);
       /*
-       * THE REMEDY SENTENCE CHANGED WITH THE DIALECT, and the assertion moved
-       * with it rather than being loosened. Through foundry 1.2.0 an unreachable
-       * endpoint said `ollama serve`; `646e8a1` (v1.3.0) deleted the Ollama
-       * transport, and the engine now says it *"uses an OpenAI-compatible
-       * inference server and never starts one"* and names the two things a
-       * person can do. What is being held is unchanged: the ENGINE'S OWN remedy
-       * reaches the user instead of being swallowed into a generic failure.
+       * THE ENDPOINT, AND NOT THE MODEL, and that is the engine's shape rather
+       * than a gap here: it probes the listing before it ever names a tag, so
+       * an unusable endpoint is reported without one. What model a run asks for
+       * is proved by the live leg below.
+       *
+       * It must be the VENUE's OpenAI base — `<url>/openai` on the server the
+       * routing record chose — and it must NOT be the app-settings URL written
+       * above, which is the shape the deleted local arm had.
        */
-      assert.ok(/never starts one/.test(err.message),
-        `the engine's own remedy must survive to the user: ${err.message}`);
+      assert.ok(/\/openai\/v1\/models/.test(err.message),
+        `the venue's OpenAI base must be the one it dialled: ${err.message}`);
+      assert.ok(!/127\.0\.0\.1:1\//.test(err.message),
+        `app-settings' ollamaUrl reached the spawn: ${err.message}`);
+      assert.ok(!/nothing-is-here/.test(err.message),
+        `app-settings' cleanTextModel reached the spawn: ${err.message}`);
+      /*
+       * THE ENGINE'S OWN SENTENCE, and it has moved TWICE — each time because
+       * the condition underneath it changed, never to loosen the check.
+       *
+       * Through foundry 1.2.0 an unreachable endpoint said `ollama serve`;
+       * `646e8a1` (v1.3.0) deleted the Ollama transport and it became *"uses an
+       * OpenAI-compatible inference server and never starts one"*. Both were
+       * the diagnosis for a port with NOTHING on it, which is what this run had
+       * while the endpoint came from app-settings.
+       *
+       * It no longer does: the endpoint is the VENUE's, and the venue is a
+       * server that IS listening — it serves capability and residency and does
+       * not serve the OpenAI door. So the engine's diagnosis for this run is
+       * its OTHER one, *"Something is listening there, but it is not an
+       * OpenAI-compatible server"*, and it is the more informative of the two.
+       *
+       * What is held is unchanged and is the whole point: the ENGINE's own
+       * words reach the user instead of being swallowed into a generic failure.
+       * It now also proves the endpoint was REACHED rather than merely composed.
+       */
+      assert.ok(/not an OpenAI-compatible server/.test(err.message),
+        `the engine's own diagnosis must survive to the user: ${err.message}`);
       return true;
     });
 });
@@ -668,15 +761,20 @@ test('a REAL cleanup stamps the book, and this app\'s own gate reads it', async 
 // ─────────────────────────────────────────────────────────────────────────────
 
 (async () => {
-  for (const t of tests) {
-    try {
-      await t.fn();
-      passed += 1;
-      console.log(`  ok  ${t.name}`);
-    } catch (err) {
-      failures.push(t.name);
-      console.error(`  FAIL  ${t.name}\n        ${err && err.message}`);
+  const venue = await startVenue();
+  try {
+    for (const t of tests) {
+      try {
+        await t.fn();
+        passed += 1;
+        console.log(`  ok  ${t.name}`);
+      } catch (err) {
+        failures.push(t.name);
+        console.error(`  FAIL  ${t.name}\n        ${err && err.message}`);
+      }
     }
+  } finally {
+    await venue.close();
   }
   console.log(`\nclean-text door: ${passed}/${tests.length} passed`);
   try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { /* temp */ }

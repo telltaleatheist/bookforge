@@ -67,16 +67,21 @@ process.env.BOOKFORGE_USERDATA_DIR = path.join(SETTINGS_ROOT, 'BookForge');
  * AND A VENUE, for the same reason and in the same folder.
  *
  * Since rollout item 2.6 a text row also asks WHERE it runs before it runs
- * (`decideWhereTextActRuns`, electron/crucible/text-venue.ts). With no record
- * the answer on a machine that has a local Crucible is that server, and the act
- * is then refused by name because the installed foundry engine cannot address
- * one — correct behaviour, and nothing to do with the thing these tests are
- * about, which is the shape a progress line takes on its way to a row. So the
- * legacy switch is written ON here: this suite drives the LOCAL engines.
+ * (`decideWhereTextActRuns`, electron/crucible/text-venue.ts). This file used
+ * to answer that by turning the legacy local-render switch ON, so the act ran
+ * against the LOCAL engines and the venue never got in the way of the thing
+ * these tests are about — the shape a progress line takes on its way to a row.
+ *
+ * That switch and the local text-engine arm are DELETED
+ * (docs/LEGACY-REMOVAL.md). A text act now runs on a Crucible server or is
+ * refused by name, and from the HOSTED window it is always the second one
+ * (`hosted_placement_not_vendored` — see the refusal check below), so the venue
+ * is settled per row by `setCrucibleRoutingHost` rather than by this file, and
+ * the record on disk is written empty so nothing here reads the real one.
  */
 fs.writeFileSync(
   path.join(SETTINGS_ROOT, 'BookForge', 'crucible-routing.json'),
-  JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked', legacyLocalRender: true }),
+  JSON.stringify({ order: [], disabled: [], newJobsWaitFor: 'top-ranked' }),
   'utf8');
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
@@ -173,14 +178,20 @@ async function fresh(name) {
    * queue's Crucible routing"), which is a correct refusal and would sit on
    * every text row in this file.
    *
-   * So this suite is a machine with the legacy switch ON and no server: the
-   * local engines, which is the arrangement every test here is about. The
-   * Crucible half is `tools/test-crucible-text-acts.js` and 2.5's own keeper.
+   * So this suite is a machine with ONE reachable server, named on every new
+   * row. It is not a real one and never dialled: a hosted text act is refused
+   * `hosted_placement_not_vendored` BEFORE any network — that check runs first
+   * in `resolveCrucibleTextEngine`, because a caller that cannot give the
+   * engine an environment cannot run the act however resident the model is. So
+   * naming a server here is what lets a text row be ADMITTED and reach the step
+   * module, which is where every assertion in this file lives.
+   *
+   * The venue DECISION is `tools/test-crucible-text-acts.js`'s subject.
    */
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [], legacyLocalRender: true, localName: null }),
-    defaultWaitFor: () => null,
-    reach: async () => ({ reachable: false, detail: 'this suite registers no server' }),
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], localName: null }),
+    defaultWaitFor: () => 'hostq',
+    reach: async () => ({ reachable: true }),
   });
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
@@ -596,45 +607,42 @@ test('the engine that has no clean-text is refused BY NAME, and nothing runs', (
   assert.match(said, /Nothing was cleaned/, 'and that nothing ran — the readings-flag refusal\'s shape');
 });
 
-test('a clean-text count reaches the row in THEIR shape, through the REAL step module', async () => {
+test('a clean-text count reaches the row in THEIR shape', async () => {
   /*
-   * A `clean` row asks the installed binary its version before it runs, so this
-   * case needs a real foundry — the gate above is what makes that true, and
-   * stubbing it out here would test a step module this app does not have.
-   * SKIPPED BY NAME on a machine without one rather than passed quietly.
+   * THE PHASE COMES OFF THE LINE, NOT OFF THE ROW — `foundryProgressOf` matches
+   * `clean-text: N/M` and answers `phase: 'clean'` whatever kind of row the
+   * reporter belongs to. So this drives the real step module through a RENDER
+   * row, which is a kind the hosted window can still run.
+   *
+   * It used to use a `clean` row. It cannot any more: a hosted TEXT act is
+   * refused `hosted_placement_not_vendored` before it reaches the seam at all
+   * (the check below), and that refusal is not this check's subject — the shape
+   * a count takes on its way home is. Driving it through a row that cannot run
+   * would have made this a test of the refusal wearing the wrong name.
    */
-  const binary = realFoundry();
-  if (binary === null) {
-    skipped.push('a clean-text count reaches the row in THEIR shape — no foundry binary on this machine');
-    return;
-  }
-  process.env.FOUNDRY_CLI_PATH = binary;
   await fresh('textpass-progress');
   engine.clearStepModules();
   engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
 
   let onProgress = null;
   host.setFoundrySeam({
-    runJob: (_request, opts) => new Promise((resolve) => {
+    runJob: (_request, opts) => {
       onProgress = opts.onProgress;
-      setTimeout(() => resolve({ state: 'done' }), 0);
-    }),
+      return new Promise(() => {}); // never settles; we only want the reporter
+    },
     setQueueRows: null,
     drained: null,
   });
   engine.start();
-  const row = host.foundryHostQueue.enqueue(textPass('clean', 'prog'), null, PROJ);
-  engine.start({ stepId: row.id });
-  // The gate SPAWNS the binary to ask its version, so this waits on a real child
-  // rather than on microtasks. A fixed `settle()` here read the step before the
-  // spawn had returned and reported "never reached the seam" for a step that was
-  // working — which is the version of this test that would have been committed.
-  for (let i = 0; i < 200 && onProgress === null; i++) await wait(25);
-  assert.ok(
-    onProgress !== null,
-    'the step never reached the seam — the ≥' + host.FOUNDRY_VERSION_FOR_CLEAN_TEXT
-    + ' gate refused ' + binary + ', or the spawn failed',
-  );
+  host.foundryHostQueue.enqueue({
+    kind: 'render',
+    inputPath: `${PROJ}\\archive\\book.pdf`,
+    outputPath: `${PROJ}\\final\\book.epub`,
+  }, null, PROJ);
+  host.foundryHostQueue.start();
+  await settle();
+  assert.ok(onProgress !== null, 'the real module called the seam and handed it a reporter');
+
   onProgress('clean-text: 412/2081');
   await settle();
   const [after] = host.foundryHostQueue.rows(PROJ);
@@ -643,6 +651,76 @@ test('a clean-text count reaches the row in THEIR shape, through the REAL step m
     'their shelf interpolates page and total off this object; a phase it does not carry is a bar '
     + 'that changed units mid-run',
   );
+});
+
+test('a HOSTED text act is refused by name and never reaches the seam', async () => {
+  /*
+   * ── WHAT THE DELETED LOCAL ARM TOOK WITH IT ──────────────────────────────
+   *
+   * Until 2026-09-15 a hosted `clean` row had two ways to run: a Crucible, which
+   * has always been refused from here, or the LOCAL text engines. The second is
+   * deleted (docs/LEGACY-REMOVAL.md), so the first is the only answer and the
+   * refusal is now unconditional.
+   *
+   * It is refused for a reason that has nothing to do with the server and
+   * everything to do with the SEAM: `runJob(request, {parentStep, signal,
+   * onProgress})` carries no environment, the credential and the per-run act
+   * name travel in one, and the vendored window cannot compose one for itself
+   * yet. `resolveCrucibleTextEngine` asks that FIRST — before capability,
+   * before residency, before any socket — which is why this check needs no
+   * server behind the name.
+   *
+   * What it holds: the row FAILS by name rather than running somewhere nobody
+   * chose, the seam is never called, and the sentence names the re-vendor this
+   * waits on. It goes green when foundry is re-vendored at or past `e096734`
+   * and this whole branch is deleted.
+   *
+   * A `clean` row asks the installed binary its version before any of this, so
+   * the case needs a real foundry; SKIPPED BY NAME without one rather than
+   * passed quietly.
+   */
+  const binary = realFoundry();
+  if (binary === null) {
+    skipped.push('a HOSTED text act is refused by name — no foundry binary on this machine');
+    return;
+  }
+  process.env.FOUNDRY_CLI_PATH = binary;
+  await fresh('textpass-refused');
+  engine.clearStepModules();
+  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
+
+  let reached = false;
+  host.setFoundrySeam({
+    runJob: () => { reached = true; return Promise.resolve({ state: 'done' }); },
+    setQueueRows: null,
+    drained: null,
+  });
+  engine.start();
+  const row = host.foundryHostQueue.enqueue(textPass('clean', 'refused'), null, PROJ);
+  engine.start({ stepId: row.id });
+  // The gate SPAWNS the binary to ask its version, so this waits on a real child
+  // rather than on microtasks.
+  let after = null;
+  for (let i = 0; i < 200; i++) {
+    await wait(25);
+    [after] = host.foundryHostQueue.rows(PROJ);
+    if (after && after.state === 'failed') break;
+  }
+  assert.strictEqual(reached, false, 'the hosted seam was called for an act that cannot run there');
+  assert.ok(after !== null && after.state === 'failed',
+    `the row must FAIL by name; it is ${after === null ? 'gone' : after.state}`);
+  assert.match(after.error || '', /hosted_placement_not_vendored/,
+    `the refusal must name itself: ${after.error}`);
+  /*
+   * AND THE SENTENCE MUST NOT SEND ANYONE TO A SWITCH THAT NO LONGER EXISTS.
+   * It used to end by telling the operator to turn on "Run renders and text
+   * passes with the local engines instead"; that row is gone from Settings, and
+   * a remedy pointing at it would be worse than none.
+   */
+  assert.ok(!/local engines instead|Run renders/.test(after.error || ''),
+    `the refusal still offers the deleted switch as a remedy: ${after.error}`);
+  assert.match(after.error || '', /no other route/,
+    `the refusal must say the hosted window has nowhere else to go: ${after.error}`);
 });
 
 test('a FINISHED read does not block a fresh press — that is a person asking again', async () => {

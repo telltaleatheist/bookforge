@@ -97,11 +97,9 @@ function passModule(type: JobType): StepModule {
      * to the rule but the same rule with a different owner: nobody picks its
      * provider on the row. It is the `clean` act, one of Crucible's four
      * capability classes, and where it runs is the routing record's answer
-     * (`decideWhereTextActRuns`) — with the legacy switch on, the queue
-     * resolves this row to the legacy venue and the act goes local anyway.
-     * Declaring `local` here would have meant the opposite: a book admitted to
-     * the Mac cleaning itself on this machine's card, silently, which is the
-     * §4.4 defect.
+     * (`decideWhereTextActRuns`). Declaring `local` here would mean the
+     * opposite: a book admitted to the Mac cleaning itself on this machine's
+     * card, silently, which is the §4.4 defect.
      *
      * `footnote-refs` is `local` because it is a string replace over a zip.
      * There is no model and no card; a remote slot would be occupied by

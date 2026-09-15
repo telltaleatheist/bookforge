@@ -525,9 +525,9 @@ export interface CleanTextEpubOptions {
    * `--crucible-server`, a queue row's resolved venue.
    *
    * `undefined` means the caller did not say, and the routing record decides
-   * (`decideWhereTextActRuns`). It does NOT mean "run locally": with the legacy
-   * switch off and a server enabled, the act goes to Crucible or is refused by
-   * name.
+   * (`decideWhereTextActRuns`). It does NOT mean "run locally": there is no
+   * local text engine any more (docs/LEGACY-REMOVAL.md), so the act goes to a
+   * Crucible server or is refused by name.
    */
   crucibleServer?: string;
   /**
