@@ -53,6 +53,31 @@ read out into this document's appendix first, in its own commit, before a byte w
     and `higgsModelForJob` / `HIGGS_VOICE_FLAG` into `higgs-models.ts`, where they were
     always catalog questions.
 
+### Still standing, and why — the bridge's WSL machinery
+
+`parallel-tts-bridge.ts` keeps a layer that is now PROVABLY DEAD rather than merely
+unused, and it is worth saying exactly why it is dead, because that is what makes its
+removal safe rather than hopeful:
+
+  - `prepRunsInWsl(venue, …)` opens with `if (venue.where === 'crucible') return false`,
+    and `GenerationVenue` has ONE member. It can no longer return true.
+  - `sessionRunsInWsl(session)` is the same shape against `session.venue`.
+  - So `sessionHomeFor`'s guest arm, every `if (sessionRunsInWsl(...))` branch, the WSL
+    ebook staging, the guest sessions-root scan in the resume path, and
+    `cleanupWslOrphanedProcesses` are all unreachable.
+
+It was left in this pass for one honest reason: `tools/test-crucible-render-session.js`
+drives `prepRunsInWsl` and `sessionHomeFor` with BOTH venues as its fixtures, and that
+suite was being repaired concurrently. Collapsing the functions while another hand held
+the test would have been two people editing one fact. **It is a follow-on, not a
+survivor** — nothing about it is load-bearing.
+
+ONE THING INSIDE IT IS NOT DEAD and must not be swept up with it: `higgsPrepEnv` still
+calls `writeHiggsVoicesDocument`, `higgsSpawnEnv` and `higgsCheckpointArm`. Prep runs
+NATIVELY on this machine for a Crucible render, and the voices document is how
+`NARRATOR_SENTENCE_GAP` and the venue's band reach narrator's packer. Those three
+catalog functions survive in `higgs-models.ts` for that caller alone.
+
 ## The one keeper — `epub-align`
 
 `generate-sentences` with `method: 'epub-align'`
@@ -533,6 +558,13 @@ renders, 25 ms is noise.
 nothing today; the guard exists because every duration is `bytes / (rate * 2)`, so a 44.1 kHz
 engine read as 24 kHz would report every sentence at **~1.8x its real length** and the
 scheduler would run the buffer dry while insisting it was ahead.
+
+**Two more that died with the local worker**, recorded because each is a measurement
+rather than a round number: `WORKER_PROGRESS_TIMEOUT_MS = 12 min`, widened from 5 because a
+legitimate MLX batch on a slow voice under GPU contention can run several minutes between
+per-sentence lines — the 5-minute version killed healthy renders; and
+`RENDERED_POLL_INTERVAL_MS = 4000`, the Mac/MLX rendered-file poller's interval, which
+existed because stdout would not mention a bucket completion for minutes.
 
 **Timeouts, each a diagnosis rather than a budget:** load 15 s warm / 180 s cold (a
 registration is a dict write; a construction pays ~6 GB + graph capture), worker `ready`

@@ -91,7 +91,6 @@ import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 
 import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './mlx-batch-progress';
-import { type ConcreteOrpheusTier } from './orpheus-memory';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -140,7 +139,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
-import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, unloadOllamaModels } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
@@ -2754,26 +2753,18 @@ interface ConversionSession {
   // AI-cleanup LLM stays off the GPU while TTS runs). Released on every terminal
   // path. See gpu-arbiter.
   holdsGpu?: boolean;
-  // Orpheus vLLM gpu_memory_utilization, sized from FREE VRAM at acquire time so the
-  // reservation never over-commits the shared desktop GPU (see acquireGpuForJob).
-  // Exported into the Orpheus worker (WSL) via ORPHEUS_GPU_MEM_UTIL.
-  orpheusGpuMemUtil?: number;
-  // The concrete Orpheus memory tier this job resolved to (from the user's choice,
-  // or auto-sized to free VRAM). Used to lower the auto ceiling if the job OOMs.
-  orpheusTier?: ConcreteOrpheusTier;
-  // Which artifact form this job's Orpheus voice is served from ('merged' or
-  // 'adapter'), resolved ONCE in the GPU preflight (acquireGpuForJob) and reused by
-  // the OOM-retry VRAM wait so the retry can't ask for a smaller floor than the
-  // preflight required — an adapter spawn needs ~1.8 GiB more than a merged one.
-  // Absent on a job whose preflight never ran (CPU / non-Orpheus engines).
-  orpheusServeArtifact?: OrpheusServeArtifact;
-  // Display label for the resolved tier (e.g. 'Light') — shown as a queue badge.
-  orpheusMemLevel?: string;
-  // vLLM submission batch matched to the level's KV cache (win/linux), so it doesn't
-  // over-admit and thrash on preemption. Set alongside the tier at sizing time.
-  orpheusVllmBatch?: number;
-  // One-line "what it's using and why" note, shown in the queue until sentences start.
-  orpheusMemNote?: string;
+  /*
+   * THE SEVEN `orpheus*` SIZING FIELDS ARE GONE — the tier, the artifact form, the
+   * sized `gpu_memory_utilization`, the vLLM submission batch, the level label and
+   * its note. Every one of them was written by the local-vLLM preflight in
+   * `acquireGpuForJob` and read by the local worker's spawn or its OOM retry, and
+   * none of those exist any more (docs/LEGACY-REMOVAL.md).
+   *
+   * They left a DEAD QUEUE BADGE behind them: `AggregatedProgress.orpheusMemoryLevel`
+   * still crosses to the renderer (`shared/queue/engine-types.ts`,
+   * `queue.types.ts`, `job-step.component.ts`) and is now always absent, so the
+   * badge never draws. Removing that field spans files this change does not own.
+   */
   // Set by the GPU preflight when there isn't enough free VRAM to run safely; the
   // run loop aborts the job with this message instead of spilling into a freeze.
   gpuPreflightError?: string;
@@ -2781,11 +2772,6 @@ interface ConversionSession {
   // no-ops headless (no mainWindow), so renderRangeHeadless reads THIS to throw the real
   // cause instead of the downstream "N sentence files missing" symptom.
   completionError?: string;
-  // True once assertGpuIsOurs has run for this session. The guard answers "is
-  // someone ELSE rendering", so it belongs to the session, not the worker: an
-  // OOM-retry respawn (retryWorker) and workers 1..n are the same render as
-  // worker 0 and must not re-ask.
-  gpuOwnershipChecked?: boolean;
   /**
    * The live Crucible render's handle, when this session's generation step runs
    * on a server instead of in a child process (`settings.crucible.server`).
@@ -6087,13 +6073,9 @@ function emitProgress(session: ConversionSession): void {
     estimatedRemaining,
     message: (session.downloadNote && shownInSession === 0)
       ? session.downloadNote
-      : (session.orpheusMemNote && shownInSession === 0)
-        ? session.orpheusMemNote
-        : session.isResumeJob
-          ? `Resuming: ${shownInSession} new`
-          : `${activeWorkers} ${activeWorkers === 1 ? 'worker' : 'workers'}`,
-    // The resolved Orpheus memory level, for a persistent queue badge.
-    orpheusMemoryLevel: session.orpheusMemLevel,
+      : session.isResumeJob
+        ? `Resuming: ${shownInSession} new`
+        : `${activeWorkers} ${activeWorkers === 1 ? 'worker' : 'workers'}`,
     // Historical data for accurate elapsed time display
     totalElapsedSeconds,
     historicalRate: session.persistentState?.historicalSentencesPerMinute,
