@@ -551,6 +551,16 @@ function modelLeasedRefusal(held) {
  *                     its own to prove the verdict is not decided by the other
  *                     two. The attempt is still counted in `capabilityReads`:
  *                     a read that was made and refused is a read that crossed.
+ *   dropClasses       a list of class names whose ROW IS ABSENT from the
+ *                     capability document. The 5.3a shape: a Mac has no
+ *                     `pages` block at all, so its record never mentions the
+ *                     class, and a module that names it must be told "not on
+ *                     this engine" rather than have `local` assumed for it.
+ *   disableClasses    {class: reason} -> that row is `enabled: false` with
+ *                     THAT reason, verbatim. The other half of 5.3a: a class
+ *                     the backend has measured and turned off. The reason is
+ *                     the knob because the whole point of the ruling is that
+ *                     the SERVER's sentence is what an app shows.
  */
 const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis'];
 const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
@@ -656,24 +666,37 @@ function settingsRoutes(behaviour) {
     };
   };
 
+  const dropped = behaviour.dropClasses || [];
+  const disabled = behaviour.disableClasses || {};
+
   const capability = () => ({
     backend_kind: backendKind,
     total_bytes: 25769803776,
     desktop_allowance_bytes: 3221225472,
-    classes: LLM_CLASSES.concat(['pages'], WSL_ONLY_CLASSES).map((c) => {
-      const row = capabilityRow(c === 'pages' ? 'pages' : c);
-      if (c === 'pages') {
-        row.enabled = true;
-        row.selected = 'dots-ocr';
-        row.reason = 'dots-ocr fits';
-      }
-      if (behaviour.omitRoute !== true && behaviour.routeMissingFor !== c) {
-        row.route = behaviour.badRouteFor === c
-          ? 'somewhere-else'
-          : routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
-      }
-      return row;
-    }),
+    classes: LLM_CLASSES.concat(['pages'], WSL_ONLY_CLASSES)
+      // A DROPPED CLASS HAS NO ROW AT ALL -- not a row saying no. 5.3a's Mac
+      // has no `pages` block, so its record never mentions the class, and the
+      // two are different documents to read.
+      .filter((c) => dropped.indexOf(c) === -1)
+      .map((c) => {
+        const row = capabilityRow(c === 'pages' ? 'pages' : c);
+        if (c === 'pages') {
+          row.enabled = true;
+          row.selected = 'dots-ocr';
+          row.reason = 'dots-ocr fits';
+        }
+        if (Object.prototype.hasOwnProperty.call(disabled, c)) {
+          row.enabled = false;
+          row.selected = '';
+          row.reason = disabled[c];
+        }
+        if (behaviour.omitRoute !== true && behaviour.routeMissingFor !== c) {
+          row.route = behaviour.badRouteFor === c
+            ? 'somewhere-else'
+            : routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
+        }
+        return row;
+      }),
   });
 
   // Every branch answers `true`; see the note in `leaseRoutes`.

@@ -82,6 +82,41 @@ const { check, summary } = makeChecker();
 const MODULE = JSON.parse(fs.readFileSync(
   path.join(REPO, 'shared', 'crucible', 'bookforge.module.json'), 'utf-8'));
 
+/**
+ * WHAT THE FAKE'S CAPABILITY RESOLVES THE MODULE'S CLASSES TO.
+ *
+ * crucible `docs/PHASE15-HOST.md` §5.3a: the module carries `needs` as CLASSES
+ * and the SERVER resolves each one through its own capability record, so the
+ * subject a class becomes is the FAKE's answer and not the module's. This is
+ * the fake's `localModelFor` default (`fake-crucible.js`: `clean` →
+ * `qwen3.5-9b`), written out here so the catalog can carry a row for it — the
+ * catalog is the second half of the question and without the row every connect
+ * would report the cleanup model missing.
+ */
+const CLASS_MODELS = { clean: 'qwen3.5-9b' };
+
+/** A capability record as the shared wire shapes it, for the pure comparison. */
+function capabilityView(classes) {
+  return {
+    backendKind: 'cuda-linux',
+    totalBytes: 25769803776,
+    desktopAllowanceBytes: 3221225472,
+    classes,
+  };
+}
+
+/** One row of it. `route` defaults to `local`, which is what most rows are. */
+function capabilityRow(capability, overrides) {
+  return Object.assign({
+    capability,
+    enabled: true,
+    selected: CLASS_MODELS[capability] === undefined ? '' : CLASS_MODELS[capability],
+    reason: 'it fits',
+    shortfallBytes: 0,
+    route: 'local',
+  }, overrides || {});
+}
+
 /** Deps with no real clock: a keeper must not wait twenty seconds for a settle. */
 function deps(overrides) {
   return Object.assign({
@@ -119,11 +154,12 @@ function deps(overrides) {
  */
 function startFake(options) {
   const opts = Object.assign({
-    missing: [], jobTypes: MODULE.job_types.map((j) => j.type), refuse: null, acceptsWorkAfter: 0,
-    settings: {},
+    missing: [], uncatalogued: [], jobTypes: MODULE.job_types.map((j) => j.type), refuse: null,
+    acceptsWorkAfter: 0, settings: {}, taskUnmet: undefined,
   }, options);
   const seen = {
     info: 0, catalog: 0, posts: [], taskLists: 0, eventStreams: [], activity: 0, cancelled: [],
+    taskReads: [],
   };
   const settings = settingsRoutes(opts.settings);
   let posted = 0;
@@ -151,21 +187,46 @@ function startFake(options) {
 
     if (route === '/v1/catalog' && req.method === 'GET') {
       seen.catalog += 1;
-      send(res, 200, {
-        rows: MODULE.subjects.map((subject) => ({
-          kind: subject.kind,
-          id: subject.id,
-          name: subject.id === 'higgs-default' ? 'Higgs default' : null,
-          job_type: subject.kind === 'voice' ? 'tts' : 'llm',
-          installed: !opts.missing.includes(subject.id),
-          installed_bytes: opts.missing.includes(subject.id) ? null : 1024,
-          expected_bytes: subject.kind === 'denoise' ? 9126805504 : null,
+      /*
+       * THE MODULE'S EXPLICIT SUBJECTS **AND** WHAT ITS CLASSES RESOLVE TO.
+       *
+       * §5.3a splits the module in two: `subjects` are ids BookForge chose (a
+       * voice, the whisper size, the rvc base) and `needs` are CLASSES the
+       * server resolves. Both halves end up as catalog lookups, so a fake
+       * whose catalog listed only the first half would report the cleanup
+       * model missing on every connect — which is a true statement about that
+       * fake and a useless one about this app.
+       */
+      const rows = MODULE.subjects.map((subject) => ({
+        kind: subject.kind,
+        id: subject.id,
+        name: subject.id === 'higgs-default' ? 'Higgs default' : null,
+        job_type: subject.kind === 'voice' ? 'tts' : 'llm',
+        installed: !opts.missing.includes(subject.id),
+        installed_bytes: opts.missing.includes(subject.id) ? null : 1024,
+        expected_bytes: subject.kind === 'denoise' ? 9126805504 : null,
+        floors: [],
+        license: null,
+        source: `hf:fake/${subject.id}`,
+        resident: false,
+      }));
+      for (const id of Object.values(CLASS_MODELS)) {
+        if (opts.uncatalogued.includes(id)) continue;
+        rows.push({
+          kind: 'model',
+          id,
+          name: 'Qwen3.5 9B',
+          job_type: 'llm',
+          installed: !opts.missing.includes(id),
+          installed_bytes: opts.missing.includes(id) ? null : 1024,
+          expected_bytes: 9663676416,
           floors: [],
           license: null,
-          source: `hf:fake/${subject.id}`,
+          source: `hf:fake/${id}`,
           resident: false,
-        })),
-      });
+        });
+      }
+      send(res, 200, { rows });
       return true;
     }
 
@@ -220,6 +281,33 @@ function startFake(options) {
       return true;
     }
 
+    /*
+     * THE TASK DOCUMENT, WHICH IS THE ONLY PLACE `unmet` LIVES.
+     *
+     * §5.3a puts the classes an engine does not serve on `TaskStatus.unmet`
+     * and on NO frame of the stream, so `module-setup.ts` reads the document
+     * once when the stream ends. `taskUnmet: undefined` leaves the field off
+     * the body entirely — a server that predates the field — which the SDK
+     * reads as `[]`; a list puts it there.
+     */
+    const document = /^\/v1\/tasks\/([^/]+)$/.exec(route);
+    if (document && req.method === 'GET') {
+      const taskId = decodeURIComponent(document[1]);
+      seen.taskReads.push(taskId);
+      if (opts.taskUnmet === 'unreadable') {
+        send(res, 500, { error: { code: 'internal', message: 'the lid closed', details: null } });
+        return true;
+      }
+      const body = {
+        task_id: taskId, type: 'module', request: { type: 'module' }, state: 'done', error: null,
+        created: '2026-09-14T11:59:00Z', started: '2026-09-14T11:59:00Z',
+        finished: '2026-09-14T12:00:00Z',
+      };
+      if (opts.taskUnmet !== undefined) body.unmet = opts.taskUnmet;
+      send(res, 200, body);
+      return true;
+    }
+
     const cancel = /^\/v1\/tasks\/([^/]+)$/.exec(route);
     if (cancel && req.method === 'DELETE') {
       seen.cancelled.push(decodeURIComponent(cancel[1]));
@@ -256,6 +344,8 @@ async function main() {
       assert.strictEqual(fake.seen.catalog, 1, 'the catalog should be read once');
       assert.strictEqual(fake.seen.posts.length, 0,
         `a stocked engine must get ZERO task posts, got ${fake.seen.posts.length}`);
+      assert.deepStrictEqual(state.unmet, [],
+        'an engine that serves every class BookForge names has nothing unmet');
     } finally { await fake.close(); }
   });
 
@@ -494,6 +584,166 @@ async function main() {
     } finally { await fake.close(); }
   });
 
+  // ── §5.3a against a live fake: unmet rides on the state ─────────────────
+  await check('a class this engine does not mention is STOCKED with the class named', async () => {
+    /*
+     * NOTHING IS MISSING AND NOTHING IS POSTED, and both halves are the
+     * ruling. No task could make this engine serve `clean`, so asking it to
+     * download its way out of being a different machine would be a task whose
+     * every entry is a skip — the exact post §4a's amendment deleted.
+     */
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ settings: { dropClasses: ['clean'] } });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.strictEqual(state.unmet.length, 1, 'the class travels on the state');
+      assert.strictEqual(state.unmet[0].class, 'clean');
+      assert.strictEqual(fake.seen.posts.length, 0,
+        'an unmet class is not a download, so there is nothing to post');
+    } finally { await fake.close(); }
+  });
+
+  await check("a disabled class is stocked too, with the ENGINE's sentence", async () => {
+    coordinate.resetCoordinationForTests();
+    const reason = 'no mlx-darwin block for qwen3.5-9b';
+    const fake = await startFake({ settings: { disableClasses: { clean: reason } } });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked');
+      assert.deepStrictEqual(state.unmet, [{ class: 'clean', reason }],
+        'the reason is the row\'s, verbatim — a word of ours makes a fixable thing a mystery');
+      assert.strictEqual(fake.seen.posts.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  await check('a PRE-PHASE-15 document is all local and nothing is unmet', async () => {
+    /*
+     * §3.3's last bullet, as the SDK now reads it: a document in which NO row
+     * carries `route` comes from a server that predates the phase, and every
+     * class on such a server IS local — a fact the document states, not a
+     * default a client fills. Every Crucible on this network today sends one.
+     * So the class resolves, the catalog answers, and the connect is an
+     * ordinary `stocked` with no `unmet` and no post.
+     */
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ settings: { omitRoute: true } });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.deepStrictEqual(state.unmet, [],
+        'a routeless document is not an undecided one');
+      assert.strictEqual(fake.seen.posts.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  await check('a class ROUTED UPSTREAM is neither missing nor unmet', async () => {
+    /*
+     * The work runs on the operator's account (§3.3), so there are no weights
+     * on that machine to be short of — and the engine has nothing to
+     * download, which is why this is `stocked` and not `preparing`. The
+     * catalog is emptied of the local model on purpose: if the route were
+     * ignored, this would report the cleanup model missing and post a module.
+     */
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({
+      uncatalogued: [CLASS_MODELS.clean],
+      settings: {
+        routes: { clean: 'anthropic/claude-sonnet-5' },
+        upstreams: { anthropic: { key: 'sk-ant-1234' } },
+      },
+    });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.deepStrictEqual(state.unmet, []);
+      assert.strictEqual(fake.seen.posts.length, 0,
+        'nothing is pulled for a class whose work leaves the card');
+    } finally { await fake.close(); }
+  });
+
+  await check("the SERVER's unmet is read off the task document and WINS", async () => {
+    /*
+     * §5.3a puts `unmet` on `TaskStatus` and on no frame of the stream, so
+     * `module-setup.ts` reads `GET /v1/tasks/{id}` once when the stream ends.
+     * The fake's capability serves `clean` perfectly, so BookForge's own
+     * prediction is EMPTY — and the server says otherwise. The server is the
+     * thing that resolved the classes, so its answer is the one that reaches
+     * the progress, beside the prediction rather than instead of it.
+     */
+    coordinate.resetCoordinationForTests();
+    const unmet = [{ class: 'clean', reason: 'nothing on this card fits' }];
+    const fake = await startFake({ missing: ['denoise-roformer'], taskUnmet: unmet });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'preparing');
+      assert.strictEqual(state.progress.state, 'done');
+      assert.deepStrictEqual(fake.seen.taskReads, ['task-1'],
+        'the document is read once, after the stream');
+      assert.deepStrictEqual(state.progress.unmet, unmet,
+        'the engine\'s own answer reaches the progress');
+      assert.deepStrictEqual(state.unmet, [],
+        'and this app\'s prediction travels beside it, not overwritten');
+    } finally { await fake.close(); }
+  });
+
+  await check('`unmet` is NULL while a task runs, and null is not empty', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ missing: ['denoise-roformer'], taskUnmet: [] });
+    try {
+      const name = registerFake(fake.url);
+      const frames = [];
+      const stop = coordinate.onCoordination((state) => {
+        if (state.phase === 'preparing') frames.push(state.progress);
+      });
+      const state = await coordinate.coordinateServer(name, deps());
+      stop();
+      assert.ok(frames.length > 1, 'there were frames to check');
+      assert.ok(frames.filter((f) => f.state === 'running').every((f) => f.unmet === null),
+        'every frame of a task still running says nobody has been asked');
+      const first = frames.findIndex((f) => f.unmet !== null);
+      assert.ok(first > 0 && frames.slice(0, first).every((f) => f.unmet === null),
+        `an answer appears once and never un-appears (first at ${first} of ${frames.length})`);
+      assert.deepStrictEqual(state.progress.unmet, [],
+        'and the terminal frame carries the engine\'s empty answer, which is a different thing');
+    } finally { await fake.close(); }
+  });
+
+  await check('a task document that cannot be re-read leaves unmet null, not a failure', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ missing: ['denoise-roformer'], taskUnmet: 'unreadable' });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'preparing');
+      assert.strictEqual(state.progress.state, 'done',
+        'a task that ran to done is a task that ran to done');
+      assert.strictEqual(state.progress.unmet, null, 'and nobody said what was unmet');
+    } finally { await fake.close(); }
+  });
+
+  await check('a WAIT carries the unmet classes too — half an hour is when it matters', async () => {
+    coordinate.resetCoordinationForTests();
+    const reason = 'no mlx-darwin block for qwen3.5-9b';
+    const fake = await startFake({
+      missing: ['denoise-roformer'],
+      refuse: BUSY,
+      acceptsWorkAfter: 0,
+      settings: { disableClasses: { clean: reason } },
+    });
+    try {
+      const name = registerFake(fake.url);
+      const state = await coordinate.coordinateServer(name, deps({ sleep: async () => {} }));
+      assert.strictEqual(state.phase, 'waiting');
+      assert.deepStrictEqual(state.unmet, [{ class: 'clean', reason }]);
+    } finally { await fake.close(); }
+  });
+
   // ── The guards around all of it ──────────────────────────────────────────
   await check('two connects at once are ONE run, not a manufactured task_busy', async () => {
     coordinate.resetCoordinationForTests();
@@ -534,25 +784,129 @@ async function main() {
   });
 
   // ── The pure comparison, driven directly ─────────────────────────────────
-  await check('missingForBookForge compares job types on the TYPE, as the server does', () => {
-    const catalog = MODULE.subjects.map((s) => ({
+  /** A catalog with everything installed: the module's subjects and the classes'. */
+  function fullCatalog() {
+    const rows = MODULE.subjects.map((s) => ({
       kind: s.kind, id: s.id, name: null, jobType: 'llm', installed: true,
       installedBytes: 1, expectedBytes: null, floors: [], license: null, source: 'hf:x', resident: false,
     }));
+    for (const id of Object.values(CLASS_MODELS)) {
+      rows.push({
+        kind: 'model', id, name: 'Qwen3.5 9B', jobType: 'llm', installed: true,
+        installedBytes: 1, expectedBytes: 9663676416, floors: [], license: null,
+        source: 'hf:x', resident: false,
+      });
+    }
+    return rows;
+  }
+
+  /** The record a healthy cuda-linux engine sends: every class local and enabled. */
+  function fullCapability() {
+    return capabilityView(
+      ['clean', 'translate', 'simplify', 'analysis', 'pages', 'tts', 'asr', 'align', 'rvc', 'denoise']
+        .map((c) => capabilityRow(c)));
+  }
+
+  await check('missingForBookForge compares job types on the TYPE, as the server does', () => {
+    const catalog = fullCatalog();
     const all = MODULE.job_types.map((j) => j.type);
-    assert.deepStrictEqual(coordinate.missingForBookForge(all, catalog), [],
-      'everything installed is nothing missing');
-    const without = coordinate.missingForBookForge(all.filter((t) => t !== 'align'), catalog);
-    assert.strictEqual(without.length, 1);
-    assert.strictEqual(without[0].jobType, 'align');
+    const stocked = coordinate.missingForBookForge(all, catalog, fullCapability());
+    assert.deepStrictEqual(stocked.missing, [], 'everything installed is nothing missing');
+    assert.deepStrictEqual(stocked.unmet, [], 'and nothing unmet on an engine that serves it all');
+    const without = coordinate.missingForBookForge(
+      all.filter((t) => t !== 'align'), catalog, fullCapability());
+    assert.strictEqual(without.missing.length, 1);
+    assert.strictEqual(without.missing[0].jobType, 'align');
   });
 
   await check('a subject this backend has no block for is carried, not dropped', () => {
     const all = MODULE.job_types.map((j) => j.type);
-    const missing = coordinate.missingForBookForge(all, []);
-    assert.strictEqual(missing.length, MODULE.subjects.length);
-    assert.ok(missing.every((m) => m.inCatalog === false && m.expectedBytes === null),
+    const { missing } = coordinate.missingForBookForge(all, [], fullCapability());
+    const subjects = missing.filter((m) => m.what === 'subject');
+    assert.strictEqual(subjects.length, MODULE.subjects.length);
+    assert.ok(subjects.every((m) => m.inCatalog === false && m.expectedBytes === null),
       'uncatalogued subjects say so rather than inventing a size');
+  });
+
+  // ── §5.3a: the module names CLASSES and the SERVER resolves them ─────────
+  await check('a class with NO ROW is unmet BY NAME — never assumed local', () => {
+    /*
+     * THE §4.6 FINDING, IN THE SHAPE BOOKFORGE MEETS IT.
+     *
+     * Foundry measured it as `pages` against the Mac: a backend with no block
+     * for a class has no capability row for it either, and the generator
+     * having already resolved the class to the cuda-linux id got the WHOLE
+     * module refused `unknown_subject`. BookForge's module names one class,
+     * `clean`, so this is that document with `clean`'s row removed.
+     *
+     * THE ARM THAT MATTERS IS THE ABSENCE. A class nothing has decided about
+     * is not a class that works: assuming `local` here would put a book's
+     * cleanup pass on an engine that cannot run it, and the failure would
+     * arrive an hour later wearing somebody else's name.
+     */
+    const all = MODULE.job_types.map((j) => j.type);
+    const noClean = capabilityView(
+      ['translate', 'simplify', 'analysis', 'pages'].map((c) => capabilityRow(c)));
+    const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), noClean);
+    assert.deepStrictEqual(missing, [], 'an unmet class is not a thing to download');
+    assert.strictEqual(unmet.length, 1, `one class is unmet, got ${unmet.length}`);
+    assert.strictEqual(unmet[0].class, 'clean');
+    assert.ok(/does not mention it/.test(unmet[0].reason),
+      `the absence itself is the reason: ${unmet[0].reason}`);
+  });
+
+  await check("a DISABLED class is unmet with the ENGINE's own reason, verbatim", () => {
+    const all = MODULE.job_types.map((j) => j.type);
+    const reason = 'no mlx-darwin block for qwen3.5-9b';
+    const off = capabilityView([
+      capabilityRow('clean', { enabled: false, selected: '', reason }),
+      capabilityRow('pages'),
+    ]);
+    const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), off);
+    assert.deepStrictEqual(missing, [], '§5.3a: a disabled class is not a refusal and not a pull');
+    assert.deepStrictEqual(unmet, [{ class: 'clean', reason }],
+      'the row said why; nothing of ours goes in its place');
+  });
+
+  await check('an ENABLED class that names nothing is unmet, not a pull of the empty string', () => {
+    const all = MODULE.job_types.map((j) => j.type);
+    const nothingFits = capabilityView([
+      capabilityRow('clean', { selected: '', reason: 'nothing on this card fits' }),
+    ]);
+    const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), nothingFits);
+    assert.deepStrictEqual(missing, [], 'a catalog search for "" would name the empty string');
+    assert.deepStrictEqual(unmet, [{ class: 'clean', reason: 'nothing on this card fits' }]);
+  });
+
+  await check('a class the engine has not pulled is MISSING, and carries both halves', () => {
+    const all = MODULE.job_types.map((j) => j.type);
+    const catalog = fullCatalog().map((row) => (row.id === CLASS_MODELS.clean
+      ? Object.assign({}, row, { installed: false, installedBytes: null })
+      : row));
+    const { missing, unmet } = coordinate.missingForBookForge(all, catalog, fullCapability());
+    assert.deepStrictEqual(unmet, [], 'a thing to download is not a thing this engine cannot do');
+    assert.strictEqual(missing.length, 1);
+    assert.deepStrictEqual(missing[0], {
+      what: 'class',
+      class: 'clean',
+      id: CLASS_MODELS.clean,
+      kind: 'model',
+      name: 'Qwen3.5 9B',
+      jobType: 'llm',
+      expectedBytes: 9663676416,
+      inCatalog: true,
+    }, 'the class BookForge asked for AND the subject that engine picked');
+  });
+
+  await check("a class whose selected id is not in that engine's catalog says so", () => {
+    const all = MODULE.job_types.map((j) => j.type);
+    const catalog = fullCatalog().filter((row) => row.id !== CLASS_MODELS.clean);
+    const { missing } = coordinate.missingForBookForge(all, catalog, fullCapability());
+    const cls = missing.find((m) => m.what === 'class');
+    assert.ok(cls, 'the class is still reported');
+    assert.strictEqual(cls.inCatalog, false);
+    assert.strictEqual(cls.kind, null, 'the kind is the catalog\'s to say, never guessed');
+    assert.strictEqual(cls.expectedBytes, null, 'and no size is invented for it');
   });
 
   // ── The surface: the button is gone, and the words exist ─────────────────
@@ -601,6 +955,39 @@ async function main() {
 
   await check('the vendored module is what gets posted, and nothing rewrites it', () => {
     assert.deepStrictEqual(moduleSetup.BOOKFORGE_MODULE, MODULE);
+  });
+
+  await check('every class the module NEEDS has words a person can read', () => {
+    const text = fs.readFileSync(
+      path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-words.ts'),
+      'utf-8');
+    const block = /export function capabilityClassWords[\s\S]*?\n}/.exec(text);
+    assert.ok(block, 'capabilityClassWords should be a function this check can read');
+    for (const need of MODULE.needs) {
+      assert.ok(new RegExp(`(^|\\s)${need.class}:`, 'm').test(block[0]),
+        `the module needs the "${need.class}" class and nothing says what that is for`);
+    }
+  });
+
+  await check('the two `stocked` sentences are both there, verbatim', () => {
+    /*
+     * PINNED AS TEXT, because this file is the renderer's and a keeper cannot
+     * `require` a TypeScript source that imports `@shared/*` — the same reason
+     * the two checks above read it rather than calling it. What the pin is
+     * FOR is that `stocked` now makes two different claims and only one of
+     * them is safe beside an unmet class: an engine told "has everything
+     * BookForge needs" a clause before "not on this engine: cleaning up text"
+     * is a row arguing with itself (§5.3a).
+     */
+    const text = fs.readFileSync(
+      path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-words.ts'),
+      'utf-8');
+    assert.ok(text.includes("'Ready — this engine has everything BookForge needs.'"),
+      'the sentence for an engine with nothing unmet should still be there');
+    assert.ok(text.includes("'Ready — there is nothing left to download for this engine.'"),
+      'the sentence for an engine with a class it cannot serve should be there');
+    assert.ok(/return `Not on this engine: \$\{joinWords\(parts\)\}`/.test(text),
+      'and the unmet line names the engine\'s own reason after the class');
   });
 
   summary('crucible coordination');
