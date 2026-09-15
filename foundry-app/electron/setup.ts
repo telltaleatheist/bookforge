@@ -23,10 +23,10 @@
  */
 import { readAppSettings, writeAppSettings } from './app-settings';
 import { localCrucibleTakeover, refreshCrucibleFacts } from './crucible-provider';
-import { lineupFor, suggestedTag } from './llm-catalog';
+import { eligibleFor, fitsOn, lineupFor, suggestedTag } from './llm-catalog';
 import { probeOllama } from './ollama';
 import { probeSystem } from './system-probe';
-import type { LlmChoices, SetupState } from '../shared/types';
+import type { LlmChoices, SetupState, SystemProfile, TranslateFloorMiss } from '../shared/types';
 
 export function setupState(): SetupState {
   const settings = readAppSettings();
@@ -62,6 +62,25 @@ export function finishSetup(skipped: string[]): SetupState {
  * two probes, which is what makes the answer a measurement rather than whatever
  * was cached the last time a tooltip was drawn.
  */
+/**
+ * Can anything that fits this machine translate here?
+ *
+ * ASKED OF THE CATALOG, not of a number written down twice: `eligibleFor` is
+ * the floor and `fitsOn` is the fit, and both are the ones the act gate reads
+ * (electron/act-gates.ts). A machine that clears the floor gets null and the
+ * step says nothing extra; one that does not is told which model it would
+ * need, because "translation needs a bigger card than this" is the single most
+ * useful thing that screen can say to somebody about to download six
+ * gigabytes.
+ */
+function translateFloorMiss(profile: SystemProfile): TranslateFloorMiss | null {
+  const eligible = eligibleFor('translate');
+  if (eligible.some((row) => fitsOn(row, profile))) return null;
+  const floor = eligible[0];
+  if (floor === undefined) return null;
+  return { needs: floor.label, needsGB: floor.local.needsGB.value };
+}
+
 export async function llmChoices(): Promise<LlmChoices> {
   const settings = readAppSettings();
   const [profile, ollama] = await Promise.all([
@@ -75,6 +94,7 @@ export async function llmChoices(): Promise<LlmChoices> {
     ollama,
     options,
     suggested: suggestedTag(options),
+    translateFloorMiss: translateFloorMiss(profile),
     current: settings.defaultLlmModel,
     crucible: localCrucibleTakeover(),
   };

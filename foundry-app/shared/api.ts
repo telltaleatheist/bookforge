@@ -9,8 +9,17 @@
  */
 import type { CustomAnalysisCategory } from './analysis-categories';
 import type { BookOutcome } from './book';
+import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
 import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
+import type {
+  CapabilityRecord,
+  SettingsDocument,
+  SettingsPatch,
+  UpstreamName,
+  UpstreamProbe,
+  UpstreamTestResult,
+} from './engine-settings';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { ReReadPrompt } from './reread';
 import type {
@@ -18,14 +27,23 @@ import type {
   CloudProviderEdit,
   CloudSettingsView,
   ComputeSlot,
+  ConnectCodePreview,
   CrucibleInstallPlan,
   CrucibleProbe,
   CrucibleServerEdit,
   CrucibleSettingsView,
   LocalCrucibleAdd,
   NewJobsWaitFor,
+  SlotAvailability,
 } from './slots';
 import type {
+  CrucibleUninstallAvailability,
+  CrucibleUninstallFlags,
+  CrucibleUninstallPlan,
+  CrucibleUninstallRun,
+} from './uninstall-wire';
+import type {
+  ModelClass,
   ActGates,
   AnalysisPlan,
   AnalysisReading,
@@ -1337,7 +1355,22 @@ export interface FoundryApi {
      * record and its address from the registry, decided at the spawn rather than
      * carried from a dialog (electron/crucible-dispatch.ts).
      */
-    defaults(): Promise<{ model: string; cleanModel: string; ollama: string }>;
+    /**
+     * What a dialog for this ACT should open with, resolved against the machine
+     * NOW rather than read from a tag the wizard wrote once. The stored choice
+     * wins whenever it can still serve the class; a stale one is replaced by the
+     * largest installed model that can (electron/llm-catalog.ts,
+     * `openingModelFor`). The class matters because the floors differ: translate
+     * and simplify need a 27B, analysis has none, the cleanup has its own.
+     */
+    defaults(cls: ModelClass): Promise<{ model: string; cleanModel: string; ollama: string }>;
+    /**
+     * What is STORED — for the Settings card, which edits these. Deliberately
+     * not `defaults`: that answer is resolved against the machine, and an
+     * editor seeded from it would write the resolution back as the person's
+     * choice the first time they pressed Save.
+     */
+    stored(): Promise<{ model: string; cleanModel: string; ollama: string }>;
     /** Answers with the tag AS STORED — a name main refused comes back changed. */
     setModel(model: string): Promise<string>;
     /** The Clean text model, same rule: answered with what was stored. */
@@ -1356,8 +1389,13 @@ export interface FoundryApi {
    * host that offers one sees a one-entry list and no picker anywhere.
    */
   slots: {
-    /** Every slot, in priority order. Hosted, this is the host's own list. */
-    list(): Promise<ComputeSlot[]>;
+    /**
+     * Every slot, in priority order, and the reason there are none when that
+     * reason is not simply "none were added" — hosted, a host that offers no
+     * registry (`SlotAvailability`, shared/slots.ts). Hosted, the list is the
+     * host's own.
+     */
+    list(): Promise<SlotAvailability>;
     /**
      * The waiting rows that name this slot — what the Servers card shows before
      * it offers to move any of them. Owen's rule for switching a server off:
@@ -1386,6 +1424,14 @@ export interface FoundryApi {
     /** Test connection. A failure is a RESULT with the SDK's own sentence on it. */
     test(name: string): Promise<CrucibleProbe>;
     /**
+     * Open that server's OWN operator page, in a window that cannot reach this
+     * app — no preload, sandboxed, its own session, locked to the server's
+     * origin (electron/crucible-ui.ts). BY NAME: the address and the token are
+     * read from the registry in main, so no credential is ever in the renderer.
+     * Rejects by name if the server has gone since the row was drawn.
+     */
+    open(name: string): Promise<void>;
+    /**
      * Test an address and a token that are NOT SAVED YET — the setup wizard's
      * Connect door, which has three boxes and no registry entry behind them.
      *
@@ -1410,6 +1456,59 @@ export interface FoundryApi {
      * Windows that file is inside WSL and `wslDistro` decides which guest.
      */
     addLocal(name: string): Promise<LocalCrucibleAdd>;
+    /**
+     * LOOK FOR A CONNECT CODE CRUCIBLE LEFT ON THIS MACHINE, and register what
+     * it names as `local` — PHASE15-HOST.md §3.6 and §5.1, way 1.
+     *
+     * The same read runs once at start (electron/mount.ts) and needs no button
+     * to have happened. This door is the SECOND CHANCE §3.6 asks for: the engine
+     * may have been installed after this app opened, in which case the honest
+     * answer at start ("there is nothing on this machine") has stopped being
+     * true and nothing would notice until the next launch.
+     *
+     * `LocalCrucibleAdd` REUSED rather than a shape of its own, because the two
+     * doors say the same three things — an entry was made, there is nothing here
+     * (`no_local_config`, a FACT and not a fallback), or there is something here
+     * that will not read (`config_unreadable`, carrying the SDK's own
+     * `invalid_pairing` sentence). `configPath` is the pairing file's path.
+     *
+     * NO TOKEN CROSSES. Main reads the line, writes the entry, answers with the
+     * view — `crucible:add-local`'s rule, for the same file-is-the-owner reason.
+     */
+    addFromPairingFile(): Promise<LocalCrucibleAdd>;
+    /**
+     * WHAT A PASTED CONNECT CODE SAYS — name and address, and nothing else.
+     *
+     * Run on every change of the paste field, so it is PURE: the SDK's
+     * `parsePairing` and no network at all. The name and the address fill the
+     * two boxes beside it, so somebody can rename the server before adding it.
+     *
+     * **The token is not in the answer**, though the person pasted it. The
+     * standing rule is that the renderer never holds a credential it did not
+     * type into a field for that purpose, and a preview carrying one would put a
+     * token in a signal for as long as the door stayed open. The line goes one
+     * way, in; Test and Add below take the LINE again.
+     */
+    parseConnectCode(line: string): Promise<ConnectCodePreview>;
+    /**
+     * Test what the code names, WITHOUT saving it — `crucible:test-at` for a
+     * pasted line, and it exists because that door cannot serve this one: it
+     * takes a token, and handing the code's token back to the renderer so it
+     * could be handed forward again is exactly what the preview refuses to do.
+     *
+     * An unreadable line is a RESULT here (`outcome: 'failed'` with the SDK's
+     * sentence), not a rejection: the door draws one sentence in one place
+     * whether it was the line or the server that would not answer.
+     */
+    testConnectCode(line: string): Promise<CrucibleProbe>;
+    /**
+     * Add what the code names, through the registry's one writer. `name` is the
+     * person's — the preview filled the box and they may have renamed it — and
+     * an empty one falls back to the name inside the code. Answers with the whole
+     * settings view for `crucible:add`'s reason, and REJECTS by name on a line
+     * that will not parse.
+     */
+    addConnectCode(line: string, name: string): Promise<CrucibleSettingsView>;
     /** Answered with what was stored. Empty is a real answer and means unset. */
     setWslDistro(distro: string): Promise<string>;
     /** What a new row's `waitFor` starts as. Answered with what was stored. */
@@ -1438,6 +1537,146 @@ export interface FoundryApi {
      * for. The caller's shape is the same either way — `await`, and catch.
      */
     install(): Promise<void>;
+    /**
+     * MAY THE UNINSTALL DOOR BE DRAWN AT ALL — crucible
+     * `docs/INSTALL-UNINSTALL.md` §6.1, and Owen's ruling with it: *the door
+     * only for a server the app can prove is this machine's; never a registry
+     * entry.*
+     *
+     * A READ, and it is the FIRST thing the card asks — a button drawn on
+     * anything less than a proof would eventually offer to delete a colleague's
+     * engine, because a loopback-looking address proves nothing (a tailnet, a
+     * port-forward and an SSH tunnel all put 127.0.0.1:7100 in front of somebody
+     * else's card). `available: false` carries the sentence the card prints
+     * instead of the button, and hosted it is always false.
+     */
+    uninstallAvailability(): Promise<CrucibleUninstallAvailability>;
+    /**
+     * THE PLAN, UNPERFORMED — `crucible uninstall --json --dry-run` (§6.2, §6.4
+     * step 1). Nothing is touched.
+     *
+     * Called again on every change of the two checkboxes, which is the
+     * contract's own instruction: the kept-weights headline has to move when
+     * "Also delete the weights" is ticked, and the dry run is the only thing
+     * that knows the new number. Refuses by name when this app cannot prove the
+     * server is local (`uninstall_not_local`), when the verb did not recognise
+     * the request (`uninstall_usage`), and when what came back is not a plan
+     * (`uninstall_not_json`). A step that FAILED is not a rejection: it is a row
+     * in the plan with `refused.fatal` and the document's `ok` is false.
+     */
+    uninstallDryRun(flags: CrucibleUninstallFlags): Promise<CrucibleUninstallPlan>;
+    /**
+     * THE SAME FLAGS, PERFORMED — §6.4 step 2. The same rows come back with
+     * `done` filling in.
+     *
+     * AND ONE THING MAIN DOES AFTERWARDS: every uninstall takes `config.toml`
+     * with it (§2's box — *"an uninstall that left a bearer token on disk would
+     * be an uninstall that left a credential behind"*), so a run that stopped
+     * the engine leaves the registry row pointing at it holding a dead token,
+     * and that row is removed. `CrucibleUninstallRun.unregistered` names it, or
+     * is null — the renderer cannot see a registry write, and a list that
+     * changed under somebody without a sentence would be the app editing their
+     * settings behind their back.
+     */
+    uninstall(flags: CrucibleUninstallFlags): Promise<CrucibleUninstallRun>;
+
+    /**
+     * ── COORDINATION: WHAT EACH SERVER IS MISSING, AND WHAT IS BEING DONE ────
+     *
+     * crucible `docs/PHASE14-ENVPACKS.md` §4a, Owen 2026-09-14. There is NO
+     * button and no consent step: whenever Foundry finds a Crucible it reads
+     * `/v1/info`, `/v1/catalog` and `/v1/capability`, compares the vendored
+     * module, and posts a `module` task ONLY when something is missing.
+     * Switching the server off in Settings is the one opt-out. So the
+     * renderer's whole part in this is to READ a state and draw one sentence —
+     * `coordinationWords`, src/app/core/crucible-words.ts, which is where every
+     * word of it lives.
+     *
+     * The third read is crucible `docs/PHASE15-HOST.md` §5.3a's: the module's
+     * `needs` carry CAPABILITY CLASSES and the engine's own capability record is
+     * the one place a class becomes a model id. A class that engine has disabled
+     * is not missing and not a refusal — it rides on the state as `unmet`, and
+     * the sentence says "not on this engine".
+     */
+    /** Every server coordination has anything to say about. Absent = not asked yet. */
+    coordination(): Promise<CrucibleCoordinationMap>;
+    /**
+     * Coordinate with one named server NOW, and answer where it got to.
+     *
+     * Idempotent: a second call while one is in flight joins the first rather
+     * than racing it into the `task_busy` the whole design exists to avoid. It
+     * does not reject — every way a conversation with a machine can end is a
+     * STATE, including "there is no server called that".
+     */
+    coordinate(name: string): Promise<CrucibleCoordinationState>;
+    /**
+     * Every state change, as it happens — pushed to EVERY window, because
+     * coordination starts at app start, before any window has asked anything.
+     * One server's state per call; the map above is what a screen loads with.
+     */
+    onCoordination(listener: (state: CrucibleCoordinationState) => void): () => void;
+
+    /**
+     * ── THE ENGINE'S OWN SETTINGS — a window, never a copy ──────────────────
+     *
+     * Wave 62 package I, to crucible `docs/PHASE15-HOST.md` §3.1, §3.2, §3.3
+     * and §5.2. Owen's ruling: the GPU engine is the SINGLE SOURCE OF TRUTH for
+     * AI settings — *"If the user enters an anthropic api key, it should pass
+     * through to crucible"* — so these four read and write a store that lives
+     * on the SERVER, and this app keeps no copy of any of it. §5.2: *"every
+     * control in these sections is a request to the engine, and its result is
+     * the engine's answer re-read. There is no Save button that writes an app
+     * file and syncs later."*
+     *
+     * BY SERVER NAME, like `open` and for the same reason: the address and the
+     * token are looked up in main, so no credential is ever in the renderer.
+     * Rejects by name when the registry no longer has that server.
+     *
+     * NO ANSWER HERE CARRIES A KEY. `SettingsDocument` has `keyHint` — the last
+     * four characters (§3.1: *"a key is write-only"*) — where the engine has a
+     * key, which is `CrucibleServerView.tokenSet`'s rule one wire along.
+     */
+    engineSettings(serverName: string): Promise<SettingsDocument>;
+    /**
+     * WRITE THROUGH — any subset of the document, answered with the WHOLE
+     * document after the write (§3.2), which is what every surface redraws
+     * from. A window that redrew from what it sent would be showing a route the
+     * engine may have refused.
+     *
+     * ONE REQUEST CARRIES BOTH HALVES when both are needed: §3.2 applies
+     * upstreams, then routes, then validates, and *"a refusal applies
+     * nothing"* — which is what lets the wizard configure a key AND set the
+     * routes that name it in a single press.
+     *
+     * REJECTS WITH A SENTENCE THAT NAMES THE FIELD for the four named refusals
+     * (`route_not_routable`, `route_bad_model`, `route_upstream_unconfigured`,
+     * `upstream_in_use`); the card draws it beside the control.
+     */
+    engineSettingsPut(serverName: string, patch: SettingsPatch): Promise<SettingsDocument>;
+    /**
+     * WHAT MODEL IDS A CREDENTIAL CAN USE — the engine asks the upstream's own
+     * listing, unbilled, and THAT is the list a person picks from. There is
+     * deliberately no compiled catalog of cloud model names anywhere in this
+     * app (§2: *"the server does not ship a cloud model list"*; the Cloud card
+     * made the same argument for itself).
+     *
+     * `probe` is an UNSAVED key or url, or absent for the configured one. The
+     * key crosses one way, is used for one request and is dropped. A failure is
+     * a RESULT so the card can print it beside the box.
+     */
+    engineUpstreamTest(
+      serverName: string,
+      upstream: UpstreamName,
+      probe?: UpstreamProbe,
+    ): Promise<UpstreamTestResult>;
+    /**
+     * THE CAPABILITY RECORD, BY SERVER NAME — the wizard's routes step.
+     *
+     * §5.2: the step *"reads capability; for each llm class that is `enabled:
+     * false` locally it says the class's reason"*. That sentence is the
+     * server's own and nothing in the settings document carries it.
+     */
+    engineCapability(serverName: string): Promise<CapabilityRecord>;
   };
 
   /**

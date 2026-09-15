@@ -34,12 +34,12 @@
  * a narration can both hold the card, because each queue believes it is the only
  * one. Declaring the resource here is what ends that: one card, one arbiter.
  */
-import { noteStepBusy, noteStepStopped } from '../queue-engine';
+import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import {
   FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRunner, foundryTooOldForCleanText,
-  parseFoundryProgressLine,
+  hostedCrucibleServerNotOffered, parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobRow, FoundryJobStepConfig } from '../foundry-host-queue';
 import { foundryVersion } from '../foundry-bridge';
@@ -53,25 +53,24 @@ import { foundryVersion } from '../foundry-bridge';
  */
 import { foundryVersionAtLeast } from '../../shared/vlm/readings-bank';
 /*
- * THE ARBITER, and the ONE reader of the machine's language-model settings.
+ * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
+ * ANY MORE, and the absence is the statement.
  *
- * `cleanTextEngineSettings` is BookForge's mirror of Foundry's `readAppSettings`
- * (electron/narration-clean-text.ts explains why it is MIRRORED and not
- * imported: `foundry-app/` is built output of a separate program with its own
- * tsconfig, and importing into it is the subtree merge the seal exists to
- * prevent). Reading it here rather than writing a second reader is what keeps
- * this step and the bare-EPUB door from ever disagreeing about which server this
- * machine speaks to.
+ * This step used to read the machine's language-model settings
+ * (`cleanTextEngineSettings`), pick a local vLLM profile (`profileForKind`),
+ * assert its served name onto the request (`servedModelForRequest`) and start
+ * and stop that server around the act (`ensureTextServer` /
+ * `noteTextQueueBusy` / `noteTextQueueIdle`). Every one of those is a decision
+ * about the ENGINE, and after Owen's ruling of 2026-09-14 the engine is
+ * Crucible's: the server answers `GET /v1/capability` with the model it will
+ * serve a class with, and the vendored window asks it. A profile chosen here
+ * would be a second opinion about which weights clean a book — and worse, the
+ * local arm behind it would start a model on THIS card for an act routed to
+ * another machine.
+ *
+ * The local text engines themselves are deleted (docs/LEGACY-REMOVAL.md). They
+ * are not a fallback for this path and must not be reintroduced as one.
  */
-import { cleanTextEngineSettings } from '../narration-clean-text';
-import {
-  ensureTextServer,
-  noteTextQueueBusy,
-  noteTextQueueIdle,
-  profileForKind,
-  servedModelForRequest,
-  textServerRoute,
-} from '../text-server';
 
 /**
  * Which pool a Foundry job contends for.
@@ -211,58 +210,18 @@ export const foundryJobStep: StepModule = {
         throw new Error(foundryTooOldForCleanText(installed.version));
       }
     }
-    /*
-     * ── THE TEXT SERVER, STARTED BEFORE THE ACT AND STOPPED AFTER IT ──────────
-     *
-     * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
-     * Foundry starts nothing, ever (their VENDORED.md's last paragraph, and
-     * since `646e8a1` the engine does not even unload); this is the moment
-     * BookForge owns.
-     *
-     * THE GATE IS THE ENDPOINT, NOT A SERVER KIND. It used to read
-     * `settings.server === 'vllm'` first and ask `textServerRoute` second, which
-     * was two questions where there is one: does this URL name the text server
-     * this machine manages. Foundry `646e8a1` deleted the server kind outright
-     * (`--server` is refused by name now) and `CleanTextEngineSettings` lost the
-     * field with it, so the surviving question is the one that was always the
-     * real one — and it is strictly better at it: a machine set to `ollama`
-     * whose URL happened to be BookForge's own text server used to be skipped
-     * silently, and is now served.
-     *
-     * When the endpoint is ours the profile for this act is brought up first —
-     * staged if its weights are absent, swapped if the wrong model is serving —
-     * and released in the `finally`, success or failure alike, so a refused row
-     * never leaves twenty gigabytes reserved against nothing. When it is not,
-     * the row says whose server it is and nothing is started or stopped.
-     *
-     * AND THE MODEL IS ASSERTED ONTO THE REQUEST. Owen, same day: *"verify that
-     * when i run translate/simplify in foundry, they will correctly use the 27b
-     * model in vllm and not the 9b."* Foundry's own guard is its `/v1/models`
-     * proof, but that runs INSIDE the engine, after the spawn, and only when the
-     * request named a model at all — `vllmModel` is EMPTY by default and means
-     * "whatever it is serving", which is precisely the case where a translation
-     * against a 9B server would run and be recorded as a translation. So the host
-     * names the profile's served id first (`servedModelForRequest`, which refuses
-     * by name when the request asks for a different one), and Foundry's proof is
-     * the second belt.
-     *
-     * The request is COPIED rather than mutated: `FoundryJobRequest` is stored
-     * "VERBATIM and never normalised on the way in" (foundry-host-queue.ts), and
-     * writing a run-time decision back into the saved row would make the board
-     * claim Foundry composed something it did not.
-     */
     const kind = config.request.kind;
     /*
      * THE THREE THAT ASK A LANGUAGE MODEL, as a narrowed value rather than a
      * boolean: `read` is the VISION model and has its own server
      * (electron/vlm-page-server.ts), and a rendering asks nothing at all. Written
-     * this way so `profileForKind` is handed a kind the type system has already
-     * agreed is a language act — the day a fourth arrives, this line is the
-     * compile error.
+     * this way so the venue block below is handed a kind the type system has
+     * already agreed is a language act — the day a fourth arrives, this line is
+     * the compile error.
      *
      * THREE AND NOT FOUR: `analysis` is a text act everywhere else in this seam
-     * (it is one of crucible's four capability classes, it has a profile in
-     * `text-server.ts`, and it has its own Crucible model setting), but no press
+     * (it is one of crucible's four capability classes and has its own
+     * capability row on every server), but no press
      * in the hosted window routes one across the host queue today — `analysis`
      * is deliberately absent from `FoundryJobKind`. RULING OWED: when Foundry
      * starts sending `kind: 'analysis'` here, this line, `FoundryJobKind`,
@@ -270,132 +229,168 @@ export const foundryJobStep: StepModule = {
      */
     const act: 'clean' | 'translate' | 'simplify' | null =
       kind === 'clean' || kind === 'translate' || kind === 'simplify' ? kind : null;
-    // Read only for the rows it can possibly govern: a read and a rendering have
-    // no business opening the language-model settings.
-    const settings = act === null ? null : await cleanTextEngineSettings();
-    let request = config.request;
-    let bracketed = false;
-    let keepWarmMinutes = 0;
     /*
-     * ── WHERE THIS TEXT ACT RUNS ──────────────────────────────────────────────
+     * ── WHERE THIS TEXT ACT RUNS, AND WHO COMPOSES IT ─────────────────────────
      *
-     * The SAME question the render asks, out of the SAME record — the row's
-     * resolved venue first (one book, one GPU: crucible `docs/PHASE7-LANES.md`
-     * §4.3/§4.4, and `machines()` below is what makes the engine resolve one at
-     * all), then the ONE legacy switch, then the ranked list.
+     * Owen, 2026-09-15: *"text acts from foundry through crucible should work
+     * … vendored or host, and it uses the same logic bookforge did before we
+     * built crucible"* — i.e. vLLM, which is what Crucible's `llm` lane serves.
      *
-     * With the switch on, everything below is exactly what it was. With it off
-     * and a server named, the act goes to that Crucible or is refused by name:
-     * there is no quiet drop to llama-server, which would clean a book with a
-     * model nobody chose and report success.
+     * TWO HALVES, AND THIS ENGINE OWNS EXACTLY ONE OF THEM. The client knows
+     * the ORDER and the SERVER; Crucible knows the ENGINE (crucible
+     * `docs/ARCHITECTURE.md`). So this step decides WHICH MACHINE, out of the
+     * SAME routing record the render reads — the row's resolved venue first
+     * (one book, one GPU: `docs/PHASE7-LANES.md` §4.3/§4.4, and `machines()`
+     * above is what makes the engine resolve one at all), then the ranked list
+     * — and hands the NAME across. Everything else about the act is the
+     * vendored window's: `crucible-dispatch.ts placeOnCrucible` asks
+     * `GET /v1/capability` for the model, `GET /v1/models` (and a `load-model`
+     * job) for residency, takes the model LEASE, composes the header map with
+     * `X-Crucible-Act` and the OpenAI base, and spawns the engine with that map
+     * as `extraEnv`.
+     *
+     * **NOTHING IS COMPOSED HERE AND NOTHING IS WRITTEN ONTO THE REQUEST.** The
+     * request crosses VERBATIM (`FoundryJobRequest` is stored "never normalised
+     * on the way in"), because its `model`/`ollama` fields are Foundry's own
+     * composition and the placement overrides both anyway
+     * (`doorArgs`: `placement.model ?? request.model`). This side used to
+     * overwrite them with a Crucible endpoint; that would now be the second
+     * composer of one address, which is the defect this whole seam is about.
+     *
+     * NO LEASE HERE EITHER, AND IT IS NOT AN OMISSION. Crucible allows ONE
+     * lease per server and refuses a second by name (`409 model_leased`,
+     * crucible `c5eb431`); the vendored dispatcher takes its own between making
+     * the model resident and spawning, and releases it in the queue's settle.
+     * A lease taken here would be refused, or would refuse theirs — either way
+     * the row parks for ever on a claim this app made against itself. BookForge
+     * leases where BookForge spawns (`narration-clean-text.ts`, the CLI clean
+     * routes), and that is the whole rule.
+     *
+     * ── "THE SAME LOGIC BOOKFORGE DID BEFORE WE BUILT CRUCIBLE" ──────────────
+     *
+     * Read literally, that is a shorter list than it sounds, and the reason is
+     * worth writing down once so nobody looks for the rest of it on this side.
+     * For a FOUNDRY-ROUTED act, BookForge's pre-Crucible logic was only ever
+     * four things: which endpoint, which model, which local vLLM profile, and
+     * the lifetime of that server. Everything a person would call "the
+     * processing" was already inside the foundry binary and still is:
+     *
+     *   · THE PROMPTS — embedded in the binary (`src/clean/prompt.ts` imports
+     *     them with `{ type: 'text' }`). `electron/prompts/tts-narration-text.txt`
+     *     is byte-identical to their copy, and theirs is the one that runs.
+     *   · THE PAYLOAD — one prose block per request, never batched with an
+     *     unrelated one (one dropped marker would refuse a whole batch and the
+     *     retry would re-do paragraphs that were already right). A CONTAINER is
+     *     the exception and always was: consecutive items of a list, quotation
+     *     or table pack under their `CHUNK_CHARS = 2000` into one request, and a
+     *     block is never split.
+     *   · THE POOL — `concurrency` workers in flight for vLLM to batch, 12 on
+     *     the OpenAI door (Owen, 2026-09-08: *"lets build in vllm batching.
+     *     ollama batching doesnt work"*). It is deliberately deeper than the ~7
+     *     a server admits; the rest queue in the server. This step sends no
+     *     `concurrency`, so that default stands — see the keeper.
+     *   · THE BUDGETS — `answerBudget` (4x chars at 2.5 chars/token, floor 128)
+     *     for a translation; temperature 0 and a fixed 2048 for a clean, which
+     *     is the think-OFF number and NOT this app's 6144 (see the note on
+     *     `EDITLIST_NUM_PREDICT` in `ai-bridge.ts`).
+     *   · THE WINDOW — the OpenAI door is told nothing about the served context
+     *     and instead refuses before request one (`fitsWindow`), which is why a
+     *     too-small window is a fast 400 rather than a slow answer.
+     *   · THE THINKING SWITCH — `/^qwen3(\.|:|-|$)/i`, sent as
+     *     `chat_template_kwargs: {enable_thinking: false}` on this door, and
+     *     CHECKED in the answer rather than trusted, because the switch is
+     *     advisory.
+     *
+     * None of that is mirrored here, and mirroring any of it would be a second
+     * copy of a number that lives in a program this app does not compile.
+     *
+     * ── THE LOCAL TEXT SERVER IS GONE FROM THIS PATH, DELIBERATELY ───────────
+     *
+     * There used to be an arm below this one that started BookForge's own
+     * vLLM (`ensureTextServer`) when the act's endpoint was this machine's text
+     * server. It is deleted with the rest of the legacy local layer
+     * (docs/LEGACY-REMOVAL.md) and is NOT a fallback for a Crucible that cannot
+     * be reached: quietly cleaning a book with a model nobody chose, and
+     * reporting success, is the failure the whole campaign removed. A text act
+     * that cannot be placed is REFUSED, by name.
      */
-    let crucible: import('../crucible/text-venue').CrucibleTextEngine | null = null;
-    if (act !== null && settings !== null) {
-      const {
-        decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost, describeTextActRefusal,
-      } = await import('../crucible/text-venue.js');
-      const venueHost = processTextVenueHost();
-      const named = ctx.job.waitForResolved;
-      const venue = await decideWhereTextActRuns(named, venueHost);
-      if (venue.where === 'crucible') {
-        try {
-          /*
-           * `none`: THE SPAWN IS NOT OURS AND NEITHER IS ITS ENVIRONMENT.
-           *
-           * Re-read 2026-09-14, because the reason written here had gone
-           * stale and the refusal had not. The vendored `runEngine` DOES take
-           * a per-run overlay now (foundry `f300fc6`,
-           * `foundry-app/electron/engine.ts`) — what BookForge has no way to
-           * reach is that argument: the seam we call is `runJob(request,
-           * {parentStep, signal, onProgress})`, which carries no environment,
-           * and the only thing that fills `extraEnv` over there is the
-           * window's own dispatcher.
-           *
-           * The alternative — putting the map on THIS process's environment —
-           * stays refused for the reason it always was: this is the app's main
-           * process, ~180 spawn sites and concurrent queue lanes, so every
-           * child with no business holding a credential would inherit one, and
-           * two acts inside it would each send the other's act name.
-           *
-           * `resolveCrucibleTextEngine` refuses `none` by name before anything
-           * else is asked, and the sentence it uses
-           * (`hostedCrucibleTextActNotVendored`) names the one thing this waits
-           * on: a re-vendor at or past foundry `e096734`, where the window
-           * reads BookForge's registry (`FoundryHost.servers()`, offered at the
-           * mount already) and places the act itself.
-           *
-           * BookForge's OWN Clean text door (`narration-clean-text.ts`) and
-           * the CLI clean routes answer `spawn`/`process` and run for real.
-           */
-          crucible = await resolveCrucibleTextEngine(
-            act, venue.server, venueHost, { headerReach: 'none' });
-        } catch (err) {
-          /*
-           * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
-           * `noteStepBusy` records the holder against the server this row waits
-           * for, so every other book queued for that machine is told the same
-           * thing once rather than polling it.
-           */
-          const named2 = describeTextActRefusal(err, venue.server, act);
-          if (named2 instanceof Error && 'busyLine' in named2
-            && typeof (named2 as { busyLine?: string }).busyLine === 'string') {
-            noteStepBusy(ctx.stepId, (named2 as { busyLine: string }).busyLine);
-          }
-          throw named2;
-        }
-        /*
-         * NO LEASE HERE, AND IT IS NOT AN OMISSION — TWICE OVER.
-         *
-         * Today: every Crucible venue on this path has just been refused
-         * `hosted_placement_not_vendored`, so no text act runs against a
-         * Crucible from here at all, and a lease taken for a run that cannot
-         * happen would hold somebody's card for nothing.
-         *
-         * AFTER THE RE-VENDOR IT IS STILL NOT OURS, and the note that used to
-         * stand here said the opposite — that this spawn should be wrapped in
-         * `withCrucibleTextActLease` the day the refusal went. That would be a
-         * DEFECT: Crucible allows ONE lease per server and refuses a second by
-         * name (`409 model_leased`, crucible `c5eb431`), and the vendored
-         * dispatcher takes its own lease between making the model resident and
-         * spawning the engine (`crucible-dispatch.ts placeOnCrucible`,
-         * released in its settle). A lease taken here would be refused, or
-         * would refuse theirs — either way the row parks forever on a claim
-         * this app made against itself.
-         *
-         * So the lease for a HOSTED act belongs to the window that spawns the
-         * engine, exactly as residency and the header map do; BookForge leases
-         * where BookForge spawns (`narration-clean-text.ts`, the CLI clean
-         * routes). Owen's unload ruling of 2026-09-14 is satisfied either way —
-         * one lease per run, held by whoever is making the requests.
-         */
-        const line = `[foundry-job] ${act} runs on crucible "${crucible.server}" `
-          + `(${venue.because}) at ${crucible.endpoint}, model ${crucible.model}, `
-          + `headers ${crucible.maskedHeaders}`;
-        console.log(line);
-        ctx.report({ message: line, detail: line });
-        request = { ...config.request, model: crucible.model, ollama: crucible.endpoint };
+    let waitFor: string | null = null;
+    if (act !== null) {
+      const { decideWhereTextActRuns, processTextVenueHost } =
+        await import('../crucible/text-venue.js');
+      const { runVenueOfRow } = await import('../crucible/step-venue.js');
+      const { hostCrucibleServers } = await import('../crucible/host-registry.js');
+      /*
+       * `runVenueOfRow` IS THE ONE READER of `waitForResolved`'s three shapes,
+       * and reading it raw here was a latent defect: the string `any` means
+       * *the row was never assigned*, and passing it straight on made
+       * `decideWhereTextActRuns` treat it as the NAME of a server called "any".
+       * It also refuses a row admitted under the retired local narrator by
+       * name, instead of silently re-deciding where a half-done book runs.
+       */
+      const assigned = runVenueOfRow(ctx.job.waitForResolved);
+      const venue = await decideWhereTextActRuns(assigned?.server, processTextVenueHost());
+      /*
+       * ── THE ONE CHECK THIS SIDE MAKES, AND WHY IT IS NOT A SECOND REGISTRY ──
+       *
+       * Their `placedBy` takes the name VERBATIM and their `slotNamed` matches
+       * it against the derived slot list **case-sensitively and exactly**. A
+       * name that does not match is a `wait` over there — and a detached
+       * `runJob` holds no pump slot to give back, so `placeRun`'s `for(;;)`
+       * retries it with a backoff FOR EVER and the promise never settles. A row
+       * that never fails and never finishes is the worst of the outcomes
+       * available, so it is refused here first.
+       *
+       * THIS IS NARROWER THAN IT WAS, and the remaining half is the real one.
+       * When this seam was built, EVERY hosted wait parked: a capability row
+       * switched off, an unconfigured upstream, an orchestrator with no engine.
+       * Foundry agreed that was theirs and split the wait arm at `1ce539a` —
+       * `standing` is required at all sixteen sites, through explicit
+       * constructors rather than an optional flag, so "nobody thought about it"
+       * and "this is transient" cannot be the same value — and a PINNED slot
+       * that answers with a standing wait now REFUSES, carrying the server's own
+       * reason. Those cases are closed and nothing here duplicates them.
+       *
+       * What is still transient, deliberately, is a slot that is not in the
+       * list AT ALL — switched off, renamed, removed. Their argument is sound
+       * for THEIR queue (somebody is about to flip the switch back, and failing
+       * would throw the row's place away) and fatal for a detached `runJob`,
+       * which has no place to keep. That gap is exactly this check, which is
+       * why it is not redundant with their fix.
+       *
+       * The list asked is the SAME snapshot this app hands that window through
+       * `FoundryHost.servers()` — one registry, one owner (Owen, 2026-09-14) —
+       * read one moment earlier. `hostCrucibleServers()` refuses by name
+       * (`registry_snapshot_not_taken`) if no reading has been taken, and that
+       * throw propagates: it is a startup bug in this app, and a row must say
+       * so rather than wear "you have no servers".
+       *
+       * The name SENT is the row's own `name` rather than the venue string, so
+       * what crosses is byte-identical to what the window derives its slot name
+       * from.
+       */
+      const offered = hostCrucibleServers();
+      const row = offered.find((entry) => entry.name.trim() === venue.server);
+      if (row === undefined) {
+        throw new Error(hostedCrucibleServerNotOffered(
+          act, venue.server, offered.map((entry) => entry.name),
+          'this machine\'s Crucible registry has no entry by that name.',
+        ));
       }
-    }
-    if (act !== null && settings !== null && crucible === null) {
-      const route = textServerRoute(settings.endpoint);
-      if (route.manage) {
-        noteTextQueueBusy();
-        bracketed = true;
-        keepWarmMinutes = settings.keepWarmMinutes;
-        const profile = profileForKind(act);
-        request = {
-          ...config.request,
-          model: servedModelForRequest(config.request['model'], profile, act),
-        };
-        const up = await ensureTextServer(profile.id, (line) => {
-          ctx.report({ message: line, detail: line });
-        });
-        console.log(`[foundry-job] ${act} runs against ${up.servedName} at ${up.url}`);
-      } else {
-        // Not ours to start. Said on the row, because "the endpoint is somebody
-        // else's" is the difference between a slow start and a wrong model.
-        ctx.report({ message: route.note, detail: route.note });
+      if (!row.enabled) {
+        // Their `slotsFrom` filters disabled entries out before a slot exists,
+        // so "switched off" and "not registered" are the same park over there
+        // and must be the same refusal here — with the true reason on it.
+        throw new Error(hostedCrucibleServerNotOffered(
+          act, venue.server, offered.filter((entry) => entry.enabled).map((entry) => entry.name),
+          'that server is switched off, and a disabled entry is not a slot in that window.',
+        ));
       }
+      waitFor = row.name.trim();
+      const line = `[foundry-job] ${act} goes to crucible "${waitFor}" (${venue.because}); the `
+        + 'hosted Foundry window composes the endpoint, model, credential and lease';
+      console.log(line);
+      ctx.report({ message: line, detail: line });
     }
 
     /*
@@ -407,15 +402,30 @@ export const foundryJobStep: StepModule = {
      */
     let row: FoundryJobRow;
     /*
-     * NO CREDENTIAL EVER TRAVELS FROM HERE. A Crucible venue has already been
-     * refused above (`headerReach: 'none'`), so everything that reaches this
-     * line is a local run against the endpoint Foundry's settings name, and
-     * `runFoundry`'s own strip keeps `$FOUNDRY_ENDPOINT_HEADERS` off the child
-     * even if something else in this process ever put one on the environment.
+     * NO CREDENTIAL TRAVELS FROM HERE, AND THAT IS STILL TRUE AFTER THE
+     * RE-VENDOR — it is true for a better reason now. What crosses is a NAME,
+     * and the window looks the token up in the registry this app already handed
+     * it (`FoundryHost.servers()`), so the map with the bearer in it is
+     * composed inside the process that spawns the engine and never passes
+     * through this module, this call, or this process's environment.
+     * `runFoundry`'s own strip keeps `$FOUNDRY_ENDPOINT_HEADERS` off BookForge's
+     * OTHER children regardless.
+     *
+     * `request` is the row's, UNTOUCHED: see the venue block above.
      */
-    const run = async (): Promise<FoundryJobRow> => foundryRunner()(request, {
+    const run = async (): Promise<FoundryJobRow> => foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
+      /*
+       * THE MACHINE, AND THE ONLY THING THIS SIDE DECIDES ABOUT THE ACT.
+       *
+       * `null` for a `read` and a `render` — and it is STATED rather than
+       * omitted, because "this kind does not travel" is a fact about the kind
+       * (`machines()` says `local` for both) and not an absence. The mount
+       * translates it into leaving their optional `waitFor` off, which is what
+       * makes their own `waitForOfNewJob()` decide, exactly as it does today.
+       */
+      waitFor,
       /*
        * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
        *
@@ -464,16 +474,17 @@ export const foundryJobStep: StepModule = {
         });
       },
     });
-    try {
-      row = await run();
-    } finally {
-      /*
-       * SUCCESS OR FAILURE ALIKE. A row that threw must hand the card back
-       * exactly as a finished one does; `noteTextQueueIdle(0)` — the default —
-       * stops the server now, and a keep-warm window always has an end.
-       */
-      if (bracketed) noteTextQueueIdle(keepWarmMinutes);
-    }
+    /*
+     * NOTHING TO BRACKET ANY MORE, AND THAT IS THE POINT. This used to sit
+     * inside a `try/finally` that stopped BookForge's own vLLM afterwards
+     * (`noteTextQueueIdle`), because this side had started it. It does not start
+     * anything now: the model on the far card is made resident and leased by the
+     * vendored dispatcher, and released in the queue's own settle over there, so
+     * a row that throws hands the card back through THEIR release rather than
+     * ours. A `finally` here would be this app disposing of somebody else's
+     * claim.
+     */
+    row = await run();
 
     /*
      * A STOP IS NOT A FAILURE, and the row is what lets this side tell them

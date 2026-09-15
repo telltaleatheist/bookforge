@@ -587,7 +587,7 @@ export class AnalysisDialogComponent {
   constructor() {
     // The model and the URL are the app's own settings, written by first-run
     // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults('analysis', this.model, this.ollama);
     // The Translate dialog's rule: a complaint about the last book is cleared when
     // the book changes, and nothing else resets. The checklist in particular is
     // the user's careful answer and survives switching tabs.

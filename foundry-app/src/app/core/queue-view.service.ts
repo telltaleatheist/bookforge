@@ -3,10 +3,10 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { typeLabel } from '@shared/documents';
 import { fold } from '@shared/original';
 import {
-  CPU_LANE_SLOTS, JOB_RESOURCE, LANES, computeLanes, laneOf, laneOfRun,
+  CPU_LANE_SLOTS, JOB_RESOURCE, LANES, computeLanes, laneOf, laneOfRun, slotOfLane,
   type ComputeLane, type JobResource, type Lane,
 } from '@shared/queue-board';
-import type { ComputeSlot, ComputeSlotKind } from '@shared/slots';
+import type { ComputeSlot, ComputeSlotKind, SlotRefusal } from '@shared/slots';
 import type { Job, JobProgress } from '@shared/types';
 
 import { OpenDocumentsService } from './documents.service';
@@ -92,6 +92,16 @@ export class QueueViewService {
   readonly computeSlots = signal<ComputeSlot[]>([]);
 
   /**
+   * WHY THERE IS NO PICKER, when the answer is not "nobody added a server".
+   *
+   * Null is the ordinary case and draws nothing. A sentence here is a hosted
+   * window whose host offers no registry: the board is not broken and every
+   * job still runs, but the person is owed the difference between a list they
+   * have not filled in and a list nothing could ask for.
+   */
+  readonly slotRefusal = signal<SlotRefusal | null>(null);
+
+  /**
    * THE GPU SIDE OF THE BOARD — one lane per machine, derived from the list.
    *
    * The same `computeLanes` the scheduler rations by (electron/job-queue.ts), so
@@ -102,7 +112,10 @@ export class QueueViewService {
 
   constructor() {
     if (api === null) return;
-    void api.slots.list().then((slots) => { this.computeSlots.set(slots); });
+    void api.slots.list().then((answer) => {
+      this.computeSlots.set(answer.slots);
+      this.slotRefusal.set(answer.refusal);
+    });
   }
 
   /**
@@ -302,14 +315,41 @@ export class QueueViewService {
     const onCards = running.filter((job) => laneOf(job.kind) === 'gpu');
     const out: SlotView[] = [];
     for (const lane of lanes) {
-      const here = onCards.filter((job) => laneOfRun(job.ranOn, lanes)?.name === lane.name);
+      const here = onCards.filter(
+        (job) => laneOfRun(job.ranOn, lanes, job.ranVia)?.name === lane.name,
+      );
+      /*
+       * ── AN EMPTY UPSTREAM LANE IS NOT DRAWN (Wave 62) ────────────────────
+       *
+       * Every Crucible slot has two lanes now: its card, and the `[cloud]` one an
+       * upstream-routed act takes (`computeLanes`, shared/queue-board.ts). The
+       * SCHEDULER needs both to exist always — a lane list that appeared and
+       * vanished as somebody edited a remote server's routes would be a board
+       * whose size changes under a fifteen-second cache. The BENCH does not: two
+       * permanently empty cards per server, on the machine of somebody who has
+       * routed nothing upstream and never will, is the bench answering a question
+       * nobody asked and taking the space of the one they did.
+       *
+       * So the cloud lane is drawn WHEN SOMETHING IS IN IT, and then it is drawn
+       * whole — both of its places, so "1 of 2" says what the second one is for.
+       * The card lane is always drawn, exactly as it always was.
+       */
+      if (lane.route === 'upstream' && here.length === 0) continue;
       for (let index = 0; index < lane.capacity; index += 1) {
         out.push({
           key: `slot:${lane.name}:${index}`,
           lane: 'gpu',
-          title: lane.capacity === 1 ? lane.name : `${lane.name} · ${index + 1} of ${lane.capacity}`,
+          /*
+           * THE MACHINE'S NAME, AND THE WORD FOR WHICH OF ITS LANES THIS IS.
+           * `slotOfLane` is why the head does not read "mac-studio:cloud": that
+           * string is an identity the scheduler and the walk compare by, not a
+           * sentence anybody should have to parse off a card.
+           */
+          title: lane.route === 'upstream'
+            ? `${slotOfLane(lane)} · sent on · ${index + 1} of ${lane.capacity}`
+            : lane.capacity === 1 ? lane.name : `${lane.name} · ${index + 1} of ${lane.capacity}`,
           kind: lane.kind,
-          hint: LANE_HINT['gpu'],
+          hint: lane.route === 'upstream' ? UPSTREAM_HINT : LANE_HINT['gpu'],
           occupant: here[index] ?? null,
           waiting: index === 0 ? this.waitingFor(lane.name) : '',
           leaving: false,
@@ -322,7 +362,7 @@ export class QueueViewService {
      * absent `ranOn` and the local slot's name both resolve to the local lane.
      */
     for (const job of onCards) {
-      if (laneOfRun(job.ranOn, lanes) !== null) continue;
+      if (laneOfRun(job.ranOn, lanes, job.ranVia) !== null) continue;
       out.push({
         key: `leaving:${job.id}`,
         lane: 'gpu',
@@ -417,14 +457,23 @@ export class QueueViewService {
   /**
    * "1 of 1 running", or what is free — the right-hand side of a lane head.
    *
-   * THE GPU TOTAL IS THE NUMBER OF MACHINES, which is the same number the
-   * scheduler rations by (`computeLanes`) and the same number of cards the bench
-   * draws. One, for a person with no Crucible; three, for somebody with two
-   * servers and a card of their own.
+   * THE GPU TOTAL IS THE NUMBER OF CARDS THE BENCH DRAWS, which is the number of
+   * machines plus whatever upstream work is actually going. One, for a person
+   * with no Crucible; three, for somebody with two servers and a card of their
+   * own.
+   *
+   * IT WAS `lanes().length` AND CANNOT BE ANY MORE (Wave 62). Every Crucible slot
+   * carries a second, upstream lane the scheduler always rations by and the bench
+   * draws only when something is in it (see `slots`). Counting the lane list here
+   * would say "5 slots free" over a bench showing two cards, which is the board
+   * being confidently wrong about itself — the one thing docs/QUEUE-BOARD.md asks
+   * it never to be. So both numbers come off the same list.
    */
   occupancy(lane: Lane): string {
     const busy = this.queue.runningJobs().filter((job) => laneOf(job.kind) === lane).length;
-    const total = lane === 'gpu' ? this.lanes().length : CPU_LANE_SLOTS;
+    const total = lane === 'gpu'
+      ? this.slots().filter((slot) => slot.lane === 'gpu' && !slot.leaving).length
+      : CPU_LANE_SLOTS;
     if (busy > 0) return `${busy} of ${total} running`;
     return total === 1 ? '1 slot free' : `${total} slots free`;
   }
@@ -913,6 +962,19 @@ const LANE_HINT: Readonly<Record<string, string>> = {
  */
 const LEAVING_HINT
   = 'This server was switched off or removed while this run was going. A job never moves once it has started, so it finishes here.';
+
+/**
+ * THE CARD FOR WORK A SERVER IS FORWARDING, and why it is beside the machine's
+ * own card rather than on it.
+ *
+ * crucible docs/PHASE15-HOST.md §3.3/§3.4: a text class on a server can be routed
+ * to Anthropic, OpenAI or an Ollama server, and the server makes that call on the
+ * operator's account — *"no lease, no lane … nothing was on the card"*. So this
+ * work is not contending for that machine's GPU at all, and two of it may go at
+ * once (`UPSTREAM_LANE_CAPACITY`, shared/queue-board.ts).
+ */
+const UPSTREAM_HINT
+  = 'Sent on by this server to the service its settings name, so it is not on that machine\'s card — two at a time, and the bill is the account\'s.';
 
 /**
  * THE TWO STAGES OF AN ANALYSIS, IN THE ORDER THEY HAPPEN — which is also the

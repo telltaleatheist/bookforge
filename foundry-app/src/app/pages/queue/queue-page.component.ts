@@ -167,6 +167,17 @@ interface PickerGroup {
           having, because an idle Mac beside a busy desk is a job that could be
           moving.
         -->
+        <!--
+          WHY THERE IS NO PICKER, when the answer is not "nobody added a
+          server". A hosted window whose host offers no registry has no slots
+          and is not broken — every job runs the way it did before servers
+          could be chosen — but a board that simply drew nothing would be
+          telling the person their list is empty when the truth is that
+          nothing could be asked. Drawn where the cards would be, once.
+        -->
+        @if (view.slotRefusal(); as refusal) {
+          <p class="slot-refusal">{{ refusal.sentence }}</p>
+        }
         <div class="slots" [class.wide]="view.slots().length > 3">
           @for (slot of view.slots(); track slot.key) {
             <article class="slot-card"
@@ -193,6 +204,14 @@ interface PickerGroup {
                 @if (slot.lane === 'cpu' && view.computeSlots().length > 1) {
                   @if (slot.occupant?.ranOn; as where) { <span class="on">on {{ where }}</span> }
                 }
+                <!--
+                  WHO IS ACTUALLY ANSWERING, on the card that is a server sending
+                  the work on. The head names the machine; this names the service
+                  its settings route this class to, which is the half a person is
+                  owed because it is the half that is billed (Job.ranVia, and
+                  crucible docs/PHASE15-HOST.md section 3.3).
+                -->
+                @if (slot.occupant?.ranVia; as via) { <span class="on">via {{ via }}</span> }
                 @if (slot.occupant; as busy) {
                   <button class="btn stop" (click)="queue.cancel(busy.id)"
                           [attr.aria-label]="'Cancel ' + view.label(busy)"
@@ -695,6 +714,12 @@ interface PickerGroup {
       planned around any more. So the grid becomes even columns that wrap, and
       the cards keep their own emphasis through the accent on the top edge.
     */
+    .slot-refusal {
+      margin: 0 0 8px; padding: 8px 10px;
+      border: 1px solid var(--border-subtle); border-radius: 6px;
+      background: var(--bg-elevated); color: var(--ink-dim); font-size: 12px;
+    }
+
     .slots { display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 12px; }
     .slots.wide { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
     @media (max-width: 1000px) { .slots, .slots.wide { grid-template-columns: minmax(0, 1fr); } }

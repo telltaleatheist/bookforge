@@ -68,6 +68,7 @@
       "icon": "build/icon.png"
     }
   },
+  "_crucibleClientNote": "STOPGAP, 2026-09-15. @crucible/client 0.6.0 is not published yet; this is vendor/crucible-client-0.6.0.tgz, packed with `npm pack` from the crucible checkout at feat/phase6-remote-render 53f40e2 (SDK 4eecca3; sha256 97da41189a3ccbf6effcb2b30bf539d8a1bd56868524a0254221c3cfff22cba7, 363,080 bytes — the same bytes BookForge vendors at de666f5c). Replace with the release URL the day Owen publishes. NEVER a file: DIRECTORY: npm junctions a directory dependency into the crucible checkout, so an edit there would silently change this app. On every re-pack under the same version, write the tarball's sha512 into the lock entry first or npm keeps the old cached tarball.",
   "dependencies": {
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
@@ -75,7 +76,7 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
-    "@crucible/client": "https://github.com/telltaleatheist/crucible/releases/download/v0.5.0/crucible-client-0.5.0.tgz",
+    "@crucible/client": "file:vendor/crucible-client-0.6.0.tgz",
     "foundry": "file:..",
     "libheif-js": "1.19.8",
     "pdf-lib": "1.17.1",

@@ -249,6 +249,20 @@ export class UiService {
   readonly setupOpen = signal(false);
 
   openSetup(): void {
+    /*
+     * NOT INSIDE A HOST. The wizard's first step is the LIBRARY, which a hosted
+     * window does not own — the host says where books live — so opening it
+     * there walks somebody into a step that throws, and its later steps offer
+     * to reconfigure an engine and pull models on a machine whose queue is the
+     * host's. The button is hidden hosted; this is the one door behind it, and
+     * a door that can only be reached by a hidden button is still a door.
+     *
+     * Found by BookForge's audit, 2026-09-14.
+     */
+    if (hosted()) {
+      console.error('[setup] the first-run wizard is not opened inside a host application.');
+      return;
+    }
     this.setupOpen.set(true);
   }
 

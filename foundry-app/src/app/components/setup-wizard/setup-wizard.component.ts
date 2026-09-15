@@ -57,6 +57,7 @@
  */
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 
+import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import type { CrucibleServerView } from '@shared/slots';
 import type {
   EnvCatalogItem,
@@ -69,12 +70,26 @@ import type {
   PageReaderProgress,
   PageReaderState,
 } from '@shared/types';
+import {
+  LLM_CLASSES,
+  defaultEngineServer,
+  type CapabilityRecord,
+  type LlmClass,
+  type SettingsDocument,
+  type SettingsPatch,
+} from '@shared/engine-settings';
 import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
+import { coordinationWords } from '../../core/crucible-words';
+import {
+  EngineUpstreamsComponent,
+  type UpstreamApply,
+} from '../engine-upstreams/engine-upstreams.component';
 import { QueueService } from '../../core/queue.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
-type StepId = 'welcome' | 'library' | 'ollama' | 'crucible' | 'envs' | 'reading' | 'done';
+type StepId =
+  | 'welcome' | 'library' | 'ollama' | 'crucible' | 'routes' | 'envs' | 'reading' | 'done';
 
 interface StepDef {
   id: StepId;
@@ -107,7 +122,7 @@ const STEPS: readonly StepDef[] = [
   {
     id: 'ollama',
     title: 'Ollama and a model',
-    blurb: 'Translation, simplification and analysis all speak to ollama. This machine gets the largest model that fits it.',
+    blurb: 'The model this machine runs text on. It gets the largest that fits — and a card that cannot hold a 27B reaches translation another way.',
   },
   {
     /*
@@ -121,6 +136,27 @@ const STEPS: readonly StepDef[] = [
     id: 'crucible',
     title: 'Crucible (optional)',
     blurb: 'Most people should skip this. It is how a second machine, or a faster path on this one, gets used.',
+  },
+  {
+    /*
+     * ── SHOWN ONLY WHEN THERE IS AN ENGINE TO ASK ────────────────────────
+     *
+     * crucible docs/PHASE15-HOST.md §5.2: the wizard's AI step reads the chosen
+     * server's capability and, for each llm class that will not run on its card,
+     * offers to run that class through an upstream instead. With no server
+     * registered there is no capability to read and nothing to configure, so the
+     * step is not drawn, not counted in the rail, and NOT recorded as skipped —
+     * a settings screen saying somebody skipped a step that was never offered
+     * would be saying something false (`dismiss`'s rule about the skipped list).
+     *
+     * IMMEDIATELY AFTER THE CRUCIBLE STEP, because that step is where the server
+     * comes from: registering one there is what makes this one appear, and a
+     * question about where translation runs asked before there is anywhere for
+     * it to run is a question with no answers in it.
+     */
+    id: 'routes',
+    title: 'Where the text work runs',
+    blurb: 'What the engine cannot do on its own card, it can do through an account you connect here.',
   },
   {
     id: 'envs',
@@ -141,7 +177,7 @@ const STEPS: readonly StepDef[] = [
 
 @Component({
   selector: 'app-setup-wizard',
-  imports: [CrucibleDoorsComponent],
+  imports: [CrucibleDoorsComponent, EngineUpstreamsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (up()) {
@@ -149,7 +185,7 @@ const STEPS: readonly StepDef[] = [
       <div class="card" role="dialog" aria-modal="true" aria-label="First-run setup">
         <!-- ── The rail of dots ────────────────────────────────────────── -->
         <div class="rail">
-          @for (step of steps; track step.id) {
+          @for (step of visible(); track step.id) {
             <span
               class="dot"
               [class.here]="step.id === current()"
@@ -220,6 +256,23 @@ const STEPS: readonly StepDef[] = [
                 </div>
               } @else {
                 <p class="machine">{{ facts.profile.detail }}</p>
+                <!--
+                  THE ONE THING THIS SCREEN MUST NOT PROMISE. Owen's floor
+                  (docs/SLOTS.md §1): translation and simplification need a 27B,
+                  or a Crucible, or a cloud key. On a smaller card no amount of
+                  pulling makes them work, so it is said BEFORE the download
+                  rather than discovered afterwards as a dark tile. The
+                  narration cleanup and the analysis still run here, which is
+                  why the step is not skipped — it is narrowed.
+                -->
+                @if (facts.translateFloorMiss; as miss) {
+                  <p class="warn">
+                    Translation and simplification need {{ miss.needs }} or larger, which wants
+                    {{ miss.needsGB }} GB — more than this machine has. The models below still
+                    clean text for the narrator and run analysis. For translation, connect a
+                    Crucible server or a cloud provider in Settings.
+                  </p>
+                }
                 <!--
                   docs/SLOTS.md §5b: the app never pulls into Ollama while a
                   LOCAL Crucible serves the class. Said in the rows rather than
@@ -311,8 +364,62 @@ const STEPS: readonly StepDef[] = [
                 Already registered: {{ crucibleNames() }}. Settings › Servers is where these are
                 ranked and switched off.
               </p>
+              <!--
+                AND WHAT FOUNDRY HAS ALREADY SAID TO EACH OF THEM.
+                crucible docs/PHASE14-ENVPACKS.md §4a: finding an engine is the
+                request, so this step offers nothing to press about it — it says
+                what is happening. One line per REGISTERED server, and a server
+                nothing has asked about yet draws none, because "idle" written
+                out is a screen announcing the absence of news.
+              -->
+              @for (server of crucibleServers(); track server.name) {
+                @if (coordinationOf(server.name); as said) {
+                  <p class="small">{{ server.name }} — {{ said }}</p>
+                }
+              }
             }
             <app-crucible-doors (changed)="loadCrucible()" />
+          }
+
+          <!-- ── Where the text work runs ────────────────────────────────── -->
+          @if (current() === 'routes') {
+            <p class="lead">
+              The GPU engine (Crucible) runs cleanup, translation, simplification and analysis.
+              What it cannot run on its own card, it can run through an account you connect —
+              the key is stored in the engine, not in Foundry, and BookForge uses the same one.
+            </p>
+            @if (routeProblem(); as why) { <p class="line bad">{{ why }}</p> }
+
+            @if (routeDoc(); as settings) {
+              @if (unservedClasses().length === 0) {
+                <p class="ok-note">
+                  This engine can run all four on its own card. Nothing to connect.
+                </p>
+                @for (cls of classes; track cls) {
+                  <p class="small">{{ classLabel(cls) }} — {{ routeLine(cls) }}</p>
+                }
+              } @else {
+                <p class="line">
+                  These will not run on this engine's card. Its own words for why:
+                </p>
+                @for (row of unservedClasses(); track row.cls) {
+                  <p class="small"><strong>{{ classLabel(row.cls) }}</strong> — {{ row.reason }}</p>
+                }
+                <p class="line">
+                  Connect one account below and Test it; the models it lists are the ones your key
+                  can use. Saving sets every class above to run there, in one go.
+                </p>
+                <app-engine-upstreams
+                  [serverName]="routeServer()"
+                  [doc]="settings"
+                  [busy]="routeBusy()"
+                  [wantsModel]="true"
+                  applyLabel="Use it for these"
+                  (apply)="applyRoutes($event)" />
+              }
+            } @else if (routeProblem() === null) {
+              <p class="line">Asking the engine…</p>
+            }
           }
 
           <!-- ── Python environments ─────────────────────────────────────── -->
@@ -675,8 +782,9 @@ export class SetupWizardComponent {
   private readonly ui = inject(UiService);
   private readonly queue = inject(QueueService);
 
-  protected readonly steps = STEPS;
   protected readonly current = signal<StepId>('welcome');
+  /** The four llm classes, in the order the routes step draws them. */
+  protected readonly classes = LLM_CLASSES;
   protected readonly libraryDir = signal('');
   protected readonly choices = signal<LlmChoices | null>(null);
   protected readonly chosen = signal('');
@@ -691,6 +799,54 @@ export class SetupWizardComponent {
   protected readonly profileSaid = signal('');
   /** The registry, so the Crucible step can say what is already there. */
   protected readonly crucibleServers = signal<CrucibleServerView[]>([]);
+  /**
+   * And what Foundry has already said to each of them, by stored name.
+   *
+   * The same map the Servers card draws, from the same push, so the wizard and
+   * Settings cannot tell one person two stories about one machine. Loaded AND
+   * listened to: coordination starts at app start, before this wizard exists,
+   * so a step that only listened would draw nothing about a server that was
+   * already `stocked` when it opened.
+   */
+  protected readonly coordination = signal<CrucibleCoordinationMap>({});
+
+  /*
+   * ── The routes step's four facts (PHASE15-HOST.md §5.2) ──────────────────
+   *
+   * Which engine is being configured, its settings document, its capability
+   * record, and whatever the last press was answered with. NONE OF IT IS
+   * STORED: the document is the engine's and is re-read from every write's own
+   * answer, which is the whole of what §5.2 means by *"there is no Save button
+   * that writes an app file and syncs later"*.
+   */
+  protected readonly routeServer = signal('');
+  protected readonly routeDoc = signal<SettingsDocument | null>(null);
+  protected readonly routeCap = signal<CapabilityRecord | null>(null);
+  protected readonly routeBusy = signal(false);
+  protected readonly routeProblem = signal<string | null>(null);
+
+  /**
+   * THE CLASSES THIS ENGINE WILL NOT RUN ON ITS OWN CARD, with the server's own
+   * sentence about each.
+   *
+   * §5.2: *"for each llm class that is `enabled: false` locally it says the
+   * class's reason and offers 'run it through Anthropic / OpenAI / an Ollama
+   * server instead'."* THE REASON IS THE SERVER'S and is printed verbatim —
+   * replacing it with a word of ours is how a fixable problem ("2.1 GB short")
+   * becomes an unfixable one ("not supported").
+   *
+   * A class already routed upstream is NOT here: §3.3 says such a row answers
+   * `enabled: true`, so the engine itself has already stopped asking.
+   */
+  protected readonly unservedClasses = computed<{ cls: LlmClass; reason: string }[]>(() => {
+    const record = this.routeCap();
+    if (record === null) return [];
+    return LLM_CLASSES.flatMap((cls) => {
+      const row = record.classes.find((entry) => entry.capability === cls);
+      if (row === undefined || row.enabled) return [];
+      return [{ cls, reason: row.reason }];
+    });
+  });
 
   /** Step ids moved past without doing the thing. A Set would not survive JSON. */
   protected readonly skipped = signal<string[]>([]);
@@ -698,8 +854,28 @@ export class SetupWizardComponent {
   private readonly live = signal<Record<string, EnvInstallProgress>>({});
 
   protected readonly up = computed(() => this.ui.setupOpen());
-  protected readonly index = computed(() => this.indexOf(this.current()));
-  protected readonly def = computed(() => STEPS[this.index()] ?? STEPS[0]!);
+  /**
+   * THE STEPS THIS RUN ACTUALLY HAS — the rail, the numbering and every walk.
+   *
+   * One step is conditional: `routes` needs a registered engine to draw a window
+   * onto (crucible docs/PHASE15-HOST.md §5.2), so with an empty registry it is
+   * not in the list at all. That is deliberately not the same as SKIPPING it —
+   * a skipped step is one somebody was offered and moved past, and the Ready
+   * screen names those out loud.
+   *
+   * IT CAN GROW MID-WIZARD, and that is right: registering a server on the
+   * Crucible step is exactly what makes the question "where does translation
+   * run" answerable, and the dot appearing is the wizard saying so. The registry
+   * is read once when this screen opens, so a machine that already had a server
+   * shows the dot from the first frame rather than discovering it three steps
+   * in.
+   */
+  protected readonly visible = computed<readonly StepDef[]>(() => {
+    const hasEngine = this.crucibleServers().length > 0;
+    return STEPS.filter((step) => step.id !== 'routes' || hasEngine);
+  });
+  protected readonly index = computed(() => Math.max(0, this.indexOf(this.current())));
+  protected readonly def = computed(() => this.visible()[this.index()] ?? STEPS[0]!);
   protected readonly chosenOption = computed<LlmModelOption | null>(() =>
     this.choices()?.options.find((option) => option.tag === this.chosen()) ?? null);
 
@@ -736,6 +912,16 @@ export class SetupWizardComponent {
         void this.loadReader();
       }
     });
+    /*
+     * COORDINATION IS NOT SOMETHING THIS SCREEN STARTS, so it is only heard.
+     * The sweep runs at app start on every enabled server (crucible
+     * docs/PHASE14-ENVPACKS.md §4a), and somebody standing on this step while a
+     * model downloads onto the Mac should watch it move rather than find out by
+     * pressing Next twice.
+     */
+    api.crucible.onCoordination((state) => {
+      this.coordination.update((all) => ({ ...all, [state.server]: state }));
+    });
 
     /*
      * ── OPENED ONCE, BY MAIN'S ANSWER, AND NEVER BY THE ABSENCE OF A FILE ────
@@ -757,6 +943,14 @@ export class SetupWizardComponent {
     void Promise.all([api.hosted(), api.setup.state()]).then(([inHost, state]) => {
       if (inHost || state.completed) return;
       this.skipped.set([...state.skipped]);
+      /*
+       * THE REGISTRY IS READ BEFORE THE FIRST FRAME, not when the Crucible step
+       * is reached, because the rail is drawn from it: `visible()` hides the
+       * routes step while there is no engine, and a machine that ALREADY has a
+       * server registered would otherwise show a rail that grew a dot three
+       * steps in for no reason a person could see.
+       */
+      void this.loadCrucible();
       this.ui.openSetup();
     });
 
@@ -768,6 +962,7 @@ export class SetupWizardComponent {
       if (here === 'library') void this.loadLibrary();
       if (here === 'ollama') void this.loadChoices();
       if (here === 'crucible') void this.loadCrucible();
+      if (here === 'routes') void this.loadRoutes();
       if (here === 'envs') void this.loadEnvs();
       if (here === 'reading') void this.loadReader();
     });
@@ -821,6 +1016,7 @@ export class SetupWizardComponent {
     if (!api) return;
     const view = await api.crucible.settings();
     this.crucibleServers.set(view.servers);
+    this.coordination.set(await api.crucible.coordination());
     /*
      * AND THE OLLAMA STEP'S FACTS, because registering a local Crucible changes
      * them: a class it serves is a class this wizard must not pull a second copy
@@ -831,25 +1027,146 @@ export class SetupWizardComponent {
     if (this.choices() !== null) await this.loadChoices();
   }
 
+  // ── Where the text work runs (PHASE15-HOST.md §5.2) ───────────────────────
+
+  /**
+   * BOTH ANSWERS, TOGETHER, because the step is one picture made of two.
+   *
+   * The CAPABILITY record says which classes this engine cannot serve locally
+   * and WHY, in its own sentence; the settings document says where each class is
+   * routed now and which upstreams are configured. Read one without the other
+   * and the step either offers to fix something already fixed or shows a route
+   * with no reason beside it.
+   *
+   * THE SERVER IS CHOSEN ONCE, by the same rule the settings card uses
+   * (`defaultEngineServer`, shared/engine-settings.ts): the loopback engine
+   * first, because it is the one whose routes decide what this computer does.
+   */
+  protected async loadRoutes(): Promise<void> {
+    if (!api) return;
+    const server = this.routeServer().length > 0
+      ? this.routeServer()
+      : defaultEngineServer(this.crucibleServers())?.name ?? '';
+    this.routeServer.set(server);
+    if (server.length === 0) return;
+    this.routeBusy.set(true);
+    try {
+      const [document, capability] = await Promise.all([
+        api.crucible.engineSettings(server),
+        api.crucible.engineCapability(server),
+      ]);
+      this.routeDoc.set(document);
+      this.routeCap.set(capability);
+      this.routeProblem.set(null);
+    } catch (err) {
+      /*
+       * BOTH GO, TOGETHER. The step's offer is composed from the two, and a
+       * document kept beside a capability record that failed to re-read would
+       * let the step say "this engine can run all four" on the strength of an
+       * EMPTY list of unserved classes — which is the same sentence as "nothing
+       * was measured", said as though it were good news.
+       */
+      this.routeDoc.set(null);
+      this.routeCap.set(null);
+      this.routeProblem.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.routeBusy.set(false);
+    }
+  }
+
+  /**
+   * ONE PRESS, ONE PUT: the key AND every route it is meant to serve.
+   *
+   * §5.2: *"entering a key calls `test`, then one `PUT` that configures the
+   * upstream AND sets the route, then capability is re-read and the step shows
+   * the new answer."* §3.2 is what makes one request the RIGHT number: upstreams
+   * are applied, then routes, then the whole is validated, and *"a refusal
+   * applies nothing"*. Two requests would leave a key stored against routes that
+   * were refused — a half-configured engine nobody asked for.
+   *
+   * IT ROUTES EVERY CLASS THE ENGINE SAID IT CANNOT SERVE, not the one the
+   * person happened to be looking at. That is the step's whole offer: the rows
+   * above it are the classes with no local answer, and a press that fixed one of
+   * four would leave three rows saying the same thing with the same button under
+   * them.
+   */
+  protected async applyRoutes(event: UpstreamApply): Promise<void> {
+    const server = this.routeServer();
+    if (!api || server.length === 0 || event.model === null) return;
+    const classes = this.unservedClasses();
+    if (classes.length === 0) return;
+    const model = `${event.upstream}/${event.model}`;
+    const patch: SettingsPatch = {
+      ...(event.upstreams === undefined ? {} : { upstreams: event.upstreams }),
+      routes: Object.fromEntries(classes.map((row) => [row.cls, model])),
+    };
+    this.routeBusy.set(true);
+    try {
+      this.routeDoc.set(await api.crucible.engineSettingsPut(server, patch));
+      this.routeProblem.set(null);
+      /*
+       * AND CAPABILITY AGAIN, because §2 recomputes it in-process on every write
+       * that touches a route and §3.3 puts the route in every row. The rows this
+       * step draws come from THAT record, so the step showing the new answer is
+       * this read and not a redraw of what was sent.
+       */
+      this.routeCap.set(await api.crucible.engineCapability(server));
+    } catch (err) {
+      this.routeProblem.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.routeBusy.set(false);
+    }
+  }
+
+  /** One class's row, in the words a person uses for it. */
+  protected classLabel(cls: LlmClass): string {
+    switch (cls) {
+      case 'clean': return 'Cleanup';
+      case 'translate': return 'Translation';
+      case 'simplify': return 'Simplification';
+      case 'analysis': return 'Analysis';
+    }
+  }
+
+  /** Where a class runs right now, as one line under its name. */
+  protected routeLine(cls: LlmClass): string {
+    const row = this.routeDoc()?.routes[cls];
+    if (row === undefined) return '';
+    if (row.route === 'upstream' && row.model !== null) return `runs on ${row.model}`;
+    return row.model === null ? 'runs here, if anything fits' : `runs here on ${row.model}`;
+  }
+
   /** The registered servers, named, for the one line the step prints about them. */
   protected crucibleNames(): string {
     return this.crucibleServers().map((server) => server.name).join(', ');
   }
 
+  /**
+   * One engine's coordination sentence, or null when nothing has asked it yet.
+   *
+   * EVERY WORD OF IT IS `core/crucible-words.ts`'s — the same function the
+   * Servers card calls, because main sends facts and the copy has one owner
+   * (crucible ARCHITECTURE.md R1).
+   */
+  protected coordinationOf(name: string): string | null {
+    const state = this.coordination()[name];
+    return state === undefined ? null : coordinationWords(state);
+  }
+
   // ── Steps ─────────────────────────────────────────────────────────────────
 
   protected indexOf(id: StepId): number {
-    return STEPS.findIndex((step) => step.id === id);
+    return this.visible().findIndex((step) => step.id === id);
   }
 
   protected next(): void {
     const at = this.index();
-    const nextStep = STEPS[at + 1];
+    const nextStep = this.visible()[at + 1];
     if (nextStep) this.current.set(nextStep.id);
   }
 
   protected back(): void {
-    const previous = STEPS[this.index() - 1];
+    const previous = this.visible()[this.index() - 1];
     if (previous) this.current.set(previous.id);
   }
 
@@ -874,7 +1191,7 @@ export class SetupWizardComponent {
    */
   protected async dismiss(): Promise<void> {
     const from = this.index();
-    const rest = STEPS.slice(from)
+    const rest = this.visible().slice(from)
       .filter((step) => step.id !== 'welcome' && step.id !== 'done')
       .map((step) => step.id);
     const all = [...new Set([...this.skipped(), ...rest])];

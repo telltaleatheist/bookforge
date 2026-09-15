@@ -17,25 +17,75 @@
  * because a component that handed its parent a server list would be a second
  * copy of a list main has already answered with.
  *
- * ── THE THREE DOORS, AND WHY THEY ARE IN THIS ORDER ─────────────────────────
+ * ── THE DOORS, AND WHY THEY ARE IN THIS ORDER ───────────────────────────────
  *
- * 1. **Connect to a Crucible server.** First because it is the one that needs
- *    nothing installed anywhere — a person whose Mac already runs one is two
- *    fields away from using it. Test before Add, and the test goes through
- *    `testAt`, which does NOT write anything: adding a server in order to find
- *    out whether it is a server would leave a dead entry behind every failure.
+ * THE ORDER IS THE CONTRACT'S, NOT A LAYOUT CHOICE. crucible
+ * `docs/PHASE15-HOST.md` §5.1 — *"Connect: three ways, in this order, all
+ * automatic"* — names the pairing file first, a pasted connect code second, and
+ * getting one installed here last, and the reason is that each is more work for
+ * the person than the one above it. A screen that offered them in another order
+ * would be asking somebody to type a token they never needed to see.
+ *
+ * 0. **The engine on this machine, found on its own.** No door at all in the
+ *    ordinary case: main reads the connect code Crucible left at
+ *    `<CRUCIBLE_HOME>/pairing` at start and registers what it names as `local`
+ *    (§3.6; electron/ipc.ts `adoptPairingFile`). What is here is the SECOND
+ *    CHANCE §3.6 asks for — "Look again on this machine", for an engine
+ *    installed AFTER this app opened, which is exactly what happens when
+ *    somebody runs Crucible's installer with Foundry already up.
+ *
+ * 1. **Connect to a Crucible server**, and the first thing in it is the PASTED
+ *    CONNECT CODE (§5.1 way 2, PHASE13-OPERATOR.md §5.1): one field instead of
+ *    three, and nobody transcribes a 43-character secret. The three boxes below
+ *    it are unchanged and still work by hand, for a server whose operator page
+ *    nobody can reach. Test before Add either way, and the test does NOT write
+ *    anything: adding a server in order to find out whether it is a server would
+ *    leave a dead entry behind every failure.
  *
  * 2. **Use the Crucible on this machine.** Reads that server's own config.toml
  *    rather than asking anybody to copy a token, so the file stays the token's
  *    single owner and a later `crucible init --force` is fixed by pressing the
- *    button again (crucible-registry.ts argues this at length).
+ *    button again (crucible-registry.ts argues this at length). §3.6 keeps this
+ *    door alive until the Windows host ships — it is how Owen's PC registers its
+ *    WSL server — and says it is DELETED then, not before.
  *
  * 3. **Install Crucible here.** Last, because it is the longest, and today it is
  *    a DOCUMENT: the exact sequence, in order, with the commands that need
  *    elevation listed apart because this app cannot obtain elevation on somebody's
  *    behalf. The button that will run it is present and disabled, wearing main's
  *    own sentence — see `CrucibleInstallPlan.drivenWhy` and
- *    electron/crucible-install.ts, which says what turning it on costs.
+ *    electron/crucible-install.ts, which says what turning it on costs. PHASE15
+ *    §4.3 names what that will be: `@crucible/bootstrap`'s `install()` becomes a
+ *    CLIENT of the Windows host, whose own installer owns the sequence. The
+ *    sentence at the top of this door now says that, in link text and no
+ *    commands — the commands below it are the plan main composed, unchanged.
+ *
+ * 4. **Remove the engine from this computer.** The way OUT, and it is drawn on
+ *    the Servers card only: `canUninstall` is an input, the first-run wizard
+ *    does not pass one, and offering to remove Crucible to somebody who has not
+ *    installed it is a screen teaching the wrong thing. Beyond that the door is
+ *    main's to allow — crucible `docs/INSTALL-UNINSTALL.md` §6.1 and Owen's
+ *    ruling with it: *the door only for a server the app can prove is this
+ *    machine's; never a registry entry.* This component does not reason about
+ *    loopback addresses or ports, because §6.1 is explicit that none of those
+ *    is a proof: *"a tailnet, a port-forward or an SSH tunnel all put
+ *    `127.0.0.1:7100` in front of somebody else's card."* It asks, and draws
+ *    nothing when the answer is no.
+ *
+ *    The order holds here too: it is LAST because it is the only one that takes
+ *    something away. Its sequence is §6.4's — the dry run first, read, then the
+ *    real run with the same flags — and a fatal step is ONE RED ROW and never
+ *    "uninstall failed", because §6.3 says a fatal step does not stop the run
+ *    and *"a UI that says 'uninstall failed' and implies nothing happened is
+ *    wrong."* Its words are BookForge's verbatim, agreed 2026-09-15: two apps
+ *    that remove one engine must not describe it two ways.
+ *
+ * ── THE WORD IS "CONNECT CODE", EVERYWHERE A PERSON READS IT ────────────────
+ *
+ * BookForge says connect code and so does this. Crucible's own documents call
+ * the thing a "pairing line", because that is what the PRODUCER calls the
+ * format; a person pasting one is not reading those documents, and two words for
+ * one thing across two apps is how somebody concludes they have two things.
  *
  * ── NOTHING HERE IS A STEP ANYBODY HAS TO TAKE ──────────────────────────────
  *
@@ -45,14 +95,19 @@
  * it is opened, and the wizard's step around this one is skippable like every
  * other. The Ollama path is untouched and remains the beginner's path.
  */
-import { ChangeDetectionStrategy, Component, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import type { CrucibleInstallPlan, CrucibleProbe } from '@shared/slots';
+import type {
+  CrucibleUninstallAvailability,
+  CrucibleUninstallPlan,
+} from '@shared/uninstall-wire';
+import { diskWords, sizeWords } from '../../core/crucible-words';
 import { api } from '../../core/foundry';
 
 /** Which door is open. `null` is all three closed, which is how it starts. */
-type DoorId = 'connect' | 'local' | 'install';
+type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
 
 @Component({
   selector: 'app-crucible-doors',
@@ -60,6 +115,29 @@ type DoorId = 'connect' | 'local' | 'install';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="doors">
+      <!--
+        ── 0. THIS MACHINE, FOUND WITHOUT A DOOR ──────────────────────────
+        PHASE15 section 5.1 way 1: main already read the connect code Crucible
+        leaves on this machine, at start. The button is for the engine that was
+        installed after this window opened — section 3.6's own case. (NO
+        BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment: it is a
+        template literal and one would end it mid-sentence.)
+      -->
+      <div class="blurb">
+        <p class="small">
+          Foundry looks for an engine on this machine on its own. If one was installed after
+          this app started, press Look again.
+        </p>
+        <div class="actions">
+          <button class="ghost" type="button" [disabled]="busy()" (click)="lookAgain()">
+            {{ busy() === 'pairing' ? 'Looking…' : 'Look again on this machine' }}
+          </button>
+        </div>
+        @if (pairingNote(); as note) {
+          <p class="small" [class.warn]="pairingFailed()">{{ note }}</p>
+        }
+      </div>
+
       <!-- ── 1. Connect ────────────────────────────────────────────────── -->
       <button class="door" type="button" (click)="toggle('connect')">
         <span class="door-name">Connect to a Crucible server</span>
@@ -68,6 +146,16 @@ type DoorId = 'connect' | 'local' | 'install';
       @if (open() === 'connect') {
         <div class="panel">
           <label class="field">
+            <span class="label">Paste a connect code</span>
+            <input type="text" name="cCode" placeholder="crucible://…"
+                   [ngModel]="code()" (ngModelChange)="onCode($event)">
+          </label>
+          <p class="small">
+            A Crucible prints one on its own page — it carries the name, the address and the
+            token together, so there is nothing to transcribe.
+          </p>
+          @if (codeRefusal(); as said) { <p class="small warn">{{ said }}</p> }
+          <label class="field">
             <span class="label">Name</span>
             <input type="text" name="cName" placeholder="Mac Studio"
                    [ngModel]="name()" (ngModelChange)="name.set($event)">
@@ -75,12 +163,18 @@ type DoorId = 'connect' | 'local' | 'install';
           <label class="field">
             <span class="label">Address</span>
             <input type="text" name="cUrl" placeholder="http://192.168.1.20:7100"
-                   [ngModel]="url()" (ngModelChange)="url.set($event)">
+                   [ngModel]="url()" (ngModelChange)="url.set($event)"
+                   [readonly]="hasCode()">
           </label>
           <label class="field">
             <span class="label">Token</span>
-            <input type="password" name="cToken" placeholder="crucible token --show, on that machine"
-                   [ngModel]="token()" (ngModelChange)="token.set($event)">
+            @if (hasCode()) {
+              <input type="text" name="cToken" value="from the connect code" readonly>
+            } @else {
+              <input type="password" name="cToken"
+                     placeholder="crucible token --show, on that machine"
+                     [ngModel]="token()" (ngModelChange)="token.set($event)">
+            }
           </label>
           <div class="actions">
             <button class="ghost" type="button" [disabled]="busy()" (click)="test()">
@@ -95,6 +189,17 @@ type DoorId = 'connect' | 'local' | 'install';
               <p class="small ok">
                 {{ result.serverName }} {{ result.version }} — {{ result.backend }}, {{ result.gpu }}
               </p>
+              <!--
+                The engine was reached through an orchestrator (crucible
+                PHASE17-ORCHESTRATOR.md §6). That is a SUCCESS and the ordinary
+                shape of a Windows machine with WSL — the line above is the
+                engine's, and this names the process in front of it so nobody
+                has to work out why the address they typed and the server that
+                answered are two different ports.
+              -->
+              @if (result.via; as via) {
+                <p class="small">{{ via }}</p>
+              }
             } @else {
               <p class="small warn">{{ result.message }}</p>
             }
@@ -147,6 +252,26 @@ type DoorId = 'connect' | 'local' | 'install';
       </button>
       @if (open() === 'install') {
         <div class="panel">
+          <!--
+            WHAT PHASE15 SECTION 4.3 SAYS, AND ONLY THAT. The sequence below is
+            still main's plan, unchanged; this is the sentence above it, and it
+            names the installers as NAMES rather than printing a command to
+            paste, because the installer is Crucible's own front door and this
+            app is not its manual.
+          -->
+          @if (isWindows) {
+            <p class="small">
+              On Windows the engine is installed by Crucible's own installer, install.ps1 from
+              the release. It sets up WSL and leaves a connect code on this machine, and Foundry
+              finds the engine through that — there is nothing to paste afterwards.
+            </p>
+          } @else {
+            <p class="small">
+              On a Mac the engine is installed by Crucible's own installer, install.sh from the
+              release. It leaves a connect code on this machine, and Foundry finds the engine
+              through that — there is nothing to paste afterwards.
+            </p>
+          }
           @if (plan(); as it) {
             <p class="small">{{ it.machine }}</p>
             @if (it.platform === 'other') {
@@ -201,6 +326,113 @@ type DoorId = 'connect' | 'local' | 'install';
           }
         </div>
       }
+
+      <!-- ── 4. Remove ─────────────────────────────────────────────────── -->
+      @if (canUninstall() && uninstall() !== null && uninstall()!.available) {
+        <button class="door" type="button" (click)="toggle('uninstall')">
+          <span class="door-name">Remove the engine from this computer</span>
+          <span class="door-note">
+            Uninstall Crucible. Your books are never touched, and the models it downloaded are
+            kept unless you say otherwise.
+          </span>
+        </button>
+        @if (open() === 'uninstall') {
+          <div class="panel">
+            <!--
+              BOTH BOXES DEFAULT OFF, and changing either clears the plan on
+              screen before asking for a new one: a Remove button sitting over
+              rows that were priced for different flags is the one thing a
+              confirmation exists to prevent. The re-ask is section 6.4's own
+              instruction, so the kept figure moves with the box. (NO BACKTICKS
+              ANYWHERE IN THIS TEMPLATE, not even in a comment.)
+            -->
+            <label class="check">
+              <input type="checkbox" name="uPurge" [ngModel]="purgeWeights()"
+                     [disabled]="busy() !== null" (ngModelChange)="setPurgeWeights($event)">
+              <span>
+                Also delete the downloaded models — tens of gigabytes, and a reinstall downloads
+                every byte again. Off, they are kept and the next install finds them.
+              </span>
+            </label>
+            @if (uninstall()!.wslTooOffered) {
+              <label class="check">
+                <input type="checkbox" name="uWsl" [ngModel]="wslToo()"
+                       [disabled]="busy() !== null" (ngModelChange)="setWslToo($event)">
+                <span>
+                  Also remove the WSL2 engine inside the guest. The distro itself is never
+                  unregistered — every other distro on this machine is yours, and so is that
+                  decision.
+                </span>
+              </label>
+            }
+
+            @if (shownPlan(); as it) {
+              <!--
+                THE ROWS, AS THE PLAN SENT THEM: the server's own sentence, its
+                action word, and its size when the step has one. A size is
+                absent when the target is a unit, a pid or a distro, which
+                section 6.3 says is not zero.
+              -->
+              <div class="rows">
+                @for (step of it.steps; track step.name) {
+                  <div class="row" [class.fatal]="isFatal(step.refused)">
+                    <span class="act">{{ step.action }}</span>
+                    <span class="what">
+                      {{ step.what }}
+                      @if (step.refused; as no) { <span class="said">— {{ no.message }}</span> }
+                    </span>
+                    @if (step.bytes !== null) { <span class="size">{{ size(step.bytes) }}</span> }
+                    @if (step.done) { <span class="size">done</span> }
+                  </div>
+                }
+              </div>
+              <p class="small">{{ uninstallSaid() }}</p>
+              @if (!it.ok) {
+                <p class="warn">
+                  A step refused, above, by name. Everything that DID finish is gone; nothing is
+                  half-removed silently.
+                </p>
+              }
+              @if (removed() === null) {
+                <p class="small">
+                  Uninstalling removes this engine's token, so every app that was paired with it —
+                  this one included — has to be paired again afterwards.
+                </p>
+                @if (packRow(); as pack) {
+                  <p class="small">
+                    Crucible's own program files stay where they are: the plan keeps them as
+                    {{ pack }}, and only Crucible's own installer script removes that and the
+                    folder around it.
+                  </p>
+                }
+              } @else if (unregistered(); as gone) {
+                <p class="small">
+                  {{ gone }} was removed from the list above — its token went with the uninstall.
+                </p>
+              }
+            }
+
+            <div class="actions">
+              @if (removed() !== null) {
+                <button class="ghost" type="button" (click)="closeUninstall()">Close</button>
+              } @else if (uninstallPlan() === null) {
+                <button class="ghost" type="button" [disabled]="busy() !== null"
+                        (click)="showPlan()">
+                  {{ busy() === 'uninstall-plan' ? 'Checking…' : 'Show me what would go' }}
+                </button>
+              } @else {
+                <button class="danger" type="button" [disabled]="busy() !== null"
+                        (click)="removeIt()">
+                  {{ busy() === 'uninstall-run' ? 'Removing…' : 'Remove it' }}
+                </button>
+                <button class="ghost" type="button" [disabled]="busy() !== null"
+                        (click)="closeUninstall()">Cancel</button>
+              }
+            </div>
+            @if (uninstallRefusal(); as why) { <p class="warn">{{ why }}</p> }
+          </div>
+        }
+      }
     </div>
   `,
   styles: [`
@@ -218,6 +450,14 @@ type DoorId = 'connect' | 'local' | 'install';
     .door:hover { background: var(--bg-hover); border-color: var(--border-default); }
     .door-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
     .door-note { font-size: 11px; color: var(--text-tertiary); }
+
+    /*
+     * NOT A DOOR — it is the sentence above the doors, and the one control in it
+     * is a retry of something the app already did. Drawn flat rather than as a
+     * fourth pressable row, because a row that looked like the three below it
+     * would read as a fourth alternative to them.
+     */
+    .blurb { display: flex; flex-direction: column; gap: 6px; padding: 0 2px 4px; }
 
     .panel {
       display: flex; flex-direction: column; gap: 8px;
@@ -268,6 +508,29 @@ type DoorId = 'connect' | 'local' | 'install';
     .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
     .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
     .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* The uninstall plan's rows, and the one control that is not a door. */
+    .check { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .check input { margin-top: 2px; flex: 0 0 auto; }
+    .rows { display: flex; flex-direction: column; gap: 2px; }
+    .row { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .row.fatal, .row.fatal .act, .row.fatal .said { color: var(--warn); }
+    .act {
+      flex: 0 0 auto; min-width: 46px;
+      font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-tertiary);
+    }
+    .what { flex: 1; min-width: 0; }
+    .said { color: var(--text-tertiary); }
+    .size { flex: 0 0 auto; font-size: 10px; color: var(--text-tertiary); }
+
+    .danger {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 26px; padding: 0 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
+      border: 1px solid var(--warn); background: transparent; color: var(--warn);
+    }
+    .danger:disabled { opacity: 0.5; cursor: not-allowed; }
   `],
 })
 export class CrucibleDoorsComponent {
@@ -278,6 +541,18 @@ export class CrucibleDoorsComponent {
    * copy of something that already has an owner.
    */
   readonly changed = output<void>();
+  /**
+   * MAY THE FOURTH DOOR BE OFFERED HERE AT ALL — the Servers card passes true
+   * and the first-run wizard passes nothing.
+   *
+   * A HOST'S CHOICE, not main's. Main decides whether the door may exist on this
+   * MACHINE (section 6.1's proof); this decides whether it belongs on this
+   * SCREEN, and the two are different questions. Somebody stepping through
+   * first-run has not installed anything yet, and a "Remove the engine" row
+   * under "Install Crucible here" is a wizard arguing with itself.
+   */
+  readonly canUninstall = input(false);
+
 
   protected readonly isWindows = api?.platform === 'win32';
   protected readonly open = signal<DoorId | null>(null);
@@ -290,15 +565,99 @@ export class CrucibleDoorsComponent {
   protected readonly localNote = signal<string | null>(null);
   protected readonly localFailed = signal(false);
   protected readonly installSaid = signal<string | null>(null);
+  protected readonly pairingNote = signal<string | null>(null);
+  protected readonly pairingFailed = signal(false);
+
+  // ── The fourth door ──────────────────────────────────────────────────────
+
+  /**
+   * MAIN'S PROOF, asked once when this component is built and again after a real
+   * run. Null means it has not answered yet and the door is not drawn; false
+   * means it answered no and the door is not drawn either — a machine with no
+   * local engine is simply a machine with three doors.
+   */
+  protected readonly uninstall = signal<CrucibleUninstallAvailability | null>(null);
+  /** The dry run. Cleared whenever a box moves — see the template's note. */
+  protected readonly uninstallPlan = signal<CrucibleUninstallPlan | null>(null);
+  /** The performed plan, once there is one. Never the same object as the dry run. */
+  protected readonly removed = signal<CrucibleUninstallPlan | null>(null);
+  protected readonly unregistered = signal<string | null>(null);
+  protected readonly purgeWeights = signal(false);
+  protected readonly wslToo = signal(false);
+  protected readonly uninstallRefusal = signal<string | null>(null);
+
+  protected readonly size = diskWords;
+
+  /** The performed plan once there is one, else the dry run. One list, twice. */
+  protected readonly shownPlan = computed(() => this.removed() ?? this.uninstallPlan());
+
+  /**
+   * The `pack:server` or `pack:host` row, quoted by name in the door's last line.
+   *
+   * Section 6.2: *"An app that needs a machine-readable answer calls the verb; an
+   * app that wants the machine clean runs the wrapper."* Foundry calls the verb,
+   * so the pack and the home stay — and the plan already names the row that says
+   * so, which is what is quoted rather than a sentence of ours about a directory.
+   */
+  protected readonly packRow = computed(
+    () => this.shownPlan()?.steps.find((step) => step.name.startsWith('pack:'))?.name ?? null,
+  );
+
+  /**
+   * ONE SENTENCE, AND IT IS BOOKFORGE'S VERBATIM (2026-09-15).
+   *
+   * Two apps that remove one engine off one machine must not describe it two
+   * ways, so the words are agreed rather than each app's own. The dry run says
+   * nothing was touched; the real run prices what went and what stayed.
+   */
+  protected readonly uninstallSaid = computed(() => {
+    const plan = this.shownPlan();
+    if (plan === null) return '';
+    const kept = `Kept${plan.dryRun ? ':' : ''} ${sizeWords(plan.kept.weightsBytes)} of models in `
+      + `${plan.kept.paths.length} folder(s).`;
+    return plan.dryRun
+      ? `Nothing has been touched. ${kept}`
+      : `Freed ${sizeWords(plan.removedBytes)}. ${kept}`;
+  });
+
+
+  /**
+   * THE PASTED LINE, AND IT IS A CREDENTIAL FOR AS LONG AS THIS DOOR IS OPEN.
+   *
+   * It is held because the three acts — preview, Test, Add — each need the WHOLE
+   * line, and main answers none of them with a token (docs' `ConnectCodePreview`
+   * argues the shape). The person typed it into this box, which is the one case
+   * the renderer is allowed to hold one; it is cleared on a successful Add, with
+   * the token box, exactly as the hand-typed token already was.
+   */
+  protected readonly code = signal('');
+  /** The SDK's `invalid_pairing` sentence for what is in the box, or null. */
+  protected readonly codeRefusal = signal<string | null>(null);
+  /**
+   * Is a READABLE code driving the boxes? Not "is the box non-empty": a half-
+   * pasted line must leave Address and Token editable, or somebody correcting a
+   * typo by hand would find the fields locked by the very thing they are fixing.
+   */
+  protected readonly hasCode = signal(false);
 
   /** Which call is in flight, so the right button says so and the others are off. */
-  protected readonly busy = signal<'test' | 'add' | 'local' | 'install' | null>(null);
+  protected readonly busy = signal<
+    'test' | 'add' | 'local' | 'install' | 'pairing' | 'uninstall-plan' | 'uninstall-run' | null
+  >(null);
 
   constructor() {
     if (!api) return;
     // The stored WSL distro, so opening door 2 on a machine that has answered
     // this before shows the answer rather than an empty box.
     void api.crucible.settings().then((view) => this.distro.set(view.wslDistro));
+    /*
+     * AND MAIN'S PROOF FOR DOOR 4, once. It is a read — a file test, and one
+     * wsl.exe call only on the machine that has Crucible in a guest and no
+     * Windows host. The wizard asks it too and throws the answer away, because
+     * `canUninstall` is false there and nothing is drawn either way; making the
+     * call conditional would put the decision in two places.
+     */
+    void this.askUninstall();
   }
 
   /**
@@ -314,6 +673,21 @@ export class CrucibleDoorsComponent {
     // before: it spawns wsl.exe, and a wizard step that probed WSL on arrival
     // would be doing work for somebody who is about to press Skip.
     if (this.open() === 'install' && this.plan() === null) void this.loadPlan();
+    /*
+     * CLOSING DOOR 4 THROWS ITS PLAN AWAY. A plan is a statement about a machine
+     * at a moment, and a door reopened an hour later over yesterday's rows with
+     * a live Remove button under them would be a confirmation of something
+     * nobody read. Reopening asks again, which costs one dry run.
+     */
+    if (this.open() !== 'uninstall') this.forgetPlan();
+  }
+
+  /** The two runs' state, and nothing else this component holds. */
+  private forgetPlan(): void {
+    this.uninstallPlan.set(null);
+    this.removed.set(null);
+    this.unregistered.set(null);
+    this.uninstallRefusal.set(null);
   }
 
   private async loadPlan(): Promise<void> {
@@ -333,7 +707,99 @@ export class CrucibleDoorsComponent {
     this.busy.set('test');
     this.probe.set(null);
     try {
-      this.probe.set(await api.crucible.testAt(this.url(), this.token()));
+      /*
+       * THE CONNECT CODE HAS ITS OWN TEST, and it is not `testAt` with a token
+       * fished out of a preview: the token would have to come back across the
+       * preload to be sent forward again, which is the one thing the preview
+       * shape exists to refuse. Main re-reads the line it was given, which costs
+       * a parse and owes nobody a secret.
+       */
+      this.probe.set(this.hasCode()
+        ? await api.crucible.testConnectCode(this.code())
+        : await api.crucible.testAt(this.url(), this.token()));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  /**
+   * EVERY CHANGE OF THE PASTE FIELD, previewed in main.
+   *
+   * On change and not on blur, because the gesture is a PASTE: there is no
+   * keystroke after it and a person who pasted a line expects to see the name of
+   * the machine they pasted, not after they click somewhere else. The call is
+   * pure on main's side — the SDK's `parsePairing` and no network — so running it
+   * per change costs an IPC round trip and nothing else.
+   *
+   * AN EMPTY BOX IS NOT A REFUSAL. Clearing the field hands the three boxes back
+   * to whoever wants to type in them and says nothing, because "paste a connect
+   * code" printed under an empty box is an instruction, not an error.
+   */
+  protected async onCode(line: string): Promise<void> {
+    this.code.set(line);
+    this.probe.set(null);
+    if (!api || line.trim().length === 0) {
+      this.hasCode.set(false);
+      this.codeRefusal.set(null);
+      return;
+    }
+    const preview = await api.crucible.parseConnectCode(line);
+    // The box may have moved on while that was in flight — a slow round trip
+    // landing after the next keystroke would overwrite what is being typed now.
+    if (this.code() !== line) return;
+    if (preview.outcome === 'refused') {
+      this.hasCode.set(false);
+      this.codeRefusal.set(preview.message);
+      return;
+    }
+    this.codeRefusal.set(null);
+    this.hasCode.set(true);
+    /*
+     * THE NAME IS FILLED SO IT CAN BE CHANGED. The code carries the server's own
+     * name (`crucible@mac-studio`), and a person with two of them wants to say
+     * which is which before it lands in a picker — so the box is filled, not
+     * locked, and Add sends whatever is in it.
+     *
+     * THE ADDRESS IS FILLED AND READ-ONLY, because it is not a preference: the
+     * token in the code is that address's token, and an address edited under it
+     * would be a credential pointed at a machine it was not issued for.
+     */
+    this.name.set(preview.name);
+    this.url.set(preview.url);
+  }
+
+  /**
+   * LOOK FOR AN ENGINE ON THIS MACHINE AGAIN — PHASE15 §3.6's second chance.
+   *
+   * Main already did this at start (electron/mount.ts). This is the press for
+   * the machine where Crucible was installed WHILE Foundry was open, where the
+   * answer at start was true and has stopped being. It is a button rather than a
+   * filesystem watch because "press it when you have installed one" is a
+   * sentence somebody can act on, and a watch on a directory an installer
+   * creates would have this app reacting mid-keystroke.
+   *
+   * ALL THREE OUTCOMES ARE SAID, including the absence: *"an absent file means
+   * 'no local server' — a fact the app shows, not a fallback it fills"* (§3.6).
+   * A button that did nothing visible on the ordinary answer would be a button
+   * somebody presses twice.
+   */
+  protected async lookAgain(): Promise<void> {
+    if (!api) return;
+    this.busy.set('pairing');
+    this.pairingNote.set(null);
+    try {
+      const answer = await api.crucible.addFromPairingFile();
+      if (answer.outcome === 'added') {
+        this.pairingFailed.set(false);
+        this.pairingNote.set(
+          `Found ${answer.serverName} at ${answer.url}, from ${answer.configPath}. `
+          + 'Its token stays that file\'s.',
+        );
+        this.changed.emit();
+      } else {
+        this.pairingFailed.set(true);
+        this.pairingNote.set(answer.message);
+      }
     } finally {
       this.busy.set(null);
     }
@@ -348,9 +814,23 @@ export class CrucibleDoorsComponent {
     if (!api) return;
     this.busy.set('add');
     try {
-      await api.crucible.add(this.name(), this.url(), this.token());
+      /*
+       * ONE DOOR OR THE OTHER, never both, and the code wins when there is one:
+       * the address box is read-only under a readable code and the token box
+       * holds a placeholder rather than a secret, so `add(name, url, token)`
+       * here would register a server with an empty token.
+       */
+      if (this.hasCode()) {
+        await api.crucible.addConnectCode(this.code(), this.name());
+      } else {
+        await api.crucible.add(this.name(), this.url(), this.token());
+      }
       this.probe.set(null);
       this.token.set('');
+      // The line goes with the token, and for the token's reason: it carries one.
+      this.code.set('');
+      this.hasCode.set(false);
+      this.codeRefusal.set(null);
       this.open.set(null);
       this.changed.emit();
     } catch (err) {
@@ -421,5 +901,112 @@ export class CrucibleDoorsComponent {
     } finally {
       this.busy.set(null);
     }
+  }
+  // ── The fourth door's four acts ──────────────────────────────────────────
+
+  /**
+   * MAIN'S PROOF, and anything thrown leaves it null so the door is not drawn.
+   *
+   * A proof that could not be taken is not a proof, and the safe direction is
+   * the one where the button that removes an engine appears only on an answer
+   * that said yes.
+   */
+  private async askUninstall(): Promise<void> {
+    if (!api) return;
+    try {
+      this.uninstall.set(await api.crucible.uninstallAvailability());
+    } catch {
+      this.uninstall.set(null);
+    }
+  }
+
+  protected isFatal(refusal: { fatal: boolean } | null): boolean {
+    return refusal !== null && refusal.fatal;
+  }
+
+  /** "Show me what would go" — the dry run, section 6.4 step 1. Touches nothing. */
+  protected showPlan(): Promise<void> {
+    return this.readPlan();
+  }
+
+  protected setPurgeWeights(on: boolean): void {
+    this.purgeWeights.set(on);
+    this.uninstallPlan.set(null);
+  }
+
+  protected setWslToo(on: boolean): void {
+    this.wslToo.set(on);
+    this.uninstallPlan.set(null);
+  }
+
+  /*
+   * A BOX MOVED: the plan on screen is thrown away, and NOT asked for again.
+   *
+   * Clearing is what stops a Remove button sitting over rows that were priced
+   * for other flags. The re-ask is deliberately the person's next press of
+   * "Show me what would go" — RULED with BookForge, 2026-09-15: a dry run spawns
+   * a process on this machine, and the press is the consent to that; a checkbox
+   * that spawned one on its own would be a control doing work nobody asked for.
+   * Section 6.4's "re-runs the dry run so the number moves" is satisfied by the
+   * press, and the kept figure is still the server's, never recomputed here.
+   */
+
+  private async readPlan(): Promise<void> {
+    if (!api || this.busy() !== null) return;
+    this.busy.set('uninstall-plan');
+    this.uninstallRefusal.set(null);
+    try {
+      this.uninstallPlan.set(await api.crucible.uninstallDryRun({
+        purgeWeights: this.purgeWeights(),
+        wslToo: this.wslToo(),
+      }));
+    } catch (err) {
+      this.uninstallRefusal.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  /**
+   * "Remove it" — the real run, THE SAME FLAGS, section 6.4 step 2.
+   *
+   * The same flags and not a fresh read of the boxes, because the rows on screen
+   * were priced against these two and confirming something other than what was
+   * read is the one thing a confirmation exists to prevent. (They cannot have
+   * moved: changing either clears the plan, and this button is only drawn while
+   * there is one.)
+   */
+  protected async removeIt(): Promise<void> {
+    if (!api || this.busy() !== null) return;
+    this.busy.set('uninstall-run');
+    this.uninstallRefusal.set(null);
+    try {
+      const run = await api.crucible.uninstall({
+        purgeWeights: this.purgeWeights(),
+        wslToo: this.wslToo(),
+      });
+      this.removed.set(run.plan);
+      this.unregistered.set(run.unregistered);
+      this.changed.emit();
+    } catch (err) {
+      this.uninstallRefusal.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  /**
+   * Cancel or Close — the door shuts, its plan goes, and MAIN IS ASKED AGAIN.
+   *
+   * After a real run the answer has usually changed: the pairing file went with
+   * the uninstall. Re-asking is what makes the door disappear rather than offer
+   * to remove a Crucible that is no longer there.
+   */
+  protected closeUninstall(): void {
+    this.open.set(null);
+    this.forgetPlan();
+    this.purgeWeights.set(false);
+    this.wslToo.set(false);
+    void this.askUninstall();
   }
 }

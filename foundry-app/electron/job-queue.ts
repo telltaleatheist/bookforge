@@ -466,19 +466,50 @@ function promisedBy(request: EngineRequest): Pick<Job, 'mints' | 'after' | 'into
  * ── Absent for everything that does not meet a model ───────────────────────
  *
  * An export, a mint, an environment install: no capability class, no placement,
- * no picker. A READING is absent too for now, and that is the one deliberate
- * omission rather than a consequence — `CRUCIBLE_READS` is false while Package B
- * owns the page reader (docs/SLOTS.md §6), and a picker on a row whose dispatch
- * ignores it would be a control that does nothing.
+ * no picker. A READING USED TO BE ABSENT TOO and no longer is: `CRUCIBLE_READS`
+ * is true (crucible-dispatch.ts) and a reading is dispatched like any other act,
+ * so it gets the picker every placed row gets. The guard below stays, because it
+ * is the constant that decides it and not a fact about the kind — the day
+ * anything turns it back off, the picker goes with it rather than becoming a
+ * control that does nothing.
  *
  * ALSO ABSENT WHEN THERE IS NOTHING TO CHOOSE — no slots, or one — which is the
  * friend with a GPU and no Crucible, and every hosted window whose host offers
  * no slot list. `waitForOfNewJob` decides that, once, so the picker's "is there
  * anything to pick" and the row's "what did I pick" cannot disagree.
  */
-function placedBy(kind: JobKind): Pick<Job, 'waitFor'> {
-  if (capabilityClassOf(kind) === null) return {};
-  if (kind === 'read' && !CRUCIBLE_READS) return {};
+function placedBy(kind: JobKind, chosen?: string): Pick<Job, 'waitFor'> {
+  /*
+   * ── A SCHEDULER'S CHOICE WINS, AND ITS LOSS IS NEVER SILENT ───────────────
+   *
+   * Hosted, the person picked a machine on the HOST's row, and this app's
+   * default is not an answer to that question — it is an answer to a question
+   * nobody asked. So `chosen` is taken as given when a placement is possible
+   * at all. What it cannot override is whether there IS a placement: an export
+   * or a mint puts nothing in front of a model, and a reading stays on this
+   * machine while `CRUCIBLE_READS` is false. Both of those drop the name, and
+   * both say so, because a control that quietly does nothing is the defect
+   * this seam exists to remove.
+   */
+  if (capabilityClassOf(kind) === null) {
+    if (chosen !== undefined) {
+      console.error(
+        `[slots] a scheduler asked for "${chosen}" on a ${kind} job, which puts nothing in `
+        + 'front of a model. The name was dropped.',
+      );
+    }
+    return {};
+  }
+  if (kind === 'read' && !CRUCIBLE_READS) {
+    if (chosen !== undefined) {
+      console.error(
+        `[slots] a scheduler asked for "${chosen}" on a page reading, which runs on this `
+        + 'machine while remote reads are switched off. The name was dropped.',
+      );
+    }
+    return {};
+  }
+  if (chosen !== undefined) return { waitFor: chosen };
   const waitFor = waitForOfNewJob();
   return waitFor === undefined ? {} : { waitFor };
 }
@@ -3092,6 +3123,38 @@ export function argsFor(
     if (request.language && request.language.trim().length > 0) {
       args.push('--language', request.language.trim());
     }
+    /*
+     * ── A READING THAT WAS PLACED ON A CRUCIBLE SAYS SO ON THE LINE ──────────
+     *
+     * The note above this function said *"No `--vlm-endpoint`. The settings
+     * screen owns which backend reads the pages"*, and that was the whole truth
+     * while `CRUCIBLE_READS` was false: there was one reader, the settings file
+     * named it, and the engine read the same file. Owen's ruling made pages a
+     * dispatched class like any other (crucible-dispatch.ts), so there is a
+     * SECOND owner of that question now — the placement — and it wins for the
+     * one run it is about. Without these two flags the engine would fall back to
+     * `backend.endpointUrl` and post the pages to this machine's own reader,
+     * which is a placement nothing honoured and a card nothing accounted for.
+     *
+     * THE TEXT DOOR'S `--endpoint` AND THIS ONE ARE SPELLED DIFFERENTLY BY THE
+     * ENGINE, and that is why `/v1` is appended here rather than stored on the
+     * placement. `normaliseVllmEndpoint` (src/translate/vllm.ts) adds the version
+     * prefix for the text path; `--vlm-endpoint` is used exactly as given
+     * (src/vlm/endpoint.ts composes `<it>/chat/completions`), which is why the
+     * local reader's own URL is `http://localhost:8000/v1`. One placement, two
+     * dialects, and the difference is said here instead of silently working on
+     * one path and 404ing on the other.
+     *
+     * THE TOKEN IS NOT ON THIS LINE. It is in `placement.env`, as it is for every
+     * other act, and `resolveEndpointHeaders` (src/backend/endpoint-headers.ts)
+     * is what the reading path already reads it through.
+     */
+    if (placement.endpoint !== null) {
+      args.push('--vlm-endpoint', `${placement.endpoint.replace(/\/+$/, '')}/v1`);
+      if (placement.model !== null && placement.model.length > 0) {
+        args.push('--vlm-endpoint-model', placement.model);
+      }
+    }
     return args;
   }
 
@@ -3365,19 +3428,38 @@ function endpointFor(): string | null {
  * need a server are settled here, before the pick:
  *
  *   * A ROW THAT IS NEVER PLACED holds the LOCAL lane — `placesOnASlot` is that
- *     test and lives beside the switch that decides half of it. A page reading
- *     loads dots on this machine's card whatever the registry says, and if it
- *     held no lane the board would start a translation on the same card.
- *   * A ROW PINNED TO A SLOT holds the lane it named, whether or not that name is
- *     still in the list (see `Slot.on`).
- *   * `any` — and a row with no `waitFor` on a board with something to choose
- *     between — answers null: the walk picks, and the walk claims as it picks.
+ *     test and lives beside the switch that decides half of it. An export never
+ *     gets here (it is not a GPU row at all); what does is a job whose dispatch
+ *     this app does not route, and if it held no lane the board would start a
+ *     translation on the same card.
+ *   * A BOARD WITH ONE LANE holds it, whatever the row says. One machine and one
+ *     answer: the walk would claim the same lane, and reserving it before the
+ *     pick is what keeps two rows in ONE synchronous pump pass apart. This is
+ *     every hosted window (`computeLanes` answers an empty slot list with the
+ *     local lane) and every desk with no Crucible.
+ *   * EVERYTHING ELSE answers null: the walk picks, and the walk claims.
+ *
+ * ── A PINNED ROW USED TO RESERVE HERE, AND NO LONGER CAN (Wave 62) ─────────
+ *
+ * It returned `job.waitFor`, which was right while a slot was one lane. A
+ * Crucible slot is TWO now — its card, and the `[cloud]` lane an upstream-routed
+ * act takes (`upstreamLaneName`, shared/queue-board.ts) — and WHICH of them a row
+ * belongs in is a fact only that server's capability row knows. Reserving the
+ * card here would hold a GPU for the length of a network read that was going to
+ * end somewhere else entirely, and then keep holding it for the whole run. So the
+ * pinned path claims where the `any` path claims: inside the walk, after the
+ * route is read (`placeOn`, electron/crucible-dispatch.ts, whose note argues the
+ * move in full).
+ *
+ * WHAT THAT COSTS is that two rows pinned to one machine can both be picked in
+ * one pass. The second reaches the claim, is refused, and parks with the walk's
+ * own sentence and the ordinary backoff — which is exactly what two `any` rows
+ * have always done. What still cannot happen is two runs on one card.
  */
 function laneAtPick(job: Job, lanes: readonly ComputeLane[]): string | null {
   if (JOB_RESOURCE[job.kind] !== 'gpu') return null;
   if (!placesOnASlot(job.kind)) return localLane(lanes)?.name ?? LOCAL_SLOT_NAME;
-  const waitFor = job.waitFor;
-  if (waitFor !== undefined && waitFor !== ANY_SLOT) return waitFor;
+  if (lanes.length === 1) return lanes[0]!.name;
   return null;
 }
 
@@ -3430,7 +3512,15 @@ function canStart(job: Job, lanes: readonly ComputeLane[]): boolean {
   let held = 0;
   for (const slot of slots.values()) if (slot.resource === resource) held += 1;
   if (resource === 'cpu') return held < CPU_LANE_SLOTS;
-  if (held >= lanes.length) return false;
+  /*
+   * THE CEILING IS THE SUM OF THE LANES' CAPACITIES, not the number of lanes.
+   * It was the count while every lane took one run; a server's `[cloud]` lane
+   * takes two (Wave 62, `UPSTREAM_LANE_CAPACITY`), and counting lanes would hold
+   * the second forwarded job behind a board that has room for it.
+   */
+  let ceiling = 0;
+  for (const lane of lanes) ceiling += lane.capacity;
+  if (held >= ceiling) return false;
   const wants = laneAtPick(job, lanes);
   return wants === null || !laneTaken(wants);
 }
@@ -4015,13 +4105,32 @@ async function placeRun(
    * field is a single name and the claim overwrites it. A lane this run already
    * holds — the pump reserved it, or the walk claimed it on an earlier pass of
    * the backoff — is granted again rather than refused by its own reservation.
+   *
+   * ── AND A LANE'S WIDTH IS NOT ALWAYS ONE ANY MORE (Wave 62) ──────────────
+   *
+   * A card lane takes one run; a server's `[cloud]` lane takes two, because
+   * nothing of ours is on that machine's GPU and what is being rationed is an
+   * account's rate limit rather than a card (`UPSTREAM_LANE_CAPACITY`,
+   * shared/queue-board.ts, which argues the number). So the holders are COUNTED
+   * against the lane's own capacity instead of the first one refusing everybody.
+   *
+   * THE BOARD IS RE-READ HERE rather than threaded down from `pump`, and that is
+   * a deliberate second read: `placeRun` is reached again on every pass of the
+   * backoff, minutes apart, and a capacity taken from the list as it was when the
+   * row was first picked would be this run rationing itself against a board
+   * somebody has since edited. A lane the list no longer carries is width one,
+   * which is the honest reading of a machine that has left.
    */
+  const lanesNow = computeLanes(computeSlots());
   const claim: LaneClaim = (lane) => {
     if (held === null) return true;
     if (held.on === lane) return true;
+    const capacity = lanesNow.find((entry) => entry.name === lane)?.capacity ?? 1;
+    let taken = 0;
     for (const other of slots.values()) {
-      if (other.id !== held.id && other.on === lane) return false;
+      if (other.id !== held.id && other.on === lane) taken += 1;
     }
+    if (taken >= capacity) return false;
     held.on = lane;
     return true;
   };
@@ -4049,6 +4158,16 @@ async function placeRun(
        * sentence, and it is what the shelf shows while the run is alive.
        */
       next.ranOn = outcome.placement.slot.name;
+      /*
+       * AND WHETHER IT WAS FORWARDED, which is the other half of "where it went"
+       * and the thing that puts the row in the server's `[cloud]` lane rather
+       * than on its card (`laneOfRun`, shared/queue-board.ts). `ranOn` stays the
+       * MACHINE — it is what the shelf says out loud — and this is the upstream's
+       * name beside it. Absent is a run on a card, which is every run this app
+       * has ever recorded.
+       */
+      if (outcome.placement.via !== null) next.ranVia = outcome.placement.via;
+      else delete next.ranVia;
       /*
        * THE LEASE GOES WHERE THE SETTLE CAN FIND IT, immediately, before anything
        * can throw. `settled` is the one ending every path in this file reaches,
@@ -4201,8 +4320,47 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * says `rednote-hilab/dots.ocr` — and handing the engine the wrong one would
    * refuse a working server by name in `confirmServedModel`. The concurrency is
    * ours only when the server is: see `PAGE_READER_CONCURRENCY`.
+   *
+   * ── AND IT HAPPENS AFTER THE PLACEMENT NOW (Wave 62, Package K) ───────────
+   *
+   * It used to be the first thing a reading did, before `placeRun` had been
+   * called at all — which was correct while `CRUCIBLE_READS` was false and every
+   * reading ran on this desk. It is not correct now that a reading is dispatched
+   * like any other act (crucible-dispatch.ts, whose note carries Owen's ruling):
+   * starting first would pull three gigabytes onto this card for a reading that
+   * was about to be sent to another machine, and then leave them there.
+   *
+   * SO THE TEST IS THE PLACEMENT'S, not the settings file's. `placement.endpoint`
+   * is null exactly when the run goes through the request's own endpoint — the
+   * local slot, and every job this app never placed — and non-null when a
+   * Crucible answered. Only the first of those may start a server here.
    */
-  const endpoint = next.kind === 'read' ? endpointFor() : null;
+
+  /*
+   * ── WHERE THIS RUN'S COMPUTE GOES, DECIDED HERE AND ONCE ──────────────────
+   *
+   * docs/SLOTS.md §3: *"jobs never start on one slot and finish on another. its
+   * atomic."* This is that sentence as code — one resolution, and nothing
+   * downstream may ask again. A placement that could be re-derived at the
+   * metadata stage or after a retry would be a book whose first half was
+   * translated by one model and whose second half was translated by another,
+   * with one records file claiming both.
+   *
+   * BEFORE THE SEED COPY AND THE CHECKLIST, deliberately, and on the rule those
+   * two state about themselves: a job that has not committed must leave the
+   * project exactly as it found it. A row that turns out to be waiting for a
+   * server somebody is narrating on goes back to the queue, and it must not have
+   * left a seeded records file behind on the way. It is before the READING SERVER
+   * for the same rule one turn further out: a parked row must not have loaded a
+   * model onto this card on its way to waiting.
+   *
+   * NULL MEANS THE ROW IS NO LONGER THIS CALL'S — parked back in the queue, or
+   * failed with the reason on it. `placeRun` has already said so and published.
+   */
+  const placement = await placeRun(next, request, wires);
+  if (placement === null) return;
+
+  const endpoint = next.kind === 'read' && placement.endpoint === null ? endpointFor() : null;
   let localReader: { servedModel: string | null; concurrency: number } | null = null;
   if (endpoint !== null && isLocalPageReader(endpoint)) {
     next.message = 'Starting the reading server…';
@@ -4226,28 +4384,6 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       return;
     }
   }
-
-  /*
-   * ── WHERE THIS RUN'S COMPUTE GOES, DECIDED HERE AND ONCE ──────────────────
-   *
-   * docs/SLOTS.md §3: *"jobs never start on one slot and finish on another. its
-   * atomic."* This is that sentence as code — one resolution, immediately before
-   * the one spawn, and nothing downstream may ask again. A placement that could
-   * be re-derived at the metadata stage or after a retry would be a book whose
-   * first half was translated by one model and whose second half was translated
-   * by another, with one records file claiming both.
-   *
-   * BEFORE THE SEED COPY AND THE CHECKLIST, deliberately, and on the rule those
-   * two state about themselves: a job that has not committed must leave the
-   * project exactly as it found it. A row that turns out to be waiting for a
-   * server somebody is narrating on goes back to the queue, and it must not have
-   * left a seeded records file behind on the way.
-   *
-   * NULL MEANS THE ROW IS NO LONGER THIS CALL'S — parked back in the queue, or
-   * failed with the reason on it. `placeRun` has already said so and published.
-   */
-  const placement = await placeRun(next, request, wires);
-  if (placement === null) return;
 
   /*
    * ── THE TWO INTERMEDIATES THAT USED TO BE HERE, AND WHY THEY ARE GONE ──────
@@ -5349,6 +5485,22 @@ interface RunOptions {
    * run notices at the next checkpoint.
    */
   signal?: AbortSignal;
+  /**
+   * THE MACHINE THE SCHEDULER'S OWN ROW CHOSE — a slot name, or `any`.
+   *
+   * Hosted, the person picked it on the HOST's queue row, and without this it
+   * never crossed: the row was stamped with THIS app's default
+   * (`waitForOfNewJob`), so a choice made on one screen was answered by a
+   * setting on another. Found by BookForge's session reading the seam,
+   * 2026-09-14, before anybody had pressed it.
+   *
+   * Absent means the caller has no opinion and this app's own default decides,
+   * which is what `runNow` wants and what a host that does not offer a picker
+   * wants. The name is not validated here: a slot that has gone is a wait with
+   * a sentence at the placement (`placeOnSlot`), which is where a name can be
+   * checked against a list that is current.
+   */
+  waitFor?: string;
 }
 
 /**
@@ -5420,7 +5572,7 @@ async function runDetached(
      * that refusal is `materializeDeferred`'s, one function down, where it can name
      * the step rather than the row.
      */
-    ...placedBy(request.kind),
+    ...placedBy(request.kind, opts.waitFor),
     ...promisedBy(request),
     createdAt: Date.now(),
   };

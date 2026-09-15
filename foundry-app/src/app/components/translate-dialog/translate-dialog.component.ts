@@ -599,7 +599,7 @@ export class TranslateDialogComponent {
     // The model and the URL come from the app's own settings, which first-run
     // setup wrote after measuring the machine. The constants above are the
     // floor for a renderer with no bridge under it — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults('translate', this.model, this.ollama);
     // Same rule as the OCR dialog: a complaint about the last book is cleared
     // when the book changes, and nothing else resets. The instructions in
     // particular are the user's careful answer and survive switching tabs.

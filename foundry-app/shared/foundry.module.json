@@ -1,0 +1,27 @@
+{
+  "name": "foundry",
+  "version": "0.6.0+66fd04e88639",
+  "job_types": [
+    {
+      "type": "llm"
+    }
+  ],
+  "needs": [
+    {
+      "class": "clean"
+    },
+    {
+      "class": "translate"
+    },
+    {
+      "class": "simplify"
+    },
+    {
+      "class": "analysis"
+    },
+    {
+      "class": "pages"
+    }
+  ],
+  "subjects": []
+}

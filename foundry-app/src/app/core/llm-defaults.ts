@@ -26,6 +26,16 @@
  * Clean text press reads `cleanTextModel` out of the very same
  * `app-settings.json`, so one file decides what both doors run.
  *
+ * ── AND THE SEED IS RESOLVED AGAINST THE MACHINE, NOT READ FROM A TAG ──────
+ *
+ * Each of these asks for a CLASS, because main answers with the model that act
+ * should open with rather than the tag the wizard once stored: a stored choice
+ * that can still serve the class wins, a stale one is replaced by the largest
+ * installed model that can (`openingModelFor`, electron/llm-catalog.ts). The
+ * class is passed because the floors differ — translate and simplify need a
+ * 27B, analysis has none — so one answer for all three would be wrong for at
+ * least one of them on a card between the two.
+ *
  * ── THE THIRD FIELD IS GONE, AND SO IS THE THING IT SEEDED ─────────────────
  *
  * A `server?: WritableSignal<LlmServerKind>` used to come back on the same
@@ -43,15 +53,18 @@
  */
 import type { WritableSignal } from '@angular/core';
 
+import type { ModelClass } from '@shared/types';
+
 import { api } from './foundry';
 
 function seed(
+  cls: ModelClass,
   chosen: (defaults: { model: string; cleanModel: string }) => string,
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
 ): void {
   if (!api) return;
-  void api.llm.defaults().then((defaults) => {
+  void api.llm.defaults(cls).then((defaults) => {
     const wanted = chosen(defaults);
     if (wanted.trim().length > 0) model.set(wanted);
     if (defaults.ollama.trim().length > 0) ollama.set(defaults.ollama);
@@ -59,10 +72,11 @@ function seed(
 }
 
 export function seedLlmDefaults(
+  cls: ModelClass,
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
 ): void {
-  seed((defaults) => defaults.model, model, ollama);
+  seed(cls, (defaults) => defaults.model, model, ollama);
 }
 
 /** The same read, taking `cleanTextModel` — for the Clean text dialog alone. */
@@ -70,5 +84,5 @@ export function seedCleanDefaults(
   model: WritableSignal<string>,
   ollama: WritableSignal<string>,
 ): void {
-  seed((defaults) => defaults.cleanModel, model, ollama);
+  seed('clean', (defaults) => defaults.cleanModel, model, ollama);
 }

@@ -579,7 +579,6 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
    * the failure mode of the missing one is a card held against nothing.
    */
   const doors = [
-    ['electron/queue-steps/foundry-job.ts', true],
     ['electron/narration-clean-text.ts', false],
     ['cli/clean-step.js', true],
     ['cli/clean-lines-step.js', false],
@@ -595,6 +594,40 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
       assert.ok(/servedModelForRequest/.test(source),
         `${rel} sends a REQUEST, so it must name the served model on it`);
     }
+  }
+  /*
+   * ── THE HOSTED QUEUE STEP IS NOT A DOOR ANY MORE, AND MUST NOT BECOME ONE ──
+   *
+   * `electron/queue-steps/foundry-job.ts` was the first entry in that list
+   * until 2026-09-15. It brought this machine's vLLM up for a hosted text act,
+   * bracketed it, and asserted the profile's served name onto the request.
+   *
+   * Every one of those is now wrong, for two independent reasons and either
+   * would do:
+   *
+   *  · The act is placed on a CRUCIBLE SERVER, which may be another machine.
+   *    Starting a 19 GB model on THIS card for work routed to the Mac is not a
+   *    slow path, it is the wrong one — and it would hold the card for the
+   *    length of somebody else's book.
+   *  · The model for a class is the SERVER's answer (`GET /v1/capability`,
+   *    read by the vendored dispatcher). A profile named here would be a
+   *    second opinion about which weights clean a book.
+   *
+   * Pinned as an ABSENCE because an absence is what is being relied on, and
+   * because the thing that would undo it is a line copied back from one of the
+   * doors above. Comments stripped: the head of that file names all three
+   * functions to say why it no longer calls them.
+   */
+  const hosted = fs.readFileSync(
+    path.join(REPO, 'electron/queue-steps/foundry-job.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  for (const banned of ['ensureTextServer', 'noteTextQueueBusy', 'noteTextQueueIdle',
+    'textServerRoute', 'profileForKind', 'servedModelForRequest']) {
+    assert.ok(!new RegExp(banned).test(hosted),
+      `electron/queue-steps/foundry-job.ts calls ${banned} again. A hosted text act runs on a `
+      + 'Crucible server the vendored Foundry window places it on; this app starts no model for '
+      + 'it and names no profile. See the block at the head of that file.');
   }
   /*
    * The bare-EPUB and clean-lines doors compose a command line instead, and the

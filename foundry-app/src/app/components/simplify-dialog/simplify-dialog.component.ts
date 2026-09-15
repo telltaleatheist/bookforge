@@ -435,7 +435,7 @@ export class SimplifyDialogComponent {
   constructor() {
     // The model and the URL are the app's own settings, written by first-run
     // setup after it measured the machine — see core/llm-defaults.ts.
-    seedLlmDefaults(this.model, this.ollama);
+    seedLlmDefaults('simplify', this.model, this.ollama);
     // A complaint about the last book is cleared when the book changes, and
     // nothing else resets — the instructions in particular are somebody's careful
     // answer and survive switching tabs.

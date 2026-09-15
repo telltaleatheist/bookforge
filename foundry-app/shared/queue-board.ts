@@ -204,6 +204,64 @@ export const SLOT_CAPACITY: Readonly<Record<ComputeSlotKind, number>> = {
 };
 
 /**
+ * ── THE SECOND LANE EVERY CRUCIBLE HAS, AND WHY IT IS NOT A CARD (Wave 62) ──
+ *
+ * crucible docs/PHASE15-HOST.md §3.3/§3.4: a text class on a server has a ROUTE,
+ * and an UPSTREAM route (`anthropic/…`, `openai/…`, `ollama/…`) is forwarded by
+ * the server on the operator's account. Owen, 2026-09-14: *"one contract, one
+ * SDK, one API, one communication method"* — the app sends the same chat to the
+ * same door and the engine's config decides where it lands.
+ *
+ * NOTHING OF OURS IS ON THE CARD ON THAT PATH. §3.4 spells it out: *"no lease,
+ * no lane, the settlement untouched (nothing was on the card)"*. So a job routed
+ * upstream that sat in the machine's one card lane would be holding a GPU it
+ * never touches — a translation waiting behind a cleanup that is being answered
+ * in somebody else's datacentre. Hence a SECOND lane per Crucible slot, named for
+ * the slot with this suffix, exactly as BookForge names its own (§5.3: *"a row
+ * whose class routes `upstream` on its server takes that server's `[cloud]` lane
+ * (one per server, width 2)"*). Two apps, one vocabulary.
+ *
+ * TWO WIDE, AND THE NUMBER IS BookForge'S. It is not a card being shared; it is
+ * an account's rate limit, which §3.4 hands to the CALLER to wait out (`429`
+ * passed through with `Retry-After` — *"the server never retries a billed
+ * request"*), and which the engine already waits out for us (docs/VLLM.md §2a).
+ * Two is what the other app rations by, and one board that two apps read has to
+ * count the same way or a person watching both sees two different machines.
+ */
+export const UPSTREAM_LANE_SUFFIX = ':cloud';
+
+/** How many upstream-routed runs one server will forward at once. See above. */
+export const UPSTREAM_LANE_CAPACITY = 2;
+
+/**
+ * The name of a slot's upstream lane. Composed in ONE place, because it is an
+ * identity three readers compare by string: the scheduler's occupancy map, the
+ * walk's claim, and the bench's card.
+ */
+export function upstreamLaneName(slot: string): string {
+  return `${slot}${UPSTREAM_LANE_SUFFIX}`;
+}
+
+/**
+ * THE MACHINE A LANE BELONGS TO — its own name, or the slot an upstream lane is
+ * named for.
+ *
+ * For the one place a lane's name is shown to a PERSON: the bench card's heading.
+ * "mac-studio:cloud" is an identity three programs compare by string and is not a
+ * sentence anybody should have to read, so the card says the machine and the word
+ * for what the lane is separately.
+ *
+ * IT READS `route` RATHER THAN THE SUFFIX. The producer already knew which lane
+ * this is; re-deriving it from the spelling of a name would be a parser standing
+ * in for a fact, and would mangle a server somebody actually called `foo:cloud`.
+ */
+export function slotOfLane(lane: ComputeLane): string {
+  return lane.route === 'upstream'
+    ? lane.name.slice(0, -UPSTREAM_LANE_SUFFIX.length)
+    : lane.name;
+}
+
+/**
  * ONE LANE OF THE GPU SIDE — a compute slot, and how many runs may be in it.
  *
  * It is `ComputeSlot` plus a capacity rather than a reference to one, because
@@ -219,6 +277,20 @@ export interface ComputeLane {
   /** A Crucible slot's base URL, as `ComputeSlot` carries it. See `localLane`. */
   url?: string;
   capacity: number;
+  /**
+   * WHICH OF THE SLOT'S TWO LANES THIS IS, in the contract's own word
+   * (PHASE15 §1: a class's route is `local` or an upstream).
+   *
+   *   `local`    — the machine's card. One run, and the lease is on it.
+   *   `upstream` — the server FORWARDING the chat on the operator's account
+   *                ({@link upstreamLaneName}). Nothing of ours is resident, so
+   *                nothing here contends with the card lane beside it.
+   *
+   * Spelled rather than derived from the name's suffix: a lane is drawn, counted
+   * and rationed by three readers, and a suffix test is a parser standing in for
+   * a fact the producer already knew.
+   */
+  route: 'local' | 'upstream';
 }
 
 /**
@@ -234,7 +306,7 @@ export interface ComputeLane {
  *
  * ── AN EMPTY LIST IS ONE LANE, AND THAT IS THE HOSTED PROMISE ──────────────
  *
- * A host that registers no slot provider gets an empty list (`hostSlots`,
+ * A host that offers no registry gets an empty list (`hostServers`,
  * electron/crucible-registry.ts), and every job in that window takes the path it
  * took before slots existed. So an empty list answers with exactly one lane —
  * today's single GPU lane, unchanged, byte for byte in behaviour — rather than
@@ -244,17 +316,45 @@ export interface ComputeLane {
  * what it IS (`UNPLACED`, electron/crucible-dispatch.ts, places every such run
  * on a slot of that name), and hosted the name is never drawn: the bench, the
  * chip and the queue page are all standalone-only.
+ *
+ * ── AND A CRUCIBLE SLOT IS TWO LANES NOW (Wave 62, Package K) ──────────────
+ *
+ * The card and the upstream one beside it — see {@link UPSTREAM_LANE_SUFFIX} for
+ * the argument. It is a pure function of the list still: the second lane exists
+ * on every Crucible slot whether or not anything is routed upstream today,
+ * because a lane list that appeared and vanished as an operator edited a REMOTE
+ * server's settings would be a board whose size depends on a fact this app
+ * re-measures on a fifteen-second clock. What is conditional is the DRAWING (the
+ * bench skips an empty upstream lane, core/queue-view.service.ts), not the
+ * rationing.
+ *
+ * THE LOCAL SLOT AND THE CLOUD SLOT GET ONE LANE EACH. Neither has a route: the
+ * local slot is Ollama on this desk, and a `cloud` slot is an app-held key that
+ * PHASE15 §5.3 deletes outright (Package L). Giving either a second lane would be
+ * inventing a machine.
  */
 export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
   if (slots.length === 0) {
-    return [{ name: LOCAL_SLOT_NAME, kind: 'local', capacity: SLOT_CAPACITY.local }];
+    return [{ name: LOCAL_SLOT_NAME, kind: 'local', capacity: SLOT_CAPACITY.local, route: 'local' }];
   }
-  return slots.map((slot) => ({
-    name: slot.name,
-    kind: slot.kind,
-    ...(slot.url === undefined ? {} : { url: slot.url }),
-    capacity: SLOT_CAPACITY[slot.kind],
-  }));
+  return slots.flatMap((slot): ComputeLane[] => {
+    const url = slot.url === undefined ? {} : { url: slot.url };
+    const card: ComputeLane = {
+      name: slot.name,
+      kind: slot.kind,
+      ...url,
+      capacity: SLOT_CAPACITY[slot.kind],
+      route: 'local',
+    };
+    if (slot.kind !== 'crucible') return [card];
+    return [card, {
+      name: upstreamLaneName(slot.name),
+      kind: slot.kind,
+      ...url,
+      capacity: UPSTREAM_LANE_CAPACITY,
+      route: 'upstream',
+    }];
+  });
 }
 
 /**
@@ -275,10 +375,17 @@ export function computeLanes(slots: readonly ComputeSlot[]): ComputeLane[] {
  * Crucible. `computeLanes` never returns an empty list, so null here means "the
  * local card is not one of the places work may go", which is exactly the state a
  * fully remote setup is in.
+ *
+ * AN UPSTREAM LANE IS NEVER THIS MACHINE'S CARD, and the guard is not belt and
+ * braces: a loopback Crucible's upstream lane carries the same loopback URL as
+ * its card lane, so the second clause below would match it. A reading that had
+ * been handed that lane would be reading on this GPU while the board believed the
+ * card was free.
  */
 export function localLane(lanes: readonly ComputeLane[]): ComputeLane | null {
-  return lanes.find((lane) => lane.kind === 'local')
-    ?? lanes.find((lane) => lane.url !== undefined && isLoopbackUrl(lane.url))
+  const card = lanes.filter((lane) => lane.route === 'local');
+  return card.find((lane) => lane.kind === 'local')
+    ?? card.find((lane) => lane.url !== undefined && isLoopbackUrl(lane.url))
     ?? null;
 }
 
@@ -297,11 +404,24 @@ export function localLane(lanes: readonly ComputeLane[]): ComputeLane | null {
  *     RUNNING. docs/SLOTS.md §3 — *"jobs never start on one slot and finish on
  *     another. its atomic"* — so the run stays where it is, and the caller draws
  *     it as the lane that is going away rather than pretending it moved home.
+ *
+ * ── AND `ranVia` PICKS THE SLOT'S OTHER LANE (Wave 62) ─────────────────────
+ *
+ * `Job.ranOn` is the MACHINE and stays the machine — it is what the shelf says
+ * ("Running on the Mac") and folding a lane suffix into it would put a colon in
+ * front of a person. `Job.ranVia` is the upstream this run was forwarded to
+ * (`anthropic`), set only on that path, and it is what says which of the
+ * server's two lanes the run is in. Absent is the card, which is every run this
+ * app has ever recorded.
  */
 export function laneOfRun(
   ranOn: string | undefined,
   lanes: readonly ComputeLane[],
+  ranVia?: string,
 ): ComputeLane | null {
+  if (ranVia !== undefined && ranOn !== undefined) {
+    return lanes.find((lane) => lane.name === upstreamLaneName(ranOn)) ?? null;
+  }
   if (ranOn === undefined || ranOn === LOCAL_SLOT_NAME) return localLane(lanes);
   return lanes.find((lane) => lane.name === ranOn) ?? null;
 }

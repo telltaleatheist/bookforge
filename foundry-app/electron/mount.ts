@@ -101,7 +101,7 @@ import { type FoundryHost, recordHost } from './host';
 import {
   type HostOperation, recordHostNodeActions, recordHostOperations, recordHostStatusOpen,
 } from './host-ops';
-import { registerIpc } from './ipc';
+import { adoptPairingFile, registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
 import * as pageReader from './page-reader';
@@ -531,6 +531,35 @@ export function mountFoundry(host?: FoundryHost): void {
   applyContentSecurityPolicy();
   registerFileProtocol();
   registerIpc();
+  /*
+   * ── THE ENGINE ON THIS MACHINE, FOUND WITHOUT ANYBODY BEING ASKED ──────────
+   *
+   * crucible `docs/PHASE15-HOST.md` §5.1, way 1: when the registry has no
+   * loopback entry, `<CRUCIBLE_HOME>/pairing` is read and what it names is
+   * registered as `local`. Owen's whole sentence for this phase is *"the user
+   * shouldn't have to interact with crucible almost at all"* — a machine whose
+   * installer already wrote a token has nothing left to type.
+   *
+   * STANDALONE ONLY, hence the guard rather than a `hosted()` check inside: a
+   * hosted window's registry is the HOST's and is read-only from here (the door
+   * refuses anyway, which is why this is a skip and not a safety), so a call
+   * would be this app trying to add a server to somebody else's list on every
+   * BookForge launch.
+   *
+   * AFTER `registerIpc`, because the write ends in `afterRegistryChanged` — the
+   * capability re-measure and docs/SLOTS.md §5b's page-reader pass — which lives
+   * behind the IPC module. And NOT AWAITED, because `mountFoundry` is what runs
+   * before the window opens: this reads a small file and then probes servers over
+   * the network, and a window that waited for a probe would be a window that did
+   * not appear because an engine was slow. Nothing on screen depends on it having
+   * finished; the Servers card and the wizard read the registry when they mount,
+   * and the button in `app-crucible-doors` is the second chance §3.6 asks for.
+   *
+   * IT CANNOT REJECT — `adoptPairingFile` answers a `LocalCrucibleAdd` for every
+   * outcome including "there is no file", which is a FACT and not a fallback —
+   * so there is no catch here to swallow one.
+   */
+  if (host === undefined) void adoptPairingFile();
 }
 
 /**

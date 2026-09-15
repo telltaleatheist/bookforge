@@ -25,7 +25,7 @@ import type {
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
 import type { HostMintMeta, HostNodeAction } from '../shared/host-ops';
-import type { ComputeSlot } from '../shared/slots';
+import type { CrucibleServerEntry } from './app-settings';
 import type { HostOperation } from './host-ops';
 
 /**
@@ -285,44 +285,56 @@ export interface FoundryHost {
    * mistake must not keep the modal from opening.
    */
   mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
+
   /**
-   * WHERE COMPUTE-HEAVY WORK MAY GO — the host's slot list, and hosted it is the
-   * WHOLE of the list (docs/SLOTS.md §3).
+   * The host's Crucible REGISTRY — every server it knows, in priority order.
    *
-   * ── Why a provider and not a registry Foundry keeps hosted ────────────────
+   * ── WHY IT REPLACED `slots?()`, WHICH HANDED OVER THE WRONG HALF ──────────
    *
-   * Because the machine has one owner. `hostQueue`'s ruling was *"one machine's
-   * GPU needs one owner"*, and the same sentence decides this: a hosted window
-   * that kept its own list of Crucible servers would be a second registry, with
-   * a second set of tokens, dispatching against the same cards the host's own
-   * scheduler is rationing. Owen's ruling for the vendored app is the one line
-   * that follows from it — *"bookforge requires crucible. it doesnt have an
-   * ollama fallback like foundry will… no local fallbacks necessary in the
-   * vendored version of foundry"* — so hosted there is NO LOCAL SLOT, and this
-   * provider is refused if it offers one.
+   * `slots?()` hands over the LIST and keeps the CREDENTIALS, and that split
+   * does not work: a placement resolves a slot's name back to an entry to get
+   * the address and the token (`crucibleServerNamed`, crucible-registry.ts),
+   * and hosted that lookup reads this app's own registry — which is always
+   * empty hosted, because the card is hidden and the write doors refuse. So a
+   * job pinned to a host-offered server parked forever on *"X is no longer
+   * registered"*. Two lists, one of them guaranteed empty, and the break only
+   * showed on a press nobody had made yet.
    *
-   * ── ABSENT IS TODAY, EXACTLY, and that is the compatibility story ─────────
+   * Handing over the REGISTRY closes that by removing the second list. The
+   * slots are then DERIVED from it by the same code standalone uses, so a host
+   * and this app cannot compute different slots from the same servers, and a
+   * credential lookup cannot miss a slot that exists.
    *
-   * A host that registers nothing gets an EMPTY slot list, and an empty list is
-   * not a broken app: no picker is drawn anywhere, no placement is decided, and
-   * every job takes the path it took before Package C existed. So a host may
-   * re-vendor this app and adopt slots later, or never, without a line changing
-   * on either side in the meantime.
+   * ── PRECEDENCE, AND WHAT ABSENT MEANS ─────────────────────────────────────
    *
-   * ── Synchronous, and read at every use ────────────────────────────────────
+   * IT IS REQUIRED HOSTED AND THERE IS NO FALLBACK. The seam it replaced,
+   * `slots?()`, is gone rather than kept as a second path: a fallback that
+   * draws slots from a list which cannot resolve credentials is the break
+   * above, kept alive behind a branch, and it would be exercised exactly when
+   * nobody was looking. A hosted window whose host offers no registry gets NO
+   * slots and a console line naming the seam — every job takes the path it
+   * took before slots existed, which is a working app rather than a queue of
+   * rows parked on a sentence nobody can act on.
    *
-   * `hostOperations` is a field read once at mount and revised through a push;
-   * this is a FUNCTION read every time the list is needed, because the list is
-   * cheap to produce (the host already has it), it changes when the host's own
-   * servers change, and a push door for it would be a second thing to keep in
-   * step with the host's registry. Synchronous for the reason `enqueue` is: the
-   * picker is drawn in the same turn as the press.
+   * That is safe by SEQUENCING rather than by luck: BookForge's host adds this
+   * before the re-vendor that carries the reader (agreed 2026-09-14), so no
+   * build ever runs against a host that lacks it.
    *
-   * A THROW IS AN EMPTY LIST AND IS LOGGED where it is called
-   * (`computeSlots`, electron/crucible-registry.ts). A host's mistake must not
+   * ── The token crosses, and that is not a new exposure ─────────────────────
+   *
+   * Hosted, this app and the host are ONE PROCESS with one userData; the
+   * host's registry file is already readable by this code. What the seam adds
+   * is that the host says which servers it means, rather than this app going
+   * looking for a file it should not know the name of.
+   *
+   * SYNCHRONOUS AND READ AT EVERY USE. The host already has the list, it
+   * changes when the host's own registry changes, and a push door for it would
+   * be a second thing to keep in step with that registry. Synchronous because
+   * the picker is drawn in the same turn as the press. A throw is an empty
+   * registry and is logged where it is called: a host's mistake must not
    * strand a job.
    */
-  slots?(): readonly ComputeSlot[];
+  servers?(): readonly CrucibleServerEntry[];
 }
 
 let host: FoundryHost | null = null;

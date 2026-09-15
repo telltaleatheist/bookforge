@@ -1554,6 +1554,28 @@ export interface Job {
    */
   ranOn?: string;
   /**
+   * THE UPSTREAM {@link Job.ranOn} FORWARDED THIS RUN TO — `anthropic`, `openai`,
+   * `ollama` — or absent for work that ran on that machine's own card.
+   *
+   * ── Why it is beside `ranOn` and not folded into it ────────────────────────
+   *
+   * crucible docs/PHASE15-HOST.md §3.3: a text class on a server has a ROUTE, and
+   * an upstream one means the SERVER makes the call on the operator's account.
+   * The machine is still the machine — the request went to it, its activity log
+   * records the act, and "Running on the Mac" is the true sentence. What changes
+   * is that nothing is on its GPU (§3.4: *"no lease, no lane … nothing was on the
+   * card"*), so the run belongs in that server's `[cloud]` lane rather than in
+   * its card lane, and this is what says so (`laneOfRun`, shared/queue-board.ts).
+   *
+   * A NAME AND NOT A FLAG, because the two readers want different halves of it:
+   * the board wants "was it forwarded at all", and the person wants to know who
+   * is being billed. One field answers both; a boolean would answer neither
+   * properly and would need the model id parsed somewhere to recover the name.
+   *
+   * ABSENT IS THE ORDINARY CASE and is every row this queue has ever held.
+   */
+  ranVia?: string;
+  /**
    * WHAT THE RUN SPENT, when the server it ran against counted.
    *
    * ── Where it comes from, and why it is on the row rather than in a file ────
@@ -2004,6 +2026,28 @@ export interface LlmModelOption {
 }
 
 /** What the wizard's model step is looking at. */
+/**
+ * WHAT A MACHINE UNDER THE TRANSLATE FLOOR IS TOLD, and why the wizard needs
+ * it rather than working it out.
+ *
+ * Owen, 2026-09-14: *"either they use the 27b or they use an api key for Claude
+ * or OpenAI."* So on a card that cannot hold a 27B, translation and
+ * simplification are not something Ollama will ever do here, however many
+ * models are pulled — and a step whose blurb promised them would be selling a
+ * download that cannot deliver. The floor is `llm-catalog.ts`'s, read with the
+ * same `eligibleFor`/`fitsOn` the act gate uses, so the wizard and the tile
+ * cannot disagree about what this machine can run.
+ *
+ * Null when the machine DOES clear the floor, which is the ordinary answer and
+ * draws nothing.
+ */
+export interface TranslateFloorMiss {
+  /** The smallest model that would serve translate here — "Qwen 3.5 · 27B". */
+  needs: string;
+  /** What it wants, in gigabytes, against what this machine has. */
+  needsGB: number;
+}
+
 export interface LlmChoices {
   profile: SystemProfile;
   ollama: OllamaFacts;
@@ -2015,6 +2059,8 @@ export interface LlmChoices {
   suggested: string;
   /** The model jobs use today, whether or not setup has ever run. */
   current: string;
+  /** Set when no model that fits this machine can serve translate. See the type. */
+  translateFloorMiss: TranslateFloorMiss | null;
   /**
    * THE CLASSES A CRUCIBLE ON THIS MACHINE HAS ALREADY TAKEN OVER — null when
    * none has, which is every machine without one.

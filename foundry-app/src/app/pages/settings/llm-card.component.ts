@@ -42,7 +42,7 @@ import { FormsModule } from '@angular/forms';
 
 import { cleanTextModelsFor } from '@shared/pipeline';
 import type { SetupState } from '@shared/types';
-import { api, ollamaRunsMlx } from '../../core/foundry';
+import { api, hosted, ollamaRunsMlx } from '../../core/foundry';
 import { UiService } from '../../core/ui.service';
 
 @Component({
@@ -93,7 +93,16 @@ import { UiService } from '../../core/ui.service';
         <button class="primary" [disabled]="saving()" (click)="save()">
           {{ saving() ? 'Saving…' : 'Save' }}
         </button>
-        <button class="ghost" (click)="openSetup()">Run first-run setup again</button>
+        <!--
+          NOT HOSTED. The wizard's first step is the library, which a hosted
+          window does not own, and its later steps reconfigure an engine the
+          host runs. UiService.openSetup refuses there as well; this hides the
+          button so nobody is offered something that will not happen. (No
+          backticks in this comment: it lives inside a template literal.)
+        -->
+        @if (!hosted()) {
+          <button class="ghost" (click)="openSetup()">Run first-run setup again</button>
+        }
       </div>
 
       @if (state(); as setup) {
@@ -156,6 +165,9 @@ export class LlmCardComponent {
   protected readonly model = signal('');
   protected readonly cleanModel = signal('');
   protected readonly ollama = signal('');
+  /** Read in the template: the wizard is not offered inside a host. */
+  protected readonly hosted = hosted;
+
   protected readonly saving = signal(false);
   protected readonly saved = signal(false);
   protected readonly state = signal<SetupState | null>(null);
@@ -194,7 +206,7 @@ export class LlmCardComponent {
      * STORED. There is no choice to resolve any more: `defaults` IS the stored
      * set, because the only thing it describes is the local slot.
      */
-    const [defaults, state] = await Promise.all([api.llm.defaults(), api.setup.state()]);
+    const [defaults, state] = await Promise.all([api.llm.stored(), api.setup.state()]);
     this.ollama.set(defaults.ollama);
     this.model.set(defaults.model);
     this.cleanModel.set(defaults.cleanModel);

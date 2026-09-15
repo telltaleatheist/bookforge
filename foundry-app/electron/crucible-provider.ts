@@ -6,9 +6,11 @@
  *
  * Three things need to know whether a Crucible is serving a class of model:
  *
- *   1. the tiles (act-gates.ts) — a LOCAL Crucible serving `translate` lights
+ *   1. the tiles (act-gates.ts) — ANY enabled Crucible serving `translate` lights
  *      Translate even where ollama holds nothing at all, because the models are
- *      over there;
+ *      over there. It was LOCAL only until Wave 62; `anyServerServing` is the
+ *      wider question and the note on it argues why a remote one may be asked
+ *      now (it costs no request: this snapshot already has the answer);
  *   2. the inventory row (machine-models.ts) — SLOTS.md §5b's "Models on this
  *      machine" lists a local Crucible's residency beside ollama's store;
  *   3. the deletion rule (machine-models.ts, `pageReaderRemovalOffer`) — Foundry
@@ -80,8 +82,10 @@ export type ServedAnswer = 'yes' | 'no' | 'unknown';
  * Three seconds, which is generous for a loopback socket and short enough that
  * four unreachable servers cannot hold the gate read for longer than a person
  * notices. It is deliberately NOT the dispatcher's timeout (there is none there,
- * on purpose — see `crucibleRequest`): a placement is a press being answered and
- * may wait; a tooltip may not.
+ * on purpose): a placement is a press being answered and may wait; a tooltip may
+ * not. It travels as `CrucibleClientOptions.timeoutMs` through `clientFor` —
+ * the SDK's own clock since `@crucible/client` 0.6.0 — rather than as a
+ * hand-rolled `AbortSignal.timeout`.
  */
 const PROBE_TIMEOUT_MS = 3_000;
 
@@ -148,6 +152,15 @@ async function probeOne(entry: CrucibleServerEntry): Promise<ServerFacts> {
      * message is kept out of the line entirely because a refusal from an
      * authenticated route can echo request details, and nothing about a token is
      * ever worth a log line.
+     *
+     * EVERY WAY THE READ CAN FAIL LANDS HERE AND MEANS THE SAME ONE THING —
+     * `record: null`, which reads as `unknown` and authorises no deletion. That
+     * now includes the SDK's `CrucibleProtocolError` for a half-routed or
+     * unknown-routed capability document (crucible PHASE15-HOST.md §3.3), which
+     * this app used to raise itself as `capability_route_missing` /
+     * `capability_route_unknown` and which arrived here as exactly the same
+     * silence. A server whose document cannot be read has not told us where its
+     * classes run, and "did not say" is never "no".
      */
     void err;
     return { ...base, record: null };
@@ -173,6 +186,81 @@ export function forgetCrucibleFacts(): void {
 function serves(record: CapabilityRecord, cls: ModelClass): boolean {
   const row = record.classes.find((entry) => entry.capability === cls);
   return row !== undefined && row.enabled && row.selected.length > 0;
+}
+
+/**
+ * ANY ENABLED SERVER THAT SERVES THIS CLASS — the tiles' question, and the one
+ * this file did not answer until Wave 62.
+ *
+ * ── Why the gate may now ask about a REMOTE server ──────────────────────────
+ *
+ * act-gates.ts used to say, in its header, *"a REMOTE Crucible is not consulted
+ * here at all: a reachability check on every gate read would put a network
+ * timeout behind a tooltip."* That was true of a gate that would have had to
+ * PROBE. It is not true of one that reads this snapshot: every probe already
+ * carries `PROBE_TIMEOUT_MS`, a server that did not answer is `record: null`, and
+ * the answer is fifteen seconds old at worst. The cost of consulting a remote
+ * server is now zero requests, so the argument that kept it out has gone — and
+ * what it was keeping out is the ordinary case for this phase, where Crucible is
+ * the one door (crucible docs/PHASE15-HOST.md §0) and the door may be in another
+ * room.
+ *
+ * ── LOOPBACK FIRST, THEN RANK ORDER, WHICH IS THE WALK'S OWN ORDER ──────────
+ *
+ * `crucibleServers()` is already in rank order and `computeSlots` puts the
+ * loopback entry first, so a tile that names a server names the one an `any` row
+ * would actually reach first (`placeJob`). A tile naming the third machine while
+ * the work goes to the first would be a sentence that is true of nothing.
+ *
+ * NULL IS "NOBODY SAID YES" and covers both "every server said no" and "nothing
+ * has answered". The gate treats them alike — it falls through to this machine's
+ * own reasoning — and neither authorises a deletion, which is
+ * `localCrucibleServes`' separate and narrower question.
+ */
+export function anyServerServing(
+  cls: ModelClass,
+): { server: string; route: 'local' | 'upstream'; selected: string; reason: string } | null {
+  const ranked = [
+    ...(snapshot?.servers ?? []).filter((server) => server.loopback),
+    ...(snapshot?.servers ?? []).filter((server) => !server.loopback),
+  ];
+  for (const server of ranked) {
+    if (server.record === null) continue;
+    const row = server.record.classes.find((entry) => entry.capability === cls);
+    if (row === undefined || !row.enabled || row.selected.length === 0) continue;
+    return { server: server.name, route: row.route, selected: row.selected, reason: row.reason };
+  }
+  return null;
+}
+
+/**
+ * THE FIRST ENABLED SERVER'S OWN SENTENCE about this class, or the empty string.
+ *
+ * For the DARK tile. A host-mode Crucible on a machine with no WSL answers the
+ * five Python classes with one sentence (PHASE15 §3.3: *"this job type needs the
+ * WSL2 engine (vLLM/SGLang); install it from the console"*), and a server whose
+ * card is too small answers with the shortfall it measured. Neither of those is a
+ * sentence this app could compose, and a tile that said "nothing here serves
+ * translate" over a server that had just explained exactly why would be throwing
+ * away the only actionable half of the answer.
+ *
+ * THE FIRST SERVER THAT ANSWERED AT ALL, in the same order as above — not the
+ * first that has a reason. A silent machine has no opinion to report, and
+ * skipping past a machine that answered "nothing fits" to quote one further down
+ * would attribute a sentence to the wrong computer.
+ */
+export function firstServerReason(cls: ModelClass): { server: string; reason: string } | null {
+  const ranked = [
+    ...(snapshot?.servers ?? []).filter((server) => server.loopback),
+    ...(snapshot?.servers ?? []).filter((server) => !server.loopback),
+  ];
+  for (const server of ranked) {
+    if (server.record === null) continue;
+    const row = server.record.classes.find((entry) => entry.capability === cls);
+    const said = (row?.reason ?? '').trim();
+    return said.length === 0 ? null : { server: server.name, reason: said };
+  }
+  return null;
 }
 
 /**

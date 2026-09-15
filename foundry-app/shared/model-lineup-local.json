@@ -24,13 +24,21 @@
     "`foundry/qwen3.5-9b` names the ordinary `qwen3.5:9b` for prose. Two different",
     "models, one obvious name, and the prefix is what keeps them apart.",
     "",
-    "THE FLOOR. `minimumFor` on the 9B row is Owen's own rule — *\"if their system",
-    "just isnt powerful enough for translation (smaller than 9b) then translation and",
-    "simplify is disabled\"* (docs/SLOTS.md §1) — and it names translate and simplify,",
-    "which is what he named. Crucible's file declares its own floor at the 4-bit 27B;",
-    "llm-catalog.ts takes the SMALLEST declared floor, because the two catalogs are",
-    "answering different questions: Crucible's is what a Crucible will serve, and",
-    "this one is what an Ollama on this desk can actually be asked for.",
+    "THE FLOOR, AND OWEN MOVED IT ON 2026-09-14. It sits on the 27B row, not the",
+    "9B: *\"i think either they use the 27b or they use an api key for Claude or",
+    "OpenAI. thats probably the best solution.\"* So translate and simplify are",
+    "offered by a 27B-class model, by a Crucible that serves the class, or by a",
+    "cloud provider the person connected on purpose — and by nothing else. His",
+    "earlier wording was *\"smaller than 9b\"*, which this file encoded literally",
+    "until he said which model he meant.",
+    "",
+    "IT IS DECLARED HERE AND NOT ONLY IN THE VENDORED FILE because the two 27Bs",
+    "are 0.7 GB apart: Crucible serves `qwen3.8:27b` (19.24 GB with overhead) and",
+    "Ollama's library also carries `qwen3.5:27b` (18.5 GB). llm-catalog.ts takes",
+    "the SMALLEST declared floor, so declaring it on the smaller of the two is",
+    "what admits both — a floor at the larger one would dark Translate on a card",
+    "holding a perfectly good 27B, on a rounding difference rather than a rule.",
+    "ANALYSIS carries no floor in either file and takes the whole list.",
     "",
     "Every `needsGB` here is `declared`: the download plus llm-catalog.ts's",
     "OVERHEAD_GB, which is the arithmetic the old hand-written table used. Nothing in",
@@ -42,133 +50,195 @@
     "file": "foundry-lineup.json",
     "repo": "telltaleatheist/crucible",
     "branch": "feat/phase6-remote-render",
-    "commit": "7e63905",
-    "generated_from": "4e1784234ec92ddb41e7047434255af4d24f189a",
-    "at": "2026-09-14"
+    "commit": "3de1671",
+    "generated_from": "60f57c68a06d32e880d9f96042967499f64a54f5",
+    "at": "2026-09-15"
   },
   "models": [
     {
       "id": "foundry/qwen3.5-0.8b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 0.8B",
       "description": "The smallest one. Runs on anything, including on the processor alone — use it when there is no GPU.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:0.8b",
         "downloadGB": 1.0,
-        "needsGB": { "value": 2.5, "basis": "declared" }
+        "needsGB": {
+          "value": 2.5,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-2b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 2B",
       "description": "Small and quick. Fine for simplifying and for short passages; noticeably rougher on long translation.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:2b",
         "downloadGB": 2.7,
-        "needsGB": { "value": 4.2, "basis": "declared" }
+        "needsGB": {
+          "value": 4.2,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-4b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 4B",
       "description": "The sweet spot for a laptop or an 8 GB card. Good prose, fast enough to watch.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:4b",
         "downloadGB": 3.4,
-        "needsGB": { "value": 4.9, "basis": "declared" }
+        "needsGB": {
+          "value": 4.9,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-9b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 9B",
       "description": "Qwen 3.5's own default. Clearly better on long-form translation; wants a 12 GB card or more.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:9b",
         "downloadGB": 6.6,
-        "needsGB": { "value": 8.1, "basis": "declared" }
+        "needsGB": {
+          "value": 8.1,
+          "basis": "declared"
+        }
       },
-      "minimum": true,
-      "minimumFor": ["translate", "simplify"]
+      "minimum": false,
+      "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-9b-q8",
-      "classes": ["clean"],
+      "classes": [
+        "clean"
+      ],
       "label": "Qwen 3.5 9B · 8-bit",
       "description": "The narration cleanup's own default. Eight-bit weights, because the cleanup is a punctuation job rather than a prose job and the loss shows there first.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:9b-q8_0",
         "downloadGB": 9.8,
-        "needsGB": { "value": 11.3, "basis": "declared" }
+        "needsGB": {
+          "value": 11.3,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-27b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 27B",
       "description": "The 27B standard, in this generation. What a 24 GB card is for.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:27b",
         "downloadGB": 17.0,
-        "needsGB": { "value": 18.5, "basis": "declared" }
+        "needsGB": {
+          "value": 18.5,
+          "basis": "declared"
+        }
       },
-      "minimum": false,
-      "minimumFor": []
+      "minimum": true,
+      "minimumFor": [
+        "translate",
+        "simplify"
+      ]
     },
     {
       "id": "foundry/qwen3.5-9b-mlx-bf16",
-      "classes": ["clean"],
+      "classes": [
+        "clean"
+      ],
       "label": "Qwen 3.5 9B · 16-bit (MLX)",
       "description": "The same weights at the same precision as Crucible's cleanup row, on ollama's MLX runner — the Apple Silicon spelling of the 16-bit row, and the only one that runs there.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:9b-mlx-bf16",
         "downloadGB": 18.0,
-        "needsGB": { "value": 19.5, "basis": "declared" }
+        "needsGB": {
+          "value": 19.5,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-35b-a3b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 35B-A3B",
       "description": "Mixture-of-experts: 35B of weights, about 3B active per token, so it is faster than its size — but all 35B must be resident.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:35b-a3b",
         "downloadGB": 24.0,
-        "needsGB": { "value": 25.5, "basis": "declared" }
+        "needsGB": {
+          "value": 25.5,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []
     },
     {
       "id": "foundry/qwen3.5-122b-a10b",
-      "classes": ["translate", "simplify", "analysis"],
+      "classes": [
+        "translate",
+        "simplify",
+        "analysis"
+      ],
       "label": "Qwen 3.5 · 122B-A10B",
       "description": "A workstation model. Listed so a machine that can run it is not quietly offered something smaller.",
       "local": {
         "kind": "ollama",
         "tag": "qwen3.5:122b-a10b",
         "downloadGB": 81.0,
-        "needsGB": { "value": 82.5, "basis": "declared" }
+        "needsGB": {
+          "value": 82.5,
+          "basis": "declared"
+        }
       },
       "minimum": false,
       "minimumFor": []

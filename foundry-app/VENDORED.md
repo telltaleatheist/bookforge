@@ -10,13 +10,20 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **e6d5424** — *docs(app): the act gate lists five exceptions and names the one that replaced the retired setting* |
-| Engine sha | **e6d5424** (v1.3.0) — the binary was rebuilt at the tip, so for once the two shas AGREE. See the note at the foot of this table. |
-| Copied on | 2026-09-14 |
-| Copied by | `git -C <foundry> archive e6d5424 app | tar -x --strip-components=1` |
+| Source sha | **1ce539a** — *feat(app): an orchestrator is not an engine — the hop is followed once, and a standing refusal fails instead of parking for ever* |
+| Engine sha | **e6d5424** (v1.3.0) — the INSTALLED binary, which is older than this copy. They are allowed to differ; see the note below and the 2026-09-15 entry at the foot. |
+| Copied on | 2026-09-15 |
+| Copied by | `git -C <foundry> archive 1ce539a app | tar -x --strip-components=1` |
 
-**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and this time they do
-not, which is worth saying rather than assuming.** The `81fdc30..e6d5424` range
+**THE APP SHA AND THE ENGINE SHA ARE ALLOWED TO DIFFER — and from 2026-09-15
+they do again**, which is the normal state rather than a problem: this table
+names the code COMPILED INTO THIS APP, and
+`tools/test-foundry-clean-text-vendor.js`'s tier-2 anchor names the code that
+RUNS (the commit the installed binary reports). The paragraph below describes
+the 2026-09-14 copy, when they happened to agree, and is kept because the
+argument in it is what the keeper is built on.
+
+*(2026-09-14.)* The `81fdc30..e6d5424` range
 carries two engine commits, `527b0db` (the Ollama door back beside the OpenAI
 one) and `76444fb` (a cloud provider is a door); the Foundry session rebuilt at
 the tip, so `dist/foundry-windows-x64.exe` answers `foundry 1.3.0 (e6d5424)` and
@@ -1519,3 +1526,147 @@ kB** (957.01 → 993.49, the standing budget WARNING only); `npx tsc -p
 tsconfig.electron.json` and `npx ng build` clean on BookForge's side; collision
 keeper 6/6, all twelve `test-foundry-*` keepers green, `test-cli-flags` 24/24
 from PowerShell, `test-clean-step-door` green after the `--server` ruling above.
+
+---
+
+**1ce539a (copied 2026-09-15) — THE HOSTED TEXT ACT, which is what this whole
+refresh is for.**
+
+Owen, 2026-09-15: *"local text acts shouldnt work. text acts from foundry
+through crucible should work, though. lets fix it so crucible can process text
+acts for foundry, vendored or host, and it uses the same logic bookforge did
+before we built crucible"* — and, clarifying the last clause, *"i.e. vllm."*
+
+Until this copy a hosted `clean`, `translate` or `simplify` could not run at
+all. BookForge refused it by name (`hosted_placement_not_vendored`) because the
+seam it calls, `runJob(request, {parentStep, signal, onProgress})`, carries no
+environment, and the vendored dispatcher resolved credentials from a registry
+that is always empty hosted — so the act could be composed neither here nor
+there. With the legacy local text engines deleted the same week, that meant
+translate and simplify did not run as queue rows and neither did clean through
+that door.
+
+**`e096734` is what closes it** — *"hosted, the servers are the host's: one
+registry, one derivation, and a placement that can always find its
+credentials"*. `crucibleServers()` asks `FoundryHost.servers()` when it is
+hosted, `computeSlots()` derives the slot list from that one registry, and
+`placeOnCrucible` then does the whole act itself: `GET /v1/capability` for the
+model, `GET /v1/models` and a `load-model` job for residency, the model lease
+with its heartbeat, the header map carrying `X-Crucible-Act`, the OpenAI base,
+and `runEngine(args, watch, placement.env)`.
+
+**Why `1ce539a`.** Owen: *"the latest — so we can vendor a fully functional and
+up to date version in."* `e096734` alone is not enough: the placement also needs
+`RunOptions.waitFor` to cross `runJob`, or the machine a person chose on
+BookForge's queue row is answered by that window's own `newJobsWaitFor` setting.
+So the minimum correct target was `990bd2e`, and `ecd03e3` the first route-aware
+one. `1ce539a` is main's tip and carries all of that plus the two things Owen's
+sentence was actually waiting on — **`engineOf` adopted** and **the standing
+refusal** — along with the settings window, the pairing/connect doors,
+coordinate-on-connect and the uninstall door.
+
+**`engineOf` is adopted: an orchestrator is not an engine.** One resolver,
+`resolveEngine(entry)`: `info()` once, the SDK's `engineOf` for the rule (never
+re-derived, or the two apps start disagreeing about which of two processes on a
+machine does the work), and for an orchestrator a client at `engine.url` with
+the SAME token — after reading THAT document and refusing
+`orchestrator_engine_is_not_an_engine` if its role is anything but engine, so
+*once, never a chain* is enforced rather than assumed. Cached on name+url and
+**never on the token**, 60 s, in-flight deduped, forgotten on a registry change
+BEFORE the capability cache because capability now reads through a hop. Every
+engine caller goes through it, `placeOnCrucible` included — resolved once, so
+the request and the spawn cannot end at two different processes.
+
+This matters to BookForge more than to Foundry, because hosted it is OUR entry
+being resolved: if a person registers the tray rather than the engine, every
+hosted text act depends on that hop. `tools/test-foundry-hosted-crucible-seam.js`
+drives the vendored resolver for real over a stubbed `fetch`, with rows of our
+own shape — engine, orchestrator, chain, no-engine, and a rotated token —
+because the hosted case is the one thing Foundry's own fifteen checks could not
+exercise. It also pins that no refusal sentence carries the bearer token, since
+ours are real and land in queue rows.
+
+**One deliberate exception, mirrored rather than contradicted:** `crucible:open`
+and `adoptPairingFile` do NOT follow the hop. A placement asks a machine to
+*work* and only an engine can; a console is a person going to look at the
+process they named, and after Phase 17 the orchestrator's console is the one
+carrying install, restart and quit. BookForge grows no console or pairing door
+on this seam, and the keeper pins that too.
+
+**What it does NOT carry, and why that is fine.** Foundry's package L — the
+PHASE15 §5.3 deletions: `cloud-providers.ts`, the cloud card, the
+`ComputeSlotKind = 'cloud'` placement — has not landed; their L is gated on a
+`llama-windows` server on a clean box. `docs/CRUCIBLE_ROLLOUT_PLAN.md` names
+"their sha AFTER L" as *the single re-vendor* target, and that bundling is not
+reachable yet, so this copy is deliberately the earlier of the two. The SECOND
+tripwire in `tools/test-foundry-hosted-crucible-seam.js` is untouched and still
+does its job: it passes while the vendored copy keeps its cloud layer and goes
+red the day it does not.
+
+Three cautions come with the tip and **Owen has accepted all three**, so they are
+recorded rather than treated as blockers: `CRUCIBLE_READS` is true (a hosted
+`read` can be placed on a Crucible, which this seam does not change — it sends
+`waitFor: null` for a read, so their own default decides); the old cloud card
+sits beside the engine settings card until a later package; and the engine
+settings card is not hosted-gated.
+
+**What BookForge changed to meet it.** `hostedCrucibleTextActNotVendored` and
+the `hosted_placement_not_vendored` code are deleted, and so is the `none`
+member of `EndpointHeaderReach` — a caller that makes no spawn now has no value
+it could pass, which states the rule more strongly than the refusal did.
+`FoundryRunJobOptions` grew `waitFor: string | null`, required, with `null`
+meaning *this kind does not travel* (a read and a render) and the mount
+translating that into an absent key, because their `placedBy` reads a literal
+`null` as a pinned slot named null. `electron/queue-steps/foundry-job.ts`
+composes nothing: no engine, no model, no endpoint, no lease, and the request
+crosses verbatim. The one thing it still checks is the NAME, against the same
+snapshot this app hands the window — their `slotNamed` matches
+case-sensitively and exactly, and a name that misses is a `wait` a detached
+`runJob` retries for ever, so it is refused here instead
+(`hostedCrucibleServerNotOffered`).
+
+**That check is narrower than it was, and the narrowing is Foundry's fix.** When
+this seam was written EVERY hosted wait parked for ever. Foundry agreed the
+defect was theirs and split the wait arm at this sha: `standing` is required at
+all sixteen sites, through explicit constructors rather than an optional flag,
+so *"nobody thought about it"* and *"this is transient"* cannot be the same
+value — and a PINNED slot answering with a standing wait now REFUSES, carrying
+the server's own reason and where to fix it. Standing: a disabled or empty
+capability row, `upstream_unconfigured`, both orchestrator refusals, a cloud slot
+stepped past by `any`. Transient and untouched: busy, engine in use, model
+leased, model not resident, unreachable, capability undecided, network refusals,
+a cancelled load, a slot switched off. A slot MISSING from the list stays
+transient by their deliberate choice — right for a row sitting in their pump,
+fatal for a detached `runJob`, which keeps no place — so BookForge's preflight
+covers that one case and nothing else.
+
+**A second effect, worth stating because it is invisible when it is wrong.** A
+Crucible placement declares `door: 'openai'`, and the engine's pool default is
+12 there against 4 on the Ollama door (Owen, 2026-09-08: *"lets build in vllm
+batching. ollama batching doesnt work"*). Before this copy every hosted act
+fell through `placeJob` UNPLACED to the Ollama door, so placing them is also
+what gives them the wide pool vLLM has something to batch. Pinned in the seam
+keeper rather than assumed.
+
+**The install, DONE this time and in this order.** The subtree's
+`@crucible/client` moved from the v0.5.0 release tarball to
+`file:vendor/crucible-client-0.6.0.tgz` (the same bytes BookForge vendors at
+`vendor/crucible-client-0.6.0.tgz`), so an install was required. Following the
+2026-09-14 entry's procedure exactly: `foundry-app/node_modules` confirmed a
+REAL directory first (`LinkType` empty, no reparse point) per the worktree-
+hygiene rule; `npm install --no-audit --no-fund` — **never `npm ci`** — which
+took `@crucible/client` 0.5.0 → 0.6.0; the `foundry` self-link junction it
+creates (`"foundry": "file:.."`, which vendored here points at BookForge's REPO
+ROOT) deleted with a NON-recursive `.Delete()` on the link and `Test-Path`
+confirmed False, with the repo root and the main `node_modules` (769 entries)
+verified intact either side; then `npm rebuild electron`, without which the
+compiled `app-settings.js` throws *"Electron failed to install correctly"* and
+takes `tools/test-clean-step-door.js` down with it. `npm run build` clean; ng
+**1.03 MB** (993.49 kB → 1.03 MB, the standing budget WARNING only).
+
+Verification: **171/171 blobs** hash-verified against `1ce539a:app/` with
+`git hash-object` vs the source tree's index shas, so `autocrlf` cannot lie. 46
+files changed from the committed base (33 modified, 13 added, **no deletions**),
+matching `git diff --name-status e6d5424..1ce539a -- app` exactly. The only
+files in the subtree that are not in `app/` are this note and
+`IPC-CHANNELS.md`.

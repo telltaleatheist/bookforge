@@ -164,70 +164,76 @@ export function foundryTooOldForCleanTextEpub(installed: string): string {
 }
 
 /**
- * ── THE HOSTED CRUCIBLE TEXT ACT, AND WHY IT IS STILL REFUSED ──────────────
+ * ── THE HOSTED CRUCIBLE TEXT ACT: WHO PLACES IT, AND THE ONE THING WE CHECK ─
  *
- * NOT A VERSION FLOOR, and there is no constant to compare against: this is a
- * property of the VENDORED SUBTREE — lines of somebody else's code copied into
- * this repo — and a floor that went green on a release while the subtree still
- * spawned the same way would be a guard passing without the thing it guards.
- * `tools/test-foundry-hosted-crucible-seam.js` reads the subtree instead, which
- * is what makes this refusal impossible to leave standing after it stops being
- * true. **It was left standing once** (found 2026-09-14): the re-vendor at
- * `e6d5424` carried foundry `f300fc6`, which gave `runEngine` an `extraEnv`
- * argument, and this sentence went on saying the engine took none.
+ * The refusal that stood here (`hostedCrucibleTextActNotVendored`, the
+ * `hosted_placement_not_vendored` code) is DELETED, and this block is what
+ * replaced it — a deletion with no note is how the next person re-derives the
+ * wrong thing.
  *
- * ── The three gaps, and where each one stands ─────────────────────────────
+ * It waited on exactly one property of the VENDORED SUBTREE: that the hosted
+ * window could not resolve a Crucible credential, so an act could be composed
+ * neither here nor there. Foundry fixed their half at `e096734` and the
+ * re-vendor of 2026-09-15 brought it in at `4e0a4cb`. Hosted,
+ * `crucibleServers()` now asks `FoundryHost.servers()`, `computeSlots()`
+ * DERIVES the slot list from that one registry, and
+ * `crucible-dispatch.ts placeOnCrucible` does the whole act: `GET /v1/capability`
+ * for the model, `GET /v1/models` and a `load-model` job for residency, the
+ * model LEASE, the header map carrying `X-Crucible-Act`, the OpenAI base, and
+ * the spawn with `extraEnv`.
  *
- *  1. The engine appended `/v1` to Crucible's `/v1/openai` base and 404ed.
- *     **FIXED** (crucible `a97ef70`): the same handlers are mounted at
- *     `/openai/v1/…` where an OpenAI client composes them, BookForge hands over
- *     `<url>/openai` (`CRUCIBLE_OPENAI_BASE_PATH`), and a real `clean` act has
- *     run end to end — 734 blocks, 265 changed, 78.5 s.
- *  2. The vendored `runEngine` took no per-run environment. **FIXED** (foundry
- *     `f300fc6`, in this subtree since `e6d5424`): it takes `extraEnv` and
- *     spawns with `{...process.env, ...extraEnv}` — see
- *     `foundry-app/electron/engine.ts`.
- *  3. **BOOKFORGE STILL CANNOT REACH THAT ARGUMENT, and this is the live gap.**
- *     The seam we call is `runJob(request, {parentStep, signal, onProgress})`
- *     and it carries no environment; the only thing that feeds `extraEnv` is
- *     `placement.env`, which the vendored DISPATCHER composes for itself
- *     (`foundry-app/electron/crucible-dispatch.ts`) out of a registry that is
- *     always empty in a hosted window. So a hosted act cannot be handed a
- *     credential by us, and the subtree cannot compose one for itself.
+ * **SO BOOKFORGE COMPOSES NOTHING ON THIS PATH.** Two composers of one
+ * credential is the defect the old refusal existed to avoid, and it stays
+ * avoided by this side not doing it: the hosted step no longer resolves a text
+ * engine, no longer writes `model`/`ollama` onto the request, and takes no
+ * lease (crucible allows ONE per server, and theirs is already taken).
  *
- * ── WHICH IS WHY THE FIX IS A RE-VENDOR AND NOT A PATCH HERE ──────────────
+ * ── WHAT BOOKFORGE STILL OWES: THE NAME ───────────────────────────────────
  *
- * Owen ruled on 2026-09-14 that **hosted Foundry reads BookForge's server
- * registry** — one owner — and Foundry landed it at `e096734`: their
- * `crucibleServers()` asks `FoundryHost.servers()` hosted, the slots are
- * DERIVED from that one list, and the dispatcher then does the whole act
- * itself — residency, the operator load, the model lease, the header map with
- * `X-Crucible-Act`, and the spawn with `extraEnv`. BookForge's half is built
- * (`electron/crucible/host-registry.ts`, offered at the mount in `main.ts`) and
- * is inert until the subtree that reads it is copied in.
+ * The scheduler picks the machine — this app's half of the division (crucible
+ * `docs/ARCHITECTURE.md`: the client knows the ORDER and the SERVER, Crucible
+ * knows the ENGINE) — and it crosses as {@link FoundryRunJobOptions.waitFor},
+ * which their `placedBy` takes VERBATIM and their `slotNamed` then matches
+ * **case-sensitively and exactly** against the derived slot list.
  *
- * So this refusal waits on exactly one thing: **a re-vendor of `foundry-app/`
- * at or past foundry `e096734`.** Nothing about it is keyed to a release
- * number, and the day it lands, this function, the reach value the hosted step
- * passes and the venue resolution around it all go together — the act's
- * endpoint, model, credential and lease become the dispatcher's, because two
- * composers of one credential is the defect this whole seam is about.
+ * A name that does not match is, over there, a `wait` — and a detached
+ * `runJob` holds no pump slot to give up, so `placeRun`'s `for(;;)` retries it
+ * with a backoff FOR EVER and the promise never settles. That is the one hosted
+ * failure mode this side can see coming, so it is refused here instead, BY
+ * NAME, before the row is handed over.
+ *
+ * IT IS THE ONLY ONE LEFT. Every other hosted park this seam found is closed on
+ * Foundry's side at `1ce539a`: a wait now carries `standing`, required at every
+ * site, and a pinned slot that answers with a standing one REFUSES with the
+ * server's own reason (a disabled or empty capability row, an unconfigured
+ * upstream, either orchestrator refusal). A slot missing from the list stays
+ * TRANSIENT by their deliberate choice — correct for a row sitting in their
+ * pump, fatal for a detached `runJob` — so this check covers that and nothing
+ * else.
+ *
+ * It is not a second registry and not a second opinion: it is a read of the
+ * SAME snapshot this app hands the window through `FoundryHost.servers()`
+ * (`electron/crucible/host-registry.ts`), asked one moment earlier. If that
+ * read says the window will not be offered this server, the act cannot be
+ * placed there, and a refusal is the honest outcome.
  */
-export function hostedCrucibleTextActNotVendored(act: string, server: string): string {
+export function hostedCrucibleServerNotOffered(
+  act: string,
+  server: string,
+  offered: readonly string[],
+  why: string,
+): string {
   return (
-    `This ${act} was routed to the Crucible server "${server}", and the HOSTED Foundry queue `
-    + 'cannot run it there: BookForge hands that window a job through `runJob(request, '
-    + '{parentStep, signal, onProgress})`, which carries no environment, so there is nowhere to '
-    + 'put $FOUNDRY_ENDPOINT_HEADERS. The vendored engine spawn DOES take a per-run environment '
-    + '(foundry f300fc6), but the only thing that fills it is the vendored dispatcher\'s own '
-    + 'placement — and the copy in foundry-app/ resolves credentials from a registry that is '
-    + 'always empty in a hosted window. Nothing ran, nothing was sent unauthenticated and no '
-    + 'model was loaded. '
-    + 'The fix is a RE-VENDOR of foundry-app/ at or past foundry e096734, where the window reads '
-    + 'this app\'s registry (FoundryHost.servers(), which BookForge already offers) and places '
-    + 'the act itself. Until then: BookForge\'s own Clean text door and the CLI clean routes DO '
-    + 'run on a Crucible; the hosted window has no other route, because the local text engines '
-    + 'it used to fall to are deleted (docs/LEGACY-REMOVAL.md).'
+    `This ${act} was routed to the Crucible server "${server}", and the hosted Foundry window `
+    + `will not be offered that server: ${why} `
+    + `${offered.length === 0
+      ? 'BookForge is offering it no servers at all.'
+      : `It is offering these, exactly as spelled: ${offered.join(', ')}.`} `
+    + 'That window matches the name it is given against that list EXACTLY — same case, no '
+    + 'trimming — and a name it cannot match parks the job for ever rather than failing it, '
+    + 'which is why this is refused here instead. Nothing ran, nothing was sent '
+    + 'unauthenticated and no model was loaded. Enable or add that server in '
+    + 'Settings → Crucible Servers, or queue this act for one of the servers listed above.'
   );
 }
 
@@ -350,6 +356,36 @@ export interface FoundryJobRow {
 export interface FoundryRunJobOptions {
   parentStep: string | null;
   signal: AbortSignal;
+  /**
+   * THE MACHINE THIS ROW WAS ADMITTED TO — a Crucible server's name, exactly as
+   * `FoundryHost.servers()` spells it.
+   *
+   * Their `RunOptions.waitFor` (foundry `f300fc6`, in this subtree since
+   * `4e0a4cb`), and it is REQUIRED here although it is optional there. Absent,
+   * their `placedBy` falls back to the vendored window's OWN `newJobsWaitFor`
+   * setting — so a machine chosen on BookForge's queue row would be answered by
+   * a setting on a screen nobody opened, which is the exact defect the field
+   * was added to close. This engine always has an answer (`machines()` makes
+   * every text act travel, so the row carries a resolved venue), so it always
+   * sends one.
+   *
+   * It is taken VERBATIM over there and matched case-sensitively against the
+   * derived slot list; a name that does not match parks the job for ever. The
+   * hosted step therefore checks it against this machine's registry snapshot
+   * first — see {@link hostedCrucibleServerNotOffered}.
+   *
+   * ── `null` IS A STATED ANSWER, NOT AN ABSENCE ─────────────────────────────
+   *
+   * A `read` and a `render` do not travel (`foundryJobStep.machines()` says
+   * `local` for both), so there is no machine for this side to name and the
+   * window's own default is the right one. That is a FACT ABOUT THE KIND and it
+   * is stated, because "this does not travel" and "I forgot to say" must not
+   * look the same at the seam — which is exactly how a choice made on one
+   * screen came to be answered by a setting on another, the defect their field
+   * was added to close. The mount turns `null` into an absent key; see the
+   * `runJob` adapter in `main.ts`.
+   */
+  waitFor: string | null;
   /**
    * EVERY LINE THE ENGINE WRITES, AS A STRING. Not a parsed object.
    *

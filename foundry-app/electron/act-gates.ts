@@ -3,17 +3,20 @@
  *
  * ── OWEN'S RULE, WHICH IS TWO RULES ─────────────────────────────────────────
  *
- * *"if their system just isnt powerful enough for translation (smaller than 9b)
- * then translation and simplify is disabled. the tiles arent lit up until the
- * models are present."* And: *"if a job is going to take an obscenely long time,
- * like translation on cpu, it should just be disabled."* (docs/SLOTS.md §1.)
+ * *"if their system just isnt powerful enough for translation … then translation
+ * and simplify is disabled. the tiles arent lit up until the models are
+ * present."* And: *"if a job is going to take an obscenely long time, like
+ * translation on cpu, it should just be disabled."* (docs/SLOTS.md §1.)
  *
  * The first is about the CATALOG — a class has a floor, and a machine that
- * cannot hold anything at or above it is not offered the act. The second is
- * about the MACHINE — a processor-only box can hold a 9B in system RAM and will
- * then generate at a word or two a second, which for a three-hundred-page
- * translation is not slow, it is not going to finish. Memory says yes and the
- * clock says no, so the clock gets its own branch.
+ * cannot hold anything at or above it is not offered the act. He settled which
+ * model that is on 2026-09-14: *"either they use the 27b or they use an api key
+ * for Claude or OpenAI"*, so the floor for translate and simplify is a 27B, and
+ * a smaller card reaches those acts through a Crucible or a cloud provider
+ * instead. The second is about the MACHINE — a processor-only box can hold a
+ * model in system RAM and will then generate at a word or two a second, which
+ * for a three-hundred-page translation is not slow, it is not going to finish.
+ * Memory says yes and the clock says no, so the clock gets its own branch.
  *
  * ── THIS GATE IS ABOUT THE MACHINE. THE OTHER ONE IS ABOUT THE BOOK ─────────
  *
@@ -43,22 +46,36 @@
  *    machine has pulled an ollama tag would dark a rail whose jobs never touch
  *    this machine's models. So hosted is lit, and the sentence says whose
  *    compute it is.
- * 2. **A CRUCIBLE ON THIS MACHINE THAT SERVES THE CLASS.** The weights are on
- *    that server, so this machine's own memory is not what binds and neither
- *    the floor nor the CPU rule applies (`localCrucibleServes`). A REMOTE
- *    Crucible is not consulted here at all: a reachability check on every gate
- *    read would put a network timeout behind a tooltip, and an unreachable
- *    server already refuses by name at the seam that sends the request. The
- *    machine-wide `llmServer: 'vllm'` setting that used to be this clause was
- *    retired with the registry (docs/SLOTS.md §7, package C) — an
- *    OpenAI-compatible server is a SLOT now, not a setting.
+ * 2. **ANY ENABLED REGISTERED SERVER WHOSE CAPABILITY ROW FOR THE CLASS SAYS
+ *    `enabled`.** Local or in another room; a resident model on its card or an
+ *    UPSTREAM route it forwards on the operator's account (crucible
+ *    docs/PHASE15-HOST.md §3.3). The weights and the account are over there, so
+ *    this machine's memory is not what binds and neither the floor nor the CPU
+ *    rule applies. `anyServerServing` (crucible-provider.ts) is the reader.
+ *
+ *    **It was LOCAL-ONLY until Wave 62**, and the sentence that kept a remote
+ *    server out said: *"a reachability check on every gate read would put a
+ *    network timeout behind a tooltip."* That argument is retired, not
+ *    overruled — it was about a gate that PROBED, and this one does not. The
+ *    provider's snapshot already has every enabled server's answer, every probe
+ *    in it carried a three-second clock, and a machine that did not answer is
+ *    `unknown` rather than a stall. Consulting a remote server now costs zero
+ *    requests, and Owen's ruling for this phase is that Crucible is the one door
+ *    — a door that is usually in another room. The machine-wide `llmServer:
+ *    'vllm'` setting that used to be this clause was retired with the registry
+ *    (docs/SLOTS.md §7, package C) — an OpenAI-compatible server is a SLOT now,
+ *    not a setting.
  * 3. **CLEAN TEXT ON A PROCESSOR.** The CPU rule covers translate, simplify and
  *    analysis, and stops there. A cleanup is only ever offered in a hosted
  *    window (Owen, 2026-09-05), where clause 1 has already lit it; applying the
  *    CPU rule anyway would dark the one act whose compute is certainly somebody
  *    else's. And Owen named translation — a book-length run that has to finish —
  *    not a punctuation pass over blocks that is resumable per block.
- * 4. **READING THROUGH A REMOTE ENDPOINT.** See `readGate`.
+ * 4. **READING THROUGH A CRUCIBLE, OR THROUGH A REMOTE ENDPOINT.** See
+ *    `readGate`. Clause 2 covers the `pages` class exactly as it covers the four
+ *    text ones now that `CRUCIBLE_READS` is true (crucible-dispatch.ts): Owen,
+ *    2026-09-14, *"if it uses the GPU (as dots does), it should probably be
+ *    crucible-side."*
  * 5. **A MACHINE WITH A CLOUD PROVIDER CONNECTED.** Owen's weaker-system case
  *    (docs/SLOTS.md §1): *"give them the option of connecting an api key for
  *    openai or claude instead of using the 27b or the 9b… for weaker systems."*
@@ -71,8 +88,8 @@
 import { readAppSettings } from './app-settings';
 import { enabledCloudProviders } from './cloud-providers';
 import {
-  localCrucibleServes,
-  localCrucibleTakeover,
+  anyServerServing,
+  firstServerReason,
   refreshCrucibleFacts,
 } from './crucible-provider';
 import { hosted } from './host';
@@ -90,6 +107,26 @@ import type { ActGate, ActGates, ModelClass, OllamaFacts, SystemProfile } from '
 
 /** Where somebody goes to fix it. Spelled once so all five sentences agree. */
 const SETTINGS_PATH = 'Settings › Language model';
+
+/**
+ * THE WAY OFF THIS MACHINE, named in every sentence that refuses for want of one
+ * — Owen, 2026-09-14: *"either they use the 27b or they use an api key for Claude
+ * or OpenAI."* A refusal that states the floor and stops there tells somebody
+ * with a 12 GB card that they are out of luck, which is not what the product
+ * does: the route is a card away, and the sentence that darkens the tile is the
+ * only place they will be looking.
+ *
+ * ── IT IS ONE ROUTE NOW, NOT TWO (Wave 62) ─────────────────────────────────
+ *
+ * It named *"Settings › Servers (a Crucible server) or Settings › Cloud providers
+ * (an OpenAI or Claude key)"*, and the second of those is going: PHASE15 §0 —
+ * *"the apps have no provider code … the keys move INTO the engine"* — and §5.3
+ * deletes Foundry's cloud card outright (Package L). A key is something the
+ * ENGINE holds, and the engine's settings card is where somebody enters it, so
+ * there is one door in this sentence and it is the engine's.
+ */
+const OTHER_ROUTES = 'Add a GPU engine in Settings › Servers, and its "Where the text work runs" '
+  + 'card will send this class to Anthropic, OpenAI or an Ollama server for you';
 
 /** Everything the five gates read, measured once per answer rather than per act. */
 interface Machine {
@@ -126,6 +163,66 @@ function pool(profile: SystemProfile): string {
 }
 
 /**
+ * ── THE ENGINE'S ANSWER, AND IT IS THE FIRST ONE ASKED FOR EVERY CLASS ─────
+ *
+ * Header note 2. Any enabled registered server whose capability row for this
+ * class says `enabled` lights the tile — and lights it OUTRIGHT, because the
+ * weights (or the account) are over there and nothing about this machine's
+ * memory, its processor or its ollama store binds the answer.
+ *
+ * NULL FALLS THROUGH, and null is both "every server said no" and "nothing has
+ * answered yet". A tile lit by a server this app has not heard from would be a
+ * tile lit by a guess; the answer comes out of `refreshCrucibleFacts`, awaited
+ * once in `actGates`, and a machine that did not answer inside its three-second
+ * clock is simply not in it.
+ *
+ * ── THE SENTENCE NAMES THE MACHINE, AND THE UPSTREAM WHEN THERE IS ONE ─────
+ *
+ * PHASE15 §3.3: a row's `route` is `local` or `upstream`, and `selected` is the
+ * model id either way. A person who has routed simplify to Anthropic and reads
+ * *"'mac-studio' is serving this class"* would have no way to know the work is
+ * about to be billed, so the upstream is in the sentence — the one place they
+ * will be looking. The MODEL ID is there too because it is the operator's own
+ * choice and this is the only surface that shows it.
+ */
+function servedGate(cls: ModelClass): ActGate | null {
+  const served = anyServerServing(cls);
+  if (served === null) return null;
+  if (served.route === 'upstream') {
+    const upstream = served.selected.split('/')[0] ?? served.selected;
+    return {
+      lit: true,
+      why: `"${served.server}" runs this class via ${upstream} (${served.selected}). `
+        + 'The text is sent to that service on the engine\'s account.',
+    };
+  }
+  return { lit: true, why: `"${served.server}" is serving this class with ${served.selected}.` };
+}
+
+/**
+ * THE DARK SENTENCE, WITH THE FIRST ENABLED SERVER'S OWN WORDS ON THE END.
+ *
+ * ── The case this exists for, verbatim ─────────────────────────────────────
+ *
+ * A host-mode Crucible on a machine with no WSL answers `tts asr align rvc
+ * denoise` with one sentence — *"this job type needs the WSL2 engine
+ * (vLLM/SGLang); install it from the console"* (PHASE15 §3.3) — and a server
+ * whose card is too small for the 27B answers with the shortfall it measured.
+ * Neither is a sentence this app could compose, and both say exactly what to do.
+ * A tile that dropped them and said only "this machine has no GPU a model can
+ * use" would be answering about the wrong computer.
+ *
+ * ONLY ON A DARK TILE, and only when a server actually said something. A lit
+ * tile has nothing to explain, and a server with no `reason` on the row has no
+ * opinion to add — an empty quote attributed to a machine is worse than silence.
+ */
+function withServerReason(cls: ModelClass, dark: ActGate): ActGate {
+  const said = firstServerReason(cls);
+  if (said === null) return dark;
+  return { lit: false, why: `${dark.why} "${said.server}" says: ${said.reason}` };
+}
+
+/**
  * A text act's gate — translate, simplify, analysis, clean — with the cloud
  * fallback on the end of it.
  *
@@ -154,11 +251,12 @@ function pool(profile: SystemProfile): string {
 function textGate(cls: ModelClass, machine: Machine): ActGate {
   const local = localTextGate(cls, machine);
   if (local.lit) return local;
+  const dark = withServerReason(cls, local);
   const provider = machine.cloud;
-  if (provider === null) return local;
+  if (provider === null) return dark;
   return {
     lit: true,
-    why: `${local.why} A cloud provider is connected, so this can run via ${provider} (cloud) — `
+    why: `${dark.why} A cloud provider is connected, so this can run via ${provider} (cloud) — `
       + 'choose it on the job\'s own row in the queue. It spends usage credits, and the text is '
       + 'sent to that provider.',
   };
@@ -167,29 +265,22 @@ function textGate(cls: ModelClass, machine: Machine): ActGate {
 /**
  * The same gate asked only of THIS MACHINE — everything above the cloud.
  *
- * THE ORDER OF THE BRANCHES IS THE ORDER OF THE ANSWERS. A Crucible serving the
- * class answers first because it makes every question under it irrelevant; a
- * non-ollama server second for the same reason; then the clock, then the
- * catalog, then the store. Each refusal names the NEXT thing that would change
- * it, which is what makes a gray tile actionable rather than final.
+ * THE ORDER OF THE BRANCHES IS THE ORDER OF THE ANSWERS. An engine serving the
+ * class answers first ({@link servedGate}) because it makes every question under
+ * it irrelevant — the weights, or the account, are not this machine's. Then the
+ * clock, then the catalog, then the store. Each refusal names the NEXT thing that
+ * would change it, which is what makes a gray tile actionable rather than final.
+ *
+ * EVERYTHING UNDER THE FIRST BRANCH IS PACKAGE L'S TO DELETE (PHASE15 §5.3 and
+ * docs/PLAN.md's Wave 62 table: *"act-gates' own 'can this machine do it'
+ * reasoning and the CPU rule"*), and it is left here untouched on the gate Owen
+ * set: nothing on the no-Crucible fallback goes before a host-mode server plus an
+ * upstream has been WATCHED serving text on a clean box. Deleting it on a promise
+ * strands the person Foundry exists for.
  */
 function localTextGate(cls: ModelClass, machine: Machine): ActGate {
-  /*
-   * A LOCAL CRUCIBLE SERVING THE CLASS LIGHTS IT OUTRIGHT. `unknown` — no local
-   * entry, nothing probed yet, or a local server that did not answer — falls
-   * through to the ollama path rather than lighting anything, because a tile lit
-   * by a server this app has not heard from would be a tile lit by a guess. The
-   * answer comes out of `refreshCrucibleFacts`, awaited once in `actGates`.
-   */
-  if (localCrucibleServes(cls) === 'yes') {
-    const server = localCrucibleTakeover()?.server;
-    return {
-      lit: true,
-      why: server === undefined
-        ? 'A Crucible on this machine is serving this class.'
-        : `"${server}", the Crucible on this machine, is serving this class.`,
-    };
-  }
+  const served = servedGate(cls);
+  if (served !== null) return served;
 
   /*
    * THERE IS NO OTHER LOCAL LANGUAGE SERVER. The local slot is Ollama, full
@@ -202,7 +293,7 @@ function localTextGate(cls: ModelClass, machine: Machine): ActGate {
   const eligible = eligibleFor(cls);
   /*
    * THE SMALLEST THING THAT MAY SERVE THIS CLASS, and the sentences below have
-   * to say WHY it is the smallest. When the class has a declared floor — the 9B
+   * to say WHY it is the smallest. When the class has a declared floor — a 27B
    * for translate and simplify — "X or larger" is the rule being quoted. When it
    * has none, the same phrasing would invent a rule: the 0.8B is merely the
    * first row in the table, and saying "you need the 0.8B or larger" about a
@@ -220,7 +311,7 @@ function localTextGate(cls: ModelClass, machine: Machine): ActGate {
    *
    * `memoryBasis === 'ram'` is `system-probe.ts`'s name for "there is no GPU a
    * model can use" — not a small GPU, none. Sixteen gigabytes of system RAM will
-   * hold the 9B and then produce a word or two a second. `lineupFor` still lists
+   * hold a 9B and then produce a word or two a second. `lineupFor` still lists
    * the whole table with honest fits/doesn't-fit against that RAM, because the
    * wizard's job is to describe the machine; the TILE's job is to not start an
    * eight-day job, so it refuses here and says which of the two facts is the
@@ -232,8 +323,7 @@ function localTextGate(cls: ModelClass, machine: Machine): ActGate {
     return {
       lit: false,
       why: `This machine has no GPU a model can use, and ${need} on the processor alone would take `
-        + `days over a book. Connect a Crucible server, or point ${SETTINGS_PATH} at one that is `
-        + 'not local.',
+        + `days over a book. ${OTHER_ROUTES}.`,
     };
   }
 
@@ -247,7 +337,7 @@ function localTextGate(cls: ModelClass, machine: Machine): ActGate {
       lit: false,
       why: `This needs ${need}, which wants `
         + `${floor === undefined ? 'more' : `${floor.local.needsGB.value} GB`} — this machine has `
-        + `${gb(machine.profile.modelMemoryMB)} of ${pool(machine.profile)}.`,
+        + `${gb(machine.profile.modelMemoryMB)} of ${pool(machine.profile)}. ${OTHER_ROUTES}.`,
     };
   }
 
@@ -294,14 +384,20 @@ function namesOf(rows: readonly LineupRow[]): string {
  */
 function readGate(): ActGate {
   /*
-   * A CRUCIBLE THAT IS SERVING PAGES IS NOT YET A CRUCIBLE THAT IS READING THEM.
+   * ── PAGES ARE A CLASS LIKE ANY OTHER NOW (Wave 62) ────────────────────────
    *
-   * `pageReaderSuperseded` is the question with both halves in it: the server
-   * says it serves the class AND this app sends reads there (`CRUCIBLE_READS`,
-   * crucible-dispatch.ts, still false). Asking `localCrucibleServes` directly
-   * here would light the tile on the strength of a capability record while the
-   * job still went to a local llama-server that may not be installed — a lit tile
-   * over a read that fails, which is the exact failure a gate exists to prevent.
+   * `CRUCIBLE_READS` is true (crucible-dispatch.ts), so a reading is DISPATCHED
+   * to any registered server whose `pages` row is enabled, exactly as a
+   * translation is — Owen, 2026-09-14: *"i think that should go through crucible
+   * as well … if it uses the GPU (as dots does), it should probably be
+   * crucible-side."* So the same clause serves it, and the local reader below is
+   * what answers when no server does.
+   *
+   * `pageReaderSuperseded` IS STILL ASKED FIRST, and it is not the same question.
+   * It is LOCAL-only and it is about this DISK: a Crucible on this machine owns
+   * the weights here, Foundry's copy has been (or is about to be) removed, and
+   * the sentence has to say so rather than naming a model this app no longer
+   * holds. A remote server serving pages falls to the clause under it.
    */
   const superseded = pageReaderSuperseded();
   if (superseded !== null) {
@@ -311,6 +407,9 @@ function readGate(): ActGate {
         + 'copy of the reader is not needed here.',
     };
   }
+
+  const served = servedGate('pages');
+  if (served !== null) return served;
 
   const settings = readSettings();
   const endpoint = settings.backend.mode === 'endpoint'
@@ -326,11 +425,17 @@ function readGate(): ActGate {
   if (pageReaderInstalled()) {
     return { lit: true, why: `The local page reader is installed and serves ${PAGE_READER_MODEL}.` };
   }
-  return {
+  /*
+   * DARK, AND WITH THE ENGINE'S OWN SENTENCE ON THE END WHEN THERE IS ONE. A
+   * registered server that answered `pages: enabled false` said why — a card too
+   * small, or host mode's one line about the WSL2 engine — and that is the half
+   * of the answer this app could not have written.
+   */
+  return withServerReason('pages', {
     lit: false,
     why: 'The local page reader is not installed yet, so there is nothing here to read the pages '
       + 'with — install it from Settings › Page reader, or point the reading endpoint elsewhere.',
-  };
+  });
 }
 
 /**

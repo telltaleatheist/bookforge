@@ -9,6 +9,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import type { FoundryApi, MenuAction } from '../shared/api';
+import type { CrucibleCoordinationState } from '../shared/coordinate-wire';
 import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type {
   AppQuestion,
@@ -248,10 +249,41 @@ const api: FoundryApi = {
     testAt: (url, token) => ipcRenderer.invoke('crucible:test-at', url, token),
     add: (name, url, token) => ipcRenderer.invoke('crucible:add', name, url, token),
     addLocal: (name) => ipcRenderer.invoke('crucible:add-local', name),
+    addFromPairingFile: () => ipcRenderer.invoke('crucible:add-from-pairing-file'),
+    parseConnectCode: (line) => ipcRenderer.invoke('crucible:parse-connect-code', line),
+    testConnectCode: (line) => ipcRenderer.invoke('crucible:test-connect-code', line),
+    addConnectCode: (line, name) => ipcRenderer.invoke('crucible:add-connect-code', line, name),
     setWslDistro: (distro) => ipcRenderer.invoke('crucible:set-wsl-distro', distro),
+    open: (name) => ipcRenderer.invoke('crucible:open', name),
     setNewJobsWaitFor: (choice) => ipcRenderer.invoke('crucible:set-new-jobs-wait-for', choice),
     installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
     install: () => ipcRenderer.invoke('crucible:install'),
+    /*
+     * The uninstall door's three. The FIRST one is what decides whether the
+     * other two are ever drawn — crucible docs/INSTALL-UNINSTALL.md §6.1: the
+     * door is for a server this app can prove is this machine's, and never for
+     * a registry entry as such. Main refuses on the same answer.
+     */
+    uninstallAvailability: () => ipcRenderer.invoke('crucible:uninstall-availability'),
+    uninstallDryRun: (flags) => ipcRenderer.invoke('crucible:uninstall-dry-run', flags),
+    uninstall: (flags) => ipcRenderer.invoke('crucible:uninstall', flags),
+    coordination: () => ipcRenderer.invoke('crucible:coordination'),
+    coordinate: (name) => ipcRenderer.invoke('crucible:coordinate', name),
+    onCoordination: (listener) =>
+      subscribe<CrucibleCoordinationState>('crucible:coordination-changed', listener),
+    /*
+     * The engine's own settings — a window onto ONE server's store, never a
+     * copy (crucible docs/PHASE15-HOST.md §5.2). By name, so the address and
+     * the token stay in main; the key goes one way, and `SettingsDocument`
+     * carries a four-character hint where the engine carries a key.
+     */
+    engineSettings: (serverName) => ipcRenderer.invoke('crucible:engine-settings', serverName),
+    engineSettingsPut: (serverName, patch) =>
+      ipcRenderer.invoke('crucible:engine-settings-put', serverName, patch),
+    engineUpstreamTest: (serverName, upstream, probe) =>
+      ipcRenderer.invoke('crucible:engine-upstream-test', serverName, upstream, probe),
+    engineCapability: (serverName) =>
+      ipcRenderer.invoke('crucible:engine-capability', serverName),
   },
 
   cloud: {
@@ -325,7 +357,8 @@ const api: FoundryApi = {
   },
 
   llm: {
-    defaults: () => ipcRenderer.invoke('llm:defaults'),
+    defaults: (cls) => ipcRenderer.invoke('llm:defaults', cls),
+    stored: () => ipcRenderer.invoke('llm:stored'),
     setModel: (model) => ipcRenderer.invoke('llm:set-model', model),
     setCleanModel: (model) => ipcRenderer.invoke('llm:set-clean-model', model),
     ollamaUrl: () => ipcRenderer.invoke('llm:ollama-url'),

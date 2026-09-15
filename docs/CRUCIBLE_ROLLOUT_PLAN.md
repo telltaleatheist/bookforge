@@ -1024,6 +1024,66 @@ apps' doors.
   `tools/test-foundry-hosted-crucible-seam.js`, whose tripwire goes red ON the re-vendor with
   the instructions on it; `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` is deleted, because a version
   number standing in for a line of somebody else's code is how the stale guard survived.
+- **D1-done. THE RE-VENDOR HAPPENED AND HOSTED TEXT ACTS RUN** *(2026-09-15, on Owen's ruling:
+  "text acts from foundry through crucible should work, vendored or host … i.e. vllm")*. The
+  bundling this plan assumed — *"their sha AFTER L"* — was **not reachable**: Foundry's package L
+  (the PHASE15 §5.3 deletions) has not landed and is gated on a `llama-windows` server on a clean
+  box, while translate and simplify did not run as queue rows at all. So the re-vendor was taken
+  at the EARLIER target instead — **`1ce539a`**, main's tip, on Owen's ruling *"the latest, so we
+  can vendor a fully functional and up to date version in"*. (`e096734` alone is not enough: the
+  placement also needs `RunOptions.waitFor` to cross `runJob`, so `990bd2e` was the minimum and
+  `ecd03e3` the first route-aware one. Every assertion BookForge's keepers make holds at all of
+  them; the tip was taken for the two things below.) `npm install --no-audit --no-fund` +
+  `npm rebuild electron` + `npm run build` ran in the subtree (`@crucible/client` 0.5.0 → 0.6.0);
+  the `file:..` self-link junction was deleted non-recursively and the main `node_modules`
+  verified intact either side. What shipped: `hostedCrucibleTextActNotVendored`
+  and the `hosted_placement_not_vendored` code deleted; the `none` member of
+  `EndpointHeaderReach` deleted with them (a caller that makes no spawn now has no value it could
+  pass); `FoundryRunJobOptions.waitFor: string | null` required, `null` = *this kind does not
+  travel*, translated to an absent key at the mount; `queue-steps/foundry-job.ts` composing
+  nothing — no engine, no model, no endpoint, no lease, no local vLLM profile — and handing the
+  request across verbatim. The ONE check this side keeps is the NAME, against the same snapshot
+  it hands the window: their `slotNamed` matches exactly, and a miss is a `wait` a detached
+  `runJob` retries for ever, so it is refused here (`hostedCrucibleServerNotOffered`). **Second
+  effect:** a placement declares `door: 'openai'`, whose pool default is 12 against Ollama's 4 —
+  before this, every hosted act fell through UNPLACED to the Ollama door, so placing them is also
+  what gives them the pool vLLM batches. The keeper's FIRST tripwire is inverted (the hosted
+  registry read is now the load-bearing property); the SECOND, on the cloud layer, is untouched
+  and still fires on the L re-vendor.
+- **D1-hop. AN ORCHESTRATOR IS NOT AN ENGINE, and hosted it is OUR entry being resolved**
+  *(foundry `1ce539a`, PHASE17 §6)*. One resolver, `resolveEngine(entry)`: `info()` once, the
+  SDK's `engineOf` for the rule, and for an orchestrator a client at `engine.url` with the SAME
+  token — after reading THAT document and refusing `orchestrator_engine_is_not_an_engine` if its
+  role is anything but engine, so *once, never a chain* is enforced rather than assumed. Cached
+  on name+url and **never on the token**, 60 s, in-flight deduped, forgotten on a registry change
+  BEFORE the capability cache. `placeOnCrucible` resolves once, so the request and the spawn
+  cannot end at two different processes. **This is BookForge's exposure more than Foundry's**: the
+  entry resolved hosted is the one `crucible/host-registry.ts` composed, so a person who registers
+  the tray rather than the engine has every hosted text act depending on that hop — and a token
+  rotated on THIS side must reach the window, which is why the cache key excluding the token is
+  pinned. Foundry proved fifteen checks against the real `:7100`/`:7101`; the HOSTED case does not
+  exist until the vendor, so `tools/test-foundry-hosted-crucible-seam.js` drives their compiled
+  resolver and the real SDK over a stubbed `fetch` with rows of our shape — engine, orchestrator,
+  chain, no-engine, rotated token — and pins that no refusal sentence carries the bearer.
+  **Mirrored, not contradicted:** `crucible:open` and `adoptPairingFile` deliberately do NOT
+  follow the hop (a placement asks a machine to work; a console is a person going to look at the
+  process they named, and the orchestrator's console is the one with install/restart/quit).
+- **D1-standing. THE PARKED-ROW DEFECT IS FIXED, and Foundry agreed it was theirs** *(foundry
+  `1ce539a`)*. BookForge's hosted step hands work to a DETACHED `runJob`, which holds no pump slot,
+  so `placeRun`'s `for(;;)` retried a wait for ever and the promise never settled. The wait arm now
+  carries `standing`, **required at all sixteen sites via explicit constructors rather than an
+  optional flag**, so *"nobody thought about it"* and *"this is transient"* cannot be the same
+  value; a pinned slot answering with a standing wait REFUSES, carrying the server's reason and
+  where to fix it. Standing: a disabled or empty capability row, `upstream_unconfigured`, both
+  orchestrator refusals, a cloud slot stepped past by `any`. Transient: busy, engine in use, model
+  leased, model not resident, unreachable, capability undecided, network refusals, a cancelled
+  load, a slot switched off. A slot MISSING from the list stays transient by their deliberate
+  choice — right for a row in their pump, fatal for a detached `runJob` — so BookForge's preflight
+  now covers exactly that one case and nothing else.
+- **D1-cautions.** Three come with the tip and **Owen has accepted all three**: `CRUCIBLE_READS` is
+  true (this seam sends `waitFor: null` for a `read`, so their own default decides and nothing
+  changes); the old cloud card sits beside the engine settings card until a later package; the
+  engine settings card is not hosted-gated.
 - **D-registry. HOSTED FOUNDRY READS BOOKFORGE'S SERVER REGISTRY** (Owen's ruling, 2026-09-14 —
   one owner; Foundry's own registry is standalone-only). *Both halves built, neither wired:
   BookForge `b2c50d78`, foundry `e096734`.* Their `crucibleServers()` asks `FoundryHost.servers()`

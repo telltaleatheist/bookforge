@@ -173,7 +173,6 @@ export function cloudHeaderMapFor(entry: CloudProviderEntry): string {
  * something by it and deserves to be told what is already called that.
  */
 export function writeCloudProviders(edits: readonly CloudProviderEdit[]): CloudProviderView[] {
-  refuseHostedChange();
   const stored = new Map(cloudProviders().map((entry) => [entry.name.toLowerCase(), entry]));
   const crucibles = new Set(
     readAppSettings().crucibleServers.map((entry) => entry.name.toLowerCase()),
@@ -234,17 +233,23 @@ export function writeCloudProviders(edits: readonly CloudProviderEdit[]): CloudP
  * refusal, for its reason (docs/SLOTS.md §3: *"The vendored (BookForge-hosted)
  * app takes its slot list from the host"*).
  *
- * A refusal rather than only a hidden card: the card IS read-only hosted, and
- * this is the door behind it. Something reachable by an IPC message must refuse
- * at the door as well, or the hiding is a decoration.
+ * ── AND IT NO LONGER REFUSES HOSTED, WHICH IS THE POINT OF THE RECORD ──────
+ *
+ * This door used to throw inside a host, on the reasoning that the slots were
+ * the host's and so the providers should be too. That was wrong twice over.
+ * Owen's rule is that a machine under the translate floor reaches those acts
+ * through a 27B or *"an api key for Claude or OpenAI"*, and a BookForge user
+ * on a laptop is exactly that machine — refusing here left them no path. And
+ * the record is not the host's to hold: hosted, this app's settings file IS
+ * the host's userData (app-settings.ts), so there is ONE store either way, and
+ * BookForge's own doors read this record rather than keeping a second list of
+ * keys and model names. One fact, one owner, and the owner is the card the
+ * person typed the key into.
+ *
+ * WHAT IS STILL THE HOST'S IS THE CRUCIBLE REGISTRY (`crucible-registry.ts`,
+ * `refuseHostedRegistryChange`). The two are not the same question: a Crucible
+ * is a machine the host administers, and a cloud key is the user's own.
  */
-function refuseHostedChange(): void {
-  if (!hosted()) return;
-  throw new Error(
-    'The slots are the host application\'s while Foundry is running inside it. '
-    + 'Connect a cloud provider there.',
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test — the one request this app makes to a provider

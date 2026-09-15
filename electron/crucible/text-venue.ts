@@ -43,25 +43,22 @@
  *               engine door (`runFoundry`). RUNS.
  *   `process` — the process IS the act: a single-purpose CLI run that spawns
  *               nothing else while it works. RUNS.
- *   `none`    — somebody else's spawn, reached through a seam that carries no
- *               environment: the app's hosted queue step, which hands the
- *               vendored Foundry window a job through `runJob(request,
- *               {parentStep, signal, onProgress})`. That window's engine spawn
- *               DOES take a per-run environment (foundry `f300fc6`), but the
- *               only thing that fills it is the window's own dispatcher, out of
- *               a registry the vendored copy cannot resolve hosted. **REFUSED
- *               BY NAME** (`hosted_placement_not_vendored`), never quietly run
- *               against llama-server.
  *
- * There is no version comparison here. The blocker is a property of the
- * VENDORED SUBTREE — lines of somebody else's code copied into this repo — and
- * a floor that could go green on a version bump while the subtree still spawned
- * the same way would be a guard that passes without the thing it guards. The
- * whole argument, and the one thing it waits on (a re-vendor at or past foundry
- * `e096734`, where the window reads BookForge's registry and places the act
- * itself), is written on `hostedCrucibleTextActNotVendored` in
- * `foundry-host-queue.ts`, and it is pinned against the subtree by
- * `tools/test-foundry-hosted-crucible-seam.js` rather than remembered.
+ * **THERE IS NO THIRD ANSWER ANY MORE.** `none` meant *somebody else's spawn,
+ * reached through a seam that carries no environment* — the app's hosted
+ * Foundry queue step — and it was REFUSED by name
+ * (`hosted_placement_not_vendored`), because the act could be composed neither
+ * here nor in the vendored window. It is deleted, along with that code, by the
+ * re-vendor of 2026-09-15 (`foundry-app/` at foundry `4e0a4cb`, which carries
+ * `e096734`): hosted, that window reads BookForge's own registry through
+ * `FoundryHost.servers()` and its dispatcher composes the endpoint, the model,
+ * the header map with `X-Crucible-Act`, the residency and the LEASE for itself.
+ *
+ * So the hosted step no longer calls this module at all for an engine — it
+ * decides the SERVER ({@link decideWhereTextActRuns}) and hands the name across
+ * as `runJob`'s `waitFor`. **Nothing here composes a credential for a spawn
+ * this app does not make**, which is the rule the deleted arm existed to state,
+ * now stated by there being no way to ask.
  */
 import type {
   CrucibleCapabilityView, RankedServerRow, RoutingView,
@@ -111,14 +108,6 @@ export type CrucibleTextActErrorCode =
   | 'crucible_server_not_named'
   /** `any`, and not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
-  /**
-   * The caller reaches the engine through a seam that carries no environment,
-   * so the credential — and the act name that changes per run — has nowhere to
-   * go, and the vendored window that owns the spawn cannot compose one for
-   * itself yet. The app's hosted queue step, and only it; it goes with the
-   * re-vendor. See the header.
-   */
-  | 'hosted_placement_not_vendored'
   /** The chosen server has no manifest for this act's model id. */
   | 'crucible_unknown_model'
   /** It has one, and nothing is serving it. The operator's job, never ours. */
@@ -388,12 +377,7 @@ export type EndpointHeaderReach =
   /** An explicit `env` on this child and no other — `runFoundry`'s overlay. */
   | 'spawn'
   /** The process IS the act: a single-purpose CLI run. `withProcessEndpointHeaders`. */
-  | 'process'
-  /**
-   * Somebody else's spawn, reached through a seam that carries no environment
-   * — the hosted Foundry queue step. Refused by name.
-   */
-  | 'none';
+  | 'process';
 
 export interface CrucibleTextActOptions {
   /**
@@ -449,18 +433,15 @@ export async function resolveCrucibleTextEngine(
   opts: CrucibleTextActOptions,
 ): Promise<CrucibleTextEngine> {
   /*
-   * THE REACH QUESTION FIRST, because a caller that cannot give the engine an
-   * environment cannot run the act however resident the model is — and asking
-   * a server about its models to produce the same no would be a round trip
-   * spent on a decision already made.
+   * `headerReach` IS STILL REQUIRED THOUGH BOTH ANSWERS NOW RUN, and that is
+   * deliberate rather than a leftover. Every caller of this function is about
+   * to be handed a credential map, and the argument is where it states, in one
+   * word a reviewer can grep, which mechanism puts that map on a process: an
+   * overlay on one child (`spawn`) or the whole process for the length of one
+   * single-purpose CLI run (`process`). A caller with NEITHER — the hosted
+   * queue step — no longer has a value it can pass, which is a stronger
+   * statement than the refusal it replaced.
    */
-  if (opts.headerReach === 'none') {
-    const { hostedCrucibleTextActNotVendored } = await import('../foundry-host-queue.js');
-    throw new CrucibleTextActError(
-      'hosted_placement_not_vendored',
-      hostedCrucibleTextActNotVendored(act, server),
-    );
-  }
 
   /*
    * THE ID, FROM THE SERVER THAT WILL RUN IT. `GET /v1/capability` is the one

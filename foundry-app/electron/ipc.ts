@@ -23,24 +23,62 @@ import * as path from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
 import { actGates } from './act-gates';
-import { readAppSettings, writeAppSettings } from './app-settings';
+import { readAppSettings, writeAppSettings, type CrucibleServerEntry } from './app-settings';
 import { probeCloud, writeCloudProviders } from './cloud-providers';
+import { openCrucibleUi } from './crucible-ui';
+import { heldSet, openingModelFor } from './llm-catalog';
+import {
+  coordinateEveryServer,
+  coordinateServer,
+  coordinationStates,
+  onCoordination,
+} from './crucible-coordinate';
 import {
   addCrucibleServer,
   addLocalCrucible,
   cloudSettingsView,
+  crucibleServers,
+  crucibleServerViews,
+  crucibleServerNamed,
   crucibleSettingsView,
   computeSlots,
+  forgetEngineTargets,
   probeCrucible,
+  slotAvailability,
   probeCrucibleAt,
+  removeCrucibleServer,
   writeCrucibleServers,
 } from './crucible-registry';
+import { readCapability } from './crucible-dispatch';
+import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
+import type {
+  SettingsDocument,
+  SettingsPatch,
+  UpstreamName,
+  UpstreamProbe,
+} from '../shared/engine-settings';
 import { crucibleInstallPlan, driveCrucibleInstall } from './crucible-install';
+import {
+  crucibleUninstallAvailability,
+  crucibleUninstallDryRun,
+  crucibleUninstallPerform,
+  uninstallStoppedTheEngine,
+} from './crucible-uninstall';
+import type {
+  CrucibleUninstallFlags,
+  CrucibleUninstallPlan,
+  CrucibleUninstallRun,
+} from '../shared/uninstall-wire';
+import { pairingFileRead, readConnectCode } from './crucible-pairing';
 import { forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
 import {
   CRUCIBLE_WHEEL,
+  isLoopbackUrl,
   type CloudProviderEdit,
+  type ConnectCodePreview,
+  type CrucibleProbe,
   type CrucibleServerEdit,
+  type LocalCrucibleAdd,
   type NewJobsWaitFor,
 } from '../shared/slots';
 import {
@@ -86,6 +124,7 @@ import {
   invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
+import type { ModelClass } from '../shared/types';
 import * as queue from './job-queue';
 import { applyPageReaderRemoval, machineModels, removeFoundryDownloads } from './machine-models';
 import { cancelOllamaInstall, cancelPull, installOllama, probeOllama, pullModel } from './ollama';
@@ -560,7 +599,34 @@ function gatesChanged(): void {
  * and one push doing both would be a card re-reading an inventory because a
  * tooltip changed.
  */
+/**
+ * THE REGISTERED SERVER OF THAT NAME, or a rejection that says the name.
+ *
+ * The four `crucible:engine-*` doors take a NAME, and the address and the token
+ * behind it are looked up here — `crucible:open`'s rule, so nothing a renderer
+ * holds could send a key to an engine this app has not been told about.
+ *
+ * IT THROWS RATHER THAN ANSWERING NULL. A card drew that row a moment ago, so a
+ * missing name means the registry moved underneath it (another window saved, or
+ * the host's list changed hosted); "there is no server called X" is the honest
+ * sentence and the card's next read redraws the list.
+ */
+function namedServerOr(serverName: string): CrucibleServerEntry {
+  const entry = crucibleServerNamed(serverName);
+  if (entry === null) throw new Error(`there is no registered server called ${serverName}`);
+  return entry;
+}
+
 async function afterRegistryChanged(): Promise<void> {
+  /*
+   * THE RESOLVED HOPS GO FIRST, AND BEFORE THE CAPABILITY ANSWERS, because the
+   * capability read is made THROUGH one (crucible docs/PHASE17-ORCHESTRATOR.md
+   * §6, `engineClientFor`). Re-pointing an entry from a tray to its engine — or
+   * the other way — changes which process every later read reaches, and a
+   * refresh that ran against a remembered hop would fill the capability cache
+   * from the machine the person has just stopped naming.
+   */
+  forgetEngineTargets();
   forgetCrucibleFacts();
   await refreshCrucibleFacts();
   const removed = await applyPageReaderRemoval();
@@ -570,6 +636,175 @@ async function afterRegistryChanged(): Promise<void> {
     broadcast('models:changed', null);
   }
 }
+
+/**
+ * COORDINATE WITH A SERVER BECAUSE SOMETHING CONNECTED US TO IT.
+ *
+ * crucible `docs/PHASE14-ENVPACKS.md` §4a: every time Foundry finds a Crucible
+ * it makes sure that Crucible has what Foundry needs — nobody presses anything.
+ * The moments are app start (every enabled server), a server being added, and a
+ * server being switched back on or newly named by a registry save; all of them
+ * go through `crucible-coordinate.ts`'s one function, which is also what makes
+ * two of them arriving together ONE run.
+ *
+ * A FAILED COORDINATION NEVER FAILS THE ACT THAT TRIGGERED IT. The server was
+ * added, the switch was flipped; what did not happen is a conversation with a
+ * machine, and that is the coordination STATE's to say, in the row. So this
+ * catches everything and logs ONE line — and `coordinateServer` is already
+ * written never to throw, which makes this the belt to that braces rather than
+ * the place the outcome is decided.
+ */
+async function coordinateWithServer(name: string, because: string): Promise<void> {
+  try {
+    const state = await coordinateServer(name);
+    console.log(`[crucible] "${name}" coordinated ${because}: ${state.phase}`);
+  } catch (err) {
+    console.error(
+      `[crucible] could not coordinate with "${name}" ${because}: `
+      + `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * WHICH SERVERS A REGISTRY SAVE CONNECTED US TO — new by name, or switched on.
+ *
+ * `crucible:save` replaces the whole list in one message (see
+ * `writeCrucibleServers` for why it is one door), so "what just changed" is a
+ * DIFF and there is nowhere else to take it from. Two answers count as a
+ * connection and the rest do not:
+ *
+ *   - a name the registry did not have before is a server this app has just met;
+ *   - `enabled` going false → true is the exact reverse of the one gesture that
+ *     means "not that one" (Owen, 2026-09-14), so switching it back on is the
+ *     moment to find out what it is missing.
+ *
+ * A RENAMED, RE-ADDRESSED OR RE-TOKENED ROW IS NOT IN THIS LIST unless its name
+ * is new, and that is the honest reading of a card that saves on every edit: a
+ * person dragging rows around has connected to nothing, and coordinating with
+ * six servers because one of them moved up the order would be this app spending
+ * somebody's afternoon on a reorder.
+ */
+function serversConnectedBySave(
+  before: readonly { name: string; enabled: boolean }[],
+  after: readonly { name: string; enabled: boolean }[],
+): string[] {
+  const was = new Map(before.map((entry) => [entry.name.toLowerCase(), entry.enabled]));
+  return after
+    .filter((entry) => {
+      if (!entry.enabled) return false;
+      const previously = was.get(entry.name.toLowerCase());
+      return previously === undefined || previously === false;
+    })
+    .map((entry) => entry.name);
+}
+
+/**
+ * THE FIRST OF PHASE15 §5.1's THREE WAYS IN: the pairing file on this machine,
+ * read and registered as `local`, with nobody typing anything.
+ *
+ * ── Why it is here and not in crucible-pairing.ts ───────────────────────────
+ *
+ * Because it WRITES THE REGISTRY, and everything that writes the registry ends
+ * in `afterRegistryChanged` above — forget the capability answers, measure
+ * again, apply docs/SLOTS.md §5b — which is this module's and deliberately
+ * private to it. A second caller that wrote an entry and did not take that pass
+ * would leave a registered engine behind gates that still say there is none, and
+ * that is the exact failure the pass was written for. crucible-pairing.ts reads
+ * a file; this decides what the app does about what it read.
+ *
+ * ── THE NAME IS `local`, FOR PARITY WITH BOOKFORGE ──────────────────────────
+ *
+ * Both apps register this machine's engine under the same name, so a person
+ * looking at two apps' settings sees one server called one thing. `local` also
+ * survives re-reading: `addCrucibleServer` replaces an existing name IN PLACE,
+ * keeping its rank and its enabled state, so pressing "Look again" after the
+ * host rotated a token fixes the entry rather than growing a second one.
+ *
+ * ── IT DOES NOTHING WHEN THERE IS ALREADY A LOOPBACK ENTRY ──────────────────
+ *
+ * §5.1 way 1 is "when the app has no `local` entry yet", and the test is the
+ * LOOPBACK-NESS of what is registered rather than the name — Owen's PC registers
+ * its WSL server through door 2 under whatever name he typed, and adopting the
+ * pairing file on top of that would be two entries pointing at one engine, which
+ * is the duplicate `slotsFrom` exists to drop. A person who wants the file read
+ * anyway presses the button, which calls this same function; it will still
+ * decline, and that is an honest answer about a machine that already has its
+ * engine.
+ *
+ * ── HOSTED, THE REGISTRY IS THE HOST'S AND THIS DOES NOTHING ────────────────
+ *
+ * Refused at the door as well as skipped at the call, because `addCrucibleServer`
+ * throws hosted (`refuseHostedRegistryChange`) and an unguarded startup call
+ * would put that throw in a console every time BookForge opened the window.
+ *
+ * ── WHAT THE FILE NAMES IS WHAT IS REGISTERED, EVEN IF IT IS A TRAY ─────────
+ *
+ * crucible docs/PHASE17-ORCHESTRATOR.md §6: *"the pairing line an app reads is
+ * the ENGINE's"* — on Windows the orchestrator writes the guest's line verbatim
+ * — so this ordinarily registers an engine and the hop below never fires. When
+ * a line names an ORCHESTRATOR anyway, registering it is still CORRECT and is
+ * left alone: `resolveEngine` (crucible-registry.ts) follows the hop for every
+ * call that does work, and the one door that does not is the console button,
+ * which should open the process the person's machine actually named (see
+ * `openCrucibleUi`, which argues it). Rewriting the address here would be this
+ * app storing a fact it derived over the fact the machine stated.
+ */
+export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
+  if (hosted()) {
+    return {
+      outcome: 'failed',
+      code: 'no_local_config',
+      message: 'The servers are the host application\'s while Foundry is running inside it.',
+    };
+  }
+  const already = crucibleServers().find((entry) => isLoopbackUrl(entry.url));
+  if (already !== undefined) {
+    return {
+      outcome: 'failed',
+      code: 'already_registered',
+      message: `This machine's Crucible is already registered as "${already.name}" `
+        + `at ${already.url}.`,
+    };
+  }
+  const read = await pairingFileRead();
+  if (read.found === 'absent') {
+    // Debug volume, one line, and the SAME sentence the button shows — see
+    // crucible-pairing.ts: an absent file is a fact about this machine.
+    console.log(`[pairing] no pairing file at ${read.path} — no local Crucible on this machine.`);
+    return {
+      outcome: 'failed',
+      code: 'no_local_config',
+      message: `No Crucible has left a connect code on this machine (${read.path}). `
+        + 'Install one here, or connect to one somewhere else.',
+    };
+  }
+  if (read.found === 'refused') {
+    console.error(`[pairing] refused: ${read.message}`);
+    return { outcome: 'failed', code: 'config_unreadable', message: read.message };
+  }
+  addCrucibleServer(PAIRING_SERVER_NAME, read.pairing.url, read.pairing.token);
+  await afterRegistryChanged();
+  console.log(
+    `[pairing] registered "${PAIRING_SERVER_NAME}" at ${read.pairing.url} from ${read.path}.`,
+  );
+  // A server this app has just met, by the same rule as `crucible:add`:
+  // finding it is the request (PHASE14 §4a), so it is coordinated with now.
+  void coordinateWithServer(PAIRING_SERVER_NAME, 'it was found in the pairing file');
+  return {
+    outcome: 'added',
+    servers: crucibleServerViews(),
+    serverName: read.pairing.name,
+    url: read.pairing.url,
+    configPath: read.path,
+  };
+}
+
+/**
+ * The name this machine's own engine is registered under, in both apps.
+ * See {@link adoptPairingFile} — parity with BookForge is the whole argument.
+ */
+const PAIRING_SERVER_NAME = 'local';
 
 export function registerIpc(): void {
   /**
@@ -3017,7 +3252,28 @@ export function registerIpc(): void {
   ipcMain.handle('doctor:run', (_event, endpointUrl?: string) => runDoctor(endpointUrl));
 
   ipcMain.handle('settings:read', () => readSettings());
-  ipcMain.handle('settings:write', (_event, patch: BackendSettingsPatch) => writeSettings(patch));
+  /*
+   * ── THE ENGINE'S SETTINGS ARE NOT OURS TO WRITE INSIDE A HOST ─────────────
+   *
+   * `settings.json` is the ENGINE's, machine-global, and hosted the host runs
+   * that same engine with that same file (docs/BOOKFORGE-HANDOFF.md). A person
+   * changing the mode or the endpoint on this screen inside BookForge would be
+   * reconfiguring the host's own conversions from a window that does not own
+   * them. The form is hidden there, and this is the door behind it: something
+   * reachable by an IPC message must refuse at the door as well, or the hiding
+   * is a decoration (`refuseHostedRegistryChange`'s rule, crucible-registry.ts).
+   *
+   * Found by BookForge's audit, 2026-09-14, unguarded on both sides.
+   */
+  ipcMain.handle('settings:write', (_event, patch: BackendSettingsPatch) => {
+    if (hosted()) {
+      throw new Error(
+        'The engine\'s settings belong to the application Foundry is running inside, which '
+        + 'runs the same engine. Change them there.',
+      );
+    }
+    return writeSettings(patch);
+  });
 
   ipcMain.handle('shell:reveal', (_event, target: string) => {
     shell.showItemInFolder(path.resolve(target));
@@ -3177,7 +3433,24 @@ export function registerIpc(): void {
    * refuses a name with whitespace in it and falls back, and a renderer that
    * kept its own optimistic copy would show a model the next job will not use.
    */
-  ipcMain.handle('llm:defaults', () => {
+  /*
+   * WHAT IS STORED, for the card that EDITS it — a different question from
+   * what a dialog should open with, and the two must not share a door. The
+   * Settings card shows these tags in fields somebody types over and saves; if
+   * it read the resolved answer, opening Settings on a machine whose stored tag
+   * had gone stale would silently rewrite that person's choice the moment they
+   * pressed Save. So the editor reads the file and the dialogs read the
+   * machine.
+   */
+  ipcMain.handle('llm:stored', () => {
+    const settings = readAppSettings();
+    return {
+      model: settings.defaultLlmModel,
+      cleanModel: settings.cleanTextModel,
+      ollama: settings.ollamaUrl,
+    };
+  });
+  ipcMain.handle('llm:defaults', async (_event, cls: ModelClass) => {
     const settings = readAppSettings();
     /*
      * ── ONE ANSWER NOW, BECAUSE THERE IS NO LONGER A CHOICE TO RESOLVE ───────
@@ -3195,9 +3468,29 @@ export function registerIpc(): void {
      * the registry names the address — and that is decided at the spawn, where
      * the server can actually be asked (electron/crucible-dispatch.ts).
      */
+    /*
+     * ── THE MODEL IS RESOLVED NOW, NOT WHEN SETUP RAN ─────────────────────────
+     *
+     * These two tags are SEEDS, and until 2026-09-14 they were handed back
+     * exactly as stored — so a dialog opened with whatever the wizard wrote
+     * months ago, even after the machine gained a model that the stored one
+     * cannot stand in for. A tile lit by a 27B would then run a 9B.
+     * `openingModelFor` answers per CLASS, because the classes have different
+     * floors: translate and simplify need a 27B, analysis has none, and the
+     * cleanup has its own model and its own setting. The stored tag still wins
+     * whenever it can serve the class — a deliberate choice is not overridden,
+     * only a stale one.
+     *
+     * A PROBE PER DIALOG OPEN is what that costs: the machine's memory and
+     * ollama's list. `actGates` already pays it on every menu draw, so the
+     * price is known and the alternative is a field that lies.
+     */
+    const [profile, ollama] = await Promise.all([probeSystem(), probeOllama(settings.ollamaUrl)]);
+    const held = heldSet(ollama.models);
+    const wanted: ModelClass = cls === 'clean' ? 'clean' : cls;
     return {
-      model: settings.defaultLlmModel,
-      cleanModel: settings.cleanTextModel,
+      model: openingModelFor(wanted, settings.defaultLlmModel, profile, held),
+      cleanModel: openingModelFor('clean', settings.cleanTextModel, profile, held),
       ollama: settings.ollamaUrl,
     };
   });
@@ -3242,8 +3535,24 @@ export function registerIpc(): void {
    */
   ipcMain.handle('crucible:settings', () => crucibleSettingsView());
   ipcMain.handle('crucible:save', async (_event, servers: CrucibleServerEdit[]) => {
+    /*
+     * READ BEFORE THE WRITE, because the only thing that can say which servers
+     * this save CONNECTED us to is the pair of lists (see
+     * `serversConnectedBySave`). Names and flags only — no token is read here
+     * and none is compared.
+     */
+    const before = crucibleServers().map((entry) => ({ name: entry.name, enabled: entry.enabled }));
     writeCrucibleServers(servers);
     await afterRegistryChanged();
+    /*
+     * A SERVER THAT WAS JUST SWITCHED ON, OR JUST NAMED, IS A SERVER THIS APP
+     * HAS JUST CONNECTED TO (PHASE14 §4a). Not awaited: a save must not sit on
+     * a catalog read, let alone on a half-hour wait for somebody else's card,
+     * and the row draws the run's own state as it arrives.
+     */
+    for (const name of serversConnectedBySave(before, crucibleServers())) {
+      void coordinateWithServer(name, 'it was added or switched back on');
+    }
     /*
      * THE WHOLE VIEW, not just the list, because saving a server CHANGES THE
      * SLOTS — enabling a loopback entry takes the local slot away — and a card
@@ -3262,6 +3571,14 @@ export function registerIpc(): void {
    * no answer carries it back (`CrucibleProbe` has no token field). That is the
    * same rule the registry keeps — see crucible-registry.ts's header.
    */
+  /*
+   * A SERVER'S OWN OPERATOR PAGE, opened by NAME so no credential crosses to
+   * the renderer. The window it opens has no preload and cannot reach this
+   * app (electron/crucible-ui.ts says why, at length). Named `crucible:open`
+   * rather than BookForge's `crucible:open-ui`, so the two apps' channels stay
+   * distinct in a vendored build.
+   */
+  ipcMain.handle('crucible:open', (_event, name: string) => { openCrucibleUi(name); });
   ipcMain.handle('crucible:test-at', (_event, url: string, token: string) =>
     probeCrucibleAt(url, token));
   /**
@@ -3274,13 +3591,203 @@ export function registerIpc(): void {
   ipcMain.handle('crucible:add', async (_event, name: string, url: string, token: string) => {
     addCrucibleServer(name, url, token);
     await afterRegistryChanged();
+    /*
+     * A SERVER THAT HAS JUST BEEN ADDED IS A SERVER THIS APP HAS JUST CONNECTED
+     * TO (PHASE14 §4a), so it is coordinated with immediately. The NAME the
+     * registry stored is used rather than the one that was typed, because
+     * `addCrucibleServer` normalises whitespace and a coordination run keyed on
+     * an un-normalised name would be a second row under a name no card draws.
+     */
+    const stored = crucibleServers().find(
+      (entry) => entry.name.toLowerCase() === name.replace(/\s+/g, ' ').trim().toLowerCase(),
+    );
+    if (stored !== undefined) void coordinateWithServer(stored.name, 'it was added');
     return crucibleSettingsView();
   });
   ipcMain.handle('crucible:add-local', async (_event, name: string) => {
     const answer = await addLocalCrucible(name);
-    if (answer.outcome === 'added') await afterRegistryChanged();
+    if (answer.outcome === 'added') {
+      await afterRegistryChanged();
+      /*
+       * THE SAME MOMENT, one door along — and the name is the ANSWER's, not the
+       * argument's: `addLocalCrucible` falls back to the server's own name when
+       * the box was left empty, so the argument may be the empty string while a
+       * row called "crucible" now exists.
+       */
+      const added = crucibleServers().find((entry) => entry.url === answer.url);
+      if (added !== undefined) {
+        void coordinateWithServer(added.name, 'the Crucible on this machine was registered');
+      }
+    }
     return answer;
   });
+  /*
+   * ── PHASE15 §5.1's THREE WAYS IN, IN ITS ORDER ────────────────────────────
+   *
+   * 1. THE PAIRING FILE ON THIS MACHINE. Read once at start (electron/mount.ts)
+   *    and again whenever somebody presses "Look again on this machine" — the
+   *    same function, because the second press is for the case §3.6 names: the
+   *    engine was installed AFTER this app started, so the answer that was
+   *    honest at start ("there is nothing here") has stopped being true. It is a
+   *    BUTTON and not a watcher on purpose: a filesystem watch on a directory
+   *    Crucible's installer creates would have this app reacting to a file
+   *    appearing mid-keystroke, and "press it when you have installed one" is a
+   *    sentence a person can act on.
+   */
+  ipcMain.handle('crucible:add-from-pairing-file', () => adoptPairingFile());
+  /*
+   * 2. A PASTED CONNECT CODE, in three doors that all take THE LINE.
+   *
+   * The preview answers NAME AND ADDRESS ONLY (`ConnectCodePreview` argues the
+   * shape at length): the renderer fills its two boxes from it so a person can
+   * rename before adding, and the token never crosses the preload in either
+   * direction. Test and Add re-read the same line in main. Three doors rather
+   * than one for the reason `crucible:test-at` is not `crucible:add`: testing an
+   * address in order to find out whether it is a Crucible must not write
+   * anything, and previewing must not dial anybody at all — it runs on every
+   * keystroke of a paste.
+   */
+  ipcMain.handle('crucible:parse-connect-code', (_event, line: string): ConnectCodePreview => {
+    const read = readConnectCode(line);
+    return read.read
+      ? { outcome: 'read', name: read.pairing.name, url: read.pairing.url }
+      : { outcome: 'refused', message: read.message };
+  });
+  ipcMain.handle('crucible:test-connect-code', async (_event, line: string): Promise<CrucibleProbe> => {
+    const read = readConnectCode(line);
+    // A REFUSAL IS A RESULT HERE, not a rejection, because the door it is drawn
+    // in already draws `CrucibleProbe.outcome === 'failed'` — one sentence, one
+    // place to look, whether the line was unreadable or the server was.
+    if (!read.read) return { outcome: 'failed', message: read.message };
+    return probeCrucibleAt(read.pairing.url, read.pairing.token);
+  });
+  /*
+   * Add, through the registry's ONE writer, answering with the whole settings
+   * view for `crucible:add`'s reason. The NAME is the caller's: the preview
+   * filled a box with the code's own name and somebody may have renamed it
+   * before pressing, and a door that re-read the name out of the line would
+   * silently throw that away. An EMPTY name falls back to the code's, which is
+   * what pressing Add on an untouched preview means.
+   *
+   * IT REJECTS BY NAME on a line that will not parse, rather than answering a
+   * view: this is the door that WRITES, and everything that writes the registry
+   * in this file rejects rather than returning a failed shape.
+   */
+  ipcMain.handle('crucible:add-connect-code', async (_event, line: string, name: string) => {
+    const read = readConnectCode(line);
+    if (!read.read) throw new Error(read.message);
+    const wanted = name.replace(/\s+/g, ' ').trim();
+    addCrucibleServer(
+      wanted.length > 0 ? wanted : read.pairing.name,
+      read.pairing.url,
+      read.pairing.token,
+    );
+    await afterRegistryChanged();
+    return crucibleSettingsView();
+  });
+
+  /*
+   * ── THE ENGINE'S OWN SETTINGS — four doors onto somebody else's store ─────
+   *
+   * Wave 62 package I, to crucible `docs/PHASE15-HOST.md` §3.1, §3.2, §3.3 and
+   * §5.2. Owen's ruling: the GPU engine is the SINGLE SOURCE OF TRUTH for AI
+   * settings — *"If the user enters an anthropic api key, it should pass through
+   * to crucible"* — so these four doors READ AND WRITE A REMOTE STORE and touch
+   * `app-settings.json` not at all. §5.2: *"every control in these sections is a
+   * request to the engine, and its result is the engine's answer re-read. There
+   * is no Save button that writes an app file and syncs later."*
+   *
+   * THEY TAKE A SERVER NAME, not a url and not a token. That is the registry's
+   * rule (`crucible:open`'s argument, one family up): the address and the
+   * credential are looked up in main, so nothing the renderer holds could reach
+   * an engine this app has not been told about.
+   *
+   * AND THE KEY CROSSES ONE WAY. `crucible:engine-settings-put` carries an
+   * unsaved key inward and `crucible:engine-upstream-test` carries one inward to
+   * be used once and dropped; no answer on any of the four carries a credential
+   * back, because the document has `key_hint` — the last four characters — where
+   * the engine has a key. Same rule, same sentence, as `CrucibleServerView`'s
+   * `tokenSet` and `CloudProviderView`'s `keySet`.
+   *
+   * `engine-` RATHER THAN MORE BARE `crucible:` MEMBERS, because the family
+   * already means "this app's registry of servers" and these are not about the
+   * registry at all: they are about what ONE of those servers has been
+   * configured to do. A reader of the channel list can tell the two apart.
+   */
+  ipcMain.handle('crucible:engine-settings', (_event, serverName: string) =>
+    readEngineSettings(namedServerOr(serverName)));
+  /**
+   * WRITE THROUGH, AND REDRAW FROM THE ANSWER.
+   *
+   * The PUT answers the whole document after the write (§3.2), so this hands
+   * that straight back and the card never guesses what took. A refusal arrives
+   * as a REJECTION wearing a sentence that names the field
+   * (electron/crucible-settings.ts composes it) — unlike Test there is nothing
+   * to draw instead, because the write did not happen and what is on screen is
+   * still true.
+   *
+   * ── AND A ROUTE WRITE MOVES THE TILES, SO THE REGISTRY PASS RUNS ──────────
+   *
+   * §2: capability *"is RECOMPUTED in-process on every settings write that
+   * touches a route"*, and §3.3 says every capability row carries its route. So
+   * the answer to "can this machine translate" has just changed on a server this
+   * app has cached (`crucible-provider.ts` holds it for fifteen seconds) and the
+   * dock's tiles are drawn from that. `afterRegistryChanged` is exactly the pass
+   * that forgets, re-measures and re-composes — it is named for the registry
+   * because that is what used to be the only thing that moved this answer, and a
+   * route write moves it identically.
+   *
+   * ONLY WHEN A ROUTE WAS TOUCHED. Saving a key alone configures an upstream
+   * nothing routes to yet: no capability row changes, and running the pass would
+   * spend a probe per server to learn that.
+   */
+  ipcMain.handle('crucible:engine-settings-put', async (
+    _event,
+    serverName: string,
+    patch: SettingsPatch,
+  ): Promise<SettingsDocument> => {
+    const document = await writeEngineSettings(namedServerOr(serverName), patch);
+    if (patch.routes !== undefined) await afterRegistryChanged();
+    return document;
+  });
+  /**
+   * WHAT MODEL IDS THIS CREDENTIAL CAN USE — and it is the only list there is.
+   *
+   * §2: *"the server does not ship a cloud model list"*, and neither does this
+   * app: the Cloud card already argued that a catalog compiled into a build is
+   * wrong by the next release and confidently so. The engine asks the upstream's
+   * own listing, unbilled, and the card shows THAT.
+   *
+   * `probe` IS THE UNSAVED CREDENTIAL, or absent for whatever is configured —
+   * `crucible:test-at`'s argument one wire along: saving a key in order to find
+   * out whether it works would be this app writing into somebody's engine to
+   * answer a question. A failure is a RESULT, not a rejection, so the card can
+   * print it beside the box.
+   */
+  ipcMain.handle('crucible:engine-upstream-test', (
+    _event,
+    serverName: string,
+    upstream: UpstreamName,
+    probe?: UpstreamProbe,
+  ) => testUpstream(namedServerOr(serverName), upstream, probe));
+  /**
+   * THE CAPABILITY RECORD, BY SERVER NAME — the wizard's routes step, and the
+   * one question it asks that the settings document cannot answer.
+   *
+   * §5.2: *"the wizard's AI step reads capability; for each llm class that is
+   * `enabled: false` locally it says the class's reason and offers 'run it
+   * through Anthropic / OpenAI / an Ollama server instead'."* The REASON is the
+   * server's own sentence about why a class will not run on its card, and
+   * nothing in `/v1/settings` carries it.
+   *
+   * IT IS `readCapability`, THE DISPATCHER'S OWN READER, and not a second one:
+   * the shape of a capability record and the mapping of its refusals onto the
+   * SDK's error types is exactly the kind of thing that is written twice and
+   * then only fixed once (crucible-dispatch.ts says so where it exports it).
+   */
+  ipcMain.handle('crucible:engine-capability', (_event, serverName: string) =>
+    readCapability(namedServerOr(serverName)));
+
   /**
    * THE HAND SEQUENCE FOR "INSTALL CRUCIBLE HERE", composed for this machine.
    *
@@ -3304,10 +3811,100 @@ export function registerIpc(): void {
     wheel: CRUCIBLE_WHEEL,
     onLine: () => { /* nothing to relay while the door refuses. */ },
   }));
+  /*
+   * ── UNINSTALL: THREE DOORS, AND THE FIRST ONE DECIDES THE OTHER TWO ───────
+   *
+   * crucible `docs/INSTALL-UNINSTALL.md` §6.1, and Owen's ruling with it: the
+   * door is drawn only for a server this app can PROVE is this machine's, and
+   * never for a registry entry as such. `crucible:uninstall-availability` is
+   * that one proof — the card asks it before it draws a button and both doors
+   * below refuse on it as well, because a control that is hidden over a door
+   * that is open has been decorated rather than locked.
+   *
+   * Everything about what is invoked, and why win32 needs `cmd.exe` to run a
+   * `.cmd`, is in electron/crucible-uninstall.ts. Nothing about it is composed
+   * here; these three are a read and two runs.
+   */
+  ipcMain.handle('crucible:uninstall-availability', () => crucibleUninstallAvailability());
+  /**
+   * THE PLAN, UNPERFORMED — §6.4 step 1, and the card re-asks it every time a
+   * checkbox moves so the kept-weights headline moves with it.
+   *
+   * An exit code of 1 is still a plan (§6.2): the JSON's `ok: false` names the
+   * one step that failed and the others happened. Only a usage error and a
+   * document that is not a document are rejections — see the module.
+   */
+  ipcMain.handle('crucible:uninstall-dry-run', (
+    _event,
+    flags: CrucibleUninstallFlags,
+  ): Promise<CrucibleUninstallPlan> => crucibleUninstallDryRun(flags));
+  /**
+   * THE REAL RUN, and the one thing Foundry does afterwards that the verb cannot.
+   *
+   * §2's box: *"THE TOKEN ALWAYS GOES, on every uninstall, including the default
+   * one."* So a run that stopped the engine has left the registry row pointing at
+   * it holding a dead credential, and the row goes — through the registry's one
+   * writer, followed by `afterRegistryChanged`, which is what every other write
+   * in this file does and what keeps the dock's gates and the slot list honest.
+   *
+   * ONLY WHEN THE PROOF NAMED A ROW. A `windows-host` proof says a host is
+   * installed on this computer and says nothing about which entry, if any, points
+   * at the engine it drives; removing a row on that basis would be the app
+   * guessing at exactly the thing §6.1 forbids guessing at.
+   *
+   * COORDINATION STATE IS LEFT TO THE NEXT CONNECT, deliberately. The map in
+   * crucible-coordinate.ts is keyed by registry name, the Servers card looks a
+   * row's state up BY the row's name, and there is no row any more — so the
+   * stale entry draws nothing anywhere. Registering a server under that name
+   * again coordinates afresh and overwrites it. Clearing it would mean a new
+   * export from that module for an entry nobody can see.
+   */
+  ipcMain.handle('crucible:uninstall', async (
+    _event,
+    flags: CrucibleUninstallFlags,
+  ): Promise<CrucibleUninstallRun> => {
+    const availability = await crucibleUninstallAvailability();
+    const plan = await crucibleUninstallPerform(flags);
+    if (availability.server === null || !uninstallStoppedTheEngine(plan)) {
+      return { plan, unregistered: null };
+    }
+    removeCrucibleServer(availability.server);
+    await afterRegistryChanged();
+    console.log(
+      `[crucible] "${availability.server}" was removed from the registry: its engine was `
+      + 'uninstalled from this computer and the token went with config.toml.',
+    );
+    return { plan, unregistered: availability.server };
+  });
   ipcMain.handle('crucible:set-wsl-distro', (_event, distro: string) =>
     writeAppSettings({ wslDistro: distro }).wslDistro);
   ipcMain.handle('crucible:set-new-jobs-wait-for', (_event, choice: NewJobsWaitFor) =>
     writeAppSettings({ newJobsWaitFor: choice }).newJobsWaitFor);
+  /*
+   * ── COORDINATION: THE BUTTON THAT IS NOT THERE ────────────────────────────
+   *
+   * crucible `docs/PHASE14-ENVPACKS.md` §4a. There is no "set up this server
+   * for Foundry" verb and no consent step: presence of the app is the request,
+   * so Foundry coordinates with every enabled server it connects to and a
+   * screen only ever READS the state. `electron/crucible-coordinate.ts` is the
+   * one owner — these two doors start a run and read the map, and neither
+   * composes a sentence, because the words are the renderer's
+   * (`src/app/core/crucible-words.ts`; R1).
+   */
+  ipcMain.handle('crucible:coordination', () => coordinationStates());
+  /**
+   * Coordinate with one named server NOW, and answer the state it reached.
+   *
+   * Idempotent and concurrency-safe in `crucible-coordinate.ts`: a second call
+   * while one is in flight joins the first. So the start sweep and a card that
+   * asks about the same server a moment later are ONE run, not two — which is
+   * the `task_busy` this whole design exists to avoid, manufactured by us.
+   *
+   * IT IS A DOOR AND NOT A BUTTON. Nothing in this app draws a control that
+   * calls it; it exists so a screen that has just learnt about a server can ask
+   * about that server rather than waiting for a push that has already been sent.
+   */
+  ipcMain.handle('crucible:coordinate', (_event, name: string) => coordinateServer(name));
   /*
    * ── THE CLOUD PROVIDERS — Package F's app half (docs/SLOTS.md §3) ─────────
    *
@@ -3369,7 +3966,14 @@ export function registerIpc(): void {
    * draw a picker would be a page that needs the token flag and the WSL distro
    * to render a dropdown.
    */
-  ipcMain.handle('slots:list', () => computeSlots());
+  /*
+   * THE LIST AND, WHEN THERE IS ONE, WHY IT IS EMPTY. A bare array told the
+   * page "no servers" when the truth could be "there was nobody to ask" — a
+   * hosted window whose host has not implemented the registry seam. The two
+   * want different sentences, so the answer is typed (`SlotAvailability`,
+   * shared/slots.ts) and the picker draws the refusal where the slots would be.
+   */
+  ipcMain.handle('slots:list', () => slotAvailability());
   /**
    * EVERY ROW OF OURS THAT NAMES THIS SLOT — what the Servers card shows before
    * it offers to move any of them. Owen's rule: told, never moved silently.
@@ -3465,6 +4069,89 @@ export function registerIpc(): void {
    * first window for a tidy-up nobody is waiting on. A failure is logged and
    * changes nothing — the files stay, and the next registry save asks again.
    */
+  /*
+   * ── EVERY COORDINATION STATE CHANGE, TO EVERY WINDOW ──────────────────────
+   *
+   * And that is not laziness about addressing: coordination starts at APP
+   * START, before any window has asked for anything, and it is the same fact
+   * for the Servers card and for the wizard's Crucible step. A push aimed at
+   * "the sender" would have no sender for the run that matters most.
+   *
+   * THE SECOND HALF IS THE ONE THAT MATTERS TO THE REST OF THE APP. A run that
+   * ends `preparing` with `progress.state === 'done'` means the server SERVES
+   * MORE THAN IT DID — a text engine it had not installed, a model it had not
+   * pulled — and every capability answer this app has cached about it was
+   * measured before that. So the registry's own pass runs: forget, re-measure,
+   * apply §5b's page-reader rule, light the tiles. Wired HERE rather than
+   * inside the coordinate module for the reason its header gives — which
+   * windows exist and what an install does to a tile are facts about the app,
+   * and that module's whole subject is one conversation with one server.
+   *
+   * ONLY ON `done`. A `failed` module leaves behind exactly the steps that
+   * completed (R6), which is a real change, and re-measuring on it would be
+   * right — but a module that failed at step 1 of 4 is also the common case for
+   * a server that is mid-something, and a capability sweep per failure would
+   * put a probe of every registered machine behind every stumble. The next
+   * connect asks again, which is the same answer arriving a moment later.
+   */
+  onCoordination((state) => {
+    broadcast('crucible:coordination-changed', state);
+    if (state.phase !== 'preparing' || state.progress.state !== 'done') return;
+    void afterRegistryChanged().catch((err: unknown) => {
+      console.error(
+        `[crucible] "${state.server}" finished preparing, but the capability sweep that `
+        + `follows it did not: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  });
+
+  /*
+   * ── AND THE FIRST SWEEP, ONCE AT STARTUP ──────────────────────────────────
+   *
+   * crucible `docs/PHASE14-ENVPACKS.md` §4a and Owen, 2026-09-14: *"lets make
+   * it as simple as possible."* Every ENABLED server, loopback entries first,
+   * with no button and no question — the enable switch in Settings is the one
+   * opt-out, because it is the control that already means "not that one".
+   *
+   * IT RUNS HOSTED TOO. The registry is the host's over there and read-only,
+   * and each app still posts its OWN module: the union of the two modules on
+   * one server is the contract. What is suppressed hosted is the DRAWING (the
+   * Servers card is BookForge's), not the asking.
+   *
+   * REGISTERED AFTER THE LISTENER ABOVE, deliberately: the sweep's first
+   * `checking` is published synchronously inside `coordinateServer`, so a
+   * listener added afterwards would miss the first frame of the run it was
+   * added for.
+   *
+   * DELIBERATELY NOT AWAITED, on the same reasoning as the §5b pass below: a
+   * run can end in a half-hour wait on somebody else's card, and nothing on
+   * screen is waiting for it. A failure is a STATE, drawn in the row; the
+   * console line here is for the case where the sweep itself could not start.
+   */
+  void coordinateEveryServer()
+    .then((states) => {
+      /*
+       * ONE LINE PER SERVER, once the sweep has settled. The states are already
+       * pushed to every window as they move; this is for the console a person
+       * reads when a window is not what they are looking at — a launch that
+       * found an engine and asked it for nothing should say so, and one that
+       * could not reach it should say which. No token, no address: the name
+       * and the phase are the whole of the news.
+       */
+      for (const state of states) {
+        const detail = state.phase === 'unreachable' || state.phase === 'refused'
+          ? `: ${state.message}`
+          : '';
+        console.log(`[crucible] "${state.server}" at start-up: ${state.phase}${detail}`);
+      }
+    })
+    .catch((err: unknown) => {
+      console.error(
+        '[crucible] the start-up coordination sweep did not finish: '
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+
   void refreshCrucibleFacts()
     .then(() => applyPageReaderRemoval())
     .then((removed) => {

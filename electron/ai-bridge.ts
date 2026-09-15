@@ -2830,6 +2830,30 @@ export function extractAnswer(raw: string, model: string): string {
  * chars) into a REASONING_OVERRUN, i.e. a skipped chunk. Used in BOTH places that must
  * agree: the call itself and the job's num_ctx sizing (a window smaller than the budget
  * clips the generation), which is why it is one constant.
+ *
+ * ── IT IS NOT THE SAME NUMBER AS FOUNDRY'S, AND THAT IS NOT A DISAGREEMENT ──
+ *
+ * Foundry's clean runner uses `EDIT_LIST_NUM_PREDICT = 2048` (their
+ * `src/clean/runner.ts`), and the two have been read side by side as if one of
+ * them were wrong. They answer different questions:
+ *
+ *   · **6144 is a THINKING budget.** This path prepends the in-band reasoning
+ *     trigger and the answer arrives after a chain of thought, so almost all of
+ *     it is reasoning and the JSON is the tail.
+ *   · **2048 is the think-OFF number** — the same size as this file's
+ *     `NUMBER_NUM_PREDICT` — and it is enough because an edit list is bounded
+ *     by the edits a paragraph can carry (their validator accepts at most 24),
+ *     not by the length of what it is editing. That is also why clean-text does
+ *     NOT use their `answerBudget`, whose 4x ratio is derived from a
+ *     TRANSLATION's length.
+ *
+ * So do not reconcile them. **And if a Crucible manifest ever turns thinking ON
+ * for the model serving the `clean` class, 2048 will clip the reasoning — that
+ * is a defect in the manifest, not a reason to triple their budget** (Foundry's
+ * own warning, 2026-09-15). BookForge's own Crucible requests send
+ * `thinking: false` unconditionally (`crucibleChatOnce`) for the neighbouring
+ * reason: a bounded budget spent entirely on reasoning returns no content at
+ * all.
  */
 const EDITLIST_NUM_PREDICT = 6144;
 

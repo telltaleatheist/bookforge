@@ -54,10 +54,19 @@
  * where they came from; main refuses the write as well, because a card that only
  * HIDES a control has decorated a door rather than locked it.
  */
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible-doors.component';
+import { coordinationWords } from '../../core/crucible-words';
+import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import { ANY_SLOT, isLoopbackUrl } from '@shared/slots';
 import type {
   ComputeSlot,
@@ -105,10 +114,19 @@ interface EditableServer extends CrucibleServerView {
           <p class="small">The host has offered no slots, so every job runs the way it always did.</p>
         }
       } @else {
+        <!--
+          FIRST MENTION IS "GPU engine (Crucible)", AND EVERY MENTION AFTER IT
+          IS "engine" — the copy rule of 2026-09-14, kept here and in
+          core/crucible-words.ts so that Foundry and BookForge say the same
+          words about the same machine. The card's TITLE stays "Servers",
+          because that is what somebody is looking for when they know the word
+          already.
+        -->
         <p class="detail">
-          Crucible servers this machine can send translation, simplification, analysis and
-          narration cleanup to. Jobs are tried in this order. Without one, everything runs on
-          this computer's own GPU through Ollama.
+          A GPU engine (Crucible) is a separate program that serves models over the network.
+          These are the engines this machine can send translation, simplification, analysis and
+          narration cleanup to, and jobs are tried in this order. Without an engine, everything
+          runs on this computer's own GPU through Ollama.
         </p>
 
         @for (row of rows(); track row.key) {
@@ -140,19 +158,50 @@ interface EditableServer extends CrucibleServerView {
                       (click)="test(row.name)">
                 {{ testing() === row.name ? 'Testing…' : 'Test connection' }}
               </button>
+              <!--
+                THE SERVER'S OWN CONSOLE. Administering an engine belongs to the
+                engine (Owen, 2026-09-14), so this is where a person goes to
+                install a job type, pull weights or read what is resident.
+                Disabled until a token is stored, because the page is opened
+                with one; a saved row is the only kind that has one.
+              -->
+              <button class="ghost" [disabled]="!row.tokenSet || row.token !== null"
+                      (click)="openUi(row.name)">Open engine console</button>
             </div>
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {
                 <p class="small ok">
                   {{ probe.serverName }} {{ probe.version }} — {{ probe.backend }}, {{ probe.gpu }}
                 </p>
+                <!--
+                  Reached through an orchestrator (crucible
+                  PHASE17-ORCHESTRATOR.md §6), which is a SUCCESS and is the
+                  shape of a Windows machine with WSL: the tray answers the
+                  address in this row and the engine that did the answering
+                  above is behind it. "Open engine console" still opens the
+                  address in the row — see openCrucibleUi, which says why.
+                -->
+                @if (probe.via; as via) {
+                  <p class="small">{{ via }}</p>
+                }
               } @else {
                 <p class="small warn">{{ probe.message }}</p>
               }
             }
+            <!--
+              AND WHAT FOUNDRY HAS ALREADY SAID TO IT, without anybody asking.
+              crucible docs/PHASE14-ENVPACKS.md §4a: connecting to an engine is
+              the request, so there is no button here and never was one — the
+              row says what happened. A server nothing has asked about yet has
+              no state and draws no line, because "idle" written out would be a
+              card announcing the absence of news.
+            -->
+            @if (coordinationOf(row.name); as said) {
+              <p class="small">{{ said }}</p>
+            }
             @if (isLoopback(row.url) && row.enabled) {
               <p class="small">
-                This is the Crucible on this machine, so it replaces the local GPU slot rather
+                This is the engine on this machine, so it replaces the local GPU slot rather
                 than sitting beside it.
               </p>
             }
@@ -174,7 +223,15 @@ interface EditableServer extends CrucibleServerView {
           screens offer one set of choices — see the module note. The WSL distro
           field lives inside door 2, beside the button that needs it.
         -->
-        <app-crucible-doors (changed)="load()" />
+        <!--
+          AND THE FOURTH DOOR, THE WAY OUT, drawn only here. The child takes an
+          input for it and the first-run wizard does not pass one: offering to
+          remove Crucible to somebody who has not installed it yet is a screen
+          teaching the wrong thing. crucible docs/INSTALL-UNINSTALL.md section
+          6.1 decides the rest — the door appears only for a server main can
+          PROVE is this machine's, and never for a registry row.
+        -->
+        <app-crucible-doors [canUninstall]="true" (changed)="load()" />
 
         <!--
           WHAT A NEW ROW STARTS AS. It is resolved to a slot NAME at the press,
@@ -286,6 +343,15 @@ export class ServersCardComponent {
   protected readonly probes = signal<Record<string, CrucibleProbe>>({});
   protected readonly orphans = signal<Job[]>([]);
   protected readonly dragFrom = signal<number | null>(null);
+  /**
+   * What Foundry has said to each engine, by the name the REGISTRY stored.
+   *
+   * Keyed by stored name and not by the name in the input box, which is why the
+   * line disappears for as long as somebody is halfway through retyping one: a
+   * sentence about "Mac Stud" would be a sentence about a server nobody has
+   * ever spoken to.
+   */
+  protected readonly coordination = signal<CrucibleCoordinationMap>({});
 
   protected readonly isLoopback = isLoopbackUrl;
   protected readonly slotNames = computed(() => this.slots().map((slot) => slot.name).join(', '));
@@ -295,6 +361,18 @@ export class ServersCardComponent {
   constructor() {
     if (!api) return;
     void this.load();
+    /*
+     * THE MAP ON LOAD, AND EVERY CHANGE AFTER IT — both, because neither is the
+     * whole picture on its own. Coordination begins at APP START, long before
+     * this card is built, so a card that only listened would draw nothing about
+     * a server that was already `stocked` before Settings was opened; and a
+     * card that only read once would freeze mid-download.
+     */
+    void this.loadCoordination();
+    const stop = api.crucible.onCoordination((state) => {
+      this.coordination.update((all) => ({ ...all, [state.server]: state }));
+    });
+    inject(DestroyRef).onDestroy(stop);
   }
 
   /**
@@ -313,6 +391,24 @@ export class ServersCardComponent {
     this.newJobsWaitFor.set(view.newJobsWaitFor);
     this.hosted.set(view.hosted);
     void this.refreshOrphans();
+  }
+
+  private async loadCoordination(): Promise<void> {
+    if (!api) return;
+    this.coordination.set(await api.crucible.coordination());
+  }
+
+  /**
+   * The one sentence this card draws about coordination, or null.
+   *
+   * EVERY WORD OF IT IS `core/crucible-words.ts`'s. Main sends facts — which
+   * phase, what is missing, who holds the card — and the copy is composed in
+   * one file so that this card, the wizard and BookForge's own row cannot come
+   * to describe one machine three ways (crucible ARCHITECTURE.md R1).
+   */
+  protected coordinationOf(name: string): string | null {
+    const state = this.coordination()[name];
+    return state === undefined ? null : coordinationWords(state);
   }
 
   protected edit(key: number, patch: Partial<EditableServer>): void {
@@ -385,6 +481,23 @@ export class ServersCardComponent {
       this.problem.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.saving.set(false);
+    }
+  }
+
+  /**
+   * Open a server's own operator page.
+   *
+   * BY NAME, and only for a row whose token is STORED rather than typed: main
+   * reads the credential from the registry, so a row still being edited has
+   * nothing there to read. The failure is drawn beside the row exactly as a
+   * failed test is — it is the same kind of news, about the same server.
+   */
+  protected async openUi(name: string): Promise<void> {
+    if (api === null) return;
+    try {
+      await api.crucible.open(name);
+    } catch (err) {
+      this.problem.set(err instanceof Error ? err.message : String(err));
     }
   }
 

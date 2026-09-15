@@ -89,123 +89,111 @@ interface EditableProvider extends CloudProviderView {
         @if (saved()) { <span class="badge">saved</span> }
       </div>
 
-      @if (hosted()) {
-        <p class="detail">
-          The slots below belong to the application Foundry is running inside. Connect a cloud
-          provider there.
-        </p>
-        @for (slot of cloudSlots(); track slot.name) {
-          <p class="small mono">{{ slot.name }}</p>
-        } @empty {
-          <p class="small">The host offers no cloud slot, so there is none here.</p>
-        }
-      } @else {
-        <p class="detail">
-          An OpenAI or Anthropic API key, so translation, simplification, narration cleanup and
-          analysis can run on usage credits instead of on this computer's own GPU. Reading the
-          pages of a book never goes to a provider — that stays here or on a Crucible.
-        </p>
+      <p class="detail">
+        An OpenAI or Anthropic API key, so translation, simplification, narration cleanup and
+        analysis can run on usage credits instead of on this computer's own GPU. Reading the
+        pages of a book never goes to a provider — that stays here or on a Crucible.
+      </p>
 
-        @for (row of rows(); track row.key) {
-          <div class="provider">
-            <div class="row">
-              <input class="name" type="text" placeholder="My OpenAI key"
-                     [ngModel]="row.name" [name]="'cname' + row.key"
-                     (ngModelChange)="edit(row.key, { name: $event })">
-              <select class="kind" [ngModel]="row.kind" [name]="'ckind' + row.key"
-                      (ngModelChange)="edit(row.key, { kind: $event })">
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-              <label class="toggle">
-                <input type="checkbox" [ngModel]="row.enabled" [name]="'con' + row.key"
-                       (ngModelChange)="edit(row.key, { enabled: $event })">
-                <span>On</span>
-              </label>
-              <button class="ghost" (click)="drop(row.key)">Remove</button>
-            </div>
-
-            <!--
-              THE MODEL, AS FREE TEXT. See the module note: a compiled catalog of
-              hosted model names is wrong by the next release, so the placeholder
-              is one plausible id and Test is the proof.
-            -->
-            <input class="wide" type="text" [placeholder]="modelHint(row.kind)"
-                   [ngModel]="row.model" [name]="'cmodel' + row.key"
-                   (ngModelChange)="edit(row.key, { model: $event })">
-
-            <!--
-              AND THE ADDRESS, WHICH IS ALMOST ALWAYS EMPTY. An OpenAI-compatible
-              host somebody runs themselves goes here; empty means the provider's
-              own, which the placeholder names so that "blank" reads as a choice
-              rather than as something unfinished.
-            -->
-            <input class="wide" type="text" [placeholder]="endpointHint(row.kind)"
-                   [ngModel]="row.endpoint" [name]="'cend' + row.key"
-                   (ngModelChange)="edit(row.key, { endpoint: $event })">
-
-            <div class="row">
-              <input class="wide" type="password"
-                     [placeholder]="row.keySet ? 'API key: set — type to replace' : 'API key: not set'"
-                     [ngModel]="row.apiKey ?? ''" [name]="'ckey' + row.key"
-                     (ngModelChange)="edit(row.key, { apiKey: $event })">
-              <button class="ghost" [disabled]="testing() === row.key"
-                      (click)="test(row.key)">
-                {{ testing() === row.key ? 'Testing…' : 'Test' }}
-              </button>
-            </div>
-            <!--
-              THE SENTENCE OWEN'S RULE REQUIRES, under the key field and never
-              anywhere else. Declared in shared/slots.ts so two surfaces cannot
-              word it differently.
-            -->
-            <p class="small warn-soft">{{ keySentence }}</p>
-
-            @if (probes()[row.key]; as probe) {
-              @if (probe.outcome === 'ok') {
-                @if (probe.chosenListed) {
-                  <p class="small ok">
-                    {{ probe.chosen }} is one of the {{ probe.models.length }} models this key can
-                    use.
-                  </p>
-                } @else {
-                  <!--
-                    A WORKING KEY AND A MODEL THAT IS NOT ON IT ARE DIFFERENT
-                    NEWS, so this is a warning beside a successful listing rather
-                    than a failure — the fix is the model box, not the key box.
-                    Saving is still allowed: a provider may serve a model it does
-                    not list, and refusing to store the id somebody typed would
-                    make this app the authority on somebody else's catalog.
-                  -->
-                  <p class="small warn">{{ notListed(probe.chosen, probe.models) }}</p>
-                }
-              } @else {
-                <p class="small warn">{{ probe.message }}</p>
-              }
-            }
+      @for (row of rows(); track row.key) {
+        <div class="provider">
+          <div class="row">
+            <input class="name" type="text" placeholder="My OpenAI key"
+                   [ngModel]="row.name" [name]="'cname' + row.key"
+                   (ngModelChange)="edit(row.key, { name: $event })">
+            <select class="kind" [ngModel]="row.kind" [name]="'ckind' + row.key"
+                    (ngModelChange)="edit(row.key, { kind: $event })">
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+            <label class="toggle">
+              <input type="checkbox" [ngModel]="row.enabled" [name]="'con' + row.key"
+                     (ngModelChange)="edit(row.key, { enabled: $event })">
+              <span>On</span>
+            </label>
+            <button class="ghost" (click)="drop(row.key)">Remove</button>
           </div>
-        } @empty {
-          <p class="small">No cloud providers. Nothing in this app sends text anywhere.</p>
-        }
 
-        <div class="actions">
-          <button class="ghost" (click)="add()">Connect a provider</button>
-          <button class="primary" [disabled]="saving()" (click)="save()">
-            {{ saving() ? 'Saving…' : 'Save' }}
-          </button>
+          <!--
+            THE MODEL, AS FREE TEXT. See the module note: a compiled catalog of
+            hosted model names is wrong by the next release, so the placeholder
+            is one plausible id and Test is the proof.
+          -->
+          <input class="wide" type="text" [placeholder]="modelHint(row.kind)"
+                 [ngModel]="row.model" [name]="'cmodel' + row.key"
+                 (ngModelChange)="edit(row.key, { model: $event })">
+
+          <!--
+            AND THE ADDRESS, WHICH IS ALMOST ALWAYS EMPTY. An OpenAI-compatible
+            host somebody runs themselves goes here; empty means the provider's
+            own, which the placeholder names so that "blank" reads as a choice
+            rather than as something unfinished.
+          -->
+          <input class="wide" type="text" [placeholder]="endpointHint(row.kind)"
+                 [ngModel]="row.endpoint" [name]="'cend' + row.key"
+                 (ngModelChange)="edit(row.key, { endpoint: $event })">
+
+          <div class="row">
+            <input class="wide" type="password"
+                   [placeholder]="row.keySet ? 'API key: set — type to replace' : 'API key: not set'"
+                   [ngModel]="row.apiKey ?? ''" [name]="'ckey' + row.key"
+                   (ngModelChange)="edit(row.key, { apiKey: $event })">
+            <button class="ghost" [disabled]="testing() === row.key"
+                    (click)="test(row.key)">
+              {{ testing() === row.key ? 'Testing…' : 'Test' }}
+            </button>
+          </div>
+          <!--
+            THE SENTENCE OWEN'S RULE REQUIRES, under the key field and never
+            anywhere else. Declared in shared/slots.ts so two surfaces cannot
+            word it differently.
+          -->
+          <p class="small warn-soft">{{ keySentence }}</p>
+
+          @if (probes()[row.key]; as probe) {
+            @if (probe.outcome === 'ok') {
+              @if (probe.chosenListed) {
+                <p class="small ok">
+                  {{ probe.chosen }} is one of the {{ probe.models.length }} models this key can
+                  use.
+                </p>
+              } @else {
+                <!--
+                  A WORKING KEY AND A MODEL THAT IS NOT ON IT ARE DIFFERENT
+                  NEWS, so this is a warning beside a successful listing rather
+                  than a failure — the fix is the model box, not the key box.
+                  Saving is still allowed: a provider may serve a model it does
+                  not list, and refusing to store the id somebody typed would
+                  make this app the authority on somebody else's catalog.
+                -->
+                <p class="small warn">{{ notListed(probe.chosen, probe.models) }}</p>
+              }
+            } @else {
+              <p class="small warn">{{ probe.message }}</p>
+            }
+          }
         </div>
-        @if (problem(); as why) { <p class="warn">{{ why }}</p> }
-
-        @if (cloudSlots().length > 0) {
-          <p class="small">
-            {{ slotNames() }}
-            {{ cloudSlots().length === 1 ? 'is a slot' : 'are slots' }} on the queue page, under
-            "Cloud — costs credits". Nothing is sent there unless a job's own row names it: jobs
-            set to "any" never fall through to a provider.
-          </p>
-        }
+      } @empty {
+        <p class="small">No cloud providers. Nothing in this app sends text anywhere.</p>
       }
-    </div>
+
+      <div class="actions">
+        <button class="ghost" (click)="add()">Connect a provider</button>
+        <button class="primary" [disabled]="saving()" (click)="save()">
+          {{ saving() ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+      @if (problem(); as why) { <p class="warn">{{ why }}</p> }
+
+      @if (cloudSlots().length > 0) {
+        <p class="small">
+          {{ slotNames() }}
+          {{ cloudSlots().length === 1 ? 'is a slot' : 'are slots' }} on the queue page, under
+          "Cloud — costs credits". Nothing is sent there unless a job's own row names it: jobs
+          set to "any" never fall through to a provider.
+        </p>
+      }
+          </div>
   `,
   styles: [`
     :host { display: block; }
@@ -265,7 +253,6 @@ interface EditableProvider extends CloudProviderView {
 export class CloudCardComponent {
   protected readonly rows = signal<EditableProvider[]>([]);
   protected readonly cloudSlots = signal<ComputeSlot[]>([]);
-  protected readonly hosted = signal(false);
   protected readonly saving = signal(false);
   protected readonly saved = signal(false);
   protected readonly problem = signal<string | null>(null);
@@ -298,7 +285,6 @@ export class CloudCardComponent {
     const view = await api.cloud.settings();
     this.adopt(view.providers);
     this.cloudSlots.set(view.slots.filter((slot) => slot.kind === 'cloud'));
-    this.hosted.set(view.hosted);
   }
 
   private adopt(providers: readonly CloudProviderView[]): void {

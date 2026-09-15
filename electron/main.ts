@@ -470,10 +470,14 @@ interface FoundryHostRecord {
    * reading REFUSES by name rather than answering with an empty list, which
    * their reader logs.
    *
-   * WE NEVER OFFERED `slots?()`, which is why nothing is being removed here:
-   * the vendored subtree at `e6d5424` still calls it and gets `undefined`, so
-   * hosted placement is inert until the re-vendor that carries their new
-   * reader. See `hostedCrucibleTextActNotVendored` in foundry-host-queue.ts.
+   * WE NEVER OFFERED `slots?()`, which is why nothing had to be removed when
+   * it retired. This seam was built on 2026-09-14 and was INERT until the
+   * subtree that reads it was copied in; the re-vendor of 2026-09-15
+   * (`foundry-app/` at foundry `4e0a4cb`, carrying `e096734`) is what made it
+   * live, and it is now the whole of how a hosted text act finds a Crucible.
+   * If nothing here answers, that window places nothing and falls to its own
+   * Ollama door — which is why `queue-steps/foundry-job.ts` refuses a text act
+   * whose server this list does not offer, rather than handing it over.
    */
   servers?(): readonly HostCrucibleServer[];
   /**
@@ -704,10 +708,20 @@ interface FoundryMountModule {
    * reaches this and finds nothing FAILS WITH A SENTENCE (foundry-host-queue.ts)
    * rather than falling back to Foundry's own queue, which is the thing the
    * ruling removed.
+   *
+   * ── `waitFor` IS DECLARED THEIR WAY HERE, NOT OURS ────────────────────────
+   *
+   * This is the MOUNT's shape — what the vendored subtree actually publishes
+   * (`RunOptions` in `foundry-app/electron/job-queue.ts`, since foundry
+   * `f300fc6`) — and over there the field is OPTIONAL, where absent means
+   * *that window's own `newJobsWaitFor` setting decides*. Ours is
+   * `string | null` and required, because a caller must STATE whether its kind
+   * travels. The translation between the two happens once, at the adapter that
+   * calls this, and the reason it must is written there.
    */
   runJob?(
     request: FoundryJobRequest,
-    opts: FoundryRunJobOptions,
+    opts: Omit<FoundryRunJobOptions, 'waitFor'> & { waitFor?: string },
   ): Promise<FoundryJobRow>;
   /**
    * The rows for one project, pushed — their shelf's mirror of OUR queue.
@@ -8264,6 +8278,8 @@ function setupIpcHandlers(): void {
        * engine that no longer exists, and a route record outliving its server
        * is a bug this app already fixed once (crucible rollout plan, 28ad983f).
        */
+      const { forgetResolvedEngine } = await import('./crucible/engine-resolve.js');
+      forgetResolvedEngine(server);
       const { forgetCrucibleRoutes } = await import('./crucible/routes.js');
       forgetCrucibleRoutes(server);
       return { success: true, data: plan };
@@ -13068,24 +13084,32 @@ app.whenReady().then(async () => {
     }
 
     /*
-     * …AND THE ONE BENCH QUESTION OF EVERY OTHER ENABLED ENGINE.
+     * …AND THE TWO BENCH QUESTIONS OF EVERY OTHER ENABLED ENGINE.
      *
      * Coordination at start is `local`'s alone, so until now nothing ever asked
-     * a REMOTE whether it has an upstream until something happened to connect to
-     * it — which is why the record above was empty and the lanes were phantom.
-     * This is one `GET /v1/settings` each, once, with no timer: the same read
-     * coordination makes as its fourth, at the one moment there is no other
-     * occasion for it. A server that does not answer stays `unknown` and keeps
-     * its lane, and says so in the log.
+     * a REMOTE whether it has an upstream — or whether it is an orchestrator
+     * with no card at all — until something happened to connect to it, which is
+     * why the record above was empty and the lanes were phantom. This is one
+     * `GET /v1/settings` and one `GET /v1/info` each, once, with no timer: the
+     * same reads coordination makes, at the one moment there is no other
+     * occasion for them. A server that does not answer stays `unknown` and keeps
+     * its row and its lane, and says so in the log.
+     *
+     * Whatever this learns REACHES THE BENCH, which is the other half of the
+     * defect: the record announces its own changes now
+     * (`crucible/routes.ts`'s `onCrucibleRecordChanged`) and the queue engine
+     * republishes on them. Without that the window kept the one snapshot it
+     * asked for while it was still starting — with an empty queue nothing else
+     * ever publishes.
      */
     try {
-      const { readUpstreamsOnStart } = await import('./crucible/coordinate.js');
-      const asked = await readUpstreamsOnStart();
+      const { readBenchFactsOnStart } = await import('./crucible/coordinate.js');
+      const asked = await readBenchFactsOnStart();
       if (asked.length > 0) {
-        logger.info(`Crucible upstreams read at startup for: ${asked.join(', ')}`);
+        logger.info(`Crucible bench facts read at startup for: ${asked.join(', ')}`);
       }
     } catch (err) {
-      logger.warn('Could not ask the registered Crucible servers about their upstreams', {
+      logger.warn('Could not ask the registered Crucible servers about their upstreams and roles', {
         error: (err as Error).message,
       });
     }
@@ -13176,8 +13200,27 @@ app.whenReady().then(async () => {
    * queue, which is the thing the ruling removed.
    */
   setFoundrySeam({
+    /*
+     * THE ONE PLACE THE TWO SHAPES OF `waitFor` MEET, and it is a translation
+     * rather than a pass-through.
+     *
+     * Ours is `string | null` and REQUIRED — every caller must state whether
+     * this kind of job travels, because "did not say" and "does not travel" are
+     * different facts and only one of them is true of a render. Theirs is
+     * `waitFor?: string` and OPTIONAL, where absent means *this app's own
+     * `newJobsWaitFor` decides*.
+     *
+     * So null must become an ABSENT KEY, not a null value: their `placedBy`
+     * branches on `chosen !== undefined`, so a literal `null` would be taken as
+     * a pinned slot named null, `slotNamed` would never match it, and the row
+     * would park for ever on a name nobody typed.
+     */
     runJob: typeof foundryMount.runJob === 'function'
-      ? (request, opts) => foundryMount.runJob!(request, opts)
+      ? (request, opts) => {
+        const { waitFor, ...rest } = opts;
+        return foundryMount.runJob!(
+          request, waitFor === null ? rest : { ...rest, waitFor });
+      }
       : null,
     setQueueRows: typeof foundryMount.setHostQueueRows === 'function'
       ? (dir, rows) => foundryMount.setHostQueueRows!(dir, rows)

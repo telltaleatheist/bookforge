@@ -424,43 +424,41 @@ async function main() {
   });
 
   // ── 7. Who may run it at all: the reach into the spawn's environment ──────
-  await check('a caller with NO reach into the environment is refused by name', async () => {
-    let asked = false;
-    const host = scriptedHost({ models: async () => { asked = true; return []; } });
-    await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'none' }),
-      (err) => {
-        assert.strictEqual(err.code, 'hosted_placement_not_vendored');
-        // Named for the CAPABILITY it waits on, never for a version number:
-        // the blocker is the state of the vendored subtree, and a floor that
-        // went green on a release would be a guard passing without its
-        // subject. REWRITTEN 2026-09-14: the sentence used to blame the
-        // `env: process.env` in their engine spawn, which foundry had already
-        // fixed (`f300fc6`) while this guard went on quoting it. The live gap
-        // is that the job seam BookForge calls carries no environment and the
-        // vendored dispatcher cannot compose one hosted;
-        // `tools/test-foundry-hosted-crucible-seam.js` reads the subtree so
-        // that cannot go stale unnoticed again.
-        assert.ok(err.message.includes('runJob'), err.message);
-        assert.ok(err.message.includes('e096734'), err.message);
-        assert.ok(err.message.includes('FOUNDRY_ENDPOINT_HEADERS'), err.message);
-        assert.ok(!err.message.includes('env: process.env'),
-          'the refusal blames the spawn foundry fixed at f300fc6: ' + err.message);
-        assert.ok(!/\b1\.3\.0\b/.test(err.message),
-          `the refusal blames a version rather than the capability:\n${err.message}`);
-        // And it says what DOES work: a refusal with no way forward is what
-        // the no-band-aids rule is about.
-        assert.ok(err.message.includes('CLI clean routes'), err.message);
-        // What it says the HOSTED window can do INSTEAD changed on 2026-09-15:
-        // the local text engines it used to fall to are deleted
-        // (docs/LEGACY-REMOVAL.md), so the honest sentence is that it has no
-        // other route until the re-vendor — not "turn the switch on".
-        assert.ok(/no other route/.test(err.message), err.message);
-        assert.ok(!/turn on|legacy switch/i.test(err.message),
-          `it still offers a switch that no longer exists: ${err.message}`);
-        return true;
-      });
-    assert.strictEqual(asked, false, 'the server was asked for its models after the reach said no');
+  await check('there is no third reach, and nothing here refuses one', () => {
+    /*
+     * THE INVERSE OF THE CHECK THAT STOOD HERE, AND ON PURPOSE.
+     *
+     * Until the re-vendor of 2026-09-15 a third value existed — `none`, *the
+     * hosted queue step, whose spawn is somebody else's and whose seam carries
+     * no environment* — and this suite held its refusal
+     * (`hosted_placement_not_vendored`) and the sentence it used. Foundry's
+     * `e096734`, vendored at `4e0a4cb`, closed it: hosted, that window reads
+     * BookForge's registry and composes the credential for its own spawn.
+     *
+     * So the arm is deleted rather than left standing green, and what is
+     * pinned now is the DELETION. A refusal reachable from this module again
+     * would mean somebody re-introduced a caller that cannot give a spawn an
+     * environment and then tried to hand it a credential anyway.
+     */
+    // Comments stripped first: the header of that file NAMES the deleted arm
+    // to say what it meant and why it went, and a check that could not tell the
+    // property from the prose would force the next person to delete the
+    // explanation in order to go green.
+    const src = fs.readFileSync(
+      path.join(REPO, 'electron', 'crucible', 'text-venue.ts'), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const reach = /export type EndpointHeaderReach =[\s\S]*?;/.exec(src);
+    assert.ok(reach !== null, 'EndpointHeaderReach is gone from text-venue.ts');
+    assert.ok(/\|\s*'spawn'/.test(reach[0]), reach[0]);
+    assert.ok(/\|\s*'process'/.test(reach[0]), reach[0]);
+    assert.ok(!/'none'/.test(reach[0]),
+      `the \`none\` reach is back. It meant "a caller that cannot give the engine spawn an `
+      + `environment", and the hosted queue step — its only user — no longer composes an act at `
+      + `all: the vendored Foundry window does, out of FoundryHost.servers(). Re-read `
+      + `electron/queue-steps/foundry-job.ts before adding it:\n${reach[0]}`);
+    assert.ok(!/hosted_placement_not_vendored/.test(src),
+      'the hosted_placement_not_vendored code is back in text-venue.ts');
   });
 
   await check('an own spawn and a single-purpose process may both run one', async () => {
