@@ -379,6 +379,19 @@ const SUITES = [
   'test-assembly-after-wsl-normalize',
   'test-wsl-sweep-serve-exclusion',
   'test-extension-typecheck',
+  // PHASE 16: the browser extension talks to a Crucible with no BookForge in
+  // between, which puts the Listen text path in TWO bundles built by two
+  // toolchains. The failure is silent by construction — a split that differs by
+  // one character makes a resumed block splice one row's audio under another
+  // row's text — so the FUNCTION BODIES are compared byte for byte rather than
+  // the imports. It also compares the one number the shared file could not
+  // import: the Crucible read-ahead depth against the local pool's ramp width.
+  'test-listen-text-one-source',
+  // And the two columns of the plan's table (§0), by name. The left one has to
+  // be present in the extension before BookForge's TTS server button can go;
+  // the right one has to stay absent, which is the half that rots, because a
+  // dropped control comes back one helpful commit at a time.
+  'test-extension-option-columns',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',
