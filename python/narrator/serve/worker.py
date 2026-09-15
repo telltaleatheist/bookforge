@@ -21,8 +21,19 @@ Protocol (one JSON object per line):
   stdin:  {action: 'load', voice, id?, modelDir?, adapterDir?, baseDir?, caps?,
                             warm?: bool}   # warm=False: skip the first-load warmup
                                            # because a speak is already waiting
-          {action: 'generate', text, voice?, stream?: bool, ...}
-          {action: 'generate_batch', items: [{i, text, voice?, stream?: bool}], ...}
+          {action: 'generate', text, voice?, stream?: bool, sampling?, ...}
+          {action: 'generate_batch',
+           items: [{i, text, voice?, stream?: bool, sampling?}], ...}
+                 # `sampling` is ONE ITEM's take-ladder rung:
+                 #   {temperature?, topP?, topK?, repetitionPenalty?}
+                 # spelled exactly as the NARRATOR_HIGGS_VOICES document
+                 # spells it. ABSENT = the voice's loaded sampling, which is
+                 # take 0. PRESENT = that item renders under those numbers,
+                 # laid OVER take 0 key by key; a batch may mix rungs.
+                 # Refused by name, per item: `sampling_malformed` (not a
+                 # sampling) and `sampling_not_supported` (this engine or this
+                 # backend has no such lever - Orpheus has none at all).
+                 # See engine/item_sampling.py.
           {action: 'cancel' | 'stop' | 'quit'}
                  # 'cancel'/'stop' ABORT a running generate_batch - see the reader
                  # thread in run(). Un-rendered rows come back as ordinary per-item
@@ -36,6 +47,17 @@ Protocol (one JSON object per line):
           {type: 'batch_item', i, format:'pcm16', data, duration, sampleRate,
                                guard?: {...}}                                # batch
           {type: 'batch_item', i, streamed: true, duration, chunks}          # fast start
+
+THE PER-ITEM SAMPLING CHANNEL (Owen, 2026-09-14, the retake spread ruling in
+docs/EXTENSION-TO-CRUCIBLE-PLAN.md section 2: *a retake must not reuse the
+settings that produced the problem; the spread IS the take ladder*). Crucible
+resolves a job's `take: N` against the voice's `[[voice.takes]]` ladder and
+sends the NUMBERS on the item. Until this existed there was no channel for
+them - the voices document is written per LOAD and a reload per take is not a
+ladder - and Crucible refused every rung above 0 by name
+(`sampling_not_wired`, crucible/docs/PHASE3-TTS.md section 4). A temperature
+never reaches this wire from the APP: it is engine config, resolved by the
+server, and what the app asks for is a take.
 
 `guard` (Owen's ruling of 2026-09-13, crucible/docs/PHASE6-REMOTE-RENDER.md) is
 the verdict the ENGINE'S OWN retake ladder reached for that chunk - `verdict`,
@@ -1126,26 +1148,55 @@ class OrpheusStreamServer:
                 'Load the voice before generating in it.'
             )
 
-    def _resolve_row(self, item) -> str:
-        """The voice token one BATCH item must render in, or raise with the reason.
+    def _resolve_row(self, item):
+        """`(voice token, sampling)` one BATCH item must render under, or raise
+        with the reason.
 
-        The two per-item rejections in one place: a voice this engine never loaded
-        (_row_voice) and a voice this BACKEND cannot serve per request. Both fail the
-        one item, not the batch."""
+        The per-item rejections in one place: a voice this engine never loaded
+        (_row_voice), a voice this BACKEND cannot serve per request, and a
+        take-ladder rung this ENGINE cannot honour. Every one of them fails the
+        one item, not the batch - that is the whole reason they live here and
+        not in a loop over the whole batch (one stray voice used to fail all 16
+        sentences).
+
+        THE ENGINE PARSES ITS OWN RUNG. `accept_item_sampling` is a member of
+        every engine this worker drives: Higgs's returns the engine-shaped
+        numbers, Orpheus's refuses by name. Asking the engine - rather than
+        testing ENGINE_ID here - is the same discriminator
+        `_guards_its_own_batch` settled on, for the same reason: `backend` is a
+        runtime name and an engine is the only thing that knows its own levers.
+        """
         v = self._row_voice(item.get('voice'))
         if self.orph.backend != 'vllm':
             self._reject_per_request_voice(v)
-        return v
+        return v, self.orph.accept_item_sampling(
+            item.get('sampling'), f'generate_batch row i={item.get("i")!r}')
 
-    def _generate_audio(self, text: str, voice: str = None, index: int = 0):
+    def _generate_audio(self, text: str, voice: str = None, index: int = 0,
+                        sampling=None):
         """Generate one sentence to a float numpy waveform via the engine's
         backend-specific path (mirrors OrpheusEngine.convert(), but in-memory).
 
         `voice` (default: the loaded voice) selects the prompt token, the sampling
         caps and - in adapter mode - the LoRA, all the way down through the retake
-        ladder, so a per-request voice is honoured end to end."""
+        ladder, so a per-request voice is honoured end to end.
+
+        `sampling` is this item's take-ladder rung, ALREADY PARSED by the
+        engine's `accept_item_sampling` (never the raw wire value). None means
+        the voice's loaded sampling - take 0 - which is what every caller sent
+        before the ladder existed. Only an engine driven through
+        `render_audio` can carry one; Orpheus refuses a rung at the door, so
+        reaching this method with one is a wiring bug and is named as such
+        rather than rendered at the wrong numbers."""
         orph = self.orph
         v = self._row_voice(voice)
+        if sampling is not None and _uses_orpheus_token_pipeline(orph):
+            raise ValueError(
+                'narrator.serve: an Orpheus render reached _generate_audio with a '
+                f'per-item sampling ({sampling!r}). Orpheus has no per-item '
+                'sampling channel and `accept_item_sampling` refuses one - a rung '
+                'that got this far would be rendered at the voice caps and '
+                'reported as the rung.')
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
             return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
@@ -1168,7 +1219,7 @@ class OrpheusStreamServer:
                     f"engine '{getattr(orph, 'ENGINE_ID', '?')}' is not Orpheus and "
                     'offers no render_audio(text). This worker has no way to render '
                     'one sentence with it.')
-            audio = render(clean, index=index)
+            audio = render(clean, index=index, sampling=sampling)
         elif orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
@@ -1205,7 +1256,7 @@ class OrpheusStreamServer:
             )
         return finalize_audio(audio)
 
-    def _generate_audio_batch(self, texts, voices=None):
+    def _generate_audio_batch(self, texts, voices=None, samplings=None):
         """Generate many sentences at once. On the vLLM backend this is a TRUE
         batch - one engine.generate([prompts]) call whose continuous batching runs
         the sequences concurrently on the GPU (the same path Orpheus audiobooks use
@@ -1217,11 +1268,32 @@ class OrpheusStreamServer:
         `voices`, when given, is aligned to `texts` and names each row's voice; None
         (or None entries) means the loaded voice. On vLLM every per-row property -
         prompt token, sampling caps, LoRA - is resolved from that row's own voice, so
-        ONE batch can carry several voices."""
+        ONE batch can carry several voices.
+
+        `samplings`, when given, is aligned to `texts` and carries each row's
+        PARSED take-ladder rung (None for a row at take 0). Only the sequential
+        arm at the bottom can honour one - the two Orpheus arms above it are
+        the engine that refuses a rung outright - so a rung reaching either of
+        them is refused by name rather than dropped."""
         orph = self.orph
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
         row_voices = [self._row_voice(voices[i] if voices else None)
                       for i in range(len(texts))]
+        row_sampling = list(samplings) if samplings is not None else [None] * len(texts)
+        if len(row_sampling) != len(texts):
+            raise ValueError(
+                f'narrator.serve: {len(row_sampling)} sampling(s) for {len(texts)} '
+                'rows; samplings must be aligned to texts or None.')
+
+        if _uses_orpheus_token_pipeline(orph) and any(r is not None for r in row_sampling):
+            # Belt and braces with `_resolve_row`, and not redundant: `_warmup`
+            # calls this method directly. An Orpheus batch can never honour a
+            # rung, and rendering it at the voice caps while the caller
+            # believes it set a temperature is the failure the whole channel
+            # exists to prevent.
+            orph.accept_item_sampling(
+                next(r for r in row_sampling if r is not None),
+                'narrator.serve batch')
 
         if _uses_orpheus_token_pipeline(orph) and orph.backend == 'vllm':
             from vllm import TokensPrompt
@@ -1339,7 +1411,8 @@ class OrpheusStreamServer:
         # driver to route to - plus `_warmup`, which calls this method directly
         # with texts and no caller indices, and whose discarded renders want the
         # compile, not the ladder.
-        return [self._generate_audio(t, row_voices[i], index=i)
+        return [self._generate_audio(t, row_voices[i], index=i,
+                                     sampling=row_sampling[i])
                 for i, t in enumerate(texts)]
 
     @staticmethod
@@ -1379,10 +1452,18 @@ class OrpheusStreamServer:
         """Drive `rows` through the ENGINE'S OWN guarded driver and emit each chunk
         as the ladder decides it, verdict attached.
 
-        `rows` is generate_batch's `(item, normalized text, voice token)` triples,
-        already past the per-row voice resolution; `emitted` is that method's
-        one-answer-per-item set, added to here so its `finally` sweep can still
-        label anything this never reached.
+        `rows` is generate_batch's `(item, normalized text, voice token,
+        sampling)` quadruples, already past the per-row voice and rung
+        resolution; `emitted` is that method's one-answer-per-item set, added
+        to here so its `finally` sweep can still label anything this never
+        reached.
+
+        THE RUNG GOES TO THE DRIVER AS A MAP KEYED BY CHUNK INDEX, not on the
+        row, because that is the key the ladder itself uses: a re-roll and both
+        halves of a split carry their parent's index, and all of them must
+        render at the numbers that chunk was asked for. The map names EVERY
+        chunk this call plans (None for a chunk at take 0), so `render_many`
+        can refuse an unnamed one instead of quietly rendering it at take 0.
 
         WHY THIS EXISTS. Until 2026-09-13 the serve world handed a Higgs engine one
         `render_audio()` per sentence - no PaceTracker, no re-roll, no split ladder -
@@ -1418,12 +1499,13 @@ class OrpheusStreamServer:
         orph = self.orph
         by_index = {}     # ladder index -> the item that asked for it
         plan_rows = []    # (index, cleaned text) - the driver's input
+        rungs = {}        # ladder index -> that chunk's sampling (None = take 0)
 
         def fail(it, message):
             send_response('batch_item', {'i': it.get('i'), 'message': message})
             emitted.add(id(it))
 
-        for it, text, voice in rows:
+        for it, text, voice, sampling in rows:
             try:
                 # A BACKSTOP, not the gate: _resolve_row already refused a
                 # per-request voice on every backend that cannot serve one. It
@@ -1471,11 +1553,13 @@ class OrpheusStreamServer:
 
             by_index[index] = it
             plan_rows.append((index, clean))
+            rungs[index] = sampling
 
         if not plan_rows:
             return
 
-        for index, audio, verdict in orph.render_many(plan_rows):
+        for index, audio, verdict in orph.render_many(plan_rows,
+                                                      sampling_by_index=rungs):
             it = by_index.pop(index, None)
             if it is None:
                 # The driver yielded an index this batch never asked for (or asked
@@ -1528,6 +1612,10 @@ class OrpheusStreamServer:
             unservable = set()
             for pos, it in enumerate(items):
                 try:
+                    # The pair is discarded: this is ORPHEUS's MLX grouping, so
+                    # the row can only be the loaded voice and can only be take
+                    # 0 - `_resolve_row` refuses anything else, per row, which
+                    # is the whole point of calling it here.
                     self._resolve_row(it)
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
@@ -1760,7 +1848,7 @@ class OrpheusStreamServer:
             positions = []          # positions into `items` that will be rendered
             for pos, it in enumerate(items):
                 try:
-                    voice = self._resolve_row(it)
+                    voice, rung = self._resolve_row(it)
                 except Exception as e:
                     if _claim(pos):
                         send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
@@ -1775,17 +1863,22 @@ class OrpheusStreamServer:
                         self._emit_batch_item(
                             it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                     continue
-                positions.append((pos, cleaned, voice))
+                positions.append((pos, cleaned, voice, rung))
 
             if not positions:
                 return
 
-            texts = [c for _pos, c, _v in positions]
-            voices = [v for _pos, _c, v in positions]
+            texts = [c for _pos, c, _v, _s in positions]
+            voices = [v for _pos, _c, v, _s in positions]
+            # Each row's take-ladder rung, aligned to `texts`. Streaming is
+            # UNGUARDED by ruling (see the docstring), so a rung here is simply
+            # the numbers that row renders at - there is no ladder to climb,
+            # and the client decided which rung it wanted.
+            samplings = [rung for _pos, _c, _v, rung in positions]
             # Row index (into `texts`) -> position into `items`, since the engine's
             # callbacks speak in row indices and the wire speaks in the caller's `i`.
-            row_to_pos = [pos for pos, _c, _v in positions]
-            stream_rows = {row for row, (pos, _c, _v) in enumerate(positions)
+            row_to_pos = [pos for pos, _c, _v, _s in positions]
+            stream_rows = {row for row, (pos, _c, _v, _s) in enumerate(positions)
                            if items[pos].get('stream') is True}
             print(f'[narrator.serve] fast-start: streaming {len(stream_rows)} of '
                   f'{len(texts)} rows', file=sys.stderr)
@@ -1859,11 +1952,12 @@ class OrpheusStreamServer:
 
             try:
                 orph.generate_batch_stream(texts, voices, stream_rows,
-                                           on_chunk, on_row, self._is_cancelled)
+                                           on_chunk, on_row, self._is_cancelled,
+                                           samplings=samplings)
             except Exception as e:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
-                for pos, _c, _v in positions:
+                for pos, _c, _v, _s in positions:
                     if _claim(pos):
                         send_response('batch_item',
                                       {'i': items[pos].get('i'),
@@ -1900,6 +1994,15 @@ class OrpheusStreamServer:
         An item may carry its own `voice`; omitted means the loaded one. On vLLM the
         batch is NOT regrouped by voice - vLLM takes a per-prompt LoRA list, so mixed
         voices ride one call and the read-ahead window keeps its reading order.
+
+        An item may also carry its own `sampling` - the take-ladder rung
+        Crucible resolved for it. ABSENT is the voice's loaded sampling (take
+        0), which is the existing behaviour and the documented meaning of "no
+        rung", not a default substituted for a missing value. A BATCH MAY MIX
+        RUNGS: every engine here either renders row by row (so mixing is free)
+        or splits its slab by sampling group (the MLX arm - one slab samples at
+        one temperature, so `_mlx_batch_groups` breaks a group when the rung
+        changes). No path renders a row at another row's numbers.
 
         An item may also carry `stream: true` (fast start, Owen 2026-09-04), which
         routes the WHOLE batch through _generate_batch_streaming so those rows emit
@@ -1954,15 +2057,16 @@ class OrpheusStreamServer:
             # this engine (or this backend) cannot serve. A single unservable voice
             # must not sink the batch: the rest are ordinary sentences in a voice that
             # is right there.
-            rows = []   # (item, normalized text, voice token)
+            rows = []   # (item, normalized text, voice token, sampling)
             for it in items:
                 try:
-                    v = self._resolve_row(it)
+                    v, rung = self._resolve_row(it)
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
                     emitted.add(id(it))
                     continue
-                rows.append((it, normalize_for_tts(it.get('text', ''), language), v))
+                rows.append((it, normalize_for_tts(it.get('text', ''), language),
+                             v, rung))
 
             if rows and _guards_its_own_batch(self.orph):
                 # THE GUARDED ARM (Owen's ruling, 2026-09-13). An engine that
@@ -1974,9 +2078,11 @@ class OrpheusStreamServer:
                 # already runs on the arms below, is untouched.
                 self._emit_guarded_batch(rows, emitted)
             elif rows:
-                audios = self._generate_audio_batch([t for _, t, _ in rows],
-                                                    [v for _, _, v in rows])
-                for (it, _text, _v), audio in zip(rows, audios):
+                audios = self._generate_audio_batch(
+                    [t for _, t, _, _ in rows],
+                    [v for _, _, v, _ in rows],
+                    [g for _, _, _, g in rows])
+                for (it, _text, _v, _g), audio in zip(rows, audios):
                     emitted.add(id(it))
                     if audio is None or len(audio) == 0:
                         send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
@@ -2015,16 +2121,22 @@ class OrpheusStreamServer:
             send_response('batch_done', {'count': len(items)})
 
     def generate(self, text: str, language: str = 'en', stream: bool = False,
-                 voice: str = None, **_ignored):
+                 voice: str = None, sampling=None, **_ignored):
         """Render ONE sentence. `voice` (optional) must be a voice a 'load'
-        registered against the live engine; omitted means the loaded voice."""
+        registered against the live engine; omitted means the loaded voice.
+
+        `sampling` (optional) is this render's take-ladder rung, in the voices
+        document's spelling. It goes through the ENGINE's own
+        `accept_item_sampling`, so the refusals are the same two a batch row
+        gets - here they land as the `error` message this door speaks in."""
         if self.orph is None:
             send_response('error', {'message': 'Model not loaded'})
             return
         try:
             check_language(language)
+            rung = self.orph.accept_item_sampling(sampling, 'generate')
             text = normalize_for_tts(text, language)
-            audio = self._generate_audio(text, voice)
+            audio = self._generate_audio(text, voice, sampling=rung)
             if audio is None or len(audio) == 0:
                 send_response('error', {'message': 'No audio generated'})
                 return
@@ -2172,6 +2284,7 @@ class OrpheusStreamServer:
                     language=request.get('language', 'en'),
                     stream=bool(request.get('stream', False)),
                     voice=request.get('voice'),
+                    sampling=request.get('sampling'),
                 )
             elif action == 'generate_batch':
                 self.generate_batch(

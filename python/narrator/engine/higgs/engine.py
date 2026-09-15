@@ -163,12 +163,39 @@ class HiggsEngine:
             return None
         return int(self.config.seed) + int(index)
 
-    def render_audio(self, text: str, seed=None) -> np.ndarray:
+    #: The levers a per-item rung may name on THIS engine. transformers'
+    #: `generate` has a repetition_penalty, but v2 is unshipped scaffolding and
+    #: nothing has ever measured one here, so it is refused by name rather than
+    #: offered untested (engine/item_sampling.py).
+    ITEM_SAMPLING_LEVERS = ('temperature', 'topP', 'topK')
+
+    def accept_item_sampling(self, raw, where: str = None):
+        """One item's `sampling` off the wire -> this engine's dict, or None.
+        Refused by name; see `engine/item_sampling.py` for both names."""
+        from ..item_sampling import parse_item_sampling
+        return parse_item_sampling(raw, where or f'HiggsEngine({self.voice!r})',
+                                   levers=self.ITEM_SAMPLING_LEVERS)
+
+    def _sampling_for(self, item_sampling) -> dict:
+        """The numbers ONE chunk renders at: the config's, with the item's rung
+        laid over it key by key. See `engine/item_sampling.py:apply_over` for why a
+        partial rung is an overlay and not a replacement."""
+        from ..item_sampling import apply_over
+        return apply_over({'temperature': self.config.temperature,
+                           'top_p': self.config.top_p,
+                           'top_k': self.config.top_k}, item_sampling)
+
+    def render_audio(self, text: str, seed=None, sampling=None) -> np.ndarray:
         """One chunk of text -> a float32 mono waveform at 24 kHz.
 
         The whole path, in one place: chat history -> generate (capped in
         FRAMES) -> the codec's six-step decode. Raises on anything it cannot
         honestly answer; never returns silence.
+
+        `sampling` is this chunk's own rung (already parsed by
+        `accept_item_sampling`), laid over the config's numbers. None - which
+        is every caller that is not climbing a take ladder - renders at the
+        config's, exactly as before.
         """
         clean = (text or '').strip()
         if not clean:
@@ -176,7 +203,8 @@ class HiggsEngine:
         conversation = self._conversation(clean)
         cap = self._budget.cap_frames(clean)
         tokens = self._backend.generate(conversation, max_new_tokens=cap,
-                                        seed=self._seed_for(0) if seed is None else seed)
+                                        seed=self._seed_for(0) if seed is None else seed,
+                                        sampling=self._sampling_for(sampling))
         return self.codec().decode(tokens)
 
     def _sentence_file(self, sentence_number: int) -> str:
@@ -237,7 +265,7 @@ class HiggsEngine:
         return [self.convert(index, text) for index, text in items]
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None) -> None:
+                              should_stop=None, samplings=None) -> None:
         """In-memory batch render. Rows are emitted WHOLE, at retirement.
 
         The argument validation is `OrpheusEngine.generate_batch_stream`'s,
@@ -250,7 +278,13 @@ class HiggsEngine:
         for streaming still gets its audio on the streaming channel - it simply
         arrives in one piece, at the same moment the row finishes. Nothing here
         pretends to have started earlier than it did.
+
+        `samplings`, when given, is aligned to `texts` and carries each row's
+        own take-ladder rung (None for a row at take 0). This engine renders
+        serially, so a batch mixing rungs costs nothing extra: each row is one
+        `render_audio` at its own numbers.
         """
+        from ..item_sampling import aligned
         if not texts:
             return
         if voices is not None and len(voices) != len(texts):
@@ -279,12 +313,14 @@ class HiggsEngine:
             raise ValueError(
                 f'HiggsEngine.generate_batch_stream: row(s) {blank} have no text after '
                 'cleaning.')
+        rungs = aligned(samplings, len(texts), 'HiggsEngine.generate_batch_stream')
 
         for i, text in enumerate(texts):
             if should_stop is not None and should_stop():
                 # Abandoned: no on_row for this row or any after it.
                 return
-            audio = self.render_audio(text, seed=self._seed_for(i))
+            audio = self.render_audio(text, seed=self._seed_for(i),
+                                      sampling=rungs[i])
             if i in stream_rows:
                 on_chunk(i, 0, audio.copy())
             on_row(i, audio)

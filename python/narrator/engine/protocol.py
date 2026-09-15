@@ -783,8 +783,28 @@ class Engine(Protocol):
         the mixed bit depths ffmpeg's concat demuxer drops frames on.
         """
 
+    def accept_item_sampling(self, raw, where: str = None):
+        """ONE ITEM's take-ladder rung, off the wire -> this engine's own
+        sampling dict, or None when the item carried no rung.
+
+        DECLARED HERE because the serve worker calls it on every engine it
+        drives and the answer differs per engine: Higgs's arms parse it (with
+        their own lever sets - the MLX arm has no repetition penalty), Orpheus
+        refuses it outright. A requirement the worker has and the protocol does
+        not state is exactly the gap `_write_silence` fell into.
+
+        `raw` None returns None: an item with no `sampling` renders at the
+        voice's loaded sampling, which is take 0, and that is a documented
+        meaning rather than a default. Anything else is either the parsed
+        numbers or one of two refusals BY NAME - `sampling_malformed` and
+        `sampling_not_supported`, both in `narrator.engine.item_sampling`. Never a
+        clamp and never a silent drop: a rung ignored is a retake rendered at
+        the very settings the retake exists to avoid.
+        """
+
     def generate_batch_stream(self, texts: Sequence[str], voices, stream_rows,
-                              on_chunk, on_row, should_stop=None) -> None:
+                              on_chunk, on_row, should_stop=None,
+                              samplings=None) -> None:
         """In-memory batch render with per-row streaming.
 
         `on_chunk(row, seq, pcm)` fires for rows named in `stream_rows` as their
@@ -792,6 +812,11 @@ class Engine(Protocol):
         that completes. A row abandoned because `should_stop()` went true gets
         NO on_row - a caller must never be able to mistake an abandoned row for
         a finished one.
+
+        `samplings`, when given, is aligned to `texts` and carries each row's
+        parsed take-ladder rung (None for a row at take 0). An engine that
+        cannot mix sampling inside one batch SPLITS the batch by sampling
+        group; none may render a row at another row's numbers.
         """
 
     def cleanup(self) -> None:

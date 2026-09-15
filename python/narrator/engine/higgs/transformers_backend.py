@@ -105,16 +105,36 @@ class HiggsTransformersBackend:
             return_dict=True, sampling_rate=self.config.sample_rate,
             return_tensors='pt').to(self.model.device)
 
-    def generate(self, conversation, max_new_tokens: int, seed=None):
+    def generate(self, conversation, max_new_tokens: int, seed=None,
+                 sampling=None):
         """Run one chunk. Returns the raw (seq, 8) audio-token matrix.
 
         Sampling is render_v2.py's: do_sample=True with temperature / top_p /
-        top_k off the config. The seed is set per call (render_v2 used
-        1234 + chunk index) so a re-render of the same chunk is reproducible.
+        top_k. The seed is set per call (render_v2 used 1234 + chunk index) so
+        a re-render of the same chunk is reproducible.
+
+        `sampling` IS THE NUMBERS FOR THIS CHUNK, not an override to be merged
+        here: the caller (`HiggsEngine.render_audio`) has already laid any
+        per-item rung over the config's values (`engine/item_sampling.py:apply_over`)
+        and hands the result down whole. Omitted means the config's, which is
+        what every caller before the take ladder passed. THREE KEYS, ALL
+        REQUIRED, refused by name if one is missing - `dict.get(k, default)`
+        here would be this backend quietly choosing a lever the ladder thinks
+        it set.
         """
         import torch
         if self.model is None:
             raise RuntimeError('HiggsTransformersBackend.load() has not run')
+        if sampling is None:
+            sampling = {'temperature': self.config.temperature,
+                        'top_p': self.config.top_p, 'top_k': self.config.top_k}
+        missing = [k for k in ('temperature', 'top_p', 'top_k') if sampling.get(k) is None]
+        if missing:
+            raise ValueError(
+                f"HiggsTransformersBackend.generate(): sampling states no "
+                f"{', '.join(missing)}. transformers' `generate` defaults every "
+                'lever it is not given, so a partial sampling renders at numbers '
+                'nobody chose while the caller believes it set them.')
         inputs = self._encode(conversation)
         if seed is not None:
             torch.manual_seed(int(seed))
@@ -123,9 +143,9 @@ class HiggsTransformersBackend:
                 **inputs,
                 max_new_tokens=int(max_new_tokens),
                 do_sample=True,
-                temperature=float(self.config.temperature),
-                top_p=float(self.config.top_p),
-                top_k=int(self.config.top_k))
+                temperature=float(sampling['temperature']),
+                top_p=float(sampling['top_p']),
+                top_k=int(sampling['top_k']))
         return out
 
     def audio_decoder(self):

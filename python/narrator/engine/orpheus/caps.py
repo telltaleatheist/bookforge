@@ -66,6 +66,34 @@ class CapsMixin:
     # when the engine does. _evict_global_cache drops both together.
     _voice_caps = {}
 
+    @staticmethod
+    def accept_item_sampling(raw, where: str = 'Orpheus'):
+        """THE PER-ITEM SAMPLING RUNG - REFUSED HERE, by name.
+
+        Every engine narrator serves answers this question ("may this one chunk
+        render under these numbers?"); Orpheus's answer is no, and it says so
+        instead of rendering at the voice's caps and calling it the rung.
+
+        Orpheus's sampling is a PER-VOICE registry (`register_voice_caps`
+        above) resolved three ways per call and reaching four separate
+        backends' samplers; a per-item override would have to be threaded
+        through `_vllm_sampling_params`, the MLX bucket sampler and the
+        transformers path, and every one of those is on the way out. Owen,
+        2026-09-14: *"orpheus is deprecated too but hasnt been removed yet.
+        higgs is the frontier"* - it is not built into Crucible and it dies
+        with the legacy layer. So the channel is refused rather than half-built.
+
+        None passes: an item with no `sampling` is not asking for a rung, and
+        Orpheus renders it exactly as it always has.
+        """
+        from ..item_sampling import refuse_item_sampling
+        return refuse_item_sampling(
+            raw, where,
+            'Orpheus has no per-item sampling channel: its sampling is the '
+            "per-voice cap registry (register_voice_caps), resolved per render "
+            'from the voice, not from the request. Orpheus is deprecated and is '
+            'not a Crucible engine - the take ladder is Higgs v3.')
+
     @classmethod
     def register_voice_caps(cls, voice: str, caps: dict) -> dict:
         """Register `voice`'s per-voice generation tuning (see VOICE_CAP_SOURCES).

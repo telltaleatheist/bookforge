@@ -229,6 +229,69 @@ COPY (never on Z:): e2a `app.py --headless --assemble_only --tts_engine xtts
 with `python_env\python.exe` from the e2a checkout - that runs on CPU. Record the
 exact command in the README.
 
+## The per-item sampling channel (`serve/worker.py` + `engine/item_sampling.py`)
+
+Added 2026-09-14 for Crucible's take ladder. Owen's ruling that day
+(`docs/EXTENSION-TO-CRUCIBLE-PLAN.md` section 2): *a retake must not reuse the
+settings that produced the problem; the spread IS the take ladder.* The ladder
+itself is Crucible's (`crucible/docs/PHASE3-TTS.md` section 3, `[[voice.takes]]`
+per voice, take 0 = the boson default 0.8 / 0.95 / 50); a job carries `take: N`
+and the server resolves the rung into NUMBERS. narrator had nowhere to put them
+- its sampling arrived through the `NARRATOR_HIGGS_VOICES` document, written per
+LOAD - so Crucible refused every rung above 0 by name (`sampling_not_wired`).
+This is the channel that lifts it.
+
+**The field.** `sampling` on ONE ITEM of `generate_batch`, and on `generate`:
+
+```json
+{"action": "generate_batch",
+ "items": [{"i": 412, "text": "...", "sampling": {"temperature": 0.7}}]}
+```
+
+Keys: `temperature`, `topP`, `topK`, `repetitionPenalty` - **exactly the voices
+document's spelling** (`engine/higgs/config.py:_SAMPLING_KEYS`), pinned equal to
+`engine/item_sampling.py:WIRE_KEYS` by `tests/test_serve_sampling.py`. A second
+spelling would be two names for one fact.
+
+**Its meaning.**
+
+- ABSENT -> the voice's loaded sampling, which IS take 0. That is the
+  documented meaning of "no rung", not a default substituted for a missing
+  value.
+- PRESENT -> that item renders under those numbers, laid **OVER** take 0 key by
+  key (`engine/item_sampling.py:apply_over`). An overlay and not a replacement
+  because PHASE3-TTS's take 1 is one line, `temperature = 0.7`, and a rung that
+  replaced the voice's sampling would send no `top_k` - which on SGLang-Omni is
+  the untruncated 1026-way codebook tail, measured 2026-09-05 as one chunk
+  running to the cap with 80 s of silence.
+- A BATCH MAY MIX RUNGS. Every engine either renders row by row (free) or
+  splits its slab by sampling group: the MLX arm's `_step_batch_sampler` takes
+  ONE temperature for every active row, so `_mlx_batch_groups` breaks a group
+  when the rung changes. **No path renders a row at another row's numbers.**
+- The rung is keyed by CHUNK INDEX through the guarded driver
+  (`render_many(..., sampling_by_index=)`), because a re-roll and both halves of
+  a split carry their parent's index and must render at their parent's numbers.
+  A chunk the map does not name is refused, never rendered at take 0.
+
+**The two refusals**, both per ITEM (the neighbours still render), both by name
+at the head of the message:
+
+| name | when |
+|---|---|
+| `sampling_malformed` | not an object, empty, an unknown key, a non-positive or non-numeric value, a fractional `topK`. The field is named. |
+| `sampling_not_supported` | well formed and this engine has no such lever: `repetitionPenalty` on the MLX arm (mlx-audio has no repetition penalty), or ANY rung on Orpheus. |
+
+**Per backend.** `higgs-v3` served (vllm-omni `extra_params` / SGLang-Omni
+top-level): per request, all four levers, mixes freely. `higgs-v3` MLX: three
+levers, solo renders mix freely, the slab is SPLIT by sampling group.
+`higgs-v2-scaffold` (transformers, unshipped): three levers, serial.
+`orpheus`: **refused** - it is deprecated, it is not a Crucible engine, and its
+sampling is the per-voice cap registry resolved per render, so a rung there
+would be ignored and reported as applied.
+
+Nothing about take 0's defaults, the guard, the retake ladder, the caps or the
+frame budget is changed by this.
+
 ## Reporting a guess
 
 If a behaviour of e2a is ambiguous (two code paths, a flag the bridge never

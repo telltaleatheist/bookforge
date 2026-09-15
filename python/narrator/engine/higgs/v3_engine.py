@@ -786,6 +786,46 @@ class HiggsV3Engine:
         the engine before it renders, so it is part of the surface."""
         return clean_text(sentence)
 
+    #: The levers a per-item rung may name on the SERVED arm. All four, because
+    #: both serving stacks carry all four per request: vllm-omni's
+    #: `extra_params` is validated against `SERVER_DEFAULT_SAMPLING` and
+    #: SGLang-Omni's `CreateSpeechRequest` has them at the top level
+    #: (`sgl_served.SAMPLING_KEYS`). `seed` is NOT a sampling lever here - it is
+    #: the request's own top-level field and both builders refuse the duplicate.
+    ITEM_SAMPLING_LEVERS = ('temperature', 'topP', 'topK', 'repetitionPenalty')
+
+    def accept_item_sampling(self, raw, where: str = None):
+        """One item's `sampling` off the wire -> this engine's dict, or None.
+
+        THIS IS THE CHANNEL CRUCIBLE'S TAKE LADDER NEEDED. A rung is per
+        RENDER; the voices document is per LOAD; until this existed Crucible
+        refused every take above 0 by name (`sampling_not_wired`,
+        crucible/docs/PHASE3-TTS.md section 4) because a reload per take is not
+        a ladder. Both refusals - `sampling_malformed` and
+        `sampling_not_supported` - are in `engine/item_sampling.py`.
+        """
+        from ..item_sampling import parse_item_sampling
+        return parse_item_sampling(raw, where or f'HiggsV3Engine({self.voice!r})',
+                                   levers=self.ITEM_SAMPLING_LEVERS)
+
+    def _sampling_for(self, item_sampling) -> dict:
+        """The sampling ONE request carries: `served_sampling()` with the
+        item's rung laid over it, key by key.
+
+        AN OVERLAY, NOT A REPLACEMENT, and on this arm that is the difference
+        between a rung and a babble. `served_sampling()` on SGLang-Omni is the
+        full resolved triple and the request is refused without it; a rung of
+        `{temperature: 0.7}` replacing it wholesale would send no top_k, which
+        is the untruncated 1026-way codebook tail - measured 2026-09-05 as one
+        chunk running to the cap with 80 s of silence. On vllm-omni with a
+        checkpoint voice `served_sampling()` is deliberately EMPTY (the server
+        reads the checkpoint's own generation_config.json), so a rung there
+        rides alone in `extra_params` and vllm-omni merges it over the file -
+        which is exactly what "take 0, but cooler" means.
+        """
+        from ..item_sampling import apply_over
+        return apply_over(self.config.served_sampling(), item_sampling)
+
     def _render_guarded(self, index: int, text: str, first_take=None):
         """`render_audio` under the truncation ladder - see `truncation.py`."""
         clean = self._clean_sentence_for_tts(text)
@@ -831,13 +871,19 @@ class HiggsV3Engine:
             return None
         return int(self.config.seed) + int(index)
 
-    def render_audio(self, text: str, seed=None, index: int = 0) -> np.ndarray:
+    def render_audio(self, text: str, seed=None, index: int = 0,
+                     sampling=None) -> np.ndarray:
         """One chunk of text -> a float32 mono waveform at 24 kHz.
 
         `index` is the chunk's own index and is what seeds it (see `_seed_for`);
         an explicit `seed` overrides. Callers that HAVE an index must pass it -
         `convert` and `generate_batch_stream` do - so a book is not rendered at
         one seed from end to end.
+
+        `sampling` is THIS CHUNK's take-ladder rung, already parsed by
+        `accept_item_sampling`. None renders at the voice's loaded sampling,
+        which is take 0 - the existing behaviour, and the documented meaning of
+        "no rung", not a substituted default.
         """
         # THE MODEL BOUNDARY STRIPS THE MARKUP - here, once, for every caller.
         # `[break]` / `[heading]` / `[item]` / `[pause:X]` are narrator's own
@@ -860,7 +906,7 @@ class HiggsV3Engine:
             text=clean, voice=self.voice_ref,
             max_new_tokens=self._budget.cap_frames(clean),
             seed=self._seed_for(index) if seed is None else seed,
-            sampling=self.config.served_sampling())
+            sampling=self._sampling_for(sampling))
         audio, _rate = self.server.speak(request)
         return audio
 
@@ -1006,7 +1052,7 @@ class HiggsV3Engine:
                 self._write_sentence(index, audio)
                 on_done(index, True)
 
-    def render_many(self, rows, in_flight=None):
+    def render_many(self, rows, in_flight=None, sampling_by_index=None):
         """THE GUARDED DRIVER: yields `(index, audio, verdict)` as the ladder
         decides each chunk, and writes NOTHING.
 
@@ -1033,10 +1079,35 @@ class HiggsV3Engine:
         iterating; a consumer that walks away closes it, `GeneratorExit` lands
         at a `yield` inside the `try`, and the pool is torn down by the same
         `BaseException` arm a cooperative stop uses.
+
+        `sampling_by_index`, when given, maps EVERY chunk index in `rows` to
+        its take-ladder rung (None for a chunk at take 0). It is a mapping and
+        not a third element of each row because the ladder is keyed by chunk
+        index and so is this: a split half and a re-roll carry their parent's
+        index and must render at their parent's numbers, which is the whole
+        point of a retake at a different temperature.
+
+        THE MAP MUST COVER EVERY ROW, and a row it misses is refused by name
+        rather than rendered at take 0. `rows` is pulled LAZILY here, so the
+        check happens as each row is taken; an absent key would otherwise be a
+        `.get()` that silently renders the ladder's rung 1 at rung 0's numbers,
+        which is the one failure this whole channel exists to prevent.
         """
         rows = iter(rows)
         if in_flight is None:
             in_flight = []
+        rungs = None if sampling_by_index is None else dict(sampling_by_index)
+
+        def rung_for(index):
+            if rungs is None:
+                return None
+            if index not in rungs:
+                raise KeyError(
+                    f'HiggsV3Engine.render_many: chunk {index} has no entry in '
+                    'sampling_by_index. The map is given per CALL and must name '
+                    'every row (None for a chunk at take 0); a missing key would '
+                    "render a ladder's rung at take 0's numbers.")
+            return rungs[index]
         width = int(self.BATCH_SIZE)
         if width < 1:
             raise ValueError(f'render_many needs BATCH_SIZE >= 1; got {width}.')
@@ -1048,9 +1119,14 @@ class HiggsV3Engine:
         outstanding = {}  # chunk index -> how many of its requests are in flight
 
         def render(request):
-            """The pool thread's whole job: one take. No plan, no file, no lock."""
+            """The pool thread's whole job: one take. No plan, no file, no lock.
+
+            The rung is read by CHUNK INDEX, so every take of a chunk - take 0,
+            its re-roll and both halves of a split - renders at the same
+            numbers the caller asked that chunk for."""
             return self.render_audio(request.text, seed=request.seed,
-                                     index=request.index)
+                                     index=request.index,
+                                     sampling=rung_for(request.index))
 
         def start(request) -> None:
             outstanding[request.index] = outstanding.get(request.index, 0) + 1
@@ -1078,6 +1154,11 @@ class HiggsV3Engine:
                     index, text = next(rows)
                 except StopIteration:
                     return False
+                # The rung is resolved HERE, at the door, and not in the pool
+                # thread: a row the caller's map does not name is a caller
+                # defect, and it must fail the CALL rather than arrive as one
+                # chunk's render failure.
+                rung_for(index)
                 # THE MARKER STRIP, AT THE LADDER'S DOOR, exactly as
                 # `_render_guarded` does it for the single-chunk path.
                 # `render_audio` strips again at the model boundary and is
@@ -1148,14 +1229,20 @@ class HiggsV3Engine:
         pool.shutdown(wait=True)
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None) -> None:
+                              should_stop=None, samplings=None) -> None:
         """Whole rows, at retirement.
 
         The buffered endpoint returns a finished wav, so there is nothing to
         emit until the row is done. A row asked to stream gets its audio as a
         single `on_chunk(row, 0, audio)` before its `on_row` - the streaming
         channel, honestly filled, arriving when it actually arrived.
+
+        `samplings`, when given, is aligned to `texts` and carries each row's
+        take-ladder rung. Sampling is PER REQUEST on both serving stacks, so a
+        batch here mixes rungs freely: the pool submits one HTTP request per
+        row and each carries its own numbers.
         """
+        from ..item_sampling import aligned
         if not texts:
             return
         if voices is not None and len(voices) != len(texts):
@@ -1184,6 +1271,8 @@ class HiggsV3Engine:
             raise ValueError(
                 f'HiggsV3Engine.generate_batch_stream: row(s) {blank} have no text '
                 'after cleaning.')
+        rungs = aligned(samplings, len(texts),
+                        'HiggsV3Engine.generate_batch_stream')
 
         def render(i: int, text: str):
             # Checked at the moment the row would be POSTed, not at submission:
@@ -1192,7 +1281,7 @@ class HiggsV3Engine:
             # all, which is what the contract requires.
             if should_stop is not None and should_stop():
                 return i, None, True
-            return i, self.render_audio(text, index=i), False
+            return i, self.render_audio(text, index=i, sampling=rungs[i]), False
 
         width = min(self.BATCH_SIZE, len(texts))
         with ThreadPoolExecutor(max_workers=width,

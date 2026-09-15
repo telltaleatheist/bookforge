@@ -155,6 +155,14 @@ class FakeEngine(PromptMixin):
         self.adapter_dir = adapter_dir
         self.voice = voice
 
+    @staticmethod
+    def accept_item_sampling(raw, where: str = 'FakeEngine'):
+        """Orpheus's answer to a per-item take-ladder rung: refused by name.
+        The REAL refusal, taken from `CapsMixin`, so a protocol test sees the
+        sentence a production Orpheus worker would send."""
+        from ..engine.orpheus.caps import CapsMixin
+        return CapsMixin.accept_item_sampling(raw, where)
+
     @classmethod
     def register_voice_caps(cls, voice: str, caps: dict) -> dict:
         """The real registry's shape and its refusal of unknown keys, so a test can
@@ -215,7 +223,7 @@ class FakeEngine(PromptMixin):
     # ---- fast start ---------------------------------------------------------
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None) -> None:
+                              should_stop=None, samplings=None) -> None:
         """The real method's CONTRACT, with fake audio: same argument validation,
         same one-on_row-per-row guarantee, same payload cadence.
 
@@ -224,6 +232,11 @@ class FakeEngine(PromptMixin):
         what WindowedFrameEmitter produces. A stop abandons every row that has not
         been delivered, WITHOUT an on_row, which is the contract the worker's
         cancelled-sweep depends on.
+
+        `samplings` is taken and REFUSED, row by row, exactly as the real
+        Orpheus engine refuses one: this fake stands in for an engine with no
+        per-item sampling channel, and accepting the argument silently is how a
+        test would come to believe a rung was honoured.
         """
         if not texts:
             return
@@ -231,6 +244,8 @@ class FakeEngine(PromptMixin):
             raise ValueError(
                 f'FakeEngine.generate_batch_stream: {len(voices)} voices for '
                 f'{len(texts)} texts; voices must be aligned to texts or None')
+        for row, rung in enumerate(samplings or []):
+            self.accept_item_sampling(rung, f'FakeEngine row {row}')
         stream_rows = set() if stream_rows is None else set(stream_rows)
         stray = [i for i in stream_rows if not (0 <= i < len(texts))]
         if stray:
@@ -442,7 +457,54 @@ class FakeHiggsEngine(FakeEngine):
             return float(entry) if attempt == 0 else 1.0
         return float(entry[min(attempt, len(entry) - 1)])
 
-    def render_many(self, rows, in_flight=None):
+    #: WHERE THE FAKE WRITES THE SAMPLING IT RENDERED EACH ITEM UNDER.
+    #:
+    #: The serve protocol tests drive a real worker SUBPROCESS, so an in-memory
+    #: list is invisible to the assertions. When this variable names a path the
+    #: fake appends one JSON object per render - `{"index", "text",
+    #: "sampling"}` - and the test reads the file back. `sampling` is the
+    #: ENGINE-shaped dict (snake_case) the render actually ran at, or null for
+    #: a chunk at take 0, so the assertion is on what was applied and not on
+    #: what was asked for.
+    #:
+    #: Unset = no file and no cost, which is every other test in the suite.
+    SAMPLING_LOG_ENV = 'NARRATOR_FAKE_SAMPLING_LOG'
+
+    def _record_sampling(self, index, text, sampling) -> None:
+        """One render's sampling, remembered in this process and - when the
+        test asked for a file - appended to it."""
+        row = {'index': None if index is None else int(index),
+               'text': text, 'sampling': sampling}
+        if not hasattr(self, 'sampling_seen'):
+            self.sampling_seen = []
+        self.sampling_seen.append(row)
+        path = (os.environ.get(self.SAMPLING_LOG_ENV) or '').strip()
+        if not path:
+            return
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(row) + '\n')
+
+    #: The levers a rung may name here: Higgs v3's MLX arm's set, which is the
+    #: narrower of the two real Higgs arms, so a test written against this fake
+    #: cannot assert a lever one shipped backend refuses.
+    ITEM_SAMPLING_LEVERS = ('temperature', 'topP', 'topK')
+
+    def accept_item_sampling(self, raw, where: str = None):
+        """One item's `sampling` off the wire -> the engine-shaped dict, or
+        None. The REAL parser (`engine/item_sampling.py`), so the refusals a test
+        sees here are the refusals a card would give."""
+        from ..engine.item_sampling import parse_item_sampling
+        return parse_item_sampling(raw, where or f'FakeHiggsEngine({self.voice!r})',
+                                   levers=self.ITEM_SAMPLING_LEVERS)
+
+    def _sampling_for(self, item_sampling):
+        """The rung laid over the voice's own sampling. This fake has no
+        generation_config to resolve, so take 0 is None and a rung is itself -
+        which is exactly what makes the recorded value readable as "what this
+        item rendered under"."""
+        return None if item_sampling is None else dict(item_sampling)
+
+    def render_many(self, rows, in_flight=None, sampling_by_index=None):
         """THE GUARDED DRIVER, serial - `(index, audio, verdict)` per chunk.
 
         The same contract the real engines offer (`HiggsV3Engine.render_many`,
@@ -462,6 +524,20 @@ class FakeHiggsEngine(FakeEngine):
         decides. `next_request()` one at a time is the depth-first order.
         """
         held = [] if in_flight is None else in_flight
+        rungs = None if sampling_by_index is None else dict(sampling_by_index)
+
+        def rung_for(index):
+            """The chunk's rung, by CHUNK index - a re-roll and a split half
+            carry their parent's index and must keep its numbers. A row the map
+            does not name is refused, never rendered at take 0."""
+            if rungs is None:
+                return None
+            if int(index) not in rungs:
+                raise KeyError(
+                    f'FakeHiggsEngine.render_many: chunk {index} has no entry in '
+                    'sampling_by_index.')
+            return rungs[int(index)]
+
         self._full_text = {}
         self._attempts = {}
         plan = truncation.GuardPlan(
@@ -470,6 +546,7 @@ class FakeHiggsEngine(FakeEngine):
                                            self.MIN_CHARS_PER_SEC))
         for index, text in rows:
             self._full_text[int(index)] = text
+            rung_for(index)     # refuse an unnamed row at the door, not mid-ladder
             plan.add(int(index), text)
             while True:
                 request = plan.next_request()
@@ -477,15 +554,16 @@ class FakeHiggsEngine(FakeEngine):
                     break
                 if request.index not in held:
                     held.append(request.index)
-                plan.offer(request, self.render_audio(request.text, seed=request.seed,
-                                                      index=request.index))
+                plan.offer(request, self.render_audio(
+                    request.text, seed=request.seed, index=request.index,
+                    sampling=rung_for(request.index)))
             for done_index, audio, _clean in plan.finished():
                 if done_index in held:
                     held.remove(done_index)
                 yield done_index, audio, plan.verdict(done_index)
 
     def render_audio(self, text: str, seed=None, index: int = 0,
-                     should_stop=None) -> np.ndarray:
+                     should_stop=None, sampling=None) -> np.ndarray:
         """ONE chunk in, one waveform out - the per-chunk entry point EVERY real
         Higgs engine has (`HiggsEngine`, `HiggsV3Engine`, `HiggsV3MlxEngine`)
         and the one the worker actually calls for a non-Orpheus engine.
@@ -501,6 +579,10 @@ class FakeHiggsEngine(FakeEngine):
         """
         if not (text or '').strip():
             raise ValueError('FakeHiggsEngine.render_audio(): the chunk has no text')
+        # RECORDED BEFORE THE RENDER, and recorded for EVERY take: a split half
+        # and a re-roll are renders too, and a test asserting "chunk 3 ran at
+        # 0.7" has to be able to see that all of its takes did.
+        self._record_sampling(index, text, self._sampling_for(sampling))
         audio = self.audio_for(text)
         rate = self._rate_for(index, text)
         if rate == 1.0:
@@ -516,8 +598,13 @@ class FakeHiggsEngine(FakeEngine):
         return np.tile(audio, repeats)[:wanted]
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None) -> None:
-        """Whole rows, at retirement - the real Higgs cadence."""
+                              should_stop=None, samplings=None) -> None:
+        """Whole rows, at retirement - the real Higgs cadence.
+
+        `samplings`, when given, is aligned to `texts`: this fake renders row
+        by row, so a batch may mix rungs and each row is recorded under its
+        own."""
+        from ..engine.item_sampling import aligned
         if not texts:
             return
         if voices is not None and len(voices) != len(texts):
@@ -539,11 +626,14 @@ class FakeHiggsEngine(FakeEngine):
             raise ValueError(
                 f'FakeHiggsEngine.generate_batch_stream: row(s) {blank} have no text '
                 'after cleaning.')
+        rungs = aligned(samplings, len(texts),
+                        'FakeHiggsEngine.generate_batch_stream')
 
         for i, text in enumerate(texts):
             if should_stop is not None and should_stop():
                 return
             time.sleep(STREAM_ROW_SECONDS)
+            self._record_sampling(i, text, self._sampling_for(rungs[i]))
             audio = self.audio_for(text)
             if i in stream_rows:
                 on_chunk(i, 0, audio.copy())
