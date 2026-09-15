@@ -29,13 +29,13 @@
  *
  * ── What this module will not do ────────────────────────────────────────────
  *
- * It reads. {@link loadModelOn} and {@link unloadModelOn} are the two exceptions
- * and they are operator verbs (PHASE5-APPS.md section 2: "an operator deciding
- * what is resident is the model this whole design rests on and there is
- * currently nowhere to do it but a CLI flag") — they submit a job that touches
- * the accelerator, so they are wired to a button and nothing calls them on their
- * own. No poll here loads anything, and nothing unloads a model on a machine
- * this app does not own.
+ * It reads. {@link loadModelOn}, {@link unloadModelOn} and
+ * {@link loadHiggsVoiceOn} are the exceptions and they are operator verbs
+ * (PHASE5-APPS.md section 2: "an operator deciding what is resident is the
+ * model this whole design rests on and there is currently nowhere to do it but
+ * a CLI flag") — they submit a job that touches the accelerator, so they are
+ * wired to a button and nothing calls them on their own. No poll here loads
+ * anything, and nothing unloads a model on a machine this app does not own.
  */
 import {
   CrucibleAuthError,
@@ -55,8 +55,15 @@ import type {
   CrucibleServersView,
   ServerFacts,
 } from '../../shared/crucible/settings-wire';
-import { crucibleClientFor, describeLocal, listServers, CRUCIBLE_CLIENT_NAME } from './servers';
+import { crucibleClientFor, describeLocal, getServer, listServers, CRUCIBLE_CLIENT_NAME } from './servers';
 import { readRouting } from './routing';
+import {
+  CrucibleVoiceLoadRefused,
+  crucibleVoiceLoadFor,
+  loadVoiceOn,
+  refuseMismatchedReference,
+  type CrucibleVoiceLoaded,
+} from './voice-load';
 
 /**
  * What one unauthenticated `ping` answered.
@@ -370,6 +377,145 @@ export async function unloadModelOn(
   model: string,
 ): Promise<{ outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   return operate(name, (client) => client.unloadModel(model));
+}
+
+/**
+ * Make a Higgs VOICE resident, clip and all — the third operator verb.
+ *
+ * The zero-shot half is why this is not `loadModelOn` with a different string
+ * (crucible `docs/PHASE3-TTS.md` §5's amendment, plan §4b): BookForge's four
+ * `zeroshot-*` catalog entries are the base weights plus ONE reference
+ * recording each, so all four load as Crucible's single `zeroshot` voice with
+ * the clip travelling in `params.reference`. `voice-load.ts` reads the wav out
+ * of `<userData>/runtime/higgs-models/refs/`, takes its BOOK-EXACT transcript
+ * from the same catalog row, and refuses a clip the server would refuse —
+ * using the server's own names — before a megabyte crosses a tailnet.
+ *
+ * Every other kind of voice loads with no reference, which is not an omission:
+ * a checkpoint's speaker is in its weights, and sending a clip with one is
+ * `reference_not_allowed`.
+ *
+ * ONE `GET /v1/voices` FIRST, so `needsReference` is the SERVER's answer and
+ * not this catalog's guess. It is the same shape and the same reason as
+ * `render.ts`'s pre-flight: at load time it turns "the job failed" into "this
+ * server does not serve that voice", which are two different fixes.
+ */
+export async function loadHiggsVoiceOn(
+  name: string,
+  voiceId: string,
+  userDataDir: string,
+  onProgress?: (line: string) => void,
+): Promise<{ outcome: 'ok'; loaded: CrucibleVoiceLoaded } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
+  let client: CrucibleClient;
+  try {
+    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
+  }
+  let load;
+  try {
+    load = crucibleVoiceLoadFor(voiceId, userDataDir);
+  } catch (err) {
+    // A catalog refusal, a missing clip file, or a clip the server would
+    // refuse — all named, all before anything is asked of the server.
+    return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    refuseMismatchedReference(await client.voices(), load, name);
+  } catch (err) {
+    if (err instanceof CrucibleVoiceLoadRefused) return { outcome: 'refused', message: err.message };
+    return failureOutcome(err, `"${name}" (${client.url})`);
+  }
+  try {
+    return { outcome: 'ok', loaded: await loadVoiceOn(client, load, onProgress) };
+  } catch (err) {
+    if (err instanceof CrucibleVoiceLoadRefused) return { outcome: 'refused', message: err.message };
+    return failureOutcome(err, `"${name}" (${client.url})`);
+  }
+}
+
+/**
+ * WHICH CLIP IS ON THAT CARD — read straight off `/v1/activity`, because the
+ * vendored SDK drops the field.
+ *
+ * `zeroshot` is one voice id and any number of recordings, so "zeroshot is
+ * resident" does not answer "whose voice will this book be read in" — and two
+ * clients (this app and the browser extension) can each have put one there.
+ * PHASE3-TTS.md §5's amendment puts it on `/v1/activity`'s `resident` block as
+ * `reference: {name, sha256, seconds}`, null for every other kind.
+ *
+ * ── WHY A `fetch` AND NOT `client.activity()` ─────────────────────────────
+ *
+ * The 0.6.0 SDK's activity reader builds `resident` out of four named fields —
+ * `kind`, `id`, `since`, `memory_bytes_estimate` — and drops the rest,
+ * `reference` included. The field IS on the wire and IS in the contract; what
+ * is missing is a line in the SDK's shaper. That is the same situation
+ * `settings-wire.ts` was in before the phase-15 re-pack, and it gets the same
+ * treatment: speak the documented wire, read ONLY the field the SDK does not
+ * model, and let `tools/test-zeroshot-reference.js` FAIL BY NAME the day the
+ * SDK carries it — which is the instruction to delete this function, not a
+ * regression.
+ */
+export async function residentClipOn(
+  name: string,
+): Promise<
+  { outcome: 'ok'; clip: { name: string | null; sha256: string; seconds: number } | null }
+  | Exclude<CrucibleProbeResult, { outcome: 'ok' }>
+> {
+  let entry;
+  try {
+    entry = getServer(name);
+  } catch (err) {
+    return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
+  }
+  let body: { resident?: { reference?: unknown } | null };
+  try {
+    const response = await fetch(`${entry.url}/v1/activity`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+    });
+    if (!response.ok) {
+      return {
+        outcome: 'refused',
+        message: `crucible "${name}" answered HTTP ${response.status} for /v1/activity, so which `
+          + 'reference clip is resident there cannot be read.',
+      };
+    }
+    body = await response.json() as { resident?: { reference?: unknown } | null };
+  } catch (err) {
+    return failureOutcome(err, `"${name}" (${entry.url})`);
+  }
+  const resident = body.resident;
+  if (resident === null || resident === undefined) return { outcome: 'ok', clip: null };
+  const reference = resident.reference;
+  // `null` is "nothing was cloned" — a checkpoint voice, or a model — and it
+  // is an ANSWER. The key being ABSENT is a server that predates §5's
+  // amendment, which is a different thing and is said so rather than read as
+  // "no clip".
+  if (reference === null) return { outcome: 'ok', clip: null };
+  if (reference === undefined) {
+    return {
+      outcome: 'refused',
+      message: `crucible "${name}" does not report a resident reference on /v1/activity. That `
+        + 'server predates PHASE3-TTS.md §5\'s amendment, so which clip a zero-shot voice was '
+        + 'cloned from is unknowable from here — update it.',
+    };
+  }
+  const row = reference as { name?: unknown; sha256?: unknown; seconds?: unknown };
+  if (typeof row.sha256 !== 'string' || typeof row.seconds !== 'number') {
+    return {
+      outcome: 'refused',
+      message: `crucible "${name}" reported a resident reference with no sha256 or no seconds.`,
+    };
+  }
+  return {
+    outcome: 'ok',
+    clip: {
+      name: typeof row.name === 'string' && row.name !== '' ? row.name : null,
+      sha256: row.sha256,
+      seconds: row.seconds,
+    },
+  };
 }
 
 async function operate(
