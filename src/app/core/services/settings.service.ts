@@ -27,9 +27,16 @@ export interface PipelineDefaults {
    *
    * Typed as the WIDE union (`TTSEngine`, retired ids included) rather than
    * `TtsEngineId`, because this value is read back out of a settings blob that
-   * may have been written when XTTS was still a choice. It has to load. What it
-   * cannot do is run: the picker only offers `narrationEngineOrder()`, and the
-   * bridge calls `assertRunnableTtsEngine` before it queues anything.
+   * may have been written when XTTS — or, since 2026-09-14, Orpheus — was still
+   * a choice. It has to load. What it cannot do is run: the picker only offers
+   * `narrationEngineOrder()`, and the bridge calls `assertRunnableTtsEngine`
+   * before it queues anything.
+   *
+   * `orpheus` is now the id this matters MOST for, and by a wide margin: XTTS
+   * stopped being the default in 2026-09-04, so the machines carrying a stale
+   * value carry `orpheus`, which was `DEFAULT_TTS_ENGINE` and the picker's FIRST
+   * entry right up until it was retired. Nearly every existing settings blob
+   * names it.
    */
   ttsEngine: TTSEngine;
   /**
@@ -91,15 +98,24 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   cleanupProvider: 'local', cleanupModel: '',
   simplifyProvider: 'local', simplifyModel: '',
   translateProvider: 'local', translateModel: '',
-  // Was 'xtts' with voice 'ScarlettJohansson'. XTTS is retired (2026-09-04) and a
-  // DEFAULT that names a retired engine is the one place the refusal would fire on
-  // a user who never chose anything — so the default moved to the engine every
-  // shipped voice is now a fine-tune of, and the voice moved with it: leaving an
-  // XTTS reference-clip name against an Orpheus default would be a pair that
-  // cannot render.
-  ttsEngine: 'orpheus',
+  // Was 'xtts' with voice 'ScarlettJohansson', then 'orpheus' with voice 'leah'.
+  // A DEFAULT that names a retired engine is the one place the refusal would fire
+  // on a user who never chose anything — `getPipelineDefaults` only repairs a
+  // STORED value, so a shipped default that went stale would reach a fresh machine
+  // unrepaired — which is why this line moves the same day the engine is retired,
+  // both times. Orpheus was retired 2026-09-14 ("higgs is the frontier"), so the
+  // default is Higgs.
+  //
+  // THE VOICE MOVED WITH IT, for the third time and the same reason: `leah` is an
+  // Orpheus fine-tune name and Higgs has never heard of it, so leaving it here
+  // would ship exactly the unrenderable engine/voice pair the migration in
+  // `getPipelineDefaults` exists to clean up. `default` is the Higgs v3 built-in
+  // voice — chosen because it is the ONLY entry in `higgs-models.json` that needs
+  // no downloaded checkpoint, so it is the one voice a machine that has installed
+  // nothing can actually render.
+  ttsEngine: 'higgs',
   ttsDevice: 'auto',
-  ttsVoice: 'leah',
+  ttsVoice: 'default',
   ttsSpeed: 1.0,
   generateVideo: false,
   rvcEnhancementEnabled: false,
@@ -883,10 +899,18 @@ export class SettingsService {
    * A STORED RETIRED ENGINE IS REPAIRED HERE, and this is the same shape
    * `streaming-engine.ts`'s `getSelectedEngineName` uses for `tts-engine.json`.
    * Nothing recorded means the built-in defaults, which is not a fallback. A
-   * stored `xtts` / `f5` / `voxtral` — every machine that used one has it — is
-   * migrated to Orpheus with a console.error naming it, and the settings are
-   * rewritten so the stale value stops being re-read. Anything else throws by
-   * name.
+   * stored `xtts` / `f5` / `voxtral` / `orpheus` — every machine that used one
+   * has it — is migrated to Higgs with a console.error naming it, and the
+   * settings are rewritten so the stale value stops being re-read. Anything else
+   * throws by name.
+   *
+   * SINCE 2026-09-14 THIS IS THE PATH ALMOST EVERY MACHINE TAKES. Orpheus was
+   * retired as a choice that day and it was both the shipped default and the
+   * picker's first entry, so essentially every settings blob in existence names
+   * a retired engine and gets repaired on the next read. That is exactly the
+   * scenario the paragraph below was written for, finally arriving at scale:
+   * without the repair, EVERY user would open the narration modal to an engine
+   * button group with nothing selected.
    *
    * Without the repair the value simply spread over the defaults: the engine
    * button group (which renders `selectableEngines()`) showed NOTHING selected,
@@ -895,10 +919,10 @@ export class SettingsService {
    * queued run would not be — it is the seed for the next run, shown in a picker
    * before anything is rendered.
    *
-   * THE VOICE GOES WITH THE ENGINE. A voice saved beside `xtts` is an XTTS
-   * reference clip; carrying it onto Orpheus would produce exactly the
-   * unrenderable pair this repair exists to prevent, so it resets to the default
-   * voice too.
+   * THE VOICE GOES WITH THE ENGINE. A voice saved beside `orpheus` is an Orpheus
+   * fine-tune name (`leah`, `mistborn`, a folder under `runtime/orpheus-models/`);
+   * carrying it onto Higgs would produce exactly the unrenderable pair this
+   * repair exists to prevent, so it resets to the default voice too.
    *
    * A STORED RETIRED AI PROVIDER IS REPAIRED THE SAME WAY (2026-09-14). A
    * machine that chose Ollama, Claude or OpenAI for a role has that string on

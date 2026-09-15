@@ -3076,11 +3076,22 @@ def _flag_registry():
     p.group("Model choice (--tts, --audiobook): engine, voice, checkpoint under test",
             "The ARM is never a flag: renderRangeHeadless routes by platform (Mac MLX,\n"
             "Windows/WSL SGLang). These say WHICH model reads the tokens, not which machine.")
-    p.add_argument("--engine", default="orpheus",
-                   help="TTS engine: orpheus or higgs (default orpheus). Both render (--mode tts) "
-                        "and both stream (--mode streaming, since 2026-09-05); the ARM is chosen "
-                        "by the platform inside the bridge — Mac MLX, Windows/WSL SGLang — never "
-                        "by a flag here.", metavar="NAME")
+    # DEFAULT MOVED orpheus -> higgs ON 2026-09-14, the day Orpheus was retired as
+    # a narration choice ("higgs is the frontier"). It is not a taste change: the
+    # CLI hands `ttsEngine` to the same `renderRangeHeadless` the app calls, and
+    # that bridge calls `assertRunnableTtsEngine` before it spawns anything — so a
+    # default of "orpheus" would have made the bare `--tts` invocation throw on
+    # every machine. `orpheus` is still ACCEPTED below rather than rejected here,
+    # deliberately: the refusal belongs to the one gate that owns it, which names
+    # the engine and the retirement date, and a second list in this file would be
+    # a second answer to the same question.
+    p.add_argument("--engine", default="higgs",
+                   help="TTS engine (default higgs). Higgs is the one engine that renders; "
+                        "orpheus is retired as a choice since 2026-09-14 and is refused by name "
+                        "by the render door, though its spawn layer is still in the build. Both "
+                        "still stream (--mode streaming). The ARM is chosen by the platform "
+                        "inside the bridge — Mac MLX, Windows/WSL SGLang — never by a flag here.",
+                   metavar="NAME")
     p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)",
                    metavar="ID")
     p.add_argument("--voice-token", dest="voice_token", help="prompt token override (tts mode only)",

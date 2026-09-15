@@ -124,7 +124,7 @@ import {
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
 import {
-  engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
+  engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES, engineDisplayName,
 } from '../../../../core/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
 import type { TTSEngine } from '@shared/tts/engine-caps';
@@ -1524,7 +1524,13 @@ export class NarrationModalComponent {
     // opens; an empty list is not evidence either way, so only a non-empty
     // list that lacks the voice refuses.
     if (this.narrate()) {
-      const engineName = this.engine() === 'higgs' ? 'Higgs' : 'Orpheus';
+      // `engineDisplayName`, not a ternary. It read
+      // `this.engine() === 'higgs' ? 'Higgs' : 'Orpheus'` until 2026-09-14, which
+      // was a SECOND table of engine names beside the real one: it answered
+      // "Orpheus" for every id that was not Higgs, so after Orpheus was retired a
+      // stored `xtts` or `f5` would have been refused with a sentence naming the
+      // wrong engine. The shared function knows the retirement and says so.
+      const engineName = engineDisplayName(this.engine());
       if (!this.voice()) {
         return `No ${engineName} voice is chosen. Pick one on the Reading tab.`;
       }

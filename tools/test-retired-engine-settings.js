@@ -4,10 +4,17 @@
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-retired-engine-settings.js
  *
- * XTTS, F5 and Voxtral left the root on 2026-09-05. Their ids did not: a record
- * or a saved setting written before then names one, and `RetiredTtsEngine` exists
- * so it can still be LOADED and DISPLAYED while `assertRunnableTtsEngine` refuses
- * to RENDER it.
+ * XTTS, F5 and Voxtral left the root on 2026-09-05, and Orpheus left the PICKER
+ * on 2026-09-14. Their ids did not leave anything: a record or a saved setting
+ * written before then names one, and `RetiredTtsEngine` exists so it can still be
+ * LOADED and DISPLAYED while `assertRunnableTtsEngine` refuses to RENDER it.
+ *
+ * Orpheus is the case that proves the split is about the CHOICE and not the code.
+ * Its spawn layer, its component, its env routing and its voice roster are all
+ * still in this build and all still work — Higgs is simply the one engine
+ * BookForge narrates on now ("higgs is the frontier") — so "still loads, still
+ * displays, never renders" is being asserted about an engine that could run if
+ * anything asked it to. Nothing does.
  *
  * That split has two halves and they need opposite answers, which is what this
  * file pins:
@@ -54,7 +61,22 @@ function check(name, fn) {
   }
 }
 
-const RETIRED = ['xtts', 'f5', 'voxtral'];
+/**
+ * `orpheus` JOINED THIS LIST ON 2026-09-14 and is the reason it matters most.
+ *
+ * XTTS, F5 and Voxtral were retired while Orpheus was the default, so the
+ * machines carrying a stale engine id were the few that had chosen one. Orpheus
+ * WAS the default and the picker's first entry, so essentially every settings
+ * blob in existence now names a retired engine and takes the migration path
+ * below. What used to be the rare case is the normal one.
+ *
+ * Its capability row is still in `TTS_ENGINES` and its spawn layer is still in
+ * the build — the retirement removed it from the CHOICE, not from the build —
+ * which is exactly why these checks are the ones that hold: "still loads, still
+ * displays, never renders" has to stay true of an engine whose code is right
+ * there to run.
+ */
+const RETIRED = ['xtts', 'f5', 'voxtral', 'orpheus'];
 
 console.log('a saved setting naming a retired engine');
 
@@ -69,7 +91,7 @@ check('every retired id still LOADS and still DISPLAYS', () => {
 check('a stored retired engine MIGRATES, and says which one it was', () => {
   for (const id of RETIRED) {
     const r = caps.resolveSavedTtsEngine(id);
-    assert.strictEqual(r.engine, 'orpheus', id);
+    assert.strictEqual(r.engine, 'higgs', id);
     assert.strictEqual(r.migratedFrom, id, id);
     // The note has to name the engine, or a log line is not actionable.
     assert.ok(r.note && r.note.includes(id), `note does not name ${id}: ${r.note}`);
@@ -77,7 +99,7 @@ check('a stored retired engine MIGRATES, and says which one it was', () => {
 });
 
 check('a stored RUNNABLE engine is returned untouched, and never marked migrated', () => {
-  for (const id of ['orpheus', 'higgs']) {
+  for (const id of caps.narrationEngineOrder()) {
     const r = caps.resolveSavedTtsEngine(id);
     assert.strictEqual(r.engine, id);
     assert.strictEqual(r.migratedFrom, undefined, id);
@@ -94,7 +116,7 @@ check('the RENDER door still refuses a retired engine outright', () => {
   for (const id of RETIRED) {
     assert.throws(() => caps.assertRunnableTtsEngine(id), /retired/i, id);
   }
-  assert.strictEqual(caps.assertRunnableTtsEngine('orpheus'), 'orpheus');
+  assert.strictEqual(caps.assertRunnableTtsEngine('higgs'), 'higgs');
 });
 
 console.log('a persisted queue row for a removed pipeline');

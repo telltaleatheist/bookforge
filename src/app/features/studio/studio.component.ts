@@ -24,7 +24,6 @@ import type { TtsTarget } from '../../core/models/manifest.types';
 
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
-import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
 
 import { ElectronService } from '../../core/services/electron.service';
@@ -2027,14 +2026,22 @@ export class StudioComponent implements OnInit, OnDestroy {
     return false;
   });
 
-  readonly ttsSettings = signal<TTSSettings>({
-    device: 'cpu',
-    language: 'en',
-    ttsEngine: 'orpheus',
-    fineTuned: 'tara',
-    speed: 1.0,
-    enableTextSplitting: true
-  });
+  /*
+   * `ttsSettings` AND `onTtsSettingsChange` WERE DELETED HERE (2026-09-14).
+   *
+   * A `signal<TTSSettings>` seeded `{ device: 'cpu', ttsEngine: 'orpheus',
+   * fineTuned: 'tara', … }` and a setter for it. NOTHING READ EITHER — no
+   * template binding, no caller, no other component; they were the last residue
+   * of a TTS panel Studio used to host before the narration modal became the one
+   * door. They surfaced during the Orpheus retirement precisely because they were
+   * a shipped default NAMING AN ENGINE, which is the thing that had to be audited
+   * — and the honest repair for a default nobody reads is not to update it to
+   * `higgs`, which would leave a second, invisible answer to "what engine does a
+   * run start on" beside `DEFAULT_PIPELINE_DEFAULTS`. It is to remove it.
+   *
+   * The narration run's engine comes from Pipeline Defaults, seeds the narration
+   * modal there, and is stated exactly once.
+   */
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -3028,10 +3035,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   onProcessQueued(): void {
     this.studioService.reloadItem(this.selectedItemId()!);
-  }
-
-  onTtsSettingsChange(settings: TTSSettings): void {
-    this.ttsSettings.set(settings);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

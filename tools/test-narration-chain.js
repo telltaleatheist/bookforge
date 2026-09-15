@@ -73,8 +73,12 @@ function settings(over = {}) {
     language: 'en',
     // The cleanup is a question with three answers (9e1baa00): a run states it.
     textCleanup: 'required',
-    ttsEngine: 'orpheus',
-    voice: 'leah',
+    // `orpheus`/`leah` until 2026-09-14. This suite is about the SHAPE of the
+    // chain (which steps exist, who owns the chapter gap) and not about the
+    // engine — but `narrationRunSteps` calls `assertRunnableTtsEngine`, so a
+    // retired engine here fails every case for a reason none of them are about.
+    ttsEngine: 'higgs',
+    voice: 'deathstalker',
     device: 'gpu',
     temperature: 0.6,
     topP: 0.9,

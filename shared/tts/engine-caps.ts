@@ -49,8 +49,12 @@
 /**
  * THE ENGINES A NARRATION RUN CAN BE RENDERED IN TODAY.
  *
- * Two, on purpose (Owen, 2026-09-04): "Orpheus is a choice, XTTS used to be a
- * choice but can now be removed, Higgs will have to be added as an option."
+ * ONE, on purpose (Owen, 2026-09-14): "orpheus is deprecated too but hasnt been
+ * removed yet. higgs is the frontier." Higgs is the one narration engine.
+ *
+ * It was two until then — the 2026-09-04 ruling ("Orpheus is a choice, XTTS used
+ * to be a choice but can now be removed, Higgs will have to be added as an
+ * option") is the shape this union still has, one engine later.
  *
  * This is the union a caller should name when it means "an engine that can
  * render", and it is deliberately NARROWER than `TTSEngine` below. The two
@@ -60,7 +64,7 @@
  * type for "an id this build recognises" that is not the same type as "an id
  * this build will render".
  */
-export type TtsEngineId = 'orpheus' | 'higgs';
+export type TtsEngineId = 'higgs';
 
 /**
  * Engine ids that exist ONLY in records and saved settings written before the
@@ -86,13 +90,31 @@ export type TtsEngineId = 'orpheus' | 'higgs';
  *   rows were deleted with the rest on 2026-09-05. Un-retiring one is no longer
  *   a line in `SELECTABLE_ORDER`: it needs its component and its env routing
  *   back first.
+ * - `orpheus` — retired as a CHOICE on 2026-09-14, on the ruling that made Higgs
+ *   the one narration engine ("orpheus is deprecated too but hasnt been removed
+ *   yet. higgs is the frontier"). It sat here unretired for a day short of a
+ *   month after that ruling and was still the FIRST entry in `SELECTABLE_ORDER`,
+ *   which is how Owen found it: "orpheus is still an option on the narrate
+ *   modal. we removed it." It had not been; a ruling is not an edit.
  *
- * ALL THREE STILL LOAD AND STILL DISPLAY. That is the whole point of this union
+ *   **ITS CODE IS STILL HERE, AND THAT IS NOT AN OVERSIGHT.** Unlike XTTS, whose
+ *   root was torn out on 2026-09-05, Orpheus's whole spawn layer is intact and
+ *   running: the WSL2 route in `parallel-tts-bridge.ts`, the `orpheus` component,
+ *   `e2a`'s engine class, the fine-tune roster below, the `orpheusModels` IPC.
+ *   Nothing of that was touched by this retirement, because this retirement
+ *   removes the engine from the CHOICE, not from the BUILD. That layer dies as
+ *   one piece when the legacy e2a spawn path is deleted after Owen's in-app pass
+ *   (see `CLAUDE.md`'s WSL/Orpheus block and memory `e2a-removal-big-move.md`).
+ *   So: a reader who finds live Orpheus code below has not found a leftover —
+ *   the picker entry is what was removed, and the executable path is scheduled
+ *   separately.
+ *
+ * ALL FOUR STILL LOAD AND STILL DISPLAY. That is the whole point of this union
  * being separate from `TtsEngineId` — a job record or a saved setting written
  * last year names one of these, and refusing to PARSE it would be a worse
  * failure than refusing to RUN it.
  */
-export type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral';
+export type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral' | 'orpheus';
 
 /**
  * EVERY ENGINE ID THIS BUILD CAN NAME — runnable plus retired.
@@ -238,7 +260,14 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     maxWorkers: 1, // vLLM; serializes
     voices: { kind: 'preset', presets: ORPHEUS_VOICES },
     sampling: {}, // fixed internal sampling
-    retired: null,
+    retired: {
+      since: '2026-09-14',
+      reason:
+        'Orpheus is retired as a narration engine — Higgs is the one engine BookForge narrates ' +
+        'on. Its spawn layer is still in this build and still runs; it is removed from the ' +
+        'choice, not from the build, and dies with the legacy e2a path after the in-app pass. ' +
+        'Re-render this job on Higgs.',
+    },
   },
 
   higgs: {
@@ -304,8 +333,8 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     retired: {
       since: '2026-09-04',
       reason:
-        'XTTS is retired as a narration engine — every voice BookForge ships is an Orpheus ' +
-        'or Higgs model. Re-render this job on Orpheus or Higgs.',
+        'XTTS is retired as a narration engine — every voice BookForge ships is a Higgs model. ' +
+        'Re-render this job on Higgs.',
     },
   },
 
@@ -325,8 +354,8 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     retired: {
       since: '2026-09-04',
       reason:
-        'Voxtral is no longer offered for narration — the picker was narrowed to Orpheus and ' +
-        'Higgs. Its environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
+        'Voxtral is no longer offered for narration — the picker was narrowed to Higgs. Its ' +
+        'environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
     },
   },
 
@@ -343,8 +372,8 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     retired: {
       since: '2026-09-04',
       reason:
-        'F5-TTS is no longer offered for narration — the picker was narrowed to Orpheus and ' +
-        'Higgs. Its environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
+        'F5-TTS is no longer offered for narration — the picker was narrowed to Higgs. Its ' +
+        'environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
     },
   },
 };
@@ -359,8 +388,16 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
  * with no per-page list to keep in step. That was already the design; it is only
  * being recorded because the alternative (a hardcoded `@for` in each template)
  * is exactly how a "removed" engine survives in one forgotten page.
+ *
+ * ONE ENTRY SINCE 2026-09-14, and the day it took to notice is the argument for
+ * the paragraph above. Owen ruled Orpheus deprecated on 2026-09-14 and every
+ * doc in the repo said so, but nobody edited THIS LINE — so the narration modal
+ * went on offering Orpheus, FIRST, ahead of Higgs, until he opened it and said
+ * "orpheus is still an option on the narrate modal. we removed it." The list was
+ * the removal and the list had not been touched. A ruling recorded in prose is
+ * not a ruling implemented in code.
  */
-const SELECTABLE_ORDER: readonly TtsEngineId[] = ['orpheus', 'higgs'];
+const SELECTABLE_ORDER: readonly TtsEngineId[] = ['higgs'];
 
 /**
  * Is this string one of the engines this build has?
@@ -399,10 +436,12 @@ export function isRunnableTtsEngine(id: string): id is TtsEngineId {
  * Narrow an engine id to a runnable one, or throw naming it and saying why.
  *
  * THE REFUSAL IS BY NAME, NEVER A COERCION. The tempting alternative — quietly
- * substituting Orpheus for a record that says `xtts` — is the failure this whole
- * split exists to prevent: it renders a book in a voice nobody chose and reports
- * success. A person reading "XTTS is retired … re-render on Orpheus or Higgs"
- * can act; a person listening to the wrong narrator cannot.
+ * substituting Higgs for a record that says `xtts` or `orpheus` — is the failure
+ * this whole split exists to prevent: it renders a book in a voice nobody chose
+ * and reports success. A person reading "Orpheus is retired … re-render on
+ * Higgs" can act; a person listening to the wrong narrator cannot. That risk got
+ * SHARPER on 2026-09-14, not softer: with one runnable engine left, a coercion
+ * has an obvious thing to coerce to, and is wrong for exactly the same reason.
  */
 export function assertRunnableTtsEngine(id: string): TtsEngineId {
   if (!isTtsEngine(id)) {
@@ -439,7 +478,8 @@ export function assertRunnableTtsEngine(id: string): TtsEngineId {
  *     one must reset it too — an Orpheus engine beside a Scarlett clip is the
  *     unrenderable pair this is supposed to end.
  *   - AN UNKNOWN id → thrown, by name. A string no build ever wrote is a bug or
- *     a hand-edited file, and quietly treating it as Orpheus would hide it.
+ *     a hand-edited file, and quietly treating it as the default engine would
+ *     hide it.
  *
  * `electron/streaming-engine.ts`'s `getSelectedEngineName` is the same shape over
  * `tts-engine.json`; it cannot share this function because its union is the
@@ -454,8 +494,16 @@ export interface SavedTtsEngineResolution {
   note?: string;
 }
 
-/** The engine a saved setting resolves to when it names nothing runnable. */
-export const DEFAULT_TTS_ENGINE: TtsEngineId = 'orpheus';
+/**
+ * The engine a saved setting resolves to when it names nothing runnable.
+ *
+ * `higgs` since 2026-09-14, and it has to be: it is the only member of
+ * `TtsEngineId`, so this constant is now the one runnable engine rather than a
+ * choice among them. When Orpheus was retired this line was the difference
+ * between a machine whose Pipeline Defaults say `orpheus` landing on Higgs with
+ * a logged reason and landing on an engine that is equally retired.
+ */
+export const DEFAULT_TTS_ENGINE: TtsEngineId = 'higgs';
 
 export function resolveSavedTtsEngine(id: string): SavedTtsEngineResolution {
   if (!isTtsEngine(id)) {

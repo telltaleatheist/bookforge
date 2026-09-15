@@ -100,8 +100,11 @@ const BOOK = {
 const settings = (over = {}) => Object.assign({
   language: 'en',
   textCleanup: 'required',
-  ttsEngine: 'orpheus',
-  voice: 'leah',
+  // `orpheus`/`leah` until 2026-09-14, when Orpheus was retired as a choice and
+  // `narrationRunSteps`' `assertRunnableTtsEngine` began refusing it. The gap is
+  // engine-agnostic; the engine named here only has to be one that renders.
+  ttsEngine: 'higgs',
+  voice: 'deathstalker',
   device: 'gpu',
   temperature: 0.6,
   topP: 0.9,

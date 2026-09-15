@@ -309,7 +309,20 @@ async function main() {
   // else here changes: `renderRangeHeadless` routes Higgs to narrator inside the
   // bridge, exactly as the app's narration modal does, so the CLI gets the
   // prep/worker/assembly split for free rather than reimplementing it.
-  const engine = args.engine || 'orpheus';
+  // REQUIRED, NOT DEFAULTED. This read `args.engine || 'orpheus'` until
+  // 2026-09-14, which was a fallback of exactly the kind that hides a bug: a
+  // caller that forgot the flag got a silent engine choice instead of an error,
+  // and after Orpheus was retired as a narration choice that silent choice became
+  // a guaranteed throw from `assertRunnableTtsEngine` several layers down, naming
+  // an engine the caller never asked for. The engine comes from the caller or the
+  // run does not start.
+  const engine = args.engine;
+  if (!engine) {
+    throw new Error(
+      '--engine is required: this renderer does not choose a TTS engine on the caller\'s ' +
+      'behalf. Pass --engine higgs (the engine this build renders).',
+    );
+  }
   const settings = {
     device: 'auto',
     language: args.language || 'en',

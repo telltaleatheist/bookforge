@@ -146,8 +146,13 @@ const caps = require(path.join(REPO, 'dist', 'shared', 'tts', 'engine-caps.js'))
 
 console.log('engine ids');
 
-check('orpheus and higgs are the runnable set, in that order', () => {
-  assert.deepStrictEqual([...caps.narrationEngineOrder()], ['orpheus', 'higgs']);
+check('higgs is the runnable set — the whole of it', () => {
+  // Was `['orpheus', 'higgs']` until 2026-09-14. Owen ruled Orpheus deprecated on
+  // that date ("higgs is the frontier") and this is the line the ruling had to
+  // reach: `SELECTABLE_ORDER` IS the narration picker, so for as long as it said
+  // `orpheus` first, the narrate modal went on offering Orpheus ahead of Higgs
+  // whatever the docs said.
+  assert.deepStrictEqual([...caps.narrationEngineOrder()], ['higgs']);
 });
 
 check('every runnable engine has retired === null', () => {
@@ -172,8 +177,22 @@ check('xtts displays as "XTTS (retired)"', () => {
 });
 
 check('a runnable engine displays without a suffix', () => {
-  assert.strictEqual(caps.engineDisplayName('orpheus'), 'Orpheus');
   assert.strictEqual(caps.engineDisplayName('higgs'), 'Higgs');
+});
+
+check('orpheus displays as "Orpheus (retired)" and still LOADS', () => {
+  // Retired 2026-09-14, and the one whose CODE is still here: unlike XTTS, the
+  // Orpheus spawn layer, component and voice roster are all intact and run. So
+  // this is the case where "loads and displays but never renders" is doing real
+  // work rather than describing an absence.
+  assert.strictEqual(caps.isTtsEngine('orpheus'), true);
+  assert.ok(caps.engineCaps('orpheus'));
+  assert.strictEqual(caps.isRunnableTtsEngine('orpheus'), false);
+  assert.strictEqual(caps.engineDisplayName('orpheus'), 'Orpheus (retired)');
+  // Its capability row survives whole — the fine-tune roster a legacy record's
+  // voice name is displayed against is still there to display it.
+  assert.ok(caps.TTS_ENGINES.orpheus.voices.presets.length > 0,
+    'the Orpheus voice roster was deleted with the picker entry');
 });
 
 check('an unknown id displays rather than throwing', () => {
@@ -190,15 +209,28 @@ check('assertRunnableTtsEngine REFUSES xtts by name, and never coerces', () => {
 });
 
 check('assertRunnableTtsEngine passes a runnable engine through unchanged', () => {
-  assert.strictEqual(caps.assertRunnableTtsEngine('orpheus'), 'orpheus');
   assert.strictEqual(caps.assertRunnableTtsEngine('higgs'), 'higgs');
+});
+
+check('assertRunnableTtsEngine REFUSES orpheus by name — never coerces to Higgs', () => {
+  // The coercion got MORE tempting on 2026-09-14, not less: with one runnable
+  // engine left there is an obvious thing to substitute. It is wrong for the
+  // same reason it always was — a book rendered in a voice nobody chose, and
+  // reported as success.
+  let threw = null;
+  try { caps.assertRunnableTtsEngine('orpheus'); } catch (err) { threw = err; }
+  assert.ok(threw, 'orpheus was accepted by the render door');
+  assert.match(threw.message, /Orpheus/, 'the refusal does not name the engine');
+  assert.match(threw.message, /2026-09-14/, 'the refusal does not carry the retirement date');
 });
 
 check('an unknown engine is refused and the message says what IS renderable', () => {
   let threw = null;
   try { caps.assertRunnableTtsEngine('nope'); } catch (err) { threw = err; }
   assert.ok(threw);
-  assert.match(threw.message, /orpheus, higgs/);
+  assert.match(threw.message, /higgs/);
+  assert.ok(!/orpheus/.test(threw.message),
+    'the refusal still advertises orpheus as something this build renders');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
