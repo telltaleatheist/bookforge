@@ -672,7 +672,18 @@ class _StubEngine:
                                     'This stub renders one sentence and honours '
                                     'no sampling.')
 
-    def render_audio(self, text, seed=None, index=0, sampling=None):
+    @staticmethod
+    def accept_item_take(raw, where=None):
+        """The rung's other half, also a declared protocol member. This stub
+        has no seed lane - it ignores `seed` entirely - so it refuses a take
+        above 0 by name rather than answering for a draw it would not make.
+        Take 0 (and an absent `take`) pass, which is every dispatch test here."""
+        from narrator.engine.item_sampling import refuse_item_take
+        return refuse_item_take(raw, where or '_StubEngine',
+                                'This stub renders one sentence and has no seed '
+                                'lane to put a retake in.')
+
+    def render_audio(self, text, seed=None, index=0, sampling=None, take=0):
         self.calls.append((text, index))
         return np.zeros(2400, dtype=np.float32)
 

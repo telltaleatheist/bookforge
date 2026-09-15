@@ -229,23 +229,36 @@ COPY (never on Z:): e2a `app.py --headless --assemble_only --tts_engine xtts
 with `python_env\python.exe` from the e2a checkout - that runs on CPU. Record the
 exact command in the README.
 
-## The per-item sampling channel (`serve/worker.py` + `engine/item_sampling.py`)
+## The per-item take channel (`serve/worker.py` + `engine/item_sampling.py`)
 
-Added 2026-09-14 for Crucible's take ladder. Owen's ruling that day
-(`docs/EXTENSION-TO-CRUCIBLE-PLAN.md` section 2): *a retake must not reuse the
-settings that produced the problem; the spread IS the take ladder.* The ladder
-itself is Crucible's (`crucible/docs/PHASE3-TTS.md` section 3, `[[voice.takes]]`
-per voice, take 0 = the boson default 0.8 / 0.95 / 50); a job carries `take: N`
-and the server resolves the rung into NUMBERS. narrator had nowhere to put them
-- its sampling arrived through the `NARRATOR_HIGGS_VOICES` document, written per
-LOAD - so Crucible refused every rung above 0 by name (`sampling_not_wired`).
-This is the channel that lifts it.
+Added 2026-09-14 for Crucible's take ladder, completed 2026-09-15. Owen's
+ruling of the first day (`docs/EXTENSION-TO-CRUCIBLE-PLAN.md` section 2): *a
+retake must not reuse the settings that produced the problem; the spread IS the
+take ladder.* The ladder itself is Crucible's (`crucible/docs/PHASE3-TTS.md`
+section 3, `[[voice.takes]]` per voice, take 0 = the boson default 0.8 / 0.95 /
+50); a job carries `take: N` and the server resolves the rung. narrator had
+nowhere to put it - its sampling arrived through the `NARRATOR_HIGGS_VOICES`
+document, written per LOAD - so Crucible refused every rung above 0 by name
+(`sampling_not_wired`). This is the channel that lifts it.
 
-**The field.** `sampling` on ONE ITEM of `generate_batch`, and on `generate`:
+**A RUNG IS TWO FACTS: (sampling deltas, seed offset).** The numbers landed on
+2026-09-14 and were half a rung. narrator seeds chunk i at `config.seed + i` on
+both Higgs arms (`_seed_for`) and the ladder never varied it, so take 0 and take
+N of one chunk were BYTE-IDENTICAL renders whenever their sampling matched - and
+two take-0 re-rolls always were, because take 0's rung is by definition the
+voice's own numbers. Owen, 2026-09-14: *"if a sentence/chunk was problematic
+before, it'll likely be problematic again with the same settings"*. A seed is a
+setting. So the item carries `take` beside `sampling`, and the two are
+INDEPENDENT: a rung that declares no sampling override is still a different
+draw, because the lane moved.
+
+**The fields.** `sampling` and `take` on ONE ITEM of `generate_batch`, and on
+`generate`:
 
 ```json
 {"action": "generate_batch",
- "items": [{"i": 412, "text": "...", "sampling": {"temperature": 0.7}}]}
+ "items": [{"i": 412, "text": "...", "take": 1,
+            "sampling": {"temperature": 0.7}}]}
 ```
 
 Keys: `temperature`, `topP`, `topK`, `repetitionPenalty` - **exactly the voices
@@ -269,28 +282,66 @@ spelling would be two names for one fact.
   ONE temperature for every active row, so `_mlx_batch_groups` breaks a group
   when the rung changes. **No path renders a row at another row's numbers.**
 - The rung is keyed by CHUNK INDEX through the guarded driver
-  (`render_many(..., sampling_by_index=)`), because a re-roll and both halves of
-  a split carry their parent's index and must render at their parent's numbers.
-  A chunk the map does not name is refused, never rendered at take 0.
+  (`render_many(..., sampling_by_index=, take_by_index=)`), because a re-roll
+  and both halves of a split carry their parent's index and must render at
+  their parent's numbers and in their parent's lane. A chunk a map does not
+  name is refused, never rendered at take 0.
 
-**The two refusals**, both per ITEM (the neighbours still render), both by name
+**`take`'s meaning.** A whole number `>= 0`, ABSENT = 0, at most
+`item_sampling.MAX_TAKE` (999). It moves the render's SEED into that take's own
+lane and changes nothing else:
+
+```
+seed = base + index + REROLL_SEED_STRIDE * (TAKE_REROLL_LANES * take + attempt)
+```
+
+`in_take_lane` contributes `TAKE_SEED_STRIDE * take` and `reroll_seed`
+contributes `REROLL_SEED_STRIDE * attempt`, and `TAKE_SEED_STRIDE` IS
+`REROLL_SEED_STRIDE * TAKE_REROLL_LANES` (100,003 x 16 = 1,600,048) precisely so
+the two add into one multiple of `REROLL_SEED_STRIDE`. With `attempt <
+TAKE_REROLL_LANES` and `index < REROLL_SEED_STRIDE` - the bound the re-roll
+stride already assumes, ~50x the longest book rendered - the map
+`(take, attempt, index) -> seed` is INJECTIVE: **no take's draw is any other
+take's draw, and no take's draw is any re-roll's.** `take = 0, attempt = 0` is
+`base + index`, the rule this engine has always had, which is what makes the
+channel additive. All of it lives in `engine/higgs/truncation.py`; the lane is
+applied in ONE place per arm (`_request_seed`), to whatever seed the ladder
+chose, so take N's whole ladder - its take 0, its re-roll, both halves of a
+split - rides inside take N's lane. `MAX_TAKE` exists so the worst seed stays
+inside a signed 32-bit int, which is what goes on the wire.
+
+On the MLX arm one `mx.random.seed` serves a whole slab, so `_mlx_batch_groups`
+breaks a group when the TAKE changes exactly as it does when the sampling
+changes. **No path renders a row in another row's lane.**
+
+**The four refusals**, all per ITEM (the neighbours still render), all by name
 at the head of the message:
 
 | name | when |
 |---|---|
 | `sampling_malformed` | not an object, empty, an unknown key, a non-positive or non-numeric value, a fractional `topK`. The field is named. |
 | `sampling_not_supported` | well formed and this engine has no such lever: `repetitionPenalty` on the MLX arm (mlx-audio has no repetition penalty), or ANY rung on Orpheus. |
+| `take_malformed` | not a whole number `>= 0` (a bool, a float - `2.0` included - a string, a negative), or above `MAX_TAKE`. Never rounded and never clamped. |
+| `take_not_supported` | well formed, above 0, and this engine has no seed lane: Orpheus, whose seeding is not `seed + index` at all. Take 0 always passes. |
 
 **Per backend.** `higgs-v3` served (vllm-omni `extra_params` / SGLang-Omni
 top-level): per request, all four levers, mixes freely. `higgs-v3` MLX: three
 levers, solo renders mix freely, the slab is SPLIT by sampling group.
 `higgs-v2-scaffold` (transformers, unshipped): three levers, serial.
-`orpheus`: **refused** - it is deprecated, it is not a Crucible engine, and its
-sampling is the per-voice cap registry resolved per render, so a rung there
-would be ignored and reported as applied.
+`orpheus`: **refused** - it is deprecated, it is not a Crucible engine, its
+sampling is the per-voice cap registry resolved per render and it has no seed
+lane, so either half of a rung there would be ignored and reported as applied.
 
-Nothing about take 0's defaults, the guard, the retake ladder, the caps or the
-frame budget is changed by this.
+**The handshake.** `ready` carries `itemTake: true`. It is a BUILD fact, sent
+before any engine loads, and it says only that this narrator parses a per-item
+rung at all - BOTH halves, under ONE key, because a build has both or neither.
+(It was `itemSampling` for one day, 2026-09-14 to 2026-09-15; renamed when the
+seed half landed rather than joined by a second key, which would have been two
+owners of one answer. Nothing had shipped under the old name.) Whether the
+LOADED engine has a given lever or a lane is the per-row answer above.
+
+Nothing about take 0's defaults, its seed, the guard, the retake ladder, the
+caps or the frame budget is changed by this.
 
 ## Reporting a guess
 

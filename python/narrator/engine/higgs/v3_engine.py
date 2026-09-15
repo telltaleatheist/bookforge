@@ -869,6 +869,19 @@ class HiggsV3Engine:
         return parse_item_sampling(raw, where or f'HiggsV3Engine({self.voice!r})',
                                    levers=self.ITEM_SAMPLING_LEVERS)
 
+    def accept_item_take(self, raw, where: str = None) -> int:
+        """One item's `take` off the wire -> a whole number >= 0.
+
+        THE OTHER HALF OF A RUNG. A rung is (sampling deltas, seed offset), and
+        until 2026-09-15 this engine honoured only the first: every take of
+        chunk i drew at `config.seed + i`, so take 0 and take N were
+        byte-identical whenever their numbers matched. `_request_seed` is where
+        the offset lands; this is where the wire's number is checked.
+        `take_malformed` is the one refusal - see `engine/item_sampling.py`.
+        """
+        from ..item_sampling import parse_item_take
+        return parse_item_take(raw, where or f'HiggsV3Engine({self.voice!r})')
+
     def _sampling_for(self, item_sampling) -> dict:
         """The sampling ONE request carries: `served_sampling()` with the
         item's rung laid over it, key by key.
@@ -932,8 +945,23 @@ class HiggsV3Engine:
             return None
         return int(self.config.seed) + int(index)
 
+    def _request_seed(self, seed, index: int, take: int):
+        """THE SEED ONE REQUEST ACTUALLY CARRIES: the ladder's own seed when it
+        chose one, this chunk's `seed + index` when it did not, shifted into
+        take `take`'s lane either way.
+
+        ONE DOOR, so the lane cannot be applied twice or missed once. Take 0
+        returns exactly what `_seed_for` / the ladder returned, which is why
+        every pre-ladder caller is untouched; a take above 0 moves the WHOLE
+        chunk - its take 0, its re-roll and both halves of a split - into a
+        lane no other take uses (`truncation.TAKE_SEED_STRIDE` carries the
+        disjointness argument).
+        """
+        base = self._seed_for(index) if seed is None else seed
+        return truncation.in_take_lane(base, take)
+
     def render_audio(self, text: str, seed=None, index: int = 0,
-                     sampling=None) -> np.ndarray:
+                     sampling=None, take: int = 0) -> np.ndarray:
         """One chunk of text -> a float32 mono waveform at 24 kHz.
 
         `index` is the chunk's own index and is what seeds it (see `_seed_for`);
@@ -945,6 +973,11 @@ class HiggsV3Engine:
         `accept_item_sampling`. None renders at the voice's loaded sampling,
         which is take 0 - the existing behaviour, and the documented meaning of
         "no rung", not a substituted default.
+
+        `take` is WHICH RUNG, and it moves the seed rather than the numbers
+        (`_request_seed`). It is independent of `sampling` on purpose: a rung
+        that declares no sampling override is still a different draw, because
+        the lane moved. 0 is take 0 and changes nothing.
         """
         # THE MODEL BOUNDARY STRIPS THE MARKUP - here, once, for every caller.
         # `[break]` / `[heading]` / `[item]` / `[pause:X]` are narrator's own
@@ -966,7 +999,7 @@ class HiggsV3Engine:
         request = SpeechRequest(
             text=clean, voice=self.voice_ref,
             max_new_tokens=self._budget.cap_frames(clean),
-            seed=self._seed_for(index) if seed is None else seed,
+            seed=self._request_seed(seed, index, take),
             sampling=self._sampling_for(sampling))
         audio, _rate = self.server.speak(request)
         return audio
@@ -1113,7 +1146,8 @@ class HiggsV3Engine:
                 self._write_sentence(index, audio)
                 on_done(index, True)
 
-    def render_many(self, rows, in_flight=None, sampling_by_index=None):
+    def render_many(self, rows, in_flight=None, sampling_by_index=None,
+                    take_by_index=None):
         """THE GUARDED DRIVER: yields `(index, audio, verdict)` as the ladder
         decides each chunk, and writes NOTHING.
 
@@ -1153,11 +1187,18 @@ class HiggsV3Engine:
         check happens as each row is taken; an absent key would otherwise be a
         `.get()` that silently renders the ladder's rung 1 at rung 0's numbers,
         which is the one failure this whole channel exists to prevent.
+
+        `take_by_index` is the OTHER half of the same rung and keeps the same
+        rules: keyed by chunk index because a re-roll and both halves of a
+        split must stay in their parent's seed lane, covering every row or
+        refused by name. It moves the SEED, not the numbers, so a chunk at take
+        3 with no sampling override still renders a draw take 0 never made.
         """
         rows = iter(rows)
         if in_flight is None:
             in_flight = []
         rungs = None if sampling_by_index is None else dict(sampling_by_index)
+        takes = None if take_by_index is None else dict(take_by_index)
 
         def rung_for(index):
             if rungs is None:
@@ -1169,6 +1210,17 @@ class HiggsV3Engine:
                     'every row (None for a chunk at take 0); a missing key would '
                     "render a ladder's rung at take 0's numbers.")
             return rungs[index]
+
+        def take_for(index):
+            if takes is None:
+                return 0
+            if index not in takes:
+                raise KeyError(
+                    f'HiggsV3Engine.render_many: chunk {index} has no entry in '
+                    'take_by_index. The map is given per CALL and must name every '
+                    'row (0 for a chunk at take 0); a missing key would render a '
+                    "retake in take 0's own seed lane.")
+            return takes[index]
         width = int(self.BATCH_SIZE)
         if width < 1:
             raise ValueError(f'render_many needs BATCH_SIZE >= 1; got {width}.')
@@ -1184,10 +1236,14 @@ class HiggsV3Engine:
 
             The rung is read by CHUNK INDEX, so every take of a chunk - take 0,
             its re-roll and both halves of a split - renders at the same
-            numbers the caller asked that chunk for."""
+            numbers the caller asked that chunk for, and in that chunk's own
+            take lane. `request.seed` is the ladder's (None for take 0 of the
+            chunk, `reroll_seed` for a re-roll); `_request_seed` shifts
+            whichever it is."""
             return self.render_audio(request.text, seed=request.seed,
                                      index=request.index,
-                                     sampling=rung_for(request.index))
+                                     sampling=rung_for(request.index),
+                                     take=take_for(request.index))
 
         def start(request) -> None:
             outstanding[request.index] = outstanding.get(request.index, 0) + 1
@@ -1290,7 +1346,7 @@ class HiggsV3Engine:
         pool.shutdown(wait=True)
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None, samplings=None) -> None:
+                              should_stop=None, samplings=None, takes=None) -> None:
         """Whole rows, at retirement.
 
         The buffered endpoint returns a finished wav, so there is nothing to
@@ -1302,8 +1358,12 @@ class HiggsV3Engine:
         take-ladder rung. Sampling is PER REQUEST on both serving stacks, so a
         batch here mixes rungs freely: the pool submits one HTTP request per
         row and each carries its own numbers.
+
+        `takes` is aligned the same way and carries each row's take, which
+        moves that row's SEED into its own lane. Mixing is free here for the
+        same reason: the seed is a per-request field, one HTTP call per row.
         """
-        from ..item_sampling import aligned
+        from ..item_sampling import aligned, takes_aligned
         if not texts:
             return
         if voices is not None and len(voices) != len(texts):
@@ -1334,6 +1394,8 @@ class HiggsV3Engine:
                 'after cleaning.')
         rungs = aligned(samplings, len(texts),
                         'HiggsV3Engine.generate_batch_stream')
+        rows_takes = takes_aligned(takes, len(texts),
+                                   'HiggsV3Engine.generate_batch_stream')
 
         def render(i: int, text: str):
             # Checked at the moment the row would be POSTed, not at submission:
@@ -1342,7 +1404,8 @@ class HiggsV3Engine:
             # all, which is what the contract requires.
             if should_stop is not None and should_stop():
                 return i, None, True
-            return i, self.render_audio(text, index=i, sampling=rungs[i]), False
+            return i, self.render_audio(text, index=i, sampling=rungs[i],
+                                        take=rows_takes[i]), False
 
         width = min(self.BATCH_SIZE, len(texts))
         with ThreadPoolExecutor(max_workers=width,

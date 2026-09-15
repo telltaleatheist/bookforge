@@ -159,7 +159,53 @@ MIN_SPLIT_CHARS = 80
 
 #: The re-roll's seed offset. Large and odd so `seed + index + STRIDE` never
 #: collides with another chunk's own seed inside any book.
+#:
+#: IT IS ALSO THE BOOK'S INDEX BOUND, stated here because `TAKE_SEED_STRIDE`
+#: below rests on it: the sentence above is only true while a book has fewer
+#: than 100,003 chunks. Measured headroom - The Final Empire, 24.6 h, packs to
+#: ~1,750 chunks at Higgs's 600-1,100-char caps, so the bound is ~50x the
+#: longest book anyone has rendered.
 REROLL_SEED_STRIDE = 100_003
+
+#: How many re-roll lanes ONE TAKE reserves inside the seed space.
+#:
+#: The ladder spends two of them: `_LadderTask.request` asks for attempt 1 and
+#: only attempt 1, so a chunk draws at `attempt = 0` (its plain take) and at
+#: `attempt = 1` (the re-roll). Sixteen is headroom for a deeper ladder and
+#: costs nothing but arithmetic - the lanes are not allocated, they are a gap
+#: in the integers.
+TAKE_REROLL_LANES = 16
+
+#: THE TAKE'S SEED OFFSET - the other half of Owen's retake ruling
+#: (2026-09-14): *a retake must not reuse the settings that produced the
+#: problem.* A SEED IS A SETTING. Until 2026-09-15 the whole ladder was
+#: seeded `seed + index` whatever the take, so take 0 and take 7 of chunk i
+#: were byte-identical renders whenever their sampling matched - and two
+#: take-0 re-rolls always were.
+#:
+#: WHY THE TWO FAMILIES CANNOT COLLIDE. Every seed narrator draws is
+#:
+#:     base + index + REROLL_SEED_STRIDE * (TAKE_REROLL_LANES * take + attempt)
+#:
+#: - `in_take_lane` contributes `TAKE_SEED_STRIDE * take` and `reroll_seed`
+#: contributes `REROLL_SEED_STRIDE * attempt`, and `TAKE_SEED_STRIDE` is
+#: `REROLL_SEED_STRIDE * TAKE_REROLL_LANES` exactly so the two add into ONE
+#: multiple of `REROLL_SEED_STRIDE`. With `0 <= attempt < TAKE_REROLL_LANES`
+#: the quantity `TAKE_REROLL_LANES * take + attempt` is distinct for every
+#: (take, attempt) pair, and with `0 <= index < REROLL_SEED_STRIDE` the index
+#: can never carry a seed into the next multiple. So (take, attempt, index) ->
+#: seed is INJECTIVE: no take's draw is any other take's draw, and no take's
+#: draw is any re-roll's.
+#:
+#: The one deliberate coincidence is `take = 0, attempt = 0`, which is `base +
+#: index` - the seed rule this file has always had. Take 0 is unchanged, which
+#: is what makes this additive.
+#:
+#: RANGE. `item_sampling.MAX_TAKE` bounds the take so the arithmetic stays
+#: inside a signed 32-bit seed (the wire's `int`): 1234 + 999 * 1_600_048 +
+#: 100_003 + 100_003 is about 1.6e9, under 2^31. tests/test_serve_sampling.py
+#: pins that.
+TAKE_SEED_STRIDE = REROLL_SEED_STRIDE * TAKE_REROLL_LANES
 
 #: The parseable prefix. LOAD-BEARING for the bridge's event parser.
 GUARD_EVENT_PREFIX = '[HIGGS3][HIGGS_GUARD_EVENT] '
@@ -368,6 +414,29 @@ def reroll_seed(base_seed: Optional[int], index: int, attempt: int) -> Optional[
     if base_seed is None:
         return None
     return int(base_seed) + int(index) + REROLL_SEED_STRIDE * int(attempt)
+
+
+def in_take_lane(seed: Optional[int], take: int) -> Optional[int]:
+    """`seed`, moved into TAKE `take`'s own lane - see `TAKE_SEED_STRIDE` for
+    why the lanes cannot collide with the re-roll's.
+
+    THE ONE PLACE A TAKE TOUCHES A SEED, and it is applied to whatever seed the
+    ladder already chose rather than only to the engine's `seed + index` rule.
+    That is what keeps take N's WHOLE ladder inside take N's lane: take 0's
+    seed, the re-roll's `reroll_seed`, and a split half's own all get the same
+    shift, so a retake at take 3 re-rolls at a seed take 0 never drew either.
+
+    `take = 0` returns the seed unchanged, which is why this is additive: every
+    caller that knows nothing about takes renders exactly what it rendered
+    before.
+
+    None stays None, for `reroll_seed`'s reason: an unseeded engine samples
+    fresh on every call, so its take N already IS a different draw and there is
+    no arithmetic to do.
+    """
+    if seed is None:
+        return None
+    return int(seed) + TAKE_SEED_STRIDE * int(take)
 
 
 def split_halves(text: str) -> List[str]:

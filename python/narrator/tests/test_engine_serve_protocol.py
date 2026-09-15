@@ -221,7 +221,7 @@ class ServeProtocolTest(_WorkerCase):
         self.assertEqual(msgs[-1]['backend'], 'transformers')
         self.assertTrue(all(m['type'] == 'status' for m in msgs[:-1]), msgs)
 
-    def test_handshake_advertises_the_per_item_sampling_channel(self):
+    def test_handshake_advertises_the_per_item_take_channel(self):
         """A client driving a take ladder can tell whether this narrator HAS one.
 
         Measured 2026-09-15: Crucible sent take 1's `{"temperature": 0.7}` on
@@ -233,12 +233,17 @@ class ServeProtocolTest(_WorkerCase):
 
         The handshake is where that comparison becomes possible, so the fact
         rides on `ready`. It is a BUILD fact - `ready` is sent before any engine
-        loads - and says only that an item's `sampling` is parsed at all. Whether
-        the loaded ENGINE has a given lever is `accept_item_sampling`'s answer,
-        per row, as `sampling_not_supported`.
+        loads - and says only that an item's rung is parsed at all: BOTH halves,
+        `sampling` and `take`, under ONE key, because a build has both or
+        neither. Whether the loaded ENGINE has a given lever or a seed lane is
+        `accept_item_sampling` / `accept_item_take`'s answer, per row, as
+        `sampling_not_supported` / `take_not_supported`.
         """
         ready = self._ready()
-        self.assertIs(ready.get('itemSampling'), True, ready)
+        self.assertIs(ready.get('itemTake'), True, ready)
+        # And the name it replaced is GONE rather than kept beside it: two keys
+        # for one build fact would be the two-owners shape the rename removed.
+        self.assertNotIn('itemSampling', ready)
 
     def test_unknown_stock_voice_is_refused_not_substituted(self):
         self._ready()

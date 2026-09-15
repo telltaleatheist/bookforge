@@ -824,6 +824,28 @@ class Engine(Protocol):
         the very settings the retake exists to avoid.
         """
 
+    def accept_item_take(self, raw, where: str = None) -> int:
+        """ONE ITEM's take, off the wire -> a whole number >= 0.
+
+        THE OTHER HALF OF A RUNG, and declared here for `accept_item_sampling`'s
+        reason: the serve worker asks it of every engine it drives and the
+        answer differs. A rung is (sampling deltas, SEED OFFSET); the Higgs
+        arms honour the offset by rendering the chunk in take N's own seed lane
+        (`engine/higgs/truncation.py:in_take_lane`), and Orpheus refuses any
+        take above 0 because it has no lane to put one in.
+
+        `raw` None returns 0, and so does an explicit 0: take 0 is the
+        documented bottom rung - the seed rule narrator has always had - not a
+        default substituted for a missing value.
+
+        A SEED IS A SETTING (Owen, 2026-09-14). Without this, take 0 and take N
+        of one chunk were byte-identical whenever their sampling matched, and
+        two take-0 re-rolls always were - measured 2026-09-15. The two refusals
+        are `take_malformed` and `take_not_supported`, both in
+        `narrator.engine.item_sampling`; never a clamp, because a take rounded
+        down is the retake rendering at the seed it exists to leave.
+        """
+
     def generate_batch_stream(self, texts: Sequence[str], voices, stream_rows,
                               on_chunk, on_row, should_stop=None,
                               samplings=None) -> None:

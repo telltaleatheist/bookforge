@@ -1,5 +1,5 @@
-"""THE PER-ITEM SAMPLING CHANNEL - one spelling, one validator, one pair of
-refusal names.
+"""THE PER-ITEM TAKE CHANNEL - one spelling, one validator, one set of refusal
+names. A rung is TWO facts, `sampling` and `take`, and they travel together.
 
 WHY THIS MODULE EXISTS (Owen, 2026-09-14, docs/EXTENSION-TO-CRUCIBLE-PLAN.md
 section 2): *a retake must not reuse the settings that produced the problem;
@@ -52,6 +52,29 @@ THE TWO REFUSALS, both by name and neither ever a clamp:
 ABSENT IS NOT A REFUSAL AND NOT A FALLBACK. An item with no `sampling` key
 renders at the voice's loaded default, which is take 0. That is the documented
 meaning of "no rung", not a value substituted for a missing one.
+
+A SEED IS A SETTING, WHICH IS WHY `take` IS ALSO ON THE WIRE (2026-09-15).
+The paragraph above was only half of a rung. narrator seeds chunk i at
+`config.seed + i` on both Higgs arms, and the take ladder never varied it, so
+take 0 and take 7 of one chunk were BYTE-IDENTICAL renders whenever their
+sampling matched - and two take-0 re-rolls always were, because take 0's rung
+is by definition the voice's own numbers. Owen's ruling of 2026-09-14 - *"if a
+sentence/chunk was problematic before, it'll likely be problematic again with
+the same settings"* - makes that a defect: a retake must not reuse the settings
+that produced the problem, and the seed is one of them.
+
+So an item carries `take: N` (a whole number, absent = 0) BESIDE `sampling`,
+and the engine renders the row in take N's own seed lane
+(`engine/higgs/truncation.py:in_take_lane`, `TAKE_SEED_STRIDE`). The two facts
+are independent on purpose: take N with an EMPTY rung - a ladder whose rung N
+declares no sampling override, which `[[voice.takes]]` permits - is still a
+different draw, because the lane moved even though the numbers did not.
+
+  take_malformed      the item's `take` is not a whole number >= 0, or is
+                      beyond `MAX_TAKE`. Refused, never rounded or clamped.
+  take_not_supported  well formed, above 0, and this engine has no take lane
+                      at all (Orpheus, deprecated) - so it would render take 0
+                      and report take N.
 """
 
 #: The wire's lever names (the voices document's camelCase) -> the engines'.
@@ -65,6 +88,21 @@ WIRE_KEYS = {'temperature': 'temperature', 'topP': 'top_p', 'topK': 'top_k',
 #: The refusal names, as they appear at the head of every message.
 MALFORMED = 'sampling_malformed'
 NOT_SUPPORTED = 'sampling_not_supported'
+TAKE_MALFORMED = 'take_malformed'
+TAKE_NOT_SUPPORTED = 'take_not_supported'
+
+#: The highest `take` this wire accepts.
+#:
+#: A LADDER IS A HANDFUL OF RUNGS - PHASE3-TTS's `[[voice.takes]]` is a short
+#: list per voice - so a take in the thousands is a caller error and is refused
+#: by name rather than turned into a seed. The number is not arbitrary: the
+#: take's seed lane is `TAKE_SEED_STRIDE` (1,600,048) wide, so 999 puts the
+#: highest seed narrator can draw at about 1.6e9, inside a signed 32-bit int,
+#: which is what `build_request_body` puts on the wire as the request's `seed`.
+#: A take of 2,000 would silently exceed that on some servers; refusing is the
+#: honest answer, and `engine/higgs/truncation.py:TAKE_SEED_STRIDE` states the
+#: arithmetic.
+MAX_TAKE = 999
 
 
 class SamplingMalformed(ValueError):
@@ -74,6 +112,15 @@ class SamplingMalformed(ValueError):
 class SamplingNotSupported(ValueError):
     """Well formed, and this engine cannot honour it. Message starts
     `sampling_not_supported:`."""
+
+
+class TakeMalformed(ValueError):
+    """The item's `take` is not a take. Message starts `take_malformed:`."""
+
+
+class TakeNotSupported(ValueError):
+    """Well formed, above 0, and this engine has no take lane. Message starts
+    `take_not_supported:`."""
 
 
 def parse_item_sampling(raw, where: str, levers=None) -> dict:
@@ -118,6 +165,84 @@ def parse_item_sampling(raw, where: str, levers=None) -> dict:
                 'whole number of candidates.')
         out[WIRE_KEYS[key]] = int(value) if key == 'topK' else float(value)
     return out
+
+
+def parse_item_take(raw, where: str) -> int:
+    """One item's `take` off the wire -> a whole number >= 0. ABSENT IS 0.
+
+    `where` names the caller in every message, exactly as
+    `parse_item_sampling`'s does, so a refusal read off a worker's stderr says
+    which row asked for what.
+
+    0 IS NOT A FALLBACK AND ABSENT IS NOT A REFUSAL. Take 0 is the documented
+    bottom rung of the ladder - the voice's own numbers in the seed lane
+    narrator has always used - so an item that says nothing about takes renders
+    exactly as every item rendered before this channel existed. That is the
+    additive guarantee, not a value substituted for a missing one.
+
+    A BOOL IS NOT A TAKE. `isinstance(True, int)` is True in Python, and
+    `take: true` from a JSON client that meant `stream: true` would otherwise
+    render take 1 and be reported as take 1. It is a malformed take.
+
+    A FLOAT THAT HAPPENS TO BE WHOLE IS STILL REFUSED, for `topK`'s reason: a
+    take indexes a rung of a list, a fractional one indexes nothing, and
+    `2.0` arriving where `2` was meant is a client whose types are wrong -
+    which is worth seeing once rather than rounding away forever.
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TakeMalformed(
+            f'{TAKE_MALFORMED}: {where} carries take {raw!r} '
+            f'({type(raw).__name__}); a take is a whole number >= 0 naming a rung '
+            'of the voice\'s ladder, and 0 (or no key at all) is take 0.')
+    if raw < 0:
+        raise TakeMalformed(
+            f'{TAKE_MALFORMED}: {where} carries take {raw!r}. A take names a rung '
+            'of the ladder and counts up from 0; there is no rung below take 0.')
+    if raw > MAX_TAKE:
+        raise TakeMalformed(
+            f'{TAKE_MALFORMED}: {where} carries take {raw!r}, above MAX_TAKE '
+            f'({MAX_TAKE}). A ladder is a handful of rungs, and a take this high '
+            'would seed the render outside the 32-bit range the servers take - '
+            'see engine/higgs/truncation.py:TAKE_SEED_STRIDE.')
+    return int(raw)
+
+
+def refuse_item_take(raw, where: str, why: str) -> int:
+    """An engine with NO take lane at all. Take 0 (and an absent `take`) pass;
+    anything above 0 is `take_not_supported`, naming why.
+
+    Orpheus is the only caller, for `refuse_item_sampling`'s reasons: it is
+    deprecated, it is not built into Crucible, and it dies with the legacy
+    layer. The refusal is what stops a retake rendering at the very seed the
+    retake exists to leave and being reported as take N.
+    """
+    take = parse_item_take(raw, where)
+    if take == 0:
+        return 0
+    raise TakeNotSupported(f'{TAKE_NOT_SUPPORTED}: {where} asks for take {take}. '
+                           f'{why}')
+
+
+def takes_aligned(takes, count: int, where: str) -> list:
+    """A `takes` argument aligned to a batch -> a list of `count` whole
+    numbers.
+
+    None for the whole argument means "take 0 everywhere", which is every
+    caller not climbing a ladder, and is the same documented shape `aligned`
+    gives a batch with no rung. A list of the WRONG LENGTH is refused by name:
+    a misaligned list would render row i in row j's seed lane and report
+    neither.
+    """
+    if takes is None:
+        return [0] * count
+    takes = list(takes)
+    if len(takes) != count:
+        raise TakeMalformed(
+            f'{TAKE_MALFORMED}: {where}: {len(takes)} take(s) for {count} rows; '
+            'takes must be aligned to the batch or None.')
+    return takes
 
 
 def refuse_item_sampling(raw, where: str, why: str):

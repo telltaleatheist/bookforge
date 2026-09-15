@@ -94,6 +94,31 @@ class CapsMixin:
             'from the voice, not from the request. Orpheus is deprecated and is '
             'not a Crucible engine - the take ladder is Higgs v3.')
 
+    @staticmethod
+    def accept_item_take(raw, where: str = 'Orpheus') -> int:
+        """THE PER-ITEM TAKE - REFUSED ABOVE 0, by name, exactly as the rung is.
+
+        A rung is two facts, numbers and a seed lane, and Orpheus has neither
+        channel. Its seeding is not `seed + index` at all: the vLLM arm is
+        deterministically seeded inside `_vllm_sampling_params` and the MLX arm
+        draws per bucket, so there is nowhere to put a lane without threading
+        one through four backends that are on the way out. Owen, 2026-09-14:
+        *"orpheus is deprecated too but hasnt been removed yet. higgs is the
+        frontier"*.
+
+        Take 0 passes, and an absent `take` IS take 0: a row that is not
+        climbing a ladder renders exactly as Orpheus always rendered it.
+        Anything above 0 is refused rather than rendered at take 0's draw and
+        reported as take N - which is the one outcome the retake ruling exists
+        to prevent.
+        """
+        from ..item_sampling import refuse_item_take
+        return refuse_item_take(
+            raw, where,
+            'Orpheus has no take lane: its seed is not `seed + index` and a '
+            'retake would draw exactly what take 0 drew. Orpheus is deprecated '
+            'and is not a Crucible engine - the take ladder is Higgs v3.')
+
     @classmethod
     def register_voice_caps(cls, voice: str, caps: dict) -> dict:
         """Register `voice`'s per-voice generation tuning (see VOICE_CAP_SOURCES).

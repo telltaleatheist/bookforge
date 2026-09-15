@@ -21,10 +21,12 @@ Protocol (one JSON object per line):
   stdin:  {action: 'load', voice, id?, modelDir?, adapterDir?, baseDir?, caps?,
                             warm?: bool}   # warm=False: skip the first-load warmup
                                            # because a speak is already waiting
-          {action: 'generate', text, voice?, stream?: bool, sampling?, ...}
+          {action: 'generate', text, voice?, stream?: bool, sampling?, take?, ...}
           {action: 'generate_batch',
-           items: [{i, text, voice?, stream?: bool, sampling?}], ...}
-                 # `sampling` is ONE ITEM's take-ladder rung:
+           items: [{i, text, voice?, stream?: bool, sampling?, take?}], ...}
+                 # A RUNG IS TWO FACTS, and both ride on the item.
+                 #
+                 # `sampling` is ONE ITEM's rung NUMBERS:
                  #   {temperature?, topP?, topK?, repetitionPenalty?}
                  # spelled exactly as the NARRATOR_HIGGS_VOICES document
                  # spells it. ABSENT = the voice's loaded sampling, which is
@@ -33,18 +35,31 @@ Protocol (one JSON object per line):
                  # Refused by name, per item: `sampling_malformed` (not a
                  # sampling) and `sampling_not_supported` (this engine or this
                  # backend has no such lever - Orpheus has none at all).
+                 #
+                 # `take` is WHICH rung, a whole number >= 0, ABSENT = 0, and
+                 # it moves the item's SEED into that take's own lane
+                 # (engine/higgs/truncation.py:in_take_lane). It is
+                 # INDEPENDENT of `sampling`: take N whose rung declares no
+                 # override is still a different draw. Refused per item as
+                 # `take_malformed` (not a whole number >= 0, or past
+                 # MAX_TAKE) and `take_not_supported` (this engine has no
+                 # lane - Orpheus).
                  # See engine/item_sampling.py.
           {action: 'cancel' | 'stop' | 'quit'}
                  # 'cancel'/'stop' ABORT a running generate_batch - see the reader
                  # thread in run(). Un-rendered rows come back as ordinary per-item
                  # failures with message 'cancelled', then 'batch_done' as always.
-  stdout: {type: 'ready', device, backend?, itemSampling: true}
-                 # `itemSampling` says THIS BUILD parses `sampling` on a
-                 # generate_batch item (below). A narrator without the key has
-                 # no such channel and would drop a rung in silence, so a client
-                 # driving a take ladder must refuse rather than render take 0
-                 # and call it take N. Engine-level support is a separate and
-                 # later fact: `sampling_not_supported`, per row.
+  stdout: {type: 'ready', device, backend?, itemTake: true}
+                 # `itemTake` says THIS BUILD parses a per-item rung - BOTH
+                 # halves, `sampling` and `take` - on a generate_batch item
+                 # (below). A narrator without the key has no such channel and
+                 # would drop a rung in silence, so a client driving a take
+                 # ladder must refuse rather than render take 0 and call it
+                 # take N. ONE key for the two facts because they landed as one
+                 # channel and an old build has neither; two keys would be two
+                 # owners of one answer. Engine-level support is a separate and
+                 # later fact: `sampling_not_supported` / `take_not_supported`,
+                 # per row.
           {type: 'status' | 'loaded' | 'error' | 'stopped', ...}
           {type: 'audio', format:'pcm16', data, duration, sampleRate}        # batch
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
@@ -1155,8 +1170,13 @@ class OrpheusStreamServer:
             )
 
     def _resolve_row(self, item):
-        """`(voice token, sampling)` one BATCH item must render under, or raise
-        with the reason.
+        """`(voice token, sampling, take)` one BATCH item must render under, or
+        raise with the reason.
+
+        A RUNG IS TWO FACTS and both are resolved here: the numbers
+        (`sampling`) and the seed lane (`take`). They are independent - a rung
+        that declares no sampling override is still a different draw, because
+        the lane moved - so an item may carry either, both or neither.
 
         The per-item rejections in one place: a voice this engine never loaded
         (_row_voice), a voice this BACKEND cannot serve per request, and a
@@ -1165,18 +1185,60 @@ class OrpheusStreamServer:
         not in a loop over the whole batch (one stray voice used to fail all 16
         sentences).
 
-        THE ENGINE PARSES ITS OWN RUNG. `accept_item_sampling` is a member of
-        every engine this worker drives: Higgs's returns the engine-shaped
-        numbers, Orpheus's refuses by name. Asking the engine - rather than
-        testing ENGINE_ID here - is the same discriminator
+        THE ENGINE PARSES ITS OWN RUNG. `accept_item_sampling` and
+        `accept_item_take` are members of every engine this worker drives:
+        Higgs's arms parse both, Orpheus's refuse both by name. Asking the
+        engine - rather than testing ENGINE_ID here - is the same discriminator
         `_guards_its_own_batch` settled on, for the same reason: `backend` is a
         runtime name and an engine is the only thing that knows its own levers.
         """
         v = self._row_voice(item.get('voice'))
         if self.orph.backend != 'vllm':
             self._reject_per_request_voice(v)
-        return v, self._item_rung(item.get('sampling'),
-                                  f'generate_batch row i={item.get("i")!r}')
+        where = f'generate_batch row i={item.get("i")!r}'
+        return (v, self._item_rung(item.get('sampling'), where),
+                self._item_take(item.get('take'), where))
+
+    def _item_take(self, raw, where: str) -> int:
+        """One item's `take` off the wire -> the engine's own answer, or 0 when
+        the item asked for none.
+
+        `_item_rung`'s rule, for `_item_rung`'s reasons, and the docstring
+        there is the argument. THE ENGINE IS ASKED ONLY WHEN THERE IS SOMETHING
+        TO ASK ABOUT: an absent `take` has one meaning for every engine - "take
+        0, the seed rule narrator has always had" - so calling the member on
+        every row of every batch would turn "this engine object predates the
+        member" into "every row fails", including rows that asked for nothing.
+
+        AN EXPLICIT 0 IS ALSO NOTHING TO ASK ABOUT, and that is deliberate
+        rather than lazy: Crucible sends `take` on EVERY item, 0 included, so
+        that the wire says which take produced the artifact. Take 0 is the
+        draw every narrator ever built already makes, so an engine with no lane
+        answers it correctly by doing nothing, and only a take ABOVE 0 is a
+        question - which is exactly where `take_not_supported` lives.
+
+        A TAKE ARRIVING AT AN ENGINE WITH NO ANSWER IS STILL A REFUSAL, by
+        name, never an AttributeError about a method: the caller asked for a
+        different draw and needs to know it did not get one.
+        """
+        from ..engine.item_sampling import parse_item_take
+        # THE SHAPE FIRST, and it is not the engine's business: "a whole number
+        # >= 0 within MAX_TAKE" is the same sentence on every backend, and
+        # `take: "2"` from an engine that has no lane should still be
+        # `take_malformed` rather than `take_not_supported` - the two say
+        # different things to whoever sent it, one a typo and one a wrong
+        # backend.
+        if parse_item_take(raw, where) == 0:
+            return 0
+        accept = getattr(self.orph, 'accept_item_take', None)
+        if accept is None:
+            raise ValueError(
+                f"take_not_supported: {where} carries take {raw!r}, and engine "
+                f"'{getattr(self.orph, 'ENGINE_ID', '?')}' implements no "
+                '`accept_item_take`. It cannot say what it would do with a take '
+                "above 0, so this row is refused rather than rendered in take 0's "
+                'own seed lane and reported as the take.')
+        return accept(raw, where)
 
     def _item_rung(self, raw, where: str):
         """One item's `sampling` off the wire -> the engine's own parsed rung,
@@ -1215,7 +1277,7 @@ class OrpheusStreamServer:
         return accept(raw, where)
 
     def _generate_audio(self, text: str, voice: str = None, index: int = 0,
-                        sampling=None):
+                        sampling=None, take: int = 0):
         """Generate one sentence to a float numpy waveform via the engine's
         backend-specific path (mirrors OrpheusEngine.convert(), but in-memory).
 
@@ -1229,7 +1291,13 @@ class OrpheusStreamServer:
         before the ladder existed. Only an engine driven through
         `render_audio` can carry one; Orpheus refuses a rung at the door, so
         reaching this method with one is a wiring bug and is named as such
-        rather than rendered at the wrong numbers."""
+        rather than rendered at the wrong numbers.
+
+        `take` is the rung's other half, ALREADY PARSED by the engine's
+        `accept_item_take`: which seed lane this render draws from. 0 is take
+        0 and is what every caller sent before the ladder existed. Orpheus
+        refuses a take above 0 at the same door and for the same reason - it
+        has no lane, so the retake would draw exactly what take 0 drew."""
         orph = self.orph
         v = self._row_voice(voice)
         if sampling is not None and _uses_orpheus_token_pipeline(orph):
@@ -1239,6 +1307,12 @@ class OrpheusStreamServer:
                 'sampling channel and `accept_item_sampling` refuses one - a rung '
                 'that got this far would be rendered at the voice caps and '
                 'reported as the rung.')
+        if take and _uses_orpheus_token_pipeline(orph):
+            raise ValueError(
+                f'narrator.serve: an Orpheus render reached _generate_audio at take '
+                f'{take}. Orpheus has no take lane and `accept_item_take` refuses '
+                'one - a take that got this far would draw exactly what take 0 drew '
+                'and be reported as the take.')
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
             return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
@@ -1261,7 +1335,7 @@ class OrpheusStreamServer:
                     f"engine '{getattr(orph, 'ENGINE_ID', '?')}' is not Orpheus and "
                     'offers no render_audio(text). This worker has no way to render '
                     'one sentence with it.')
-            audio = render(clean, index=index, sampling=sampling)
+            audio = render(clean, index=index, sampling=sampling, take=take)
         elif orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
@@ -1298,7 +1372,7 @@ class OrpheusStreamServer:
             )
         return finalize_audio(audio)
 
-    def _generate_audio_batch(self, texts, voices=None, samplings=None):
+    def _generate_audio_batch(self, texts, voices=None, samplings=None, takes=None):
         """Generate many sentences at once. On the vLLM backend this is a TRUE
         batch - one engine.generate([prompts]) call whose continuous batching runs
         the sequences concurrently on the GPU (the same path Orpheus audiobooks use
@@ -1316,11 +1390,20 @@ class OrpheusStreamServer:
         PARSED take-ladder rung (None for a row at take 0). Only the sequential
         arm at the bottom can honour one - the two Orpheus arms above it are
         the engine that refuses a rung outright - so a rung reaching either of
-        them is refused by name rather than dropped."""
+        them is refused by name rather than dropped.
+
+        `takes` is the rung's other half, aligned the same way and refused on
+        the same arms for the same reason: Orpheus has no seed lane, so a take
+        above 0 there would draw exactly what take 0 drew."""
         orph = self.orph
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
         row_voices = [self._row_voice(voices[i] if voices else None)
                       for i in range(len(texts))]
+        row_takes = list(takes) if takes is not None else [0] * len(texts)
+        if len(row_takes) != len(texts):
+            raise ValueError(
+                f'narrator.serve: {len(row_takes)} take(s) for {len(texts)} rows; '
+                'takes must be aligned to texts or None.')
         row_sampling = list(samplings) if samplings is not None else [None] * len(texts)
         if len(row_sampling) != len(texts):
             raise ValueError(
@@ -1336,6 +1419,14 @@ class OrpheusStreamServer:
             orph.accept_item_sampling(
                 next(r for r in row_sampling if r is not None),
                 'narrator.serve batch')
+
+        if _uses_orpheus_token_pipeline(orph) and any(row_takes):
+            # The same belt and braces for the rung's other half, and the same
+            # reason: Orpheus has no seed lane, so a take above 0 would draw
+            # exactly what take 0 drew while the caller believed it had a
+            # different one.
+            orph.accept_item_take(next(t for t in row_takes if t),
+                                  'narrator.serve batch')
 
         if _uses_orpheus_token_pipeline(orph) and orph.backend == 'vllm':
             from vllm import TokensPrompt
@@ -1454,7 +1545,7 @@ class OrpheusStreamServer:
         # with texts and no caller indices, and whose discarded renders want the
         # compile, not the ladder.
         return [self._generate_audio(t, row_voices[i], index=i,
-                                     sampling=row_sampling[i])
+                                     sampling=row_sampling[i], take=row_takes[i])
                 for i, t in enumerate(texts)]
 
     @staticmethod
@@ -1495,17 +1586,18 @@ class OrpheusStreamServer:
         as the ladder decides it, verdict attached.
 
         `rows` is generate_batch's `(item, normalized text, voice token,
-        sampling)` quadruples, already past the per-row voice and rung
+        sampling, take)` quintuples, already past the per-row voice and rung
         resolution; `emitted` is that method's one-answer-per-item set, added
         to here so its `finally` sweep can still label anything this never
         reached.
 
-        THE RUNG GOES TO THE DRIVER AS A MAP KEYED BY CHUNK INDEX, not on the
-        row, because that is the key the ladder itself uses: a re-roll and both
-        halves of a split carry their parent's index, and all of them must
-        render at the numbers that chunk was asked for. The map names EVERY
-        chunk this call plans (None for a chunk at take 0), so `render_many`
-        can refuse an unnamed one instead of quietly rendering it at take 0.
+        THE RUNG GOES TO THE DRIVER AS TWO MAPS KEYED BY CHUNK INDEX, not on
+        the row, because that is the key the ladder itself uses: a re-roll and
+        both halves of a split carry their parent's index, and all of them
+        must render at the numbers - and in the seed lane - that chunk was
+        asked for. Each map names EVERY chunk this call plans (None / 0 for a
+        chunk at take 0), so `render_many` can refuse an unnamed one instead of
+        quietly rendering it at take 0.
 
         WHY THIS EXISTS. Until 2026-09-13 the serve world handed a Higgs engine one
         `render_audio()` per sentence - no PaceTracker, no re-roll, no split ladder -
@@ -1542,12 +1634,13 @@ class OrpheusStreamServer:
         by_index = {}     # ladder index -> the item that asked for it
         plan_rows = []    # (index, cleaned text) - the driver's input
         rungs = {}        # ladder index -> that chunk's sampling (None = take 0)
+        takes = {}        # ladder index -> that chunk's take (0 = take 0)
 
         def fail(it, message):
             send_response('batch_item', {'i': it.get('i'), 'message': message})
             emitted.add(id(it))
 
-        for it, text, voice, sampling in rows:
+        for it, text, voice, sampling, take in rows:
             try:
                 # A BACKSTOP, not the gate: _resolve_row already refused a
                 # per-request voice on every backend that cannot serve one. It
@@ -1596,12 +1689,14 @@ class OrpheusStreamServer:
             by_index[index] = it
             plan_rows.append((index, clean))
             rungs[index] = sampling
+            takes[index] = take
 
         if not plan_rows:
             return
 
         for index, audio, verdict in orph.render_many(plan_rows,
-                                                      sampling_by_index=rungs):
+                                                      sampling_by_index=rungs,
+                                                      take_by_index=takes):
             it = by_index.pop(index, None)
             if it is None:
                 # The driver yielded an index this batch never asked for (or asked
@@ -1654,10 +1749,11 @@ class OrpheusStreamServer:
             unservable = set()
             for pos, it in enumerate(items):
                 try:
-                    # The pair is discarded: this is ORPHEUS's MLX grouping, so
-                    # the row can only be the loaded voice and can only be take
-                    # 0 - `_resolve_row` refuses anything else, per row, which
-                    # is the whole point of calling it here.
+                    # The triple is discarded: this is ORPHEUS's MLX grouping,
+                    # so the row can only be the loaded voice, can only be at
+                    # take 0 and can carry no rung - `_resolve_row` refuses
+                    # anything else, per row, which is the whole point of
+                    # calling it here.
                     self._resolve_row(it)
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
@@ -1890,7 +1986,7 @@ class OrpheusStreamServer:
             positions = []          # positions into `items` that will be rendered
             for pos, it in enumerate(items):
                 try:
-                    voice, rung = self._resolve_row(it)
+                    voice, rung, take = self._resolve_row(it)
                 except Exception as e:
                     if _claim(pos):
                         send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
@@ -1905,22 +2001,25 @@ class OrpheusStreamServer:
                         self._emit_batch_item(
                             it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                     continue
-                positions.append((pos, cleaned, voice, rung))
+                positions.append((pos, cleaned, voice, rung, take))
 
             if not positions:
                 return
 
-            texts = [c for _pos, c, _v, _s in positions]
-            voices = [v for _pos, _c, v, _s in positions]
+            texts = [c for _pos, c, _v, _s, _k in positions]
+            voices = [v for _pos, _c, v, _s, _k in positions]
             # Each row's take-ladder rung, aligned to `texts`. Streaming is
             # UNGUARDED by ruling (see the docstring), so a rung here is simply
             # the numbers that row renders at - there is no ladder to climb,
             # and the client decided which rung it wanted.
-            samplings = [rung for _pos, _c, _v, rung in positions]
+            samplings = [rung for _pos, _c, _v, rung, _k in positions]
+            # And its other half: which seed lane the row draws from. Same
+            # reasoning - no ladder here, the client chose the take.
+            takes = [take for _pos, _c, _v, _s, take in positions]
             # Row index (into `texts`) -> position into `items`, since the engine's
             # callbacks speak in row indices and the wire speaks in the caller's `i`.
-            row_to_pos = [pos for pos, _c, _v, _s in positions]
-            stream_rows = {row for row, (pos, _c, _v, _s) in enumerate(positions)
+            row_to_pos = [pos for pos, _c, _v, _s, _k in positions]
+            stream_rows = {row for row, (pos, _c, _v, _s, _k) in enumerate(positions)
                            if items[pos].get('stream') is True}
             print(f'[narrator.serve] fast-start: streaming {len(stream_rows)} of '
                   f'{len(texts)} rows', file=sys.stderr)
@@ -1995,11 +2094,11 @@ class OrpheusStreamServer:
             try:
                 orph.generate_batch_stream(texts, voices, stream_rows,
                                            on_chunk, on_row, self._is_cancelled,
-                                           samplings=samplings)
+                                           samplings=samplings, takes=takes)
             except Exception as e:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
-                for pos, _c, _v, _s in positions:
+                for pos, _c, _v, _s, _k in positions:
                     if _claim(pos):
                         send_response('batch_item',
                                       {'i': items[pos].get('i'),
@@ -2099,16 +2198,16 @@ class OrpheusStreamServer:
             # this engine (or this backend) cannot serve. A single unservable voice
             # must not sink the batch: the rest are ordinary sentences in a voice that
             # is right there.
-            rows = []   # (item, normalized text, voice token, sampling)
+            rows = []   # (item, normalized text, voice token, sampling, take)
             for it in items:
                 try:
-                    v, rung = self._resolve_row(it)
+                    v, rung, take = self._resolve_row(it)
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
                     emitted.add(id(it))
                     continue
                 rows.append((it, normalize_for_tts(it.get('text', ''), language),
-                             v, rung))
+                             v, rung, take))
 
             if rows and _guards_its_own_batch(self.orph):
                 # THE GUARDED ARM (Owen's ruling, 2026-09-13). An engine that
@@ -2121,10 +2220,11 @@ class OrpheusStreamServer:
                 self._emit_guarded_batch(rows, emitted)
             elif rows:
                 audios = self._generate_audio_batch(
-                    [t for _, t, _, _ in rows],
-                    [v for _, _, v, _ in rows],
-                    [g for _, _, _, g in rows])
-                for (it, _text, _v, _g), audio in zip(rows, audios):
+                    [t for _, t, _, _, _ in rows],
+                    [v for _, _, v, _, _ in rows],
+                    [g for _, _, _, g, _ in rows],
+                    [k for _, _, _, _, k in rows])
+                for (it, _text, _v, _g, _k), audio in zip(rows, audios):
                     emitted.add(id(it))
                     if audio is None or len(audio) == 0:
                         send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
@@ -2163,22 +2263,25 @@ class OrpheusStreamServer:
             send_response('batch_done', {'count': len(items)})
 
     def generate(self, text: str, language: str = 'en', stream: bool = False,
-                 voice: str = None, sampling=None, **_ignored):
+                 voice: str = None, sampling=None, take=None, **_ignored):
         """Render ONE sentence. `voice` (optional) must be a voice a 'load'
         registered against the live engine; omitted means the loaded voice.
 
         `sampling` (optional) is this render's take-ladder rung, in the voices
-        document's spelling. It goes through the ENGINE's own
-        `accept_item_sampling`, so the refusals are the same two a batch row
-        gets - here they land as the `error` message this door speaks in."""
+        document's spelling, and `take` (optional) is which rung - the seed
+        lane. Both go through the ENGINE's own `accept_item_sampling` /
+        `accept_item_take`, so the refusals are the same ones a batch row gets
+        - here they land as the `error` message this door speaks in."""
         if self.orph is None:
             send_response('error', {'message': 'Model not loaded'})
             return
         try:
             check_language(language)
             rung = self._item_rung(sampling, 'generate')
+            rung_take = self._item_take(take, 'generate')
             text = normalize_for_tts(text, language)
-            audio = self._generate_audio(text, voice, sampling=rung)
+            audio = self._generate_audio(text, voice, sampling=rung,
+                                         take=rung_take)
             if audio is None or len(audio) == 0:
                 send_response('error', {'message': 'No audio generated'})
                 return
@@ -2259,26 +2362,38 @@ class OrpheusStreamServer:
         # sent even when it could not be determined - as absent, which the pool reads
         # as "unknown" and treats as NOT capable.
         _warn_fake_engine('ready')
-        # `itemSampling` IS THE CHANNEL SAYING IT EXISTS, and it is a BUILD fact,
-        # not an engine one. Crucible resolves a take ladder's rung and sends the
-        # numbers on every `generate_batch` item; a narrator built before
-        # `engine/item_sampling.py` has no such channel and DROPS the key in
-        # silence - `_resolve_row` there read only `item['voice']` - so take 1
-        # rendered at take 0's sampling and was reported as a successful take 1.
-        # That is the shape crucible/docs/ARCHITECTURE.md's audit names: a fact
-        # with two owners (the recipe's narrator pin and Crucible's belief about
-        # it) and nothing comparing them. Measured 2026-09-15: two renders of one
-        # sentence at take 0 and take 1 came back byte-identical because the env's
-        # pinned narrator predated the channel. So the handshake carries the fact,
-        # and Crucible refuses a rung by name when it is absent.
+        # `itemTake` IS THE CHANNEL SAYING IT EXISTS, and it is a BUILD fact,
+        # not an engine one. Crucible resolves a take ladder's rung and sends
+        # BOTH its halves on every `generate_batch` item - the numbers as
+        # `sampling` and the rung's own number as `take`; a narrator built
+        # before `engine/item_sampling.py` has neither channel and DROPS both
+        # keys in silence - `_resolve_row` there read only `item['voice']` - so
+        # take 1 rendered at take 0's sampling, in take 0's seed lane, and was
+        # reported as a successful take 1. That is the shape
+        # crucible/docs/ARCHITECTURE.md's audit names: a fact with two owners
+        # (the recipe's narrator pin and Crucible's belief about it) and
+        # nothing comparing them. Measured 2026-09-15: two renders of one
+        # sentence at take 0 and take 1 came back byte-identical because the
+        # env's pinned narrator predated the channel. So the handshake carries
+        # the fact, and Crucible refuses a rung by name when it is absent.
+        #
+        # ONE KEY FOR THE TWO FACTS, renamed from `itemSampling` the same day
+        # (2026-09-15) the seed half landed. They are one channel: a build has
+        # both or neither, they are parsed by one module, and they are refused
+        # under one `sampling_not_wired`. Two keys would be two owners of one
+        # answer, which is the audit's own shape; `itemSampling` alone would be
+        # a name that stopped covering what it announces. Nothing had shipped
+        # under the old name - the tts recipes still pin a narrator older than
+        # either half - so the rename costs a re-pin nobody has made yet.
         #
         # Sent at 'ready', which is BEFORE any engine loads, so it can only say
-        # "this narrator parses `sampling` on an item" - never "this engine has
-        # that lever". The latter stays where it belongs: `accept_item_sampling`,
-        # per row, as `sampling_not_supported`.
+        # "this narrator parses a rung on an item" - never "this engine has
+        # that lever, or that lane". Those stay where they belong:
+        # `accept_item_sampling` / `accept_item_take`, per row, as
+        # `sampling_not_supported` / `take_not_supported`.
         send_response('ready', {'device': self.device,
                                 **({'backend': self.backend} if self.backend else {}),
-                                'itemSampling': True})
+                                'itemTake': True})
 
         inbox: "queue.Queue" = queue.Queue()
         reader = threading.Thread(target=self._read_stdin, args=(inbox,),
@@ -2345,6 +2460,7 @@ class OrpheusStreamServer:
                     stream=bool(request.get('stream', False)),
                     voice=request.get('voice'),
                     sampling=request.get('sampling'),
+                    take=request.get('take'),
                 )
             elif action == 'generate_batch':
                 self.generate_batch(

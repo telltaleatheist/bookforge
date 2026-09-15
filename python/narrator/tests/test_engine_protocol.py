@@ -60,7 +60,7 @@ from narrator.engine.protocol import (BackendSpec, Budget, ClipsVoice,  # noqa: 
 ENGINE_MEMBERS = ('ENGINE_ID', 'SAMPLE_RATE', 'pads', 'edge_fade', 'backend',
                   'voice', 'backend_spec', 'codec', 'budget', 'stop_policy',
                   'resolve_load_voice', 'convert', 'convert_batch',
-                  '_write_silence', 'accept_item_sampling',
+                  '_write_silence', 'accept_item_sampling', 'accept_item_take',
                   'generate_batch_stream', 'cleanup')
 
 

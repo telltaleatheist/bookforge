@@ -1093,6 +1093,22 @@ class HiggsV3MlxEngine:
             return None
         return int(self.config.seed) + int(index)
 
+    def _request_seed(self, seed, index: int, take: int):
+        """THE SEED ONE RENDER ACTUALLY DRAWS AT - the served arm's
+        `HiggsV3Engine._request_seed`, word for word, because the two arms must
+        put take N in the same lane or one machine's take 3 is another's take
+        0: the ladder's seed when it chose one, `seed + index` when it did not,
+        shifted into take `take`'s lane either way.
+
+        ON THIS BACKEND ONE SEED SERVES A WHOLE SLAB (`mx.random.seed` is drawn
+        per batch), so the lane is applied to the BUCKET's seed and
+        `_mlx_batch_groups` breaks a group when the take changes - the same
+        split it already makes when the sampling changes, and for the same
+        reason: a slab cannot carry two draws.
+        """
+        base = self._seed_for(index) if seed is None else seed
+        return truncation.in_take_lane(base, take)
+
     def _decode_frames(self, frames_tq):
         """(frames, 8) real codes -> a float32 waveform. The codec call, and
         nothing else - every filter has already run in HiggsV3MlxCodec.decode."""
@@ -1223,9 +1239,10 @@ class HiggsV3MlxEngine:
         return max(1, min(width, int(headroom / kv_gb_per_row)))
 
     def _mlx_batch_groups(self, entries: list) -> list:
-        """entries: `(index, text, prompt_positions, cap_frames, sampling)` in
-        BOOK ORDER. Returns `(bucket, depth)` pairs, each bucket a CONSECUTIVE
-        slice whose rows all render at the SAME sampling.
+        """entries: `(index, text, prompt_positions, cap_frames, sampling,
+        take)` in BOOK ORDER. Returns `(bucket, depth)` pairs, each bucket a
+        CONSECUTIVE slice whose rows all render at the SAME sampling AND the
+        same take.
 
         A GROUP BREAKS ON A SAMPLING CHANGE, and that is not a nicety.
         `_generate_delayed_rows_batch` runs one `_step_batch_sampler` over
@@ -1235,6 +1252,16 @@ class HiggsV3MlxEngine:
         answer: this backend cannot mix, so it batches by group instead
         (`engine/item_sampling.py:group_key`). `sampling` None is its own group -
         the rows at take 0.
+
+        IT BREAKS ON A TAKE CHANGE FOR THE SAME REASON (2026-09-15). One
+        `mx.random.seed` is drawn per SLAB, so every row in a bucket shares one
+        RNG stream and the bucket's seed is one row's
+        (`_request_seed(..., take)`). Two takes in one slab would therefore
+        both draw out of whichever take's lane the first row named - which is
+        precisely the "take N rendered as take 0" this channel exists to stop,
+        and it would be invisible because the audio WOULD differ, just not in
+        the way the take asked for. The rung's two halves are both in the
+        group key.
 
         No sorting and no length bucketing: mlx-audio's batch prefill LEFT-pads
         every prompt to the longest in the batch and hands the padding to
@@ -1259,17 +1286,22 @@ class HiggsV3MlxEngine:
         def _depth(rows):
             return max(int(e[2]) + int(e[3]) for e in rows)
 
+        def _rung_key(entry):
+            """THE WHOLE RUNG, both halves: the sampling's order-independent
+            key and the take. Two rows share a slab only when both match."""
+            return group_key(entry[4]), int(entry[5])
+
         def _run_length(start, limit):
-            """How many CONSECUTIVE entries from `start` share one sampling,
+            """How many CONSECUTIVE entries from `start` share one rung,
             looked at NO FURTHER than `limit` rows - the window can never be
             wider than that anyway, and a book of 1400 chunks at one rung would
             otherwise re-walk its whole tail once per window.
 
             The slab cannot straddle two rungs, so this is a ceiling on the
             window and not a preference."""
-            key = group_key(entries[start][4])
+            key = _rung_key(entries[start])
             end = start + 1
-            while end < start + limit and group_key(entries[end][4]) == key:
+            while end < start + limit and _rung_key(entries[end]) == key:
                 end += 1
             return end - start
 
@@ -1545,6 +1577,14 @@ class HiggsV3MlxEngine:
         return parse_item_sampling(raw, where or f'HiggsV3MlxEngine({self.voice!r})',
                                    levers=self.ITEM_SAMPLING_LEVERS)
 
+    def accept_item_take(self, raw, where: str = None) -> int:
+        """One item's `take` off the wire -> a whole number >= 0. The served
+        arm's rule verbatim (`HiggsV3Engine.accept_item_take`): a rung is
+        (sampling deltas, seed offset), and this is the offset's number.
+        `take_malformed` is the refusal."""
+        from ..item_sampling import parse_item_take
+        return parse_item_take(raw, where or f'HiggsV3MlxEngine({self.voice!r})')
+
     def _sampling_for(self, item_sampling) -> dict:
         """The numbers ONE render runs at: `self._sampling` (resolved once from
         the checkpoint's generation_config.json) with the item's rung laid over
@@ -1555,7 +1595,7 @@ class HiggsV3MlxEngine:
         return apply_over(self._sampling, item_sampling)
 
     def render_audio(self, text: str, seed=None, index: int = 0,
-                     should_stop=None, sampling=None):
+                     should_stop=None, sampling=None, take: int = 0):
         """One chunk of text -> a float32 mono waveform at 24 kHz.
 
         `index` is the chunk's own index and is what seeds it (see `_seed_for`);
@@ -1565,6 +1605,10 @@ class HiggsV3MlxEngine:
         `sampling` is this chunk's take-ladder rung (already parsed by
         `accept_item_sampling`); None renders at the voice's loaded sampling,
         which is take 0.
+
+        `take` is WHICH RUNG, and it moves the seed rather than the numbers
+        (`_request_seed`) - so a rung that declares no sampling override is
+        still a different draw. 0 changes nothing.
         """
         # THE MODEL BOUNDARY STRIPS THE MARKUP - once, for every caller. See
         # HiggsV3Engine.render_audio: this path only trimmed whitespace, so the
@@ -1581,7 +1625,7 @@ class HiggsV3MlxEngine:
         v3_served.validate_control_tokens(clean)
         rows = self._generate_delayed_rows(
             clean, self._budget.cap_frames(clean),
-            self._seed_for(index) if seed is None else seed,
+            self._request_seed(seed, index, take),
             should_stop=should_stop, sampling=self._sampling_for(sampling))
         if rows is None:
             return None
@@ -1707,7 +1751,8 @@ class HiggsV3MlxEngine:
 
     # -- the driver, above the files ----------------------------------------
 
-    def render_many(self, rows, in_flight=None, sampling_by_index=None):
+    def render_many(self, rows, in_flight=None, sampling_by_index=None,
+                    take_by_index=None):
         """THE GUARDED DRIVER, AND NOT ONE FILE WRITTEN: `(index, audio,
         verdict)` for every chunk in `rows`, yielded the moment the ladder
         decides it.
@@ -1796,9 +1841,15 @@ class HiggsV3MlxEngine:
         exists to prevent. On THIS backend a mixed-rung batch is also a SPLIT
         batch: the slab sampler takes one set of numbers, so `_mlx_batch_groups`
         breaks a group whenever the sampling changes.
+
+        `take_by_index` is the rung's other half - which lane the chunk's seed
+        draws from - keyed by chunk index for the same reason and covering
+        every row the same way. It splits a slab too (`_mlx_batch_groups`):
+        one `mx.random.seed` per batch means one take per batch.
         """
         held = [] if in_flight is None else in_flight
         rungs = None if sampling_by_index is None else dict(sampling_by_index)
+        takes = None if take_by_index is None else dict(take_by_index)
         # ONE STRIP, ONE ALLOWLIST CHECK, BOTH WIDTHS - see the docstring. This
         # is `convert_batch`'s own loop, moved up with the driver and now
         # covering the serial arm too, which used to leave the refusal to
@@ -1817,6 +1868,12 @@ class HiggsV3MlxEngine:
                     'sampling_by_index. The map is given per CALL and must name '
                     'every row (None for a chunk at take 0); a missing key would '
                     "render a ladder's rung at take 0's numbers.")
+            if takes is not None and int(index) not in takes:
+                raise KeyError(
+                    f'HiggsV3MlxEngine.render_many: chunk {index} has no entry in '
+                    'take_by_index. The map is given per CALL and must name every '
+                    'row (0 for a chunk at take 0); a missing key would render a '
+                    "retake in take 0's own seed lane.")
             cleaned.append((int(index), clean))
         if not cleaned:
             return
@@ -1825,6 +1882,9 @@ class HiggsV3MlxEngine:
         # resolve one chunk's numbers one way.
         def rung_for(index):
             return None if rungs is None else rungs[int(index)]
+
+        def take_for(index):
+            return 0 if takes is None else takes[int(index)]
         # ONE PLAN FOR THE WHOLE CALL, never one per chunk: the band re-centres
         # on the takes already shipped (Owen, 2026-09-08, "the calculated and
         # recorded characters per second"), and a plan per chunk would throw the
@@ -1833,18 +1893,20 @@ class HiggsV3MlxEngine:
                                     base_seed=self.config.seed,
                                     tracker=self._pace_tracker())
         if int(self.BATCH_SIZE or 1) <= 1:
-            yield from self._render_many_serial(plan, cleaned, held, rung_for)
+            yield from self._render_many_serial(plan, cleaned, held, rung_for,
+                                                take_for)
             return
-        yield from self._render_many_rounds(plan, cleaned, held, rung_for)
+        yield from self._render_many_rounds(plan, cleaned, held, rung_for, take_for)
 
-    def _render_many_serial(self, plan, cleaned, held, rung_for):
+    def _render_many_serial(self, plan, cleaned, held, rung_for, take_for):
         """`render_many` at the shipped default width of 1: one chunk at a
         time, the ladder walked depth-first by taking `next_request()` every
         time. `cleaned` is `(index, text)` already through the marker strip.
 
-        `rung_for(index)` is the chunk's take-ladder sampling, resolved by
-        CHUNK index so every take of a chunk - take 0, the re-roll, both halves
-        of a split - runs at the numbers that chunk was asked for.
+        `rung_for(index)` is the chunk's take-ladder sampling and
+        `take_for(index)` its seed lane, both resolved by CHUNK index so every
+        take of a chunk - take 0, the re-roll, both halves of a split - runs at
+        the numbers and in the lane that chunk was asked for.
 
         This is the loop `truncation.render_guarded` runs for `convert`, written
         out rather than called for one reason: that function returns the audio
@@ -1881,7 +1943,8 @@ class HiggsV3MlxEngine:
                 try:
                     take = self.render_audio(request.text, seed=request.seed,
                                              index=request.index,
-                                             sampling=rung_for(request.index))
+                                             sampling=rung_for(request.index),
+                                             take=take_for(request.index))
                 except Exception as exc:
                     # NAMED on the host's log stream first, the way the served
                     # arm names it: the tuple tells a caller THAT the chunk
@@ -1899,7 +1962,7 @@ class HiggsV3MlxEngine:
                 plan.offer(request, take)
             yield from self._decided(plan, held)
 
-    def _render_many_rounds(self, plan, cleaned, held, rung_for):
+    def _render_many_rounds(self, plan, cleaned, held, rung_for, take_for):
         """`render_many` above width 1: consecutive memory-budgeted slices
         (`_mlx_batch_groups`), each generated in one left-padded batch and
         decoded per row, then the guard's retakes a ROUND at a time. `cleaned`
@@ -1918,11 +1981,13 @@ class HiggsV3MlxEngine:
         prompts = self._mlx_prompts_for([clean for _index, clean in cleaned])
         prompt_by_index = {index: prompt
                            for (index, _clean), prompt in zip(cleaned, prompts)}
-        # THE RUNG RIDES ON THE ENTRY because the SLICER needs it: a slab
-        # samples every active row at one temperature, so `_mlx_batch_groups`
-        # breaks a group when the rung changes and a bucket is homogeneous.
+        # THE RUNG RIDES ON THE ENTRY because the SLICER needs it - BOTH
+        # halves of it. A slab samples every active row at one temperature AND
+        # draws one seed for the whole batch, so `_mlx_batch_groups` breaks a
+        # group when either the sampling or the take changes and a bucket is
+        # homogeneous in both.
         entries = [(index, clean, positions, self._budget.cap_frames(clean),
-                    rung_for(index))
+                    rung_for(index), take_for(index))
                    for (index, clean), (_embeds, positions)
                    in zip(cleaned, prompts)]
 
@@ -1942,7 +2007,10 @@ class HiggsV3MlxEngine:
                     held.append(entry[0])
             try:
                 rows_per_row = self._generate_delayed_rows_batch(
-                    texts, caps, self._seed_for(bucket[0][0]),
+                    # The bucket's OWN take lane: every row in it shares one,
+                    # which is what `_mlx_batch_groups` guarantees.
+                    texts, caps,
+                    self._request_seed(None, bucket[0][0], bucket[0][5]),
                     prompts=[prompt_by_index[e[0]] for e in bucket],
                     group_no=group_no, group_count=len(groups),
                     sampling=self._sampling_for(bucket[0][4]))
@@ -1954,7 +2022,7 @@ class HiggsV3MlxEngine:
                 # is RECORDED and rendered with the rest of this call's retakes.
                 plan.add(entry[0], entry[1], first_take=self.codec().decode(codes))
             yield from self._decided(plan, held)
-        yield from self._render_retake_rounds(plan, held, rung_for)
+        yield from self._render_retake_rounds(plan, held, rung_for, take_for)
 
     def _decided(self, plan, held):
         """Every chunk the ladder has decided since the last call, with the
@@ -1974,7 +2042,7 @@ class HiggsV3MlxEngine:
     #: ladder that does not terminate, which is a bug to see, not to survive.
     MAX_RETAKE_ROUNDS = 2 * (truncation.MAX_DEPTH + 1)
 
-    def _render_retake_rounds(self, plan, held, rung_for):
+    def _render_retake_rounds(self, plan, held, rung_for, take_for):
         """The guard's retakes for this call, a ROUND at a time, each round in
         one batch; every chunk a round decides is yielded as
         `(index, audio, verdict)`.
@@ -1993,7 +2061,7 @@ class HiggsV3MlxEngine:
                 return
             _log(f'length guard: retake round {round_no}, {len(requests)} take(s) '
                  f'for chunk(s) {sorted({request.index for request in requests})}')
-            audio = self._render_requests(requests, rung_for)
+            audio = self._render_requests(requests, rung_for, take_for)
             for request, take in zip(requests, audio):
                 plan.offer(request, take)
             yield from self._decided(plan, held)
@@ -2002,21 +2070,25 @@ class HiggsV3MlxEngine:
             f'retake round ({plan.pending} chunk(s) still on the ladder); the ladder '
             'is meant to terminate at MAX_DEPTH.')
 
-    def _render_requests(self, requests: list, rung_for) -> list:
+    def _render_requests(self, requests: list, rung_for, take_for) -> list:
         """`truncation.RenderRequest`s rendered as batches; the audio, aligned
         to `requests`.
 
         ONE SEED PER BUCKET, as everywhere on this backend (`mx.random.seed` is
         drawn per batch): the bucket takes its first request's seed, which for a
         re-roll is `reroll_seed` - a seed no take 0 in this book used - and for
-        a split half is that chunk's own. The text differs from take 0's either
-        way, so the draw does too.
+        a split half is that chunk's own, and either way it is shifted into
+        that chunk's TAKE LANE (`_request_seed`), which is the lane every row
+        in the bucket shares because `_mlx_batch_groups` breaks a group when
+        the take changes. The text differs from take 0's either way, so the
+        draw does too.
         """
         width = max(1, int(self.BATCH_SIZE or 1))
         if width <= 1 or len(requests) == 1:
             return [self.render_audio(request.text, seed=request.seed,
                                       index=request.index,
-                                      sampling=rung_for(request.index))
+                                      sampling=rung_for(request.index),
+                                      take=take_for(request.index))
                     for request in requests]
         # Keyed by POSITION, not by chunk index: the two halves of one chunk are
         # two requests carrying the same index, and they render side by side.
@@ -2028,14 +2100,14 @@ class HiggsV3MlxEngine:
         # otherwise land in one slab at one temperature.
         entries = [(position, request.text, positions,
                     self._budget.cap_frames(request.text),
-                    rung_for(request.index))
+                    rung_for(request.index), take_for(request.index))
                    for position, (request, (_embeds, positions))
                    in enumerate(zip(requests, prompts))]
         out = [None] * len(requests)
         groups = self._mlx_batch_groups(entries)
         for group_no, (bucket, depth) in enumerate(groups, 1):
             first = requests[bucket[0][0]]
-            seed = first.seed if first.seed is not None else self._seed_for(first.index)
+            seed = self._request_seed(first.seed, first.index, bucket[0][5])
             try:
                 rows_per_row = self._generate_delayed_rows_batch(
                     [entry[1] for entry in bucket], [entry[3] for entry in bucket], seed,
@@ -2065,7 +2137,7 @@ class HiggsV3MlxEngine:
             f'rows {rows}) failed: {err}')
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
-                              should_stop=None, samplings=None) -> None:
+                              should_stop=None, samplings=None, takes=None) -> None:
         """Whole rows, at retirement - the honest cadence for this codec.
 
         `samplings`, when given, is aligned to `texts` and carries each row's
@@ -2074,6 +2146,11 @@ class HiggsV3MlxEngine:
         `_mlx_batch_groups` breaks a group when the rung changes and the
         read-ahead is split into homogeneous slabs rather than rendered at one
         row's numbers.
+
+        `takes` is aligned the same way and is the rung's other half: which
+        seed lane the row draws from. Rung 1 honours any take; rung 2's slab
+        draws ONE seed, so a take change breaks a group exactly as a sampling
+        change does.
 
         A row asked to stream gets its audio as a single `on_chunk(row, 0, pcm)`
         before its `on_row`: the streaming channel, filled with what there
@@ -2119,7 +2196,7 @@ class HiggsV3MlxEngine:
         fallback that hides the one thing worth learning: that this width does
         not work on this machine.
         """
-        from ..item_sampling import aligned
+        from ..item_sampling import aligned, takes_aligned
         if not texts:
             return
         if voices is not None and len(voices) != len(texts):
@@ -2150,6 +2227,8 @@ class HiggsV3MlxEngine:
                 'after cleaning.')
         rungs = aligned(samplings, len(texts),
                         'HiggsV3MlxEngine.generate_batch_stream')
+        rows_takes = takes_aligned(takes, len(texts),
+                                   'HiggsV3MlxEngine.generate_batch_stream')
 
         # ---- rung 1: the streamed rows, solo, in ascending order ----------
         for row in sorted(stream_rows):
@@ -2157,7 +2236,7 @@ class HiggsV3MlxEngine:
                 return
             audio = self.render_audio(texts[row], index=row,
                                       should_stop=should_stop,
-                                      sampling=rungs[row])
+                                      sampling=rungs[row], take=rows_takes[row])
             if audio is None:      # should_stop went true mid-row
                 return
             on_chunk(row, 0, audio.copy())
@@ -2180,7 +2259,7 @@ class HiggsV3MlxEngine:
                     return
                 audio = self.render_audio(texts[row], index=row,
                                           should_stop=should_stop,
-                                          sampling=rungs[row])
+                                          sampling=rungs[row], take=rows_takes[row])
                 if audio is None:
                     return
                 on_row(row, audio)
@@ -2209,7 +2288,8 @@ class HiggsV3MlxEngine:
         prompts = self._mlx_prompts_for([cleaned[row] for row in read_ahead])
         prompt_by_row = dict(zip(read_ahead, prompts))
         entries = [(row, cleaned[row], positions,
-                    self._budget.cap_frames(cleaned[row]), rungs[row])
+                    self._budget.cap_frames(cleaned[row]), rungs[row],
+                    rows_takes[row])
                    for row, (_embeds, positions) in zip(read_ahead, prompts)]
         groups = self._mlx_batch_groups(entries)
         _log(f'stream batch: {len(stream_rows)} row(s) solo, {len(read_ahead)} '
@@ -2229,7 +2309,7 @@ class HiggsV3MlxEngine:
                 out = self._generate_delayed_rows_batch(
                     [entry[1] for entry in bucket],
                     [entry[3] for entry in bucket],
-                    self._seed_for(rows[0]),
+                    self._request_seed(None, rows[0], bucket[0][5]),
                     should_stop=should_stop,
                     prompts=[prompt_by_row[row] for row in rows],
                     group_no=group_no, group_count=len(groups),
