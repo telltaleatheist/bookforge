@@ -261,8 +261,16 @@ export class ReaderStreamBridge {
         await import('../shared/listen-text/chunks.js');
       let band;
       try {
-        // higgsVoiceCapsForModel defaults to THIS MACHINE'S arm; never re-derive it.
-        band = listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)));
+        // THE ENGINE THAT WILL SPEAK IT STATES THE BAND, when it is somewhere
+        // else — the same read the TTS API server makes, for the same reason
+        // (electron/crucible/voice-band.ts). The local pool states nothing and
+        // the catalog stands for it, because that engine IS this machine's
+        // narrator. `higgsVoiceCapsForModel` defaults to THIS MACHINE'S arm,
+        // which is exactly why it must not answer for another machine's.
+        const stated = await getActiveEngine().statedChunkCaps?.(voice) ?? null;
+        band = stated === null
+          ? listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)))
+          : listenBandFromCaps(voice, stated);
       } catch (err) {
         this.send(ws, {
           type: 'error',

@@ -37,7 +37,12 @@
  *
  * It does not chunk, normalise or pack — `shared/listen-text/` does, before a
  * row gets here. A row longer than the (voice, backend) cap is refused by the
- * server as `chunk_too_long` and is never re-split.
+ * server as `chunk_too_long` and is never re-split. WHAT THE PACKER PACKS TO is
+ * the SERVER's since 2026-09-15: the caller reads the venue's `GET /v1/voices`
+ * row and hands `listenBandFromCaps` those numbers rather than the local
+ * catalog's (`electron/crucible/voice-band.ts`; in the app it is the active
+ * engine's `statedChunkCaps`, in the extension the caps its own `voices` call
+ * already returned).
  *
  * PURE of Node and of the DOM: `Int16Array`, promises, and the SDK's session
  * interface. What a client does with the PCM (base64 for the main process's

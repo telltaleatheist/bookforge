@@ -140,6 +140,17 @@ const SUITES = [
   // the local naming, and a 409 server_busy that FAILS the render naming the
   // holder instead of quietly taking this machine's GPU.
   'test-crucible-render',
+  // WHOSE NUMBERS A BOOK IS PACKED TO (2026-09-15). The engine owns the voice's
+  // facts and the client owns the chunking, so the ceiling, the floor and the
+  // pace come from the VENUE's `GET /v1/voices` row and never from this
+  // machine's catalog — which on Windows was the `served` arm's block whatever
+  // machine the render was bound for, and which is how Owen's Mac render was
+  // refused `chunk_too_long` before a second of audio. Against a fake stating
+  // 800 while the local catalog states 900: the ceiling clamped to the cap, the
+  // two refusals by name (a voice the venue does not advertise, a row with no
+  // cap), the target clamp, the voice document prep packs against, and a chunk
+  // over the cap refused HERE with nothing submitted.
+  'test-crucible-venue-band',
   // A render on a Crucible server never enters WSL (2026-09-14): the session
   // is host-native from the start whatever the engine's toggle says, the prep
   // runs in the tools env (measured before it spawns), the SHIPPED completion

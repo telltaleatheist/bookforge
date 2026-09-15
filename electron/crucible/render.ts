@@ -73,6 +73,7 @@ import {
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { downloadRenderArtifacts } from './render-artifacts';
+import { crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap } from './voice-band';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
 
 /**
@@ -248,6 +249,11 @@ export function crucibleVoiceFor(ttsEngine: string | undefined, voiceId: string 
  * It does NOT require the voice to be RESIDENT. A render job owns the exclusive
  * lane for its whole duration and loads its own voice if it has to; that is the
  * one deliberate asymmetry with `llm`, where a chat never loads.
+ *
+ * `runCrucibleRender` itself no longer calls this: it needs the SAME row for the
+ * cap (`voice-band.ts`), so it reads the row once and asserts both halves off it.
+ * This entry point stays for the callers that only ask the question — the retake
+ * door (`reroll.ts`) and the keepers.
  */
 export async function assertCrucibleVoiceAvailable(
   client: { voices(): Promise<readonly { id: string; installed: boolean; loadable: boolean; reason: string | null }[]> },
@@ -270,12 +276,27 @@ export async function assertCrucibleVoiceAvailable(
       + 'the server\'s are two catalogs; see CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE.',
     );
   }
-  if (!row.loadable) {
-    throw new CrucibleRenderRefused(
-      row.installed ? 'crucible_voice_not_loadable' : 'crucible_voice_not_installed',
-      `crucible "${server}" cannot load voice "${voice}": ${row.reason ?? 'it did not say why'}`,
-    );
-  }
+  assertVoiceRowLoadable(row, server, voice);
+}
+
+/**
+ * The `loadable` half of the row, refused by name.
+ *
+ * Its own function because the row is now fetched by two callers — this
+ * module's `assertCrucibleVoiceAvailable` and `voice-band.ts`'s
+ * `crucibleVoiceBand`, which reads the SAME single `GET /v1/voices` for the
+ * cap — and "can this server load it" must mean one thing with one message.
+ */
+export function assertVoiceRowLoadable(
+  row: { installed: boolean; loadable: boolean; reason: string | null },
+  server: string,
+  voice: string,
+): void {
+  if (row.loadable) return;
+  throw new CrucibleRenderRefused(
+    row.installed ? 'crucible_voice_not_loadable' : 'crucible_voice_not_installed',
+    `crucible "${server}" cannot load voice "${voice}": ${row.reason ?? 'it did not say why'}`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -524,8 +545,18 @@ export async function runCrucibleRender(
     log(`attaching to crucible "${server}" job ${jobId} after event ${lastEventId}`);
   } else {
     // Before the whole book crosses the wire: does this server have this voice,
-    // and can it load it. One GET, and the refusal carries the server's own row.
-    await assertCrucibleVoiceAvailable(client, server, voice);
+    // can it load it, and does every chunk fit the cap IT states. One GET, and
+    // every refusal carries the server's own row.
+    //
+    // THE CAP IS READ FROM THE SERVER AND NEVER FROM THE LOCAL CATALOG (see
+    // voice-band.ts's header): the two disagree today, and the server is the one
+    // that refuses. Asked here, `chunk_too_long` arrives as a local refusal
+    // naming the chunk and what packed it, rather than as an HTTP 400 after the
+    // whole book has been serialised onto the wire.
+    const { row, band } = await crucibleVoiceBand(client, server, voice);
+    assertVoiceRowLoadable(row, server, voice);
+    log(describeVenueBand(band));
+    refuseChunksOverVenueCap(band, options.chunks);
     log(`submitting ${options.chunks.length} chunk(s) to crucible "${server}" as voice "${voice}"`);
     try {
       jobId = await client.render({

@@ -223,7 +223,8 @@ import {
   higgsModelForJob,
   higgsRunsInWsl,
 } from './higgs-spawn';
-import type { HiggsModel, HiggsRenderOverride } from './higgs-models';
+import { higgsCheckpointArm, higgsVoiceCapsForModel } from './higgs-models';
+import type { CrucibleStatedBand, HiggsModel, HiggsRenderOverride } from './higgs-models';
 import {
   NARRATOR_APP_RE,
   NARRATOR_BATCH_RE,
@@ -2603,6 +2604,14 @@ function buildJobSpawn(opts: {
    * host in the tools env and never enters WSL — `NarratorSpawnRequest.onHost`.
    */
   onHost?: boolean;
+  /**
+   * THE NUMBERS THE RENDERING MACHINE STATES for this voice, when the render is
+   * on a Crucible server (`electron/crucible/voice-band.ts`). Prep-only in
+   * practice, because prep is what packs: with it the voice document carries the
+   * VENUE's cap, band and pace instead of this machine's catalog block, so a book
+   * bound for the Mac is no longer packed to the PC's `served` numbers.
+   */
+  venueBand?: CrucibleStatedBand;
 }): NarratorSpawnPlan {
   const engine = narratorEngineFor(opts.settings);
   const onHost = opts.onHost === true;
@@ -2614,6 +2623,7 @@ function buildJobSpawn(opts: {
       jobId: opts.jobId,
       envExtras: opts.envExtras,
       ...(onHost ? { onHost } : {}),
+      ...(opts.venueBand === undefined ? {} : { venueBand: opts.venueBand }),
     });
   }
   return buildNarratorSpawn({
@@ -3573,6 +3583,55 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
  * We generate our own session ID and read the session-state.json file after completion
  * (avoids fragile stdout parsing)
  */
+/**
+ * THE CHUNK LENGTHS THIS BOOK IS PACKED TO, ASKED OF THE MACHINE THAT WILL SPEAK IT.
+ *
+ * Prep is the packer (`python/narrator/text/paragraph_packer.py`, driven by the
+ * voice document's band), and until 2026-09-15 it packed from THIS MACHINE'S
+ * catalog — on Windows from the `served` arm's block, whatever machine the render
+ * was bound for. `electron/crucible/stream.ts` carried that as a RULING OWED and
+ * `electron/crucible/voice-band.ts` is the ruling: the ceiling, the floor and the
+ * pace come from the venue's `GET /v1/voices` row, the cap is never the local
+ * catalog's, and the only thing the local row still contributes is a TARGET, and
+ * only when the server states none of its own — clamped to the venue's ceiling.
+ *
+ * Every refusal is by name and none of them falls back: an unmapped voice
+ * (`crucible_voice_unmapped`), one the server does not advertise
+ * (`crucible_unknown_voice`), a row with no cap (`crucible_voice_states_no_cap`),
+ * an unreachable server (`crucible_unreachable`). A book packed to a cap nobody
+ * measured is a book rendered wrong on a machine nobody is watching.
+ */
+async function venueBandForPrep(
+  settings: ParallelTtsSettings,
+  server: string,
+): Promise<CrucibleStatedBand> {
+  const { crucibleVoiceFor } = await import('./crucible/render.js');
+  const { crucibleVoiceBand, describeVenueBand, statedBandForDocument } =
+    await import('./crucible/voice-band.js');
+  const { crucibleClientFor, CRUCIBLE_CLIENT_NAME } = await import('./crucible/servers.js');
+  const model = higgsModelForJob(settings);
+  const voice = crucibleVoiceFor(settings.ttsEngine, model.id);
+  const { band } = await crucibleVoiceBand(
+    crucibleClientFor(server, CRUCIBLE_CLIENT_NAME), server, voice,
+  );
+  // The local row's TARGET is the one number the catalog may still contribute,
+  // and `venuePackingTarget` clamps it to the venue's ceiling. Read from THIS
+  // machine's arm because that is the row a local render would have used; it is
+  // not a second opinion about the cap, which this document does not take.
+  //
+  // A machine with NO arm of its own (neither win32 nor darwin) has no local row
+  // to read a target from, and that is simply "no local target" — the venue's
+  // ceiling, floor and cap are unaffected, because none of them was ever going
+  // to come from here.
+  const arm = higgsCheckpointArm();
+  const localTarget = arm === null ? null : (higgsVoiceCapsForModel(model, arm).targetChars ?? null);
+  const stated = statedBandForDocument(band, localTarget);
+  console.log(`[PARALLEL-TTS] ${describeVenueBand(band)} → prep packs to `
+    + `${stated.floorChars ?? 'no floor'}-${stated.ceilingChars} chars`
+    + `${stated.targetChars === null ? '' : `, target ${stated.targetChars}`}`);
+  return stated;
+}
+
 export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings,
@@ -3587,6 +3646,8 @@ export async function prepareSession(
 ): Promise<PrepInfo> {
   const sessionId = crypto.randomUUID();
   const engine = narratorEngineFor(settings);
+  /** The rendering venue's own cap/band/pace, for a Crucible render. See below. */
+  let venueBand: CrucibleStatedBand | undefined;
 
   if (venue.where === 'crucible') {
     // THE ENGINE IS NOT ON THIS MACHINE. The render goes to a Crucible server, so
@@ -3598,6 +3659,10 @@ export async function prepareSession(
     // not, rather than falling back into the guest.
     const refusal = await hostPrepRefusal(engine);
     if (refusal) throw new Error(refusal);
+    // AND THE NUMBERS THIS BOOK IS PACKED TO ARE THAT SERVER'S. One
+    // `GET /v1/voices` before prep spawns; every refusal by name, and none of
+    // them falls back to the local catalog. See `venueBandForPrep`.
+    venueBand = await venueBandForPrep(settings, venue.server);
   } else if (isHiggsJob(settings)) {
     // The Higgs ENVIRONMENT, checked ONCE for this job — not once per worker.
     // The doctor is a WSL round trip; running it per range put a ~1 s blocking
@@ -3771,6 +3836,8 @@ export async function prepareSession(
       // A Crucible-venue prep runs here, in the tools env, whatever the engine's
       // WSL toggle says — the render is on another machine. See prepRunsInWsl.
       onHost: venue.where === 'crucible',
+      // AND IT PACKS TO THAT MACHINE'S NUMBERS, not to this arm's catalog block.
+      ...(venueBand === undefined ? {} : { venueBand }),
       // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
       // worker. Precedence: an explicit user env override wins, else the selected
       // voice's declared packing cap, else nothing — NO invented default.

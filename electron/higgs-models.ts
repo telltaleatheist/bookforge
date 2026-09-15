@@ -2300,6 +2300,59 @@ export interface HiggsDocumentTarget {
   userDataDir?: string;
   /** Guest translation, on the arm that has a guest. Identity by default. */
   translatePath?: (p: string) => string;
+  /**
+   * THE ENGINE'S OWN NUMBERS, when the engine is somewhere else.
+   *
+   * Present exactly for a prep whose render runs on a Crucible server: the band
+   * that server advertises on `GET /v1/voices` for this voice
+   * (`electron/crucible/voice-band.ts`). When it is here it REPLACES this arm's
+   * cap, band and pace in the document, and the local catalog is not consulted
+   * for them at all — Phase 15's division: the engine owns the voice's facts,
+   * the client owns the chunking.
+   *
+   * Why it has to replace rather than merge: the catalog's blocks are per ARM of
+   * THIS MACHINE (`served` on Windows, `mlx` on the Mac), and prep for a remote
+   * render runs on the host — so a book bound for the Mac was being packed to the
+   * PC's `served` block. Two numbers for one fact, and the one that refuses is
+   * the server's.
+   *
+   * What it does NOT replace: the checkpoint path, the clips, the sampling and
+   * the chunk gap. Those are about the weights this machine would load or the
+   * audio this machine will assemble, and a remote render has no opinion on them.
+   */
+  venueBand?: CrucibleStatedBand;
+}
+
+/**
+ * The half of `electron/crucible/voice-band.ts`'s `CrucibleVoiceBand` that a
+ * voice document carries. Structural, and declared here as well as there, so
+ * this module — which imports no Electron and no SDK — stays free of both.
+ * `tools/test-crucible-venue-band.js` compares the two shapes rather than
+ * trusting them.
+ */
+export interface CrucibleStatedBand {
+  /** The registered server the numbers came from — goes into the document's note. */
+  server: string;
+  /** Crucible's voice id the row belonged to. */
+  voice: string;
+  /** The cap certificate for this (voice, backend) on that server. */
+  maxChars: number;
+  /**
+   * The packing ceiling, ALREADY RESOLVED by `venuePackingCeiling` — the row's
+   * `safe_max_chars` when it states one, else the cap, never above the cap. The
+   * rule has one owner and it is not this module; this field is its answer.
+   */
+  ceilingChars: number;
+  /** The merge floor the venue states (`safe_min_chars`), or null. */
+  floorChars: number | null;
+  /**
+   * The target, ALREADY RESOLVED by `venuePackingTarget` — the server's when it
+   * states one, else the local catalog's clamped to the ceiling, else null.
+   */
+  targetChars: number | null;
+  paceCharsPerSec: number;
+  maxCharsPerSec: number;
+  minCharsPerSec: number;
 }
 
 export function higgsVoicesDocument(
@@ -2337,13 +2390,40 @@ export function higgsVoicesDocument(
   // one artifact that survives beside a render, so this is where a post-mortem
   // learns the weights were not the catalog's.
   if (model._overrideNote) entry._overrideNote = model._overrideNote;
+  // AND SO DOES A VENUE, for the same reason and through the same door: the
+  // document is the one artifact that survives beside a render, so this is where
+  // a post-mortem learns that the cap and band this book was packed to were a
+  // SERVER's rather than this catalog's. Carried harmlessly by narrator's
+  // `load_voices`, which reads the entry key by key.
+  if (target.venueBand !== undefined) {
+    entry._venueNote = `cap, band and pace stated by crucible "${target.venueBand.server}" for voice `
+      + `"${target.venueBand.voice}" on GET /v1/voices; the local catalog was not consulted for them.`;
+  }
 
   // THE ARM'S OWN CAPS. A certificate is per (directory, backend), so the
   // document for the darwin arm carries the MLX block's cap and never the
   // served one — and a null there means no `maxChars` is emitted at all, which
   // narrator's `load_voices` refuses for a checkpoint entry BY NAME. Two
   // independent refusals of one unmeasured arm.
-  const caps = higgsVoiceCapsForModel(model, target.arm);
+  const localCaps = higgsVoiceCapsForModel(model, target.arm);
+  // THE VENUE'S NUMBERS WIN, WHOLE. See `HiggsDocumentTarget.venueBand`: for a
+  // render on a Crucible server the cap, the band and the pace are that server's
+  // and this arm's are not consulted at all — not merged with, not compared to,
+  // not used to fill a gap. Anything else is two numbers for one fact, which is
+  // the shape the whole cap-certificate discipline exists to avoid.
+  const venue = target.venueBand;
+  const caps: HiggsBackendCaps = venue === undefined ? localCaps : {
+    ...localCaps,
+    maxChars: venue.maxChars,
+    // narrator's set of sources is closed (catalog | placeholder | length-sweep)
+    // and it refuses anything else, so the honest word for a number a SERVER
+    // stated is the same one an operator's ruling gets: 'catalog', with the
+    // provenance in the note, which no protocol reads.
+    maxCharsSource: 'catalog',
+    safeMinChars: venue.floorChars,
+    safeMaxChars: venue.ceilingChars,
+    targetChars: venue.targetChars,
+  };
   // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
   // near-miss. narrator's `load_voices` raises for an adapter entry with no
   // `maxChars`, so `refuseUnmeasuredAdapter` was guarding a number that never
@@ -2432,7 +2512,16 @@ export function higgsVoicesDocument(
   // (`truncation.PaceTracker`) — without the pace it cannot tell the tolerated
   // deviation from the reference it was measured against. A voice with no pace
   // gets no band and renders at the engine's default one.
-  if (model.pace !== undefined) {
+  //
+  // AND THE VENUE'S PACE IS THE VENUE'S, for the same reason its cap is: the
+  // guard is centred on the pace the machine that will render measured, and the
+  // row carries all three rates ("the whole block, because a client that packs
+  // needs all of it"). A local pace is not blended in behind it.
+  if (venue !== undefined) {
+    entry.paceCharsPerSec = venue.paceCharsPerSec;
+    entry.maxCharsPerSec = venue.maxCharsPerSec;
+    entry.minCharsPerSec = venue.minCharsPerSec;
+  } else if (model.pace !== undefined) {
     refuseMalformedPace(model, 'voice', model.pace);
     const band = higgsLengthBand(model.pace);
     entry.paceCharsPerSec = band.paceCharsPerSec;

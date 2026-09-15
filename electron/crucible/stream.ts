@@ -84,11 +84,20 @@
  * ── What is deliberately not here ──────────────────────────────────────────
  *
  * No chunking and no text normalisation — the surfaces pack the rows before the
- * scheduler sees them (`shared/listen-text/chunks.ts`, `shared/listen-text/normalize.ts`), from THIS
- * MACHINE'S catalog band. A row longer than the (voice, backend) cap is refused
- * by the server as `chunk_too_long`, never re-split here. RULING OWED: pack to
- * the venue server's advertised `pace` / `max_chars` (`GET /v1/voices`) instead
- * of the local catalog's, so a remote arm with a different cap is honoured.
+ * scheduler sees them (`shared/listen-text/chunks.ts`, `shared/listen-text/normalize.ts`). A row
+ * longer than the (voice, backend) cap is refused by the server as
+ * `chunk_too_long`, and it is never re-split here.
+ *
+ * WHAT THEY PACK TO IS THIS SERVER'S, as of 2026-09-15. The RULING OWED that
+ * stood here — "pack to the venue server's advertised `pace` / `max_chars`
+ * instead of the local catalog's" — is `electron/crucible/voice-band.ts`, and
+ * this engine's `statedChunkCaps()` is the stream half of it: the surfaces ask
+ * the ACTIVE engine for the band, this one answers from its `GET /v1/voices`
+ * row (ceiling `safe_max_chars` when stated, never above `max_chars`), and the
+ * local catalog is not consulted for a Crucible Listen. The local pool declares
+ * no `statedChunkCaps` and the catalog stands for it, which is not a fallback:
+ * that engine IS this machine's narrator and the catalog is how it was
+ * configured.
  *
  * No `speed`. `PlaySettings.speed` is carried for wire compatibility and the
  * local pool ignores it (Orpheus's sampling is fixed per fine-tune); this backend
@@ -115,6 +124,7 @@ import {
   type CrucibleRowChunk,
 } from '../../shared/listen-client/crucible-rows.js';
 import { CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE, CrucibleRenderRefused, crucibleVoiceFor } from './render';
+import { bandFromVoiceRow, venuePackingCeiling } from './voice-band';
 import { decideWhereGenerationRuns, type VenueHost } from './generation-venue';
 import { recordCrucibleStreamRow, takeChunkGuards } from '../chunk-guard-ledger';
 import { IdleWatch } from '../stream-idle';
@@ -761,6 +771,53 @@ export class CrucibleStreamingEngine {
 
   getCurrentVoice = (): string | null => this.live?.voice ?? null;
 
+  /**
+   * THE BAND THIS SERVER STATES for a BookForge voice — `StreamingEngine`'s
+   * `statedChunkCaps`, and the stream half of `voice-band.ts`'s ruling.
+   *
+   * The surfaces pack before the scheduler starts anything, so this answers off
+   * `serverRows` when `startSession` has already fetched them and fetches them
+   * itself when it has not: one `GET /v1/voices`, the same call `startSession`
+   * makes moments later, and the venue must already be bound (the facade binds
+   * it before asking).
+   *
+   * Refusals stay refusals: an unmapped voice, one this server does not
+   * advertise, or a row with no cap THROWS by name rather than resolving `null`,
+   * because packing to the local catalog after the server said no is how a book
+   * gets rendered to a cap nobody measured. `null` means only one thing — this
+   * engine has no venue bound yet, which the facade does not allow.
+   */
+  statedChunkCaps = async (voice: string): Promise<{
+    maxChars: number | null;
+    safeMinChars: number | null;
+    safeMaxChars: number | null;
+  } | null> => {
+    const server = this.server;
+    const client = this.client;
+    if (server === null || client === null) return null;
+    const crucibleVoice = crucibleVoiceFor(this.deps.selectedEngine(), voice);
+    if (this.serverRows === null) this.serverRows = await client.voices();
+    const row = this.serverRows.find((v) => v.id === crucibleVoice);
+    if (row === undefined) {
+      const known = this.serverRows.map((v) => v.id).join(', ');
+      throw new CrucibleStreamRefused(
+        'crucible_unknown_voice',
+        `crucible "${server}" has no voice "${crucibleVoice}" `
+        + `(${this.serverRows.length === 0 ? 'it advertises none' : `known: ${known}`}), so there is `
+        + 'no band to pack this Listen into. Nothing packs to the local catalog instead.',
+      );
+    }
+    const band = bandFromVoiceRow(server, crucibleVoice, row);
+    return {
+      maxChars: band.maxChars,
+      safeMinChars: band.safeMinChars,
+      // The ceiling rule has one owner (`venuePackingCeiling`): safe when stated,
+      // never above the cap. `listenBandFromCaps` takes `safeMaxChars ?? maxChars`
+      // and this hands it the already-resolved answer.
+      safeMaxChars: venuePackingCeiling(band),
+    };
+  };
+
   /** Never: a session is opened ON one resident voice, and the server holds one. */
   canServeVoicePerRequest = (_voice: string): boolean => false;
 
@@ -995,5 +1052,30 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
     },
     getStreamWorkerConfig: () => backend().getStreamWorkerConfig(),
     setStreamWorkerConfig: (updates) => backend().setStreamWorkerConfig(updates),
+    /**
+     * THE BAND THE SURFACES PACK TO, from whichever backend will speak the rows.
+     *
+     * The venue has to be DECIDED before the answer means anything, and a surface
+     * asks this before it packs — which is before the scheduler starts anything.
+     * So this takes the same cold-start decision `startSession` takes, through
+     * `startSession` itself: it is idempotent (a warm backend answers from what
+     * it already has), it is the decision that was about to be taken anyway, and
+     * taking it twice in two ways is how the pack and the render end up on two
+     * different servers.
+     *
+     * On the local narrator it resolves `null` — see `StreamingEngine`: that
+     * engine is this machine's, and the catalog is its own configuration.
+     */
+    statedChunkCaps: async (voice) => {
+      // WHICH backend will answer is knowable without starting anything — a
+      // bound one, else the legacy switch's — so the local pool is never spawned
+      // by a question about chunk lengths. Only the Crucible arm needs a venue,
+      // and only it pays for one.
+      const engine = backend();
+      if (typeof engine.statedChunkCaps !== 'function') return null;
+      const started = await startSession();
+      if (!started.success) throw new Error(started.error ?? 'Listen has nowhere to run');
+      return engine.statedChunkCaps(voice);
+    },
   };
 }

@@ -798,8 +798,17 @@ export class TtsApiServer {
         await import('../shared/listen-text/chunks.js');
       let band;
       try {
-        // higgsVoiceCapsForModel defaults to THIS MACHINE'S arm; never re-derive it.
-        band = listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)));
+        // THE ENGINE THAT WILL SPEAK IT STATES THE BAND, when it is somewhere
+        // else: a Crucible answers `statedChunkCaps` off its `GET /v1/voices`
+        // row (electron/crucible/voice-band.ts). The local pool declares no such
+        // method and the catalog stands for it — not a fallback: that engine IS
+        // this machine's narrator, and higgs-models.json is how it was
+        // configured. `higgsVoiceCapsForModel` defaults to THIS MACHINE'S arm,
+        // which is exactly why it must not answer for another machine's.
+        const stated = await getActiveEngine().statedChunkCaps?.(voice) ?? null;
+        band = stated === null
+          ? listenBandFromCaps(voice, higgsVoiceCapsForModel(higgsPreflight(voice)))
+          : listenBandFromCaps(voice, stated);
       } catch (err) {
         this.send(ws, {
           type: 'error',

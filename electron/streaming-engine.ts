@@ -126,6 +126,24 @@ export interface StreamingEngine {
     count?: number;
     devicePref?: StreamWorkerConfig['devicePref'];
   }): StreamWorkerConfig;
+  /**
+   * Optional. THE LENGTH THIS ENGINE STATES for `voice`, when the engine is
+   * somewhere else and publishes its own facts — a Crucible's `GET /v1/voices`
+   * (`electron/crucible/voice-band.ts`). The surfaces pack their rows before the
+   * scheduler ever sees them, and this is how they pack to the numbers the
+   * machine that will speak them enforces rather than to this machine's catalog.
+   *
+   * ABSENT — the local narrator pool — is not a gap: that engine IS this
+   * machine's narrator, and `electron/data/higgs-models.json` is how it was
+   * configured, so the catalog's band is the engine's own. A backend that HAS an
+   * answer and cannot give it yet resolves `null`, and the caller refuses rather
+   * than packing to somebody else's numbers.
+   */
+  statedChunkCaps?(voice: string): Promise<{
+    maxChars: number | null;
+    safeMinChars: number | null;
+    safeMaxChars: number | null;
+  } | null>;
 }
 
 // THE POOL LEARNS THE SELECTION FROM HERE, at module load, and never the other

@@ -88,6 +88,7 @@ import {
   higgsServingStack,
   higgsSglangFor,
   writeHiggsVoicesDocument,
+  type CrucibleStatedBand,
   type HiggsCheckpointArm,
   type HiggsModel,
   type HiggsRenderOverride,
@@ -271,6 +272,11 @@ export function buildHiggsSpawn(
      * one thing here that has to agree with the spawn.
      */
     onHost?: boolean;
+    /**
+     * The renderng venue's own band for this voice, for a prep bound for a
+     * Crucible server — see `higgsEnvExtras`'s parameter of the same name.
+     */
+    venueBand?: CrucibleStatedBand;
   },
 ): HiggsSpawnPlan {
   const onHost = opts.onHost === true;
@@ -278,7 +284,10 @@ export function buildHiggsSpawn(
     engine: 'higgs',
     phase: kind,
     args: opts.args,
-    envExtras: { ...opts.envExtras, ...higgsEnvExtras(opts.model, opts.jobId, kind, undefined, onHost) },
+    envExtras: {
+      ...opts.envExtras,
+      ...higgsEnvExtras(opts.model, opts.jobId, kind, undefined, onHost, opts.venueBand),
+    },
     cwdHint: opts.cwd,
     ...(onHost ? { onHost } : {}),
   });
@@ -326,6 +335,14 @@ export function higgsEnvExtras(
   kind: HiggsSpawnKind,
   streamBatchCeiling?: number,
   onHost = false,
+  /**
+   * The band the CRUCIBLE that will render this book advertises for this voice
+   * (`electron/crucible/voice-band.ts`). Present only for a prep whose render
+   * runs on a server; it replaces this arm's cap, band and pace in the voice
+   * document, so the book is packed to the numbers the engine will enforce
+   * rather than to this machine's catalog. See `HiggsDocumentTarget.venueBand`.
+   */
+  venueBand?: CrucibleStatedBand,
 ): Record<string, string> {
   const serving = higgsServingFor(model);
   // Asked of narrator-spawn rather than recomputed, so the arm the voice document
@@ -346,6 +363,7 @@ export function higgsEnvExtras(
   const translate = viaWsl ? toGuestPath : (p: string) => p;
   const voicesHostPath = writeHiggsVoicesDocument(model, jobId, {
     arm, userDataDir, translatePath: translate,
+    ...(venueBand === undefined ? {} : { venueBand }),
   });
   // ONE DERIVATION, THREE VARIABLES. `HIGGS_ENV` is the prefix the launch script
   // builds CUDA_HOME, PATH, LD_LIBRARY_PATH and its `vllm-omni` path out of, and

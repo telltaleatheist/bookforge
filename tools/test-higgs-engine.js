@@ -3301,14 +3301,18 @@ check('the render doors resolve the voice through ONE function', () => {
   // door; `higgsModelForJob(settings)` is the only one that can see an override.
   assert.strictEqual(/higgsPreflight/.test(bridgeSrc), false,
     'parallel-tts-bridge still resolves a Higgs voice without its override');
-  // Six since 2026-09-13: the four local render doors, plus the two in the
-  // Crucible seam (`crucibleChunksForSession`) — the voice-id mapping to the
+  // Seven since 2026-09-15: the four local render doors, the two in the
+  // Crucible seam (`startCrucibleGeneration`) — the voice-id mapping to the
   // server's voice, and the refusal sentence that names the BookForge voice it
-  // could not map. Both read the SAME door, which is the point of this pin: a
-  // remote render must see the override exactly as a local one does.
+  // could not map — and `venueBandForPrep`, which asks the VENUE for that
+  // voice's cap and band before prep packs the book
+  // (`electron/crucible/voice-band.ts`). Every one reads the SAME door, which
+  // is the point of this pin: a remote render must see the override exactly as
+  // a local one does, and a band fetched for a voice the render does not use
+  // would pack the book to the wrong certificate.
   const sites = bridgeSrc.match(/higgsModelForJob\(/g) || [];
-  assert.strictEqual(sites.length, 6,
-    `expected 6 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
+  assert.strictEqual(sites.length, 7,
+    `expected 7 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
   // Listen stays catalog-only — a resident engine shared by every tab is not the
   // place to load an uncertified checkpoint.
   const pool = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
