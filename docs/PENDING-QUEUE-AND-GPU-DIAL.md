@@ -69,3 +69,26 @@ No display-label indirection: the name IS the label.
 
 Pending survives a restart. A book staged but not sent must not vanish because the app
 closed.
+
+## The bench's layout — grouped, not one flat grid
+
+Owen, 2026-09-15: *"im not a fan of how the slots are laid out. maybe we should have a
+local cpu slot section and a gpu slot section. they look kind of ugly clustered together
+randomly. and its hard to tell which slot im looking at unless i look closely at the
+names."*
+
+Today `queue.component.ts` renders `tray.lanes()` as ONE flat grid, so a GPU slot and a CPU
+slot are the same card in the same run and the only thing separating them is a word inside
+the strip. Group them instead:
+
+- **GPU — the Crucible engines.** One row per engine, named by its GPU ("3090 Ti",
+  "M1 Ultra"). This is the section the dial acts on.
+- **CPU — BookForge itself.** The two `local-work` slots.
+- The in-app long-form aligner row appears only while a step charges it, and belongs with
+  the section its resource says it is.
+
+Each section carries its own heading and its own in-use count; the overall "N of M slots in
+use" stays. A section with no rows is not drawn — an empty heading is worse than nothing.
+
+This is deliberately folded into the Pending/dial build rather than done separately: both
+rework the same component, and two passes over one file is how two agents collide.
