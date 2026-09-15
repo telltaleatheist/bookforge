@@ -65,7 +65,13 @@ function voiceRow(id) {
     id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
     revision: 'rev1', fingerprint: `${id}@rev1`, memory_bytes_estimate: 1,
-    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1, pace: FAKE_PACE,
+    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1,
+    // A checkpoint's voice is in its weights: loading one WITH a clip is
+    // `reference_not_allowed`. The field is required on every row since the
+    // 0.6.0 SDK (PHASE3-TTS.md §5's amendment) and the SDK refuses the whole
+    // document by name without it, so it is stated rather than omitted.
+    needs_reference: false,
+    pace: FAKE_PACE,
   };
 }
 

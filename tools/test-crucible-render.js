@@ -145,6 +145,10 @@ function voiceRow(id, over) {
     max_chars: 800,
     sample_rate: 24000,
     takes: 1,
+    // Required on every row since the 0.6.0 SDK (PHASE3-TTS.md §5's amendment):
+    // false for a checkpoint, whose voice is in its weights, true for the
+    // `zeroshot` row, which is the base weights plus somebody's clip.
+    needs_reference: false,
     pace: FAKE_PACE,
   }, over || {});
 }

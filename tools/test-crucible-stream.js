@@ -126,13 +126,18 @@ const FAKE_PACE = {
   target_chars: null, safe_min_chars: 400, safe_max_chars: 800,
 };
 
-function voiceRow(id, resident) {
-  return {
+function voiceRow(id, resident, over) {
+  return Object.assign({
     id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident, loadable: true, reason: null,
     revision: 'abc1234', fingerprint: `${id}@abc1234`, memory_bytes_estimate: 19000000000,
-    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1, pace: FAKE_PACE,
-  };
+    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1,
+    // Required on every row since the 0.6.0 SDK (PHASE3-TTS.md §5's amendment).
+    // False here: a checkpoint's voice is in its weights, and loading one WITH
+    // a clip is `reference_not_allowed`.
+    needs_reference: false,
+    pace: FAKE_PACE,
+  }, over || {});
 }
 
 /** 240 samples of a deterministic ramp, so two rows never share bytes. */
