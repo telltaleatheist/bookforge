@@ -440,10 +440,12 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
         raise ValueError(
             'Higgs SGLang-Omni request carries no sampling. '
             + _WHY_SAMPLING_IS_REQUIRED
-            + " HiggsV3Config.served_sampling() is what states it, from the "
-            "checkpoint's generation_config.json (which "
+            + " HiggsV3Config.served_sampling() is what states it: from a "
+            "MERGE's generation_config.json (which "
             'v3_served.require_generation_config has already proved is there and '
-            'carries usable numbers).')
+            'carries usable numbers), or from v3\'s deploy default for base '
+            'weights - which is what a zero-shot voice renders at, whatever '
+            'directory it names.')
     if 'seed' in sampling:
         raise ValueError(
             "Higgs SGLang sampling carries a seed. The seed is the request's own "

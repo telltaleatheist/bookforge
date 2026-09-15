@@ -360,7 +360,10 @@ class HiggsV3MlxConfig:
     `checkpoint` voice that is the voice's own merged directory - its weights
     ARE the voice, exactly as on the served arm, and the only difference is that
     here loading it is a `load_model` call rather than a server restart. For a
-    `clips` or `default` voice it is the base checkpoint from `MODEL_ENV`.
+    `clips` or `default` voice it is the base checkpoint - the directory the
+    voice names in `base_dir` when it names one (whoever writes the voices
+    document pins the base weights, so a clone renders on known bytes), else
+    `MODEL_ENV`.
 
     `sampling` EMPTY means THE MODEL DIRECTORY'S OWN SAMPLING - see
     `mlx_sampling`, which reads it from the checkpoint's
@@ -440,7 +443,10 @@ class HiggsV3MlxConfig:
                              proved is there and carries all three keys. That is
                              the same file the served arm's vllm-omni reads, so
                              both arms render one voice at one sampling.
-          base weights       there is NO file to read: the
+          base weights       (a `default` voice, or a zero-shot clone -
+                             including one that NAMES its base weights in
+                             `base_dir`, since 2026-09-15) there is NO file to
+                             read: the
                              `bosonai/higgs-audio-v3-tts-4b` snapshot ships none
                              (verified 2026-09-05 on the WSL HF cache AND on the
                              Mac's `runtime/higgs-models/base`), which is the
@@ -465,6 +471,11 @@ class HiggsV3MlxConfig:
         `__post_init__` applies to a user-supplied `repetition_penalty`; a lever
         the runtime cannot honour is a refusal at either door.
         """
+        # `checkpoint_dir`, the MERGE - never `base_dir`. A zero-shot voice
+        # may name its base weights (pinned, so the clone renders on known
+        # bytes) and that directory has no generation_config.json in it; its
+        # authority is SERVER_DEFAULT_SAMPLING below, exactly as for a voice
+        # that names no directory at all (2026-09-15).
         if self.voice.checkpoint_dir:
             document = v3_served.require_generation_config(
                 self.voice.checkpoint_dir, self.voice.name)
@@ -998,12 +1009,12 @@ class HiggsV3MlxEngine:
             name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
             max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
             placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
-        checkpoint = getattr(resolved, 'checkpoint_dir', None)
-        if checkpoint:
-            # The checkpoint's REQUIRED FILES, at the load message - here the
-            # generation_config.json is not just the server's sampling, it is
-            # THIS process's (see HiggsV3MlxConfig.mlx_sampling).
-            v3_served.checkpoint_serve_target(checkpoint, resolved.name)
+        # The named directory's REQUIRED FILES, at the load message - and for
+        # a MERGE the generation_config.json is not just the server's
+        # sampling, it is THIS process's (see HiggsV3MlxConfig.mlx_sampling).
+        # A zero-shot voice's `base_dir` is base weights, which carry no such
+        # file and are asked for none.
+        v3_served.voice_serve_target(resolved)
         return name
 
     def backend_spec(self) -> BackendSpec:
@@ -2258,12 +2269,13 @@ def higgs_v3_mlx_config_from_worker_kwargs(voice=None, model_dir=None,
         max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
         placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
     # A fine-tuned voice's WEIGHTS are the voice, so the model loaded is the
-    # voice's own checkpoint. Everything else loads the base.
-    checkpoint = getattr(resolved, 'checkpoint_dir', None)
-    if checkpoint:
-        v3_served.checkpoint_serve_target(checkpoint, resolved.name)
+    # voice's own checkpoint. A zero-shot voice may name a directory too - the
+    # BASE weights, pinned by whoever wrote the document - and that is the
+    # model this process loads; `model_dir_from_env()` is for a voice that
+    # names none at all.
+    named = v3_served.voice_serve_target(resolved)
     # THE VOICE'S OWN SAMPLING, when the document states one, over the
     # checkpoint file's - see `mlx_sampling`. None keeps the file's values.
     return HiggsV3MlxConfig(voice=resolved,
-                            model_dir=checkpoint or model_dir_from_env(),
+                            model_dir=named or model_dir_from_env(),
                             sampling=getattr(resolved, 'sampling', None))

@@ -328,6 +328,17 @@ def load_voices(path: str = None, *, allowed_controls=None,
     chunks into babble. `v3_served.require_generation_config` refuses a
     checkpoint voice without it BY NAME; on the Mac the MLX backend reads the
     same file for its own sampler, because mlx-audio does not.
+
+    THAT LAST FILE IS DEMANDED OF A MERGE ONLY (2026-09-15). A `clips` voice
+    may name a `checkpointDir` too, and what it names is the BASE snapshot at
+    a pinned revision - Crucible writes it so a clone renders on the bytes the
+    pin names rather than on whatever the HF cache holds. The published base
+    (`bosonai/higgs-tts-3-4b` at 239f63fb: thirteen files) has never carried a
+    `generation_config.json`, which is exactly why narrator states base
+    sampling explicitly on both arms. So the KIND BESIDE THE KEY decides what
+    the directory is, and this loader reads a `clips` voice's into
+    `ClipsVoice.base_dir` - a different field, checked by
+    `v3_served.require_base_weights_dir` and asked for no such file.
         {"kind": "default"}                    the model's OWN voice, no
                                                conditioning at all - a smoke
                                                test or a demo. 12 % of the
@@ -424,6 +435,30 @@ def load_voices(path: str = None, *, allowed_controls=None,
                 f"{path}: voice '{name}' is kind 'checkpoint' with no "
                 "'checkpointDir'. The checkpoint IS the voice - there is nothing to "
                 'serve without it.')
+        base_dir = None
+        if kind == 'clips' and checkpoint_dir:
+            # A `clips` VOICE'S DIRECTORY IS THE BASE MODEL, and it is read
+            # into a different field for that reason (2026-09-15).
+            #
+            # The key is spelled `checkpointDir` because that is the key
+            # narrator has always read a directory from and the one Crucible
+            # writes; what it MEANS is decided by the kind beside it. For
+            # kind 'checkpoint' (and for a 'default' voice, whose weights are
+            # the voice) it is a merged fine-tune, whose own
+            # generation_config.json is the sampling the server reads. For
+            # kind 'clips' the voice is in the REFERENCE and the directory is
+            # the base model the reference conditions - pinned by whoever
+            # wrote this document so the clone renders on known bytes. Base
+            # weights carry no generation_config.json, have never carried
+            # one, and are not asked for one; narrator states base sampling
+            # itself on both arms.
+            #
+            # No real document is re-read by this: every `clips` entry
+            # BookForge ships (the four zeroshot-* voices) names no directory
+            # at all, and the only writer that ever paired the two is
+            # Crucible, where it has always meant the base weights it pulled
+            # at the manifest's pin.
+            base_dir, checkpoint_dir = checkpoint_dir, None
         if kind == 'clips' and not clips:
             raise ValueError(
                 f"{path}: voice '{name}' is a reference clone with no clips. A "
@@ -475,6 +510,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
             name=name,
             scene=entry.get('scene'),
             checkpoint_dir=checkpoint_dir,
+            base_dir=base_dir,
             allowed_controls=tuple(entry.get('allowedControls', allowed_controls)),
             max_reference_seconds=entry.get('maxReferenceSeconds',
                                             max_reference_seconds),

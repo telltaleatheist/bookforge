@@ -205,6 +205,28 @@ class ClipsVoice:
     #: where it can be read, not inherited invisibly from a file inside the
     #: model directory.
     sampling: Optional[dict] = None
+    #: THE BASE WEIGHTS THIS CLONE IS CONDITIONED ON, when the voice document
+    #: named them. NOT a merge and never confusable with one - that is the
+    #: whole reason it is a second field instead of a second meaning for
+    #: `checkpoint_dir` (2026-09-15).
+    #:
+    #: A zero-shot clone is the base model plus a reference, so "which base?"
+    #: is a real question with a real answer, and until this field existed
+    #: there was nowhere to put it: the served arm fell back to "whatever
+    #: snapshot the HuggingFace cache holds" and the MLX arm to
+    #: `NARRATOR_HIGGS3_MLX_MODEL`. Crucible pulls the base at the manifest's
+    #: PINNED revision and names that directory, so the clone renders on the
+    #: bytes the pin names; it had to spell that `checkpointDir`, and the
+    #: first zero-shot load it ever made was refused for the
+    #: `generation_config.json` that only a MERGE carries. Base weights carry
+    #: none - the published `bosonai/higgs-tts-3-4b` tree has thirteen files
+    #: and no such entry - and need none, because narrator states base
+    #: sampling explicitly (`v3_served.SERVER_DEFAULT_SAMPLING`).
+    #:
+    #: `checkpoint_dir` and this are mutually exclusive
+    #: (`v3_served.voice_serve_target` refuses both); None means the voice
+    #: names no directory and the arm's own base variable decides.
+    base_dir: Optional[str] = None
     kind: str = field(default='clips', init=False)
 
     def __post_init__(self):

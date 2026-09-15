@@ -752,6 +752,54 @@ _WHY_GENERATION_CONFIG = (
     'it.')
 
 
+def require_base_weights_dir(base_dir: str, voice_name: str) -> str:
+    """A zero-shot voice's BASE weights directory must BE a directory - and
+    that is the whole of what is asked of it.
+
+    NO `generation_config.json`, and that is the point of having this beside
+    `require_generation_config` rather than reusing it (2026-09-15). The
+    published base has never carried one: `bosonai/higgs-tts-3-4b` at
+    239f63fb7b02 lists thirteen files - `config.json`, `chat_template.jinja`,
+    the weights, the tokenizer pair, the index, the docs - and no
+    `generation_config.json` under any name or subdirectory. That absence is
+    not a defect to route around; it is the fact `SERVER_DEFAULT_SAMPLING`
+    exists for, and narrator states base sampling EXPLICITLY on both arms
+    because of it (`HiggsV3Config.served_sampling`,
+    `HiggsV3MlxConfig.mlx_sampling`).
+
+    WHY A VOICE NAMES BASE WEIGHTS AT ALL. Crucible pulls the base at the
+    manifest's pinned revision and names that directory in the voices document
+    so a clone renders on the bytes the pin names, instead of on whatever
+    snapshot the HuggingFace cache happens to hold
+    (`crucible/narratorvoices.py`, PHASE3-TTS.md section 4b). Before
+    2026-09-15 the only field for it was `checkpointDir`, which means a MERGE,
+    and the first zero-shot load Crucible ever made was refused by name for a
+    file base weights never had.
+    """
+    name = _require_voice_name(voice_name, 'require_base_weights_dir')
+    if not (base_dir or '').strip():
+        raise ValueError(
+            f"Higgs v3 voice '{name}' names an empty base weights directory. "
+            'A zero-shot clone is the BASE model conditioned on a reference; '
+            'with no directory there is nothing to condition.')
+    if not os.path.isdir(base_dir):
+        raise ValueError(
+            f"Higgs v3 voice '{name}' names the base weights directory "
+            f'{base_dir}, which is not a directory. That directory IS what '
+            'the model is loaded from - there is nothing to serve.')
+    return base_dir
+
+
+def _require_voice_name(voice_name: str, caller: str) -> str:
+    name = (voice_name or '').strip()
+    if not name:
+        raise ValueError(
+            f'{caller}() needs the VOICE NAME: every refusal it makes has to '
+            'say which voice is misconfigured, and an unnamed one is a refusal '
+            'nobody can act on.')
+    return name
+
+
 def require_generation_config(checkpoint_dir: str, voice_name: str) -> dict:
     """Read a merged checkpoint's `generation_config.json`, or refuse BY NAME.
 
@@ -765,13 +813,12 @@ def require_generation_config(checkpoint_dir: str, voice_name: str) -> dict:
     it is what puts the file there (it asserts byte-equality with the base, or
     copies a recorded per-run override), and narrator writing one would be
     narrator deciding a model's sampling.
+
+    ASKED OF A MERGE ONLY. Base weights carry no such file and never did, so a
+    voice that names ITS BASE WEIGHTS reaches `require_base_weights_dir`
+    instead; `voice_serve_target` is the one place that chooses between them.
     """
-    name = (voice_name or '').strip()
-    if not name:
-        raise ValueError(
-            'require_generation_config() needs the VOICE NAME: every refusal it '
-            'makes has to say which voice is misconfigured, and an unnamed one is '
-            'a refusal nobody can act on.')
+    name = _require_voice_name(voice_name, 'require_generation_config')
     if not os.path.isdir(checkpoint_dir):
         raise ValueError(
             f"Higgs v3 voice '{name}' names the merged checkpoint directory "
@@ -884,16 +931,15 @@ def _check_sampling_types(document: dict, path: str, name: str) -> None:
 
 
 def checkpoint_serve_target(checkpoint_dir: str, voice_name: str) -> str:
-    """What `vllm-omni serve <...>` is pointed at for this voice.
+    """What `vllm-omni serve <...>` is pointed at for a MERGED FINE-TUNE.
 
     It IS the checkpoint dir - there are no extra launch arguments, because
     there is no adapter to name. Kept as a function so the one place that
     decides "which directory does this voice's server run on" has a name and a
     test - and, since 2026-09-05, so that the one place also PROVES the directory
     carries the sampling the server will read out of it
-    (`require_generation_config`). Both v3 arms call this: the served config
-    (`HiggsV3Config.__post_init__`), the MLX config builder, and both
-    `resolve_load_voice`s.
+    (`require_generation_config`). Both v3 arms reach it through
+    `voice_serve_target`.
     """
     if not (checkpoint_dir or '').strip():
         raise ValueError(
@@ -901,6 +947,44 @@ def checkpoint_serve_target(checkpoint_dir: str, voice_name: str) -> str:
             '(checkpointDir). There is no adapter to load onto a base server.')
     require_generation_config(checkpoint_dir, voice_name)
     return checkpoint_dir
+
+
+def voice_serve_target(voice):
+    """THE DIRECTORY THIS VOICE'S MODEL IS LOADED FROM, validated for what it
+    is - or `None` when the voice names none and the arm's own base variable
+    decides.
+
+    ONE function because there is one question, and two answers because a
+    voice may name its weights in either of two fields, which mean different
+    things (2026-09-15):
+
+      `checkpoint_dir`   a MERGED FINE-TUNE. The weights ARE the voice, and
+                         the directory must carry the `generation_config.json`
+                         the server reads its sampling out of
+                         (`checkpoint_serve_target`).
+      `base_dir`         the BASE weights a zero-shot clone is conditioned on,
+                         pinned by whoever wrote the voices document. No
+                         `generation_config.json` is asked of it and none
+                         exists (`require_base_weights_dir`); base sampling is
+                         STATED by narrator instead.
+
+    Both at once is refused: one server runs on one directory, and a voice
+    that names two has not said which.
+    """
+    checkpoint = (getattr(voice, 'checkpoint_dir', None) or '').strip()
+    base = (getattr(voice, 'base_dir', None) or '').strip()
+    if checkpoint and base:
+        raise ValueError(
+            f"Higgs v3 voice '{voice.name}' names a merged checkpoint "
+            f'({checkpoint}) AND base weights ({base}). Those are different '
+            'models and one server runs on one directory: a fine-tune\'s '
+            'voice is in its weights and a clone\'s is in its reference, so a '
+            'voice that claims both has not said which model to load.')
+    if checkpoint:
+        return checkpoint_serve_target(checkpoint, voice.name)
+    if base:
+        return require_base_weights_dir(base, voice.name)
+    return None
 
 
 # ---------------------------------------------------------------------------

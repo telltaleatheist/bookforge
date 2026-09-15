@@ -74,6 +74,7 @@ WHAT IS DIFFERENT FROM ORPHEUS
 import os
 from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, as_completed,
                                 wait)
+import dataclasses
 from dataclasses import dataclass
 from typing import Optional
 
@@ -152,12 +153,15 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
     if (controls == voice.allowed_controls
             and cap == voice.max_reference_seconds):
         return voice
-    return ClipsVoice(
-        clips=voice.clips, name=voice.name, scene=voice.scene,
-        checkpoint_dir=voice.checkpoint_dir, allowed_controls=controls,
-        max_reference_seconds=cap, max_chars=voice.max_chars,
-        max_chars_source=voice.max_chars_source,
-        target_chars=voice.target_chars)
+    # `replace` and NOT a fresh ClipsVoice(...) with a hand-written field
+    # list: this stamps TWO fields and must carry every other one through
+    # untouched. The hand-written list silently dropped `sampling`, the safe
+    # band and the pace triple, and on 2026-09-15 it would have dropped
+    # `base_dir` too - which is the directory the server runs on, so a
+    # zero-shot voice whose controls needed stamping would have come up on
+    # the wrong model.
+    return dataclasses.replace(voice, allowed_controls=controls,
+                               max_reference_seconds=cap)
 
 
 @dataclass
@@ -182,6 +186,12 @@ class HiggsV3Config:
     base_url: Optional[str] = None
     serve_script: Optional[str] = None
     checkpoint_dir: Optional[str] = None
+    #: THE PINNED BASE WEIGHTS a zero-shot clone is conditioned on - the other
+    #: directory a server can run on, and NEVER a merge (see
+    #: `protocol.ClipsVoice.base_dir`). Kept apart from `checkpoint_dir`
+    #: because only a merge carries the `generation_config.json` the sampling
+    #: branches below are about; `model_dir` is what points the server.
+    base_dir: Optional[str] = None
     sampling: Optional[dict] = None
     seed: Optional[int] = 1234
     sentences_dir: Optional[str] = None
@@ -238,18 +248,57 @@ class HiggsV3Config:
                 'server runs on one checkpoint - refusing to pick.')
         if voice_checkpoint and not self.checkpoint_dir:
             self.checkpoint_dir = voice_checkpoint
+        # THE SAME PAIR OF RULES FOR THE BASE WEIGHTS, and they are a separate
+        # pair rather than the same one because the two directories are
+        # different models: a merge IS the voice, base weights are what a
+        # reference conditions.
+        voice_base = getattr(self.voice, 'base_dir', None)
+        if voice_base and self.base_dir and voice_base != self.base_dir:
+            raise ValueError(
+                f"Higgs v3 voice '{self.voice.name}' names base weights "
+                f'{voice_base} but the config names {self.base_dir}. One '
+                'server runs on one model - refusing to pick.')
+        if voice_base and not self.base_dir:
+            self.base_dir = voice_base
+        if self.checkpoint_dir and self.base_dir:
+            raise ValueError(
+                f"Higgs v3 voice '{self.voice.name}' names a merged checkpoint "
+                f'({self.checkpoint_dir}) AND base weights ({self.base_dir}). '
+                "A fine-tune's voice is in its weights and a clone's is in its "
+                'reference; a config that claims both has not said which model '
+                'to serve.')
         if self.checkpoint_dir:
             # Also proves the directory carries the generation_config.json the
             # server will read its sampling out of - see
             # v3_served.require_generation_config.
             v3_served.checkpoint_serve_target(self.checkpoint_dir,
                                               self.voice.name)
+        elif self.base_dir:
+            # The bytes, and nothing more: base weights have never carried a
+            # generation_config.json, which is exactly why `served_sampling`
+            # STATES their sampling instead of letting the server resolve it.
+            v3_served.require_base_weights_dir(self.base_dir, self.voice.name)
 
     #: The keys of `SERVER_DEFAULT_SAMPLING` that may ride in `extra_params`.
     #: `seed` is excluded: it is the request's TOP-LEVEL field and
     #: `build_request_body` refuses the duplicate.
     EXTRA_PARAM_KEYS = tuple(k for k in v3_served.SERVER_DEFAULT_SAMPLING
                              if k != 'seed')
+
+    @property
+    def model_dir(self):
+        """WHICH DIRECTORY THE SERVER RUNS ON - the merge, or the pinned base
+        weights, or `None` when the voice names neither and the launch
+        script's own default decides.
+
+        Distinct from `checkpoint_dir` on purpose. "Which model is served?"
+        and "is that model a fine-tune whose own generation_config.json
+        decides its sampling?" are two questions, and they stopped having one
+        answer the moment a zero-shot voice could name its base weights
+        (2026-09-15). Everything that POINTS the server reads this;
+        everything that asks about SAMPLING reads `checkpoint_dir`.
+        """
+        return self.checkpoint_dir or self.base_dir
 
     def served_sampling(self) -> dict:
         """What rides in the request's `extra_params` - decided by voice KIND.
@@ -275,7 +324,14 @@ class HiggsV3Config:
                              tail that derails long chunks into babble. That is
                              the exact failure this branch exists to prevent,
                              and until 2026-09-05 it was live for every
-                             non-checkpoint voice on the served arm.
+                             non-checkpoint voice on the served arm. SINCE
+                             2026-09-15 "base weights" includes a ZERO-SHOT
+                             voice that NAMES its base directory (`base_dir`,
+                             pinned by whoever wrote the document so the clone
+                             renders on known bytes). Naming the directory
+                             does not put a generation_config.json in it, so
+                             this branch reads `checkpoint_dir` - the merge -
+                             and never `model_dir`.
 
         `sampling` is a named per-config override and is merged on top of
         either.
@@ -298,10 +354,11 @@ class HiggsV3Config:
         """
         if self.stack == STACK_SGLANG_OMNI:
             return self.applied_sampling()
-        # `self.checkpoint_dir` and not `self.voice.checkpoint_dir`: this is the
-        # config's resolved answer to "which directory is this server running
-        # on", which __post_init__ takes from the voice when the voice names one
-        # and which an operator may state directly.
+        # `self.checkpoint_dir` and not `self.model_dir`: a zero-shot voice
+        # names a directory too - the BASE weights, pinned - and sending
+        # nothing for those is the bare `SamplingParams()` this branch exists
+        # to prevent, because base weights carry no generation_config.json for
+        # the server to read. Only a MERGE is silent here.
         if self.checkpoint_dir:
             resolved = {}
         else:
@@ -431,6 +488,9 @@ class HiggsV3Budget:
         """
         ref = self._voice(voice)
         if ref.max_chars is None:
+            # `checkpoint_dir`, which is the FINE-TUNE and not merely a
+            # directory: a zero-shot voice's `base_dir` is the base model, and
+            # the base model's placeholder is what it should be packed at.
             if ref.checkpoint_dir:
                 raise ValueError(
                     f"Higgs v3 voice '{ref.name}' is a fine-tune "
@@ -571,7 +631,7 @@ class HiggsV3Engine:
         if config.stack == STACK_SGLANG_OMNI:
             self.server = HiggsSglServedBackend(
                 base_url=config.base_url, serve_script=config.serve_script,
-                checkpoint_dir=config.checkpoint_dir,
+                checkpoint_dir=config.model_dir,
                 concurrency=self.BATCH_SIZE,
                 server_log=(os.path.join(config.process_dir,
                                          sgl_served.SERVER_LOG_NAME)
@@ -579,7 +639,7 @@ class HiggsV3Engine:
         else:
             self.server = HiggsV3ServedBackend(
                 base_url=config.base_url, serve_script=config.serve_script,
-                checkpoint_dir=config.checkpoint_dir,
+                checkpoint_dir=config.model_dir,
                 concurrency=self.BATCH_SIZE,
                 server_log=(os.path.join(config.process_dir,
                                          v3_served.SERVER_LOG_NAME)
@@ -619,7 +679,7 @@ class HiggsV3Engine:
             if self.server.serve_script and self.server._proc is not None:
                 self.server._record_server()
             self.server.check_serves_expected_model(
-                checkpoint_dir=self.config.checkpoint_dir)
+                checkpoint_dir=self.config.model_dir)
             # THE SENTINEL PROOF IS vllm-omni'S, BOTH HALVES. The patch is a
             # site-packages fix to `vllm_omni/model_executor/
             # stage_input_processors/higgs_audio_v3.py`; SGLang-Omni has its own
@@ -706,12 +766,13 @@ class HiggsV3Engine:
             name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
             max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
             placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
-        checkpoint = getattr(resolved, 'checkpoint_dir', None)
-        if checkpoint:
-            # A checkpoint voice's REQUIRED FILES are checked here, at the load
-            # message, for the same reason `maxChars` is: the refusal belongs
-            # before a 55-297 s server start and before anything holds a GPU.
-            v3_served.checkpoint_serve_target(checkpoint, resolved.name)
+        # The served directory's REQUIRED FILES are checked here, at the load
+        # message, for the same reason `maxChars` is: the refusal belongs
+        # before a 55-297 s server start and before anything holds a GPU.
+        # WHICH files are required depends on which directory the voice names
+        # - a merge's generation_config.json, base weights' bytes and nothing
+        # else - and `voice_serve_target` is the one place that knows.
+        v3_served.voice_serve_target(resolved)
         return name
 
     def backend_spec(self) -> BackendSpec:
@@ -755,8 +816,8 @@ class HiggsV3Engine:
         raise ValueError(
             f'HiggsV3Engine cannot switch voice in place: this server was started '
             f"for '{self.voice}'"
-            + (f' on checkpoint {self.config.checkpoint_dir}'
-               if self.config.checkpoint_dir else '')
+            + (f' on model {self.config.model_dir}'
+               if self.config.model_dir else '')
             + f", and a load for '{want}'"
             + (f' (checkpoint {adapter_dir})' if adapter_dir else '')
             + f' needs a NEW server. Neither stack can load a voice into a running '
@@ -1360,6 +1421,9 @@ def higgs_v3_prep_budget(voice_name: str):
     if safe_min and safe_max:
         floor, cap = int(safe_min), int(safe_max)
     elif getattr(resolved, "checkpoint_dir", None):
+        # A MERGE with no band. A zero-shot voice's directory is its
+        # `base_dir`, and "no measured band of its own" is the true statement
+        # about it rather than a defect - it falls to the target below.
         raise ValueError(
             "Higgs v3 voice %r is a fine-tune (%s) and declares no safe band. Set "
             "safeMinChars and safeMaxChars in electron/data/higgs-models.json from "
@@ -1456,4 +1520,5 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
     return HiggsV3Config(
         voice=resolved,
         checkpoint_dir=getattr(resolved, 'checkpoint_dir', None),
+        base_dir=getattr(resolved, 'base_dir', None),
         sampling=getattr(resolved, 'sampling', None))

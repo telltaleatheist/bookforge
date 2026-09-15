@@ -47,6 +47,7 @@ from narrator.engine.higgs.v3_engine import (HiggsV3Budget,           # noqa: E4
                                              HiggsV3Config,
                                              HiggsV3Defaults,
                                              HiggsV3Engine,
+                                             higgs_v3_prep_budget,
                                              higgs_v3_stop_policy)
 from narrator.engine.higgs.v3_served import (HiggsV3ServedBackend,    # noqa: E402
                                              HiggsV3ServerError)
@@ -784,6 +785,192 @@ class GenerationConfigTest(V3TestCase):
         self.assertFalse(
             os.path.exists(os.path.join(merged, 'generation_config.json')),
             'the refusal must not create the file it refused over')
+
+
+class ZeroShotBaseWeightsTest(V3TestCase):
+    """A ZERO-SHOT VOICE MAY NAME ITS BASE WEIGHTS, and base weights are not a
+    merge.
+
+    THE REGRESSION. 2026-09-15, 00:11: the first zero-shot load ever made
+    through Crucible on the PC was refused by name -
+
+        engine_failed: narrator (higgs-v3) refused the request: Higgs v3
+        voice 'zeroshot': the merged checkpoint
+        /home/telltale/.crucible/voices/zeroshot/cuda-linux does not carry
+        generation_config.json, which is a REQUIRED ...
+
+    - for a file base weights have never carried. The pinned repo
+    `bosonai/higgs-tts-3-4b` at 239f63fb7b02b1aa085f98d9efae5e35cc5523e8 lists
+    THIRTEEN files (`config.json`, `chat_template.jinja`, `model.safetensors`
+    and its index, the tokenizer pair, `.gitattributes`, the four docs, one
+    asset) and no `generation_config.json` under any name or subdirectory; the
+    pull took the whole snapshot, so nothing was missed. That absence is the
+    fact `SERVER_DEFAULT_SAMPLING` exists for.
+
+    What went wrong was a field with two meanings. Crucible names the pinned
+    base directory so the clone renders on known bytes rather than on whatever
+    the HF cache holds, and the only key for a directory was `checkpointDir` -
+    which means a MERGE, whose own generation_config.json is its sampling. So
+    the document now says which by the KIND beside it, and narrator reads a
+    `clips` voice's into `base_dir`.
+    """
+
+    def _document(self, entry, name='zeroshot'):
+        path = os.path.join(self.dir, 'voices.json')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({name: entry}, handle)
+        os.environ[v3_config.VOICES_ENV] = path
+        self.addCleanup(os.environ.pop, v3_config.VOICES_ENV, None)
+        return path
+
+    def base_weights(self, name='base-pinned'):
+        """The pulled base snapshot: a directory with `config.json` in it and
+        NO generation_config.json - which is what the published repo is."""
+        path = os.path.join(self.dir, name)
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, 'config.json'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('{}')
+        return path
+
+    def _entry(self, base, **extra):
+        entry = {'kind': 'clips',
+                 'checkpointDir': base,
+                 'maxChars': 600,
+                 'targetChars': 600,
+                 # The document's own spelling, which is Crucible's:
+                 # `_SAMPLING_KEYS` is camelCase on the wire.
+                 'sampling': {'temperature': 0.8, 'topP': 0.95, 'topK': 50},
+                 'clips': [{'path': self.clip, 'transcript': X2_TEXT,
+                            'seconds': 27.42}]}
+        entry.update(extra)
+        return entry
+
+    # -- what the document means ---------------------------------------------
+
+    def test_a_clips_voices_directory_is_read_as_BASE_WEIGHTS(self):
+        """The kind beside the key is what says which model the directory
+        holds. `checkpoint_dir` stays None, so every refusal that is about a
+        fine-tune keeps asking about fine-tunes."""
+        base = self.base_weights()
+        voice = v3_config.load_voice('zeroshot', self._document(self._entry(base)))
+        self.assertEqual(voice.base_dir, base)
+        self.assertIsNone(voice.checkpoint_dir)
+
+    def test_a_checkpoint_voices_directory_is_still_a_merge(self):
+        """Unchanged, and the point of branching on the kind rather than on
+        the presence of clips: a fine-tune auditioned with a reference clip is
+        still a fine-tune."""
+        merged = self.merged_checkpoint()
+        path = self._document({'kind': 'checkpoint', 'checkpointDir': merged,
+                               'maxChars': 500,
+                               'clips': [{'path': self.clip,
+                                          'transcript': X2_TEXT,
+                                          'seconds': 27.42}]}, name='ds-ft')
+        voice = v3_config.load_voice('ds-ft', path)
+        self.assertEqual(voice.checkpoint_dir, merged)
+        self.assertIsNone(voice.base_dir)
+
+    # -- the load that was refused -------------------------------------------
+
+    def test_the_load_is_NOT_refused_for_a_missing_generation_config(self):
+        """THE REGRESSION ITSELF. The directory carries no
+        generation_config.json, and that is what base weights are."""
+        base = self.base_weights()
+        self._document(self._entry(base))
+        self.assertFalse(
+            os.path.exists(os.path.join(base, 'generation_config.json')))
+        self.assertEqual(HiggsV3Engine.resolve_load_voice('zeroshot'),
+                         'zeroshot')
+
+    def test_narrator_never_writes_the_file_into_the_base_dir(self):
+        """Accepting the load must not mean repairing the directory: the
+        pulled snapshot is bytes at a pinned revision and narrator does not
+        add to them."""
+        base = self.base_weights()
+        self._document(self._entry(base))
+        HiggsV3Engine.resolve_load_voice('zeroshot')
+        self.assertEqual(sorted(os.listdir(base)), ['config.json'])
+
+    def test_a_base_dir_that_is_not_there_is_still_refused_BY_NAME(self):
+        """The file is not required; the BYTES are. A voice pointing at a
+        directory nothing pulled is a load that would die inside the model
+        loader instead."""
+        self._document(self._entry(os.path.join(self.dir, 'never-pulled')))
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Engine.resolve_load_voice('zeroshot')
+        message = str(caught.exception)
+        self.assertIn('zeroshot', message)
+        self.assertIn('never-pulled', message)
+        self.assertNotIn('generation_config.json', message)
+
+    def test_naming_a_merge_AND_base_weights_is_refused(self):
+        """Two directories is two models, and one server runs on one."""
+        voice = ClipsVoice(
+            clips=(ReferenceClip(self.clip, X2_TEXT, seconds=14.0),),
+            name='zeroshot', checkpoint_dir=self.merged_checkpoint(),
+            base_dir=self.base_weights(), max_chars=600,
+            max_chars_source='catalog')
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Config(voice=voice, base_url=self.server.base_url)
+        self.assertIn('has not said which', str(caught.exception))
+
+    # -- what the engine then does with it -----------------------------------
+
+    def test_the_server_is_pointed_at_the_pinned_base_directory(self):
+        """The whole reason the document names it: without this the served arm
+        starts on whatever snapshot the HuggingFace cache holds, and the render
+        carries a fingerprint naming bytes nobody read."""
+        base = self.base_weights()
+        config = HiggsV3Config(voice=self.voice(), base_dir=base,
+                               base_url=self.server.base_url)
+        self.assertEqual(config.model_dir, base)
+        self.assertIsNone(config.checkpoint_dir)
+
+    def test_such_a_voice_STATES_its_sampling_in_extra_params(self):
+        """The half that would have been silently wrong. `served_sampling`
+        used to go empty for any voice naming a directory, and an empty
+        request against a directory with no generation_config.json is a bare
+        SamplingParams(): top_p 1.0, top_k DISABLED, the untruncated 1026-way
+        tail that derails long chunks into babble."""
+        base = self.base_weights()
+        self.server.httpd.model_root = base
+        engine = HiggsV3Engine(self.quiet_config(
+            base_dir=base, sampling={'temperature': 0.8, 'top_p': 0.95,
+                                     'top_k': 50}))
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        extra = self.server.requests[-1]['extra_params']
+        self.assertEqual(extra['temperature'], 0.8)
+        self.assertEqual(extra['top_p'], 0.95)
+        self.assertEqual(extra['top_k'], 50)
+        self.assertEqual(extra['repetition_penalty'], 1.0)
+
+    def test_the_prep_packs_it_at_its_target_and_not_as_a_fine_tune(self):
+        """The SECOND refusal of the same shape, one step further down the
+        same load: the safe-band check asked "does this voice name a
+        directory?" and a zero-shot voice now does. It has no measured band
+        and its declared target is the answer."""
+        self._document(self._entry(self.base_weights()))
+        budget = higgs_v3_prep_budget('zeroshot')
+        self.assertEqual(budget.chars, 600)
+        self.assertEqual(budget.floor_chars, 600)
+
+    def test_v3_defaults_are_stamped_without_losing_the_base_dir(self):
+        """`apply_v3_voice_defaults` rebuilds a hand-built voice to stamp v3's
+        control allowlist. It used to rebuild from a hand-written field list,
+        which would have dropped this one - and a rebuilt voice that lost its
+        directory is a server started on the wrong model."""
+        base = self.base_weights()
+        bare = ClipsVoice(clips=(ReferenceClip(self.clip, X2_TEXT, seconds=14.0),),
+                          name='zeroshot', base_dir=base, max_chars=600,
+                          max_chars_source='catalog',
+                          sampling={'temperature': 0.8})
+        self.assertEqual(bare.allowed_controls, ())
+        config = HiggsV3Config(voice=bare, base_url=self.server.base_url)
+        self.assertEqual(len(config.voice.allowed_controls), 45)
+        self.assertEqual(config.voice.base_dir, base)
+        self.assertEqual(config.voice.sampling, {'temperature': 0.8})
 
 
 class ServedSamplingTest(V3TestCase):
