@@ -481,7 +481,7 @@ class StreamLadderTest(unittest.TestCase):
                                _Pcm(f'solo:{index}'))
         engine._generate_delayed_rows_batch = (
             lambda texts, caps, seed, should_stop=None, prompts=None,
-            group_no=1, group_count=1, on_retire=None:
+            group_no=1, group_count=1, on_retire=None, sampling=None:
             [on_retire(p, p) for p in range(len(texts))] and None
             or [p for p in range(len(texts))])
         on_chunk, on_row, events = self._recorder()
@@ -1211,7 +1211,12 @@ class RenderManySerialFailureTest(unittest.TestCase):
         and the rows behind it are not owed a render."""
         renders = _SerialRenders()
 
-        def interrupted(text, seed=None, index=0):
+        def interrupted(text, seed=None, index=0, sampling=None):
+            # `sampling=` IS LOAD-BEARING HERE, not tidying: without it the
+            # call raises TypeError - an ordinary Exception - which
+            # `_render_many_serial` catches per chunk, so the KeyboardInterrupt
+            # below is never reached and this test passes for a reason that has
+            # nothing to do with what it asserts.
             if index == 1:
                 raise KeyboardInterrupt()
             return renders(text, seed=seed, index=index)

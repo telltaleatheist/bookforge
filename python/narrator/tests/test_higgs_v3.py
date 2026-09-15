@@ -1228,19 +1228,38 @@ class EngineTest(V3TestCase):
         7-15 s of gibberish before "Dedication.". The serve worker cleaned
         before calling; the render worker hands convert() the stored text and
         render_audio only trimmed whitespace. The strip is the model boundary's,
-        for every caller."""
+        for every caller.
+
+        THE ASSERTION IS OVER THE WHOLE BATCH'S REQUESTS AND NOT `[-2:]`
+        (corrected 2026-09-14, after a 1-in-5 failure). Two things make the
+        last two requests the wrong window. `convert_batch` runs
+        `serve_concurrency()` renders IN A POOL, so two chunks' HTTP requests
+        arrive in whichever order the threads win; and the fake server answers
+        every chunk with the same fixed duration, which puts chunk 3 (35 chars
+        in 1.0 s, against a 20 chars/s ceiling) outside the band, so the length
+        guard re-rolls it and the batch makes THREE requests, not two. The
+        window then sometimes held chunk 3 twice. What this test is actually
+        about is that no marker survives the model boundary, and the set of
+        texts the server was asked for says that without caring which thread
+        was quicker or how many takes the ladder spent."""
         engine = HiggsV3Engine(self.config(sentences_dir=self.dir))
         self.addCleanup(engine.cleanup)
         engine.render_audio('[break][heading]Dedication.')
         self.assertEqual(self.server.requests[-1]['input'], 'Dedication.')
+        mark = len(self.server.requests)
         engine.convert_batch([(3, '[break]I would like to dedicate this book.'),
                               (4, '[item]First. [pause:1.5]Second.')])
-        inputs = sorted(r['input'] for r in self.server.requests[-2:])
-        self.assertEqual(inputs, ['First. Second.',
-                                  'I would like to dedicate this book.'])
+        batch = [r['input'] for r in self.server.requests[mark:]]
+        self.assertEqual(sorted(set(batch)),
+                         ['First. Second.',
+                          'I would like to dedicate this book.'],
+                         'the server was asked for a text that is neither '
+                         "chunk's, stripped")
         for r in self.server.requests:
             self.assertNotIn('[break]', r['input'])
             self.assertNotIn('[heading]', r['input'])
+            self.assertNotIn('[item]', r['input'])
+            self.assertNotIn('[pause:', r['input'])
 
     def test_a_chunk_that_is_only_markers_is_refused_by_name(self):
         engine = HiggsV3Engine(self.config())

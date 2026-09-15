@@ -661,6 +661,17 @@ class _StubEngine:
     def _clean_sentence_for_tts(self, text):
         return (text or '').strip()
 
+    @staticmethod
+    def accept_item_sampling(raw, where=None):
+        """A declared member of the `Engine` protocol, so a stub that stands
+        in for a loaded engine has one. This one takes no take-ladder rung -
+        the dispatch tests send none - and says so by name rather than
+        answering for numbers it would not apply."""
+        from narrator.engine.item_sampling import refuse_item_sampling
+        return refuse_item_sampling(raw, where or '_StubEngine',
+                                    'This stub renders one sentence and honours '
+                                    'no sampling.')
+
     def render_audio(self, text, seed=None, index=0, sampling=None):
         self.calls.append((text, index))
         return np.zeros(2400, dtype=np.float32)
