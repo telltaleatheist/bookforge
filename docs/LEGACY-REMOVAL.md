@@ -247,6 +247,96 @@ not yet carried. Neither file has been touched by this campaign:
     prose. Its neighbours are measurements too: a 43.7 s cold start on this 3090 Ti with
     weights cached, a 15-minute budget because a FIRST serve also pulls ~5.7 GB.
 
+## THE SPAWN LAYER'S RECORD — carried out of the files deleted 2026-09-15
+
+Everything below was encoded ONLY in `orpheus-worker-pool.ts`, `narrator-spawn.ts`,
+`higgs-spawn.ts`, `higgs-doctor.ts`, `higgs-hf-install.ts`, `orpheus-models.ts`,
+`orpheus-hf-catalog.ts` and `electron/scripts/higgs/**`. Read out before they went, because
+that is how a 7x regression happens: the number survives in one header and the
+reimplementation never sees it.
+
+**Crucible owns all of this now.** Where a row below disagrees with what a Crucible recipe
+does, the row is the MEASUREMENT and the recipe is the thing to check.
+
+### 1. The environment a narrator spawn was given — the highest-risk loss
+
+**Serving (`higgsSpawnEnv`, `serve_higgs_sgl.sh`, `serve_higgs_v3.sh`).** These are the
+numbers the SGLang port must match:
+
+| Variable | Value | Why that value |
+| --- | --- | --- |
+| `HIGGS_SGL_MEM_FRACTION` | `0.60` | 24 GB card: the rest is the audio tokenizer, the codec and CUDA's own context. 0.85 OOMed. |
+| `HIGGS_SGL_CUDA_GRAPH_MAX_BS` | defaults to `HIGGS_MAX_NUM_SEQS` | Two knobs that must not drift: graphs captured for a batch the server will never run are wasted capture time, and a batch wider than the captured graphs silently falls back to eager. |
+| `HIGGS_MAX_NUM_SEQS` | `16` | The packer's own batch. |
+| `HIGGS_SGL_MAX_NEW_TOKENS` | `7500` | ~50 s of audio at 25 Hz × 6 codebooks — over the longest legal chunk, so a cap-hit means a runaway rather than a truncation. |
+| `NARRATOR_HIGGS3_MLX_BATCH` | `64` | **The 7x.** Measured 2026-09-05; unset on Crucible's `mlx-darwin` arm on 2026-09-15 and the Mac rendered one chunk at a time. |
+| `NARRATOR_ENGINE` | `higgs` / `orpheus` | Which engine `python -m narrator.serve` starts. The pool is engine-agnostic; this is the only thing that decides. |
+| `PYTORCH_NO_CUDA_MEMORY_CACHING` | `1` on win32 ONLY | On Linux it BREAKS CUDA-graph capture — model weights then report 0.00 GB. |
+| `TORCH_CUDA_ENABLE_CUDA_GRAPH` | `0` win32, `1` elsewhere | vLLM CUDA graphs do not capture on native Windows; `enforce_eager` there is ~6x slower (15 s/sentence vs 2-3 s). |
+| `CUDA_LAUNCH_BLOCKING` | `1` win32, `0` elsewhere | Pairs with the above. |
+
+**The voices document.** A Higgs spawn is STARTED ON its voice — `set_voice` refuses in
+place, because a fine-tuned voice IS the merged checkpoint the server booted and vLLM-Omni
+has no adapter flags. `writeHiggsVoicesDocument` wrote that document before the spawn, and
+`setPersistedVoiceProbe` existed so the first boot came up on the voice `loadVoice` was
+about to ask for rather than the catalog's first entry and then restarting.
+
+### 2. Measured numbers and their provenance
+
+- **WSL2 vs native Windows for Orpheus: ~15 s/sentence → 2-3 s.** vLLM's CUDA graphs only
+  capture on Linux. This is the entire reason the WSL route existed. A healthy capture logs
+  `Graph capturing finished in 12 secs, took 1.88 GiB`; 0% capture with weights at 0.00 GB
+  means the two environment variables above are wrong.
+- **`WINDOWS_WORKER_STAGGER_MS`** — workers started simultaneously on Windows collided over
+  conda temp files. The stagger was the fix, not a politeness.
+- **vLLM pinned at 0.7.3, torch 2.5.1+cu121, numpy 1.26.4** for Orpheus. `pyannote-audio`
+  4.x pulls torch 2.8.0 and breaks vLLM; 3.3.2 is the compatible pin and torch must be
+  force-reinstalled after anything that moves it.
+- **A Higgs voice whose artifact is missing renders the model's own default speaker** —
+  measured at 12% of the narrator's ECAPA ceiling, i.e. a different person, not a bad clone.
+  (Kept live in `streaming-engine.ts`.)
+
+### 3. Incidents
+
+- **The env rebuild wipes site-packages patches (2026-09-15).** `install tts --build
+  --force` silently reverted the Higgs patches on both machines; the re-apply fix landed
+  hours AFTER the Mac's rebuild, which is one of the two suspects for that day's Mac
+  slowdown. Any env rebuild must re-apply patches or verify them.
+- **CUDA-graph capture vs `PYTORCH_NO_CUDA_MEMORY_CACHING` (2026-06).** Setting it on Linux
+  produced "CUDA error: operation not permitted when stream is capturing" and 0.00 GB
+  weights. Platform-gated ever since.
+- **Assembly finding the wrong audiobook.** Workers used WSL paths and assembly used Windows
+  paths — two halves reading two filesystems. The fix was to move the FILES
+  (`normalizeWslSessionToWindows`, copying inside WSL so ext4→/mnt is fast), never to route
+  assembly through WSL "for consistency".
+- **A `wsl.exe` command without `--exec` is run through the distro's default shell**, which
+  expands every `$` before bash sees it. That made the Higgs doctor report a correctly
+  patched env as missing both patches. Always `wsl.exe -d <distro> --exec bash -c`.
+  (Pinned live by `tools/test-wsl-script-invocation.js`, which survives.)
+
+### 4. Why this and not that
+
+- **One pool object serves both engines.** It speaks narrator's JSON-lines protocol to
+  `python -m narrator.serve`; which engine is on the other end is `NARRATOR_ENGINE` in the
+  spawn. The difference lived in `buildSpawnPlan`, never in two pools.
+- **Orpheus switches voices for free; Higgs does not** — see the voices document above. Any
+  scheduler that assumes a cheap voice switch is assuming the Orpheus shape.
+- **A guest GPU process is never SIGKILLed.** It wedges the WSL distro; the recovery is a
+  reboot. Termination was always a graceful stop with a timeout.
+- **The doctor was a separate ~1 s WSL round trip and was NOT run from status payloads** —
+  `higgsAvailability()` is called from every `hello` and every status frame, so it trusted
+  the toggle and let a misconfigured env surface at start with the doctor's own message.
+  That trade is why an availability probe and a doctor were two different things.
+
+### 5. What the Higgs doctor probed, in order — diagnostic knowledge
+
+Each check's failure meant something different, which is the part that reads as trivia
+until something breaks: the distro answers at all → the conda env exists → the interpreter
+imports the serving stack → the site-packages patches are present (the check the `--exec`
+bug broke) → the checkpoint is staged on this arm (`higgsCheckpointStagedOn`, `wsl` vs
+`darwin`) → the reference clips are on disk. A failure at any rung names a different fix,
+and a Crucible `doctor` that collapses them into one "not ready" loses that.
+
 ## If a deletion would strand a feature
 
 `epub-align` is the one that was found before starting. Anything else that turns out to
