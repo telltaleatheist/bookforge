@@ -289,13 +289,25 @@ check('a half-local half-remote render is ONE summary that says so', () => {
 // 6. The sink is wired to BOTH paths, and the log line is not the only copy
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('both render paths feed the ONE sink', () => {
+check('the ONE render path feeds the ONE sink', () => {
+  /*
+   * THERE IS ONE RENDER PATH NOW. This check used to pin that the LOCAL path's
+   * parsed stdout guard event reached the ledger rather than only the daily log
+   * file — a real defect at the time, and a dead letter since: the local worker
+   * is deleted (docs/LEGACY-REMOVAL.md) and there is no stdout to parse. A
+   * render's guard verdicts arrive as the SERVER's chunk events.
+   *
+   * What still matters, and is kept: the ledger is still POPPED on both terminal
+   * paths, and the remote path still feeds the same sink. A cancelled render
+   * that does not pop leaks its take records for the life of the process
+   * whatever produced them.
+   */
   const bridge = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
   assert.ok(/from '\.\/chunk-guard-ledger'/.test(bridge),
-    'the local render path must import the ledger');
-  assert.ok(/recordGuardEvent\(session\.jobId, guardEvent\)/.test(bridge),
-    'the parsed stdout guard event must reach the ledger, not only the daily log file '
-    + '(ARCHITECTURE.md R4: a log line is never load-bearing)');
+    'the render path must import the ledger');
+  assert.ok(!/recordGuardEvent\(/.test(bridge),
+    'the bridge records a guard event from parsed WORKER STDOUT again — there is no local '
+    + 'worker, so this would be parsing a stream nothing writes');
   assert.ok(/guard: takeChunkGuards\(session\.jobId\)/.test(bridge),
     'the roll-up must reach job-analytics.json, which is the app\'s durable per-render '
     + 'report');

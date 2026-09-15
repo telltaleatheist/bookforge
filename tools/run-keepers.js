@@ -466,7 +466,19 @@ const SUITES = [
   'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
-  'test-assembly-after-wsl-normalize',
+  // 'test-assembly-after-wsl-normalize' was here until 2026-09-15, and the file
+  // is gone with it. Its whole subject was `normalizeWslSessionToWindows`, which
+  // copied a session off ext4 after a legacy WSL render and repointed prepInfo —
+  // deleted with the local spawn layer (docs/LEGACY-REMOVAL.md). No render this
+  // app can construct writes a session into the guest any more, so there is
+  // nothing to normalise and nothing to repoint.
+  //
+  // ITS LESSON IS KEPT BECAUSE IT IS NOT ABOUT WSL: a repointing that updates
+  // three fields of a record and not the fourth fails SILENTLY when the fourth
+  // is the one a downstream door reads. What made it invisible was the other
+  // half — mediainfo answers a path past 260 characters with a SILENT 0.0
+  // duration, so the book assembled WRONG instead of failing. Any code that
+  // rewrites a set of paths should be asked which reader takes which field.
   'test-wsl-sweep-serve-exclusion',
   'test-extension-typecheck',
   // PHASE 16: the browser extension talks to a Crucible with no BookForge in
@@ -693,11 +705,21 @@ const SUITES = [
   // disk, `outputs.audiobook` never set, nothing listed anywhere, "Reassembly
   // complete!" on the row.
   'test-reassembly-registration-failure',
-  // `normalizeWslSessionToWindows` throws by design and had no enclosing try, in
-  // a function called as a floating promise from four places, in a process with
-  // no unhandledRejection handler: the row sat at "Assembling…" forever and the
-  // GPU lease was never released. Drives the SHIPPED tail, lifted.
-  'test-worker-completion-throw',
+  // 'test-worker-completion-throw' was here until 2026-09-15, and the file is
+  // gone with it: its six checks drove the WSL copy-failure path inside
+  // `checkAllWorkersComplete`, and both the copy and the worker `close` handlers
+  // that called it are deleted (docs/LEGACY-REMOVAL.md).
+  //
+  // ITS LESSON IS KEPT AND IS NOT ABOUT WSL EITHER. A function called as a
+  // FLOATING PROMISE, in a process that installs no `unhandledRejection`
+  // handler, sends a throw NOWHERE: no completion event was emitted, the session
+  // was never removed from `activeSessions` so the queue row sat at
+  // "Assembling…" forever with no timeout, `session.completionError` — the only
+  // carrier a headless run has — was never set, and the GPU lease was never
+  // released, so every later job waited out its full timeout. The comment that
+  // claimed an enclosing `catch` covered it was wrong by about a hundred and
+  // eighty lines, and only brace-counting showed it. Wherever a tail is invoked
+  // without `await`, the throw is the thing to ask about.
   // ── THE 30 THAT WERE NEVER RUN (2026-09-13) ──────────────────────────────
   //
   // A census found 92 of the 121 `tools/test-*.js` files listed here and 29 not,

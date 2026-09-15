@@ -259,7 +259,7 @@ check('the per-chunk door resolves ONE aligner env, and refuses instead of falli
     'and the CLI adapter uses it rather than writing its own');
 });
 
-check('the post-render phase runs BEFORE the session leaves the guest, and never fails the render', () => {
+check('the post-render phase runs BEFORE the session is cached, and never fails the render', () => {
   const bridge = read('electron/parallel-tts-bridge.ts');
   // Scoped to the completion path itself: `cacheSessionToProject` is DEFINED
   // earlier in this file and called by other doors, so a whole-file indexOf
@@ -270,17 +270,29 @@ check('the post-render phase runs BEFORE the session leaves the guest, and never
   const complete = bridge.slice(at);
   const align = complete.indexOf('await runPostRenderAlignment(session)');
   const cache = complete.indexOf('await cacheSessionToProject(');
-  const normalize = complete.indexOf('await normalizeWslSessionToWindows(');
   assert.ok(align > 0, 'the TTS step must run the alignment as its final phase');
-  assert.ok(cache > 0 && normalize > 0, 'both copies out of the guest are here');
+  assert.ok(cache > 0, 'the copy to the project cache is here');
+  /*
+   * THERE WAS A SECOND COPY — `normalizeWslSessionToWindows`, which moved a
+   * session off ext4 after a legacy WSL render. It is deleted with that render
+   * path (docs/LEGACY-REMOVAL.md), so the ORDER argument below now has one
+   * subject instead of two. The argument itself is unchanged and is still the
+   * whole design.
+   */
+  assert.ok(!/(await |function )normalizeWslSessionToWindows\s*\(/.test(bridge),
+    'the WSL session normaliser is back — there is no guest render to normalise out of. '
+    + '(Matched on a CALL or a DEFINITION, not on the name: several comments still explain '
+    + 'what it did, and a test that fails on its own history teaches people to delete '
+    + 'history.)');
   // ORDER IS THE WHOLE DESIGN. On Windows the render writes the session inside
   // WSL, the qwen env is in the guest, and the guest cannot see the network
   // drive the session is copied to. The report and the measured transcript are
   // session files: written after either copy, they stay on ext4 and the native
   // assembly never sees them.
-  assert.ok(align < cache && align < normalize,
-    'the alignment must run BEFORE both copies out of the guest — see '
-    + 'runPostRenderAlignment');
+  assert.ok(align < cache,
+    'the alignment must run BEFORE the session is copied to the project cache: the report '
+    + 'and the measured transcript are SESSION files, and written after the copy they would '
+    + 'never reach it — see runPostRenderAlignment');
   const phase = bridge.slice(bridge.indexOf('async function runPostRenderAlignment'),
     bridge.indexOf('function postRenderAlignProgress(session'));
   assert.ok(!/throw /.test(phase),

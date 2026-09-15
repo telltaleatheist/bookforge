@@ -214,13 +214,22 @@ for (const { r, mustSay } of CASES) {
 
 console.log('and the messages the user sees are built from it');
 check('every error path in the bridge reads BOTH streams', () => {
-  // The four doors named in the review. Asserted on the source because the
-  // alternative is driving four Electron-bound async functions, and what went
-  // wrong was a missing argument, which source shows exactly.
+  /*
+   * TWO DOORS NOW, not four. `worker` and `retake` were the LOCAL narrator
+   * spawn and are deleted (docs/LEGACY-REMOVAL.md); what is left that this app
+   * still spawns is PREP (host-native, for a Crucible render) and ASSEMBLY.
+   *
+   * Asserted on the source because the alternative is driving Electron-bound
+   * async functions, and what went wrong was a missing ARGUMENT, which source
+   * shows exactly. The definition line is excluded so the count is of CALLERS —
+   * counting it was what made this read 3 against a floor of 4.
+   */
   const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
-  const calls = src.match(/spawnFailureDetail\([^)]*\)/g) || [];
-  assert.ok(calls.length >= 4,
-    `expected the four doors (prep, worker, assembly, retake) to call it; saw ${calls.length}`);
+  const calls = (src.match(/spawnFailureDetail\([^)]*\)/g) || [])
+    .filter((c) => !/^spawnFailureDetail\(stdoutTail/.test(c));
+  assert.strictEqual(calls.length, 2,
+    `expected the two surviving doors (prep, assembly) to call it; saw ${calls.length}. `
+    + 'A THIRD would mean something started spawning locally again.');
   for (const call of calls) {
     assert.ok(!/^spawnFailureDetail\(\s*''/.test(call),
       `a door passes an empty stdout tail: ${call}`);
