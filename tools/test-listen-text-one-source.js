@@ -36,6 +36,25 @@
  *   - esbuild folds `'a' + 'b'` into one literal and re-wraps lines.
  *   - esbuild lowers `/\p{L}/u` to `new RegExp("\\p{L}", "u")` for the target.
  *
+ * AND ONE MORE, MEASURED 2026-09-14 and NOT in that list because it is not
+ * cosmetic in the same way: **a LOCAL binding is renamed when some other module
+ * in the shipped graph declares the same name at the top level.** esbuild
+ * suffixes the collision — `foldCapsRun`'s own `let run = 0` became `let run2 =
+ * 0` in `offscreen.js` the day `extension/src/clips.ts` was added with a
+ * top-level `function run(store, request)`. Reproduced exactly by bundling
+ * `shared/listen-text/index.ts` beside a stub that declares `function run()`.
+ *
+ * So the premise below — "both are esbuild over the same source at the same
+ * target, so they cannot legitimately differ" — is FALSE for a local
+ * identifier, and this check will fail on a name collision that changes no
+ * behaviour at all (§2 stays green, which is the tell). It is left asserting
+ * byte-equality anyway, because the cheap answer is to rename the colliding
+ * TOP-LEVEL symbol in the extension's own source, and because licensing
+ * `X` ≡ `X<digits>` here would also license a genuine paste that happened to
+ * be numbered. If that trade stops being worth it, the fix is a token-wise
+ * comparison that allows a shipped `X<digits>` only where the harness has `X`
+ * at the same position — not a looser string compare.
+ *
  * Normalising all of that away would leave a comparison so lossy it proved
  * nothing. So the claim is split into the two halves that ARE true, and
  * together they are stronger than the one that was not:
@@ -204,6 +223,7 @@ const norm = (s) => dedent(s.replace(/\r\n/g, '\n'));
  */
 const PINNED = [
   'speakableListenText',
+  'expandBibleReferences',
   'splitForTts',
   'capSegment',
   'splitIntoSentences',
@@ -261,8 +281,11 @@ const app = {
  * the number rules, the printed ellipsis and curly quotes, a caps heading, the
  * acronyms the fold must keep, web decoration and a soft hyphen, money and
  * percents and page ranges, a sentence long enough to force `capSegment`, a
- * one-word heading, a tail scrap short enough to hit the starvation floor, and
- * the two empty cases.
+ * one-word heading, a tail scrap short enough to hit the starvation floor, the
+ * two empty cases — and a CITATION-DENSE row, because a scripture book name is
+ * now expanded before the rules run (bible-books.ts) and an expansion that
+ * happened in one bundle and not the other would change where the sentence
+ * splits, which is exactly the silent defect this file exists for.
  */
 const CORPUS = [
   'Project 2025 was published in 2023. It runs to 920 pages.',
@@ -274,6 +297,9 @@ const CORPUS = [
   'INTRODUCTION.',
   'WWII and WWI and TPUSA and ADHD reached 1,000,000 readers in the 1980s.',
   'One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Ok.',
+  'He read 1 Pet. 3:7, then Rom. 5:17, Ps. 63:6, Col. 3:19-4:1 and II Cor. 5:17. '
+  + 'My ex. called; Rev. King and Col. Sanders and Phil. and Dan. and Tim. were late, '
+  + 'and Ch. 3:7 of the manual says Widescreen 16:9 at 5:30-6:00.',
   '',
   '   ',
 ];
