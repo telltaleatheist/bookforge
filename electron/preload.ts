@@ -93,6 +93,7 @@ import type {
   BookChapterAddResult, BookChapterRenameResult, BookChapterTitles,
 } from '../shared/vlm/chapter-titles';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
+import type { VoicePickerDto } from '../shared/tts/voice-picker-dto';
 import type { DocumentStageProgressEvent } from '../shared/document/pipeline-types';
 
 /**
@@ -744,6 +745,7 @@ export interface CompletedAudiobook {
   targetLang?: string;
 }
 
+
 /**
  * One Higgs catalog voice as `higgsModels.listCatalog` returns it — the
  * renderer-side mirror of electron/higgs-models' `HiggsModel` (this file must not
@@ -1176,6 +1178,13 @@ export interface ElectronAPI {
     /** The full catalog entries — voice ref, licence, measured caps — for the
      *  Settings → Higgs voices panel. */
     listCatalog: () => Promise<{ success: boolean; data?: HiggsModelDto[]; error?: string }>;
+    /** Which MACHINES can speak which voice, grouped by the set that can — the
+     *  servers' own answer, not this box's disk. A voice only one server serves
+     *  PINS the venue (Owen, 2026-09-15), which is why `missing` is part of the
+     *  reply rather than something the caller infers: a server that did not
+     *  answer contributes no voices, and treating that as "it does not have
+     *  them" would silently reroute a book. */
+    picker: () => Promise<{ success: boolean; data?: VoicePickerDto; error?: string }>;
   };
   rvcVoices: {
     /** User-added RVC voice sources ({ url, name }). */
@@ -2780,6 +2789,18 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('higgs:list-models'),
     listCatalog: () =>
       ipcRenderer.invoke('higgs:list-catalog'),
+    /*
+     * WHICH MACHINES CAN SPEAK WHICH VOICE — the servers' answer, sectioned.
+     *
+     * Not a richer `list`. `list` reads the shipped catalog file and answers
+     * even when nothing else on this machine works; this one goes to every
+     * enabled Crucible server and can therefore be slow, partial, or refuse.
+     * Two different questions with two different failure modes, so two doors:
+     * a caller that needs a name for a saved voice id must not be made to wait
+     * on a tailnet to get one.
+     */
+    picker: () =>
+      ipcRenderer.invoke('higgs:voice-picker'),
   },
   rvcVoices: {
     // User-added RVC voice sources ({ url, name }); installs flow through the

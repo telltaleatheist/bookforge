@@ -30,6 +30,7 @@ import { ComponentService } from '../../../core/services/component.service';
  * BookForge's MAIN process — see that file. This service is still the door this
  * window asks; what it is no longer is the only place the answer is written.
  */
+import type { VoicePickerDto } from '@shared/tts/voice-picker-dto';
 import {
   ORPHEUS_BUILTIN_VOICES,
   mergeOrpheusVoices,
@@ -65,6 +66,52 @@ export class NarrationVoicesService {
 
   /** Done once per app: the machine does not grow voices while a modal is open. */
   private loaded = false;
+
+  /**
+   * WHICH MACHINES CAN SPEAK WHICH VOICE — the servers' own answer, grouped.
+   *
+   * `null` until asked, and `null` is a real state rather than "empty": it means
+   * nobody has asked the servers yet, which is different from asking and being
+   * told nothing. The picker draws the flat `higgsVoices` list until this
+   * arrives and then draws the grouped one.
+   *
+   * NOT folded into `load()` above, and the asymmetry is the point. `load()`
+   * reads a shipped file and is effectively instant; this goes to every enabled
+   * Crucible server over a tailnet and can be slow or partial. Making the modal
+   * wait on a sleeping Mac to show any voices at all would be a worse bug than
+   * the one this fixes.
+   */
+  private readonly picker = signal<VoicePickerDto | null>(null);
+  readonly voicePicker = computed(() => this.picker());
+
+  /**
+   * Re-asked on every open, never cached.
+   *
+   * The answer changes when a server is switched on, when weights finish
+   * pulling, and when a machine wakes up. A cached list is the defect this
+   * replaced wearing newer clothes — it just goes stale in a different place.
+   */
+  async loadVoicePicker(): Promise<void> {
+    const api = (window as any).electron?.higgsModels;
+    if (!api?.picker) {
+      console.warn('[NARRATION-VOICES] No voice-picker IPC on this build — the flat list stands.');
+      return;
+    }
+    const res = await api.picker();
+    if (!res?.success) {
+      /*
+       * LOUD, AND THE GROUPED LIST STAYS NULL. Substituting the catalog list
+       * here would put back the exact defect this door exists to fix — a list
+       * that cannot see a server — while looking like it worked. The modal says
+       * the machines could not be reached; it does not quietly answer a
+       * different question.
+       */
+      console.error('[NARRATION-VOICES] Could not ask the servers which voices they serve:', res?.error);
+      this.picker.set(null);
+      return;
+    }
+    this.picker.set(res.data as VoicePickerDto);
+  }
 
   readonly orpheusVoices = computed(() => this.orpheus());
   readonly higgsVoices = computed(() => this.higgs());

@@ -8994,6 +8994,29 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /*
+   * WHICH MACHINES CAN SPEAK WHICH VOICE — asked of the machines.
+   *
+   * The handler above reads the shipped catalog and answers about THIS box,
+   * which since Phase 17 is an orchestrator that renders nothing. This one asks
+   * every enabled Crucible server (`crucible/voice-picker.ts`) and returns the
+   * grouped list Owen ruled on 2026-09-15: sections by the SET of machines that
+   * can render a voice, and a voice only one machine serves pins the venue.
+   *
+   * ERRORS PROPAGATE AS `success: false`, and the renderer must not fall back to
+   * the catalog list when it does. The two answer different questions, and
+   * quietly substituting the one that cannot see a server would restore exactly
+   * the defect this door exists to fix — while looking like it worked.
+   */
+  ipcMain.handle('higgs:voice-picker', async () => {
+    try {
+      const { narrationVoicePicker } = await import('./crucible/voice-picker.js');
+      return { success: true, data: await narrationVoicePicker(app.getPath('userData')) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
 
   /**
    * Download a Higgs checkpoint voice from its catalog `source` into this arm's

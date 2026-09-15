@@ -191,7 +191,11 @@ export type HiggsVoiceKind = 'default' | 'clips' | 'checkpoint';
  * is what a machine auditions the serving stack with before any checkpoint
  * exists.
  */
-const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> =
+// Exported since 2026-09-15 so the Crucible-backed picker
+// (`crucible/voice-picker.ts`) asks the SAME question rather than
+// restating the rule — two lists of what is selectable is how a dropdown
+// and a render come to disagree.
+export const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> =
   new Set(['default', 'checkpoint', 'clips']);
 
 /**

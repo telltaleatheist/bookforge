@@ -344,6 +344,16 @@ function fileName(fullPath: string): string {
                   (ngModelChange)="voice.set($event)"
                   placeholder="Choose a voice"
                 />
+                <!--
+                  WHICH MACHINES ARE MISSING FROM THAT LIST. Never silent: a
+                  server that did not answer contributes no voices, so a voice
+                  both machines serve reads as single-server and pins the book to
+                  the one that answered. Owen's lock makes this a routing fact,
+                  not a status line.
+                -->
+                @for (m of voiceServersMissing(); track m.server) {
+                  <p class="nm-hint warn">{{ m.server }} — {{ m.why }}</p>
+                }
               </div>
 
               <div class="nm-field">
@@ -1088,6 +1098,21 @@ export class NarrationModalComponent {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
     /*
+     * AND THE SERVERS' OWN ANSWER, asked EVERY time this modal opens.
+     *
+     * Separate from the line above and deliberately not deduped: the catalog is
+     * a shipped file, this is one `GET /v1/voices` per enabled Crucible server.
+     * The answer changes when a machine wakes, when a server is switched on and
+     * when weights finish pulling, so a per-app cache would go stale in exactly
+     * the situations the operator opened the modal to act on.
+     *
+     * Not awaited. The flat catalog list draws immediately and the grouped list
+     * replaces it when the machines answer — a modal that showed no voices at
+     * all until a sleeping Mac timed out would be a worse bug than the one this
+     * fixes.
+     */
+    void this.voices.loadVoicePicker();
+    /*
      * THE ADD-ON LIST, for the box that is disabled without one — the voice
      * conversion. (The Align box was the other, until Owen removed it on
      * 2026-09-08.) Deduped inside the service (`ensureLoaded`), so a dialog
@@ -1290,12 +1315,51 @@ export class NarrationModalComponent {
    * nothing anywhere saying it exists. `stageRefusal` refuses it as well, for
    * the case where it arrives from a saved preset rather than a click.
    */
-  readonly voiceOptions = computed<DesktopSelectItems>(() =>
-    this.voices.voicesFor(this.engine()).map((v) => ({
+  readonly voiceOptions = computed<DesktopSelectItems>(() => {
+    /*
+     * THE MACHINES' ANSWER WHEN THERE IS ONE, the shipped catalog until then.
+     *
+     * Owen's ruling, 2026-09-15: voices are grouped by the SET of Crucible
+     * servers that can render them, and a voice only one server serves LOCKS
+     * the venue to it. The grouped list is therefore the truthful one — the flat
+     * list below cannot see a server at all — but it arrives over a tailnet, so
+     * the catalog holds the dropdown open until it does.
+     *
+     * The fallback is NOT a fallback in the banned sense: it is a real, shipped
+     * roster, and the modal says separately (`voiceServersMissing`) when the
+     * list it is showing could not be confirmed with a machine. What it must
+     * never do is present the catalog's answer AS the machines' answer.
+     */
+    const picker = this.voices.voicePicker();
+    if (picker !== null) {
+      return picker.sections.map((section) => ({
+        // The lock is stated in the heading, where it is read BEFORE the choice
+        // is made. A tooltip on the option would arrive after.
+        label: section.locks ? `${section.label} — only this server` : section.label,
+        options: section.voices.map((v) => ({
+          value: v.value,
+          label: v.label,
+          ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
+        })),
+      }));
+    }
+    return this.voices.voicesFor(this.engine()).map((v) => ({
       value: v.value,
       label: v.label,
       ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
-    })));
+    }));
+  });
+
+  /**
+   * The machines whose voices are NOT in the list above, and why.
+   *
+   * Drawn rather than hidden, because Owen's lock makes this a routing fact: a
+   * server that dropped out contributes no voices, so a voice both machines
+   * serve looks single-server and pins the book to the one that answered. The
+   * operator is owed the sentence that says the list is partial and which
+   * machine is missing from it.
+   */
+  readonly voiceServersMissing = computed(() => this.voices.voicePicker()?.missing ?? []);
 
   readonly rvcInstalled = computed(() => this.components.isInstalled('rvc-env'));
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
