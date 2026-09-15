@@ -4,6 +4,56 @@ Written 2026-09-13 19:50, the night Owen asked for *"three fully functioning app
 get up"*. This is the list, the order, and the honest state. It is updated at each wake
 (2 AM, 6 AM) and is the first thing to read in the morning.
 
+## 0h. AFTERNOON 2026-09-15 — the Mac rendered 7x too slow, and it was one unset variable
+
+Owen's `thirdreich` book on the Mac, through Crucible, ran at **2.9 chunks/min — "261 words/min ·
+14 sent/min"** where that machine has done **~130 raw sent/min** since 2026-09-10 (BookForge
+`626980a2`, deathstalker at MLX batch 62). Nothing was saturated: 66.5% of one core of twenty,
+load 3.00, 9.45 GB resident on a 64 GB machine.
+
+**ROOT CAUSE — the seam, not the machine.** narrator's in-process backend reads its batch ceiling
+from `NARRATOR_HIGGS3_MLX_BATCH`, which **defaults to 1**; at 1 `render_many` takes
+`_render_many_serial` and a book renders one chunk at a time. BookForge's own darwin worker has set
+that variable since 2026-09-05 (`electron/higgs-spawn.ts:higgsMlxBatchEnv`, the Orpheus memory
+tier's 64). **Crucible never learned to** — `crucible/engines/narrator.py:environment()` emitted the
+three `HIGGS_*` variables on the served arm and nothing at all on `mlx-darwin`, because "reads none
+of the three" had been read as "reads nothing". So the throughput did not regress on the Mac; it was
+lost by every render that moved out of the app and into the server. The live process's environment
+held exactly two variables, and the engine log carried zero `MLX batch generating` heartbeats.
+
+**MEASURED on owens-mac-studio** (M1 Ultra, `thirdreich`, one resident load per run, 521-572-char
+chunks inside the voice's 500-700 band, driven through `generate_batch` the way the render job does):
+
+| width | chars/min | realtime | vs width 1 |
+|---|---|---|---|
+| unset → 1 | 1,799 | 1.99x | 1.00x |
+| 16 | 6,749 | 7.43x | 3.75x |
+| 32 | 9,662 | 10.78x | 5.37x |
+| 64 | 12,579 | 13.97x | **6.99x** |
+
+At its own width the Mac **beats** `cuda-linux`, which measures 11,387-11,584 chars/min at
+`HIGGS_MAX_NUM_SEQS = 16`. Owen's live job measured 2.003x realtime off its own artifacts, flat from
+a 4.9 s chunk to a 50.5 s one — so per-chunk overhead is nil and width was the only lever.
+
+**FIXED** — crucible `d9fb696f`: `MLX_RENDER_WIDTH = {"higgs-v3": 64}`, a measured table keyed by
+engine (`ttsstream.STREAM_BATCH_WIDTH`'s discipline — no default, an unmeasured engine refused by
+name), emitted only on the arm that reads it. Four unit tests. **NOT deployed to the Mac** — that is
+a `git pull` + `launchctl kickstart` on `/Volumes/Callisto/Projects/crucible`, and it is Owen's
+in-app pass that proves it.
+
+**Two suspects ruled OUT with evidence.** (1) The morning's patch-wipe defect cannot apply here:
+`crucible/narratorpatches.py` says both patches are vLLM-stack edits and `envs/tts/mlx-darwin.txt`
+pins neither — confirmed on the machine, which has no `vllm`/`vllm-omni` at all and matches its
+recipe exactly (`mlx 0.32.2`, `mlx-audio 0.4.8`, `mlx-lm 0.31.3`). (2) Last night's `take` added to
+`_mlx_batch_groups`' key does not over-split: the render door sends one take and one sampling for
+the whole job, and at `BATCH_SIZE = 1` the grouper is never reached.
+
+**OWED:** `NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB` is still narrator's own 42 GB default — right for a
+64 GB Mac and wrong for a smaller one. It wants deriving from the capability's `total_bytes` less
+its desktop allowance, which is the absorption PHASE9-CAPABILITY.md section 5 already has queued.
+Full write-up and the caveats (the seed regime changes with width; the `maxChars` certificate is
+still single-row) in `crucible/docs/PHASE3-TTS.md` section 6b.
+
 ## 0g. MIDDAY 2026-09-15 — what Owen's own in-app pass found, and what it cost
 
 He ran the app. Every item below came from USING it, not from reading it, which is why they are
