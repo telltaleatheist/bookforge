@@ -231,7 +231,12 @@ extracted from the app with keepers (no behaviour change; the 8766 relay still r
 3. The extension: registry + picker + connect code; load/unload jobs; the stream client;
 Orpheus removed; "Buffer before playing" as a client gate. 4. BookForge's Streaming tab on the
 shared client. 5. Owen's Sunday check on both machines. 6. Delete the 8766 relay and
-`tts-api-server.ts`. 7. Delete the Enhance page and its bridge (ruled: drop). 8. Delete the TTS server button and its options from BookForge once the extension carries every one of them.
+`tts-api-server.ts` — **SPLIT (Owen, 2026-09-14 late): the SPEAK relay goes, the tab recorder's
+endpoint on that same server STAYS.** The recorder hands raw PCM to a machine with a filesystem
+and ffmpeg writes the FLAC; nothing replaces that, so `record.*` keeps its door and the
+extension keeps the BookForge host/port/token rows that reach it. 7. Delete the Enhance page and
+its bridge (ruled: drop). 8. Delete the TTS server button and its options from BookForge once
+the extension carries every one of them.
 ### Status (2026-09-14, evening)
 
 - **Step 2 — LANDED.** `9d2a85f3` moved the Listen text path to `shared/listen-text/`
@@ -263,18 +268,19 @@ shared client. 5. Owen's Sunday check on both machines. 6. Delete the 8766 relay
     no `reference` field on `load-voice`, and a `kind = "zeroshot"` voice is refused before any
     engine starts. Nothing was invented to work around it.
   - **Deliberately KEPT: BookForge's host/port/token rows in Options**, relabelled for what they
-    are. The tab recorder hands raw PCM to a machine with a filesystem, step 6 deletes the server
-    that answers it, and the `record.*` verbs have nowhere else to go yet. Removing those rows
-    now would break a working feature to satisfy a table.
-- **Step 4 — SATISFIED IN SUBSTANCE, NOT RELOCATED. RULING OWED FROM OWEN.** BookForge's
-  Streaming tab does run the same shared client: the policy it drives IS
+    are — and step 6 is now SPLIT so they stay for good: the recorder's endpoint outlives the
+    speak relay. Removing those rows would break a working feature to satisfy a table.
+- **Step 4 — RULED (Owen, 2026-09-14 late): the Streaming tab STAYS IN THE MAIN PROCESS. No
+  renderer token door.** And it already runs the shared client: the policy it drives IS
   `shared/listen-client/session-policy.ts`, the rows behind it ARE
   `shared/listen-client/crucible-rows.ts`, and it reaches the same registry through the same
-  venue decision. What is NOT done is moving that client into `src/app/core/listen/` so the
-  RENDERER talks to the Crucible itself — because that puts a bearer token in the Angular
-  renderer, and `electron/crucible/servers.ts` refuses to hand one out by design: "the only type
-  that carries a plaintext token out of the registry" is the main-process one, and every listing
-  carries `tokenMasked`. The two ways forward are a token door to the renderer, or an IPC byte
-  pipe for the session's five verbs — which is a relay, and this phase exists to delete one. No
-  door was opened on a guess. The tab's process buttons are still BookForge's own; turning them
-  into the popup's Load/Unload is step 8's work and touches the files the Enhance deletion is in.
+  venue decision — so the one-owner property step 4 was for is in hand. What is NOT done, and
+  now never will be, is moving that client into `src/app/core/listen/` so the RENDERER talks to
+  the Crucible itself: that needs a bearer token in the Angular renderer, and
+  `electron/crucible/servers.ts` refuses to hand one out by design ("the only type that carries
+  a plaintext token out of the registry" is the main-process one; every listing carries
+  `tokenMasked`). The alternative — an IPC byte pipe for the session's five verbs — is a relay,
+  and this phase exists to delete one. **`src/app/core/listen/` is therefore not a directory
+  that is owed. It is a directory that is not wanted**, and this line is here so nobody creates
+  it later reading step 4's heading alone. The tab's process buttons are still BookForge's own;
+  turning them into the popup's Load/Unload is step 8's work.

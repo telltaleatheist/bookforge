@@ -262,8 +262,8 @@ check('KEPT: the tab-recording rows are untouched', () => {
     throw new Error(
       'Options lost BookForge\'s host/port/token. The plan calls them "replaced by the server '
       + 'picker", and they are — FOR SPEECH. The tab recorder still hands raw PCM to a machine '
-      + 'with a filesystem, and until step 6 finds that verb a new home, removing these breaks '
-      + 'recording.');
+      + 'with a filesystem, and Owen split step 6 on 2026-09-14 so that endpoint outlives the '
+      + 'speak relay: these rows are permanent, not a remnant.');
   }
 });
 

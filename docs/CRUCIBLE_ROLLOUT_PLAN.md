@@ -18,17 +18,21 @@ the reader bridge and the Play tab still run on it. Two keepers hold it:
 `test-listen-text-one-source` compares the two bundles' function bodies byte for byte (a split
 that differs by one character makes a resumed block splice one row's audio under another row's
 text, and nothing throws), and `test-extension-option-columns` pins both columns of the plan's
-table by name. **Owed:** (a) **a ruling on step 4** — moving the Listen client into the Angular
-renderer needs a bearer token there, and `electron/crucible/servers.ts` refuses to hand one out
-by design; the alternatives are a token door or an IPC byte pipe, which is a relay, and neither
-was chosen on a guess. (b) **Zero-shot is BLOCKED, not skipped** — `load-voice` has no
-`reference` field in PHASE3-TTS.md or the 0.6.0 SDK, and a `kind = "zeroshot"` voice is refused
-before any engine starts, at the load door as well as the render door, so the extension's clip
-picker cannot be built until narrator's load message carries clips. (c) **Step 6 has a
-conflict**: deleting `tts-api-server.ts` also deletes the tab recorder's only door; the
-`record.*` verbs need a home first, and the extension's BookForge host/port/token rows were kept
-for exactly that reason. (d) **Nothing was run on a card** — both were off limits — so the
-extension has never spoken: Owen's in-app pass is the first real read.
+table by name. **Two rulings came with it (Owen, late):** step 4 — **the Streaming tab STAYS in
+the main process**, no bearer token in the Angular renderer, so `src/app/core/listen/` is not a
+directory that is owed but one that is not wanted (the shared policy and the shared row layer
+are already what the tab drives); and step 6 is **SPLIT** — the speak relay goes, the tab
+recorder's endpoint on that same server stays, which is why the extension keeps its BookForge
+host/port/token rows for good. **Still owed:** (a) **zero-shot is BLOCKED, not skipped** —
+`load-voice` has no `reference` field in PHASE3-TTS.md or the 0.6.0 SDK, and a
+`kind = "zeroshot"` voice is refused before any engine starts, at the load door as well as the
+render door, so the extension's clip picker cannot be built until narrator's load message
+carries clips. (b) **Nothing was run on a card** — both were off limits — so the extension has
+never spoken: Owen's in-app pass is the first real read. (c) `test-crucible-module-file` is RED
+and correctly so: the crucible checkout regenerated `modules/bookforge.module.json` at 19:31
+(`subjects: [model qwen3.5-9b]` → `needs: [{class: "clean"}]`, the §5.3a classes-not-ids
+change) and BookForge's vendored copy has not been re-vendored yet. That is the re-vendor
+already on this section's "next" list; it was left red rather than silenced.
 
 **Landed today, evening:** Crucible Phase 15 contract (`crucible/docs/PHASE15-HOST.md`, §0–§8 incl.
 the AMENDED block: Windows IS the `llama-windows` backend; control is Windows's, data is the

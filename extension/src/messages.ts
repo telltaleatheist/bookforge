@@ -489,8 +489,8 @@ export interface Settings {
    * Speech goes to a Crucible chosen in Options (`src/servers.ts`,
    * `chrome.storage.local`'s own keys). These three are what the RECORDER
    * needs: it hands raw PCM to a machine with a filesystem, and BookForge's
-   * ffmpeg writes the FLAC. See protocol.ts's header for the conflict this
-   * leaves in the plan's step 6.
+   * ffmpeg writes the FLAC. They are permanent — the plan's step 6 is split,
+   * and the recorder's endpoint outlives the speak relay (protocol.ts).
    */
   host: string;
   port: number;

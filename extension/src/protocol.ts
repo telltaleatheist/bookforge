@@ -27,10 +27,10 @@
  * BookForge host/port/token row beside the Crucible server picker: they are two
  * different servers doing two different jobs.
  *
- * KNOWN CONFLICT, stated rather than discovered later: the plan's step 6
- * deletes `electron/tts-api-server.ts` and the 8766 relay once the extension is
- * direct — and tab recording is the half of that server nothing has replaced.
- * The `record.*` verbs below have to land somewhere before that deletion.
+ * AND IT IS NOT ON BORROWED TIME. Owen ruled on 2026-09-14 that the plan's
+ * step 6 is SPLIT: the SPEAK relay in `electron/tts-api-server.ts` goes, and
+ * the recorder's endpoint on that same server STAYS. So the verbs below are
+ * the permanent shape of this file, not a remnant waiting for a deletion.
  */
 
 export const DEFAULT_PORT = 8766;
