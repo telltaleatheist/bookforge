@@ -60,7 +60,8 @@ from narrator.engine.protocol import (BackendSpec, Budget, ClipsVoice,  # noqa: 
 ENGINE_MEMBERS = ('ENGINE_ID', 'SAMPLE_RATE', 'pads', 'edge_fade', 'backend',
                   'voice', 'backend_spec', 'codec', 'budget', 'stop_policy',
                   'resolve_load_voice', 'convert', 'convert_batch',
-                  '_write_silence', 'generate_batch_stream', 'cleanup')
+                  '_write_silence', 'accept_item_sampling',
+                  'generate_batch_stream', 'cleanup')
 
 
 def _load_assembler_profiles():

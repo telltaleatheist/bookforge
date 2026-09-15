@@ -3029,7 +3029,7 @@ class ConvertManyTest(unittest.TestCase):
         release = {i: threading.Event() for i in range(8)}
         pulled = []
 
-        def render_audio(text, seed=None, index=0):
+        def render_audio(text, seed=None, index=0, sampling=None):
             with lock:
                 active[0] += 1
                 peak[0] = max(peak[0], active[0])
@@ -3079,7 +3079,7 @@ class ConvertManyTest(unittest.TestCase):
         rendering other chunks, not sitting on chunk 0."""
         seen = []
 
-        def render_audio(text, seed=None, index=0):
+        def render_audio(text, seed=None, index=0, sampling=None):
             seen.append((index, seed))
             if index == 0 and seed is None:
                 return self.audio(len(text), cps=40.0)     # a truncation
@@ -3106,7 +3106,7 @@ class ConvertManyTest(unittest.TestCase):
         active, peak = [0], [0]
         started = threading.Event()
 
-        def render_audio(text, seed=None, index=0):
+        def render_audio(text, seed=None, index=0, sampling=None):
             with lock:
                 active[0] += 1
                 peak[0] = max(peak[0], active[0])
@@ -3125,7 +3125,7 @@ class ConvertManyTest(unittest.TestCase):
         self.assertEqual(peak[0], 2, 'both halves were in flight together')
 
     def test_a_failed_take_fails_its_chunk_by_name_and_the_stream_goes_on(self):
-        def render_audio(text, seed=None, index=0):
+        def render_audio(text, seed=None, index=0, sampling=None):
             if index == 3:
                 raise RuntimeError('HTTP 400 for this text')
             return self.audio(len(text))
@@ -3139,7 +3139,7 @@ class ConvertManyTest(unittest.TestCase):
         self.assertNotIn(3, eng.written, 'a chunk that failed is never written')
 
     def test_a_dead_server_ends_the_stream_before_the_queue_is_submitted(self):
-        def render_audio(text, seed=None, index=0):
+        def render_audio(text, seed=None, index=0, sampling=None):
             if index == 1:
                 raise v3_served.HiggsV3ServerDown('port 8100 refused')
             return self.audio(len(text))

@@ -661,7 +661,7 @@ class _StubEngine:
     def _clean_sentence_for_tts(self, text):
         return (text or '').strip()
 
-    def render_audio(self, text, seed=None, index=0):
+    def render_audio(self, text, seed=None, index=0, sampling=None):
         self.calls.append((text, index))
         return np.zeros(2400, dtype=np.float32)
 

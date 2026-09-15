@@ -61,6 +61,11 @@ def _engine(*, ceiling: int, budget: float = 42.0,
     # ...and the voice the guard's `_pace_tracker()` seeds itself from: one with
     # no pace fields, so `tracker_for` falls to the engine's default band above.
     engine.voice_ref = SimpleNamespace()
+    # The sampling `mlx_sampling()` resolves once at construction. Set here
+    # because `__init__` did not run: every render path lays the item's
+    # take-ladder rung OVER this (`_sampling_for`), so a missing one is an
+    # AttributeError rather than a silent default.
+    engine._sampling = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50}
     return engine
 
 
@@ -167,8 +172,13 @@ class BatchGroupsTest(unittest.TestCase):
     """Consecutive book-order slices, each with its own depth."""
 
     @staticmethod
-    def _entries(count: int, positions: int = 700, cap: int = 300):
-        return [(i, f'chunk {i}', positions, cap) for i in range(count)]
+    def _entries(count: int, positions: int = 700, cap: int = 300, sampling=None):
+        # FIVE-TUPLES since the per-item sampling channel landed: the slicer
+        # reads entry[4] so it can break a group when the take-ladder rung
+        # changes (a slab samples every row at one temperature). None is the
+        # rung of a chunk at take 0, which is every entry in this file but the
+        # one test that says otherwise.
+        return [(i, f'chunk {i}', positions, cap, sampling) for i in range(count)]
 
     def test_slices_are_consecutive_and_in_book_order(self):
         engine = _engine(ceiling=4, budget=42.0)
@@ -179,7 +189,8 @@ class BatchGroupsTest(unittest.TestCase):
 
     def test_depth_is_the_deepest_prompt_plus_its_own_cap(self):
         engine = _engine(ceiling=4, budget=42.0)
-        entries = [(0, 'a', 700, 300), (1, 'b', 900, 100), (2, 'c', 100, 1500)]
+        entries = [(0, 'a', 700, 300, None), (1, 'b', 900, 100, None),
+                   (2, 'c', 100, 1500, None)]
         with mock.patch.dict(os.environ, {}, clear=True):
             groups = engine._mlx_batch_groups(entries)
         self.assertEqual(len(groups), 1)
@@ -229,8 +240,8 @@ class BatchGroupsTest(unittest.TestCase):
         of its own slice; what the shrink protects is everything BEHIND it,
         which starts a fresh window and is measured on its own depth."""
         engine = _engine(ceiling=8, budget=42.0)
-        entries = ([(0, 'deep', 1000, 30000)]
-                   + [(i, f'c{i}', 100, 100) for i in range(1, 8)])
+        entries = ([(0, 'deep', 1000, 30000, None)]
+                   + [(i, f'c{i}', 100, 100, None) for i in range(1, 8)])
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(engine._mlx_width_for_depth(31000), 5)
             groups = engine._mlx_batch_groups(entries)
@@ -246,6 +257,33 @@ class BatchGroupsTest(unittest.TestCase):
             with mock.patch.object(engine, '_mlx_width_for_depth', return_value=2):
                 groups = engine._mlx_batch_groups(entries)
         self.assertEqual([len(bucket) for bucket, _d in groups], [2, 2, 1])
+
+    def test_a_sampling_change_breaks_the_group(self):
+        """THE SLAB CANNOT MIX RUNGS. `_generate_delayed_rows_batch` runs one
+        `_step_batch_sampler` over every active row with ONE temperature /
+        top_p / top_k, so two take-ladder rungs in one bucket would render one
+        of them at the other's numbers and report both as asked for. The slicer
+        breaks on the rung instead - split, never silently wrong."""
+        engine = _engine(ceiling=8, budget=42.0)
+        hot = {'temperature': 0.7}
+        entries = ([(i, f'c{i}', 100, 100, None) for i in range(3)]
+                   + [(i, f'c{i}', 100, 100, hot) for i in range(3, 5)]
+                   + [(i, f'c{i}', 100, 100, None) for i in range(5, 7)])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            groups = engine._mlx_batch_groups(entries)
+        self.assertEqual([[e[0] for e in bucket] for bucket, _d in groups],
+                         [[0, 1, 2], [3, 4], [5, 6]])
+
+    def test_two_rungs_that_state_the_same_numbers_are_one_group(self):
+        """The key is the NUMBERS, not the dict object: two rows Crucible
+        resolved to the same rung batch together, which is the common case for
+        a retake round where several chunks climbed to the same step."""
+        engine = _engine(ceiling=8, budget=42.0)
+        entries = [(0, 'a', 100, 100, {'temperature': 0.7, 'top_p': 0.95}),
+                   (1, 'b', 100, 100, {'top_p': 0.95, 'temperature': 0.7})]
+        with mock.patch.dict(os.environ, {}, clear=True):
+            groups = engine._mlx_batch_groups(entries)
+        self.assertEqual([len(bucket) for bucket, _d in groups], [2])
 
     def test_no_entries_is_no_groups(self):
         engine = _engine(ceiling=8, budget=42.0)
@@ -352,7 +390,8 @@ class ConvertBatchRoutingTest(unittest.TestCase):
         # a run-on and the ladder would - correctly - re-roll it.
         import numpy as np
         take = np.zeros(int(len('a chunk') / 17.0 * 24000), dtype=np.float32)
-        engine.render_audio = lambda text, seed=None, index=0: calls.append((text, seed, index)) or take
+        engine.render_audio = (lambda text, seed=None, index=0, sampling=None:
+                               calls.append((text, seed, index)) or take)
         engine._write_sentence = lambda number, audio: written.append((number, audio)) or True
         self.assertTrue(engine.convert(7, 'a chunk'))
         self.assertEqual(calls, [('a chunk', None, 7)])
@@ -407,12 +446,12 @@ class StreamLadderTest(unittest.TestCase):
     def test_stream_rows_render_solo_first_in_ascending_order(self):
         engine = _stream_engine(ceiling=8)
         solo = []
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                solo.append(index) or _Pcm(f'solo:{index}'))
         batched = []
 
         def _batch(texts, caps, seed, should_stop=None, prompts=None,
-                   group_no=1, group_count=1, on_retire=None):
+                   group_no=1, group_count=1, on_retire=None, sampling=None):
             batched.append(list(texts))
             for position, text in enumerate(texts):
                 on_retire(position, f'codes:{text}')
@@ -438,7 +477,7 @@ class StreamLadderTest(unittest.TestCase):
 
     def test_on_chunk_fires_only_for_stream_rows_and_on_row_exactly_once(self):
         engine = _stream_engine(ceiling=8)
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                _Pcm(f'solo:{index}'))
         engine._generate_delayed_rows_batch = (
             lambda texts, caps, seed, should_stop=None, prompts=None,
@@ -458,7 +497,7 @@ class StreamLadderTest(unittest.TestCase):
     def test_a_ceiling_of_one_renders_the_read_ahead_serially_in_order(self):
         engine = _stream_engine(ceiling=1)
         seen = []
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                seen.append(index) or _Pcm(f'solo:{index}'))
         engine._generate_delayed_rows_batch = mock.Mock(
             side_effect=AssertionError('an unconfigured process batched'))
@@ -479,12 +518,12 @@ class StreamLadderTest(unittest.TestCase):
         # a failed batch_item for every row it has not already answered, which is
         # exactly what a single-row failure does on the serial rung.
         engine = _stream_engine(ceiling=2)
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                _Pcm(f'solo:{index}'))
         calls = []
 
         def _batch(texts, caps, seed, should_stop=None, prompts=None,
-                   group_no=1, group_count=1, on_retire=None):
+                   group_no=1, group_count=1, on_retire=None, sampling=None):
             calls.append(group_no)
             if group_no == 1:
                 for position, text in enumerate(texts):
@@ -508,7 +547,7 @@ class StreamLadderTest(unittest.TestCase):
 
     def test_a_stop_between_solo_rows_ends_the_call_with_no_further_answer(self):
         engine = _stream_engine(ceiling=8)
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                _Pcm(f'solo:{index}'))
         engine._generate_delayed_rows_batch = mock.Mock(
             side_effect=AssertionError('the batch ran after a stop'))
@@ -523,11 +562,11 @@ class StreamLadderTest(unittest.TestCase):
 
     def test_a_stopped_batch_keeps_the_rows_that_already_retired(self):
         engine = _stream_engine(ceiling=4)
-        engine.render_audio = (lambda text, index=0, should_stop=None:
+        engine.render_audio = (lambda text, index=0, should_stop=None, sampling=None:
                                _Pcm(f'solo:{index}'))
 
         def _batch(texts, caps, seed, should_stop=None, prompts=None,
-                   group_no=1, group_count=1, on_retire=None):
+                   group_no=1, group_count=1, on_retire=None, sampling=None):
             on_retire(0, 'first')
             return None            # should_stop went true mid-batch
 
@@ -540,11 +579,12 @@ class StreamLadderTest(unittest.TestCase):
 
     def test_the_seed_is_the_first_row_of_each_group(self):
         engine = _stream_engine(ceiling=2)
-        engine.render_audio = lambda text, index=0, should_stop=None: 'x'
+        engine.render_audio = (lambda text, index=0, should_stop=None,
+                               sampling=None: 'x')
         seeds = []
 
         def _batch(texts, caps, seed, should_stop=None, prompts=None,
-                   group_no=1, group_count=1, on_retire=None):
+                   group_no=1, group_count=1, on_retire=None, sampling=None):
             seeds.append(seed)
             return list(texts)
 
@@ -557,7 +597,8 @@ class StreamLadderTest(unittest.TestCase):
 
     def test_a_mixed_voice_batch_is_still_refused(self):
         engine = _stream_engine(ceiling=8)
-        engine.render_audio = lambda text, index=0, should_stop=None: 'x'
+        engine.render_audio = (lambda text, index=0, should_stop=None,
+                               sampling=None: 'x')
         with self.assertRaises(ValueError) as caught:
             engine.generate_batch_stream(['a', 'b'], ['testvoice', 'other'],
                                          set(), None, lambda r, p: None)
@@ -663,7 +704,7 @@ class RetakeBatchTest(unittest.TestCase):
         calls = []
 
         def _batch(texts, caps, seed, prompts=None, group_no=1, group_count=1,
-                   should_stop=None, on_retire=None):
+                   should_stop=None, on_retire=None, sampling=None):
             calls.append({'texts': list(texts), 'seed': seed})
             first = len(calls) == 1
             return [self._audio(50) if (first and text in bad_first_take)
@@ -782,7 +823,7 @@ class _SerialRenders:
         self._attempts = {}
         self._full_text = {}
 
-    def __call__(self, text, seed=None, index=0):
+    def __call__(self, text, seed=None, index=0, sampling=None):
         if self._watch is not None:
             self.in_flight_at.append((index, text, list(self._watch)))
         self.calls.append((index, text, seed))
@@ -1052,7 +1093,7 @@ class _FailingRenders(_SerialRenders):
         self.fail_at = {int(k): set(v) for k, v in fail_at.items()}
         self._seen = {}
 
-    def __call__(self, text, seed=None, index=0):
+    def __call__(self, text, seed=None, index=0, sampling=None):
         first = self._full_text.get(index, text)
         if text == first:
             take = self._seen.get(index, 0)
