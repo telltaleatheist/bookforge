@@ -1169,8 +1169,44 @@ class OrpheusStreamServer:
         v = self._row_voice(item.get('voice'))
         if self.orph.backend != 'vllm':
             self._reject_per_request_voice(v)
-        return v, self.orph.accept_item_sampling(
-            item.get('sampling'), f'generate_batch row i={item.get("i")!r}')
+        return v, self._item_rung(item.get('sampling'),
+                                  f'generate_batch row i={item.get("i")!r}')
+
+    def _item_rung(self, raw, where: str):
+        """One item's `sampling` off the wire -> the engine's own parsed rung,
+        or None when the item asked for none.
+
+        THE ENGINE IS ASKED ONLY WHEN THERE IS SOMETHING TO ASK ABOUT, and that
+        is the whole of this method. An absent rung has ONE meaning for every
+        engine narrator drives - "render this at the voice's loaded sampling,
+        which is take 0" - and every implementation of `accept_item_sampling`
+        answers None to None. Calling it anyway on every row of every batch is
+        ceremony that buys nothing and costs the additive guarantee this
+        channel is supposed to have: it turns "this engine object predates the
+        member" into "every row of every batch fails", including the rows that
+        never asked for anything. Measured 2026-09-14 - a stub engine in
+        tests/test_higgs_mlx.py, standing in for a Higgs load on the Mac, had
+        every sentence refused with an AttributeError about a field it had not
+        sent.
+
+        A RUNG ARRIVING AT AN ENGINE THAT HAS NO ANSWER IS STILL A REFUSAL, by
+        name, and not an AttributeError about a method: the caller asked for
+        numbers and needs to know they were not applied. `Engine
+        .accept_item_sampling` is a declared protocol member and
+        tests/test_engine_protocol.py holds every engine to it, so this arm is
+        the report of a wiring defect rather than a path anything takes.
+        """
+        if raw is None:
+            return None
+        accept = getattr(self.orph, 'accept_item_sampling', None)
+        if accept is None:
+            raise ValueError(
+                f"sampling_not_supported: {where} carries sampling {raw!r}, and "
+                f"engine '{getattr(self.orph, 'ENGINE_ID', '?')}' implements no "
+                '`accept_item_sampling`. It cannot say what it would do with a '
+                'take-ladder rung, so this row is refused rather than rendered at '
+                'the voice default and reported as the rung.')
+        return accept(raw, where)
 
     def _generate_audio(self, text: str, voice: str = None, index: int = 0,
                         sampling=None):
@@ -2134,7 +2170,7 @@ class OrpheusStreamServer:
             return
         try:
             check_language(language)
-            rung = self.orph.accept_item_sampling(sampling, 'generate')
+            rung = self._item_rung(sampling, 'generate')
             text = normalize_for_tts(text, language)
             audio = self._generate_audio(text, voice, sampling=rung)
             if audio is None or len(audio) == 0:
