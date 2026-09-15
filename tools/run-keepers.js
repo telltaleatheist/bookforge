@@ -453,6 +453,16 @@ const SUITES = [
   // the right one has to stay absent, which is the half that rots, because a
   // dropped control comes back one helpful commit at a time.
   'test-extension-option-columns',
+  // …and step 8 itself: BookForge's TTS server, deleted (Owen, 2026-09-15: "there
+  // shouldnt be tts server logic in bookforge anymore at all, including the
+  // settings"). Same two-column shape, from the other side: half forbids the
+  // relay, the module, the `tts-api:*` IPC pair, the nav-rail button and the
+  // Settings section's voice pickers; half INSISTS the carried rows are still in
+  // the extension, because deleting BookForge's copy is only correct while the
+  // extension has them. A third half names the three things a tidy-up takes by
+  // accident — the tab recorder's endpoint, the Streaming tab on the scheduler,
+  // and `src/app/core/listen/` staying uncreated.
+  'test-no-tts-server-doors',
   // THE ZERO-SHOT CLIP, through both clients and the module they share. A
   // `zeroshot` voice is the base weights plus somebody's recording, so the
   // failure this pins is the quietest one in the whole pipeline: a clone
@@ -511,6 +521,16 @@ const SUITES = [
   // one 3090 Ti start together, which looks like a working queue until both
   // runs OOM.
   'test-queue-slot-sets',
+  // THE QUEUE'S GPU DIAL AND THE PENDING BAND
+  // (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`). Where the dial's value lives — its
+  // own record, refused rather than replaced when corrupt — plus the bench's
+  // grouping and the fact that Pending and the live queue partition the runs
+  // exactly. The defects it defends are silent: a dial reset to `any` by a
+  // rename starts sending books to a card the operator steered away from, and a
+  // staged book that leaked into the live queue would commit a GPU nobody had
+  // pressed Send on. The PRECEDENCE table itself is driven in
+  // `test-queue-wait-for`, beside the routing it defers to.
+  'test-queue-gpu-dial',
   // WHERE EACH STEP OF A BOOK RUNS. §4.4 — every step of one book runs on the
   // machine the book was assigned — and the failure is SILENT by construction:
   // §4's safety default is that an undeclared step does not travel, so a
