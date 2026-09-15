@@ -28,19 +28,22 @@
  * {@link crucibleCapabilityWithRoutes} is a projection like the other three,
  * and the three-case reading of §3.3 belongs to the SDK's parser.
  *
- * It does not yet MAKE all three. A document in which NO row carries `route`
- * is a server that predates the field, and §3.3 pins that for both apps by
- * name — *"every class on such a server IS local … BookForge's helper and
- * Foundry's package K alike"* — while `readCapabilityRow` requires the field
- * and refuses the document. **That is a known SDK defect, measured against
- * Owen's live server and being fixed under this same version**, and it is
- * deliberately NOT worked around here: catching that refusal and reading
- * `local` out of it would be this app holding a second opinion about a
+ * And since the 0.6.0 re-pack (`1a1fb892`, 2026-09-14) it MAKES all three.
+ * A document in which NO row carries `route` is a server that predates the
+ * field, and §3.3 pins that for both apps by name — *"every class on such a
+ * server IS local … BookForge's helper and Foundry's package K alike"* —
+ * which `readCapabilityRow` now reads exactly that way (no row has it ⇒
+ * `local`; SOME rows have it ⇒ refused, naming the row; a value that is
+ * neither ⇒ refused, naming the value).
+ *
+ * Until that re-pack the SDK refused the routeless document, and this file
+ * deliberately did NOT work around it: catching that refusal and reading
+ * `local` out of it would have been this app holding a second opinion about a
  * document the SDK owns, which is the two-owners defect the seam was deleted
- * to end (ARCHITECTURE.md R1). Until the re-pack lands, such a server is
- * refused `settings_document_unreadable`, and
- * `tools/test-crucible-settings-seam.js` carries the tripwire that says so
- * and says how to invert it.
+ * to end (ARCHITECTURE.md R1). `tools/test-crucible-settings-seam.js` carried
+ * the tripwire that pinned the defect in the open. **Because nothing was
+ * worked around, inverting that check was the entire fix — no code in this
+ * file changed, and this paragraph is the only thing that had to.**
  *
  * ── NOTHING HERE STORES ANYTHING ───────────────────────────────────────────
  *

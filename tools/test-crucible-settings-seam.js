@@ -21,17 +21,22 @@
  * SDK's parser and this app's projection meeting over real bytes on a real
  * socket.
  *
- * ── SECTION 4 HOLDS A TRIPWIRE, AND IT ASSERTS A DEFECT ON PURPOSE ────────
+ * ── SECTION 4'S TRIPWIRE HAS EXPIRED, AND THAT IS WHAT IT WAS FOR ─────────
  *
  * PHASE15 §3.3 says a capability document in which NO row carries `route`
  * comes from a server that predates the field and reads as all-local. The
- * vendored SDK refuses that document instead, which Foundry measured against
- * Owen's live server and which is being fixed under this same version.
- * BookForge does not work around it — a client that caught the refusal and
- * read "local" out of it would be a second opinion about a document the SDK
- * owns — so the WRONG behaviour is pinned, counted, and carries the
- * instruction to invert the check when the fix lands. It is not a `SKIP:`,
- * because a skip is invisible and this one expires.
+ * vendored SDK refused that document instead, which Foundry measured against
+ * Owen's live server; BookForge did not work around it — a client that caught
+ * the refusal and read "local" out of it would be a second opinion about a
+ * document the SDK owns — so the WRONG behaviour was pinned, counted, and
+ * carried the instruction to invert the check when the fix landed.
+ *
+ * It landed with the 0.6.0 re-pack (BookForge `1a1fb892`). The check is
+ * inverted: a routeless document now reads as every class local, and the
+ * route record the read fills says local too. Because the defect was never
+ * worked around, INVERTING THE CHECK WAS THE WHOLE FIX — no BookForge code
+ * changed, only a header paragraph in `engine-settings.ts` that called the
+ * refusal live.
  *
  * The pairing-file checks that used to sit here have their own suite
  * (`test-crucible-pairing-file.js`): `electron/crucible/pairing-file.ts` did
@@ -250,9 +255,10 @@ async function withFake(behaviour, fn) {
     });
 
   await withFake({ omitRoute: true }, async ({ name }) => {
-    await check('TRIPWIRE: a PRE-PHASE-15 capability document is still refused by the SDK', async () => {
+    await check('a document where NO row has a route is a PRE-PHASE-15 server: every class is local', async () => {
       /*
-       * THIS CHECK ASSERTS A DEFECT, DELIBERATELY, AND HAS A DATE.
+       * THE TRIPWIRE THAT USED TO BE HERE HAS EXPIRED, AND THIS IS WHAT IT
+       * BECAME (inverted 2026-09-14, against the re-vendored 0.6.0 SDK).
        *
        * crucible `eb59f7b` / PHASE15 §3.3 settle the reading for both apps: a
        * document in which NO row carries `route` comes from a server that
@@ -261,43 +267,37 @@ async function withFake(behaviour, fn) {
        * helper and Foundry's package K alike". Owen's live WSL server answers
        * exactly that way until the phase-15 branch is deployed onto it.
        *
-       * The vendored SDK does not make that reading. `readCapabilityRow`
-       * requires the field (`oneOf(str(entry, 'route', …), ['local',
-       * 'upstream'])`), so the document is a `CrucibleProtocolError` and this
-       * app reports `settings_document_unreadable`. Foundry measured it
-       * against the live server and it is being fixed in the SDK, under this
-       * same version.
-       *
-       * IT IS NOT WORKED AROUND HERE. Catching that refusal and reading
-       * "every class is local" out of it would put a second opinion about the
+       * Until tonight the vendored SDK refused that document instead, and this
+       * check PINNED the defect rather than working around it — reading
+       * "local" out of a refusal would have put a second opinion about the
        * document beside the SDK's, which is the two-owners defect the whole
-       * seam was deleted to end. So the wrong behaviour is pinned, in the open,
-       * where it is counted rather than skipped — a `SKIP:` line is invisible
-       * and this one expires.
+       * seam was deleted to end (ARCHITECTURE.md R1). The SDK now makes all
+       * three readings itself (`readCapabilityRow`: no row has it ⇒ `local`;
+       * SOME rows have it ⇒ refuse, naming the row; a value that is neither ⇒
+       * refuse, naming the value), so the reading is where it always belonged
+       * and this is a plain agreement check.
        *
-       * WHEN THIS GOES RED, NOTHING HAS REGRESSED — IT IS THE FIX ARRIVING.
-       * Invert it: assert that `record.classes` is non-empty and that every
-       * row reads `route === 'local'`, and rename it back to "a document where
-       * NO row has a route is a PRE-PHASE-15 server: every class is local".
+       * NOTHING IN `electron/crucible/engine-settings.ts` CHANGED FOR THIS,
+       * and that is the point of having refused to work around it: there was
+       * no workaround to delete. Only its header paragraph, which called the
+       * refusal a live defect, is brought up to date.
        */
-      let caught = null;
-      try {
-        await seam.crucibleCapabilityWithRoutes(name);
-      } catch (err) {
-        caught = err;
+      const record = await seam.crucibleCapabilityWithRoutes(name);
+      assert.ok(record.classes.length > 0, 'a pre-phase-15 document still lists its classes');
+      for (const row of record.classes) {
+        assert.strictEqual(row.route, 'local',
+          `${row.capability} reads route ${JSON.stringify(row.route)} on a document where no row `
+          + 'carries one. §3.3: every class on such a server IS local.');
       }
-      assert.ok(caught !== null,
-        'THIS IS NOT A REGRESSION — IT IS THE SDK FIX THIS TRIPWIRE WAS WAITING FOR.\n'
-        + '        CrucibleClient.capability() now reads a document in which no row carries a\n'
-        + '        `route`, as crucible PHASE15 §3.3 says it must. INVERT this check: assert\n'
-        + '        that every row of the record reads route === "local", and restore its old\n'
-        + '        name ("a document where NO row has a route is a PRE-PHASE-15 server: every\n'
-        + '        class is local"). Nothing in electron/crucible/engine-settings.ts changes —\n'
-        + '        the reading was always the SDK\'s to make.');
-      assert.strictEqual(caught.code, 'settings_document_unreadable',
-        `the SDK refused it as ${caught.code}, which is not the protocol error this pins: ${caught.message}`);
-      assert.ok(caught.message.includes('route'),
-        `the refusal does not name the field it could not read: ${caught.message}`);
+      // And the route RECORD the read fills says local too — the queue's
+      // `[cloud]` lane asks that record synchronously, so a pre-phase-15
+      // server must not leave it saying `unknown` about a class it listed.
+      const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
+      for (const row of record.classes) {
+        assert.strictEqual(routes.crucibleRouteOf(name, row.capability), 'local',
+          `the route record says ${row.capability} is `
+          + `${routes.crucibleRouteOf(name, row.capability)} on a pre-phase-15 server`);
+      }
     });
   });
 
