@@ -572,6 +572,22 @@ const SUITES = [
   // pressed Send on. The PRECEDENCE table itself is driven in
   // `test-queue-wait-for`, beside the routing it defers to.
   'test-queue-gpu-dial',
+  // WHICH MACHINES CAN SPEAK WHICH VOICE, and the two different authorities that
+  // answer it. The picker used to ask THIS machine's disk — a box that, in
+  // orchestrator mode, renders nothing — so it greyed out voices the engine could
+  // speak and offered voices it could not. It now asks the servers.
+  //
+  // The half that must never regress silently is ROUTING. A voice only one server
+  // serves LOCKS the venue to it (Owen, 2026-09-15), so if an unreachable Mac
+  // counted as "the Mac does not have this voice", a voice both machines serve
+  // would present as 3090-only the moment the Mac slept and pin a book to the PC
+  // with nobody choosing it. Every screen would look healthy.
+  //
+  // The other half is the exception that proves it: the four zero-shot voices are
+  // `clips = "from-request"`, so BookForge uploads the bytes off its own disk and
+  // the LOCAL check is the right one for exactly those. Both are pinned here so a
+  // later change cannot quietly merge two questions that have two answers.
+  'test-voice-inventory',
   // WHERE EACH STEP OF A BOOK RUNS. §4.4 — every step of one book runs on the
   // machine the book was assigned — and the failure is SILENT by construction:
   // §4's safety default is that an undeclared step does not travel, so a
