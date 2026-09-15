@@ -19,9 +19,6 @@ import type {
 } from '@shared/crucible/coordinate-wire';
 import { coordinationWords } from './crucible-words';
 
-/** The reserved name for the server on this machine. Never a registry entry. */
-const LOCAL = 'local';
-
 /**
  * Settings → Crucible Servers.
  *
@@ -34,11 +31,17 @@ const LOCAL = 'local';
  *
  * ── What is on this page, and which contract each part comes from ──────────
  *
- * **The local server first.** It is never in the registry: its token lives in
- * its own `config.toml` and is read from there on every call (§7.1.1). When
- * there is none that is a NAMED STATE with its fix — `no_local_config`,
- * `no_wsl_distro` — shown as a state rather than an error, because a laptop that
- * only ever renders on the Mac is not broken.
+ * **ONE LIST, ONE KIND OF ROW** (Owen's ruling, 2026-09-15: *"a local crucible
+ * server shouldnt be treated any differently than a remote crucible server"*).
+ * This page used to open with a card of its own for the engine on this machine
+ * — a card the app manufactured from a config file, with a badge, no Remove
+ * button and a sentence explaining why. It is gone. Every server is a row,
+ * every row ranks, disables, tests, opens and removes the same way, and
+ * nothing here asks where a machine is.
+ *
+ * What is left of the old card is an OFFER, and it lives in the Connect door
+ * below with the other ways of adding a server: *there is a Crucible on this
+ * computer — add it?* Refusing it is an ordinary state, not a broken app.
  *
  * **Add, with a Test that calls `ping` then `info`** (PHASE5-APPS.md section 2).
  * The two-step is the point: `ping` is unauthenticated and `info` is not, so the
@@ -85,43 +88,13 @@ const LOCAL = 'local';
         <p class="cru-error">{{ err }}</p>
       }
 
-      <!-- ── The server on this machine ─────────────────────────────────── -->
+      <!-- ── Rank, enablement, and the queue's default ──────────────────── -->
       <div class="cru-group-row">
-        <h4 class="cru-group">The engine on this machine</h4>
-        <!-- Re-read the config. The first wsl.exe call on a cold VM can fail
-             (wsl_read_failed) while it boots, and the fix is to ask again. -->
+        <h4 class="cru-group">Engines the queue may use</h4>
+        <!-- Ask again. Nothing here is on a timer, and a machine that has just
+             had a Crucible installed or started is one press away from showing. -->
         <desktop-button variant="ghost" size="sm" (click)="recheck()">Re-check</desktop-button>
       </div>
-      @if (view(); as v) {
-        @if (v.local.present) {
-          <div class="cru-card">
-            <div class="cru-card-head">
-              <div>
-                <span class="cru-name">{{ v.local.serverName }}</span>
-                <span class="cru-badge local">local</span>
-              </div>
-              <span class="cru-url">{{ v.local.url }}</span>
-              <span class="cru-spacer"></span>
-              <desktop-button variant="ghost" size="sm" (click)="openUi(localName)">Open engine console</desktop-button>
-            </div>
-            <p class="cru-meta">
-              Token {{ v.local.tokenMasked }}, read from
-              <code>{{ v.local.configPath }}</code>
-              {{ v.local.via === 'wsl' ? '(inside WSL)' : '' }} every time — this app keeps no copy.
-            </p>
-          </div>
-        } @else {
-          <div class="cru-card state">
-            <span class="cru-badge muted">{{ v.local.code }}</span>
-            <p class="cru-meta">{{ v.local.reason }}</p>
-          </div>
-        }
-      } @else {
-        <p class="cru-meta">Reading this machine's Crucible config…</p>
-      }
-
-      <!-- ── Rank, enablement, and the queue's default ──────────────────── -->
-      <h4 class="cru-group">Engines the queue may use</h4>
       <p class="cru-sub">
         Drag to set the order — the first one that is free gets the work. The order IS the
         priority; there are no rank numbers. A newly connected engine starts at the bottom.
@@ -151,19 +124,13 @@ const LOCAL = 'local';
               <span>{{ row.enabled ? 'Enabled' : 'Disabled' }}</span>
             </label>
             <span class="cru-name">{{ row.name }}</span>
-            @if (row.name === localName) {
-              <span class="cru-badge local">this machine</span>
-            }
-            @if (staleOf(row.name)) {
-              <span class="cru-badge stale">stale — a copy of this machine's own token</span>
-            }
             <span class="cru-spacer"></span>
             <!--
               OPEN — PHASE13-OPERATOR.md §5.3. Every server row gets it,
               because the server's own page is where everything about a server
               now happens: install a job type, pull weights, watch the task,
-              read the token. The token is read in MAIN from the registry (or
-              the local server's config.toml) and never crosses this seam.
+              read the token. The token is read in MAIN from the registry and
+              never crosses this seam.
             -->
             <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Open</desktop-button>
             <!--
@@ -179,18 +146,20 @@ const LOCAL = 'local';
             <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="refreshServer(row.name)">
               Refresh
             </desktop-button>
-            @if (row.name !== localName) {
-              @if (confirmRemove() === row.name) {
-                <span class="cru-confirm">
-                  Forget {{ row.name }}?
-                  <desktop-button variant="ghost" size="sm" (click)="remove(row.name)">Remove</desktop-button>
-                  <desktop-button variant="ghost" size="sm" (click)="confirmRemove.set(null)">Cancel</desktop-button>
-                </span>
-              } @else {
-                <desktop-button variant="ghost" size="sm" (click)="confirmRemove.set(row.name)">Remove</desktop-button>
-              }
+            <!--
+              EVERY ROW IS REMOVABLE. The engine on this machine used to be the
+              one that was not, because it was not a registry entry at all.
+              Removing a row forgets an address and a key; it never uninstalls
+              anything, which is a different door further down.
+            -->
+            @if (confirmRemove() === row.name) {
+              <span class="cru-confirm">
+                Forget {{ row.name }}?
+                <desktop-button variant="ghost" size="sm" (click)="remove(row.name)">Remove</desktop-button>
+                <desktop-button variant="ghost" size="sm" (click)="confirmRemove.set(null)">Cancel</desktop-button>
+              </span>
             } @else {
-              <span class="cru-note">Not removable — it is this machine's own engine.</span>
+              <desktop-button variant="ghost" size="sm" (click)="confirmRemove.set(row.name)">Remove</desktop-button>
             }
           </div>
 
@@ -506,7 +475,6 @@ const LOCAL = 'local';
     .cru-url { font-size: 12px; color: var(--text-secondary); }
     .cru-spacer { flex: 1; }
     .cru-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--bg-elevated, var(--surface-2)); color: var(--text-secondary); }
-    .cru-badge.local { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
     .cru-badge.good { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
     .cru-badge.bad, .cru-badge.stale { background: color-mix(in srgb, var(--error, #d05a5a) 18%, transparent); color: var(--error, #d05a5a); }
     .cru-toggle, .cru-radio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
@@ -546,8 +514,6 @@ const LOCAL = 'local';
 })
 export class CrucibleServersPanelComponent {
   private readonly electron = inject(ElectronService);
-
-  readonly localName = LOCAL;
 
   readonly view = signal<CrucibleServersView | null>(null);
   readonly loadError = signal<string | null>(null);
@@ -607,10 +573,9 @@ export class CrucibleServersPanelComponent {
   // ── The list ───────────────────────────────────────────────────────────
 
   /**
-   * Ask again. The local server's config is read through `wsl.exe` on Windows,
-   * and the first call against a cold VM can fail while it boots — that is
-   * `wsl_read_failed`, a real answer, and asking again is the fix rather than a
-   * retry loop nobody can see.
+   * Ask again. Nothing on this page is on a timer: a server that has just been
+   * started, or a Crucible just installed on this computer, appears when
+   * somebody asks rather than at some unpredictable moment of its own.
    */
   async recheck(): Promise<void> {
     await this.reload();
@@ -628,23 +593,13 @@ export class CrucibleServersPanelComponent {
     this.view.set(res.data);
   }
 
-  /** A remote's URL, or the local server's. */
+  /** One row's URL, whatever machine it is on. */
   urlOf(name: string): string | null {
-    const v = this.view();
-    if (!v) return null;
-    if (name === LOCAL) return v.local.present ? v.local.url : null;
-    return v.remotes.find((row) => row.name === name)?.url ?? null;
+    return this.view()?.servers.find((row) => row.name === name)?.url ?? null;
   }
 
   maskOf(name: string): string {
-    const v = this.view();
-    if (!v) return '';
-    if (name === LOCAL) return v.local.present ? v.local.tokenMasked : '';
-    return v.remotes.find((row) => row.name === name)?.tokenMasked ?? '';
-  }
-
-  staleOf(name: string): boolean {
-    return this.view()?.remotes.find((row) => row.name === name)?.stale === 'loopback_duplicates_local';
+    return this.view()?.servers.find((row) => row.name === name)?.tokenMasked ?? '';
   }
 
   /** Did WE submit this? A foreign job is drawn as somebody else's (§5). */
@@ -940,9 +895,9 @@ export class CrucibleServersPanelComponent {
    * Open that server's own page (PHASE13 §5.3).
    *
    * A window with no preload, in its own session, pinned to that server's
-   * origin. The token is read in MAIN from the registry or from `local`'s own
-   * config.toml; nothing about it crosses this seam, and no external browser
-   * gets the `#token=` fragment into its history.
+   * origin. The token is read in MAIN from the registry; nothing about it
+   * crosses this seam, and no external browser gets the `#token=` fragment into
+   * its history.
    */
   async openUi(name: string): Promise<void> {
     const res = await this.electron.crucible.openUi(name);

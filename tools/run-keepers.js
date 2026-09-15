@@ -273,8 +273,26 @@ const SUITES = [
   // machine's place, and a venue decision that quietly fell back to the local
   // narrator would take a GPU somebody else is using and finish the book in a
   // voice nobody chose. Neither suite needs a server, a card or the network.
+  //
+  // `test-crucible-servers` is also where the ABSENCE of the reserved name
+  // `local` is pinned (Owen's ruling, 2026-09-15). Not by reading a comment:
+  // it asks the registry what the word does and gets `unknown_server`, checks
+  // that `LOCAL_SERVER_NAME` and `describeLocal` export nothing, that the
+  // registry constructor takes a file and no local reader, and that no module
+  // named `local` is emitted or imported. A reserved identity comes back as a
+  // constant and a branch, so those are what is watched.
   'test-crucible-servers',
   'test-crucible-routing',
+  // AND THE ONE-TIME MOVE OF THAT NAME OUT OF THIS MACHINE'S RECORDS. Four
+  // files under `<userData>` could name it — the registry, the rank record, the
+  // upstream record and the QUEUE — and a row left naming it would refuse
+  // `unknown_server` for ever. So the migration is lossless or not made at all,
+  // and this suite drives it over a copy of Owen's own records: every reference
+  // rewritten in one pass, idempotent, finished rather than repeated after a
+  // crash, and — the half that matters — every refusal asserted to leave all
+  // four files BYTE-IDENTICAL, because "refused" and "half-applied" look the
+  // same from a log line.
+  'test-crucible-retire-reserved-name',
   // The four TEXT acts on somebody else's card (rollout item 2.6). Its centre
   // is a credential and a name: the bearer token must be in the spawn's
   // environment and in NOTHING a log or a command line can carry, and a
@@ -297,10 +315,10 @@ const SUITES = [
   // registry still cannot resolve a credential hosted — the last of which is a
   // TRIPWIRE that goes red on the re-vendor with the instructions on it, which
   // is the point. Plus the registry BookForge hands that window under Owen's
-  // one-owner ruling: priority order, disabled entries kept and marked, `local`
-  // present exactly when it resolves, a name that will not resolve omitted and
-  // RECORDED, and a call before the first reading refused by name rather than
-  // answered with an empty list a window cannot tell from "you have none".
+  // one-owner ruling: priority order, disabled entries kept and marked, ONE
+  // kind of row wherever the machine is, a name that will not resolve omitted
+  // and RECORDED, and a call before the first reading refused by name rather
+  // than answered with an empty list a window cannot tell from "you have none".
   'test-foundry-hosted-crucible-seam',
   // The module file BookForge posts to a Crucible, and the one property that
   // matters about it: it is a COPY. `shared/crucible/bookforge.module.json` is
@@ -352,7 +370,7 @@ const SUITES = [
   // still does differently from the SDK's. Split out of the seam suite when the
   // Phase 15 SDK shipped and that seam was deleted:
   // `electron/crucible/pairing-file.ts` did NOT go with it, because the SDK's
-  // reader is async (a packaging rule of theirs) while `readLocalServer` is
+  // reader is async (a packaging rule of theirs) while `discoverCrucible` is
   // synchronous (an architectural constraint of ours). Its OTHER two reasons —
   // the SDK's path rule omitting PHASE15 §3.6's Windows case, and an empty file
   // reading as "no engine" — were asserted here as tripwires, fired on the

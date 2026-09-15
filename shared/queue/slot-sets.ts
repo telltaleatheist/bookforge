@@ -13,9 +13,9 @@
  *
  * So capacity is per MACHINE, and the sets are:
  *
- *     local        [ gpu ] [ cpu ] [ cpu ]     ← this machine's Crucible
- *     local:cloud          [ cpu ] [ cpu ]     ← only if it HAS an upstream
- *     mac          [ gpu ] [ cpu ] [ cpu ]     ← a registered remote
+ *     3090 Ti      [ gpu ] [ cpu ] [ cpu ]     ← a registered Crucible
+ *     3090 Ti:cloud        [ cpu ] [ cpu ]     ← only if it HAS an upstream
+ *     mac          [ gpu ] [ cpu ] [ cpu ]     ← another one
  *     mac:cloud            [ cpu ] [ cpu ]     ← only if IT has an upstream
  *     local-longform-align  [ gpu ]            ← ONLY while a step charges it
  *     local-work           [ cpu ] [ cpu ]     ← what BookForge does ITSELF
@@ -163,10 +163,12 @@ export const LONGFORM_ALIGN_SET = 'local-longform-align';
  * The set holding work BOOKFORGE DOES ITSELF and never sends anywhere —
  * assembly, muxing, an export landing, a hosted-API pass.
  *
- * §2.4 calls this row `local`. It is spelled `local-work` here because `local`
- * is the RESERVED NAME of this machine's own Crucible server
- * (`electron/crucible/local.ts`), and one word meaning two machines is exactly
- * the duplicated fact crucible `docs/ARCHITECTURE.md` R1 forbids.
+ * §2.4 calls this row `local`. It is spelled `local-work` here, and it stays
+ * spelled that way now that the reserved Crucible name `local` is gone (Owen's
+ * ruling, 2026-09-15): this row is not a server and never was, and a bare
+ * `local` beside a bench of machine names would read as one. It is also the
+ * only meaning of the word left in the queue — `electron/crucible/servers.ts`
+ * refuses a server called `local-work` for the same reason, from this constant.
  */
 export const LOCAL_WORK_SET = 'local-work';
 
@@ -207,9 +209,9 @@ export const CLOUD_LANE_SLOTS = 2;
 /**
  * The separator between an engine's name and its cloud lane.
  *
- * A registry name cannot contain it: `servers.ts` refuses any name that does
- * not match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, and the reserved `local` and
- * {@link LONGFORM_ALIGN_SET} carry no colon either. That is what makes
+ * A registry name cannot contain it: `servers.ts`'s `validateServerName`
+ * refuses a colon BY NAME and says this is why, and {@link LOCAL_WORK_SET} and
+ * {@link LONGFORM_ALIGN_SET} carry none either. That is what makes
  * {@link serverOfCloudLane} the exact INVERSE of {@link cloudLaneOf} rather
  * than a guess at where to split.
  */
@@ -445,10 +447,10 @@ export type EngineUpstreams = 'configured' | 'none' | 'unknown';
  * could place work into that nothing can serve, and the refusal would come from
  * the engine's own door (`job_type_not_served`) rather than from the bench. So
  * it draws no row and no lane. The row belongs to the ENGINE it fronts, which
- * this app reaches under its own registered name — on Windows that is `local`,
- * whose connect code names the WSL engine and not the tray process in front of
- * it. An orchestrator registered ALONGSIDE its engine therefore adds nothing
- * and removes nothing: the card is counted once, by the half that has it.
+ * this app reaches under its own registered name — on Windows the connect code
+ * the host leaves names the WSL engine and not the tray process in front of it.
+ * An orchestrator registered ALONGSIDE its engine therefore adds nothing and
+ * removes nothing: the card is counted once, by the half that has it.
  *
  * `unknown` — nobody has read that server's `/v1/info` yet, or it did not
  * answer. **Absence of knowledge is not absence of an engine**, and every
@@ -460,10 +462,10 @@ export type EngineRole = 'engine' | 'orchestrator' | 'unknown';
 
 export interface SlotSetFacts {
   /**
-   * Every ENABLED registered server, in rank order, this machine's own `local`
-   * included. A disabled server contributes no set: §4.2.2's enable switch is a
-   * capacity switch, so turning it off takes its slots away and new claims stop
-   * going there.
+   * Every ENABLED registered server, in rank order — and since 2026-09-15 that
+   * is every server there is, wherever it answers. A disabled one contributes no
+   * set: §4.2.2's enable switch is a capacity switch, so turning it off takes its
+   * slots away and new claims stop going there.
    */
   readonly enabledServers: readonly string[];
   /**
@@ -759,39 +761,58 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
 }
 
 /**
- * THIS MACHINE HAS ONE CARD, and two slot sets can point at it.
+ * THIS MACHINE HAS ONE CARD, and more than one slot set can point at it.
  *
- * The local long-form aligner and this machine's own Crucible server (`local`)
- * are two venues over one 3090 Ti. As separate sets they each have a GPU slot,
- * so without this rule the scheduler could start an `epub-align` and a
- * `local` render at the same moment — which the single global `gpu: 1` used to
- * prevent by accident. It is stated here rather than rediscovered.
+ * BookForge still has a GPU tenant of its own — the long-form aligner
+ * ({@link LONGFORM_ALIGN_SET}) — and a Crucible server that answers on this
+ * machine's loopback is the SAME 3090 Ti under a different set. As separate sets
+ * they each have a GPU slot, so without this rule the scheduler could start an
+ * `epub-align` and a render on that engine at the same moment, which the single
+ * global `gpu: 1` used to prevent by accident. It is stated here rather than
+ * rediscovered on a card running two models.
+ *
+ * ── `serversOnThisMachine` IS NOT A KIND OF SERVER ───────────────────────
+ *
+ * Owen's ruling of 2026-09-15 deleted the reserved name `local` and with it the
+ * idea that a server here is a different sort of thing. It is not: it is added,
+ * named, ranked, coordinated with and drawn exactly like any other. This
+ * parameter answers one narrow question that is about THIS APP'S OWN CARD —
+ * *does the venue I am about to use share the card my aligner runs on* — and the
+ * caller answers it from the address (`electron/crucible/discovery.ts`,
+ * `isLoopbackUrl`, which says what that reading does and does not promise).
+ *
+ * It is a LIST because a machine can legitimately have two: a Windows box runs
+ * an orchestrator and a WSL engine on two loopback ports, and both may be
+ * registered.
+ *
+ * ENDS WHEN long-form alignment becomes a Crucible job
+ * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7). With no in-app GPU tenant there is no
+ * second venue over this machine's card and this rule has nothing left to say.
  *
  * Returns the OTHER set id already using this machine's card, or `null` when
- * nothing is. A remote server's venue answers `null` immediately: its card is
- * not this one, which is the whole point of the per-server sets.
+ * nothing is. A venue that is not on this machine answers `null` immediately:
+ * its card is not this one, which is the whole point of the per-server sets.
  *
  * NOT the same question as `external-gpu-job.lock` and the GPU arbiter, which
- * are about holders OUTSIDE this queue (a training chain). Whether a local
- * Crucible should replace those two is item A4 of
+ * are about holders OUTSIDE this queue (a training chain). Whether a Crucible
+ * here should replace those two is item A4 of
  * `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b — a ruling, not this.
  */
 export function thisMachinesCardHeldBy(options: {
   /** The venue the step is about to run at. */
   readonly venue: string;
-  /** The reserved name of this machine's own Crucible server, when it has one. */
-  readonly localServerName: string | null;
+  /** Registered servers that answer on this machine's loopback. See above. */
+  readonly serversOnThisMachine: readonly string[];
   readonly occupancy: ReadonlyMap<string, SetOccupancy>;
 }): string | null {
-  const { venue, localServerName, occupancy } = options;
+  const { venue, serversOnThisMachine, occupancy } = options;
   /*
-   * A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even `local`'s. The work runs
-   * on somebody's API; the engine forwarding it holds nothing. Answered first
-   * so `local:cloud` cannot be mistaken for `local`.
+   * A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even for an engine that is on it.
+   * The work runs on somebody's API; the engine forwarding it holds nothing.
+   * Answered first so `<server>:cloud` cannot be mistaken for `<server>`.
    */
   if (isCloudLane(venue)) return null;
-  const here: string[] = [LONGFORM_ALIGN_SET];
-  if (localServerName !== null) here.push(localServerName);
+  const here: string[] = [LONGFORM_ALIGN_SET, ...serversOnThisMachine];
   if (!here.includes(venue)) return null;
   for (const id of here) {
     if (id === venue) continue;

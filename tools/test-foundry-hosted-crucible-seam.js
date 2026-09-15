@@ -51,9 +51,10 @@
  *     server this machine will not offer that window) names the server, lists
  *     what IS offered, and says why it is refused here rather than handed over.
  *  5. **The registry BookForge hands over is the one every other door reads**,
- *     in priority order, disabled entries included, `local` present exactly
- *     when it resolves, refusals named rather than swallowed, and a call before
- *     the first reading refused by name instead of answered with an empty list.
+ *     in priority order, disabled entries included, one kind of row wherever
+ *     the machine is (Owen's ruling, 2026-09-15), refusals named rather than
+ *     swallowed, and a call before the first reading refused by name instead
+ *     of answered with an empty list.
  *
  * The SECOND tripwire, at the foot, is still a tripwire: it passes while the
  * vendored copy keeps its own cloud layer and goes red on the re-vendor that
@@ -370,7 +371,7 @@ async function main() {
   // ── 5. The registry BookForge hands the hosted window ────────────────────
   console.log('\nThe one registry, handed over (Owen, 2026-09-14)\n');
 
-  const TOKEN_LOCAL = 'crux_local_aaaa';
+  const TOKEN_HERE = 'crux_here_aaaa';
   const TOKEN_MAC = 'crux_mac_bbbb';
 
   /** The two reads a snapshot is composed from, scripted. */
@@ -378,19 +379,19 @@ async function main() {
     return Object.assign({
       routing: () => ({
         ranked: [
-          { name: 'local', enabled: true },
+          // A loopback engine is one row like any other now: no reserved
+          // name, no badge, no separate source — see servers.ts.
+          { name: '3090 Ti', enabled: true },
           { name: 'mac', enabled: false },
           { name: 'droplet', enabled: true },
         ],
         newJobsWaitFor: 'top-ranked',
         unknown: [],
-        legacyLocalRender: false,
       }),
       server: (name) => ({
         name,
-        url: name === 'local' ? 'http://127.0.0.1:7100' : `https://${name}.example:7100`,
-        token: name === 'local' ? TOKEN_LOCAL : TOKEN_MAC,
-        source: name === 'local' ? 'local' : 'registry',
+        url: name === '3090 Ti' ? 'http://127.0.0.1:7100' : `https://${name}.example:7100`,
+        token: name === '3090 Ti' ? TOKEN_HERE : TOKEN_MAC,
       }),
     }, over);
   }
@@ -409,16 +410,19 @@ async function main() {
 
   check('the servers cross in PRIORITY ORDER, with the disabled one marked and kept', () => {
     const taken = hostRegistry.refreshHostCrucibleRegistry(reader());
-    assert.deepStrictEqual(taken.servers.map((row) => row.name), ['local', 'mac', 'droplet']);
+    assert.deepStrictEqual(taken.servers.map((row) => row.name), ['3090 Ti', 'mac', 'droplet']);
     assert.deepStrictEqual(taken.servers.map((row) => row.enabled), [true, false, true]);
     // Their reader treats a MISSING `enabled` as enabled; ours always states it.
     for (const row of taken.servers) assert.strictEqual(typeof row.enabled, 'boolean');
-    assert.strictEqual(taken.localAbsent, null);
+    // THERE IS NO SEPARATE ANSWER ABOUT THIS MACHINE any more: the snapshot
+    // is the ranking and the registry, and nothing else.
+    assert.strictEqual('localAbsent' in taken, false,
+      'localAbsent is deleted; a field about "the local row" is how the reserved name comes back');
   });
 
   check('the token crosses and the URL is handed over exactly as the registry stores it', () => {
     const rows = hostRegistry.hostCrucibleServers();
-    assert.strictEqual(rows[0].token, TOKEN_LOCAL);
+    assert.strictEqual(rows[0].token, TOKEN_HERE);
     assert.strictEqual(rows[1].token, TOKEN_MAC);
     // No `/v1`, no `/openai`: the vendored dispatcher composes the OpenAI base
     // itself, and a transform here would be the second composer of one address.
@@ -432,24 +436,22 @@ async function main() {
   check('a log line of this registry carries names only — never a token or a URL', () => {
     const line = hostRegistry.describeHostCrucibleRegistry(
       hostRegistry.hostCrucibleRegistrySnapshot());
-    assert.ok(line.includes('local'), line);
+    assert.ok(line.includes('3090 Ti'), line);
     assert.ok(line.includes('mac (off)'), line);
-    assert.ok(!line.includes(TOKEN_LOCAL) && !line.includes(TOKEN_MAC), line);
+    assert.ok(!line.includes(TOKEN_HERE) && !line.includes(TOKEN_MAC), line);
     assert.ok(!line.includes('7100'), line);
   });
 
-  check('`local` is simply absent when this machine has none, and the reason is kept', () => {
+  check('a machine with one registered server hands over exactly that one', () => {
     const taken = hostRegistry.refreshHostCrucibleRegistry(reader({
       routing: () => ({
         ranked: [{ name: 'mac', enabled: true }],
         newJobsWaitFor: 'any',
         unknown: [],
-        legacyLocalRender: false,
       }),
     }));
     assert.deepStrictEqual(taken.servers.map((row) => row.name), ['mac']);
-    assert.notStrictEqual(taken.localAbsent, null);
-    assert.strictEqual(taken.localAbsent.code, 'no_local_server');
+    assert.deepStrictEqual(taken.omitted, []);
   });
 
   check('a name that will not resolve is OMITTED and RECORDED, never handed over half-formed', () => {
@@ -458,19 +460,14 @@ async function main() {
     const taken = hostRegistry.refreshHostCrucibleRegistry(reader({
       server: (name) => {
         if (name === 'mac') {
-          throw new CrucibleRegistryError('stale_local_entry', 'mac duplicates the local server');
+          throw new CrucibleRegistryError('unknown_server', 'mac was removed a moment ago');
         }
-        return {
-          name,
-          url: `https://${name}.example:7100`,
-          token: TOKEN_MAC,
-          source: 'registry',
-        };
+        return { name, url: `https://${name}.example:7100`, token: TOKEN_MAC };
       },
     }));
-    assert.deepStrictEqual(taken.servers.map((row) => row.name), ['local', 'droplet']);
+    assert.deepStrictEqual(taken.servers.map((row) => row.name), ['3090 Ti', 'droplet']);
     assert.deepStrictEqual(taken.omitted.map((row) => `${row.name}:${row.code}`),
-      ['mac:stale_local_entry']);
+      ['mac:unknown_server']);
     // An entry with no token would fail at the press with a worse sentence than
     // this one, and their shape has no field to carry a refusal in.
     assert.ok(hostRegistry.describeHostCrucibleRegistry(taken).includes('omitted mac'),
@@ -485,7 +482,7 @@ async function main() {
     // And the previous reading still stands: a read that did not work does not
     // wipe the answer the window is using.
     assert.deepStrictEqual(
-      hostRegistry.hostCrucibleServers().map((row) => row.name), ['local', 'droplet']);
+      hostRegistry.hostCrucibleServers().map((row) => row.name), ['3090 Ti', 'droplet']);
   });
 
   check('the mount offers the seam, so the window can actually ask', () => {

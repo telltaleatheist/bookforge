@@ -7636,8 +7636,8 @@ function setupIpcHandlers(): void {
   // file under <userData> is not a feature, so this is where the line is crossed.
   //
   // Three modules answer here and each owns one fact (ARCHITECTURE.md R1):
-  // `servers.ts` the registry of REMOTES, `local.ts` the server on this machine
-  // (read from its own config.toml, never copied), `routing.ts` the rank/enable
+  // `servers.ts` the registry — every server, wherever it runs — `discovery.ts`
+  // the OFFER of one found on this computer, `routing.ts` the rank/enable
   // record. `probe.ts` is the only one that talks to a server, and everything it
   // does is a read — except the two operator verbs at the bottom, which are the
   // only doors here that touch an accelerator.
@@ -7648,9 +7648,9 @@ function setupIpcHandlers(): void {
    * moments the snapshot exists for (electron/crucible/host-registry.ts).
    *
    * Called after every door below that can change the list, and on the panel's
-   * own read, which is where a person presses Re-check on `local`. It is NOT a
-   * refresh on a timer and not one per use: the window's reader is synchronous
-   * and resolving `local` is a `wsl.exe` spawn.
+   * own read, which is where a person presses Re-check. It is NOT a refresh on
+   * a timer and not one per use: the window's reader is synchronous and runs
+   * while a page paints.
    *
    * A FAILED RE-READ DOES NOT FAIL THE WRITE THAT JUST SUCCEEDED. The entry was
    * added, the rank was saved; what failed is this app telling the hosted
@@ -7674,7 +7674,8 @@ function setupIpcHandlers(): void {
    *
    * crucible `docs/PHASE14-ENVPACKS.md` §4a: every time BookForge finds a
    * Crucible it makes sure that Crucible has what BookForge needs — nobody
-   * presses anything. The moments are app start (for `local`), a server being
+   * presses anything. The moments are app start (for every enabled server), a
+   * server being
    * added, a server being switched back on, and the wizard's step landing on
    * connected; all four go through `coordinate.ts`'s one function, which is
    * also what makes two of them arriving together ONE run.
@@ -7699,9 +7700,8 @@ function setupIpcHandlers(): void {
     try {
       const { serversView } = await import('./crucible/probe.js');
       const view = serversView();
-      // The panel's read IS the Re-check of `local`: it resolves the local
-      // server's config on the way through, so this is the moment the hosted
-      // window's copy of the list is cheapest to bring level with it.
+      // The panel's read is the moment a person looks at the list, so it is the
+      // moment the hosted window's copy of it is cheapest to bring level.
       await refreshHostedFoundryRegistry('after the Servers panel read');
       return { success: true, data: view };
     } catch (err) {
@@ -7718,8 +7718,7 @@ function setupIpcHandlers(): void {
   // (`crucible.add`) is unchanged, so no renderer call site moved.
   ipcMain.handle('crucible:add-server', async (_event, server: { name: string; url: string; token: string }) => {
     try {
-      // The registry's own refusals, verbatim: `local` is reserved, a loopback URL
-      // is this machine (which is read from its config, never registered), a
+      // The registry's own refusals, verbatim: an unusable or already-taken name, a
       // duplicate name is not a silent repoint. The row shows the message.
       const { addServer } = await import('./crucible/servers.js');
       const added = addServer(server);
@@ -7730,6 +7729,40 @@ function setupIpcHandlers(): void {
       // row draws the run's own state as it arrives.
       void coordinateWithServer(added.name, 'it was added');
       return { success: true, data: added };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * ADD THE CRUCIBLE FOUND ON THIS COMPUTER, under a name the operator chose.
+   *
+   * THE SAME ADD, and that is the whole point of it. It ends in
+   * `addServer({name, url, token})` — the same validation, the same named
+   * refusals, the same row — and what it saves a person is typing an address
+   * and a bearer token out of a file inside a WSL guest.
+   *
+   * It exists as its own channel for ONE reason: the token. `crucible:servers`
+   * carries `****<last 4>` and nothing on that wire can hold a plaintext
+   * credential (`shared/crucible/settings-wire.ts`), so a renderer that
+   * prefilled the connect form from the discovery would have to be handed the
+   * key to hand it back. The NAME is the only field that crosses; main reads
+   * the rest from the machine.
+   *
+   * It is NOT a second kind of server (Owen's ruling, 2026-09-15). What it adds
+   * is a registry row like any other: rankable, disable-able, removable,
+   * coordinated with by the same code, and drawn with the same heading.
+   */
+  ipcMain.handle('crucible:add-discovered', async (_event, name: string) => {
+    try {
+      const { discoverCrucible, processDiscoveryHost } = await import('./crucible/discovery.js');
+      const { getWslDistro } = await import('./tool-paths.js');
+      const found = discoverCrucible(processDiscoveryHost(getWslDistro()));
+      const { addServer } = await import('./crucible/servers.js');
+      const row = addServer({ name, url: found.url, token: found.token });
+      await refreshHostedFoundryRegistry('a Crucible on this computer was added');
+      void coordinateWithServer(row.name, 'it was added');
+      return { success: true, data: row };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7757,7 +7790,7 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // The same test for a server this machine already knows — `local` included.
+  // The same test for a server this machine already knows, by its registry name.
   //
   // RENAMED 2026-09-14 for the same reason as `crucible:add-server` above:
   // Foundry e6d5424 claims `crucible:test` (package C). Note that their
@@ -8027,7 +8060,7 @@ function setupIpcHandlers(): void {
   // "Offer to install a Crucible, or point at one elsewhere." Door 1 (connect
   // to one elsewhere) and door 2 (use the one on this machine) are already
   // answered by `crucible:test-address`/`crucible:add-server` and
-  // `crucible:servers` above — the registry and `local.ts`, unchanged. These
+  // `crucible:servers` above — the registry and `discovery.ts`, unchanged. These
   // three are door 3.
   //
   // THE CHANNEL NAMES ARE NOT FOUNDRY'S, AND THAT IS DELIBERATE. The vendored
@@ -8201,16 +8234,19 @@ function setupIpcHandlers(): void {
    * TAKING THE CRUCIBLE OFF THIS MACHINE — the dry run, and the real one.
    *
    * `crucible uninstall` is the ENGINE's verb; `electron/crucible/uninstall.ts`
-   * finds the CLI that owns the local server and runs it. Two channels for one
+   * finds the CLI that owns the Crucible on this computer and runs it. Two
+   * channels for one
    * command, because the two acts are not the same act: the first is a read
    * that touches nothing and the second deletes a service, a home and possibly
    * tens of gigabytes. A single channel with a `dryRun` flag would put both
    * behind one name in the collision doc and in the log.
    *
-   * LOCAL ONLY. The door refuses `uninstall_not_local` for anything but this
-   * machine's own engine (ruling 2026-09-15, taken with Foundry so both apps
-   * draw the same door) — an engine somewhere else is uninstalled on the
-   * machine it is on.
+   * THIS MACHINE ONLY, AND PROVED. The door refuses `uninstall_not_local`
+   * unless the named row's URL is the URL of the Crucible discovery finds on
+   * this computer (ruling 2026-09-15, taken with Foundry so both apps draw the
+   * same door) — an engine somewhere else is uninstalled on the machine it is
+   * on, and with the reserved name gone the check is the address rather than a
+   * word.
    *
    * Channel names are `crucible:host-*` for the reason the install pair is:
    * the vendored Foundry claims the short `crucible:` spellings.
@@ -8272,11 +8308,12 @@ function setupIpcHandlers(): void {
         },
       );
       /*
-       * THE REGISTRY'S ROW GOES WITH THE ENGINE. `local` is read from the
-       * pairing file / config.toml rather than stored, so nothing is deleted
-       * there — but the ROUTE record this app keeps about that server names an
-       * engine that no longer exists, and a route record outliving its server
-       * is a bug this app already fixed once (crucible rollout plan, 28ad983f).
+       * THE ROUTE RECORD GOES WITH THE ENGINE. The registry row is the
+       * operator's to remove — uninstalling the software is not the same act as
+       * forgetting the address — but the ROUTE record this app keeps about that
+       * server names an engine that no longer exists, and a route record
+       * outliving its server is a bug this app already fixed once (crucible
+       * rollout plan, 28ad983f).
        */
       const { forgetResolvedEngine } = await import('./crucible/engine-resolve.js');
       forgetResolvedEngine(server);
@@ -8331,7 +8368,7 @@ function setupIpcHandlers(): void {
   /**
    * Open a NAMED server's own operator page in a window with no bridge.
    *
-   * The token is read here from the one owner of it — the registry, or `local`'s
+   * The token is read here from the one owner of it — the registry, or the
    * config.toml — and never typed, never sent to the renderer, never put in an
    * external browser's history. The window's hardening is section 5.3 exactly
    * and lives in `electron/crucible/operator-window.ts` with the argument for
@@ -8370,7 +8407,7 @@ function setupIpcHandlers(): void {
    *
    * Idempotent and concurrency-safe in `coordinate.ts`: a second call while one
    * is in flight joins the first. So the wizard's step landing on "connected"
-   * and app start both calling it for `local` is one run, not two — which is
+   * and app start both calling it for one server is one run, not two — which is
    * the `task_busy` this whole design exists to avoid, manufactured by us.
    */
   ipcMain.handle('crucible:coordinate', async (_event, name: string) => {
@@ -12881,6 +12918,34 @@ app.whenReady().then(async () => {
   setupIpcHandlers();
   registerClipforgeIpc();
   registerDocumentIpc();
+  /*
+   * THE RETIRED CRUCIBLE NAME `local` COMES OUT OF THE RECORDS FIRST.
+   *
+   * It has to run HERE, above `startQueueEngine()`, and the order is the whole
+   * of why it is safe: it rewrites `<userData>/queue-engine.json` on disk, and
+   * the queue engine reads that file inside `configure()` on the next line. The
+   * other three records it touches (the registry, the rank record, the upstream
+   * record) are not read until later still.
+   *
+   * It writes NOTHING when no record names the retired server, which is every
+   * launch after the first. When it cannot be done it refuses BY NAME having
+   * written nothing at all, and the rows that still say `local` then refuse
+   * `unknown_server` in their own words — see
+   * `crucible/retire-reserved-name.ts` for why that is the right end of it.
+   */
+  try {
+    const retire = await import('./crucible/retire-reserved-name.js');
+    const report = retire.retireReservedLocalName(
+      retire.processRetireHost(app.getPath('userData')),
+    );
+    if (report.found.length > 0) logger.info(retire.describeRetirement(report));
+  } catch (err) {
+    logger.error('The retired Crucible server name "local" could not be migrated out of this '
+      + 'machine\'s records; nothing was changed and any row that names it will refuse by name', {
+      error: (err as Error).message,
+    });
+  }
+
   // The queue, before any window exists. It is main's now: its state is loaded
   // (migrating the retired renderer blob on first run), its step modules are
   // registered, and its doors are opened here — so a run survives every window
@@ -13070,46 +13135,36 @@ app.whenReady().then(async () => {
     });
   }
 
+  /*
+   * COORDINATE WITH EVERY ENABLED SERVER — THE SAME WAY WITH EACH.
+   *
+   * Two calls used to stand here: a full coordination with the reserved `local`
+   * row, and a two-question bench read of every OTHER enabled server. Owen's
+   * ruling of 2026-09-15 deleted the reserved name and with it the reason for
+   * the split (*"a local crucible server shouldnt be treated any differently
+   * than a remote crucible server"*), so every enabled server now gets the
+   * larger of the two — see `crucible/coordinate.ts`'s own note on what that
+   * costs, which for a stocked engine is one extra read.
+   *
+   * It answers the bench questions the old pass existed for, for every server:
+   * whether the engine has an upstream (the `[cloud]` lane) and whether the
+   * address is an ORCHESTRATOR with no card (no row at all).
+   *
+   * Whatever this learns REACHES THE BENCH: the record announces its own
+   * changes (`crucible/routes.ts`'s `onCrucibleRecordChanged`) and the queue
+   * engine republishes on them. Without that the window kept the one snapshot
+   * it asked for while it was still starting — with an empty queue nothing else
+   * ever publishes.
+   */
   void (async () => {
     try {
-      const { coordinateLocalOnStart } = await import('./crucible/coordinate.js');
-      const state = await coordinateLocalOnStart();
-      logger.info(state === null
-        ? 'Crucible coordination: this machine has no local server, so there was nothing to ask.'
-        : `Crucible coordination with "local" at startup: ${state.phase}`);
+      const { coordinateServersOnStart } = await import('./crucible/coordinate.js');
+      const asked = await coordinateServersOnStart();
+      logger.info(asked.length === 0
+        ? 'Crucible coordination: no enabled server is registered, so there was nothing to ask.'
+        : `Crucible coordination at startup with: ${asked.join(', ')}`);
     } catch (err) {
-      logger.warn('Could not coordinate with the Crucible on this machine at startup', {
-        error: (err as Error).message,
-      });
-    }
-
-    /*
-     * …AND THE TWO BENCH QUESTIONS OF EVERY OTHER ENABLED ENGINE.
-     *
-     * Coordination at start is `local`'s alone, so until now nothing ever asked
-     * a REMOTE whether it has an upstream — or whether it is an orchestrator
-     * with no card at all — until something happened to connect to it, which is
-     * why the record above was empty and the lanes were phantom. This is one
-     * `GET /v1/settings` and one `GET /v1/info` each, once, with no timer: the
-     * same reads coordination makes, at the one moment there is no other
-     * occasion for them. A server that does not answer stays `unknown` and keeps
-     * its row and its lane, and says so in the log.
-     *
-     * Whatever this learns REACHES THE BENCH, which is the other half of the
-     * defect: the record announces its own changes now
-     * (`crucible/routes.ts`'s `onCrucibleRecordChanged`) and the queue engine
-     * republishes on them. Without that the window kept the one snapshot it
-     * asked for while it was still starting — with an empty queue nothing else
-     * ever publishes.
-     */
-    try {
-      const { readBenchFactsOnStart } = await import('./crucible/coordinate.js');
-      const asked = await readBenchFactsOnStart();
-      if (asked.length > 0) {
-        logger.info(`Crucible bench facts read at startup for: ${asked.join(', ')}`);
-      }
-    } catch (err) {
-      logger.warn('Could not ask the registered Crucible servers about their upstreams and roles', {
+      logger.warn('Could not coordinate with this machine\'s Crucible servers at startup', {
         error: (err as Error).message,
       });
     }

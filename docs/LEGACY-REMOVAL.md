@@ -87,7 +87,8 @@ One known cost, reported rather than fixed: `gpuThermal` renders only on that ro
 (`isThisMachine` returns true for it alone), so this machine's card temperature is now
 drawn only while an `epub-align` step is queued. The reading is about THIS MACHINE, not
 about that step. The real fix needs the snapshot to carry which server name is this
-machine's, which `electron/crucible/local.ts` would own — UNRULED, and deliberately not
+machine's, which `electron/crucible/servers.ts`'s `serversOnThisMachine` now answers for
+the scheduler — UNRULED for the bench, and deliberately not
 built here.
 
 Also out of scope, and untouched: data/format migrations that merely use the word "legacy"

@@ -751,7 +751,7 @@ function toolPathText(raw: string | boolean | undefined): string {
                 The WSL keys the
                 Orpheus page owned are read only by that held spawn and die
                 with it. wslDistro did not move, because it never belonged to
-                Orpheus: its non-legacy reader is crucible/local.ts, which finds
+                Orpheus: its non-legacy reader is crucible/discovery.ts, which finds
                 it in tool-paths.json exactly as before.
 
                 WHAT IS LEFT HERE is the three tools BookForge still installs.
@@ -765,7 +765,7 @@ function toolPathText(raw: string | boolean | undefined): string {
               </div>
             } @else if (section.id === 'crucible') {
               <!-- The Crucible servers the queue may use: this machine's, the
-                   remotes, their rank and their enable switches. -->
+                   servers, their rank and their enable switches. -->
               <app-crucible-servers-panel></app-crucible-servers-panel>
             } @else if (section.id === 'pipeline-defaults') {
               <!-- Default AI / TTS / output selections the pipeline seeds from. -->

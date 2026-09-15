@@ -54,6 +54,72 @@ its desktop allowance, which is the absorption PHASE9-CAPABILITY.md section 5 al
 Full write-up and the caveats (the seed regime changes with width; the `maxChars` certificate is
 still single-row) in `crucible/docs/PHASE3-TTS.md` section 6b.
 
+## 0h. THE RESERVED NAME `local` IS GONE (ruling 2026-09-15, BUILT)
+
+Owen, verbatim:
+
+> *"it shouldnt be named 'local' anywhere. it might not be local. a local
+> crucible server shouldnt be treated any differently than a remote crucible
+> server. it should all be entered the exact same way. if we have to change how
+> the code works then we should do that. bookforge shouldnt even know if it's
+> local because it doesnt mater"*
+
+**A Crucible server is a registry entry and nothing else.** Same fields, same add
+flow, same coordination, same bench row, whether it answers on `127.0.0.1` or
+across the tailnet. What was deleted:
+
+- `LOCAL_SERVER_NAME` and `electron/crucible/local.ts` (the file is now
+  `discovery.ts`, and what it answers is an OFFER, not a server).
+- `describeLocal()`, `ResolvedServer.source`/`.local`, `CrucibleServerListing.stale`,
+  and the refusal codes `local_is_not_registered`, `stale_local_entry`,
+  `loopback_duplicates_local`. **A loopback URL is added like any other now.**
+- `HostCrucibleRegistrySnapshot.localAbsent`.
+- `coordinateLocalOnStart()` + `readBenchFactsOnStart()` → one
+  `coordinateServersOnStart()`: **every enabled server is coordinated and asked
+  the bench questions the same way.** It stays cheap because coordination posts
+  nothing when nothing is missing (ASK, THEN ACT).
+- The Servers panel's "engine on this machine" card, its badge, and the row that
+  could not be removed. One list, one kind of row, Remove on every one.
+
+What replaced the convenience: `discovery.ts` still reads the pairing file (else
+`config.toml`, on Windows through `wsl.exe`) and answers *what the entry for the
+Crucible on this computer would look like*. That PREFILLS the add door —
+`crucible:add-discovered` takes a NAME and main supplies the rest, because the
+token may not cross the seam — and ends in the same `addServer` every other door
+ends in. `node cli/crucible.js --discovered` / `--add-discovered --name <n>` is
+the same thing headless.
+
+**Names are free text**, so the rules are enforced at the point of entry
+(`servers.ts validateServerName`) and refused by name: 1–48 characters, no
+control characters, no `:` (the queue hangs `<server>:cloud` off a name), no `/`
+or `\` (the name becomes a browser session partition), no double spaces, and not
+one of the queue's own bench rows (`local-work`, `local-longform-align`,
+`legacy-local-narrator`, `any`). Uniqueness is case-insensitive; **lookup stays
+exact**. There is deliberately NO display label: one string, everywhere.
+
+**Migration.** `electron/crucible/retire-reserved-name.ts` runs once at start,
+above `startQueueEngine()` because it rewrites `queue-engine.json` on disk. It
+adds the discovered engine to the registry under the name the engine calls itself
+(or reuses the row that already has that URL) and rewrites every reference in
+`crucible-routing.json`, `crucible-upstreams.json` and `queue-engine.json` in the
+same pass. **If it cannot be done it refuses BY NAME and writes nothing at all** —
+no Crucible here, an unusable name, that name taken by a different machine, or a
+record that will not parse. `tools/test-crucible-retire-reserved-name.js` drives
+it over a copy of Owen's own records and asserts every file is byte-identical
+after each refusal.
+
+**The one place "here" still means anything** is the scheduler's one-card rule:
+BookForge still runs the long-form aligner on this machine's GPU itself, so a
+render on a Crucible that answers on loopback is the same 3090 Ti.
+`serversOnThisMachine()` answers that from the ADDRESS, it decides nothing about
+how a server is added or drawn, and it goes away with §B7.
+
+**Still standing, and it is Foundry's:** `foundry-app/electron/ipc.ts` registers
+this machine's engine as `local`, arguing *"parity with BookForge"*. That
+argument is now false. It is a vendored subtree with its own tsconfig — neither
+`npx tsc -p tsconfig.electron.json` nor `node tools/run-keepers.js` compiles it —
+so it must be changed upstream in the foundry repo and re-vendored.
+
 ## 0g. MIDDAY 2026-09-15 — what Owen's own in-app pass found, and what it cost
 
 He ran the app. Every item below came from USING it, not from reading it, which is why they are
@@ -135,8 +201,9 @@ here and not in 0f.
   still PARSES and DISPLAYS so old records open, and can no longer be chosen), with the shipped presets
   that name `ttsEngine: 'orpheus'` corrected rather than left to resolve to nothing.
 - **The bench's legacy GPU row.** Owen: one GPU slot per Crucible engine, two local CPU slots, nothing
-  else. `local` and `mac` are CORRECT (both are registered engines; `local` is this machine's WSL
-  engine, not an in-app path). The offender is `the local narrator (legacy)`, which has THREE tenants,
+  else. Both rows are CORRECT (both are registered engines, not in-app paths) — though the name
+  `local` is no longer one anything here uses; see 0h. The offender is `the local narrator (legacy)`,
+  which has THREE tenants,
   not one: `epub-align` (a local WhisperX spawn that auto-selects CUDA; Crucible has no long-form align
   job — the `align-longform` spec is in §B7 and UNRULED), `video-assembly` (declares `resource: 'gpu'`
   with no justification and no `machines()`), and any render while the legacy switch is on. Agent is
@@ -264,7 +331,7 @@ pages are capable of installing and configuring it."* Step by step, with a keepe
 
 **Step 1 — first run, no server.** Already true and now actually reachable. The setup step
 (`app-crucible-doors mode="probing"`) shows ONE of three faces from `crucible:host-install-plan`;
-the local read is `local.ts`, pairing file FIRST. The gap was the third face: **the install
+the read of a Crucible on this computer is `discovery.ts`, pairing file FIRST. The gap was the third face: **the install
 button was disabled on every machine** because `DRIVEN_INSTALL_AVAILABLE` was a hardcoded
 `false` over a hand-transcribed `@crucible/bootstrap` surface. The package is now vendored
 (`vendor/crucible-bootstrap-0.6.0.tgz`, `npm pack` of `sdk/bootstrap`, the same stopgap shape as
@@ -517,8 +584,8 @@ Three doors now read ONE discriminator for "is this an upstream model id"
 §1), which is why it was put beside the act names rather than written
 `.includes('/')` three times.
 
-**CONNECT (§5.1) — the pairing file is a second door to `local`, not a fallback.**
-`readLocalServer` asks `$CRUCIBLE_HOME/pairing` first (else
+**CONNECT (§5.1) — the pairing file is a second door to the Crucible on this computer, not a fallback.**
+`discoverCrucible` asks `$CRUCIBLE_HOME/pairing` first (else
 `%LOCALAPPDATA%\Crucible\pairing` on Windows, `~/.crucible/pairing` elsewhere — pinned in
 PHASE15 §3.6, which this build asked for and the Crucible agent wrote), and only then reads
 `config.toml` through `wsl.exe`. Two named artefacts written by different parts of the
@@ -602,7 +669,7 @@ a tripwire nobody can find the reason for gets deleted by the next person.
    operation: a static `node:fs` import would break a bundler targeting a browser-ish
    runtime, so its imports are assembled at run time and a dynamic import is a promise —
    `cruciblePairingPath` is async too, so even the PATH cannot be had synchronously.
-   BookForge's `readLocalServer` is synchronous because the registry, `readRouting()` and the
+   BookForge's `discoverCrucible` is synchronous because the registry, `readRouting()` and the
    hosted-Foundry snapshot all are, and `readRouting()` runs inside the queue's synchronous
    pump. Ours, ours to fix, and not on the way past.
 2. **THE SDK'S PATH RULE DOES NOT CARRY THE WINDOWS CASE §3.6 PINS.** The table in §3.6 says
@@ -774,7 +841,7 @@ apps' doors.
   machine and a row waiting for a card is told WHICH card. 26-check keeper
   `tools/test-queue-slot-sets.js`. Two rulings recorded in §3 (the server CPU number, and the
   legacy set's own slot).
-- **A2. Local slots are not "removed" when a local Crucible exists — they are RENAMED.** Once
+- **A2. ~~Local slots are not "removed" when a local Crucible exists — they are RENAMED.~~ SUPERSEDED by 0h: there is no `local` row to rename.** Once
   `local` resolves, this machine's card IS the `local` server's GPU slot; there is no separate
   "BookForge's own GPU" slot to remove. What still existed beside it was the LEGACY SPAWN
   LAYER (WSL narrator, local text engines, local VLM/RVC/align spawns) behind the ONE switch
@@ -1187,7 +1254,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - [x] `denoise` job type (shares the RVC env; `audio-separator` pinned by name) *done (crucible `380e9d2`: roformer pass in the rvc env, `audio-separator==0.31.1` compatible-not-resolved until the first real install; `enable_denoise` flag; capability class). Also `5593320`: the urvc base assets are pulled from HF by pinned digest (`crucible rvc pull-base`) — the upstream is the installed fork's own `JackismyShephard/ultimate-rvc`, not the ancestral repos, and the embedder's `config.json` joined the list (without it transformers will not load the directory). Crucible: 859 tests green.*
 
 ### Tier 2 — BookForge gets its doors (built + tested, unverified on a card)
-- [x] **2.1 Local discovery, registry holds remotes only** (the fix Owen said go on): `electron/crucible/local.ts` reads the local server's own `config.toml` (`$CRUCIBLE_HOME`, on Windows through `wsl.exe -d <distro> --exec`); the reserved server name `local` resolves to it; `addServer` refuses loopback URLs by name; the stale `wsl` entry is refused at use with the fix in the message. *Done 20:05 — 20-check keeper `tools/test-crucible-servers.js`; live: `--list` shows `local` read through WSL, `--server wsl` refused as stale, `--server mac` healthy; the stale `wsl` entry was removed from the real registry with the CLI's own repair door.*
+- [x] ~~**2.1 Local discovery, registry holds remotes only**~~ **SUPERSEDED by 0h (2026-09-15)** — the reserved name and the loopback refusal are deleted. As delivered on 2026-09-13 (the fix Owen said go on): `electron/crucible/local.ts` reads the local server's own `config.toml` (`$CRUCIBLE_HOME`, on Windows through `wsl.exe -d <distro> --exec`); the reserved server name `local` resolves to it; `addServer` refuses loopback URLs by name; the stale `wsl` entry is refused at use with the fix in the message. *Done 20:05 — 20-check keeper `tools/test-crucible-servers.js`; live: `--list` shows `local` read through WSL, `--server wsl` refused as stale, `--server mac` healthy; the stale `wsl` entry was removed from the real registry with the CLI's own repair door.*
 - [x] **2.2 Servers settings row** (PHASE5-APPS §2, PHASE7-LANES §4.2.2): the local server first, then remotes; add/remove remote with **Test** (ping, then info); drag to rank; enable switch per server; **New jobs wait for: top-ranked / Any**. IPC + preload + renderer. *Done 20:55 (`f6ef8d76`, `ea39bc58`): **Settings → Crucible Servers**; routing record `<userData>/crucible-routing.json` (`electron/crucible/routing.ts`, 19-check keeper); live read-only probe of the Mac OK; Load/Unload buttons wired and never pressed. Open: the first `wsl.exe` read against a cold VM returned exit −1 and the second succeeded — the card has a Re-check button, and the root cause is owed a reproduction.*
 - [x] **2.3 The `crucible` AI provider reachable from Settings**: renderer enum gains `crucible`, the AI setup picks a server (from 2.2's list) and a *resident* model; `checkProviderConnection` finally receives its server parameter. *Done 21:00 (`3a98ff70`): **Settings → AI → Crucible** card; a queue row cannot yet name a server (that is 2.5's `waitFor`), so that door refuses `crucible` by name.*
 - [x] **2.4 Audiobook render through Crucible** *(built 21:25, `944d1f02`: `electron/crucible/render.ts`, one `tts` job per book with `take: 0`, voices checked against `/v1/voices` before the POST, 26-check keeper against a fake Crucible; three rulings owed in the file: zero-shot voices, whether a remote render holds this machine's GPU lease, resume across an app restart. Follow-up done 21:50, `dbc5633b`: `decideWhereGenerationRuns` in `electron/crucible/generation-venue.ts` — caller's name wins, else the legacy switch, else the top-ranked server (not pinged: a named machine is an instruction), else for `any` the first enabled server whose ping answers; refusals `no_enabled_server` / `no_reachable_server`, never a silent drop to local. The resolved venue is written onto the run's saved state so Continue goes back to the same machine. On this PC the default venue is `local`, the WSL service. The legacy switch is in Settings → Crucible Servers: "Render audiobooks with the local narrator instead (legacy — removed after the in-app pass)".)*: the narration modal's generation step submits a `tts` job (chunks up front, so there is a percentage), streams `chunk` events into the guard ledger, downloads artifacts into `sentencesDir` with the existing downloader, and assembly runs locally as it does today. The WSL narrator spawn stays **until Owen's in-app pass**, then is deleted in a commit he approves — a dated stopgap, not a fallback: the app takes the Crucible path whenever the selected server is reachable and refuses by name when it is not.

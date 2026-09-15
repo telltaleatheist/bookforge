@@ -71,7 +71,7 @@ export interface CrucibleUninstallTarget {
   argv: string[];
   /** One line naming it, for the screen. */
   describe: string;
-  /** How `local.ts` found the server this belongs to: `pairing`, `file` or `wsl`. */
+  /** How `discovery.ts` found the Crucible this belongs to: `pairing`, `file` or `wsl`. */
   via: string;
 }
 

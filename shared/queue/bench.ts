@@ -485,12 +485,13 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
 /**
  * Does this slot set run on the machine BookForge is on?
  *
- * The legacy narrator spawn always does. A SERVER might — `local` is this
- * machine's own Crucible — but the snapshot does not carry which name that is
- * (the reserved word belongs to `electron/crucible/local.ts`, and a bench that
- * spelled it would be a second owner of it, crucible `docs/ARCHITECTURE.md`
- * R1). So a server's lane carries no temperature at all, which is the honest
- * answer for every remote one and a missing decoration for the local one.
+ * The in-app long-form aligner always does. A SERVER might — one that answers
+ * on this machine's loopback is the same card — but the snapshot does not carry
+ * which names those are. Since Owen's ruling of 2026-09-15 there is no reserved
+ * word to spell either: the question is about ADDRESSES, which only the registry
+ * holds (`electron/crucible/servers.ts serversOnThisMachine`). So a server's
+ * lane carries no temperature at all, which is the honest answer for every
+ * server somewhere else and a missing decoration for one here.
  *
  * CONSEQUENCE OF THE IN-APP ROW BECOMING CONDITIONAL (2026-09-15), and WIDENED
  * when the legacy narrator was deleted the same day: the reading is drawn only
@@ -498,9 +499,10 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
  * only while an `epub-align` step is queued. So the card's temperature — a fact
  * about THIS MACHINE, not about that step — is usually not drawn at all. That is
  * a missing decoration rather than a lie, and it is deliberately left that way:
- * what would fix it is the snapshot carrying which server name is this
- * machine's, which belongs to `electron/crucible/local.ts` and is a RULING, not
- * a bench change (docs/LEGACY-REMOVAL.md).
+ * what would fix it is the snapshot carrying which server names answer on this
+ * machine's loopback — the scheduler already asks that question for its one-card
+ * rule — and that is a RULING about what a bench row shows, not a bench change
+ * (docs/LEGACY-REMOVAL.md).
  */
 function isThisMachine(setId: string, _snapshot: QueueSnapshot): boolean {
   return setId === LONGFORM_ALIGN_SET;

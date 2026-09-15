@@ -109,7 +109,7 @@ async function checkAsync(name, fn) {
 //
 // Every fact `crucibleHostFacts` reads, supplied. A test that let ANY of these
 // fall through to the real machine would pass on this PC and fail on the Mac,
-// which is the property `local.ts` and `pages.ts` are written for too.
+// which is the property `discovery.ts` and `pages.ts` are written for too.
 
 const WSL_TABLE = [
   '  NAME      STATE      VERSION',
@@ -126,7 +126,7 @@ function host(overrides) {
     wslDistro: 'Ubuntu',
     listWsl: () => ({ status: 0, stdout: WSL_TABLE, stderr: '' }),
     queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
-    localConfig: () => ({
+    discovered: () => ({
       present: false,
       code: 'no_local_config',
       reason: 'no local Crucible: ~/.crucible/config.toml does not exist inside WSL distro "Ubuntu".',
@@ -565,7 +565,7 @@ check('the happy PC: a WSL2 guest, a card, no config yet, and no refusals', () =
   // `no_local_config` is the ORDINARY state of a machine that has not installed
   // one — it is the reason this screen exists, not a fault to report.
   assert.deepStrictEqual(facts.refusals, []);
-  assert.strictEqual(facts.local.present, false);
+  assert.strictEqual(facts.discovered.present, false);
 });
 
 check('the WSL1-only machine is refused as wsl_missing, with the command', () => {
@@ -654,14 +654,14 @@ const CONFIG_PRESENT = {
 };
 
 checkAsync('DOOR 2 open: the config is here, and the plan says so', async () => {
-  const plan = await install.crucibleInstallPlan(host({ localConfig: () => CONFIG_PRESENT }));
-  assert.strictEqual(plan.host.local.present, true);
-  assert.strictEqual(plan.host.local.serverName, 'crucible@owens-pc-wsl');
+  const plan = await install.crucibleInstallPlan(host({ discovered: () => CONFIG_PRESENT }));
+  assert.strictEqual(plan.host.discovered.present, true);
+  assert.strictEqual(plan.host.discovered.serverName, 'crucible@owens-pc-wsl');
   assert.ok(
     plan.machine.includes('crucible@owens-pc-wsl'),
     'the one-line description does not mention the server that is already here',
   );
-  // The step this app can actually verify is `init`: local.ts has already read
+  // The step this app can actually verify is `init`: discovery.ts has already read
   // whether a config is there. On a MAC or a Linux box that step is in the
   // list by the package's own name, so a machine with a config is not told to
   // initialise again.
@@ -669,7 +669,7 @@ checkAsync('DOOR 2 open: the config is here, and the plan says so', async () => 
     platform: 'darwin', arch: 'arm64', wslDistro: undefined,
     listWsl: () => { throw new Error('not asked'); },
     queryGpu: () => { throw new Error('not asked'); },
-    localConfig: () => CONFIG_PRESENT,
+    discovered: () => CONFIG_PRESENT,
   }));
   const init = mac.steps.find((step) => step.title === 'init');
   assert.ok(init, 'the installer\'s step list has no `init` step any more');
@@ -678,7 +678,7 @@ checkAsync('DOOR 2 open: the config is here, and the plan says so', async () => 
 
 check('DOOR 2 closed: `no_local_config` is a STATE and is not reported as a refusal', () => {
   const facts = install.crucibleHostFacts(host());
-  assert.strictEqual(facts.local.present, false);
+  assert.strictEqual(facts.discovered.present, false);
   assert.ok(
     !facts.refusals.some((r) => r.code === 'no_local_config'),
     'a laptop that only ever renders on the Mac was told it is broken',
@@ -687,7 +687,7 @@ check('DOOR 2 closed: `no_local_config` is a STATE and is not reported as a refu
 
 check('DOOR 2 broken: an unreadable config IS a refusal — that one has a fix', () => {
   const facts = install.crucibleHostFacts(host({
-    localConfig: () => ({
+    discovered: () => ({
       present: false,
       code: 'config_unreadable',
       reason: 'config.toml is not valid TOML. The server would refuse it too.',
@@ -711,7 +711,7 @@ checkAsync('DOOR 3: the verdict always says why, whichever way it went', async (
 
 checkAsync('DOOR 3: no step claims `done` that this app has not actually checked', async () => {
   // Two facts, and only two: whether a WSL2 distro is there (the listing said
-  // so) and whether a config is there (local.ts said so). A checkbox that
+  // so) and whether a config is there (discovery.ts said so). A checkbox that
   // guessed anything else would be worse than no checkbox.
   for (const platform of ['win32', 'darwin', 'linux']) {
     const plan = await install.crucibleInstallPlan(host({
@@ -722,7 +722,7 @@ checkAsync('DOOR 3: no step claims `done` that this app has not actually checked
         ? () => ({ status: 0, stdout: WSL_TABLE, stderr: '' })
         : () => { throw new Error('not asked'); },
       queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
-      localConfig: () => CONFIG_PRESENT,
+      discovered: () => CONFIG_PRESENT,
     }));
     for (const step of plan.steps) {
       if (!step.done) continue;

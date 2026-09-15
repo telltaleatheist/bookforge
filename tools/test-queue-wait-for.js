@@ -100,7 +100,7 @@ function fakeModule(type, opts = {}) {
 function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
-    localName: initial.localName === undefined ? 'local' : initial.localName,
+    serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
     asked: [],
@@ -108,7 +108,7 @@ function fakeHost(initial) {
   state.host = {
     routing: () => ({
       ranked: state.ranked.map((row) => ({ ...row })),
-      localName: state.localName,
+      serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
     async reach(name) {

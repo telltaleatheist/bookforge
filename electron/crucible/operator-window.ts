@@ -145,7 +145,7 @@ export function openCrucibleOperatorWindow(name: string): { name: string; url: s
   }
 
   // Resolves `local` from its own config.toml and a remote from the registry.
-  // Its refusals — unknown_server, stale_local_entry, no_local_config — are the
+  // Its refusals — unknown_server, corrupt_registry — are the
   // ones the row already shows, and they travel unchanged.
   const server = getServer(asked);
 

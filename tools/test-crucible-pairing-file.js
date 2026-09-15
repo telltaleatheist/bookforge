@@ -26,7 +26,7 @@
  *
  * ONE reason for this file's existence survives, and it is the first one: the
  * SDK's reader is async (a packaging rule of theirs — its imports are
- * assembled at run time) and `readLocalServer` is synchronous (an
+ * assembled at run time) and `discoverCrucible` is synchronous (an
  * architectural constraint of ours — `readRouting()` runs inside the queue's
  * synchronous pump). This is that one rule executed twice, not read twice, and
  * check 3.1 is the tripwire for the day even that ends.
@@ -45,7 +45,7 @@ if (!fs.existsSync(READER)) {
 }
 
 const pairingFile = require(READER);
-const local = require(path.join(REPO, 'dist', 'electron', 'crucible', 'local.js'));
+const discovery = require(path.join(REPO, 'dist', 'electron', 'crucible', 'discovery.js'));
 
 let failures = 0;
 async function check(name, fn) {
@@ -135,9 +135,9 @@ console.log('the connect code on this machine');
     assert.ok(!caught.message.includes('tok-'), 'a refusal never carries a token');
   });
 
-  await check('readLocalServer asks the pairing file FIRST, and does not touch WSL when it answers', () => {
+  await check('discoverCrucible asks the pairing file FIRST, and does not touch WSL when it answers', () => {
     const line = 'crucible://crucible%40owens-pc-wsl@127.0.0.1:7100/#tok-abcdefghij\n';
-    const got = local.readLocalServer({
+    const got = discovery.discoverCrucible({
       platform: 'win32',
       env: {},
       homedir: 'C:\\Users\\t',
@@ -169,7 +169,7 @@ console.log('the connect code on this machine');
     const promise = sdk.cruciblePairingPath('/srv/cru');
     assert.ok(promise instanceof Promise,
       'cruciblePairingPath is synchronous now — then reason one is gone: delete '
-      + 'electron/crucible/pairing-file.ts and have readLocalServer use the SDK.');
+      + 'electron/crucible/pairing-file.ts and have discoverCrucible use the SDK.');
     return promise.then(() => undefined);
   });
 

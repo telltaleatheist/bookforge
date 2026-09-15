@@ -30,7 +30,7 @@ import { startGpuThermalSampler } from './gpu-thermal-sampler';
 import * as engine from './queue-engine';
 import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
-import { LOCAL_SERVER_NAME } from './crucible/local';
+import { serversOnThisMachine } from './crucible/servers';
 import { readRouting } from './crucible/routing';
 import { pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
@@ -48,11 +48,16 @@ let registered = false;
 /**
  * The routing view, MEMOISED FOR A FEW SECONDS.
  *
- * Not an optimisation: `readRouting()` calls `describeLocal()`, which on
- * Windows reads the local server's `config.toml` through a SYNCHRONOUS
- * `wsl.exe` spawn. The scheduler asks the routing question on every pump pass
- * over a queued narration, and a wsl spawn on the main thread per pass would
- * stutter the UI for as long as the queue holds.
+ * `readRouting()` and `serversOnThisMachine()` are each a synchronous read of a
+ * file under `<userData>`, and the scheduler asks the routing question on every
+ * pump pass over a queued narration. Two file reads per pass on the main thread
+ * for an answer that changes when a person presses something is work nobody
+ * asked for.
+ *
+ * (Until 2026-09-15 this was not an optimisation at all but a necessity:
+ * `readRouting()` resolved the reserved name `local` through a SYNCHRONOUS
+ * `wsl.exe` spawn of a few hundred milliseconds. That name is gone and so is
+ * the spawn; the memo is kept on its own smaller merits.)
  *
  * The staleness is bounded and harmless: admission re-asks on its own tick
  * (15 s), so a server enabled in Settings is used within one tick at worst, and
@@ -83,11 +88,13 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       }));
       return {
         ranked,
-        // Named only when this machine actually has one: `local` is in the
-        // ranked list exactly when `describeLocal().present`.
-        localName: ranked.some((row) => row.name === LOCAL_SERVER_NAME)
-          ? LOCAL_SERVER_NAME
-          : null,
+        /*
+         * NOT A KIND OF SERVER — the one question about "here" that survived
+         * the ruling, asked of the ADDRESS and answered for the scheduler's
+         * one-card rule alone. `electron/crucible/discovery.ts`'s
+         * `isLoopbackUrl` says what that reading promises and what it does not.
+         */
+        serversOnThisMachine: serversOnThisMachine(),
       };
     },
     defaultWaitFor() {

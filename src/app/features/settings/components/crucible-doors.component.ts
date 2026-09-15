@@ -6,7 +6,9 @@ import { FormsModule } from '@angular/forms';
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
-import type { CrucibleProbeResult, LocalServerVia } from '@shared/crucible/settings-wire';
+import type {
+  CrucibleDiscoveryVia, CrucibleProbeResult, CrucibleServersView,
+} from '@shared/crucible/settings-wire';
 import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
 import { bytesWords, coordinationWords, sizeWords } from './crucible-words';
 import type {
@@ -14,9 +16,6 @@ import type {
   CrucibleInstallPlan,
 } from '@shared/crucible/install-wire';
 import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
-
-/** The reserved name of the engine on this machine. Never a registry entry. */
-const LOCAL_ENGINE = 'local';
 
 /**
  * HOW A PERSON GETS A CRUCIBLE — and, since PHASE13, how little of that is
@@ -34,6 +33,18 @@ const LOCAL_ENGINE = 'local';
  *   1. **Connect** — name, address, token, or ONE pasted `crucible://` line.
  *   2. **Get one on this machine** — the pre-server minute, the chicken-and-egg
  *      a page cannot do for itself, after which the door is **Open Crucible**.
+ *
+ * ── ONE KIND OF SERVER (Owen's ruling, 2026-09-15) ──────────────────────
+ *
+ * *"a local crucible server shouldnt be treated any differently than a remote
+ * crucible server. it should all be entered the exact same way."* There is no
+ * reserved name here any more and no door that adds a different sort of thing.
+ * Door 2 used to say "use the engine on this machine", meaning a row the app
+ * manufactured out of a config file; it now says **add** it, and what it adds
+ * is a registry entry under a name the operator typed, through the same
+ * `addServer` every other door ends in. The only thing that makes it its own
+ * door is that the address and the key are already known, so nobody has to
+ * copy them out of a file inside a WSL guest.
  *
  * ── THE TWO FACES THIS COMPONENT HAS, AND WHY ──────────────────────────────
  *
@@ -79,27 +90,38 @@ const LOCAL_ENGINE = 'local';
       <div class="doors">
         @if (plan(); as p) {
           @if (face() === 'connected') {
-            <!-- ── Connected: this machine already has one ──────────────── -->
-            @if (p.host.local.present) {
-              <div class="panel">
-                <p class="ok">
-                  <strong>{{ p.host.local.serverName }}</strong> at {{ p.host.local.url }}
-                </p>
-                <p class="hint">
-                  {{ localSourceWords(p.host.local.via) }}
-                  <code>{{ p.host.local.configPath }}</code> every time this app asks, so no copy
-                  of its key is kept here. It is the engine BookForge will use, and BookForge has
-                  already made sure it has what it needs.
-                </p>
-                <!--
-                  NOTHING TO PRESS. A local engine is not a decision (the brief
-                  of 2026-09-14 §4, crucible PHASE14 §4a): it resolved, it is
-                  already the one BookForge uses, and BookForge has already
-                  told it what it needs. The only button on this step is Next,
-                  which belongs to the wizard.
-                -->
-                <ng-container [ngTemplateOutlet]="coordinationState" />
-              </div>
+            <!-- ── Connected: at least one engine is registered ─────────── -->
+            <div class="panel">
+              <p class="ok">
+                {{ serverCount() === 1 ? 'One engine is connected' : serverCount() + ' engines are connected' }}:
+                <strong>{{ serverNames() }}</strong>
+              </p>
+              <p class="hint">
+                BookForge renders and cleans on those and nowhere else, and it has already made
+                sure each of them has what it needs. Which one a book goes to is the order in
+                Settings → Crucible Servers.
+              </p>
+              <!--
+                NOTHING TO PRESS. Coordination is not a decision (the brief of
+                2026-09-14 §4, crucible PHASE14 §4a): the engine is registered,
+                BookForge has already told it what it needs, and the only button
+                on this step is Next, which belongs to the wizard.
+              -->
+              <ng-container [ngTemplateOutlet]="coordinationState" />
+            </div>
+          } @else if (face() === 'adopt') {
+            <!-- ── There is one on this computer; it just is not added ──── -->
+            @if (discovered(); as d) {
+              @if (d.present) {
+                <div class="panel">
+                  <p class="ok"><strong>{{ d.serverName }}</strong> at {{ d.url }}</p>
+                  <p class="hint">
+                    {{ discoveredSourceWords(d.via) }} <code>{{ d.configPath }}</code>. Give it a name
+                    — its card is the usual one — and BookForge will use it like any other engine.
+                  </p>
+                  <ng-container [ngTemplateOutlet]="adoptForm" />
+                </div>
+              }
             }
           } @else if (face() === 'install') {
             <!-- ── This machine can host one (or nothing says it cannot) ── -->
@@ -170,57 +192,60 @@ const LOCAL_ENGINE = 'local';
           </div>
         }
 
-        <!-- ── 2. Use the one on this machine ──────────────────────────── -->
-        <button class="door" type="button" (click)="toggle('local')">
-          <span class="door-name">Use the engine on this machine</span>
+        <!-- ── 2. Add the one already on this computer ─────────────────── -->
+        <button class="door" type="button" (click)="toggle('here')">
+          <span class="door-name">Add the engine already on this computer</span>
           <span class="door-note">
-            Read from its own settings — name, address and key. Nothing to paste.
+            Its address and key are already here, so there is nothing to paste — only a name to
+            choose.
           </span>
         </button>
-        @if (open() === 'local') {
+        @if (open() === 'here') {
           <div class="panel">
-            @if (localFacts(); as l) {
-              @if (l.present) {
-                <p class="ok"><strong>{{ l.serverName }}</strong> at {{ l.url }}</p>
+            @if (discovered(); as d) {
+              @if (d.present) {
+                <p class="ok"><strong>{{ d.serverName }}</strong> at {{ d.url }}</p>
                 <p class="hint">
-                  Read from <code>{{ l.configPath }}</code>{{ l.via === 'wsl' ? ' inside WSL' : '' }}
-                  every time this app asks — no copy of its key is kept here. It is already the
-                  engine called <code>local</code> in the list above; there is nothing to add,
-                  and BookForge has already made sure it has what it needs.
+                  {{ discoveredSourceWords(d.via) }} <code>{{ d.configPath }}</code>{{ d.via === 'wsl' ? ' inside WSL' : '' }},
+                  key {{ d.tokenMasked }}.
                 </p>
-                <!--
-                  PHASE13 §5.2: once the reserved name 'local' resolves, this door is
-                  Everything it used to offer to explain is on the page that
-                  button opens.
-                -->
-                <div class="actions">
-                  <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="openUi('local')">
-                    Open engine console
-                  </desktop-button>
-                  <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="testLocal()">
-                    {{ busy() === 'local' ? 'Testing…' : 'Test it' }}
-                  </desktop-button>
-                </div>
-                @if (localProbe(); as p) {
-                  @if (p.outcome === 'ok') {
-                    <p class="ok">
-                      Answering — v{{ p.facts.version }} · {{ p.facts.backend }} ·
-                      {{ p.facts.gpu.name }} · job types {{ p.facts.jobTypes.join(', ') }}
-                    </p>
-                  } @else {
-                    <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
+                @if (d.registeredAs; as name) {
+                  <p class="hint">
+                    Already added, as <strong>{{ name }}</strong>. It is a row in the list above
+                    like any other engine — rank it, switch it off, remove it — and BookForge has
+                    already made sure it has what it needs.
+                  </p>
+                  <div class="actions">
+                    <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="openUi(name)">
+                      Open engine console
+                    </desktop-button>
+                    <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="testHere(name)">
+                      {{ busy() === 'here' ? 'Testing…' : 'Test it' }}
+                    </desktop-button>
+                  </div>
+                  @if (hereProbe(); as p) {
+                    @if (p.outcome === 'ok') {
+                      <p class="ok">
+                        Answering — v{{ p.facts.version }} · {{ p.facts.backend }} ·
+                        {{ p.facts.gpu.name }} · job types {{ p.facts.jobTypes.join(', ') }}
+                      </p>
+                    } @else {
+                      <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
+                    }
                   }
+                  <ng-container [ngTemplateOutlet]="coordinationState" />
+                } @else {
+                  <ng-container [ngTemplateOutlet]="adoptForm" />
                 }
-                <ng-container [ngTemplateOutlet]="coordinationState" />
               } @else {
-                <p class="bad"><span class="code">{{ l.code }}</span> {{ l.reason }}</p>
+                <p class="bad"><span class="code">{{ d.code }}</span> {{ d.reason }}</p>
                 <p class="hint">
                   That is a state, not a fault — a machine that only ever renders on another one
                   has no engine of its own and does not need one. The third door sets one up here.
                 </p>
               }
             } @else {
-              <p class="hint">Reading this machine's Crucible config…</p>
+              <p class="hint">Looking for a Crucible on this computer…</p>
             }
           </div>
         }
@@ -255,9 +280,15 @@ const LOCAL_ENGINE = 'local';
           crucible uninstall deletes a service, a home directory and possibly
           tens of gigabytes, and a door that could reach the Mac Studio from a
           laptop is a door that will. Main refuses uninstall_not_local as
-          well, because a disabled control over an open door is a decoration.
+          well — by comparing the named row's URL with the address of the
+          Crucible found here, not by trusting a name — because a disabled
+          control over an open door is a decoration.
+
+          It needs the engine to be REGISTERED, because the door names a row.
+          An engine sitting on this computer that nobody has added has no name
+          to uninstall by; add it first, or uninstall it where it lives.
         -->
-        @if (localFacts()?.present) {
+        @if (registeredHere() !== null) {
           <button class="door" type="button" (click)="toggle('uninstall')">
             <span class="door-name">Remove the engine from this computer</span>
             <span class="door-note">
@@ -443,6 +474,38 @@ const LOCAL_ENGINE = 'local';
           <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
         }
       }
+      @if (error(); as e) { <p class="bad">{{ e }}</p> }
+    </ng-template>
+
+    <!--
+      THE SAME ADD, WITH THE TWO FIELDS NOBODY SHOULD HAVE TO TYPE.
+
+      One control: a name. The address and the key came off this computer
+      already, and the key never reaches this component at all — main reads it
+      and hands it to addServer, the same function the form above ends in,
+      with the same refusals. The suggested name is what the ENGINE calls
+      itself, offered rather than imposed: Owen names machines after their
+      cards, and the name a row is filed under is the operator's.
+    -->
+    <ng-template #adoptForm>
+      <label class="field">
+        <span>Call it</span>
+        <input type="text" [(ngModel)]="draftAdoptName" name="adoptName" placeholder="3090 Ti" />
+      </label>
+      <p class="hint">
+        Anything you like, as long as it is not already taken — its card, usually. This is the
+        name you will see on the bench and on every book waiting for it.
+      </p>
+      <div class="actions">
+        <desktop-button
+          variant="primary"
+          size="sm"
+          [disabled]="busy() !== null || draftAdoptName.trim() === ''"
+          (click)="adopt()"
+        >
+          {{ busy() === 'adopt' ? 'Adding…' : 'Add it' }}
+        </desktop-button>
+      </div>
       @if (error(); as e) { <p class="bad">{{ e }}</p> }
     </ng-template>
 
@@ -692,9 +755,9 @@ export class CrucibleDoorsComponent {
   /** Something landed that changes what the host's own list would say. */
   readonly changed = output<void>();
 
-  readonly open = signal<'connect' | 'local' | 'install' | 'uninstall' | null>(null);
+  readonly open = signal<'connect' | 'here' | 'install' | 'uninstall' | null>(null);
   readonly busy = signal<
-    'test' | 'add' | 'local' | 'install' | 'paste' | 'uninstall-plan' | 'uninstall' | null
+    'test' | 'add' | 'adopt' | 'here' | 'install' | 'paste' | 'uninstall-plan' | 'uninstall' | null
   >(null);
   readonly error = signal<string | null>(null);
   /**
@@ -706,11 +769,13 @@ export class CrucibleDoorsComponent {
 
   draftPaste = '';
   draftName = '';
+  /** What the engine on this computer would be called. Prefilled, never imposed. */
+  draftAdoptName = '';
   draftUrl = '';
   draftToken = '';
   readonly pairingRefusal = signal<{ code: string; detail: string } | null>(null);
   readonly probe = signal<CrucibleProbeResult | null>(null);
-  readonly localProbe = signal<CrucibleProbeResult | null>(null);
+  readonly hereProbe = signal<CrucibleProbeResult | null>(null);
 
   readonly plan = signal<CrucibleInstallPlan | null>(null);
   readonly installRefusal = signal<CrucibleHostRefusal | null>(null);
@@ -737,10 +802,12 @@ export class CrucibleDoorsComponent {
   readonly installBytes = signal<string | null>(null);
 
   /**
-   * WHERE COORDINATION WITH THIS MACHINE'S ENGINE STANDS.
+   * WHERE COORDINATION WITH THE ENGINE ON THIS COMPUTER STANDS.
    *
-   * Only ever `local` here: both faces that draw it are about this machine's
-   * own engine, and a remote's state belongs to its row in the servers panel.
+   * Named by {@link registeredHere}, never by a reserved word: the faces that
+   * draw it are about the engine this computer has, and that engine is a
+   * registry row under whatever the operator called it. Every other server's
+   * state belongs to its row in the servers panel.
    */
   readonly coordination = signal<CrucibleCoordinationState | null>(null);
   /** A stop that refused. Its own line, because it is about the STOP. */
@@ -748,8 +815,35 @@ export class CrucibleDoorsComponent {
   /** Has the connected face already asked? One ask per mount, not one per paint. */
   private coordinateAsked = false;
 
-  /** The local half of the measured facts — door 2's whole answer. */
-  readonly localFacts = computed(() => this.plan()?.host.local ?? null);
+  /**
+   * WHAT THIS PAGE KNOWS ABOUT SERVERS — every registered one, the rank record,
+   * and the OFFER of a Crucible found on this computer.
+   *
+   * Read here rather than taken from the install plan: the plan measures a
+   * MACHINE (`wsl.exe -l -v`, `nvidia-smi`) and this is a question about a
+   * registry, which is two file reads. It is also the only place that can say
+   * whether the engine here has already been added, which is the difference
+   * between an offer and a row.
+   */
+  readonly servers = signal<CrucibleServersView | null>(null);
+
+  /** The offer, or the named reason there is none. Door 2's whole answer. */
+  readonly discovered = computed(() => this.servers()?.discovered ?? null);
+
+  /**
+   * The NAME the engine on this computer is registered under, or null when it
+   * is not registered. The only handle any door here has on it — there is no
+   * reserved word to fall back on.
+   */
+  readonly registeredHere = computed<string | null>(() => {
+    const found = this.discovered();
+    return found !== null && found.present ? found.registeredAs : null;
+  });
+
+  readonly serverCount = computed<number>(() => this.servers()?.servers.length ?? 0);
+  readonly serverNames = computed<string>(
+    () => (this.servers()?.servers ?? []).map((row) => row.name).join(', '),
+  );
 
   /**
    * WHICH ONE FACE the wizard's step shows (§5.5), from main's own verdict.
@@ -760,10 +854,20 @@ export class CrucibleDoorsComponent {
    * an unmeasured card to "connect only" would be a wrong answer stated
    * confidently.
    */
-  readonly face = computed<'connected' | 'install' | 'connect-only' | null>(() => {
+  readonly face = computed<'connected' | 'adopt' | 'install' | 'connect-only' | null>(() => {
+    const view = this.servers();
+    if (view === null) return null;
+    /*
+     * CONNECTED MEANS "THERE IS AN ENGINE TO WORK ON", and since 2026-09-15
+     * that is a registry question rather than a question about this machine.
+     * A laptop pointed at the Mac Studio is connected; a PC with a Crucible
+     * sitting on it that nobody has added is NOT, which is the `adopt` face —
+     * one field and one button, because the address and the key are in hand.
+     */
+    if (view.servers.length > 0) return 'connected';
+    if (view.discovered.present) return 'adopt';
     const plan = this.plan();
     if (plan === null) return null;
-    if (plan.host.local.present) return 'connected';
     return plan.hostable === 'no' ? 'connect-only' : 'install';
   });
 
@@ -777,6 +881,9 @@ export class CrucibleDoorsComponent {
       }
     });
 
+    // The registry read is cheap on every mount, and every face needs it.
+    void this.loadServers();
+
     /*
      * THE WIZARD'S STEP LANDING ON "CONNECTED" IS A CONNECT (crucible
      * PHASE14 §4a), so it coordinates — and it is the same run app start
@@ -786,15 +893,16 @@ export class CrucibleDoorsComponent {
      * second opinion about something main already owns (R1).
      */
     effect(() => {
-      if (this.face() === 'connected' && !this.coordinateAsked) {
+      const here = this.registeredHere();
+      if (this.face() === 'connected' && here !== null && !this.coordinateAsked) {
         this.coordinateAsked = true;
-        void this.coordinateLocal();
+        void this.coordinateHere(here);
       }
     });
 
     void this.readCoordination();
     const stop = this.electron.crucible.onCoordination((state) => {
-      if (state.server === LOCAL_ENGINE) this.coordination.set(state);
+      if (state.server === this.registeredHere()) this.coordination.set(state);
     });
     this.destroyRef.onDestroy(stop);
 
@@ -839,11 +947,11 @@ export class CrucibleDoorsComponent {
    * somebody's time to answer a question they did not ask. Door 2 needs the
    * same read, so both load it.
    */
-  toggle(door: 'connect' | 'local' | 'install' | 'uninstall'): void {
+  toggle(door: 'connect' | 'here' | 'install' | 'uninstall'): void {
     this.error.set(null);
     const next = this.open() === door ? null : door;
     this.open.set(next);
-    if ((next === 'install' || next === 'local') && this.plan() === null) void this.loadPlan();
+    if ((next === 'install' || next === 'here') && this.plan() === null) void this.loadPlan();
     /*
      * CLOSING THE UNINSTALL DOOR FORGETS ITS PLAN. A dry run is a measurement
      * of a machine at one moment; reopening the door half an hour later and
@@ -970,16 +1078,58 @@ export class CrucibleDoorsComponent {
 
   // ── Door 2, and the operator door beside it ──────────────────────────────
 
-  async testLocal(): Promise<void> {
-    this.busy.set('local');
+  /** Every registered server, plus whether the engine here is one of them. */
+  private async loadServers(): Promise<void> {
+    const res = await this.electron.crucible.servers();
+    if (!res.success || !res.data) {
+      // NOT an empty view: "there are no servers" and "the list could not be
+      // read" are different sentences, and only one of them has a fix.
+      this.error.set(res.error ?? 'The list of engines could not be read, and nothing said why.');
+      return;
+    }
+    this.servers.set(res.data);
+    const found = res.data.discovered;
+    if (found.present && found.registeredAs === null && this.draftAdoptName === '') {
+      // The engine's OWN name, as a suggestion. Overwritten by anything typed,
+      // and never re-imposed once somebody has touched the field.
+      this.draftAdoptName = found.serverName;
+    }
+  }
+
+  /**
+   * ADD THE ENGINE ON THIS COMPUTER, under the name in the field.
+   *
+   * Ends in the same `addServer` the connect form does, with the same refusals
+   * shown the same way: only the NAME crosses the seam, because the key may
+   * not (`shared/crucible/settings-wire.ts`).
+   */
+  async adopt(): Promise<void> {
+    this.busy.set('adopt');
     this.error.set(null);
     try {
-      const res = await this.electron.crucible.test('local');
+      const res = await this.electron.crucible.addDiscovered(this.draftAdoptName.trim());
+      if (!res.success || !res.data) {
+        this.error.set(res.error ?? 'It could not be added, and nothing said why.');
+        return;
+      }
+      await this.loadServers();
+      this.open.set(null);
+      this.changed.emit();
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  async testHere(name: string): Promise<void> {
+    this.busy.set('here');
+    this.error.set(null);
+    try {
+      const res = await this.electron.crucible.test(name);
       if (!res.success || !res.data) {
         this.error.set(res.error ?? 'The test failed and said nothing about why.');
         return;
       }
-      this.localProbe.set(res.data);
+      this.hereProbe.set(res.data);
     } finally {
       this.busy.set(null);
     }
@@ -999,7 +1149,7 @@ export class CrucibleDoorsComponent {
 
   /** The one sentence about coordination. Every word of it is in one file. */
   /**
-   * WHICH OF THE TWO DOORS "the engine on this machine" CAME THROUGH.
+   * WHICH OF THE TWO DOORS THE CRUCIBLE ON THIS COMPUTER CAME THROUGH.
    *
    * Since phase 15 there are two (crucible docs/PHASE15-HOST.md section 3.6):
    * the connect code the engine, or the Windows host, wrote beside its config,
@@ -1008,7 +1158,7 @@ export class CrucibleDoorsComponent {
    * parts of the system, so the row says which one answered rather than
    * calling both "read from".
    */
-  localSourceWords(via: LocalServerVia): string {
+  discoveredSourceWords(via: CrucibleDiscoveryVia): string {
     if (via === 'pairing') return 'Found the connect code this engine left at';
     if (via === 'wsl') return 'Read, inside WSL, from';
     return 'Read from';
@@ -1031,12 +1181,14 @@ export class CrucibleDoorsComponent {
     return coordinationWords(state);
   }
 
-  /** Whatever main already knows about this machine's engine. */
+  /** Whatever main already knows about the engine on this computer. */
   private async readCoordination(): Promise<void> {
+    const here = this.registeredHere();
+    if (here === null) return;
     const res = await this.electron.crucible.coordination();
     if (!res.success || !res.data) return;
-    const local = res.data[LOCAL_ENGINE];
-    if (local !== undefined) this.coordination.set(local);
+    const state = res.data[here];
+    if (state !== undefined) this.coordination.set(state);
   }
 
   /**
@@ -1046,8 +1198,8 @@ export class CrucibleDoorsComponent {
    * engine" means. It joins the run app start began rather than starting a
    * second one, so calling it on arrival costs a promise and nothing else.
    */
-  private async coordinateLocal(): Promise<void> {
-    const res = await this.electron.crucible.coordinate(LOCAL_ENGINE);
+  private async coordinateHere(name: string): Promise<void> {
+    const res = await this.electron.crucible.coordinate(name);
     if (!res.success) {
       this.setupError.set(res.error
         ?? 'BookForge could not tell this machine\u2019s engine what it needs, and nothing said why.');
@@ -1093,11 +1245,15 @@ export class CrucibleDoorsComponent {
         this.changed.emit();
         await this.loadPlan();
         this.busy.set(null);
-        // ROUTED THROUGH THE ONE FUNCTION (the brief §1). A driven install ends
-        // with an engine that answers and holds nothing, and what stocks it is
-        // the same coordination every other connect uses — not a second path
-        // that only this button knows about.
-        await this.coordinateLocal();
+        /*
+         * A FRESH INSTALL IS NOT YET A SERVER. It writes a config and a connect
+         * code on this computer, which is exactly what discovery reads — so the
+         * registry read below turns the wizard's face to `adopt`, one field and
+         * one button, and coordination happens when it is ADDED (main does it
+         * on the way past `crucible:add-discovered`). Coordinating with a
+         * machine that has no name here yet would be this button inventing one.
+         */
+        await this.loadServers();
         return;
       }
       if (res.refusal) {
@@ -1154,7 +1310,15 @@ export class CrucibleDoorsComponent {
     this.uninstallRefusal.set(null);
     this.uninstallLine.set(null);
     try {
-      const res = await this.electron.crucible.uninstallPlan(LOCAL_ENGINE, {
+      const here = this.registeredHere();
+      if (here === null) {
+        // The door is not drawn in this state, so reaching it is a bug rather
+        // than a thing to explain away with a default name.
+        this.error.set('The engine on this computer is not in the list, so there is no row to '
+          + 'uninstall by. Add it first, in the door above.');
+        return;
+      }
+      const res = await this.electron.crucible.uninstallPlan(here, {
         purgeWeights: this.purgeWeights,
         wslToo: this.wslToo,
       });
@@ -1180,15 +1344,23 @@ export class CrucibleDoorsComponent {
    * The real run, and the ONE thing that happens after it: the plan is
    * re-read.
    *
-   * `loadPlan()` is what closes the door — with the engine gone,
-   * `localFacts().present` is false and the door is not drawn at all. Nothing
-   * here decides that; it is the same measurement every other face reads.
+   * `loadServers()` is what closes the door — with the engine gone, discovery
+   * finds nothing, `registeredHere()` is null and the door is not drawn at all.
+   * Nothing here decides that; it is the same read every other face uses. The
+   * registry ROW is left alone: uninstalling the software and forgetting the
+   * address are two acts, and the second one is the list's Remove button.
    */
   async runUninstall(): Promise<void> {
     this.busy.set('uninstall');
     this.uninstallRefusal.set(null);
     try {
-      const res = await this.electron.crucible.uninstall(LOCAL_ENGINE, {
+      const here = this.registeredHere();
+      if (here === null) {
+        this.error.set('The engine on this computer is not in the list, so there is no row to '
+          + 'uninstall by. Add it first, in the door above.');
+        return;
+      }
+      const res = await this.electron.crucible.uninstall(here, {
         purgeWeights: this.purgeWeights,
         wslToo: this.wslToo,
       });
@@ -1196,6 +1368,7 @@ export class CrucibleDoorsComponent {
         this.uninstallPlan.set(res.data);
         this.changed.emit();
         await this.loadPlan();
+        await this.loadServers();
         return;
       }
       if (res.refusal) {

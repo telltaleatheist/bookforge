@@ -2416,7 +2416,7 @@ on the document chain. This door produces a FILE, and a re-export loses it.""",
             'bookforge-tts --narration-text --project "<library>/projects/<slug>"',
             'bookforge-tts --narration-text --input book.epub',
             '# the clean act on a Crucible, with the per-act model from Settings:\n'
-            'bookforge-tts --narration-text --input book.epub --crucible-server local',
+            'bookforge-tts --narration-text --input book.epub --crucible-server "3090 Ti"',
             'bookforge-tts --narration-text --input book.epub --dry-run',
         ],
     },
@@ -2483,7 +2483,7 @@ component can be months older.""",
             '# the Foundry project directly, when the mapping is not the question:\n'
             'bookforge-tts --clean --foundry-project "<library>/foundry/projects/<key>"',
             '# the clean act on a Crucible server, named truthfully on every request:\n'
-            'bookforge-tts --clean --project "<library>/projects/<slug>" --crucible-server local',
+            'bookforge-tts --clean --project "<library>/projects/<slug>" --crucible-server "3090 Ti"',
             'bookforge-tts --clean --project "<library>/projects/<slug>" --dry-run',
         ],
     },
@@ -3479,8 +3479,9 @@ def _flag_registry():
                    metavar="N")
     p.add_argument("--crucible-server", dest="crucible_server",
                    help="--tts: run the generation step on a REGISTERED Crucible. "
-                        "It names an entry in the registry (--crucible-list), never a URL; "
-                        "`local` is the reserved name for this machine's own server. Every "
+                        "It names an entry in the registry (--crucible-list), never a URL, and "
+                        "there is no reserved name for a server on this computer — it is a "
+                        "registry entry like any other (ruling 2026-09-15). Every "
                         "chunk goes up in ONE tts job, the engine's guard verdicts come back on "
                         "the chunk events, and the FLACs are downloaded into the session's "
                         "sentences dir — the prep before it and the assembly, RVC pass and "

@@ -73,7 +73,7 @@ import type {
   CrucibleUpstreamProbe,
   CrucibleUpstreamTestResult,
   PairingResult,
-  RemoteServerRow as CrucibleRemoteServerRow,
+  CrucibleServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
 } from '../shared/crucible/settings-wire';
@@ -1178,7 +1178,7 @@ export interface ElectronAPI {
   };
   ai: {
     /**
-     * `crucibleServer` NAMES a registered server (or the reserved `local`) and
+     * `crucibleServer` NAMES a registered server and
      * is read only by the `crucible` provider, which has no default one —
      * asking for it without a name is refused by name.
      *
@@ -1321,19 +1321,30 @@ export interface ElectronAPI {
   /**
    * The Crucible inference servers this machine can reach (Settings → Crucible
    * Servers). Wire shapes come from shared/crucible/settings-wire.ts — the main
-   * process owns the registry, the local config and the rank record, and the
-   * renderer must not re-spell any of them.
+   * process owns the registry and the rank record, and the renderer must not
+   * re-spell either.
+   *
+   * ONE KIND OF SERVER (Owen's ruling, 2026-09-15). There is no reserved name
+   * for the machine this app runs on: a Crucible on `127.0.0.1` is added,
+   * named, tested, ranked and removed by exactly these calls.
    */
   crucible: {
-    /** The local server (or the named reason there is none), the remotes, and the rank record. */
+    /** Every registered server, the rank record, and the OFFER of one found on this computer. */
     servers: () => Promise<{ success: boolean; data?: CrucibleServersView; error?: string }>;
-    /** Record a REMOTE. Refuses exactly as the registry refuses; the row shows its message. */
-    add: (server: { name: string; url: string; token: string }) => Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }>;
-    /** Forget a remote. `local` is refused — it is not a registry entry. */
-    remove: (name: string) => Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }>;
+    /** Record a server. Refuses exactly as the registry refuses; the row shows its message. */
+    add: (server: { name: string; url: string; token: string }) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
+    /**
+     * The SAME add, for the Crucible `servers().discovered` found on this
+     * computer: only the NAME crosses, because the token may not (see the
+     * wire's header). Not a second kind of server — a registry row like any
+     * other, under whatever it is called here.
+     */
+    addDiscovered: (name: string) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
+    /** Forget a server. An unknown name is refused by name. */
+    remove: (name: string) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
     /** Test an address+token that is not registered yet: ping, then info. */
     testAddress: (url: string, token: string) => Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }>;
-    /** The same test for a known server, `local` included. */
+    /** The same test for a server this machine already knows, by its registry name. */
     test: (name: string) => Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }>;
     /** `GET /v1/activity` — a bench read, never admission. */
     activity: (name: string) => Promise<{ success: boolean; data?: { outcome: 'ok'; activity: CrucibleActivityView } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>; error?: string }>;
@@ -1428,8 +1439,9 @@ export interface ElectronAPI {
      * ── THE INSTALL STORY'S THIRD DOOR ──────────────────────────────────────
      *
      * Doors 1 and 2 are already up there: `testAddress` + `add` is "connect to
-     * one elsewhere", and `servers().local` is "use the one on this machine".
-     * These three are "install one here".
+     * one", and `servers().discovered` is the same door with the fields filled
+     * in from a Crucible found on this computer. These three are "install one
+     * here".
      */
 
     /** What this machine can run a Crucible with, measured — `detectHost()`'s shape. */
@@ -1451,8 +1463,9 @@ export interface ElectronAPI {
      * which touches nothing. The same plan object the real run performs, so
      * the two cannot describe different things.
      *
-     * LOCAL ONLY: anything but this machine's own engine is
-     * `uninstall_not_local`, and a Crucible whose CLI predates the verb is
+     * THIS MACHINE ONLY, AND PROVED: a row whose URL is not the URL of the
+     * Crucible found on this computer is `uninstall_not_local`, whatever it is
+     * called, and a Crucible whose CLI predates the verb is
      * `uninstall_not_available`.
      */
     uninstallPlan: (
@@ -1492,9 +1505,8 @@ export interface ElectronAPI {
     /**
      * Open a NAMED server's own page in a window with no preload, no node
      * integration, its own session partition and navigation pinned to that
-     * server's origin. The token is read in main from the registry (or
-     * `local`'s config.toml) and is never typed, sent here, or put in a
-     * browser's history.
+     * server's origin. The token is read in main from the registry and is never
+     * typed, sent here, or put in a browser's history.
      */
     openUi: (name: string) => Promise<{ success: boolean; data?: { name: string; url: string }; error?: string }>;
     /** What `shared/crucible/bookforge.module.json` asks a server for. */
@@ -2926,6 +2938,7 @@ const electronAPI: ElectronAPI = {
     // what guards the pair, and it reads BOTH sides' channel strings.
     add: (server: { name: string; url: string; token: string }) =>
       ipcRenderer.invoke('crucible:add-server', server),
+    addDiscovered: (name: string) => ipcRenderer.invoke('crucible:add-discovered', name),
     remove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
     testAddress: (url: string, token: string) =>
       ipcRenderer.invoke('crucible:test-address', url, token),

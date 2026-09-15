@@ -1,18 +1,17 @@
 /**
  * The shapes the Crucible Servers settings row sends across the IPC seam.
  *
- * Types only. The main process owns the registry (`electron/crucible/servers.ts`),
- * the local server's config (`local.ts`) and the rank/enable record
- * (`routing.ts`); the renderer owns none of those and must not re-spell them, so
- * the wire lives here, once, and both sides import it — the same rule
- * `shared/vlm/conversion.ts` and `shared/processing/pass-types.ts` already
- * follow.
+ * Types only. The main process owns the registry (`electron/crucible/servers.ts`)
+ * and the rank/enable record (`routing.ts`); the renderer owns neither and must
+ * not re-spell them, so the wire lives here, once, and both sides import it —
+ * the same rule `shared/vlm/conversion.ts` and `shared/processing/pass-types.ts`
+ * already follow.
  *
- * Nothing here carries a token. {@link LocalServerRow.tokenMasked} and
- * {@link RemoteServerRow.tokenMasked} are `****<last 4>`, which is enough to tell
- * two tokens apart and not enough to use one — the registry's listing types are
- * structurally unable to carry the plaintext (see `servers.ts`), and this wire
- * keeps that property rather than re-earning it.
+ * Nothing here carries a token. {@link CrucibleServerRow.tokenMasked} is
+ * `****<last 4>`, which is enough to tell two tokens apart and not enough to use
+ * one — the registry's listing type is structurally unable to carry the
+ * plaintext (see `servers.ts`), and this wire keeps that property rather than
+ * re-earning it.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,7 +19,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * WHICH DOOR "the server on this machine" CAME THROUGH.
+ * WHICH DOOR A CRUCIBLE FOUND ON THIS COMPUTER CAME THROUGH.
+ *
+ * Not a property of a SERVER — since Owen's ruling of 2026-09-15 every server is
+ * a registry entry and nothing else. This is a property of the offer the add
+ * form is prefilled from (`electron/crucible/discovery.ts`), shown so a person
+ * can see where the address and the key came from before they accept it.
  *
  *  - `pairing` — the connect code the engine (or the Windows host) wrote beside
  *    its own config, crucible `docs/PHASE15-HOST.md` §3.6. **The contract's
@@ -30,10 +34,16 @@
  *    dated: §3.6 says it "is how the WSL server gets registered" until a host
  *    exists on the machine, "and that door is deleted when the host lands".
  */
-export type LocalServerVia = 'pairing' | 'file' | 'wsl';
+export type CrucibleDiscoveryVia = 'pairing' | 'file' | 'wsl';
 
-/** The server on this machine, as the row draws it. */
-export type LocalServerRow =
+/**
+ * A CRUCIBLE FOUND ON THIS COMPUTER, as the add door draws it.
+ *
+ * An OFFER, not a server: it is what the registry entry would look like if the
+ * operator accepted it. Nothing routes through it, nothing ranks it, and it is
+ * not in {@link CrucibleServersView.servers} until it has been added.
+ */
+export type DiscoveredCrucibleRow =
   | {
       present: true;
       /** `[server] name`, or the connect code's name, e.g. `crucible@owens-pc-wsl`. */
@@ -42,7 +52,12 @@ export type LocalServerRow =
       tokenMasked: string;
       /** The file this was read from; prefixed `<distro>:` when read through WSL. */
       configPath: string;
-      via: LocalServerVia;
+      via: CrucibleDiscoveryVia;
+      /**
+       * The name it is ALREADY registered under, when a registry entry has this
+       * URL. `null` when nothing does, which is when there is something to add.
+       */
+      registeredAs: string | null;
     }
   | {
       present: false;
@@ -52,18 +67,13 @@ export type LocalServerRow =
       reason: string;
     };
 
-/** One registered remote server, as the row draws it. */
-export interface RemoteServerRow {
+/** One registered server, as the row draws it. Wherever it runs. */
+export interface CrucibleServerRow {
   name: string;
   url: string;
   tokenMasked: string;
   /** ISO 8601. */
   added: string;
-  /**
-   * `null` for a usable entry. `loopback_duplicates_local` for a pre-rule entry
-   * whose URL is this machine — refused at use, shown here so it can be removed.
-   */
-  stale: null | 'loopback_duplicates_local';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -81,7 +91,7 @@ export interface RankedServerRow {
 
 /** The rank/enable record resolved against the servers that exist. */
 export interface RoutingView {
-  /** Every known server, best first. `local` participates by name. */
+  /** Every registered server, best first. There is no other kind. */
   ranked: RankedServerRow[];
   newJobsWaitFor: WaitForDefault;
   /*
@@ -100,8 +110,14 @@ export interface RoutingView {
 
 /** Everything the settings row draws before it probes anything. */
 export interface CrucibleServersView {
-  local: LocalServerRow;
-  remotes: RemoteServerRow[];
+  /** Every registered server. One list, one kind of row. */
+  servers: CrucibleServerRow[];
+  /**
+   * A Crucible on THIS computer that the add form can be prefilled from, or the
+   * named reason there is none. It is an offer and never a row in
+   * {@link servers} — see {@link DiscoveredCrucibleRow}.
+   */
+  discovered: DiscoveredCrucibleRow;
   routing: RoutingView;
 }
 
@@ -148,7 +164,7 @@ export type CrucibleProbeResult =
   | { outcome: 'wrong_token'; message: string }
   /** The server and this client do not speak the same API version. */
   | { outcome: 'version_mismatch'; message: string }
-  /** Any other named refusal — the registry's, the local config's, or the server's. */
+  /** Any other named refusal — the registry's or the server's. */
   | { outcome: 'refused'; message: string };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,7 +220,7 @@ export type PairingResult =
  * is the only thing that says where in the module this is.
  */
 export interface CrucibleModuleProgress {
-  /** The registry name (or `local`) this task is running on. */
+  /** The registry name of the server this task is running on. */
   server: string;
   taskId: string | null;
   state: 'running' | 'done' | 'failed' | 'cancelled';
@@ -416,7 +432,7 @@ export interface CrucibleCapabilityView {
  *
  * A key is WRITE-ONLY. Nothing on this wire can carry one back — the read shape
  * has a {@link CrucibleUpstreamRow.keyHint}, four characters, and no field a
- * key could travel in. That is the same property `LocalServerRow.tokenMasked`
+ * key could travel in. That is the same property `CrucibleServerRow.tokenMasked`
  * has at the top of this file, kept rather than re-earned.
  */
 

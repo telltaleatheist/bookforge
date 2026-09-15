@@ -36,9 +36,9 @@
  * ── NOTHING TO PRESS, ON ANY SERVER ────────────────────────────────────────
  *
  * Owen, 2026-09-14: *"lets make it as simple as possible."* Coordination is
- * automatic on every server this app is connected to — `local` and every
- * remote, however long ago it was registered (crucible `1a10cc8`). The one way
- * to say "not that one" is the ENABLE switch that already means it, which is
+ * automatic on every server this app is connected to, however long ago it was
+ * registered (crucible `1a10cc8`) and wherever it answers. The one way to say
+ * "not that one" is the ENABLE switch that already means it, which is
  * why {@link coordinateServer} refuses a disabled server by name rather than
  * inventing a second opinion about which servers count.
  *
@@ -66,9 +66,9 @@
  *
  * ── AND NEVER TWICE AT ONCE FOR ONE SERVER ─────────────────────────────────
  *
- * Four different moments call this (app start for `local`, a server added, a
- * server re-enabled, the wizard's step landing on connected) and two of them
- * can happen inside a second of each other. {@link inFlight} is what makes the
+ * Four different moments call this (app start, for every enabled server; a
+ * server added; a server re-enabled; the wizard's step landing on connected)
+ * and two of them can happen inside a second of each other. {@link inFlight} is what makes the
  * second one join the first instead of racing it into the `task_busy` this
  * whole design exists to avoid.
  */
@@ -82,11 +82,10 @@ import {
   type CatalogRow,
 } from '@crucible/client';
 
-import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, describeLocal, getServer } from './servers';
+import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, getServer } from './servers';
 import { resolveEngine } from './engine-resolve';
 import { crucibleCapabilityWithRoutes, crucibleEngineSettings } from './engine-settings';
 import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
-import { LOCAL_SERVER_NAME } from './local';
 import { noteCrucibleRole } from './routes';
 import { rankedServers } from './routing';
 import type {
@@ -482,12 +481,11 @@ async function readUpstreamPresence(server: string): Promise<void> {
 /**
  * THE OTHER BENCH FACT: is this address an engine or an orchestrator.
  *
- * `GET /v1/info` and nothing else, for a server this app is not otherwise
- * coordinating with right now. Coordination records the role out of the info it
- * already reads (see `runCoordination`); this exists because coordination at
- * start is `local`'s alone, and without it a registered orchestrator would keep
- * a GPU row nothing can serve until something happened to connect to it — the
- * same shape of defect the upstream record was given a file to close.
+ * `GET /v1/info` through the ONE resolver, which follows the orchestrator hop
+ * once and records what is on the other side. Coordination records the role of
+ * the ADDRESS out of the info it already reads (see `runCoordination`); this
+ * answers the same question one level deeper, so a registered orchestrator does
+ * not keep a GPU row nothing can serve.
  *
  * A failure is swallowed AND SAID: the record answers `unknown` for a server it
  * has not heard from, and `unknown` draws the row, because every pre-Phase-17
@@ -647,70 +645,56 @@ function report(state: CrucibleCoordinationState): CrucibleCoordinationState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Coordinate with the server on this machine, if there is one.
+ * COORDINATE WITH EVERY ENABLED SERVER AT START — THE SAME WAY WITH EACH.
  *
- * Called at app start. A machine with no local Crucible is the ordinary case
- * for a laptop that renders on the Mac, so "no local server" is silence rather
- * than a state: `local` never coordinated is `local` with nothing to say.
- */
-export async function coordinateLocalOnStart(
-  deps: CoordinateDeps = defaultDeps(),
-): Promise<CrucibleCoordinationState | null> {
-  if (!describeLocal().present) return null;
-  return coordinateServer(LOCAL_SERVER_NAME, deps);
-}
-
-/**
- * ASK EVERY OTHER ENABLED ENGINE THE TWO BENCH QUESTIONS, once, at start.
+ * ── What this replaced, and why the shape changed ──────────────────────────
  *
- * ── The defect this closes ─────────────────────────────────────────────────
+ * There were two functions here until Owen's ruling of 2026-09-15. One
+ * coordinated with the reserved `local` row — a full coordination, the three
+ * reads and a module task if anything was missing. The other asked every OTHER
+ * enabled server two cheap questions and deliberately skipped `local`, because
+ * the first function had already answered them for it.
  *
- * The cloud lane is drawn for an engine that HAS an upstream or that nobody has
- * asked (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`). "Nobody has
- * asked" was the state of every server but `local` on every launch, because the
- * only moment that read it was coordination and coordination at start is
- * `local`'s alone — so the bench Owen looked at on 2026-09-15 drew
- * `mac — routed elsewhere · CPU ×2` for a Mac with no upstream configured at
- * all. `crucible/routes.ts` now REMEMBERS the answer across restarts, which
- * makes the steady state right; this makes it CURRENT, for an upstream
- * configured on that machine since this app last heard from it.
+ * *"a local crucible server shouldnt be treated any differently than a remote
+ * crucible server."* So there is one function, every enabled server goes through
+ * it, and the thing they all get is the FULL coordination — the strictly larger
+ * of the two, which is what makes "the same way" true rather than a wording.
  *
- * ── The second question, and the second defect ────────────────────────────
+ * ── Why coordinating all of them at start is not the big act it looks like ─
  *
- * The same shape, one level up: a registered address that is an ORCHESTRATOR
- * serves no job types and has no card, so it must draw no row at all
- * (`shared/queue/slot-sets.ts`'s `EngineRole`; crucible PHASE17 §1). Nobody had
- * asked, so the bench drew a GPU slot for anything registered — correct today
- * on Owen's machine only because `local`'s connect code happens to name the WSL
- * engine on :7100 rather than the tray orchestrator in front of it on :7101.
- * `GET /v1/info` is the question and this is the moment it is asked.
+ * Coordination is cheap WHEN THERE IS NOTHING TO DO, and that is the whole
+ * design (see this module's header): three reads, a comparison, and a task
+ * posted only when the comparison says something is missing. An engine that is
+ * already stocked costs three GETs and posts nothing. The old two-question pass
+ * already cost two of them per server, so the difference for a stocked machine
+ * is one read.
  *
- * ── Why this shape ────────────────────────────────────────────────────────
+ * And it closes, for every server, the two bench defects the two-question pass
+ * was written for: the cloud lane drawn for an engine nobody had asked about
+ * (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`), and the GPU row drawn
+ * for an address that turns out to be an ORCHESTRATOR (`EngineRole`; crucible
+ * PHASE17 §1).
  *
- * It is one `GET /v1/settings` and one `GET /v1/info` per enabled server, once,
- * and no timer: exactly the reads `coordinateServer` already makes
- * (`readUpstreamPresence`, and the info at the head of its own three),
- * called at the one moment there is no other occasion for them. Not a full
- * coordination, because coordinating is what this app does when it CONNECTS to
- * a machine (PHASE14 §4a) — posting module tasks to every registered Crucible
- * at every launch would be a far bigger act than answering a bench row.
+ * ── The role read is still its own call, and that is not an inconsistency ──
  *
- * `local` is skipped: {@link coordinateLocalOnStart} reads its settings on the
- * way past, and two GETs at once to a cold WSL guest is one more than the
- * question needs. A DISABLED server is skipped too, for the reason
- * `coordinateServer` refuses one — a disabled engine takes no work, so it has no
- * lane to be right or wrong about.
+ * {@link readRolePresence} goes through `engine-resolve.ts`, which follows the
+ * orchestrator hop ONCE and records what it found. Coordination's own
+ * `noteCrucibleRole` records the role of the ADDRESS from the info it already
+ * read. They answer the same question at two depths, both are wanted, and
+ * running both is what the pre-ruling code did for a remote. It is kept for
+ * every server rather than dropped for the sake of one call.
  *
- * Every failure is swallowed AND SAID, by the same line coordination uses: an
- * engine that did not answer stays `unknown` and keeps its lane, because absence
- * of knowledge is not absence of an upstream. Recording `false` on a timeout
- * would be the fallback.
+ * Every failure is swallowed AND SAID: coordination never throws (see
+ * {@link coordinateServer}), and the role read logs its own line. A server that
+ * did not answer keeps its lane, because absence of knowledge is not absence of
+ * an upstream.
  *
  * Returns the names it asked, for the caller's log line. The server list is
  * injected for the reason {@link CoordinateDeps} is: a keeper drives it with a
  * scripted set rather than with this machine's registry.
  */
-export async function readBenchFactsOnStart(
+export async function coordinateServersOnStart(
+  deps: CoordinateDeps = defaultDeps(),
   enabledServers: () => readonly string[] = () => rankedServers().map((row) => row.name),
 ): Promise<string[]> {
   let enabled: readonly string[];
@@ -720,12 +704,14 @@ export async function readBenchFactsOnStart(
     /*
      * `rankedServers` refuses BY NAME when nothing is enabled, and that refusal
      * is about placing work — it is the queue's to report when a row cannot be
-     * placed, not this one's at startup. With no enabled server there is no
-     * bench row to be wrong about either, so there is simply nothing to ask.
+     * placed, not this one's at startup. With no enabled server there is nothing
+     * to coordinate with and no bench row to be wrong about.
      */
     return [];
   }
-  const asked = enabled.filter((name) => name !== LOCAL_SERVER_NAME);
-  await Promise.all(asked.flatMap((name) => [readUpstreamPresence(name), readRolePresence(name)]));
-  return asked;
+  await Promise.all(enabled.flatMap((name) => [
+    coordinateServer(name, deps),
+    readRolePresence(name),
+  ]));
+  return [...enabled];
 }

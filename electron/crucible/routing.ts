@@ -3,9 +3,10 @@
  *
  * ── What this owns, and what it deliberately does not ───────────────────────
  *
- * `servers.ts` owns WHICH servers exist (the registry of remotes) and `local.ts`
- * owns the one on this machine. Neither says anything about *preference*, and
- * preference is a third fact with a third owner: crucible
+ * `servers.ts` owns WHICH servers exist — the registry, and since Owen's ruling
+ * of 2026-09-15 that is ALL of them, the one on this machine included. It says
+ * nothing about *preference*, and preference is a second fact with a second
+ * owner: crucible
  * `docs/PHASE7-LANES.md` section 4.2.2 gives the operator a single list, dragged
  * to order, with an enable switch per row, plus one setting for what a new queue
  * row defaults to. That is what this file persists, and it is the ONLY owner of
@@ -14,7 +15,7 @@
  * it might get back.
  *
  *   <userData>/crucible-routing.json
- *   { "order": ["local", "mac"], "disabled": ["mac"], "newJobsWaitFor": "top-ranked" }
+ *   { "order": ["3090 Ti", "mac"], "disabled": ["mac"], "newJobsWaitFor": "top-ranked" }
  *
  * A record written before 2026-09-15 also carries `legacyLocalRender`. The layer
  * that key reached — the WSL narrator, the local text engines, the local VLM,
@@ -32,9 +33,12 @@
  * **Rank is the list's order. There is no rank number** (§4.2.2: "the list's
  * order IS the rank"), so nothing here stores one and nothing renumbers.
  *
- * **`local` participates by name.** The server on this machine is ranked and
- * enabled exactly like a remote — it is simply never in the registry, so the
- * caller passes it in the known set with the reserved name `local`.
+ * **EVERY server is one row, and there is no other kind.** Until 2026-09-15 the
+ * server on this machine was passed into the known set under the reserved name
+ * `local`, which was not a registry entry at all. Owen's ruling deleted that:
+ * the known set is simply the registry, so a machine on `127.0.0.1` is ranked,
+ * enabled, disabled and forgotten by exactly the code a Mac across the tailnet
+ * is.
  *
  * **A newly added server lands at the BOTTOM** (§4.2.2: "adding a machine must
  * never silently demote the one every existing row defaults to"). That is not a
@@ -59,8 +63,7 @@
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { LOCAL_SERVER_NAME } from './local';
-import { listServers, describeLocal } from './servers';
+import { listServers } from './servers';
 // The wire shapes, owned once in shared/ because the settings row reads them
 // too (see that file's header). This module owns the RECORD; the view it hands
 // back is the wire's.
@@ -158,10 +161,10 @@ function isWaitFor(value: unknown): value is WaitForDefault {
 /**
  * The routing record over one file.
  *
- * Every method takes `known` — the servers that exist right now, best-guess
- * order, `local` first when this machine has one. This class never asks the
- * registry itself, so a keeper drives it with a scripted server set and the
- * module-level doors below bind it to the real one.
+ * Every method takes `known` — the servers that exist right now, in the order
+ * the registry holds them. This class never asks the registry itself, so a
+ * keeper drives it with a scripted server set and the module-level doors below
+ * bind it to the real one.
  */
 export class Routing {
   constructor(private readonly file: string) {}
@@ -402,18 +405,15 @@ function store(): Routing {
 }
 
 /**
- * The servers this machine has, best-guess order: `local` first when there is
- * one, then the registry in the order it was written.
+ * The servers this machine has, in the order they were added.
  *
- * The local server is included by NAME only — `describeLocal()` returns a named
- * state when there is none (`no_local_config`, `no_wsl_distro`), and a machine
- * that has no local Crucible simply has no `local` row to rank.
+ * That is the whole of it: the registry IS the set of servers (Owen's ruling,
+ * 2026-09-15). There is no manufactured row for this machine and no second
+ * source to merge in — a machine with an empty registry has no servers, which is
+ * a true state and the one the Crucible Servers panel is for.
  */
 export function knownServers(): string[] {
-  const names: string[] = [];
-  if (describeLocal().present) names.push(LOCAL_SERVER_NAME);
-  for (const entry of listServers()) names.push(entry.name);
-  return names;
+  return listServers().map((entry) => entry.name);
 }
 
 /** The record resolved against {@link knownServers}. */

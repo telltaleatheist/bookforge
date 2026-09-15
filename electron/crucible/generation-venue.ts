@@ -62,7 +62,7 @@ import { pingServer, type CruciblePingResult } from './probe';
  */
 export type GenerationVenue = {
   where: 'crucible';
-  /** A registered server's name, or the reserved `local`. Never a URL. */
+  /** A registered server's name. Never a URL.  */
   server: string;
   /**
    * Which of the three answers this was. Goes on the render's log, because
@@ -98,7 +98,7 @@ export class CrucibleVenueError extends Error {
 /**
  * The only two things this decision reads from the world, so a keeper can drive
  * every branch with no registry, no record on disk and no network — the same
- * shape `local.ts`'s `LocalHost` uses for the same reason.
+ * shape `discovery.ts`'s `DiscoveryHost` uses for the same reason.
  */
 export interface VenueHost {
   /** The routing record resolved against the servers that exist. */
@@ -137,7 +137,7 @@ export async function decideWhereGenerationRuns(
         'crucible_server_not_named',
         'settings.crucible is set but names no server. It takes the NAME of an entry in '
           + '<userData>/crucible-servers.json (bookforge-tts --crucible-list), or the reserved '
-          + '"local"; there is no default server and no local fallback.',
+          + 'a registered server; there is no default and no fallback to this machine.',
       );
     }
     return { where: 'crucible', server: named.trim(), because: 'the caller named it' };

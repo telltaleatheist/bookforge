@@ -571,11 +571,11 @@ test("a cloud lane is never THIS machine's card, even local's", () => {
   // `local:cloud` is the local engine FORWARDING work. Nothing is on the 3090.
   const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
   assert.strictEqual(slots.thisMachinesCardHeldBy({
-    venue: slots.cloudLaneOf('local'), localServerName: 'local', occupancy,
+    venue: slots.cloudLaneOf('3090 Ti'), serversOnThisMachine: ['3090 Ti'], occupancy,
   }), null);
   // …and the GPU venue beside it still is.
   assert.strictEqual(slots.thisMachinesCardHeldBy({
-    venue: 'local', localServerName: 'local', occupancy,
+    venue: '3090 Ti', serversOnThisMachine: ['3090 Ti'], occupancy,
   }), LEGACY);
 });
 
@@ -606,11 +606,11 @@ test('occupancy counts only what is RUNNING, per set', () => {
 test('this machine has ONE card behind two venues', () => {
   const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
   assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: 'local', localServerName: 'local', occupancy }),
+    slots.thisMachinesCardHeldBy({ venue: '3090 Ti', serversOnThisMachine: ['3090 Ti'], occupancy }),
     LEGACY,
     'a local-Crucible render must not start on a card the legacy spawn is using');
   assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: 'mac', localServerName: 'local', occupancy }),
+    slots.thisMachinesCardHeldBy({ venue: 'mac', serversOnThisMachine: ['3090 Ti'], occupancy }),
     null,
     'a REMOTE venue is a different card, which is the whole point of the sets');
 });
@@ -618,7 +618,7 @@ test('this machine has ONE card behind two venues', () => {
 test('with no local Crucible, only the legacy venue is this machine', () => {
   const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
   assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: 'mac', localServerName: null, occupancy }),
+    slots.thisMachinesCardHeldBy({ venue: 'mac', serversOnThisMachine: [], occupancy }),
     null);
 });
 
@@ -763,7 +763,7 @@ function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
     legacyLocalRender: initial.legacyLocalRender === true,
-    localName: initial.localName === undefined ? 'local' : initial.localName,
+    serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
   };
@@ -771,7 +771,7 @@ function fakeHost(initial) {
     routing: () => ({
       ranked: state.ranked.map((row) => ({ ...row })),
       legacyLocalRender: state.legacyLocalRender,
-      localName: state.localName,
+      serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
     async reach(name) {

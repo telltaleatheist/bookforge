@@ -26,17 +26,23 @@
  * Requires BookForge to be BUILT (dist/electron present) but NOT running:
  *   npx tsc -p tsconfig.electron.json
  *
- * TWO KINDS OF SERVER (2026-09-13). `--server local` is the Crucible on THIS
- * machine — inside WSL2 on Windows — read from its own config.toml on every
- * call, so its token is never copied anywhere. The registry (--add/--remove/
- * --list) holds REMOTE servers only; a loopback URL is refused by name, and a
- * pre-rule entry for the local server is refused at use with the fix in the
- * message. electron/crucible/local.ts says why.
+ * ONE KIND OF SERVER (Owen's ruling, 2026-09-15). There used to be two: the
+ * registry held REMOTE servers, and `--server local` was a reserved name read
+ * out of this machine's own config.toml. *"a local crucible server shouldnt be
+ * treated any differently than a remote crucible server. it should all be
+ * entered the exact same way."* So `--add` takes a loopback URL like any other
+ * and `--list` prints one list. `--discovered` is the one convenience left: it
+ * prints what a Crucible found on THIS computer would be added as, and
+ * `--add-discovered --name <n>` adds it without anybody typing an address and
+ * a key out of a file inside a WSL guest. electron/crucible/discovery.ts says
+ * why that is a prefill and not a second kind of server.
  *
  * Usage:
  *   node cli/crucible.js --add --name <n> --url <u> (--token <t> | --token-file <path>)
  *   node cli/crucible.js --remove --name <n>
- *   node cli/crucible.js --list                       # local first, then remotes
+ *   node cli/crucible.js --list                       # every registered server
+ *   node cli/crucible.js --discovered                 # a Crucible on THIS computer, if any
+ *   node cli/crucible.js --add-discovered --name <n>  # …added under that name
  *   node cli/crucible.js --ping   --server <n>
  *   node cli/crucible.js --info   --server <n>
  *   node cli/crucible.js --health --server <n>
@@ -240,23 +246,47 @@ async function run(args) {
   }
 
   // ── --list ────────────────────────────────────────────────────────────────
-  // The local server first, read from its own config.toml (never the registry),
-  // then every registered remote. Neither listing type can carry a plaintext
-  // token; see electron/crucible/servers.ts. A machine with no local Crucible
-  // is a stated fact on the first line, not an error and not an empty line.
+  // ONE LIST. Every server, wherever it runs. The listing type cannot carry a
+  // plaintext token; see electron/crucible/servers.ts.
   if (args.list) {
-    const here = servers.describeLocal();
-    if (here.present) {
-      console.log(`local\t${here.url}\ttoken ${here.tokenMasked}\t${here.serverName}  (${here.configPath})`);
-    } else {
-      console.log(`local\t—\t${here.code}: ${here.reason}`);
-    }
     const rows = servers.listServers();
     for (const row of rows) {
-      const stale = row.stale === null ? '' : `\tSTALE (${row.stale}): remove it and use --server local`;
-      console.log(`${row.name}\t${row.url}\ttoken ${row.tokenMasked}\tadded ${row.added}${stale}`);
+      console.log(`${row.name}\t${row.url}\ttoken ${row.tokenMasked}\tadded ${row.added}`);
     }
-    console.log(`\n${rows.length} remote server(s)  —  ${servers.registryPath()}`);
+    console.log(`\n${rows.length} server(s)  —  ${servers.registryPath()}`);
+    return;
+  }
+
+  // ── --discovered / --add-discovered ──────────────────────────────────────
+  //
+  // A PREFILL, NOT A KIND OF SERVER. `discovery.js` reads the connect code or
+  // config.toml a Crucible on THIS computer left behind, and says what the
+  // registry entry for it would be. `--add-discovered` then calls the SAME
+  // addServer the typed `--add` does, with the same refusals — what it saves is
+  // copying an address and a bearer token out of a file inside a WSL guest.
+  //
+  // The token is NEVER printed, here or anywhere: --discovered shows the name,
+  // the address and the file it came from, and the last four characters of the
+  // key so two can be told apart.
+  if (args.discovered || args['add-discovered']) {
+    const discovery = require(path.join(DIST, 'crucible', 'discovery.js'));
+    const toolPaths = require(path.join(DIST, 'tool-paths.js'));
+    const found = discovery.discoverCrucible(
+      discovery.processDiscoveryHost(toolPaths.getWslDistro()),
+    );
+    if (args['add-discovered']) {
+      const name = required(args, 'name', 'what this machine will call the engine on it');
+      const added = servers.addServer({ name, url: found.url, token: found.token });
+      console.log(`added ${added.name}  ${added.url}  token ${added.tokenMasked}`);
+      return;
+    }
+    const already = servers.listServers()
+      .find((row) => row.url.replace(/\/+$/, '') === found.url.replace(/\/+$/, ''));
+    console.log(`${found.name}\t${found.url}\ttoken ${servers.maskToken(found.token)}`
+      + `\tvia ${found.via}  (${found.configPath})`);
+    console.log(already === undefined
+      ? '\nNot registered. Add it:  node cli/crucible.js --add-discovered --name "<name>"'
+      : `\nAlready registered as "${already.name}".`);
     return;
   }
 
@@ -484,11 +514,11 @@ run(parseArgs(process.argv.slice(2))).catch((err) => {
     process.exitCode = 1;
     return;
   }
-  // The registry's own named refusals, the local server's (no config.toml, no
-  // WSL distro, a key the server itself would refuse), and this file's argument
+  // The registry's own named refusals, discovery's (no config.toml, no WSL
+  // distro, a key the server itself would refuse), and this file's argument
   // refusals.
   if (err instanceof UsageError || (err instanceof Error
-      && (err.name === 'CrucibleRegistryError' || err.name === 'CrucibleLocalError'))) {
+      && (err.name === 'CrucibleRegistryError' || err.name === 'CrucibleDiscoveryError'))) {
     console.error(`[crucible] ${err.message}`);
     process.exitCode = 1;
     return;

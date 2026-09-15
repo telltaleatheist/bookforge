@@ -23,16 +23,19 @@
  * the same reason, so even the PATH cannot be had synchronously.
  *
  * BookForge's side of the meeting is the opposite constraint, and it is
- * architectural rather than stylistic: {@link readLocalServer} is synchronous
- * because `servers.ts`'s registry, `routing.ts`'s `readRouting()` and the
- * hosted-Foundry snapshot all are, and `readRouting()` is called inside the
- * queue's synchronous pump (`crucibleAdmission`). `host-registry.ts`'s header
- * sets out what that costs and why it is paid. Making the local-server
- * resolution async is a real refactor of the scheduler's read path; it is not
- * something to do on the way past.
+ * architectural rather than stylistic: `discovery.ts`'s `discoverCrucible` is
+ * synchronous because the install plan and the Settings panel both compose it
+ * beside other synchronous machine reads, and `install.ts`'s `InstallHost`
+ * cannot await inside one. Making it async is a real refactor of those; it is
+ * not something to do on the way past.
  *
- * **ENDS WHEN:** the local-server resolution becomes async, or the SDK grows a
- * synchronous variant. Then this file is deleted and the callers await.
+ * (It was a HARDER constraint until 2026-09-15: the scheduler's own read path
+ * went through it, because `readRouting()` resolved a reserved server name out
+ * of this machine's config inside a synchronous pump. Owen's ruling deleted
+ * that name, so nothing on the pump's path reaches here any more.)
+ *
+ * **ENDS WHEN:** discovery becomes async, or the SDK grows a synchronous
+ * variant. Then this file is deleted and the callers await.
  *
  * **2. ~~The SDK's path rule does not carry the Windows case~~ — SETTLED
  * 2026-09-14, and this is what it settled to.** It used to be a real

@@ -198,7 +198,7 @@ async function fresh(name) {
    * The venue DECISION is `tools/test-crucible-text-acts.js`'s subject.
    */
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], localName: null }),
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'hostq',
     reach: async () => ({ reachable: true }),
   });

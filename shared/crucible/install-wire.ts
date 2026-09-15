@@ -28,7 +28,7 @@
 
 import type { BootstrapRefusalCode } from '@crucible/bootstrap';
 
-import type { LocalServerVia } from './settings-wire';
+import type { CrucibleDiscoveryVia } from './settings-wire';
 
 /**
  * THE THREE PLATFORMS THE SEQUENCE DIFFERS BY, AND A WORD FOR THE REST.
@@ -47,7 +47,7 @@ export type InstallPlatform = 'win32' | 'darwin' | 'linux' | 'other';
  * `BootstrapRefusalCode` covers both halves of the story — the six this app's
  * own probes reach (`unsupported_platform`, `wsl_missing`, `no_wsl_distro`,
  * `wsl_read_failed`, `no_nvidia_driver`, `not_apple_silicon`), the three
- * `local.ts` answers (`no_local_config`, `config_unreadable`,
+ * `discovery.ts` answers (`no_local_config`, `config_unreadable`,
  * `config_missing_key`), and everything only the installer can meet
  * (`host_not_installed`, `host_unreachable`, `host_install_running`,
  * `pack_not_published`, `pack_sha_mismatch`, `step_failed`, …). They are not
@@ -99,7 +99,7 @@ export interface CrucibleWslFacts {
   /**
    * The distro the GPU and config facts were actually read through: the app's
    * OWN WSL setting (Settings → Add-ons → WSL distro), never wsl.exe's default.
-   * `local.ts`'s rule, kept: "the default distro" is whatever `wsl --set-default`
+   * `discovery.ts`'s rule, kept: "the default distro" is whatever `wsl --set-default`
    * last said, and a server read from the wrong guest is a wrong server.
    */
   probed: string | null;
@@ -116,16 +116,17 @@ export interface CrucibleGpuFacts {
 }
 
 /** Is there already a Crucible config on this machine, and what does it say? */
-export type CrucibleLocalConfigFacts =
-  | { present: true; serverName: string; url: string; configPath: string; via: LocalServerVia }
+export type CrucibleDiscoveredFacts =
+  | { present: true; serverName: string; url: string; configPath: string; via: CrucibleDiscoveryVia }
   | { present: false; code: CrucibleHostRefusalCode; reason: string };
 
 /**
  * `detectHost()`-SHAPED, AND ONLY THE PARTS THIS APP CAN MEASURE ITSELF.
  *
  * Field for field a subset of the package's `HostFacts` — `platform`, `wsl`,
- * `gpu`, `refusals` — with `local` added because BookForge has `local.ts` and
- * the package would answer the same question with `readLocalConfig()`. What is
+ * `gpu`, `refusals` — with `discovered` added because BookForge has
+ * `discovery.ts` and the package would answer the same question with
+ * `readLocalConfig()`. What is
  * missing is `python` and `conda`, deliberately: finding the server interpreter
  * is `probeInterpreter`'s one guest-side script, and inventing a second one here
  * would be the copy this seam exists to avoid.
@@ -138,7 +139,7 @@ export interface CrucibleHostFacts {
   /** win32 only; null elsewhere, where there is no guest. */
   wsl: CrucibleWslFacts | null;
   gpu: CrucibleGpuFacts | null;
-  local: CrucibleLocalConfigFacts;
+  discovered: CrucibleDiscoveredFacts;
   /** One named refusal per null above, each with the command that clears it. */
   refusals: CrucibleHostRefusal[];
 }

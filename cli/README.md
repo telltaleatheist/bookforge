@@ -147,10 +147,11 @@ here before it, and the coverage audit, the RVC pass, the denoise pass and the a
 run here after it, reading the same directory they always read. See
 `electron/crucible/render.ts` and crucible `docs/PHASE6-REMOTE-RENDER.md`.
 
-It takes the **name of a registered server** (`--crucible-list`), never a URL; `local`
-is the reserved name for this machine's own server. Four things to know:
+It takes the **name of a registered server** (`--crucible-list`), never a URL. There is
+no reserved name for a server on this computer: it is a registry entry like any other
+(ruling 2026-09-15). Four things to know:
 
-- **There is no fallback to the local card.** A server that is busy (`server_busy`,
+- **There is no fallback to this machine's card.** A server that is busy (`server_busy`,
   reported with the SDK's "GPU busy: `<holder>`" line), that has `tts` disabled
   (`job_type_disabled`), that is serving a streaming session (`engine_in_use`), or that
   does not have the voice, fails the run **naming which one it was**. Rendering the
@@ -964,19 +965,19 @@ through BookForge's own chain. This one is the press.
 
 Accepted by all three clean-text doors (`--clean`, `--clean-lines`,
 `--narration-text`) and by them only. It names a **registered Crucible** — an entry
-in `<userData>/crucible-servers.json` (`--crucible-list`), or the reserved `local` for
-the server on this machine — and sets **the same venue field the app sets** from a
+in `<userData>/crucible-servers.json` (`--crucible-list`), wherever that machine is —
+and sets **the same venue field the app sets** from a
 queue row's resolved server, so a headless run and the hosted press decide identically.
 
 ```bash
 # The clean act on this machine's own Crucible:
-python cli/bookforge-tts.py --clean --project "<dir>" --crucible-server local
+python cli/bookforge-tts.py --clean --project "<dir>" --crucible-server "3090 Ti"
 
 # A training corpus through the Mac's:
 python cli/bookforge-tts.py --clean-lines --input lines.txt --language en --crucible-server mac
 
 # The bare-EPUB failsafe, same flag:
-python cli/bookforge-tts.py --narration-text --input book.epub --crucible-server local
+python cli/bookforge-tts.py --narration-text --input book.epub --crucible-server "3090 Ti"
 ```
 
 What changes on the line and what does not:
@@ -1009,7 +1010,7 @@ off and a server enabled, the act goes to Crucible **or is refused by name** —
 no quiet drop to llama-server.
 
 **This runs for real, and one path does not.** A `clean` act through BookForge's own
-engine door has been measured end to end against `local` — 734 blocks, 265 changed,
+engine door has been measured end to end against this machine's engine — 734 blocks, 265 changed,
 78.5 s — so `--narration-text`, `--clean-lines` and `--clean` all work. What does not
 is the **hosted Foundry window's own queue** inside the app: it spawns the engine
 through the vendored `runEngine`, which uses `env: process.env` and takes no per-run
@@ -1371,8 +1372,8 @@ so `--ai-cleanup` can run on the Mac Studio's GPU instead of local Ollama.
 ```
 bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)
 bookforge-tts --crucible-remove --name N
-bookforge-tts --crucible-list                  # local first (from its config.toml), then remotes
-bookforge-tts --crucible-ping   --server N     # N = local, or a registered remote; unauthenticated
+bookforge-tts --crucible-list                  # every registered server, tokens masked
+bookforge-tts --crucible-ping   --server N     # N = any registered server; unauthenticated
 bookforge-tts --crucible-info   --server N     # backend, GPU, capabilities
 bookforge-tts --crucible-health --server N     # status, queue depth, resident models
 bookforge-tts --crucible-echo   --server N --file FILE [--out FILE]
@@ -1386,17 +1387,34 @@ bookforge-tts --ai-cleanup  --input FILE --provider crucible --server N --model 
 bookforge-tts --ai-simplify --input FILE --provider crucible --server N --model ID --simplify-mode learner
 ```
 
-**Two kinds of server, one owner each (2026-09-13).** `--server local` is the Crucible on
-*this* machine — inside WSL2 on Windows, read through the distro in Settings → Add-ons —
-and it is never registered: every call reads its token from the server's own
-`config.toml` (`$CRUCIBLE_HOME`, default `~/.crucible`), so there is no copy to go stale
-when `crucible init --force` mints a new one. The registry holds **remote** servers
-only, the machines whose tokens you pasted because no other source exists for them.
-`--crucible-add` refuses a loopback URL by name (`local_is_not_registered`), and an entry
-from before this rule is refused at use (`stale_local_entry`) with the fix in the message:
-remove it and say `--server local`. `--crucible-list` prints the local server first, or
-the named reason there is none (`no_local_config`, `no_wsl_distro`) — a laptop that only
-ever renders on the Mac is a stated fact, not an error.
+**ONE kind of server (Owen's ruling, 2026-09-15).** *"a local crucible server shouldnt be
+treated any differently than a remote crucible server. it should all be entered the exact
+same way … bookforge shouldnt even know if it's local because it doesnt mater."*
+
+There used to be two: the registry held **remote** servers, and `--server local` was a
+reserved name resolved out of this machine's own `config.toml`. Both are gone.
+`--crucible-add` takes a loopback URL like any other, `--crucible-list` prints one list,
+and a machine with an empty registry has no servers — a true state, not an error.
+
+What is left of the old behaviour is a **prefill**, in `node cli/crucible.js`:
+
+```bash
+node cli/crucible.js --discovered                    # what a Crucible HERE would be added as
+node cli/crucible.js --add-discovered --name "3090 Ti"   # …added, under that name
+```
+
+It reads the connect code (`%LOCALAPPDATA%\Crucible\pairing`, crucible PHASE15-HOST §3.6)
+or, failing that, the server's own `config.toml` — on Windows through the WSL distro in
+Settings → Add-ons — and ends in the SAME `addServer` the typed `--add` does, with the
+same refusals. What it saves is copying an address and a bearer token out of a file
+inside a guest. The token is never printed: `--discovered` shows `****<last 4>`.
+
+**A record that still said `local` was migrated once**, at the first launch of the build
+that landed this: the entry was added to the registry under the name the engine calls
+itself, and the rank record, the upstream record and every queue row that named it were
+rewritten in the same pass (`electron/crucible/retire-reserved-name.ts`). If that could
+not be done — no Crucible here any more, or the name taken by a different machine —
+nothing was changed at all and the log says which record still holds the word.
 
 **The token is never printed.** `--crucible-list` shows `****` plus its last four
 characters, and the type the registry returns for a listing cannot carry a plaintext

@@ -295,10 +295,9 @@ async function projectHalf() {
   for (const name of ['app-settings.json', 'tool-paths.json']) {
     /*
      * `app-settings.json` because "whichever the machine is on" is what the
-     * model tests assert, and `tool-paths.json` because the reserved server
-     * `local` is read out of the WSL guest this app is configured with — an
-     * empty userData has no distro, and the venue test below would then be
-     * measuring the fixture rather than the door.
+     * model tests assert, and `tool-paths.json` because several doors read the
+     * app's WSL distro setting and an empty userData has none — the venue test
+     * below would then be measuring the fixture rather than the door.
      */
     const real = path.join(require(STUB).USER_DATA, name);
     if (fs.existsSync(real)) fs.copyFileSync(real, path.join(doorUserData, name));
@@ -315,18 +314,22 @@ async function projectHalf() {
    * thing this suite asserts about it.
    */
   /*
-   * THE FAKE, AND HOW THE DOOR IS TOLD ABOUT IT — the PAIRING FILE, which is
-   * the contract's own first way to find the server on this machine (crucible
-   * `docs/PHASE15-HOST.md` §3.6, §5.1: *"No typing."*).
+   * THE FAKE, AND HOW THE DOOR IS TOLD ABOUT IT — a REGISTRY ENTRY, in a
+   * `<userData>` of ours.
    *
-   * NOT the registry, deliberately: `addServer` and `ServerRegistry.get` both
-   * refuse a loopback URL by name (`stale_local_entry`) because the local
-   * server has one owner and a copied token goes stale the moment
-   * `crucible init --force` runs. A keeper that wrote such an entry anyway
-   * would be testing against a shape the app refuses. The pairing file is where
-   * a loopback address BELONGS, it is read with no WSL and no `wsl.exe` spawn,
-   * and `$CRUCIBLE_HOME` points it at a directory of ours — so this suite
-   * neither reads nor needs whatever Crucible is actually running on this box.
+   * It used to be the pairing file, because the loopback address of a fake had
+   * nowhere else to go: `addServer` refused a loopback URL by name, since the
+   * server on this machine was a reserved name read from its own config. Owen's
+   * ruling of 2026-09-15 deleted that — a Crucible on `127.0.0.1` is registered
+   * exactly like one across the tailnet — so the fixture now takes the same
+   * door the app takes, which is the only way this suite can be testing the
+   * shape the app actually uses.
+   *
+   * `BOOKFORGE_USER_DATA` points the registry at a directory of ours, so this
+   * suite neither reads nor needs whatever Crucible is running on this box, and
+   * it writes no token anywhere near the real one. `CRUCIBLE_HOME` still points
+   * at a scratch directory below, so nothing here can reach the connect code
+   * the real engine left on this machine either.
    */
   const door = settingsRoutes({});
   const fake = await startFakeCrucible(async (req, res, ctx) => {
@@ -359,14 +362,19 @@ async function projectHalf() {
     }
     return door.handle(req, res, ctx);
   });
-  /** The reserved name for the server on this machine — what the pairing file names. */
-  const FAKE_SERVER = 'local';
+  /** What THIS fixture calls the fake — an ordinary registry name, nothing reserved. */
+  const FAKE_SERVER = 'clean-door-fake';
   const crucibleHome = path.join(ROOT, 'crucible-home');
   fs.mkdirSync(crucibleHome, { recursive: true });
   const { port } = new URL(fake.url);
   fs.writeFileSync(
-    path.join(crucibleHome, 'pairing'),
-    `crucible://clean-door-fake@127.0.0.1:${port}/#test-token-abcd\n`,
+    path.join(doorUserData, 'crucible-servers.json'),
+    JSON.stringify({ servers: [{
+      name: FAKE_SERVER,
+      url: `http://127.0.0.1:${port}`,
+      token: 'test-token-abcd',
+      added: '2026-09-15T00:00:00.000Z',
+    }] }),
     'utf8');
   const routingFile = path.join(doorUserData, 'crucible-routing.json');
   fs.writeFileSync(

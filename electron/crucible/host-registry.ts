@@ -7,21 +7,19 @@
  * runs inside THIS process against THIS machine's cards, so a second registry
  * over there would be a second set of tokens and a second ranking dispatching
  * against the same GPUs BookForge's own scheduler is rationing. There is one
- * registry — `<userData>/crucible-servers.json` plus the local server's own
- * `config.toml` — and this module is the door it reaches the window through
+ * registry — `<userData>/crucible-servers.json`, and since 2026-09-15 that is
+ * ALL of it — and this module is the door it reaches the window through
  * (`FoundryHost.servers()`, foundry `e096734`).
  *
  * ── WHY A SNAPSHOT, AND WHY THAT IS NOT A CACHE ───────────────────────────
  *
  * Their seam is **synchronous and read at every use**: `computeSlots()` runs
- * while the queue page is being painted, so it cannot await. Ours cannot be
- * computed synchronously on demand without paying for it — resolving `local`
- * means reading a `config.toml` that lives inside WSL, which on Windows is a
- * SYNCHRONOUS `wsl.exe` spawn of a few hundred milliseconds
- * (`local.ts readLocalServer`). One of those per paint is a stuttering window.
+ * while the queue page is being painted, so it cannot await. Ours is two file
+ * reads with a bearer token in one of them, and re-deriving it under every paint
+ * of a window that is not this app's to profile is not a bargain worth making.
  *
  * So the fact has an owner and a derivation (crucible `docs/ARCHITECTURE.md`
- * R1): **the registry file and the config.toml are the fact**, and the snapshot
+ * R1): **the registry file and the rank record are the fact**, and the snapshot
  * below is derived from them at NAMED MOMENTS — app start, every write that can
  * change the list (add, remove, re-rank, enable/disable, forget), and the
  * Servers panel's read, which is where a person presses Re-check. It carries
@@ -49,7 +47,6 @@
  * instead of the window going looking for a file it should not know the name
  * of. Nothing here is logged but names — see {@link describeHostCrucibleRegistry}.
  */
-import { LOCAL_SERVER_NAME, CrucibleLocalError } from './local';
 import { readRouting } from './routing';
 import { getServer, CrucibleRegistryError, type ResolvedServer } from './servers';
 import type { RoutingView } from '../../shared/crucible/settings-wire';
@@ -66,7 +63,7 @@ import type { RoutingView } from '../../shared/crucible/settings-wire';
  * "switched off" depend on their default rather than on our record.
  */
 export interface HostCrucibleServer {
-  /** How this machine names the server: a registry name, or the reserved `local`. */
+  /** How this machine names the server — the operator's own word for it. */
   name: string;
   /** The base URL as the registry stores it — no `/v1`, no `/openai`. */
   url: string;
@@ -97,16 +94,6 @@ export interface HostCrucibleRegistrySnapshot {
    * recorded here so the omission is a stated fact rather than a silent gap.
    */
   omitted: HostRegistryOmission[];
-  /**
-   * Why there is no `local` row, when there is none. `null` when there is one.
-   *
-   * A machine with no local Crucible is not a failure: `describeLocal()` answers
-   * with a NAMED absence (`no_local_config`, `no_wsl_distro`) and `readRouting`
-   * leaves `local` out of the ranking entirely. The refusal stays visible where
-   * it already is — Settings → Crucible Servers — and is kept here only so the
-   * log line can say which of the two it was.
-   */
-  localAbsent: { code: string; reason: string } | null;
 }
 
 /** The one way this module refuses. */
@@ -126,7 +113,7 @@ export class CrucibleHostRegistryError extends Error {
 export interface HostRegistryReader {
   /** The rank/enable record resolved against the servers that exist. */
   routing(): RoutingView;
-  /** One server WITH its token: `local` from its config, a remote from the registry. */
+  /** One server WITH its token, from the registry. */
   server(name: string): ResolvedServer;
 }
 
@@ -151,15 +138,9 @@ let snapshot: HostCrucibleRegistrySnapshot | null = null;
  * failed read.
  *
  * A failure to resolve ONE NAME in the ranking is recorded and that name is
- * omitted: a stale loopback entry (`stale_local_entry`) is refused at use
- * everywhere in this app, and a name that vanished between the two reads
- * (`unknown_server`) is a server somebody removed a moment ago. Both are about
- * one row and neither is a reason to hand over nothing.
- *
- * Two reads of `local` happen here (the ranking asks whether there is one, and
- * the resolve asks for its token) and that is deliberate: this runs at named
- * moments, where a second `wsl.exe` costs nothing, and the alternative is a
- * second copy of `knownServers()`'s composition living in this file.
+ * omitted: a name that vanished between the two reads (`unknown_server`) is a
+ * server somebody removed a moment ago. That is about one row, and it is not a
+ * reason to hand over nothing.
  */
 export function refreshHostCrucibleRegistry(
   reader: HostRegistryReader = processHostRegistryReader(),
@@ -172,7 +153,7 @@ export function refreshHostCrucibleRegistry(
     try {
       resolved = reader.server(row.name);
     } catch (err) {
-      if (err instanceof CrucibleRegistryError || err instanceof CrucibleLocalError) {
+      if (err instanceof CrucibleRegistryError) {
         omitted.push({ name: row.name, code: err.code, reason: err.message });
         continue;
       }
@@ -185,36 +166,13 @@ export function refreshHostCrucibleRegistry(
       enabled: row.enabled,
     });
   }
-  const local = view.ranked.some((row) => row.name === LOCAL_SERVER_NAME)
-    ? null
-    : localAbsence(omitted);
   const taken: HostCrucibleRegistrySnapshot = {
     readAt: new Date().toISOString(),
     servers,
     omitted,
-    localAbsent: local,
   };
   snapshot = taken;
   return taken;
-}
-
-/**
- * Why `local` is not in the list. The ranking leaves it out when
- * `describeLocal()` answered with a named absence, and that answer is not
- * carried on the view — so the honest thing this module can say without taking
- * a THIRD reading is whether the resolve refused it, and otherwise that this
- * machine's config named no local server.
- */
-function localAbsence(
-  omitted: readonly HostRegistryOmission[],
-): { code: string; reason: string } {
-  const refused = omitted.find((entry) => entry.name === LOCAL_SERVER_NAME);
-  if (refused !== undefined) return { code: refused.code, reason: refused.reason };
-  return {
-    code: 'no_local_server',
-    reason: 'this machine\'s Crucible config named no local server, so there is no "local" row. '
-      + 'Settings → Crucible Servers says which of the reasons it was.',
-  };
 }
 
 /**
@@ -256,8 +214,7 @@ export function describeHostCrucibleRegistry(taken: HostCrucibleRegistrySnapshot
   const gone = taken.omitted.map((row) => `${row.name}: ${row.code}`);
   return `[crucible] hosted Foundry registry at ${taken.readAt}: `
     + `${names.length === 0 ? 'no servers' : names.join(', ')}`
-    + `${gone.length === 0 ? '' : ` — omitted ${gone.join('; ')}`}`
-    + `${taken.localAbsent === null ? '' : ` — no local server (${taken.localAbsent.code})`}`;
+    + `${gone.length === 0 ? '' : ` — omitted ${gone.join('; ')}`}`;
 }
 
 /** Forget the reading. For a keeper that drives the "never taken" refusal. */

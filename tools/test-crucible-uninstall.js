@@ -74,7 +74,8 @@ if (!fs.existsSync(MODULE)) {
   process.exit(1);
 }
 const uninstall = require(MODULE);
-const { CrucibleLocalError } = require(path.join(REPO, 'dist', 'electron', 'crucible', 'local.js'));
+const { CrucibleDiscoveryError } = require(path.join(REPO, 'dist', 'electron', 'crucible', 'discovery.js'));
+const { CrucibleRegistryError } = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
 const hostRunner = require(path.join(REPO, 'dist', 'electron', 'crucible', 'host-runner.js'));
 
 let ran = 0;
@@ -102,34 +103,50 @@ async function checkAsync(name, fn) {
 
 // ── The scripted world ───────────────────────────────────────────────────────
 //
-// `crucibleUninstallTarget` asks `local.ts` where this machine's server is,
-// and `local.ts` reads the pairing file and config.toml. Both are redirected
-// into a temp directory: nothing below reads anything real.
+// `crucibleUninstallTarget` asks `discovery.ts` where the Crucible on this
+// computer is, and the REGISTRY what address the named row holds. Both are
+// supplied: nothing below reads anything real.
+//
+// Since Owen's ruling of 2026-09-15 the door's gate is those TWO ADDRESSES
+// MATCHING, not a reserved name. `HERE_NAME` is an ordinary registry name;
+// what makes the door open is that the registry says it is at the same URL
+// discovery found here.
 
 const TMP = fs.mkdtempSync(path.join(require('os').tmpdir(), 'bf-cru-uninstall-'));
 const MAC_HOME = path.join(TMP, 'dot-crucible');
 fs.mkdirSync(MAC_HOME, { recursive: true });
 
 /*
- * WHERE local.ts WOULD HAVE LOOKED, supplied rather than looked at. The door
- * takes the local read as a parameter for exactly this reason: a test whose
+ * WHERE discovery.ts WOULD HAVE LOOKED, supplied rather than looked at. The
+ * door takes both reads as parameters for exactly this reason: a test whose
  * answer depended on whether the machine running it happens to hold a
  * Crucible is a test that passes on the PC and fails on a laptop - and, worse,
  * would read the live WSL config on Owen's machine while asserting about a
  * fixture.
  */
+const HERE_URL = 'http://127.0.0.1:7100';
+/** An ORDINARY registry name. Nothing about the word opens this door. */
+const HERE_NAME = '3090 Ti';
+
 const LOCAL_HERE = () => ({
-  name: 'local',
-  url: 'http://127.0.0.1:7100',
+  name: 'crucible@owens-pc-wsl',
+  url: HERE_URL,
   token: 'tok',
   configPath: path.join(MAC_HOME, 'config.toml'),
   via: 'pairing',
 });
 
+/** The registry, scripted: `3090 Ti` is here, `mac` is somewhere else. */
+const REGISTRY = (name) => {
+  if (name === HERE_NAME) return HERE_URL;
+  if (name === 'mac') return 'http://owens-mac-studio.hs.owenmorgan.com:7100';
+  throw new CrucibleRegistryError('unknown_server', `no crucible server named "${name}"`);
+};
+
 const NO_LOCAL = () => {
-  throw new CrucibleLocalError(
+  throw new CrucibleDiscoveryError(
     'no_local_config',
-    'no local Crucible: there is no pairing file and no config.toml on this machine.',
+    'no Crucible on this computer: there is no pairing file and no config.toml here.',
   );
 };
 
@@ -186,10 +203,10 @@ function runner(overrides) {
 // 1. Local only
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('a server that is not `local` is refused by NAME, and nothing is spawned', () => {
+check('a row whose ADDRESS is another machine is refused by name, and nothing is spawned', () => {
   const r = runner();
   let caught = null;
-  try { uninstall.crucibleUninstallTarget('mac', r, undefined, LOCAL_HERE); } catch (err) { caught = err; }
+  try { uninstall.crucibleUninstallTarget('mac', r, undefined, LOCAL_HERE, REGISTRY); } catch (err) { caught = err; }
   assert.ok(caught, 'the door let a REMOTE engine be uninstalled from this machine');
   assert.strictEqual(caught.code, 'uninstall_not_local');
   assert.ok(
@@ -204,7 +221,8 @@ checkAsync('and the RUN door refuses it too — not only the button', async () =
   let caught = null;
   try {
     await uninstall.crucibleUninstall(
-      'mac', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE);
+      'mac', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY,
+      REGISTRY);
   } catch (err) { caught = err; }
   assert.ok(caught, 'a disabled control over an open door is a decoration');
   assert.strictEqual(caught.code, 'uninstall_not_local');
@@ -213,13 +231,13 @@ checkAsync('and the RUN door refuses it too — not only the button', async () =
 
 check('no Crucible on this machine at all is uninstall_not_local, with the reason', () => {
   let caught = null;
-  try { uninstall.crucibleUninstallTarget('local', runner(), undefined, NO_LOCAL); } catch (err) { caught = err; }
+  try { uninstall.crucibleUninstallTarget(HERE_NAME, runner(), undefined, NO_LOCAL, REGISTRY); } catch (err) { caught = err; }
   assert.ok(caught, 'a machine with no engine was offered an uninstall');
   assert.strictEqual(caught.code, 'uninstall_not_local');
-  assert.ok(caught.detail, 'the refusal does not carry what local.ts actually said');
+  assert.ok(caught.detail, 'the refusal does not carry what discovery.ts actually said');
   assert.ok(
     caught.detail.includes('no_local_config'),
-    `local.ts's own reason was replaced rather than carried: ${caught.detail}`,
+    `discovery.ts's own reason was replaced rather than carried: ${caught.detail}`,
   );
 });
 
@@ -228,7 +246,7 @@ check('no Crucible on this machine at all is uninstall_not_local, with the reaso
 // ─────────────────────────────────────────────────────────────────────────────
 
 check('darwin/linux: the server pack\'s own binary, beside the config it wrote', () => {
-  const target = uninstall.crucibleUninstallTarget('local', runner(), undefined, LOCAL_HERE);
+  const target = uninstall.crucibleUninstallTarget(HERE_NAME, runner(), undefined, LOCAL_HERE, REGISTRY);
   assert.strictEqual(target.kind, 'native');
   assert.deepStrictEqual(target.argv, [SERVER_CLI]);
 });
@@ -237,17 +255,17 @@ check('a config with no server pack beside it is uninstall_not_available', () =>
   // That is what a Crucible installed some other way looks like, and it is not
   // something this app can take apart: it says so rather than guessing a path.
   let caught = null;
-  try { uninstall.crucibleUninstallTarget('local', runner({ files: {} }), undefined, LOCAL_HERE); } catch (err) { caught = err; }
+  try { uninstall.crucibleUninstallTarget(HERE_NAME, runner({ files: {} }), undefined, LOCAL_HERE, REGISTRY); } catch (err) { caught = err; }
   assert.ok(caught);
   assert.strictEqual(caught.code, 'uninstall_not_available');
 });
 
 check('win32 with a host: the host pack\'s entry point (PHASE15 4.4)', () => {
-  const target = uninstall.crucibleUninstallTarget('local', runner({
+  const target = uninstall.crucibleUninstallTarget(HERE_NAME, runner({
     platform: 'win32',
     env: { LOCALAPPDATA: 'C:\\Users\\t\\AppData\\Local' },
     files: { [HOST_CLI]: '@echo off' },
-  }), undefined, LOCAL_HERE);
+  }), undefined, LOCAL_HERE, REGISTRY);
   assert.strictEqual(target.kind, 'host');
   assert.deepStrictEqual(target.argv, [HOST_CLI]);
 });
@@ -256,7 +274,7 @@ check('win32 with no LOCALAPPDATA is refused, never assembled from a username', 
   let caught = null;
   try {
     uninstall.crucibleUninstallTarget(
-      'local', runner({ platform: 'win32', env: {}, files: {} }), undefined, LOCAL_HERE);
+      HERE_NAME, runner({ platform: 'win32', env: {}, files: {} }), undefined, LOCAL_HERE, REGISTRY);
   } catch (err) { caught = err; }
   assert.ok(caught);
   assert.strictEqual(caught.code, 'uninstall_no_localappdata');
@@ -301,7 +319,7 @@ check('--wsl-too is a HOST flag, and asking for it anywhere else is refused by n
 checkAsync('the dry run answers the CLI\'s plan, with `kept` on it', async () => {
   const r = runner();
   const plan = await uninstall.crucibleUninstall(
-    'local', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE,
+    HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY,
   );
   assert.deepStrictEqual(r.calls, [[SERVER_CLI, 'uninstall', '--json', '--dry-run']]);
   assert.strictEqual(plan.dryRun, true);
@@ -316,7 +334,7 @@ checkAsync('the dry run answers the CLI\'s plan, with `kept` on it', async () =>
 
 checkAsync('`keep` is a RESULT with a size, not the absence of a step', async () => {
   const plan = await uninstall.crucibleUninstall(
-    'local', { dryRun: true, purgeWeights: false, wslToo: false }, runner(), undefined, LOCAL_HERE,
+    HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, runner(), undefined, LOCAL_HERE, REGISTRY,
   );
   const keep = plan.steps.find((s) => s.action === 'keep');
   assert.ok(keep, 'the kept weights are not a step, so the screen cannot say what it is keeping');
@@ -326,7 +344,7 @@ checkAsync('`keep` is a RESULT with a size, not the absence of a step', async ()
 
 checkAsync('a step whose target is not a path has bytes NULL, never 0', async () => {
   const plan = await uninstall.crucibleUninstall(
-    'local', { dryRun: true, purgeWeights: false, wslToo: false }, runner(), undefined, LOCAL_HERE,
+    HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, runner(), undefined, LOCAL_HERE, REGISTRY,
   );
   const service = plan.steps.find((s) => s.name === 'service');
   assert.strictEqual(
@@ -353,8 +371,8 @@ checkAsync('the real run streams its lines and reports what was freed', async ()
     }),
   });
   const plan = await uninstall.crucibleUninstall(
-    'local', { dryRun: false, purgeWeights: false, wslToo: false }, r,
-    (text) => lines.push(text), LOCAL_HERE,
+    HERE_NAME, { dryRun: false, purgeWeights: false, wslToo: false }, r,
+    (text) => lines.push(text), LOCAL_HERE, REGISTRY,
   );
   assert.deepStrictEqual(r.calls, [[SERVER_CLI, 'uninstall', '--json']]);
   assert.deepStrictEqual(lines, ['removing …']);
@@ -383,7 +401,7 @@ checkAsync('a fatal step is carried through with `ok: false` and its own words',
     }),
   });
   const plan = await uninstall.crucibleUninstall(
-    'local', { dryRun: false, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE,
+    HERE_NAME, { dryRun: false, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY,
   );
   // A non-zero exit is NOT read as "no answer": the CLI prints its plan even
   // when a step refused, and the refusal is the useful half.
@@ -408,7 +426,7 @@ checkAsync('a CLI that predates the verb is uninstall_not_available, not a crash
   let caught = null;
   try {
     await uninstall.crucibleUninstall(
-      'local', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE);
+      HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY);
   } catch (err) { caught = err; }
   assert.ok(caught);
   assert.strictEqual(caught.code, 'uninstall_not_available');
@@ -420,7 +438,7 @@ checkAsync('an answer that is not the document is uninstall_unreadable, never an
   let caught = null;
   try {
     await uninstall.crucibleUninstall(
-      'local', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE);
+      HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY);
   } catch (err) { caught = err; }
   assert.ok(caught, 'a plain-text answer was read as an uninstall with no steps');
   assert.strictEqual(caught.code, 'uninstall_unreadable');
@@ -455,7 +473,7 @@ checkAsync('a CLI that could not be spawned at all is uninstall_unrun', async ()
   let caught = null;
   try {
     await uninstall.crucibleUninstall(
-      'local', { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE);
+      HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY);
   } catch (err) { caught = err; }
   assert.ok(caught);
   assert.strictEqual(caught.code, 'uninstall_unrun');
@@ -585,7 +603,7 @@ check('the INSTALL door spawns no .cmd today, and shares the runner anyway', () 
 // 8. The door
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('the settings door exists, is local-only, and says what it keeps', () => {
+check('the settings door exists, is this-machine-only, and says what it keeps', () => {
   const doors = fs.readFileSync(
     path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-doors.component.ts'),
     'utf-8',
@@ -594,11 +612,13 @@ check('the settings door exists, is local-only, and says what it keeps', () => {
     doors.includes('Remove the engine from this computer'),
     'the uninstall door is not in Settings -> Crucible Servers',
   );
-  // DRAWN ONLY WHEN THERE IS SOMETHING TO REMOVE. A remote row never grows
-  // this button, and the door is inside a `localFacts()?.present` guard.
+  // DRAWN ONLY WHEN THERE IS SOMETHING TO REMOVE, AND ONLY WHEN IT HAS A NAME.
+  // A row on another machine never grows this button, and since the reserved
+  // name went (ruling 2026-09-15) the door needs the engine here to be a
+  // REGISTERED row, because the door names one.
   assert.ok(
-    doors.includes('@if (localFacts()?.present) {'),
-    'the uninstall door is drawn without checking that there IS a local engine',
+    doors.includes('@if (registeredHere() !== null) {'),
+    'the uninstall door is drawn without checking that there IS an engine here, registered',
   );
   assert.ok(
     /kept unless you say otherwise/.test(doors),

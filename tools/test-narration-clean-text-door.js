@@ -103,13 +103,17 @@ process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
  * check below meet "no Crucible server is available to the queue": a true
  * sentence about a machine nobody configured, and not the question asked here.
  *
- * So the keeper brings its OWN server: a fake Crucible on loopback, named
- * through the PAIRING FILE (crucible `docs/PHASE15-HOST.md` §3.6 — the
- * contract's own first way to find the server on this machine, read with no
- * WSL and no `wsl.exe` spawn). `$CRUCIBLE_HOME` points that read at a directory
- * of ours, so nothing here touches whatever Crucible is running on this box.
- * The registry is deliberately NOT used: it refuses a loopback entry by name,
- * because the local server has one owner and a copied token goes stale.
+ * So the keeper brings its OWN server: a fake Crucible on loopback, written
+ * into a REGISTRY of ours under an ordinary name.
+ *
+ * It used to be named through the pairing file, because a loopback address had
+ * nowhere else to go: the registry refused one by name, since the server on
+ * this machine was a reserved name read from its own config. Owen's ruling of
+ * 2026-09-15 deleted that — a Crucible on `127.0.0.1` is registered exactly
+ * like one across the tailnet — so the fixture takes the door the app takes.
+ * `$CRUCIBLE_HOME` still points anything that looks for a connect code at a
+ * directory of ours, so nothing here touches whatever Crucible is running on
+ * this box.
  *
  * The VENUE DECISION itself is `tools/test-crucible-text-acts.js`'s subject;
  * what this file needs from it is only that it answers.
@@ -117,9 +121,11 @@ process.env.BOOKFORGE_USERDATA_DIR = path.join(ROOT, 'userdata');
 const CRUCIBLE_HOME = path.join(ROOT, 'crucible-home');
 fs.mkdirSync(CRUCIBLE_HOME, { recursive: true });
 process.env.CRUCIBLE_HOME = CRUCIBLE_HOME;
+/** What THIS fixture calls its fake. An ordinary registry name, nothing reserved. */
+const VENUE = 'clean-door-fake';
 fs.writeFileSync(
   path.join(FAKE_APPDATA, 'BookForge', 'crucible-routing.json'),
-  JSON.stringify({ order: ['local'], disabled: [], newJobsWaitFor: 'top-ranked' }, null, 2),
+  JSON.stringify({ order: [VENUE], disabled: [], newJobsWaitFor: 'top-ranked' }, null, 2),
   'utf8');
 // The binary this run uses, stated: `ensureFoundryPath` returns it without
 // touching the component registry, which is not mounted here.
@@ -154,8 +160,8 @@ function modelRow(id, resident) {
  * Start the keeper's own Crucible and write the pairing line that names it.
  *
  * Called from the runner, before the first check: the port is only known once
- * the socket is listening, and `readCruciblePairingFile` reads the file at CALL
- * time, so the file can be written after the door module has been required.
+ * the socket is listening, and the registry is read at CALL time, so the file
+ * can be written after the door module has been required.
  */
 async function startVenue() {
   const settings = settingsRoutes({});
@@ -194,8 +200,13 @@ async function startVenue() {
   });
   const { port } = new URL(fake.url);
   fs.writeFileSync(
-    path.join(CRUCIBLE_HOME, 'pairing'),
-    `crucible://clean-door-fake@127.0.0.1:${port}/#test-token-abcd\n`,
+    path.join(FAKE_APPDATA, 'BookForge', 'crucible-servers.json'),
+    JSON.stringify({ servers: [{
+      name: VENUE,
+      url: `http://127.0.0.1:${port}`,
+      token: 'test-token-abcd',
+      added: '2026-09-15T00:00:00.000Z',
+    }] }, null, 2),
     'utf8');
   return fake;
 }

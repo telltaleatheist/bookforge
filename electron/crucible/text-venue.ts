@@ -86,7 +86,7 @@ import {
  */
 export type TextActVenue = {
   where: 'crucible';
-  /** A registered server's name, or the reserved `local`. Never a URL. */
+  /** A registered server's name. Never a URL. */
   server: string;
   because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
 };
@@ -156,7 +156,7 @@ export interface TextVenueHost {
   enabled(): RankedServerRow[];
   /** One unauthenticated reachability check. */
   ping(name: string): Promise<CruciblePingResult>;
-  /** One server WITH its token: `local` from its config, a remote from the registry. */
+  /** One server WITH its token, from the registry. */
   server(name: string): ResolvedServer;
   /**
    * THE ADDRESS THAT SERVES WORK FOR THIS NAME, which is not always the one
@@ -363,7 +363,7 @@ export async function decideWhereTextActRuns(
         'crucible_server_not_named',
         'a Crucible server was asked for and none was named. It takes the NAME of an entry in '
           + '<userData>/crucible-servers.json (bookforge-tts --crucible-list), or the reserved '
-          + '"local"; there is no default server and no local fallback.',
+          + 'a registered server; there is no default and no fallback to this machine.',
       );
     }
     return { where: 'crucible', server: named.trim(), because: 'the caller named it' };

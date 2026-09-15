@@ -1706,15 +1706,17 @@ export function setGpuLockProbe(probe: () => string | null): void {
 export interface CrucibleRoutingHost {
   /**
    * Every server in rank order (disabled ones included), and which of those
-   * names is THIS machine's own server.
+   * ANSWER ON THIS MACHINE'S LOOPBACK.
    *
-   * `localName` is asked for rather than assumed because the reserved name is
-   * `electron/crucible/local.ts`'s to spell, and an engine that hard-coded the
-   * word `local` would be a second owner of it (crucible `docs/ARCHITECTURE.md`
-   * R1). It is what decides whether this machine's GPU lock and arbiter have
-   * anything to say about a step: work bound for the Mac must not wait on them.
+   * The second half is not a kind of server — since Owen's ruling of
+   * 2026-09-15 there is only one kind, and this engine cannot tell them apart
+   * by anything but the address. It is asked for rather than worked out here
+   * because the registry is the thing with the addresses and this file has no
+   * registry in it. It decides one thing: whether this machine's GPU lock and
+   * arbiter have anything to say about a step, and whether the one-card rule
+   * below applies. Work bound for the Mac must not wait on either.
    */
-  routing(): { ranked: WaitForServer[]; localName: string | null };
+  routing(): { ranked: WaitForServer[]; serversOnThisMachine: readonly string[] };
   /**
    * What a NEW row's `waitFor` is written as — the top-ranked server's NAME, or
    * `any` (crucible `docs/PHASE7-LANES.md` §4.2.1a).
@@ -1916,7 +1918,7 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     };
   }
 
-  let record: { ranked: WaitForServer[]; localName: string | null };
+  let record: { ranked: WaitForServer[]; serversOnThisMachine: readonly string[] };
   try {
     record = host.routing();
   } catch (err) {
@@ -1942,7 +1944,7 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
       return {
         ok: true,
         venue: verdict.server,
-        onThisMachine: record.localName !== null && verdict.server === record.localName,
+        onThisMachine: record.serversOnThisMachine.includes(verdict.server),
       };
     case 'ask':
       askReach(verdict.server);
@@ -2062,21 +2064,21 @@ function gpuSlotHolder(setId: string, sets: readonly SlotSet[]): string | null {
 }
 
 /**
- * The reserved name of THIS machine's own Crucible server, or null when it has
- * none. Never spelled here — `electron/crucible/local.ts` owns the word and the
- * host is asked for it (crucible `docs/ARCHITECTURE.md` R1).
+ * WHICH REGISTERED SERVERS ANSWER ON THIS MACHINE'S LOOPBACK, for the one-card
+ * rule below. Never worked out here — this file has no registry in it, so the
+ * host is asked (crucible `docs/ARCHITECTURE.md` R1).
  */
-function localServerName(): string | null {
+function serversOnThisMachine(): readonly string[] {
   const host = crucibleHost;
-  if (host === null) return null;
+  if (host === null) return [];
   try {
-    return host.routing().localName;
+    return host.routing().serversOnThisMachine;
   } catch {
     // The record is unreadable; admission has already refused every travelling
-    // row in `routing.ts`'s own words. Naming no local server here means the
-    // one-card rule falls back to the legacy set alone, which is the set the
-    // only work that can still start belongs to.
-    return null;
+    // row in `routing.ts`'s own words. Naming no server here leaves the
+    // one-card rule with the in-app aligner alone, which is the set the only
+    // work that can still start belongs to.
+    return [];
   }
 }
 
@@ -2338,15 +2340,16 @@ export function pump(): void {
         }
 
         /*
-         * THIS MACHINE HAS ONE CARD AND TWO VENUES OVER IT — the legacy narrator
-         * spawn and this machine's own Crucible server. Separate sets, so
-         * nothing above would stop both starting at once; the single global
-         * `gpu: 1` used to prevent that by accident, and it is stated here now
-         * rather than rediscovered on a card running two models.
+         * THIS MACHINE HAS ONE CARD AND MORE THAN ONE VENUE OVER IT — the
+         * in-app long-form aligner, and any Crucible that answers on this
+         * machine's loopback. Separate sets, so nothing above would stop both
+         * starting at once; the single global `gpu: 1` used to prevent that by
+         * accident, and it is stated here now rather than rediscovered on a card
+         * running two models.
          */
         const alsoHere = thisMachinesCardHeldBy({
           venue: routed.venue,
-          localServerName: localServerName(),
+          serversOnThisMachine: serversOnThisMachine(),
           occupancy: currentOccupancy(),
         });
         const alsoWhat = alsoHere === null ? null : occupantPhrase(alsoHere, 'gpu');

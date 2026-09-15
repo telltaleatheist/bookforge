@@ -85,10 +85,10 @@ import type {
 } from '@crucible/bootstrap';
 
 import {
-  CrucibleLocalError,
-  processHost as processLocalHost,
-  readLocalServer,
-} from './local';
+  CrucibleDiscoveryError,
+  discoverCrucible,
+  processDiscoveryHost,
+} from './discovery';
 import { getWslDistro } from '../tool-paths';
 import { BOOKFORGE_MODULE } from './module-setup';
 import type {
@@ -99,7 +99,7 @@ import type {
   CrucibleHostRefusalCode,
   CrucibleInstallPlan,
   CrucibleInstallStep,
-  CrucibleLocalConfigFacts,
+  CrucibleDiscoveredFacts,
   CrucibleWslDistro,
   CrucibleWslFacts,
   InstallPlatform,
@@ -446,7 +446,7 @@ export interface HostRunResult {
 /**
  * Everything {@link crucibleHostFacts} reads from the world.
  *
- * Injectable for the reason `local.ts`, `generation-venue.ts` and `pages.ts`
+ * Injectable for the reason `discovery.ts`, `generation-venue.ts` and `pages.ts`
  * all are: a keeper must be able to drive "no WSL", "WSL1 only", "no card",
  * "config already there" without a guest, a driver or a disk.
  */
@@ -459,8 +459,8 @@ export interface InstallHost {
   listWsl(): HostRunResult;
   /** `nvidia-smi --query-gpu=name,memory.total`, inside `distro` when one is named. */
   queryGpu(distro: string | undefined): HostRunResult;
-  /** The local server, or the named reason there is none. */
-  localConfig(): CrucibleLocalConfigFacts;
+  /** A Crucible already on this computer, or the named reason there is none. */
+  discovered(): CrucibleDiscoveredFacts;
 }
 
 /**
@@ -488,9 +488,9 @@ export function processInstallHost(): InstallHost {
       }
       return runDecoded('bash', ['-c', NVIDIA_SMI_SCRIPT]);
     },
-    localConfig: () => {
+    discovered: () => {
       try {
-        const server = readLocalServer(processLocalHost(getWslDistro()));
+        const server = discoverCrucible(processDiscoveryHost(getWslDistro()));
         return {
           present: true,
           serverName: server.name,
@@ -499,7 +499,7 @@ export function processInstallHost(): InstallHost {
           via: server.via,
         };
       } catch (err) {
-        if (err instanceof CrucibleLocalError) {
+        if (err instanceof CrucibleDiscoveryError) {
           return { present: false, code: err.code, reason: err.message };
         }
         throw err;
@@ -647,7 +647,7 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
       arch: host.arch,
       wsl: null,
       gpu: null,
-      local: host.localConfig(),
+      discovered: host.discovered(),
       refusals,
     };
   }
@@ -708,7 +708,7 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
         );
       } else if (probed === null) {
         // NOT the same refusal as "no distro". There is a guest; nobody has said
-        // which one, and `local.ts`'s rule is that there is no default here on
+        // which one, and `discovery.ts`'s rule is that there is no default here on
         // purpose — a server read from the wrong guest is a wrong server.
         refuse(
           'no_wsl_distro',
@@ -786,15 +786,17 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
   }
 
   // ── Is one already here? A STATE, not a fault ──────────────────────────────
-  const local = host.localConfig();
-  if (!local.present && local.code !== 'no_local_config') {
+  const discovered = host.discovered();
+  if (!discovered.present && discovered.code !== 'no_local_config') {
     // `no_local_config` is the ordinary state of a machine that has not
     // installed one yet and is the whole reason this screen exists. Anything
     // ELSE — an unreadable config, a missing key — is a real refusal with a fix.
-    refuse(local.code, local.reason);
+    refuse(discovered.code, discovered.reason);
   }
 
-  return { platform, platformName: host.platform, arch: host.arch, wsl, gpu, local, refusals };
+  return {
+    platform, platformName: host.platform, arch: host.arch, wsl, gpu, discovered, refusals,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -928,8 +930,8 @@ export function describeMachine(facts: CrucibleHostFacts): string {
   } else {
     parts.push('no card measured');
   }
-  parts.push(facts.local.present
-    ? `a Crucible config is already here (${facts.local.serverName})`
+  parts.push(facts.discovered.present
+    ? `a Crucible config is already here (${facts.discovered.serverName})`
     : 'no Crucible config here yet');
   return `${parts.join(' · ')}.`;
 }
@@ -1021,12 +1023,12 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
     commands: [],
     /*
      * `done` IS TRUE FOR EXACTLY ONE STEP, and only where this app measured
-     * it. `init` writes config.toml, and `local.ts` has already read whether
-     * one is there. Every other step is something only the machine it runs on
-     * knows the outcome of, and a checkbox that guessed would be worse than
-     * no checkbox.
+     * it. `init` writes config.toml, and `discovery.ts` has already read
+     * whether one is there. Every other step is something only the machine it
+     * runs on knows the outcome of, and a checkbox that guessed would be worse
+     * than no checkbox.
      */
-    done: step.name === 'init' && facts.local.present,
+    done: step.name === 'init' && facts.discovered.present,
   }));
 }
 

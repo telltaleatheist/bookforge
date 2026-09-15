@@ -8,22 +8,29 @@
  * reports each one with its target and its size, keeps the weights unless
  * `--purge-weights` says otherwise, and answers `--json` in a shape written
  * for an app to draw. BookForge composes NO sequence of its own here. It finds
- * the CLI that owns the local server, runs the dry run, shows it, and — if a
- * person says so — runs the same plan for real.
+ * the CLI that owns the Crucible on this computer, runs the dry run, shows it,
+ * and — if a person says so — runs the same plan for real.
  *
  * That is the whole design, and it is the same rule the install side follows
  * (crucible PHASE15-HOST.md §4.3, PHASE14 §4a): two descriptions of one
  * sequence cannot differ, so there is one, and it is not this one.
  *
- * ── LOCAL ONLY, AND REFUSED BY NAME OTHERWISE (ruling 2026-09-15) ──────────
+ * ── THIS MACHINE ONLY, AND IT IS **PROVED** NOW (ruling 2026-09-15) ────────
  *
  * The door is drawn ONLY for a Crucible this app can prove is on THIS machine:
  * the pairing file it left here, the `config.toml` it wrote here, or the host
- * on loopback. Never for a registry entry that names another machine, and
- * never for a `local`-named row this app cannot prove is local — `crucible
- * uninstall` deletes a service, a home directory and possibly tens of
- * gigabytes of weights, and a door that could reach the Mac Studio from a
- * laptop is a door that will. Anything else is `uninstall_not_local`.
+ * on loopback. `crucible uninstall` deletes a service, a home directory and
+ * possibly tens of gigabytes of weights, and a door that could reach the Mac
+ * Studio from a laptop is a door that will.
+ *
+ * The ruling's own words were *"never for a `local`-named row this app cannot
+ * prove is local"*, and until 2026-09-15 the check was exactly the thing it
+ * warned about: `server === 'local'`, trusting a reserved NAME. That name is
+ * gone (Owen: *"bookforge shouldnt even know if it's local because it doesnt
+ * mater"*) and the check is now the proof the ruling asked for — the named
+ * server's URL out of the registry, compared against the URL of the Crucible
+ * discovery finds on this computer. They match or it is
+ * `uninstall_not_local`, whatever the row is called.
  *
  * There is deliberately no remote uninstall and no "are you sure" that turns
  * into one: an engine somewhere else is uninstalled on the machine it is on.
@@ -53,12 +60,13 @@
 
 import type { Runner } from '@crucible/bootstrap';
 
-import type { LocalServer } from './local';
+import type { DiscoveredCrucible } from './discovery';
 import {
-  CrucibleLocalError,
-  processHost as processLocalHost,
-  readLocalServer,
-} from './local';
+  CrucibleDiscoveryError,
+  discoverCrucible,
+  processDiscoveryHost,
+} from './discovery';
+import { CrucibleRegistryError, getServer } from './servers';
 import { getWslDistro } from '../tool-paths';
 import type {
   CrucibleUninstallPlan,
@@ -107,20 +115,23 @@ export class CrucibleUninstallError extends Error {
 /**
  * WHICH `crucible` OWNS THE ENGINE ON THIS MACHINE, or `uninstall_not_local`.
  *
- * Three answers and no fourth, each tied to how `local.ts` found the server —
- * because the thing that found it is the thing that knows where it lives:
+ * Three answers and no fourth, each tied to how `discovery.ts` found the server
+ * — because the thing that found it is the thing that knows where it lives:
  *
  *   - **win32, host present.** `%LOCALAPPDATA%\Crucible\host\crucible.cmd`, the
  *     host pack's entry point (PHASE15 §4.4). It uninstalls the Windows side,
  *     and `--wsl-too` carries the same flags into the guest first.
  *   - **win32, read through `wsl.exe`.** There is no host on this machine yet
  *     (Owen's PC today), so the only Crucible CLI here is the guest's own and
- *     it is reached the way `local.ts` reached its config.
+ *     it is reached the way `discovery.ts` reached its config.
  *   - **darwin / linux.** `<CRUCIBLE_HOME>/server/bin/crucible` — the machine
  *     IS the server, and there is no host anywhere but Windows.
  *
- * `serverName` is checked against the caller's: a UI that has a row selected
- * must not be able to press this while looking at another one.
+ * THE NAMED ROW MUST BE THE MACHINE. `server` is a registry name like any
+ * other now, so the first thing this does is look up its URL and compare it
+ * with the URL of the Crucible discovery finds here. A row whose address is
+ * somewhere else is `uninstall_not_local` however it is spelled, and a UI that
+ * has the wrong row selected cannot press this.
  */
 export function crucibleUninstallTarget(
   server: string,
@@ -132,30 +143,36 @@ export function crucibleUninstallTarget(
    * the answer depending on whether the machine it runs on happens to have
    * one. The default IS the real read; nothing in the app passes this.
    */
-  readLocal: () => LocalServer = () => readLocalServer(processLocalHost(distro)),
+  readHere: () => DiscoveredCrucible = () => discoverCrucible(processDiscoveryHost(distro)),
+  /** The registry lookup, injectable for the same reason. */
+  serverUrl: (name: string) => string = (name) => getServer(name).url,
 ): CrucibleUninstallTarget {
-  if (server !== 'local') {
-    throw new CrucibleUninstallError(
-      'uninstall_not_local',
-      `"${server}" is a Crucible somewhere else. An engine is uninstalled on the machine it is `
-      + 'on, by somebody at that machine: this door deletes a service, a home directory and '
-      + 'possibly tens of gigabytes of weights, and it is not reachable across a network on '
-      + 'purpose. Remove the row from the list here if you no longer want to use it.',
-    );
+  let named: string;
+  try {
+    named = serverUrl(server);
+  } catch (err) {
+    if (err instanceof CrucibleRegistryError) {
+      throw new CrucibleUninstallError(
+        'uninstall_not_local',
+        `there is no server called "${server}" to uninstall: ${err.message}`,
+        { detail: `${err.code}: ${err.message}` },
+      );
+    }
+    throw err;
   }
 
-  let local: LocalServer;
+  let local: DiscoveredCrucible;
   try {
-    local = readLocal();
+    local = readHere();
   } catch (err) {
-    if (err instanceof CrucibleLocalError) {
+    if (err instanceof CrucibleDiscoveryError) {
       /*
-       * `local.ts`'s OWN NAME travels in the detail. Its message is the
-       * reason alone (`no local Crucible: ~/.crucible/config.toml does not
-       * exist …`), and the code beside it is the difference between "there is
-       * nothing here", "the config is unreadable" and "the config is missing a
-       * key" — three states with three different next moves, which one
-       * sentence about "no Crucible" would flatten into one.
+       * `discovery.ts`'s OWN NAME travels in the detail. Its message is the
+       * reason alone (`no Crucible on this computer: ~/.crucible/config.toml
+       * does not exist …`), and the code beside it is the difference between
+       * "there is nothing here", "the config is unreadable" and "the config is
+       * missing a key" — three states with three different next moves, which
+       * one sentence about "no Crucible" would flatten into one.
        */
       throw new CrucibleUninstallError(
         'uninstall_not_local',
@@ -164,6 +181,25 @@ export function crucibleUninstallTarget(
       );
     }
     throw err;
+  }
+
+  /*
+   * THE PROOF. Not the name — the ADDRESS. Trailing slashes are stripped on
+   * both sides because the registry stores the base URL without one and a
+   * connect code may carry one; nothing else is normalised, because a host
+   * spelled differently IS a different address until somebody proves
+   * otherwise, and this is the function that is supposed to be hard to fool.
+   */
+  const here = local.url.replace(/\/+$/, '');
+  if (named.replace(/\/+$/, '') !== here) {
+    throw new CrucibleUninstallError(
+      'uninstall_not_local',
+      `"${server}" is at ${named}, and the Crucible on this computer is at ${here}. An engine `
+      + 'is uninstalled on the machine it is on, by somebody at that machine: this door '
+      + 'deletes a service, a home directory and possibly tens of gigabytes of weights, and '
+      + 'it is not reachable across a network on purpose. Remove the row from the list here '
+      + 'if you no longer want to use it.',
+    );
   }
 
   if (runner.platform === 'win32') {
@@ -191,8 +227,8 @@ export function crucibleUninstallTarget(
       }
       /*
        * The GUEST'S OWN CLI, because there is no host on this machine. The
-       * home is the guest's default (`~/.crucible`), which is where `local.ts`
-       * read the config from, so the binary beside it is the one that owns it.
+       * home is the guest's default (`~/.crucible`), which is where
+       * `discovery.ts` read the config from, so the binary beside it owns it.
        */
       return {
         kind: 'guest',
@@ -285,12 +321,13 @@ export async function crucibleUninstall(
   options: { dryRun: boolean; purgeWeights: boolean; wslToo: boolean },
   runner: Runner,
   onLine?: (line: string, stream: 'stdout' | 'stderr') => void,
-  /** See {@link crucibleUninstallTarget}. Nothing in the app passes this. */
-  readLocal?: () => LocalServer,
+  /** See {@link crucibleUninstallTarget}. Nothing in the app passes these. */
+  readHere?: () => DiscoveredCrucible,
+  serverUrl?: (name: string) => string,
 ): Promise<CrucibleUninstallPlan> {
-  const target = readLocal === undefined
+  const target = readHere === undefined
     ? crucibleUninstallTarget(server, runner)
-    : crucibleUninstallTarget(server, runner, getWslDistro(), readLocal);
+    : crucibleUninstallTarget(server, runner, getWslDistro(), readHere, serverUrl);
   const argv = uninstallArgv(target, options);
   const timeoutMs = options.dryRun ? UNINSTALL_DRY_RUN_TIMEOUT_MS : UNINSTALL_RUN_TIMEOUT_MS;
   const result = onLine === undefined

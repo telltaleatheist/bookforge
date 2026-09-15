@@ -45,7 +45,7 @@ import type {
   CrucibleUpstreamProbe,
   CrucibleUpstreamTestResult,
   PairingResult,
-  RemoteServerRow as CrucibleRemoteServerRow,
+  CrucibleServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
 } from '@shared/crucible/settings-wire';
@@ -3929,19 +3929,29 @@ export class ElectronService {
   };
 
   readonly crucible = {
-    /** The local server (or the named reason there is none), the remotes, and the rank record. */
+    /** Every registered server, the rank record, and the OFFER of one found on this computer. */
     servers: (): Promise<{ success: boolean; data?: CrucibleServersView; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.servers()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    /** Record a REMOTE server. Refuses exactly as the registry refuses. */
-    add: (server: { name: string; url: string; token: string }): Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }> =>
+    /** Record a server, wherever it runs. Refuses exactly as the registry refuses. */
+    add: (server: { name: string; url: string; token: string }): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.add(server)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    remove: (name: string): Promise<{ success: boolean; data?: CrucibleRemoteServerRow; error?: string }> =>
+    /**
+     * The SAME add, for the Crucible `servers().discovered` found on this
+     * computer: only the NAME crosses, because the token may not. Not a second
+     * kind of server — a registry row like any other.
+     */
+    addDiscovered: (name: string): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.addDiscovered(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    remove: (name: string): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.remove(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
@@ -3952,7 +3962,7 @@ export class ElectronService {
         ? (window as any).electron.crucible.testAddress(url, token)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
-    /** The same test for a server this machine knows, `local` included. */
+    /** The same test for a server this machine knows, by its registry name. */
     test: (name: string): Promise<{ success: boolean; data?: CrucibleProbeResult; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.test(name)
@@ -4070,7 +4080,7 @@ export class ElectronService {
     /*
      * ── THE INSTALL STORY'S THIRD DOOR ─────────────────────────────────────
      *
-     * Doors 1 and 2 are `testAddress` + `add` and `servers().local` above.
+     * Doors 1 and 2 are `testAddress` + `add` and `addDiscovered` above.
      * These three are "install one here": what this machine has, the sequence
      * that would follow from it, and the driven install that refuses by name
      * until `@crucible/bootstrap` ships in a Crucible release.

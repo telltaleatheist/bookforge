@@ -545,14 +545,21 @@ async function main() {
     }
   });
 
-  await check('EVERY ENABLED ENGINE IS ASKED AT START, not just the local one', async () => {
+  await check('EVERY ENABLED ENGINE IS ASKED AT START, THE SAME WAY', async () => {
     /*
-     * The other half of the same defect. Coordination is what reads this fact,
-     * and coordination at start is `local`'s alone (PHASE14 §4a: coordinating
-     * is what this app does when it CONNECTS to a machine) — so nothing ever
-     * asked a REMOTE until something happened to connect to it, and the record
-     * above had nothing to remember on the first launch after a server was
-     * added. One `GET /v1/settings` each, once, no timer.
+     * The other half of the same defect, and what Owen's ruling of 2026-09-15
+     * did to it. Coordination is what reads this fact, and coordination at
+     * start USED TO BE the reserved `local` row's alone (PHASE14 §4a:
+     * coordinating is what this app does when it CONNECTS to a machine) — so
+     * nothing ever asked a REMOTE until something happened to connect to it,
+     * and the record above had nothing to remember on the first launch after a
+     * server was added. The fix at the time was a second, smaller pass that
+     * skipped `local`.
+     *
+     * With the reserved name gone there is ONE pass and every enabled server
+     * goes through it, coordination and all. It stays cheap because coordination
+     * is cheap when nothing is missing: three reads, a comparison, and NOTHING
+     * POSTED — which is what the last assertion here is about.
      */
     const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
     routes.unbindCrucibleUpstreamsFile();
@@ -564,11 +571,10 @@ async function main() {
     try {
       const a = registerFake(withKey.url);
       const b = registerFake(bare.url);
-      const asked = await coordinate.readBenchFactsOnStart(() => ['local', a, b]);
+      const asked = await coordinate.coordinateServersOnStart(deps(), () => [a, b]);
 
       assert.deepStrictEqual(asked, [a, b],
-        '`local` is skipped: the local coordination reads its settings on the way past, and two '
-        + 'GETs at once to a cold WSL guest is one more than the question needs');
+        'every enabled server is asked, and there is no row that is asked differently');
       assert.strictEqual(routes.crucibleUpstreamsOf(a), 'configured');
       assert.strictEqual(routes.crucibleUpstreamsOf(b), 'none',
         'and this is the row that used to be drawn as a phantom cloud lane');
@@ -585,7 +591,8 @@ async function main() {
       assert.strictEqual(withKey.settings.reads, 1, 'once each, and nothing polls');
       assert.strictEqual(bare.settings.reads, 1);
       assert.strictEqual(withKey.seen.posts.length + bare.seen.posts.length, 0,
-        'this is a READ, not a coordination: nothing is posted to anybody at startup');
+        'ASK, THEN ACT: both engines are stocked, so the comparison stops and no module task is '
+        + 'posted to anybody at startup');
     } finally {
       await withKey.close();
       await bare.close();
@@ -602,7 +609,7 @@ async function main() {
     const dead = await startFake({});
     const name = registerFake(dead.url);
     await dead.close();
-    const asked = await coordinate.readBenchFactsOnStart(() => [name]);
+    const asked = await coordinate.coordinateServersOnStart(deps(), () => [name]);
     assert.deepStrictEqual(asked, [name], 'it was asked, and the failure did not stop the sweep');
     assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown');
     assert.strictEqual(routes.crucibleRoleOf(name), 'unknown',
@@ -642,7 +649,7 @@ async function main() {
     });
     try {
       const name = registerFake(tray.url);
-      await coordinate.readBenchFactsOnStart(() => [name]);
+      await coordinate.coordinateServersOnStart(deps(), () => [name]);
       assert.strictEqual(routes.crucibleRoleOf(name), 'orchestrator');
       assert.strictEqual(routes.crucibleEngineBehind(name).url, wsl.url,
         'so an operator can be told which address to register instead of this one');

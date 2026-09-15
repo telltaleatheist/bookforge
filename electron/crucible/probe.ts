@@ -55,7 +55,9 @@ import type {
   CrucibleServersView,
   ServerFacts,
 } from '../../shared/crucible/settings-wire';
-import { crucibleClientFor, describeLocal, getServer, listServers, CRUCIBLE_CLIENT_NAME } from './servers';
+import { crucibleClientFor, getServer, listServers, maskToken, CRUCIBLE_CLIENT_NAME } from './servers';
+import { CrucibleDiscoveryError, discoverCrucible, processDiscoveryHost } from './discovery';
+import { getWslDistro } from '../tool-paths';
 import { readRouting } from './routing';
 import {
   CrucibleVoiceLoadRefused,
@@ -78,32 +80,59 @@ export type CruciblePingResult =
   | Exclude<CrucibleProbeResult, { outcome: 'ok' }>;
 
 /**
- * Everything the row draws before it probes anything: the local server (or the
- * named reason there is none), the registered remotes, and the rank/enable
- * record resolved against both.
+ * Everything the row draws before it probes anything: every registered server,
+ * the rank/enable record resolved against them, and — separately — whether
+ * there is a Crucible on THIS computer the add form can be prefilled from.
+ *
+ * ── The offer is not a row (Owen's ruling, 2026-09-15) ────────────────────
+ *
+ * `discovered` used to be `local`: a server the panel drew above the list, with
+ * its own card, its own Test button and no Remove, because the app manufactured
+ * it from this machine's config instead of from the registry. It is now an
+ * OFFER — "there is a Crucible here; add it?" — and `registeredAs` says when the
+ * offer has already been taken, which is the one thing a person needs to know
+ * before pressing Add a second time.
+ *
+ * The token is masked here exactly as a registry entry's is. It travels no
+ * further than the number of characters it takes to tell two apart.
  */
 export function serversView(): CrucibleServersView {
-  const local = describeLocal();
+  const servers = listServers();
   return {
-    local: local.present
-      ? {
-          present: true,
-          serverName: local.serverName,
-          url: local.url,
-          tokenMasked: local.tokenMasked,
-          configPath: local.configPath,
-          via: local.via,
-        }
-      : { present: false, code: local.code, reason: local.reason },
-    remotes: listServers().map((entry) => ({
+    servers: servers.map((entry) => ({
       name: entry.name,
       url: entry.url,
       tokenMasked: entry.tokenMasked,
       added: entry.added,
-      stale: entry.stale,
     })),
+    discovered: discoveredRow(servers.map((entry) => ({ name: entry.name, url: entry.url }))),
     routing: readRouting(),
   };
+}
+
+/** The offer, or the named reason there is nothing to offer. Never throws for "none". */
+function discoveredRow(
+  registered: readonly { name: string; url: string }[],
+): CrucibleServersView['discovered'] {
+  try {
+    const found = discoverCrucible(processDiscoveryHost(getWslDistro()));
+    const url = found.url.replace(/\/+$/, '');
+    const already = registered.find((entry) => entry.url.replace(/\/+$/, '') === url);
+    return {
+      present: true,
+      serverName: found.name,
+      url: found.url,
+      tokenMasked: maskToken(found.token),
+      configPath: found.configPath,
+      via: found.via,
+      registeredAs: already === undefined ? null : already.name,
+    };
+  } catch (err) {
+    if (err instanceof CrucibleDiscoveryError) {
+      return { present: false, code: err.code, reason: err.message };
+    }
+    throw err;
+  }
 }
 
 /**
@@ -224,14 +253,14 @@ export async function pingServer(name: string): Promise<CruciblePingResult> {
   }
 }
 
-/** The same Test, for a server this machine already knows: `local` or a registry name. */
+/** The same Test, for a server this machine already knows, by its registry name. */
 export async function probeServer(name: string): Promise<CrucibleProbeResult> {
   let client: CrucibleClient;
   try {
     client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
-    // An unknown name, a stale local entry, or no local config at all: each is
-    // already a named refusal with its own fix in the message.
+    // An unknown name, or a corrupt registry: each is already a named refusal
+    // with its own fix in the message.
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
   try {
