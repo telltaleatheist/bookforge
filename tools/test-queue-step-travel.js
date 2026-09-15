@@ -165,7 +165,7 @@ const STEPS = {
 
   // ── 3. Align refuses by name, before any card is touched ─────────────────
 
-  await check('align refuses a server venue BY NAME and names the local switch', async () => {
+  await check('align refuses a server venue BY NAME and says what is owed', async () => {
     const mod = STEPS.align();
     const ctx = {
       stepId: 's1',
@@ -180,8 +180,16 @@ const STEPS = {
       assert.match(err.message, /mac/, 'and it says which machine it was sent to');
       assert.match(err.message, /Nothing was submitted and no card was taken/,
         'the whole point is that it refuses BEFORE loading a 3 GB aligner');
-      assert.match(err.message, /Settings → Crucible Servers/,
-        'and says what runs it today rather than leaving the user with a dead row');
+      /*
+       * IT USED TO OFFER THE LEGACY SWITCH as the way forward. That switch is
+       * deleted (docs/LEGACY-REMOVAL.md), so the honest refusal names the BUILD
+       * that is owed and says the audio is intact — a refusal must not point at
+       * a control that no longer exists, which is worse than a dead row.
+       */
+      assert.match(err.message, /rendered audio is intact/, 'the user is told what survived');
+      assert.match(err.message, /B5/, 'and which build unblocks it');
+      assert.ok(!/turn on|legacy switch/i.test(err.message),
+        `it still offers a switch that no longer exists: ${err.message}`);
       return true;
     });
   });

@@ -184,9 +184,15 @@ async function main() {
     assert.ok(!/env: process\.env/.test(sentence),
       `the refusal still blames the spawn Foundry fixed at f300fc6:\n${sentence}`);
     assert.ok(sentence.includes('Nothing ran'), sentence);
-    // A refusal with no way forward is what the no-band-aids rule is about.
+    // A refusal with no way forward is what the no-band-aids rule is about —
+    // and what the HOSTED window can do instead changed on 2026-09-15: the
+    // local text engines it used to fall to are deleted
+    // (docs/LEGACY-REMOVAL.md), so the honest sentence says it has no other
+    // route until the re-vendor rather than pointing at a deleted switch.
     assert.ok(sentence.includes('CLI clean routes'), sentence);
-    assert.ok(sentence.includes('local engines'), sentence);
+    assert.ok(/no other route/.test(sentence), sentence);
+    assert.ok(!/turn on|legacy switch/i.test(sentence),
+      `it still offers a switch that no longer exists:\n${sentence}`);
   });
 
   check('nothing is keyed to a Foundry version for the hosted text act any more', () => {

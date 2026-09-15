@@ -341,7 +341,13 @@ const normalize = eval(
     assert.ok(typeof refusal === 'string' && refusal.length > 0, 'an empty file passed as a python');
     assert.ok(refusal.includes(fakePython), `the refusal must name the interpreter: ${refusal}`);
     assert.ok(/cannot run narrator's prep/.test(refusal), refusal);
-    assert.ok(/Nothing preps inside WSL for a render that does not run there/.test(refusal), refusal);
+    assert.ok(/nothing preps inside WSL for a render that does not run there/i.test(refusal),
+      refusal);
+    // And it no longer offers the deleted switch as the way out: the fix is to
+    // install narrator's text dependencies into that interpreter.
+    assert.ok(/pip install -e/.test(refusal), refusal);
+    assert.ok(!/turn on "Render audiobooks/.test(refusal),
+      `it still offers a switch that no longer exists: ${refusal}`);
   });
 
   const platformUserData = process.platform === 'darwin'
