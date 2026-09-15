@@ -357,12 +357,6 @@ export interface RerollAtVenueOptions {
   readonly onProgress?: (progress: CrucibleRerollProgress) => void;
   readonly onLog?: (line: string) => void;
   readonly signal?: AbortSignal;
-  /**
-   * The local narrator spawn, EXACTLY as it has always run —
-   * `regenerateSentenceIndices` with its temperature spread. Called only when
-   * the legacy switch is on; never as a fallback.
-   */
-  readonly legacyLocal: () => Promise<void>;
 }
 
 export interface RerollAtVenueOutcome {
@@ -373,8 +367,8 @@ export interface RerollAtVenueOutcome {
 
 /**
  * Where this re-roll runs, and run it there. The run's venue when it has one,
- * else the ONE decision every other GPU door makes. No second switch, no
- * fallback.
+ * else the ONE decision every other GPU door makes. No local narrator spawn and
+ * no fallback to one.
  */
 export async function rerollAtVenue(options: RerollAtVenueOptions): Promise<RerollAtVenueOutcome> {
   const log = options.onLog ?? (() => undefined);
@@ -384,11 +378,6 @@ export async function rerollAtVenue(options: RerollAtVenueOptions): Promise<Rero
     ...(options.crucible === undefined ? {} : { callerNamed: options.crucible }),
     host: options.host,
   });
-  if (venue.where === 'legacy-local-narrator') {
-    log(`the sentence re-roll runs on the local narrator spawn — ${venue.origin}: ${venue.because}`);
-    await options.legacyLocal();
-    return { venue };
-  }
   log(`the sentence re-roll runs on crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
   const crucible = await runCrucibleReroll({
     server: venue.server,

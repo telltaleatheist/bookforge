@@ -1350,7 +1350,6 @@ export interface ElectronAPI {
      * spawning narrator here instead of on a Crucible server. A dated stopgap
      * (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), never set by a failure.
      */
-    setLegacyLocalRender: (value: boolean) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** Drop a name the rank record mentions that no server answers to. */
     forget: (name: string) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** OPERATOR VERB: submits a `load-model` job, which takes that machine's card. */
@@ -1721,9 +1720,7 @@ export interface ElectronAPI {
        * case `venueRefusal` says so — a card that drew a local GPU for a run
        * about to go to a Crucible was the defect this field closes.
        */
-      venue?: { where: 'crucible'; server: string; because: string }
-        | { where: 'legacy-local-narrator'; because: string }
-        | null;
+      venue?: { where: 'crucible'; server: string; because: string } | null;
       /** The venue decision's own refusal, verbatim. The run refuses the same way. */
       venueRefusal?: string | null;
       error?: string;
@@ -2940,8 +2937,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('crucible:set-enabled', name, enabled),
     setWaitFor: (value: CrucibleWaitForDefault) =>
       ipcRenderer.invoke('crucible:set-wait-for', value),
-    setLegacyLocalRender: (value: boolean) =>
-      ipcRenderer.invoke('crucible:set-legacy-local-render', value),
     forget: (name: string) => ipcRenderer.invoke('crucible:forget', name),
     // The two operator verbs. They reach a card; nothing calls them but a button.
     loadModel: (name: string, model: string) =>

@@ -11,10 +11,11 @@
  * and the scheduler — plus the surfaces' own engine-lifecycle calls — drives one
  * interface: `StreamingEngine` in `electron/streaming-engine.ts`, reached through
  * `getActiveEngine()`. Until 2026-09-14 the only thing behind that interface was
- * the local narrator worker pool. This file puts a second thing behind it: a
- * Crucible streaming session (crucible `docs/PHASE3-TTS.md` section 7,
- * `crucible/ttsstream.py`, the SDK's `stream()`), and a VENUE-ROUTED facade that
- * decides which of the two answers.
+ * the local narrator worker pool; on 2026-09-15 that pool was DELETED
+ * (docs/LEGACY-REMOVAL.md) and this is the only thing left: a Crucible streaming
+ * session (crucible `docs/PHASE3-TTS.md` section 7, `crucible/ttsstream.py`, the
+ * SDK's `stream()`), behind a VENUE-ROUTED facade that decides WHICH SERVER
+ * answers.
  *
  * The surfaces do not change and cannot tell. That is the whole point:
  * crucible `docs/PHASE7-LANES.md` section 5.1 — *"the Crucible integration is
@@ -25,14 +26,13 @@
  * `decideWhereGenerationRuns` (`generation-venue.ts`) — the same decision the
  * audiobook render makes, reused rather than re-implemented: the caller's name
  * wins (Listen has no caller-named server today, so this arm is never taken
- * here), else the ONE legacy switch (`legacyLocalRender` in the routing record)
- * means the local narrator exactly as before, else the routing record's
- * top-ranked / first-that-answers server. There is no second switch and no
- * fallback: with the switch off, a Listen that cannot be placed FAILS by name.
+ * here), else the routing record's top-ranked / first-that-answers server. There
+ * is no local narrator to fall back to: a Listen that cannot be placed FAILS by
+ * name.
  *
  * The decision is taken when the backend is COLD — at `startSession()` with
  * nothing running — and sticks until `endSession()`, the way the engine
- * selection does ("takes effect on the next engine start"). A switch flipped
+ * selection does ("takes effect on the next engine start"). A record edited
  * under a live session is honoured at the next cold start, never mid-sentence.
  *
  * ── What a session is, and what it refuses ─────────────────────────────────
@@ -944,44 +944,33 @@ function broadcastToWindows(channel: string, data?: unknown): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface VenueRoutedDeps {
-  /** The local narrator pool for the selected engine (the pre-2026-09-14 backend). */
-  local(): StreamingEngine;
   /** The Crucible backend, already wrapped `observable()`. */
   crucible: StreamingEngine;
   /** The same Crucible engine, unwrapped, for `bind`. */
   crucibleEngine: CrucibleStreamingEngine;
   /** What `decideWhereGenerationRuns` reads. */
   venue: VenueHost;
-  /**
-   * The ONE legacy switch, read cheaply (the routing FILE only — never the
-   * resolved view, which reads the local server's config through `wsl.exe`).
-   * Decides which backend answers the sync questions before anything has
-   * started, so the pickers show the right catalog.
-   */
-  legacySwitchIsOn(): boolean;
 }
 
 /**
- * A `StreamingEngine` that is one of two, decided at cold start.
+ * A `StreamingEngine` bound to a SERVER at cold start.
  *
- * Every method delegates to the BOUND backend — the one the last
- * `startSession()` chose — or, before anything has started, to the backend the
- * legacy switch points at. `startSession()` is where the venue is decided, and
- * only when nothing is running: a live backend keeps answering until it is
- * ended, so a switch flipped mid-Listen takes effect at the next cold start,
- * exactly as an engine selection does.
+ * There used to be two backends here and the facade chose between them; the
+ * local narrator pool is deleted (docs/LEGACY-REMOVAL.md), so what is left
+ * decides WHICH MACHINE rather than WHICH KIND. `startSession()` is where that
+ * is decided, and only when nothing is running: a live session keeps answering
+ * until it is ended, so a routing change mid-Listen takes effect at the next
+ * cold start, exactly as an engine selection does.
+ *
+ * The indirection is kept rather than collapsed because the DECISION is the
+ * thing — every sync question below must be answerable before a session exists,
+ * and `bind` must happen exactly once, before `startSession` reaches the SDK.
  */
 export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngine {
-  let bound: 'local' | 'crucible' | null = null;
-
-  const backend = (): StreamingEngine => {
-    if (bound === 'local') return deps.local();
-    if (bound === 'crucible') return deps.crucible;
-    return deps.legacySwitchIsOn() ? deps.local() : deps.crucible;
-  };
+  const backend = (): StreamingEngine => deps.crucible;
 
   const startSession = async (): Promise<{ success: boolean; voices?: string[]; error?: string }> => {
-    if (bound !== null && backend().isSessionActive()) {
+    if (backend().isSessionActive()) {
       // Warm and running: the venue was decided when it was started.
       return backend().startSession();
     }
@@ -991,18 +980,11 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
     } catch (err) {
       // `no_enabled_server` / `no_reachable_server` / a corrupt record — in the
       // decision's own words, which name the settings page that fixes each.
-      // NOT the local narrator: nothing streams on this machine by accident.
+      // There is no local narrator: nothing streams on this machine by accident.
       const code = (err as { code?: unknown }).code;
       console.error(`[StreamVenue] Listen has nowhere to run: ${errorText(err)}`);
       return { success: false, error: typeof code === 'string' ? `${code}: ${errorText(err)}` : errorText(err) };
     }
-    if (venue.where === 'legacy-local-narrator') {
-      bound = 'local';
-      console.log(`[StreamVenue] Listen renders through the local narrator: ${venue.because} `
-        + '(Settings → Crucible Servers; removed after the in-app pass)');
-      return deps.local().startSession();
-    }
-    bound = 'crucible';
     console.log(`[StreamVenue] Listen goes to crucible "${venue.server}" (${venue.because})`);
     try {
       deps.crucibleEngine.bind(venue.server);
@@ -1032,8 +1014,8 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
     getDefaultVoice: () => backend().getDefaultVoice(),
     getWorkerCount: () => backend().getWorkerCount(),
     getMaxConcurrentSentences: () => {
-      // Both backends batch and both define it; a backend that did not would be
-      // a contract change, refused here rather than read as "one at a time".
+      // The backend batches and defines it; one that did not would be a contract
+      // change, refused here rather than read as "one at a time".
       const engine = backend();
       if (typeof engine.getMaxConcurrentSentences !== 'function') {
         throw new Error('the bound streaming backend reports no batch width (getMaxConcurrentSentences)');
@@ -1043,13 +1025,9 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
     getEngineState: () => backend().getEngineState(),
     isServiceMode: () => backend().isServiceMode(),
     setServiceMode: (on) => backend().setServiceMode(on),
-    onEngineState: (listener) => {
-      // Both backends, because a state change on either is "the active engine
-      // changed state" to a subscriber that only knows there is one engine.
-      const offLocal = deps.local().onEngineState(() => listener(backend().getEngineState(), backend().isServiceMode()));
-      const offCrucible = deps.crucible.onEngineState(() => listener(backend().getEngineState(), backend().isServiceMode()));
-      return () => { offLocal(); offCrucible(); };
-    },
+    onEngineState: (listener) => deps.crucible.onEngineState(
+      () => listener(backend().getEngineState(), backend().isServiceMode()),
+    ),
     getStreamWorkerConfig: () => backend().getStreamWorkerConfig(),
     setStreamWorkerConfig: (updates) => backend().setStreamWorkerConfig(updates),
     /**
@@ -1063,14 +1041,8 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
      * taking it twice in two ways is how the pack and the render end up on two
      * different servers.
      *
-     * On the local narrator it resolves `null` — see `StreamingEngine`: that
-     * engine is this machine's, and the catalog is its own configuration.
      */
     statedChunkCaps: async (voice) => {
-      // WHICH backend will answer is knowable without starting anything — a
-      // bound one, else the legacy switch's — so the local pool is never spawned
-      // by a question about chunk lengths. Only the Crucible arm needs a venue,
-      // and only it pays for one.
       const engine = backend();
       if (typeof engine.statedChunkCaps !== 'function') return null;
       const started = await startSession();

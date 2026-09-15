@@ -44,7 +44,6 @@ import {
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { LEGACY_LOCAL_NARRATOR } from '../../shared/queue/wait-for';
 import { projectDirForStep, queueMainWindow } from './runtime';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
@@ -242,14 +241,11 @@ export const ttsConversionStep: StepModule = {
      * so the venue the queue page shows and the venue the render uses are the
      * same fact rather than two lookups that can disagree.
      *
-     * The legacy local narrator is NOT a server: when that is the venue,
-     * nothing is passed and the bridge reads the switch itself, exactly as an
-     * in-app render does.
+     * An UNASSIGNED row passes nothing and the bridge decides for itself
+     * (`generation-venue.ts`), which is what a standalone CLI render does.
      */
     const venue = ctx.job.waitForResolved;
-    const crucibleServer = venue === undefined || venue === LEGACY_LOCAL_NARRATOR
-      ? undefined
-      : venue;
+    const crucibleServer = venue === undefined ? undefined : venue;
 
     const conversionConfig: Record<string, unknown> = {
       workerCount,

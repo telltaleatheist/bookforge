@@ -83,7 +83,6 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       }));
       return {
         ranked,
-        legacyLocalRender: view.legacyLocalRender,
         // Named only when this machine actually has one: `local` is in the
         // ranked list exactly when `describeLocal().present`.
         localName: ranked.some((row) => row.name === LOCAL_SERVER_NAME)

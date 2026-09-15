@@ -84,24 +84,13 @@ export interface RoutingView {
   /** Every known server, best first. `local` participates by name. */
   ranked: RankedServerRow[];
   newJobsWaitFor: WaitForDefault;
-  /**
-   * Run GPU work with the LOCAL engines instead of sending it to a Crucible
-   * server: audiobook renders by spawning narrator here, and the four text acts
-   * — clean, translate, simplify, analysis — against the local text server.
-   *
-   * **ONE switch for both**, and the field keeps the name it was minted with
-   * (renaming it would orphan every record on disk to buy a spelling). Its
-   * label is "Run renders and text passes with the local engines instead
-   * (legacy — removed after the in-app pass)".
-   *
-   * **A dated stopgap with one owner** (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling
-   * 4): the local spawn layers stay until Owen's in-app pass and are then
-   * deleted in a commit he approves. It is a switch rather than a fallback —
-   * nothing flips it, the work says on the log when it is on, and when it is
-   * off, work that cannot reach a server FAILS BY NAME rather than quietly
-   * taking the local card.
+  /*
+   * There was a `legacyLocalRender` here — the ONE switch that ran renders and
+   * text passes with the local engines instead. The layer it turned on is
+   * DELETED (docs/LEGACY-REMOVAL.md); a record on disk that still carries the
+   * key is stripped on read and said once, by name (`crucible/routing.ts`).
+   * Every act is now a Crucible server or a named refusal.
    */
-  legacyLocalRender: boolean;
   /**
    * Names the record mentions that no server answers to any more. Reported with
    * the name, never pruned behind the operator's back.

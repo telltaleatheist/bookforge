@@ -231,12 +231,6 @@ export interface DenoiseAtVenueOptions<T> {
   readonly host: VenueHost;
   readonly onLog?: (line: string) => void;
   /**
-   * The pass with its blocks separated HERE — the resident `separator_worker.py`
-   * in the rvc-env, exactly as it has always run. Called only when the legacy
-   * switch is on; never as a fallback.
-   */
-  readonly legacyLocal: () => Promise<T>;
-  /**
    * The same pass with its blocks separated on `server`.
    *
    * Two callbacks rather than one arm built here because the block machinery —
@@ -257,9 +251,8 @@ export interface DenoiseAtVenueOutcome<T> {
 
 /**
  * Where this denoise runs, and run it there. The run's venue when it has one,
- * else the ONE decision every other GPU door makes. No second switch, no
- * fallback: with the legacy switch off and no server reachable this THROWS with
- * the reason.
+ * else the ONE decision every other GPU door makes. No local separator spawn and
+ * no fallback to one: with no server reachable this THROWS with the reason.
  */
 export async function denoiseAtVenue<T>(
   options: DenoiseAtVenueOptions<T>,
@@ -271,10 +264,6 @@ export async function denoiseAtVenue<T>(
     ...(options.crucible === undefined ? {} : { callerNamed: options.crucible }),
     host: options.host,
   });
-  if (venue.where === 'legacy-local-narrator') {
-    log(`the denoise runs on the local audio-separator spawn — ${venue.origin}: ${venue.because}`);
-    return { venue, outcome: await options.legacyLocal() };
-  }
   log(`the denoise runs on crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
   return { venue, outcome: await options.onCrucibleServer(venue.server) };
 }

@@ -12,7 +12,7 @@
  * this machine that knows which servers the operator wants used and in what
  * order.
  *
- * ── The four answers, in the order they are asked ──────────────────────────
+ * ── The three answers, in the order they are asked ─────────────────────────
  *
  * 1. **The caller named a server.** `settings.crucible.server` wins, unchanged
  *    and unconditionally — it is the CLI's `--crucible-server`, a resumed
@@ -20,23 +20,21 @@
  *    name back onto the session's settings — the machine an in-flight book is
  *    already rendering on. An explicit instruction is
  *    never second-guessed by a record.
- * 2. **The legacy switch is on.** `legacyLocalRender` in the routing record
- *    means narrator here, and the render says so on its log by name. It is a
- *    dated stopgap (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), the ONE place
- *    that says it, and it is never set by a failure.
- * 3. **`newJobsWaitFor: 'top-ranked'`** — the top of the enabled list
+ * 2. **`newJobsWaitFor: 'top-ranked'`** — the top of the enabled list
  *    (crucible `docs/PHASE7-LANES.md` §4.2.1). Its reachability is NOT checked:
  *    naming a machine is an instruction, and a row that names one waits for it
  *    rather than being re-routed. The render fails against that server, by that
  *    server's name, which is the answer an operator can act on.
- * 4. **`newJobsWaitFor: 'any'`** — the first enabled server, in rank order,
+ * 3. **`newJobsWaitFor: 'any'`** — the first enabled server, in rank order,
  *    whose `ping` answers. §4.2.1: "the first server that will take it,
  *    preferring rank order; unreachable servers are simply not candidates".
  *
  * ── What is NOT here ───────────────────────────────────────────────────────
  *
- * **No fallback to the local card.** With the legacy switch off, a render that
- * cannot be placed FAILS — `no_enabled_server` in routing's own words, or
+ * **No fallback to the local card, and no switch that would make one.** The
+ * legacy local-render switch and the narrator spawn behind it are DELETED
+ * (docs/LEGACY-REMOVAL.md), so a render that cannot be placed FAILS —
+ * `no_enabled_server` in routing's own words, or
  * {@link CrucibleVenueError} `no_reachable_server` naming every server it tried
  * and what each one said. Quietly spawning narrator instead would take a GPU
  * somebody else is using and finish the book in whatever voice this machine
@@ -54,22 +52,24 @@ import type { RankedServerRow, RoutingView } from '../../shared/crucible/setting
 import { rankedServers, readRouting } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
 
-/** Where one render's generation step runs, and why it is there. */
-export type GenerationVenue =
-  | {
-      where: 'crucible';
-      /** A registered server's name, or the reserved `local`. Never a URL. */
-      server: string;
-      /**
-       * Which of the four answers this was. Goes on the render's log, because
-       * "why is this book on the Mac" must be answerable six weeks later.
-       */
-      because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
-    }
-  | {
-      where: 'legacy-local-narrator';
-      because: 'the legacy local-render switch is on';
-    };
+/**
+ * Where one render's generation step runs, and why it is there.
+ *
+ * ONE MEMBER, deliberately: a render runs on a Crucible server or it does not
+ * run. The union's second arm was the legacy local narrator, and it is gone with
+ * the spawn layer (docs/LEGACY-REMOVAL.md) — the type is what makes "there is no
+ * local venue" checkable rather than remembered.
+ */
+export type GenerationVenue = {
+  where: 'crucible';
+  /** A registered server's name, or the reserved `local`. Never a URL. */
+  server: string;
+  /**
+   * Which of the three answers this was. Goes on the render's log, because
+   * "why is this book on the Mac" must be answerable six weeks later.
+   */
+  because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
+};
 
 export type CrucibleVenueErrorCode =
   /** `settings.crucible` is present and names no server. */
@@ -77,7 +77,13 @@ export type CrucibleVenueErrorCode =
   /** `any`, and not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
   /** A later step was named a server its run did not go to. See {@link venueForRunStep}. */
-  | 'run_venue_disagrees';
+  | 'run_venue_disagrees'
+  /**
+   * An OLD queue row assigned to the deleted local narrator
+   * (`RETIRED_LOCAL_NARRATOR_VENUE`). Refused by name, never re-decided — see
+   * `step-venue.ts`'s `runVenueOfRow`.
+   */
+  | 'legacy_venue_retired';
 
 export class CrucibleVenueError extends Error {
   readonly code: CrucibleVenueErrorCode;
@@ -109,7 +115,7 @@ export function processVenueHost(): VenueHost {
 }
 
 /**
- * Decide where this render's generation step runs. See the header for the four
+ * Decide where this render's generation step runs. See the header for the three
  * answers and the order they are asked in.
  *
  * `settings` is narrowed to the one field this reads on purpose: the decision
@@ -138,9 +144,6 @@ export async function decideWhereGenerationRuns(
   }
 
   const view = host.view();
-  if (view.legacyLocalRender) {
-    return { where: 'legacy-local-narrator', because: 'the legacy local-render switch is on' };
-  }
 
   // Throws CrucibleRoutingError `no_enabled_server` — in routing's own words,
   // which already distinguish "you have none" from "you disabled them all" and
@@ -166,7 +169,7 @@ export async function decideWhereGenerationRuns(
   throw new CrucibleVenueError(
     'no_reachable_server',
     'new jobs are set to wait for ANY server, and none of the enabled ones answered: '
-      + `${tried.join('; ')}. Start one, or turn on "Render audiobooks with the local narrator `
-      + 'instead" in Settings → Crucible Servers. Nothing renders on this machine by accident.',
+      + `${tried.join('; ')}. Start one, or add one in Settings → Crucible Servers. There is no `
+      + 'local narrator to fall back to: BookForge renders on a Crucible server or not at all.',
   );
 }

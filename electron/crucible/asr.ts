@@ -535,12 +535,6 @@ export interface TranscribeAtVenueOptions {
   readonly onProgress?: (progress: CrucibleAsrProgress) => void;
   readonly onLog?: (line: string) => void;
   readonly signal?: AbortSignal;
-  /**
-   * The local whisper spawn, EXACTLY as it has always run — engine overlay,
-   * model download, `transcribe_audiobook.py`. Called only when the legacy
-   * switch is on; never as a fallback.
-   */
-  readonly legacyLocal: () => Promise<{ cues: number }>;
 }
 
 export interface TranscribeAtVenueOutcome {
@@ -556,11 +550,11 @@ export interface TranscribeAtVenueOutcome {
  *
  * The run's venue when it has one (`venueForRunStep`), else ONE decision, the
  * same one the render and the Listen path make (`decideWhereGenerationRuns`:
- * the caller named it → the legacy switch → the routing record), so the
- * machine that transcribes a book is chosen the way the machine that renders
- * one is. There is no second switch and no fallback: with the legacy switch off
- * and no server reachable, this THROWS with the reason, and the row fails
- * saying which server it could not reach.
+ * the caller named it → the routing record), so the machine that transcribes a
+ * book is chosen the way the machine that renders one is. There is no local
+ * whisper spawn any more and no fallback to one: with no server reachable this
+ * THROWS with the reason, and the row fails saying which server it could not
+ * reach.
  */
 export async function transcribeAtVenue(options: TranscribeAtVenueOptions): Promise<TranscribeAtVenueOutcome> {
   const log = options.onLog ?? (() => undefined);
@@ -570,11 +564,6 @@ export async function transcribeAtVenue(options: TranscribeAtVenueOptions): Prom
     ...(options.crucible === undefined ? {} : { callerNamed: options.crucible }),
     host: options.host,
   });
-  if (venue.where === 'legacy-local-narrator') {
-    log(`transcription runs on the local whisper spawn — ${venue.origin}: ${venue.because}`);
-    const local = await options.legacyLocal();
-    return { venue, cues: local.cues };
-  }
   log(`transcription runs on crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
   const crucible = await runCrucibleAsr({
     server: venue.server,

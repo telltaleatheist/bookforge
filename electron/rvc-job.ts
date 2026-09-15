@@ -298,12 +298,6 @@ export async function runRvcEnhancement(
     };
   }
 
-  if (venue.where === 'legacy-local-narrator') {
-    const ready = rvcEnhancementReady();
-    if (!ready.ok) {
-      return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
-    }
-  }
   const source = config.sentencesDir ?? rawSentencesDir(config.processDir);
   if (!fs.existsSync(source)) {
     return {
@@ -489,31 +483,9 @@ export async function runRvcEnhancement(
           total: p.total,
           message: `Enhancing voice with ${voice.label}… (${p.announced}/${p.total})`,
         }),
-        legacyLocal: async () => {
-          await enhanceSentences({
-            sentencesDir: enhanceSource,
-            outputDir: stageDir,
-            modelName: voice.modelName,
-            indexRate,
-            protectRate,
-            nSemitones,
-            // Absent stays absent — that is what leaves urvc on its own default.
-            f0Method: config.f0Method,
-            hopLength: config.hopLength,
-            signal: abort.signal,
-            onProgress: (done, total) => sendProgress(mainWindow, jobId, {
-              phase: 'enhancing',
-              percentage: total ? Math.round((done / total) * 100) : 0,
-              processed: done,
-              total,
-              message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
-            }),
-          });
-          return { outputDir: stageDir };
-        },
       });
-      log(`voice conversion ran on ${at.venue.where === 'crucible'
-        ? `crucible "${at.venue.server}"` : 'the local urvc spawn'} (${at.venue.origin}: ${at.venue.because}).`);
+      log(`voice conversion ran on crucible "${at.venue.server}" `
+        + `(${at.venue.origin}: ${at.venue.because}).`);
 
       // The conversion has read the gap set for the last time; drop it before the
       // copy so the two full sets never coexist with a third on the way out.

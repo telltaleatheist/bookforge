@@ -2,28 +2,26 @@
  * WHERE A TEXT ACT RUNS, and what the engine is handed when the answer is a
  * Crucible server.
  *
- * ── One routing record, one legacy switch ──────────────────────────────────
+ * ── One routing record ─────────────────────────────────────────────────────
  *
  * `generation-venue.ts` answers this question for a RENDER. This answers it for
  * the four text acts, out of the SAME record, in the same order, with the same
  * refusals — because "which machine does this machine's work go to" is one
  * question and two answers to it would drift (crucible `docs/ARCHITECTURE.md`
- * R1). The four answers, unchanged:
+ * R1). The three answers, unchanged:
  *
  *   1. The caller named a server — the queue row's resolved venue, the CLI's
  *      `--crucible-server`. An explicit instruction is never second-guessed.
- *   2. The legacy switch is on — the LOCAL text engines (llama-server through
- *      `text-server.ts`, or whatever endpoint Foundry's settings name). ONE
- *      switch covers renders and text passes: `legacyLocalRender` in the routing
- *      record, "Run renders and text passes with the local engines instead".
- *   3. `newJobsWaitFor: 'top-ranked'` — the top of the enabled list, NOT pinged,
+ *   2. `newJobsWaitFor: 'top-ranked'` — the top of the enabled list, NOT pinged,
  *      because naming a machine is an instruction.
- *   4. `newJobsWaitFor: 'any'` — the first enabled server whose `ping` answers.
+ *   3. `newJobsWaitFor: 'any'` — the first enabled server whose `ping` answers.
  *
- * **There is no fallback to the local engines.** With the switch off, a text act
- * that cannot be placed FAILS, by name. Quietly starting llama-server instead
- * would take a card somebody else is using and clean a book with a model nobody
- * chose, and report success.
+ * **There is no fallback to the local engines, and no switch that would make
+ * one.** `legacyLocalRender` and the local text-engine arm behind it are DELETED
+ * (docs/LEGACY-REMOVAL.md; ROLLOUT_PLAN §A2 names the local text engines as part
+ * of that layer). A text act that cannot be placed FAILS, by name. Quietly
+ * starting llama-server instead would take a card somebody else is using and
+ * clean a book with a model nobody chose, and report success.
  *
  * ── Residency is the operator's, checked by name ───────────────────────────
  *
@@ -82,18 +80,18 @@ import {
   type CrucibleTextAct,
 } from './text-acts';
 
-/** Where one text act runs, and why it is there. */
-export type TextActVenue =
-  | {
-      where: 'crucible';
-      /** A registered server's name, or the reserved `local`. Never a URL. */
-      server: string;
-      because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
-    }
-  | {
-      where: 'legacy-local-engines';
-      because: 'the legacy local-engine switch is on';
-    };
+/**
+ * Where one text act runs, and why it is there.
+ *
+ * ONE MEMBER, like {@link import('./generation-venue').GenerationVenue} and for
+ * the same reason: an act runs on a Crucible server or it does not run.
+ */
+export type TextActVenue = {
+  where: 'crucible';
+  /** A registered server's name, or the reserved `local`. Never a URL. */
+  server: string;
+  because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
+};
 
 export type CrucibleTextActErrorCode =
   /** The server has no capability row for this class: it has never been measured. */
@@ -324,7 +322,7 @@ export async function crucibleActModel(
 }
 
 /**
- * Decide where this text act runs. See the header for the four answers and the
+ * Decide where this text act runs. See the header for the three answers and the
  * order they are asked in.
  *
  * `named` is the caller's instruction — the queue row's resolved venue, the
@@ -349,9 +347,6 @@ export async function decideWhereTextActRuns(
   }
 
   const view = host.view();
-  if (view.legacyLocalRender) {
-    return { where: 'legacy-local-engines', because: 'the legacy local-engine switch is on' };
-  }
 
   // Throws CrucibleRoutingError `no_enabled_server` in routing's own words,
   // which already tell "you have none" from "you disabled them all".
@@ -376,8 +371,8 @@ export async function decideWhereTextActRuns(
   throw new CrucibleTextActError(
     'no_reachable_server',
     'new jobs are set to wait for ANY Crucible server, and none of the enabled ones answered: '
-      + `${tried.join('; ')}. Start one, or turn on "Run renders and text passes with the local `
-      + 'engines instead" in Settings → Crucible Servers. Nothing runs on this machine by accident.',
+      + `${tried.join('; ')}. Start one, or add one in Settings → Crucible Servers. There are no `
+      + 'local text engines to fall back to: a text act runs on a Crucible server or not at all.',
   );
 }
 

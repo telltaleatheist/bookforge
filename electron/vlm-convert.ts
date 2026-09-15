@@ -639,37 +639,24 @@ export async function planVlmConversion(
     // conversion pressed on the versions page, which decides as it always did.
     const venue = await decideWherePagesRun(
       pagesHost, undefined, runVenueOfRow(request.runVenue));
-    if (venue.where === 'legacy-local-narrator') {
-      route = resolveVlmRoute({
-        platform: process.platform,
-        arch: process.arch,
-        endpoint: null,
-        wslReaderRefusal: wslVlmRefusal(),
-      });
-      venueDecision =
-        `Reading the pages with the local engines — ${venue.origin}: ${venue.because}. `
-        + '(Legacy: "Run renders and text passes with the local engines instead" in '
-        + 'Settings → Crucible Servers.)';
-    } else {
-      // Every refusal a Crucible page read can make happens HERE, before the
-      // project is resolved and long before a stage is claimed: no such model,
-      // no backend for it on that host (the Mac), not image-capable, not
-      // resident. See electron/crucible/pages.ts.
-      crucible = await resolveCruciblePageReader(venue.server, pagesHost);
-      route = {
-        kind: 'endpoint',
-        // `concurrency: 0` is foundry's own default of twelve pages in flight,
-        // which PHASE3-VLM.md §4 makes a REQUIREMENT of the manifest rather than
-        // a preference: `--max-num-seqs` on `dots-ocr` is 16 so that twelve can
-        // actually be in flight. Setting a number here would freeze this build's
-        // copy of somebody else's GPU property.
-        endpoint: { url: crucible.endpoint, model: crucible.model, concurrency: 0 },
-      };
-      venueDecision =
-        `Reading the pages on crucible "${crucible.server}" (${crucible.model}`
-        + `${crucible.fingerprint === null ? '' : ` @ ${crucible.fingerprint}`}) — `
-        + `${venue.origin}: ${venue.because}. Headers: ${crucible.maskedHeaders}`;
-    }
+    // Every refusal a Crucible page read can make happens HERE, before the
+    // project is resolved and long before a stage is claimed: no such model,
+    // no backend for it on that host (the Mac), not image-capable, not
+    // resident. See electron/crucible/pages.ts.
+    crucible = await resolveCruciblePageReader(venue.server, pagesHost);
+    route = {
+      kind: 'endpoint',
+      // `concurrency: 0` is foundry's own default of twelve pages in flight,
+      // which PHASE3-VLM.md §4 makes a REQUIREMENT of the manifest rather than
+      // a preference: `--max-num-seqs` on `dots-ocr` is 16 so that twelve can
+      // actually be in flight. Setting a number here would freeze this build's
+      // copy of somebody else's GPU property.
+      endpoint: { url: crucible.endpoint, model: crucible.model, concurrency: 0 },
+    };
+    venueDecision =
+      `Reading the pages on crucible "${crucible.server}" (${crucible.model}`
+      + `${crucible.fingerprint === null ? '' : ` @ ${crucible.fingerprint}`}) — `
+      + `${venue.origin}: ${venue.because}. Headers: ${crucible.maskedHeaders}`;
   }
   if (route.kind === 'refused') throw new Error(`${route.reason} Nothing was converted.`);
 

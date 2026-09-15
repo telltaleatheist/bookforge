@@ -26,7 +26,7 @@
  */
 import type { AIProviderConfig } from '../ai-bridge';
 import type { CrucibleTextAct } from '../crucible/text-acts';
-import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import { WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 /**
  * WHICH MACHINES AN AI STEP CAN RUN ON (crucible `docs/PHASE7-LANES.md` §4).
@@ -143,14 +143,6 @@ export function providerConfigOf(
           'crucible_server_not_named: this job is set to use a Crucible server and its row was '
             + 'not assigned one. Pick a server for the book on the queue page (or Any), or queue '
             + 'it against the bundled local model.',
-        );
-      }
-      if (assignedVenue === LEGACY_LOCAL_NARRATOR) {
-        throw new Error(
-          'crucible_server_not_named: this job is set to use a Crucible server, but "Run renders '
-            + 'and text passes with the local engines instead" is on in Settings → Crucible '
-            + 'Servers, so its row was assigned the local engines. Turn that off, or queue this '
-            + 'job against the bundled local model.',
         );
       }
       return { provider: 'crucible', crucible: { server: assignedVenue, act } };

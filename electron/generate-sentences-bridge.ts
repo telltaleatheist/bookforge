@@ -73,7 +73,7 @@ export interface GenerateSentencesConfig {
    * the caller has one. A later step follows its run and decides only when the
    * run has no venue yet (`venueForRunStep`); `crucible` must agree with it.
    */
-  runVenue?: { where: 'crucible'; server: string } | { where: 'legacy-local-narrator' };
+  runVenue?: { where: 'crucible'; server: string };
 }
 
 interface ActiveJob {
@@ -173,7 +173,7 @@ function sendComplete(
   error?: string,
   warning?: string,
   /**
-   * WHERE the transcription ran — `crucible:<server>` or `legacy-local-narrator`
+   * WHERE the transcription ran — `crucible:<server>`
    * — recorded on the completion so the queue row's artifact says which machine
    * transcribed the book, the way a render's saved state says which rendered it.
    */
@@ -187,8 +187,8 @@ function sendComplete(
 }
 
 /** One word for a venue, for the log and the completion record. */
-function venueLabel(venue: { where: 'crucible'; server: string } | { where: 'legacy-local-narrator' }): string {
-  return venue.where === 'crucible' ? `crucible:${venue.server}` : venue.where;
+function venueLabel(venue: { where: 'crucible'; server: string }): string {
+  return `crucible:${venue.server}`;
 }
 
 export async function startGenerateSentences(
@@ -410,7 +410,6 @@ export async function startGenerateSentences(
         ...(config.language === undefined ? {} : { language: config.language }),
         outVttPath: outVtt,
         signal: controller.signal,
-        legacyLocal: transcribeLocally,
         onLog: (line) => glog(`[generate-sentences] ${line}`),
         onProgress: (p) => {
           // The same three phases the local script narrates, in the same words,

@@ -364,17 +364,20 @@ export function processPagesVenueHost(): PagesVenueHost {
  * follows the run's machine instead of deciding again. `runVenue` is that
  * answer when the caller has one — the row's `waitForResolved`, through
  * `runVenueOfRow` — and with none, `venueForRunStep` asks
- * `decideWhereGenerationRuns`, which is the caller's name → the ONE legacy
- * switch → the routing record, in that order. A standalone conversion from the
- * library has no run and takes exactly the path it always did.
+ * `decideWhereGenerationRuns`, which is the caller's name → the routing record,
+ * in that order. A standalone conversion from the library has no run and decides
+ * for itself.
  *
  * A `callerNamed` that DISAGREES with the run's venue is refused by name
  * (`run_venue_disagrees`), not ranked — the rule belongs to `venueForRunStep`
  * and is not restated here.
  *
- * `legacy-local-narrator` here means the local page readers, unchanged: MLX on
- * Apple silicon, the WSL vLLM server on Windows. It is one switch for renders,
- * text passes and pages both, and the caller says so by name in its log.
+ * THE LOCAL PAGE READERS ARE GONE — the MLX reader on Apple silicon and the WSL
+ * vLLM server on Windows went with the legacy spawn layer
+ * (docs/LEGACY-REMOVAL.md), so this answers with a Crucible server or refuses.
+ * What did NOT go is the TYPED ENDPOINT in Settings → AI → Reading pages: it is
+ * a deliberate choice of GPU, it is asked BEFORE this decision
+ * (`electron/vlm-convert.ts`), and it still wins.
  */
 export async function decideWherePagesRun(
   host: PagesVenueHost,

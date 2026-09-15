@@ -495,7 +495,6 @@ export async function runFinalDenoise(
       ...(config.crucible === undefined ? {} : { crucible: config.crucible }),
       host: processVenueHost(),
       onLog: log,
-      legacyLocal: () => deriveDenoisedSentences(plan, hooks),
       onCrucibleServer: (server) => deriveDenoisedSentences(plan, { ...hooks, crucible: { server } }),
     });
     const set = at.outcome;

@@ -48,7 +48,7 @@ import {
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
 import { serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf } from './slot-sets';
-import { LEGACY_LOCAL_NARRATOR } from './wait-for';
+import { LONGFORM_ALIGN_SET } from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Why a row is still
@@ -347,7 +347,7 @@ function compactTokens(n: number): string {
 export interface BenchLane {
   /**
    * Which slot set this lane belongs to — a server's name,
-   * `legacy-local-narrator`, or `local-work` (`shared/queue/slot-sets.ts`).
+   * `local-longform-align`, or `local-work` (`shared/queue/slot-sets.ts`).
    *
    * Part of a lane's IDENTITY, not decoration: two machines each have a "GPU ·
    * slot 1 of 1", and a surface tracking lanes by resource and index alone
@@ -491,15 +491,18 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
  * R1). So a server's lane carries no temperature at all, which is the honest
  * answer for every remote one and a missing decoration for the local one.
  *
- * CONSEQUENCE OF THE LEGACY ROW BECOMING CONDITIONAL (2026-09-15): the reading
- * is drawn only while that row is on the bench, and with nothing charging it
- * there is nowhere truthful to put the number at all. That is the same missing
- * decoration, widened — not a lie — and what would fix it is the snapshot
- * carrying which server name is this machine's, which belongs to
- * `electron/crucible/local.ts` and is a ruling, not a bench change.
+ * CONSEQUENCE OF THE IN-APP ROW BECOMING CONDITIONAL (2026-09-15), and WIDENED
+ * when the legacy narrator was deleted the same day: the reading is drawn only
+ * while {@link LONGFORM_ALIGN_SET} is on the bench, and that row now appears
+ * only while an `epub-align` step is queued. So the card's temperature — a fact
+ * about THIS MACHINE, not about that step — is usually not drawn at all. That is
+ * a missing decoration rather than a lie, and it is deliberately left that way:
+ * what would fix it is the snapshot carrying which server name is this
+ * machine's, which belongs to `electron/crucible/local.ts` and is a RULING, not
+ * a bench change (docs/LEGACY-REMOVAL.md).
  */
 function isThisMachine(setId: string, _snapshot: QueueSnapshot): boolean {
-  return setId === LEGACY_LOCAL_NARRATOR;
+  return setId === LONGFORM_ALIGN_SET;
 }
 
 /**
@@ -599,8 +602,8 @@ export interface BookPlan {
    */
   waitFor: Array<string | null>;
   /**
-   * Where its work was actually sent, once it has been — a server's name, or
-   * `legacy-local-narrator`. Empty until the first GPU step is admitted; after
+   * Where its work was actually sent, once it has been — a server's name.
+   * Empty until the first GPU step is admitted; after
    * that the picker is read-only, because a job finishes on the machine it
    * started on (§4.3).
    */

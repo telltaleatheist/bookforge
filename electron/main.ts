@@ -7814,19 +7814,8 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // The ONE switch for the legacy local narrator (docs/CRUCIBLE_ROLLOUT_PLAN.md
-  // §2 ruling 4). It is a dated stopgap with one owner: nothing sets it but
-  // this handler, no render has its own version of it, and a render says on the
-  // log when it is on. The spawn layer it reaches is deleted after Owen's
-  // in-app pass.
-  ipcMain.handle('crucible:set-legacy-local-render', async (_event, value: boolean) => {
-    try {
-      const { setLegacyLocalRender } = await import('./crucible/routing.js');
-      return { success: true, data: setLegacyLocalRender(value) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // There was a `crucible:set-legacy-local-render` here. The switch and the
+  // local spawn layer behind it are deleted (docs/LEGACY-REMOVAL.md).
 
   // Drop a name the rank record mentions that no server answers to any more.
   ipcMain.handle('crucible:forget', async (_event, name: string) => {
@@ -10966,15 +10955,11 @@ ipcMain.handle('narration:text-readiness', async (
     try {
       const { wslVlmRefusal, vlmPageServerStatus } = await import('./vlm-page-server.js');
       const { decideWherePagesRun, processPagesVenueHost } = await import('./crucible/pages.js');
-      let venue: { where: 'crucible'; server: string; because: string }
-        | { where: 'legacy-local-narrator'; because: string }
-        | null = null;
+      let venue: { where: 'crucible'; server: string; because: string } | null = null;
       let venueRefusal: string | null = null;
       try {
         const decided = await decideWherePagesRun(processPagesVenueHost());
-        venue = decided.where === 'crucible'
-          ? { where: 'crucible', server: decided.server, because: decided.because }
-          : { where: 'legacy-local-narrator', because: decided.because };
+        venue = { where: 'crucible', server: decided.server, because: decided.because };
       } catch (err) {
         venueRefusal = (err as Error).message;
       }

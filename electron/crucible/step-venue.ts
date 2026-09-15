@@ -2,10 +2,11 @@
  * A LATER STEP OF A RUN FOLLOWS THE RUN — it does not decide again.
  *
  * Its own module, beside `generation-venue.ts` rather than inside it, on
- * purpose: that file has exactly ONE producer of the legacy venue (the switch)
- * and `tools/test-crucible-render.js` counts it, because a second producer
- * there would be a second fallback. Nothing here PRODUCES a venue — it carries
- * the run's answer through, or asks the one decision for one.
+ * purpose: nothing here PRODUCES a venue — it carries the run's answer through,
+ * or asks the one decision for one. `generation-venue.ts` is the only thing that
+ * decides, and it has exactly one answer to give (a Crucible server); the legacy
+ * local narrator that used to be the other one is deleted
+ * (docs/LEGACY-REMOVAL.md).
  */
 
 import {
@@ -13,17 +14,18 @@ import {
   decideWhereGenerationRuns,
   type VenueHost,
 } from './generation-venue';
-import { LEGACY_LOCAL_NARRATOR, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 /**
  * The venue a run has ALREADY been given: the server its render went to
  * (`settings.crucible.server`, persisted into the session's
  * `session_state.json` by `decideAndRememberVenue`; the queue row's
- * `waitForResolved`), or the legacy local narrator.
+ * `waitForResolved`).
+ *
+ * ONE MEMBER. A run went to a machine, or it has no venue yet — there is no
+ * third state now that the legacy local narrator is deleted.
  */
-export type RunVenue =
-  | { where: 'crucible'; server: string }
-  | { where: 'legacy-local-narrator' };
+export type RunVenue = { where: 'crucible'; server: string };
 
 /**
  * Where one step of a run runs, and whether that was the run's answer or one
@@ -32,8 +34,7 @@ export type RunVenue =
  * step lands on the wrong card.
  */
 export type StepVenue =
-  | { where: 'crucible'; server: string; origin: 'the run' | 'decided here'; because: string }
-  | { where: 'legacy-local-narrator'; origin: 'the run' | 'decided here'; because: string };
+  { where: 'crucible'; server: string; origin: 'the run' | 'decided here'; because: string };
 
 /**
  * DO TWO RECORDS OF ONE RUN'S VENUE AGREE?
@@ -45,13 +46,12 @@ export type StepVenue =
  * caller refuses by name on a disagreement rather than picking one.
  */
 export function sameRunVenue(a: RunVenue, b: RunVenue): boolean {
-  if (a.where !== b.where) return false;
-  return a.where === 'crucible' && b.where === 'crucible' ? a.server === b.server : true;
+  return a.server === b.server;
 }
 
 /** How a venue reads in a refusal. One spelling, so two jobs cannot differ. */
 export function describeRunVenue(v: RunVenue): string {
-  return v.where === 'crucible' ? `crucible "${v.server}"` : 'the legacy local narrator';
+  return `crucible "${v.server}"`;
 }
 
 /**
@@ -63,17 +63,29 @@ export function describeRunVenue(v: RunVenue): string {
  * spelled in five files (crucible `docs/ARCHITECTURE.md` R1):
  *
  *  - a SERVER's name — the machine the queue admitted this run to;
- *  - {@link LEGACY_LOCAL_NARRATOR} — the dated local spawn;
  *  - `any`, or absent — the run was never assigned, because nothing in it
  *    travelled or it has not been admitted yet. `undefined` then, so
  *    {@link venueForRunStep} decides rather than being handed a non-answer.
+ *  - {@link RETIRED_LOCAL_NARRATOR_VENUE} — an OLD row, admitted while the
+ *    legacy local narrator existed. REFUSED BY NAME rather than re-decided:
+ *    §4.3 says a book finishes on the machine it started on, and quietly
+ *    continuing a half-rendered book on a different card is exactly what that
+ *    rule forbids. The operator queues it again.
  *
  * `any` is NOT a venue and must never reach `venueForRunStep` as one: it is the
  * row saying it does not mind, and the decision is still to be made.
  */
 export function runVenueOfRow(waitForResolved: string | undefined): RunVenue | undefined {
   if (waitForResolved === undefined || waitForResolved === WAIT_FOR_ANY) return undefined;
-  if (waitForResolved === LEGACY_LOCAL_NARRATOR) return { where: 'legacy-local-narrator' };
+  if (waitForResolved === RETIRED_LOCAL_NARRATOR_VENUE) {
+    throw new CrucibleVenueError(
+      'legacy_venue_retired',
+      'this run was assigned to the local narrator, which no longer exists: BookForge renders on '
+        + 'a Crucible server now and the local spawn layer has been removed '
+        + '(docs/LEGACY-REMOVAL.md). Nothing here moves a half-rendered book onto another card on '
+        + 'its own — choose a server for it and queue it again.',
+    );
+  }
   return { where: 'crucible', server: waitForResolved };
 }
 
@@ -111,19 +123,21 @@ export async function venueForRunStep(options: {
     const source = options.runVenueSource ?? 'the run';
     if (callerNamed !== undefined) {
       const named = callerNamed.server.trim();
-      const runs = runVenue.where === 'crucible' ? `crucible "${runVenue.server}"` : 'the legacy local narrator';
-      if (runVenue.where !== 'crucible' || runVenue.server !== named) {
+      if (runVenue.server !== named) {
         throw new CrucibleVenueError(
           'run_venue_disagrees',
-          `this step was told to run on crucible "${named}", but its run already went to ${runs} `
-          + `(${source}). One book, one GPU (PHASE7-LANES.md §4.4): a step follows its run, and two `
-          + 'answers for one run are refused rather than ranked.',
+          `this step was told to run on crucible "${named}", but its run already went to `
+          + `${describeRunVenue(runVenue)} (${source}). One book, one GPU (PHASE7-LANES.md §4.4): a `
+          + 'step follows its run, and two answers for one run are refused rather than ranked.',
         );
       }
     }
-    return runVenue.where === 'crucible'
-      ? { where: 'crucible', server: runVenue.server, origin: 'the run', because: `the run's venue (${source})` }
-      : { where: 'legacy-local-narrator', origin: 'the run', because: `the run's venue (${source})` };
+    return {
+      where: 'crucible',
+      server: runVenue.server,
+      origin: 'the run',
+      because: `the run's venue (${source})`,
+    };
   }
   const decided = await decideWhereGenerationRuns(
     callerNamed === undefined ? undefined : { crucible: callerNamed },

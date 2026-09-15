@@ -14,8 +14,15 @@
  * it might get back.
  *
  *   <userData>/crucible-routing.json
- *   { "order": ["local", "mac"], "disabled": ["mac"], "newJobsWaitFor": "top-ranked",
- *     "legacyLocalRender": false }
+ *   { "order": ["local", "mac"], "disabled": ["mac"], "newJobsWaitFor": "top-ranked" }
+ *
+ * A record written before 2026-09-15 also carries `legacyLocalRender`. The layer
+ * that key reached — the WSL narrator, the local text engines, the local VLM,
+ * RVC and denoise spawns — IS DELETED (docs/LEGACY-REMOVAL.md), so the key is
+ * STRIPPED on read and said once, by name, on the log. It is not corrupt (it was
+ * valid when it was written) and nothing rewrites the file behind the operator's
+ * back; the next render simply fails honestly with `no_enabled_server`, which is
+ * an answer a person can act on, instead of quietly taking this machine's card.
  *
  * Written temp-and-rename like `servers.ts`, for the same reason: a half-written
  * record is the one shape that loses every preference at once.
@@ -73,27 +80,6 @@ export interface RoutingRecord {
   disabled: string[];
   /** What a new queue row's `waitFor` is written as (§4.2.1a). */
   newJobsWaitFor: WaitForDefault;
-  /**
-   * Run GPU work with the LOCAL engines instead of on a Crucible server: the
-   * generation step by spawning narrator here, and the four text acts against
-   * the local text server (or whatever endpoint Foundry's settings name).
-   *
-   * ONE SWITCH FOR BOTH, and the key keeps its original name deliberately —
-   * renaming it would orphan every record already on disk to buy a spelling.
-   * Its MEANING generalised when the text acts joined the seam
-   * (docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.6); its label says so.
-   *
-   * See {@link RoutingView.legacyLocalRender} — a dated stopgap
-   * (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4), switched on deliberately and
-   * never by a failure.
-   *
-   * Absent means `false`, and that is a MIGRATION rather than a fallback:
-   * every record written before this switch existed has no key, and the
-   * behaviour those records described is the one the absent value names. A key
-   * that is present and not a boolean is a corrupt record, like every other
-   * field here.
-   */
-  legacyLocalRender: boolean;
 }
 
 export type CrucibleRoutingErrorCode =
@@ -107,8 +93,6 @@ export type CrucibleRoutingErrorCode =
   | 'duplicate_in_order'
   /** Anything but `top-ranked` or `any`. */
   | 'invalid_wait_for'
-  /** Anything but true or false for the legacy local narrator switch. */
-  | 'invalid_legacy_local_render'
   /** `forget` was asked to drop a name that IS a server. */
   | 'server_is_known'
   /** Every server is disabled, or there are none. */
@@ -125,6 +109,42 @@ export class CrucibleRoutingError extends Error {
 }
 
 const DEFAULT_WAIT_FOR: WaitForDefault = 'top-ranked';
+
+/**
+ * THE RETIRED SWITCH: stripped on read, said ONCE, never honoured.
+ *
+ * `legacyLocalRender` used to mean "run GPU work with the local engines instead"
+ * — the WSL narrator, the local text engines, the local VLM/RVC/denoise spawns.
+ * That whole layer is deleted (docs/LEGACY-REMOVAL.md), so there is nothing for
+ * the key to turn on.
+ *
+ * Three things it deliberately is NOT:
+ *
+ *  - **not corrupt.** The key was valid when it was written, and refusing the
+ *    record would brick the app's startup over a setting that no longer has a
+ *    meaning. Every other preference in the file is still good.
+ *  - **not migrated.** Nothing rewrites the file: the operator's record is
+ *    theirs, and a silent rewrite is how a person loses the evidence of what
+ *    they had asked for. The key simply stops being read; the next write of any
+ *    OTHER preference drops it, because {@link RoutingRecord} no longer has it.
+ *  - **not silent.** A machine that was rendering locally yesterday will now
+ *    refuse `no_enabled_server`, and the operator is owed the sentence that
+ *    connects the two. Said once per record, on the log, by name.
+ */
+const saidLegacySwitchRetired = new Set<string>();
+
+function noteRetiredLegacySwitch(file: string, value: unknown): void {
+  if (value === undefined) return;
+  if (saidLegacySwitchRetired.has(file)) return;
+  saidLegacySwitchRetired.add(file);
+  console.log(
+    `[CRUCIBLE-ROUTING] ${file} carries "legacyLocalRender": ${JSON.stringify(value)}. That switch `
+      + 'is RETIRED and is ignored: the local spawn layer it turned on — the WSL narrator, the '
+      + 'local text engines, the local VLM/RVC/denoise spawns — has been deleted '
+      + '(docs/LEGACY-REMOVAL.md). Every act now runs on a Crucible server or refuses by name. '
+      + 'The key is left in the file untouched; nothing here rewrites your record.',
+  );
+}
 
 /** `<userData>/crucible-routing.json`. Resolved at CALL time, like the registry. */
 export function routingPath(): string {
@@ -157,7 +177,7 @@ export class Routing {
   read(): RoutingRecord {
     const file = this.file;
     if (!fs.existsSync(file)) {
-      return { order: [], disabled: [], newJobsWaitFor: DEFAULT_WAIT_FOR, legacyLocalRender: false };
+      return { order: [], disabled: [], newJobsWaitFor: DEFAULT_WAIT_FOR };
     }
 
     let parsed: unknown;
@@ -189,20 +209,11 @@ export class Routing {
           + `${JSON.stringify(record?.newJobsWaitFor)}. Repair or delete the file by hand.`,
       );
     }
-    // Absent = false: every record written before the switch existed has no key
-    // and described exactly that. Present and not a boolean is corrupt.
-    if (record.legacyLocalRender !== undefined && typeof record.legacyLocalRender !== 'boolean') {
-      throw new CrucibleRoutingError(
-        'corrupt_routing',
-        `${file}: "legacyLocalRender" must be true or false, not `
-          + `${JSON.stringify(record.legacyLocalRender)}. Repair or delete the file by hand.`,
-      );
-    }
+    noteRetiredLegacySwitch(file, (record as Record<string, unknown>)['legacyLocalRender']);
     return {
       order: [...(record.order as string[])],
       disabled: [...(record.disabled as string[])],
       newJobsWaitFor: record.newJobsWaitFor,
-      legacyLocalRender: record.legacyLocalRender === true,
     };
   }
 
@@ -241,12 +252,7 @@ export class Routing {
 
     const mentioned = new Set([...record.order, ...record.disabled]);
     const unknown = [...mentioned].filter((name) => !knownSet.has(name));
-    return {
-      ranked,
-      newJobsWaitFor: record.newJobsWaitFor,
-      unknown,
-      legacyLocalRender: record.legacyLocalRender,
-    };
+    return { ranked, newJobsWaitFor: record.newJobsWaitFor, unknown };
   }
 
   /**
@@ -316,25 +322,6 @@ export class Routing {
       );
     }
     this.write({ ...this.read(), newJobsWaitFor: value });
-    return this.view(known);
-  }
-
-  /**
-   * Turn the LEGACY local narrator on or off for audiobook renders.
-   *
-   * The one switch (docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4). There is no
-   * per-render version of it on purpose: a second place to say "not this one"
-   * is a second owner of the same fact, and the reason this exists at all is
-   * that the spawn layer is scheduled for deletion rather than for a choice.
-   */
-  setLegacyLocalRender(value: boolean, known: readonly string[]): RoutingView {
-    if (typeof value !== 'boolean') {
-      throw new CrucibleRoutingError(
-        'invalid_legacy_local_render',
-        `"${String(value)}" is not true or false. The legacy local narrator is on or it is off.`,
-      );
-    }
-    this.write({ ...this.read(), legacyLocalRender: value });
     return this.view(known);
   }
 
@@ -447,11 +434,6 @@ export function setServerEnabled(name: string, enabled: boolean): RoutingView {
 /** Set what a new queue row waits for. See {@link Routing.setNewJobsWaitFor}. */
 export function setNewJobsWaitFor(value: WaitForDefault): RoutingView {
   return store().setNewJobsWaitFor(value, knownServers());
-}
-
-/** Turn the legacy local narrator on or off. See {@link Routing.setLegacyLocalRender}. */
-export function setLegacyLocalRender(value: boolean): RoutingView {
-  return store().setLegacyLocalRender(value, knownServers());
 }
 
 /** Forget a name no server answers to. See {@link Routing.forget}. */

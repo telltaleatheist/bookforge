@@ -91,7 +91,6 @@ import {
 import {
   decideWaitFor,
   holdBusy,
-  LEGACY_LOCAL_NARRATOR,
   WAIT_FOR_ANY,
   type ServerState,
   type WaitForServer,
@@ -105,7 +104,8 @@ import {
 import {
   cloudLaneOf,
   isCloudLane,
-  legacySetCharged,
+  longformAlignCharged,
+  LONGFORM_ALIGN_SET,
   slotSetForStep,
   slotSetOccupancy,
   slotSets,
@@ -590,7 +590,7 @@ function currentSlotSets(): SlotSet[] {
     enabledServers,
     upstreams,
     occupied,
-    legacyCharged: legacySetCharged({ jobs }),
+    alignerCharged: longformAlignCharged({ jobs }),
   });
 }
 
@@ -1649,8 +1649,8 @@ export function setGpuLockProbe(probe: () => string | null): void {
 /** What the scheduler needs to know about this machine's Crucible servers. */
 export interface CrucibleRoutingHost {
   /**
-   * Every server in rank order (disabled ones included), the legacy switch, and
-   * which of those names is THIS machine's own server.
+   * Every server in rank order (disabled ones included), and which of those
+   * names is THIS machine's own server.
    *
    * `localName` is asked for rather than assumed because the reserved name is
    * `electron/crucible/local.ts`'s to spell, and an engine that hard-coded the
@@ -1658,7 +1658,7 @@ export interface CrucibleRoutingHost {
    * R1). It is what decides whether this machine's GPU lock and arbiter have
    * anything to say about a step: work bound for the Mac must not wait on them.
    */
-  routing(): { ranked: WaitForServer[]; legacyLocalRender: boolean; localName: string | null };
+  routing(): { ranked: WaitForServer[]; localName: string | null };
   /**
    * What a NEW row's `waitFor` is written as — the top-ranked server's NAME, or
    * `any` (crucible `docs/PHASE7-LANES.md` §4.2.1a).
@@ -1860,7 +1860,7 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     };
   }
 
-  let record: { ranked: WaitForServer[]; legacyLocalRender: boolean; localName: string | null };
+  let record: { ranked: WaitForServer[]; localName: string | null };
   try {
     record = host.routing();
   } catch (err) {
@@ -1873,7 +1873,6 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     waitFor: job.waitFor,
     resolved: job.waitForResolved,
     ranked: record.ranked,
-    legacyLocalRender: record.legacyLocalRender,
     state: serverState,
     // OUR OWN bookkeeping, never the server's state: how many GPU steps
     // BookForge already has in flight there (crucible
@@ -1883,8 +1882,6 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
   });
 
   switch (verdict.kind) {
-    case 'legacy-local':
-      return { ok: true, venue: LEGACY_LOCAL_NARRATOR, onThisMachine: true };
     case 'run':
       return {
         ok: true,
@@ -2154,7 +2151,7 @@ export function pump(): void {
          */
         const routed = step.travels === true
           ? crucibleAdmission(job)
-          : { ok: true as const, venue: LEGACY_LOCAL_NARRATOR, onThisMachine: true };
+          : { ok: true as const, venue: LONGFORM_ALIGN_SET, onThisMachine: true };
         if (!routed.ok) {
           admissionBlocked = true;
           if (step.progress.admissionHold !== routed.reason) {
@@ -2204,7 +2201,7 @@ export function pump(): void {
           ? (moduleFor(step.type).crucibleClass?.(step.config ?? {}) ?? null)
           : null;
         let venue = routed.venue;
-        if (routableClass !== null && routed.venue !== LEGACY_LOCAL_NARRATOR) {
+        if (routableClass !== null && routed.venue !== LONGFORM_ALIGN_SET) {
           const route = crucibleRouteOf(routed.venue, routableClass);
           if (route === 'unknown') {
             const reason = `Waiting: BookForge has not yet read where "${routed.venue}" runs `

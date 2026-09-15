@@ -31,8 +31,9 @@
  * ── What this module is ─────────────────────────────────────────────────────
  *
  * The vocabulary and the DECISION, as one pure function over facts the caller
- * has already gathered: the record's ranked list, the legacy switch, and what
- * each server last said. It performs no I/O, so the engine can ask it inside a
+ * has already gathered: the record's ranked list, what each row was already
+ * assigned, and what each server last said. It performs no I/O, so the engine
+ * can ask it inside a
  * synchronous pump and a keeper can drive every branch with no network.
  *
  * Every "no" it can answer is a SENTENCE THAT NAMES THE SERVER. A row that sits
@@ -45,15 +46,21 @@
 export const WAIT_FOR_ANY = 'any';
 
 /**
- * The venue a row was assigned when the LEGACY local-render switch was on.
+ * THE VENUE THAT NO LONGER EXISTS — recognised, never honoured.
  *
- * Not a server: it is `parallel-tts-bridge`'s own narrator spawn, the dated
- * stopgap in docs/CRUCIBLE_ROLLOUT_PLAN.md §2 ruling 4. It is never written into
- * `waitFor` — the switch is read live at admission, exactly as an in-app render
- * reads it through `generation-venue.ts` — and only ever into the RESOLVED
- * field, so the row says where its work actually went.
+ * A row admitted before 2026-09-15 while the legacy local-render switch was on
+ * had this written into `waitForResolved`: not a server, but
+ * `parallel-tts-bridge`'s own narrator spawn. That layer is DELETED
+ * (docs/LEGACY-REMOVAL.md), so the string survives for exactly one purpose — a
+ * queue file on disk can still carry it, and such a row must HOLD with a
+ * sentence naming the retirement rather than be re-decided.
+ *
+ * Re-deciding would be the worse answer: §4.3 says a job that started on a
+ * machine finishes on that machine, and a half-rendered book silently continued
+ * on a different card is the failure that rule exists to prevent. The operator
+ * re-queues it; nothing here does that for them.
  */
-export const LEGACY_LOCAL_NARRATOR = 'legacy-local-narrator';
+export const RETIRED_LOCAL_NARRATOR_VENUE = 'legacy-local-narrator';
 
 /** One server's place in the queue's order. Mirrors `RankedServerRow`. */
 export interface WaitForServer {
@@ -78,15 +85,15 @@ export interface WaitForFacts {
   /** The row's answer: a server name, `any`, or absent (see `holdNoAnswer`). */
   readonly waitFor: string | undefined;
   /**
-   * The venue this book was already assigned — a server name or
-   * {@link LEGACY_LOCAL_NARRATOR}. Once set it WINS over `waitFor`: §4.3, a job
-   * is atomic, so a book that started on a machine finishes on that machine.
+   * The venue this book was already assigned — a server's name. Once set it
+   * WINS over `waitFor`: §4.3, a job is atomic, so a book that started on a
+   * machine finishes on that machine. An old row's
+   * {@link RETIRED_LOCAL_NARRATOR_VENUE} is the one value that is not a server,
+   * and it holds rather than running anywhere.
    */
   readonly resolved: string | undefined;
   /** Every server, in rank order, disabled ones included. */
   readonly ranked: readonly WaitForServer[];
-  /** The legacy local-narrator switch, read live from the routing record. */
-  readonly legacyLocalRender: boolean;
   /** What each server last said. */
   readonly state: (server: string) => ServerState;
   /**
@@ -112,8 +119,6 @@ export interface WaitForFacts {
 }
 
 export type WaitForVerdict =
-  /** Spawn narrator here, as an in-app render does with the switch on. */
-  | { readonly kind: 'legacy-local' }
   /** Send it to this server. */
   | { readonly kind: 'run'; readonly server: string }
   /** Nobody has asked this server yet. Ask, then decide again. */
@@ -165,6 +170,13 @@ export function holdBusy(server: string, line: string): string {
  *    the manufactured instruction §4.2.1a exists to prevent, and writing `any`
  *    would have been a silent default. So the field stays absent and says so.
  */
+export function holdRetiredVenue(): string {
+  return 'This book was assigned to the local narrator, which no longer exists: BookForge renders '
+    + 'on a Crucible server now, and the local spawn layer has been removed. Choose a server for '
+    + 'it, or Any, and queue it again — nothing here moves a half-rendered book onto a different '
+    + 'card on its own.';
+}
+
 export function holdNoAnswer(): string {
   return 'Waiting: this book does not say which Crucible server to render on. Choose one for it, '
     + 'or Any.';
@@ -194,26 +206,25 @@ function asking(server: string): string {
  * different fact:
  *
  *  1. **This book is already assigned.** §4.3 — a job that started on a machine
- *     finishes on that machine. That outranks the legacy switch and the record,
- *     because both of those can change under a book that is half rendered.
- *  2. **The legacy switch is on.** The render spawns narrator here, exactly as
- *     an in-app render does (`generation-venue.ts` answer 2).
- *  3. **The row names a server.** It runs there if it is enabled and reachable,
+ *     finishes on that machine. That outranks the record, because the record can
+ *     change under a book that is half rendered. The one assignment that is not
+ *     a machine is {@link RETIRED_LOCAL_NARRATOR_VENUE}, which HOLDS.
+ *  2. **The row names a server.** It runs there if it is enabled and reachable,
  *     and otherwise HOLDS AND SAYS WHICH. It is never re-routed: a named server
  *     is an instruction, and the queue-level enable switch is about availability
  *     rather than about overriding what a person asked for (§4.2.2).
- *  4. **The row says `any`.** The first enabled server, in rank order, that will
+ *  3. **The row says `any`.** The first enabled server, in rank order, that will
  *     take it. Disabled, unreachable and busy servers are simply not candidates;
  *     when none is left the hold NAMES that, rather than sitting silent.
  */
 export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
   const { resolved } = facts;
   if (resolved !== undefined) {
-    if (resolved === LEGACY_LOCAL_NARRATOR) return { kind: 'legacy-local' };
+    if (resolved === RETIRED_LOCAL_NARRATOR_VENUE) {
+      return { kind: 'hold', sentence: holdRetiredVenue() };
+    }
     return forOneServer(resolved, facts);
   }
-
-  if (facts.legacyLocalRender) return { kind: 'legacy-local' };
 
   const waitFor = facts.waitFor;
   if (waitFor === undefined || waitFor === '') return { kind: 'hold', sentence: holdNoAnswer() };
@@ -282,6 +293,6 @@ function forOneServer(server: string, facts: WaitForFacts): WaitForVerdict {
 export function waitForLabel(value: string | undefined): string {
   if (value === undefined || value === '') return 'No server chosen';
   if (value === WAIT_FOR_ANY) return 'Any — the first that will take it';
-  if (value === LEGACY_LOCAL_NARRATOR) return 'The local narrator (legacy)';
+  if (value === RETIRED_LOCAL_NARRATOR_VENUE) return 'The local narrator (retired)';
   return value;
 }

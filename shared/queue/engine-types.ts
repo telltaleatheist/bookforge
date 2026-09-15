@@ -488,8 +488,8 @@ export interface QueueStep {
    */
   travels?: boolean;
   /**
-   * WHERE THIS STEP'S WORK ACTUALLY WENT — a registered server's name, or
-   * `legacy-local-narrator`.
+   * WHERE THIS STEP'S WORK ACTUALLY WENT — a registered server's name, a cloud
+   * lane, or `local-longform-align` for the one GPU act that cannot travel.
    *
    * Written ONCE, by the pump, at the moment the step is admitted, and never
    * changed afterwards. It is the SLOT SET the step occupies while it runs
@@ -608,8 +608,9 @@ export interface QueueJob {
    */
   waitFor?: string;
   /**
-   * WHERE THIS BOOK'S GPU WORK WAS ACTUALLY SENT — a server's name, or
-   * `legacy-local-narrator`.
+   * WHERE THIS BOOK'S GPU WORK WAS ACTUALLY SENT — a server's name. A queue
+   * written before 2026-09-15 can also carry `legacy-local-narrator`, which is
+   * refused by name rather than honoured (`shared/queue/wait-for.ts`).
    *
    * Written once, at the first GPU admission, and never changed: §4.3, a job is
    * atomic, so a book that started on a machine finishes on that machine, and a

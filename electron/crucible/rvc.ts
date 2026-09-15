@@ -425,12 +425,6 @@ export interface ConvertSentencesAtVenueOptions {
   readonly onProgress?: (progress: CrucibleRvcProgress) => void;
   readonly onLog?: (line: string) => void;
   readonly signal?: AbortSignal;
-  /**
-   * The local urvc spawn, EXACTLY as it has always run — `enhanceSentences`,
-   * the rvc-env, the 96-file recycle. Called only when the legacy switch is on;
-   * never as a fallback.
-   */
-  readonly legacyLocal: () => Promise<{ outputDir: string }>;
 }
 
 export interface ConvertSentencesAtVenueOutcome {
@@ -444,9 +438,9 @@ export interface ConvertSentencesAtVenueOutcome {
  * Where this voice conversion runs, and run it there.
  *
  * The run's venue when it has one (`venueForRunStep`), else the ONE decision the
- * render, the Listen path and the alignment make. There is no second switch and
- * no fallback: with the legacy switch off and no server reachable this THROWS
- * with the reason, and the row fails saying which server it could not reach.
+ * render, the Listen path and the alignment make. There is no local urvc spawn
+ * any more and no fallback to one: with no server reachable this THROWS with the
+ * reason, and the row fails saying which server it could not reach.
  */
 export async function convertSentencesAtVenue(
   options: ConvertSentencesAtVenueOptions,
@@ -458,11 +452,6 @@ export async function convertSentencesAtVenue(
     ...(options.crucible === undefined ? {} : { callerNamed: options.crucible }),
     host: options.host,
   });
-  if (venue.where === 'legacy-local-narrator') {
-    log(`the voice conversion runs on the local urvc spawn — ${venue.origin}: ${venue.because}`);
-    const local = await options.legacyLocal();
-    return { venue, outputDir: local.outputDir };
-  }
   log(`the voice conversion runs on crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
   const crucible = await runCrucibleRvc({
     server: venue.server,

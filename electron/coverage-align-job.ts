@@ -233,15 +233,11 @@ export interface CoverageAlignResult {
 
 /**
  * Test seams for `runCoverageAlign`, and nothing the app passes: the routing
- * record and the network behind the venue decision, and the local spawn behind
- * the legacy answer. A keeper drives every branch with neither a server, a
- * card, nor a narrator on the machine.
+ * record and the network behind the venue decision. A keeper drives every branch
+ * with neither a server nor a card.
  */
 export interface CoverageAlignDeps {
   venueHost?: VenueHost;
-  legacyLocal?: (
-    stepId: string, config: CoverageAlignConfig, mainWindow: BrowserWindow | null,
-  ) => Promise<CoverageAlignResult>;
 }
 
 /**
@@ -609,14 +605,8 @@ export async function runCoverageAlign(
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
-  console.log(`[COVERAGE-ALIGN] venue: ${
-    venue.where === 'crucible' ? `crucible "${venue.server}"` : 'the legacy local narrator'} — ${venue.origin}: ${venue.because}`);
+  console.log(`[COVERAGE-ALIGN] venue: crucible "${venue.server}" — ${venue.origin}: ${venue.because}`);
 
-  if (venue.where === 'legacy-local-narrator') {
-    const local = deps.legacyLocal ?? runCoverageAlignLocally;
-    const result = await local(stepId, config, mainWindow);
-    return { ...result, venue };
-  }
   const result = await runCoverageAlignOnCrucible(stepId, config, mainWindow, venue.server);
   return { ...result, venue };
 }
@@ -624,10 +614,10 @@ export async function runCoverageAlign(
 /**
  * The venue this session's render was given, out of the session's own record —
  * `<processDir>/session_state.json` → `settings.crucible.server`, which
- * `parallel-tts-bridge.decideAndRememberVenue` writes for a Crucible render and
- * leaves absent for a legacy one. Absent file or absent field is "the run has
- * no recorded venue" (a session rendered before venues were recorded, or by
- * the local narrator); a present-but-malformed field is refused by name.
+ * `parallel-tts-bridge.decideAndRememberVenue` writes for every render. Absent
+ * file or absent field is "the run has no recorded venue" — a session rendered
+ * before venues were recorded, or by the deleted local narrator; a
+ * present-but-malformed field is refused by name.
  *
  * This is the source the POST-RENDER phase reaches: it calls `runCoverageAlign`
  * with no venue of its own, and the session is the run.

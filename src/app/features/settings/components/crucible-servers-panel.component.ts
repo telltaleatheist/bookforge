@@ -399,20 +399,16 @@ const LOCAL = 'local';
         engine that will have it, preferring this order. Books already queued are never re-routed.
       </p>
 
-      <!-- The dated stopgap, reachable on purpose and exactly once. -->
-      <div class="cru-legacy">
-        <label class="cru-toggle">
-          <input type="checkbox" [checked]="legacyLocalRender()" (change)="setLegacyLocalRender($any($event.target).checked)" />
-          <span>Run renders and text passes with the local engines instead (legacy — removed after the in-app pass)</span>
-        </label>
-        <p class="cru-sub">
-          Off, an audiobook's generation step and the four text acts — clean, translate, simplify,
-          analysis — run on the server above, and work that cannot reach one fails saying which. It
-          never quietly takes this machine's card. On, a render spawns narrator here and a text act
-          runs against the local text server, and each says so on its log. This is the only switch
-          for both; there is no per-render or per-act version.
-        </p>
-      </div>
+      <!--
+        THE LEGACY CHECKBOX IS GONE, and so is the layer behind it.
+
+        "Run renders and text passes with the local engines instead" spawned
+        narrator here and ran a text act against the local text server. That
+        whole layer is deleted (docs/LEGACY-REMOVAL.md): an audiobook's
+        generation step and the four text acts run on a server above, or they
+        fail saying which server they could not reach. Nothing takes this
+        machine's card by accident, and there is no switch that would make it.
+      -->
 
       <!-- ── Get a Crucible: the three doors ────────────────────────────── -->
       <!--
@@ -559,9 +555,6 @@ export class CrucibleServersPanelComponent {
   readonly ranked = computed<RankedServerRow[]>(() => this.view()?.routing.ranked ?? []);
   readonly unknown = computed<string[]>(() => this.view()?.routing.unknown ?? []);
   readonly waitFor = computed<WaitForDefault | null>(() => this.view()?.routing.newJobsWaitFor ?? null);
-  /** The legacy local-narrator switch. False until the record says otherwise. */
-  readonly legacyLocalRender = computed(() => this.view()?.routing.legacyLocalRender === true);
-
   /** Per-server probe / activity / model answers, each asked for on demand. */
   readonly probe = signal<Record<string, CrucibleProbeResult>>({});
   readonly activity = signal<Record<string, CrucibleActivityView>>({});
@@ -775,20 +768,6 @@ export class CrucibleServersPanelComponent {
     const res = await this.electron.crucible.setWaitFor(value);
     if (!res.success || !res.data) {
       this.loadError.set(res.error ?? 'That setting could not be saved, and nothing said why.');
-      return;
-    }
-    this.applyRouting(res.data);
-  }
-
-  /**
-   * Turn the legacy local narrator on or off. The ONE place that says it — the
-   * bridge reads this record and nothing else, and no render carries its own
-   * version of the answer.
-   */
-  async setLegacyLocalRender(value: boolean): Promise<void> {
-    const res = await this.electron.crucible.setLegacyLocalRender(value);
-    if (!res.success || !res.data) {
-      this.loadError.set(res.error ?? 'That switch could not be saved, and nothing said why.');
       return;
     }
     this.applyRouting(res.data);

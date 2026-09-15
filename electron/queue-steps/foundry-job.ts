@@ -37,7 +37,6 @@
 import { noteStepBusy, noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
-import { LEGACY_LOCAL_NARRATOR } from '../../shared/queue/wait-for';
 import {
   FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRunner, foundryTooOldForCleanText,
   parseFoundryProgressLine,
@@ -297,10 +296,7 @@ export const foundryJobStep: StepModule = {
       } = await import('../crucible/text-venue.js');
       const venueHost = processTextVenueHost();
       const named = ctx.job.waitForResolved;
-      const venue = await decideWhereTextActRuns(
-        named === undefined || named === LEGACY_LOCAL_NARRATOR ? undefined : named,
-        venueHost,
-      );
+      const venue = await decideWhereTextActRuns(named, venueHost);
       if (venue.where === 'crucible') {
         try {
           /*

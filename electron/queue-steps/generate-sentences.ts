@@ -27,7 +27,7 @@ interface GsCompleteEvent {
   outputPath?: string;
   error?: string;
   warning?: string;
-  /** Where the whisper transcription ran: `crucible:<server>` or `legacy-local-narrator`. */
+  /** Where the whisper transcription ran: `crucible:<server>`. */
   venue?: string;
   /** A Crucible `server_busy`: the holder line. A wait, never a failure. */
   busyLine?: string;

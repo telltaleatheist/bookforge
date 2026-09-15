@@ -17,7 +17,7 @@
  *     local:cloud          [ cpu ] [ cpu ]     ← only if it HAS an upstream
  *     mac          [ gpu ] [ cpu ] [ cpu ]     ← a registered remote
  *     mac:cloud            [ cpu ] [ cpu ]     ← only if IT has an upstream
- *     legacy…      [ gpu ]                     ← ONLY while a step charges it
+ *     local-longform-align  [ gpu ]            ← ONLY while a step charges it
  *     local-work           [ cpu ] [ cpu ]     ← what BookForge does ITSELF
  *
  * ── THE CLOUD LANE, AND WHY IT HANGS OFF A SERVER ──────────────────────────
@@ -56,40 +56,40 @@
  * no gpu slot, because bookforge shouldnt know how to drive gpu work in-app …
  * even if that server is just a local windows install with no wsl engine."*
  *
- * The legacy set below is the one row that is not that, and it is now drawn
- * ONLY WHEN SOMETHING IN THE QUEUE WOULD CHARGE IT
- * ({@link SlotSetFacts.legacyCharged}). With nothing charging it the bench is
+ * {@link LONGFORM_ALIGN_SET} below is the one row that is not that, and it is
+ * drawn ONLY WHEN SOMETHING IN THE QUEUE WOULD CHARGE IT
+ * ({@link SlotSetFacts.alignerCharged}). With nothing charging it the bench is
  * exactly Owen's sentence: one GPU slot per registered server, plus
  * `local-work`'s two CPU slots, and no more.
  *
- * ── WHY IT IS CONDITIONAL RATHER THAN DELETED ──────────────────────────────
+ * WHY IT IS CONDITIONAL RATHER THAN DELETED. This file used to push the row
+ * unconditionally, and the argument for that was sound as far as it went: a GPU
+ * step whose module has not been taught to travel spawns HERE, and with no set
+ * to charge it {@link slotsOf} answers 0, so the scheduler finds nought slots
+ * and never launches it. But that argument is about a step that EXISTS. So the
+ * row exists exactly then, and the fact is computed by running
+ * {@link slotSetForStep} — the function the scheduler itself allocates with —
+ * over the snapshot's own steps, so the bench and the pump cannot come to
+ * disagree about whether the row is there (crucible `docs/ARCHITECTURE.md` R1:
+ * one fact, one owner).
  *
- * This file used to push the row unconditionally, and the argument for that was
- * sound as far as it went: a GPU step whose module has not been taught to travel
- * spawns HERE whatever the switch says, and with no set to charge it
- * {@link slotsOf} answers 0, so the scheduler finds nought slots and never
- * launches it. But that argument is about a step that EXISTS. So the row exists
- * exactly then, and the fact is computed by running {@link slotSetForStep} —
- * the function the scheduler itself allocates with — over the snapshot's own
- * steps, so the bench and the pump cannot come to disagree about whether the row
- * is there (crucible `docs/ARCHITECTURE.md` R1: one fact, one owner).
+ * ONE thing sends GPU work there, as of 2026-09-15: **`generate-sentences` with
+ * `method: 'epub-align'`** — the whole-audiobook forced alignment
+ * (`electron/whisperx-align-bridge.ts`, `electron/scripts/align_audiobook.py`).
+ * It is not a Crucible job because Crucible has no job of that SHAPE, not
+ * because nobody wired it: the `align` job takes `chunks:[{index,text}]` and one
+ * audio input PER chunk, which is a caller that ALREADY KNOWS which audio goes
+ * with which text — and discovering that (a rough transcript of the whole m4b,
+ * then a coarse DTW of the ebook's sentences onto it) is this act's middle stage
+ * and most of its cost. `align-longform` is a Crucible job type that does not
+ * exist; it is written up as a ruling in `docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7.
  *
- * Measured 2026-09-15, TWO things still send GPU work there:
+ * A SECOND tenant was here until 2026-09-15 and is gone: **any render at all
+ * while `legacyLocalRender` was on**. That switch and the whole local spawn
+ * layer behind it are DELETED (docs/LEGACY-REMOVAL.md), which is why this row is
+ * no longer named after the narrator.
  *
- *  1. **Any render at all while `legacyLocalRender` is on** — the dated switch,
- *     which does go with that layer after Owen's in-app pass.
- *  2. **`generate-sentences` with `method: 'epub-align'`** — the whole-audiobook
- *     forced alignment (`electron/whisperx-align-bridge.ts`,
- *     `electron/scripts/align_audiobook.py`). It is not a Crucible job because
- *     Crucible has no job of that SHAPE, not because nobody wired it: the
- *     `align` job takes `chunks:[{index,text}]` and one audio input PER chunk,
- *     which is a caller that ALREADY KNOWS which audio goes with which text —
- *     and discovering that (a rough transcript of the whole m4b, then a coarse
- *     DTW of the ebook's sentences onto it) is this act's middle stage and most
- *     of its cost. `align-longform` is a Crucible job type that does not exist;
- *     it is written up as a ruling in `docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7.
- *
- * A third tenant was listed here until 2026-09-15 and is gone: **`video-assembly`**
+ * A third was listed until the same day: **`video-assembly`**
  * declared `resource: 'gpu'` with no comment and nobody had measured it. Read
  * end to end (`electron/video-assembly-bridge.ts`), it draws PNG frames in an
  * offscreen BrowserWindow and muxes them with `ffmpeg -c:v libx264` — a SOFTWARE
@@ -98,7 +98,7 @@
  * `local-work` like every other thing BookForge does itself.
  *
  * `tools/test-queue-slot-sets.js` pins the SHAPE: with nothing queued there is
- * no legacy row at all, with an `epub-align` queued there is exactly one, and
+ * no in-app GPU row at all, with an `epub-align` queued there is exactly one, and
  * every GPU row drawn is a registered server's bar that one named exception — so
  * a new in-app GPU venue has to come past that check.
  *
@@ -125,9 +125,34 @@
  * no engine and no network. No I/O, no clock, no Electron.
  */
 
-import { LEGACY_LOCAL_NARRATOR } from './wait-for';
+import { RETIRED_LOCAL_NARRATOR_VENUE } from './wait-for';
 import { TERMINAL_STEP_STATUSES } from './engine-types';
 import type { QueueJob, QueueStep, StepResource } from './engine-types';
+
+/**
+ * THE ONE GPU SET THAT IS NOT A REGISTERED SERVER — and what is left in it.
+ *
+ * It used to be called `legacy-local-narrator`, because the legacy render spawn
+ * was its loudest tenant. That layer is DELETED (docs/LEGACY-REMOVAL.md), and
+ * exactly ONE tenant remains: `generate-sentences` with `method: 'epub-align'`,
+ * the whole-audiobook forced alignment (`electron/whisperx-align-bridge.ts`,
+ * `electron/scripts/align_audiobook.py`).
+ *
+ * So the row is NAMED FOR IT. Keeping the old spelling would have left the bench
+ * telling an operator their book is waiting for "the local narrator (legacy)"
+ * when what it is waiting for is an aligner — a row that lies about its tenant
+ * is exactly the duplicated-fact failure this layer is built to avoid.
+ *
+ * **The row is not deleted with the layer, and must not be.** `epub-align` is
+ * UNMIGRATED rather than legacy: Crucible has no `align-longform` job type
+ * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7, UNRULED — its `align` job takes one
+ * audio input per chunk from a caller that already knows which seconds hold
+ * which sentences, which is precisely what this act must DISCOVER). Delete the
+ * row and that step charges a set with no slots, {@link slotsOf} answers 0, and
+ * the scheduler never launches it with nothing to explain why. When §B7 is ruled
+ * and built, the row empties on its own and this constant goes with it.
+ */
+export const LONGFORM_ALIGN_SET = 'local-longform-align';
 
 /**
  * The set holding work BOOKFORGE DOES ITSELF and never sends anywhere —
@@ -178,8 +203,8 @@ export const CLOUD_LANE_SLOTS = 2;
  * The separator between an engine's name and its cloud lane.
  *
  * A registry name cannot contain it: `servers.ts` refuses any name that does
- * not match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, and the reserved `local` and the
- * legacy set's id carry no colon either. That is what makes
+ * not match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, and the reserved `local` and
+ * {@link LONGFORM_ALIGN_SET} carry no colon either. That is what makes
  * {@link serverOfCloudLane} the exact INVERSE of {@link cloudLaneOf} rather
  * than a guess at where to split.
  */
@@ -212,7 +237,7 @@ export const WAIT_STEP_CAP = 32;
 /** One machine's worth of slots. */
 export interface SlotSet {
   /**
-   * A registered server's NAME, {@link LEGACY_LOCAL_NARRATOR}, or
+   * A registered server's NAME, {@link LONGFORM_ALIGN_SET}, or
    * {@link LOCAL_WORK_SET}. It is what `slotSetForStep` returns, so the two
    * cannot drift.
    */
@@ -222,9 +247,8 @@ export interface SlotSet {
   readonly gpu: number;
   readonly cpu: number;
   /**
-   * This set takes no NEW work: its server was disabled or removed, or the
-   * legacy switch was turned off, while something of ours was still running
-   * there. §4.3 — a job that started on a machine finishes on that machine — so
+   * This set takes no NEW work: its server was disabled or removed while
+   * something of ours was still running there. §4.3 — a job that started on a machine finishes on that machine — so
    * the set stays on the bench until its occupant lands, and then it is gone.
    */
   readonly retiring: boolean;
@@ -233,9 +257,9 @@ export interface SlotSet {
 /**
  * How a set's id reads as a heading.
  *
- * The legacy row's heading is UNCHANGED now that the row is conditional, and
- * deliberately: it would be useful to say WHY it is there — "the local narrator
- * (legacy) — aligning Mistborn against its EPUB" — but a {@link SlotSet} has a
+ * {@link LONGFORM_ALIGN_SET}'s heading names the WORK, deliberately: it would be
+ * useful to say WHY it is there — "the local long-form aligner — aligning
+ * Mistborn against its EPUB" — but a {@link SlotSet} has a
  * heading and nothing else, and `BenchLane.hold` is already the sentence for a
  * different fact (admission refusing a FREE lane). Inventing a second sentence
  * field for one row is a change to what a bench row IS, which is not this. The
@@ -244,7 +268,7 @@ export interface SlotSet {
  */
 function labelFor(id: string): string {
   if (id === LOCAL_WORK_SET) return 'BookForge itself';
-  if (id === LEGACY_LOCAL_NARRATOR) return 'the local narrator (legacy)';
+  if (id === LONGFORM_ALIGN_SET) return 'the local long-form aligner';
   const cloud = serverOfCloudLane(id);
   if (cloud !== null) return `${cloud} — routed elsewhere`;
   return id;
@@ -275,7 +299,7 @@ function labelFor(id: string): string {
  *     order is load-bearing twice over (the cloud lane is the other reason,
  *     below).
  *  4. A GPU step whose module has NOT been taught to travel spawns on this
- *     machine, always — the legacy set, whatever its run says.
+ *     machine, always — {@link LONGFORM_ALIGN_SET}, whatever its run says.
  *  5. A GPU step of a run already assigned follows the run (§4.4, one book one
  *     GPU), which is what lets the bench say why a queued row is waiting before
  *     the pump has admitted it.
@@ -299,9 +323,18 @@ export function slotSetForStep(job: QueueJob, step: QueueStep): string | null {
    * Nothing else moves: a plain `cpu` step is never given a venue, so it still
    * falls to `local-work` on the very next line.
    */
-  if (step.venue !== undefined) return step.venue;
+  if (step.venue !== undefined) {
+    /*
+     * ONE SPELLING MIGRATION, and it is about a FILE rather than a decision: a
+     * queue written before 2026-09-15 stamped this machine's non-travelling GPU
+     * set `legacy-local-narrator`. The set is the same set under a truthful
+     * name, so an old step is read into it rather than being stranded on an id
+     * the bench no longer draws.
+     */
+    return step.venue === RETIRED_LOCAL_NARRATOR_VENUE ? LONGFORM_ALIGN_SET : step.venue;
+  }
   if (step.resource === 'cpu') return LOCAL_WORK_SET;
-  if (step.travels !== true) return LEGACY_LOCAL_NARRATOR;
+  if (step.travels !== true) return LONGFORM_ALIGN_SET;
   return job.waitForResolved ?? null;
 }
 
@@ -338,9 +371,9 @@ export function slotSetOccupancy(
 }
 
 /**
- * IS THERE ANYTHING IN THIS QUEUE THAT CAN ONLY RUN ON THE LEGACY SPAWN?
+ * IS THERE ANYTHING IN THIS QUEUE THAT CAN ONLY RUN ON THIS MACHINE'S CARD?
  *
- * The one owner of the question the legacy row's existence turns on, and it is
+ * The one owner of the question that row's existence turns on, and it is
  * answered with {@link slotSetForStep} — the very function the scheduler
  * allocates with — rather than by listing the step kinds that charge it. A list
  * would be a second opinion about a decision `slotSetForStep` already makes, and
@@ -358,13 +391,13 @@ export function slotSetOccupancy(
  * asks it inside a synchronous pass without deep-copying itself first, and the
  * bench draws the answer it gave.
  */
-export function legacySetCharged(
+export function longformAlignCharged(
   snapshot: { readonly jobs: readonly QueueJob[] },
 ): boolean {
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
-      if (slotSetForStep(job, step) === LEGACY_LOCAL_NARRATOR) return true;
+      if (slotSetForStep(job, step) === LONGFORM_ALIGN_SET) return true;
     }
   }
   return false;
@@ -443,7 +476,8 @@ export interface SlotSetFacts {
    */
   readonly occupied: readonly string[];
   /**
-   * DOES ANYTHING IN THE SNAPSHOT CHARGE THE LEGACY SPAWN — {@link legacySetCharged}.
+   * DOES ANYTHING IN THE SNAPSHOT CHARGE {@link LONGFORM_ALIGN_SET} —
+   * {@link longformAlignCharged}.
    *
    * Owen, 2026-09-15: *"we would have as many gpu slots as we have connected
    * crucible serves … without a crucible server, there is no gpu slot, because
@@ -454,24 +488,24 @@ export interface SlotSetFacts {
    * Passed IN rather than derived here because this module never sees the
    * snapshot: `slotSets` takes facts, not jobs, which is what lets a keeper drive
    * every branch with no engine. The caller computes it with
-   * {@link legacySetCharged} so there is still exactly one owner of the
+   * {@link longformAlignCharged} so there is still exactly one owner of the
    * question — a caller that answered it its own way would be the bench and the
    * pump disagreeing about a row.
    *
-   * It covers RUNNING steps as well as queued ones, which is why the legacy set
-   * is never reached by the `occupied` pass below: a row that is drawn because
-   * something of ours is on it must not be marked `retiring`, because the legacy
-   * spawn is not retiring — it takes new work for as long as the layer exists.
+   * It covers RUNNING steps as well as queued ones, which is why that set is
+   * never reached by the `occupied` pass below: a row that is drawn because
+   * something of ours is on it must not be marked `retiring`, because the local
+   * aligner is not retiring — it takes new work until §B7 is built.
    *
    * Decided ONCE per snapshot by the caller, so a row cannot appear and vanish
    * between two steps of one pump.
    */
-  readonly legacyCharged: boolean;
+  readonly alignerCharged: boolean;
 }
 
 /**
  * EVERY SLOT SET THAT EXISTS RIGHT NOW, in a stable order: the servers in rank
- * order, then the legacy spawn, then BookForge's own work last.
+ * order, then the local long-form aligner, then BookForge's own work last.
  *
  * `local-work` is always present and is never retiring: a machine with no
  * Crucible server at all still assembles and muxes, and a bench with no row on
@@ -498,32 +532,32 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   }
 
   /*
-   * AND A CALLER THAT SAID NOTHING ABOUT THE LEGACY SPAWN IS REFUSED TOO, for
+   * AND A CALLER THAT SAID NOTHING ABOUT THAT ROW IS REFUSED TOO, for
    * the same reason and with the same two bad guesses: `true` draws a GPU row
    * Owen has ruled must not exist without a Crucible server behind it, and
    * `false` strands a step that can run nowhere else on a set with nought slots,
    * which the scheduler would never launch and nothing would explain.
    */
-  if (typeof facts.legacyCharged !== 'boolean') {
+  if (typeof facts.alignerCharged !== 'boolean') {
     throw new Error(
-      'slotSets: `legacyCharged` was not supplied. Compute it with `legacySetCharged(snapshot)` '
-        + '— the legacy GPU row exists exactly while something in the queue charges it, and '
-        + 'neither guess is a thing to make on a caller\'s behalf.',
+      'slotSets: `alignerCharged` was not supplied. Compute it with '
+        + '`longformAlignCharged(snapshot)` — the in-app GPU row exists exactly while something '
+        + 'in the queue charges it, and neither guess is a thing to make on a caller\'s behalf.',
     );
   }
   /*
-   * AND THE TWO FACTS MUST AGREE ABOUT THIS ROW. `legacySetCharged` counts
+   * AND THE TWO FACTS MUST AGREE ABOUT THIS ROW. `longformAlignCharged` counts
    * running steps as well as queued ones, so a caller holding something on the
-   * legacy spawn cannot honestly answer `false` — and if one did, the occupied
+   * local aligner cannot honestly answer `false` — and if one did, the occupied
    * pass below would draw the row `retiring`, which says "this set takes no new
    * work" about the one set that always does while the layer exists. Refused by
    * name rather than reconciled.
    */
-  if (!facts.legacyCharged && facts.occupied.includes(LEGACY_LOCAL_NARRATOR)) {
+  if (!facts.alignerCharged && facts.occupied.includes(LONGFORM_ALIGN_SET)) {
     throw new Error(
-      'slotSets: `occupied` says the legacy local narrator is holding something of ours while '
-        + '`legacyCharged` says nothing charges it. Both are read off the same steps — compute '
-        + 'the second with `legacySetCharged(snapshot)` rather than by hand.',
+      'slotSets: `occupied` says the local long-form aligner is holding something of ours while '
+        + '`alignerCharged` says nothing charges it. Both are read off the same steps — compute '
+        + 'the second with `longformAlignCharged(snapshot)` rather than by hand.',
     );
   }
 
@@ -573,14 +607,10 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   }
 
   /*
-   * THE LEGACY SET IS HERE WHEN SOMETHING CHARGES IT, and never otherwise.
+   * THE IN-APP GPU ROW IS HERE WHEN SOMETHING CHARGES IT, and never otherwise.
    *
-   * It is still not conditional on the SWITCH. `routing.legacyLocalRender`
-   * decides whether a RENDER takes the local narrator spawn; it does not decide
-   * whether that spawn layer exists, and `generate-sentences` with
-   * `method: 'epub-align'` comes here whatever the switch says. What decides the
-   * row is whether the QUEUE holds such a step at all — the caller's
-   * {@link legacySetCharged}, computed with `slotSetForStep`, so the row is
+   * What decides it is whether the QUEUE holds such a step at all — the caller's
+   * {@link longformAlignCharged}, computed with `slotSetForStep`, so the row is
    * present for exactly the steps the scheduler would send here and for no
    * others.
    *
@@ -588,20 +618,19 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * answer, because in that state nothing is asking: a step that would charge it
    * makes the row appear in the same snapshot it appears in.
    *
-   * Its gpu slot is ONE, which is what keeps the stopgap behaving exactly as it
-   * did under the old global number. What removes the row for good is §B7 (a
-   * Crucible `align-longform` job type, Owen's ruling) plus the deletion of the
-   * legacy layer after the in-app pass.
+   * Its gpu slot is ONE, which is what keeps it behaving exactly as it did under
+   * the old global number. What removes the row for good is §B7 — a Crucible
+   * `align-longform` job type, Owen's ruling.
    */
-  if (facts.legacyCharged && !seen.has(LEGACY_LOCAL_NARRATOR)) {
-    seen.add(LEGACY_LOCAL_NARRATOR);
+  if (facts.alignerCharged && !seen.has(LONGFORM_ALIGN_SET)) {
+    seen.add(LONGFORM_ALIGN_SET);
     sets.push({
-      id: LEGACY_LOCAL_NARRATOR,
-      label: labelFor(LEGACY_LOCAL_NARRATOR),
+      id: LONGFORM_ALIGN_SET,
+      label: labelFor(LONGFORM_ALIGN_SET),
       gpu: SERVER_GPU_SLOTS,
-      // The legacy spawn is a GPU stopgap and nothing else: CPU work has never
-      // gone through it, and giving it a CPU lane would invent a second home
-      // for work `local-work` already owns.
+      // This row is a GPU venue and nothing else: CPU work has never gone
+      // through it, and giving it a CPU lane would invent a second home for
+      // work `local-work` already owns.
       cpu: 0,
       retiring: false,
     });
@@ -609,8 +638,8 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
 
   /*
    * A set nobody may claim into, kept alive by its occupant alone. Only a
-   * SERVER's set or a cloud lane can reach here: the legacy set is drawn above
-   * whenever anything of ours is on it (that is what charges it), and the two
+   * SERVER's set or a cloud lane can reach here: {@link LONGFORM_ALIGN_SET} is
+   * drawn above whenever anything of ours is on it (that is what charges it), and the two
    * facts are checked against each other at the top rather than papered over
    * with a third branch in this expression.
    */
@@ -641,9 +670,9 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
 /**
  * THIS MACHINE HAS ONE CARD, and two slot sets can point at it.
  *
- * The legacy narrator spawn and this machine's own Crucible server (`local`)
+ * The local long-form aligner and this machine's own Crucible server (`local`)
  * are two venues over one 3090 Ti. As separate sets they each have a GPU slot,
- * so without this rule the scheduler could start a legacy RVC pass and a
+ * so without this rule the scheduler could start an `epub-align` and a
  * `local` render at the same moment — which the single global `gpu: 1` used to
  * prevent by accident. It is stated here rather than rediscovered.
  *
@@ -670,7 +699,7 @@ export function thisMachinesCardHeldBy(options: {
    * so `local:cloud` cannot be mistaken for `local`.
    */
   if (isCloudLane(venue)) return null;
-  const here: string[] = [LEGACY_LOCAL_NARRATOR];
+  const here: string[] = [LONGFORM_ALIGN_SET];
   if (localServerName !== null) here.push(localServerName);
   if (!here.includes(venue)) return null;
   for (const id of here) {

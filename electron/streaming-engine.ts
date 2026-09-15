@@ -2,22 +2,25 @@
  * Streaming Engine selector — chooses which TTS engine backs the Listen feature
  * (the in-app Play tab, the TTS API server, and the browser extension).
  *
- * TWO ENGINES. Orpheus everywhere; Higgs where its platform arm exists. The
- * one-member union that stood here between the XTTS removal and 2026-09-05 was
- * interim — the selector was always the thing the TTS Server settings payload,
- * the browser extension's `config` message and the persisted `tts-engine.json`
- * are written against, and it is what makes the selection OBSERVABLE (see
- * `observable()` below).
+ * ONE ENGINE, and one place it can run. Higgs is the engine; a Crucible server
+ * is where it runs. The local narrator worker pool that used to back this
+ * interface is DELETED (docs/LEGACY-REMOVAL.md), so `getActiveEngine()` is a
+ * Crucible streaming session and nothing else — and this module's remaining job
+ * is the SELECTION: the thing the TTS Server settings payload, the browser
+ * extension's `config` message and the persisted `tts-engine.json` are written
+ * against, and what makes a voice change OBSERVABLE (see `observable()` below).
  *
- * WHICH ENGINE A MACHINE CAN ACTUALLY OFFER IS NOT A CONSTANT — see
- * `getAvailableEngines()`. Higgs v3's only shipping backend is a vLLM-Omni
- * server, so it is a Windows/WSL feature today; the in-process MLX backend that
- * would make it a Mac one is being written on `feat/narrator-higgs-mlx`.
+ * ORPHEUS IS RETIRED HERE, NOT DROPPED — the same treatment narration gave it
+ * (`shared/tts/engine-caps.ts`, commits c167d5ea / b593e56f). A `tts-engine.json`
+ * that names it still PARSES and still has something to display; it simply can
+ * no longer be chosen, and a saved selection is migrated loudly to Higgs. The
+ * alternative — refusing an id this build once wrote — is a Listen feature that
+ * throws forever on every machine that ever listened on Orpheus, including from
+ * the Settings page that would repair it.
  *
- * ONE MORE THING THE POOL MUST HONOUR FOR HIGGS: a v3 voice change is a SERVER
- * RESTART. `HiggsV3Engine.set_voice` refuses in place by name — a fine-tuned
- * voice IS the merged checkpoint the server was started on, and vLLM-Omni has no
- * adapter flags. Orpheus switches voices for free; Higgs does not.
+ * ONE THING A HIGGS VOICE CHANGE COSTS: it is a SERVER RESTART. A fine-tuned
+ * voice IS the merged checkpoint the engine was started on, and vLLM-Omni has no
+ * adapter flags, so `set_voice` refuses in place by name.
  *
  * The choice persists in `tts-engine.json` (userData) and takes effect on the
  * next engine start.
@@ -27,7 +30,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { orpheusWorkerPool, setPersistedVoiceProbe, setServeEngineProbe } from './orpheus-worker-pool';
+import { setPersistedVoiceProbe, setServeEngineProbe } from './orpheus-worker-pool';
 import {
   PlaySettings,
   AudioChunk,
@@ -37,17 +40,24 @@ import {
   EngineState,
   LoadVoiceOptions,
 } from './orpheus-worker-pool';
-import { shouldUseWsl2ForOrpheus } from './narrator-paths';
-import { higgsMlxBackendPresent, narratorNativePython } from './narrator-spawn';
 import { listRenderableHiggsModels } from './higgs-models';
-import { shouldUseWsl2ForHiggs } from './tool-paths';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 import { CrucibleStreamingEngine, venueRoutedStreamingEngine } from './crucible/stream';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
 import { processVenueHost } from './crucible/generation-venue';
-import { Routing, routingPath } from './crucible/routing';
 
-export type StreamEngineName = 'orpheus' | 'higgs';
+/**
+ * The engines the Listen pickers may SELECT. One.
+ *
+ * See {@link RETIRED_STREAM_ENGINES} for the ids this build can still name and
+ * will not run — `orpheus`, `xtts`. The two lists are separate on purpose: a
+ * retired id has to stay nameable, because `tts-engine.json` outlives the code
+ * that wrote it.
+ */
+export type StreamEngineName = 'higgs';
+
+/** Every selectable id, derived once so no second hand-written list exists. */
+const STREAM_ENGINE_NAMES: readonly StreamEngineName[] = ['higgs'];
 
 /** The methods the scheduler + API server invoke on an engine pool. */
 export interface StreamingEngine {
@@ -146,32 +156,6 @@ export interface StreamingEngine {
   } | null>;
 }
 
-// THE POOL LEARNS THE SELECTION FROM HERE, at module load, and never the other
-// way round: this module owns `tts-engine.json` and the pool must not read it (the
-// import would be a cycle). Registered before anything can spawn, because
-// `buildSpawnPlan` asks the probe for the engine AND, for Higgs, for the voice
-// whose document it is about to write.
-setServeEngineProbe(() => getSelectedEngineName());
-// And the voice the user persisted for it, so a Higgs spawn — which is STARTED ON
-// its voice — comes up on the voice `loadVoice` is about to ask for, rather than
-// on the catalog's first entry and then restarting (see the pool's
-// setPersistedVoiceProbe). Reads the file directly: getDefaultStreamVoice() asks
-// the pool's getDefaultVoice(), which is the caller here — a cycle.
-setPersistedVoiceProbe(() => readPersisted().voices?.[getSelectedEngineName()] ?? null);
-
-// Compile-time proof the pool satisfies the contract.
-//
-// ONE POOL, TWO ENTRIES, and that is not a placeholder. The pool is not
-// Orpheus-shaped machinery with a Higgs mode bolted on: it speaks narrator's
-// JSON-lines protocol to `python -m narrator.serve`, and WHICH engine is on the
-// other end is `NARRATOR_ENGINE` in the spawn. So the same object serves both,
-// and the difference lives where it belongs — in `buildSpawnPlan`, which asks
-// `getSelectedEngineName()` for the engine to start.
-const ENGINES: Record<StreamEngineName, StreamingEngine> = {
-  orpheus: orpheusWorkerPool,
-  higgs: orpheusWorkerPool,
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Persisted selection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,15 +196,15 @@ function writePersisted(cfg: PersistedStreamConfig): void {
 }
 
 function isEngineName(v: unknown): v is StreamEngineName {
-  // DERIVED FROM `ENGINES`, never a literal list. It was `v === 'orpheus'`, written
-  // when there was one engine — and it stayed that way when Higgs was added to the
-  // union, to `ENGINES`, to `getAvailableEngines()`, to the Settings picker and to
-  // the extension's engine menu. Every surface offered Higgs and this one function
-  // refused it by name, so selecting it failed with "Unknown streaming engine:
-  // higgs. This build streams: orpheus, higgs." — a message that contradicts itself.
-  //
-  // A hand-written second copy of the engine list has no way to be right for long.
-  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(ENGINES, v);
+  // DERIVED FROM the one list, never a second literal. It was `v === 'orpheus'`,
+  // written when there was one engine — and it stayed that way when Higgs was
+  // added to the union, to `getAvailableEngines()`, to the Settings picker and to
+  // the extension's engine menu. Every surface offered Higgs and this one
+  // function refused it by name, so selecting it failed with "Unknown streaming
+  // engine: higgs. This build streams: orpheus, higgs." — a message that
+  // contradicts itself. A hand-written second copy has no way to be right for
+  // long.
+  return typeof v === 'string' && (STREAM_ENGINE_NAMES as readonly string[]).includes(v);
 }
 
 // Fired whenever the stream selection changes (engine or default voice), from
@@ -244,11 +228,35 @@ function emitStreamConfigChanged(): void {
 }
 
 /**
- * Engine names this file used to write into `tts-engine.json` and no longer runs.
- * A machine that ever listened on XTTS has `"engine": "xtts"` on disk, and that
- * file outlives the code that wrote it.
+ * Engine ids this file used to write into `tts-engine.json` and no longer runs —
+ * NAMEABLE, never selectable. A machine that ever listened on XTTS has
+ * `"engine": "xtts"` on disk, and one that listened last week has
+ * `"engine": "orpheus"`; that file outlives the code that wrote it.
+ *
+ * The display name is kept so a surface asked about a saved selection has
+ * something true to show, which is what "retired, not dropped" means
+ * (`shared/tts/engine-caps.ts` does the same for narration).
  */
-const RETIRED_ENGINE_NAMES = new Set(['xtts']);
+const RETIRED_STREAM_ENGINES = new Map<string, { label: string; since: string; reason: string }>([
+  ['xtts', {
+    label: 'XTTS',
+    since: '2026-09-05',
+    reason: 'XTTS was retired as a streaming engine — every voice BookForge ships is a Higgs model.',
+  }],
+  ['orpheus', {
+    label: 'Orpheus',
+    since: '2026-09-15',
+    reason: 'Orpheus was retired with the local narrator spawn (docs/LEGACY-REMOVAL.md). Higgs is '
+      + 'the one engine BookForge streams, and it streams on a Crucible server.',
+  }],
+]);
+
+/** How a saved id reads on a surface — "Orpheus (retired)", or the id itself. */
+export function streamEngineLabel(id: string): string {
+  const retired = RETIRED_STREAM_ENGINES.get(id);
+  if (retired !== undefined) return `${retired.label} (retired)`;
+  return id === 'higgs' ? 'Higgs' : id;
+}
 
 /**
  * The active streaming engine.
@@ -256,46 +264,69 @@ const RETIRED_ENGINE_NAMES = new Set(['xtts']);
  * THERE IS NO DEFAULTING HERE, and the three cases are deliberately different:
  *
  *  - NOTHING RECORDED (a fresh install, or a file written before the engine was
- *    ever a choice) → Orpheus. A real default now that there are two engines, and
- *    the reason is that Orpheus is the one EVERY supported machine can run:
- *    Windows/WSL, Linux and the Mac. Higgs is opt-in because it is not.
- *  - A RETIRED NAME (`xtts`) → migrated, loudly, and the file is rewritten so the
- *    stale preference stops being re-read. This is the same shape as
- *    `loadWorkerCfg`'s legacy `cpuWorkers` migration. It is safe in a way a
+ *    ever a choice) → Higgs, the one engine this build streams.
+ *  - A RETIRED NAME (`xtts`, `orpheus`) → migrated, loudly, and the file is
+ *    rewritten so the stale preference stops being re-read. It is safe in a way a
  *    narration engine substitution would NOT be: Listen renders what it is asked
  *    for sentence by sentence in a voice the user can hear immediately, and there
  *    is no other pool left to route to — the alternative is a Listen feature that
- *    throws forever on every machine that used XTTS, including from the Settings
- *    page that would repair it.
+ *    throws forever on every machine that used the retired engine, including from
+ *    the Settings page that would repair it.
  *  - AN UNKNOWN NAME → refused BY NAME. A string nobody in this build has ever
- *    written is a bug or a hand-edited file, and quietly treating it as Orpheus
+ *    written is a bug or a hand-edited file, and quietly treating it as Higgs
  *    would hide it.
  */
 export function getSelectedEngineName(): StreamEngineName {
   if (selected !== null) return selected;
   const cfg = readPersisted();
   if (cfg.engine === undefined) {
-    selected = 'orpheus';
+    selected = 'higgs';
     return selected;
   }
   if (isEngineName(cfg.engine)) {
     selected = cfg.engine;
     return selected;
   }
-  if (!RETIRED_ENGINE_NAMES.has(cfg.engine)) {
+  const retired = RETIRED_STREAM_ENGINES.get(cfg.engine);
+  if (retired === undefined) {
     throw new Error(
       `tts-engine.json names a streaming engine this build has never had: "${cfg.engine}". ` +
-      `This build streams: ${Object.keys(ENGINES).join(', ')}.`,
+      `This build streams: ${STREAM_ENGINE_NAMES.join(', ')}.`,
     );
   }
   console.error(
-    `[StreamingEngine] tts-engine.json selects "${cfg.engine}", which was retired on 2026-09-05. ` +
-    'Migrating the saved selection to Orpheus.',
+    `[StreamingEngine] tts-engine.json selects "${cfg.engine}", which was retired on ` +
+    `${retired.since}. ${retired.reason} Migrating the saved selection to Higgs.`,
   );
-  selected = 'orpheus';
+  selected = 'higgs';
   writePersisted({ ...cfg, engine: selected });
   return selected;
 }
+
+/*
+ * ── HELD, NOT DEAD: the two probes the local narrator spawn reads ──────────
+ *
+ * Nothing in this build reaches the local worker pool any more — Listen is a
+ * Crucible streaming session (see below) — so these registrations start nothing.
+ * They stay because `buildSpawnPlan` in `orpheus-worker-pool.ts` reads them, and
+ * that file is THE SURVIVING RECORD of narrator spawn tuning measured over
+ * months (a 7x MLX batch-width knob Crucible was missing was found on
+ * 2026-09-15). The spawn layer's deletion is held until that record has been
+ * audited against Crucible's own `environment()`; this is the half of it that
+ * lives here, and unwiring it would quietly remove a line of the record before
+ * anyone read it.
+ *
+ * DELETE WITH THE POOL, and not before.
+ *
+ * What each says: WHICH ENGINE this spawn is for (the pool must not read
+ * `tts-engine.json` itself — the import would be a cycle), and the voice the
+ * user persisted for it, so a Higgs spawn — which is STARTED ON its voice —
+ * comes up on the voice `loadVoice` is about to ask for rather than on the
+ * catalog's first entry and then restarting. The second reads the file directly:
+ * `getDefaultStreamVoice()` asks the pool, which is the caller here.
+ */
+setServeEngineProbe(() => getSelectedEngineName());
+setPersistedVoiceProbe(() => readPersisted().voices?.[getSelectedEngineName()] ?? null);
 
 /**
  * Every caller reaches a pool through this facade, which exists for one reason:
@@ -322,21 +353,16 @@ function observable(pool: StreamingEngine): StreamingEngine {
   };
 }
 
-const OBSERVABLE: Record<StreamEngineName, StreamingEngine> = {
-  orpheus: observable(ENGINES.orpheus),
-  higgs: observable(ENGINES.higgs),
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
-// The venue: local narrator, or a Crucible streaming session (2026-09-14)
+// The venue: WHICH Crucible server holds this Listen session (2026-09-14)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * The Crucible Listen backend — one instance for the process, because a
  * Crucible holds ONE streaming session and this is the object that holds it.
- * Exported for the quit path (main.ts closes it beside the local pool) and for
- * nothing else: every other caller goes through {@link getActiveEngine}, which
- * is what decides whether this backend or the local pool is answering.
+ * Exported for the quit path (main.ts closes it) and for nothing else: every
+ * other caller goes through {@link getActiveEngine}, which is what decides which
+ * SERVER it is bound to.
  */
 export const crucibleListenEngine = new CrucibleStreamingEngine({
   selectedEngine: getSelectedEngineName,
@@ -344,22 +370,16 @@ export const crucibleListenEngine = new CrucibleStreamingEngine({
 });
 
 /**
- * What every caller reaches: a facade over the two backends, decided at cold
- * start by `decideWhereGenerationRuns` (crucible/generation-venue.ts — the
- * SAME decision the audiobook render makes, the ONE legacy switch included).
- * See crucible/stream.ts for the rules. The three streaming surfaces and the
- * scheduler call this and cannot tell which backend answered.
- *
- * The pre-start default reads the routing FILE only — never `readRouting()`,
- * whose resolved view reads the local server's config through `wsl.exe` and
- * is far too slow for a status payload.
+ * What every caller reaches: the Crucible backend, bound to a SERVER at cold
+ * start by `decideWhereGenerationRuns` (crucible/generation-venue.ts — the SAME
+ * decision the audiobook render makes). See crucible/stream.ts for the rules.
+ * The three streaming surfaces and the scheduler call this and never learn which
+ * machine answered.
  */
 const VENUE_ROUTED: StreamingEngine = venueRoutedStreamingEngine({
-  local: () => OBSERVABLE[getSelectedEngineName()],
   crucible: observable(crucibleListenEngine),
   crucibleEngine: crucibleListenEngine,
   venue: processVenueHost(),
-  legacySwitchIsOn: () => new Routing(routingPath()).read().legacyLocalRender,
 });
 
 export function getActiveEngine(): StreamingEngine {
@@ -427,7 +447,12 @@ export async function setDefaultStreamVoice(voice: string): Promise<{ success: b
 export async function setSelectedEngineName(name: string): Promise<void> {
   if (!isEngineName(name)) {
     throw new Error(
-      `Unknown streaming engine: ${name}. This build streams: ${Object.keys(ENGINES).join(', ')}.`,
+      `Unknown streaming engine: ${name}. ${
+        RETIRED_STREAM_ENGINES.has(name)
+          ? `"${name}" was retired on ${RETIRED_STREAM_ENGINES.get(name)!.since}: `
+            + `${RETIRED_STREAM_ENGINES.get(name)!.reason} `
+          : ''
+      }This build streams: ${STREAM_ENGINE_NAMES.join(', ')}.`,
     );
   }
   if (name === getSelectedEngineName()) return;
@@ -448,7 +473,7 @@ export async function setSelectedEngineName(name: string): Promise<void> {
   const info = getAvailableEngines().find((e) => e.id === name);
   if (!info) {
     throw new Error(
-      `Streaming engine '${name}' is in ENGINES but not in getAvailableEngines(), so `
+      `Streaming engine '${name}' is selectable but not in getAvailableEngines(), so `
       + 'nothing can say whether this machine can run it. Refusing to select an engine '
       + 'with no availability answer — add it to getAvailableEngines().',
     );
@@ -457,11 +482,11 @@ export async function setSelectedEngineName(name: string): Promise<void> {
     throw new Error(`${info.name} cannot stream on this machine. ${info.reason ?? ''}`.trim());
   }
 
-  // THE WORKER MUST GO. Both engines are served by the SAME pool object — one
-  // resident process, whose engine was fixed by `NARRATOR_ENGINE` when it was
-  // spawned. Leaving it up would have the app reporting Higgs while an Orpheus
-  // worker went on answering every sentence, which is the worst available outcome:
-  // audio that is fine, in the wrong voice, with nothing anywhere saying so.
+  // THE SESSION MUST GO. A Crucible streaming session is opened on ONE engine
+  // and one resident voice; leaving it up would have the app reporting one
+  // engine while the session went on answering from another, which is the worst
+  // available outcome: audio that is fine, in the wrong voice, with nothing
+  // anywhere saying so.
   //
   // Ended BEFORE the selection is written, so a failure to stop leaves the
   // selection alone rather than pointing at an engine that is not running.
@@ -485,56 +510,31 @@ export interface EngineInfo {
   reason?: string;
 }
 
-function orpheusAvailability(): EngineInfo {
-  // Windows + "WSL2 for Orpheus": Orpheus runs in WSL — assume usable (same trust
-  // as the batch pipeline; a misconfigured WSL surfaces at start).
-  if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
-    return { id: 'orpheus', name: 'Orpheus', available: true };
-  }
-  // Otherwise it needs a resolvable native Orpheus env (Mac narrator-mlx, or a
-  // managed/external env on Windows/Linux). Asked of narrator-spawn, which is what
-  // the spawn itself will ask — a probe that resolves differently from the launcher
-  // is a picker that promises an engine every render then refuses.
-  try {
-    narratorNativePython('orpheus');
-    return { id: 'orpheus', name: 'Orpheus', available: true };
-  } catch (err) {
-    return {
-      id: 'orpheus',
-      name: 'Orpheus',
-      available: false,
-      reason: err instanceof Error ? err.message : 'Orpheus environment not found',
-    };
-  }
-}
-
 /**
- * IS HIGGS STREAMABLE ON THIS MACHINE?
+ * IS HIGGS STREAMABLE FROM THIS MACHINE?
  *
- * Three things have to be true, and each is false somewhere real:
+ * TWO questions now, where there used to be three. The platform and the
+ * environment were about the LOCAL spawn — "does this box have a vLLM-Omni it
+ * can start" — and there is no local spawn any more: the engine runs on a
+ * Crucible server, whose own `/v1/capability` and `409` answer for it, in its
+ * own words, at the moment a session is opened. Re-asking here would be this
+ * app's second opinion about somebody else's card (crucible
+ * `docs/ARCHITECTURE.md` R1) and would refuse a perfectly good Mac render
+ * because THIS machine has no WSL.
  *
- *  1. A BACKEND FOR THIS PLATFORM. Higgs v3 ships one: a vLLM-Omni SERVER, which
- *     has no macOS build. So Windows/WSL yes, Mac not yet — the in-process MLX
- *     backend that would change that is being written on
- *     `feat/narrator-higgs-mlx`, and `higgsMlxBackendPresent()` detects it landing
- *     rather than hard-coding a `false` somebody has to remember to flip.
- *  2. THE ENVIRONMENT. On Windows that is the WSL `higgs3` env behind the
- *     "WSL2 for Higgs" toggle; on a Mac it will be `narrator-mlx`, the same env
- *     the Orpheus MLX arm uses.
- *  3. A VOICE. Higgs has no built-in voices the way Orpheus has prompt tokens —
- *     every voice is a catalog entry whose artifact is installed or is not, and a
- *     voice whose artifact is missing would serve the model's own default speaker:
- *     measured at 12% of the narrator's ECAPA ceiling, a DIFFERENT person rather
- *     than a bad clone. So "no voice installed" is "not available".
+ * What is still ours to answer is THE VOICE. Higgs has no built-in voices the
+ * way Orpheus had prompt tokens — every voice is a catalog entry whose artifact
+ * is installed or is not, and a voice whose artifact is missing would serve the
+ * model's own default speaker: measured at 12% of the narrator's ECAPA ceiling,
+ * a DIFFERENT person rather than a bad clone. So "no voice installed" is "not
+ * available", and it is a fact about this machine's catalog.
  *
- * WHAT IS *NOT* A REASON TO REFUSE: the absence of sub-sentence streaming. Higgs's
- * codec has no sound windowed decode (`HiggsCodec.streaming_decoder()` returns
- * None, deliberately — its delay pattern leaves a window's last frames incomplete
- * by construction), so it cannot emit audio mid-sentence. But
- * `generate_batch_stream` emits WHOLE ROWS at retirement, which is the pool's
- * `batch_chunk`/`batch_item` path unchanged — a sentence simply arrives all at
- * once instead of in slices. That is a latency difference, not a missing feature,
- * and an earlier version of this file refused the engine outright over it.
+ * WHAT IS *NOT* A REASON TO REFUSE: the absence of sub-sentence streaming.
+ * Higgs's codec has no sound windowed decode (its delay pattern leaves a
+ * window's last frames incomplete by construction), so it cannot emit audio
+ * mid-sentence — but whole rows arrive at retirement, which is a latency
+ * difference, not a missing feature. An earlier version of this file refused the
+ * engine outright over it.
  */
 function higgsAvailability(): EngineInfo {
   const unavailable = (reason: string): EngineInfo =>
@@ -548,52 +548,24 @@ function higgsAvailability(): EngineInfo {
   }
   if (voices.length === 0) {
     return unavailable(
-      'No Higgs voice is installed. Install one in Settings → Higgs — a voice whose '
+      'No Higgs voice is installed. Install one in Settings \u2192 Higgs \u2014 a voice whose '
       + 'artifact is missing would render in the model\'s own speaker, not the one chosen.',
     );
   }
-
-  if (process.platform === 'win32') {
-    // Same trust as Orpheus's WSL arm and as the batch pipeline: the toggle being
-    // on means the user set this up, and a misconfigured WSL surfaces at start
-    // with the doctor's own message. The doctor itself is a ~1 s WSL round trip
-    // and this function is called from every `hello` and every status payload, so
-    // it is NOT run here.
-    if (!shouldUseWsl2ForHiggs()) {
-      return unavailable(
-        'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" '
-        + 'in Settings → Higgs and install the environment there.',
-      );
-    }
-    return { id: 'higgs', name: 'Higgs', available: true };
-  }
-
-  if (!higgsMlxBackendPresent()) {
-    return unavailable(
-      'Higgs has no backend for this platform yet. Its only shipping backend is a '
-      + 'vLLM-Omni server, which is Windows/WSL-only; the in-process MLX backend for '
-      + 'macOS is not in this build.',
-    );
-  }
-  try {
-    narratorNativePython('higgs');
-    return { id: 'higgs', name: 'Higgs', available: true };
-  } catch (err) {
-    return unavailable(err instanceof Error ? err.message : 'Higgs environment not found');
-  }
+  return { id: 'higgs', name: 'Higgs', available: true };
 }
 
 /**
  * The streaming engines the Listen pickers offer.
  *
- * BOTH ROWS ALWAYS, with `available` and a `reason` carrying the truth — the
- * pickers disable an unavailable engine and show its reason on hover. That is the
- * opposite of the XTTS treatment (delisted once its pool was gone, because a row
- * for code that does not exist is a promise the build cannot keep): Higgs's code
- * IS here, and "not on this machine, because X" is something a user can act on.
+ * ONE ROW, with `available` and a `reason` carrying the truth — the pickers
+ * disable an unavailable engine and show its reason on hover. A RETIRED engine
+ * is not listed here: a row for an engine nothing can run is a promise the build
+ * cannot keep, and it is nameable through {@link streamEngineLabel} instead,
+ * which is what a surface asked about a SAVED selection needs.
  */
 export function getAvailableEngines(): EngineInfo[] {
-  return [orpheusAvailability(), higgsAvailability()];
+  return [higgsAvailability()];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

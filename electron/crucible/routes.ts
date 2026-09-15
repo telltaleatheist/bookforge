@@ -103,7 +103,7 @@ const upstreamsByServer = new Map<string, boolean>();
  * lane anyway, because such a row's venue IS `<server>:cloud` and `slotSets`
  * keeps an occupied set on the bench (`facts.occupied`); and a QUEUED one is
  * computable from the snapshot by exactly the method the legacy row uses
- * (`legacySetCharged`). The lane is drawn for an unread engine because absence
+ * (`longformAlignCharged`). The lane is drawn for an unread engine because absence
  * of knowledge is not absence of an upstream, not because anything would break.
  *
  * NOT IN `crucible-routing.json`: that file is the operator's PREFERENCES —

@@ -649,24 +649,14 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
       takes: takeTemperatures.length,
       onLog: (line) => console.log(`[CORRECT-SENTENCES] ${line}`),
       ...(signal === undefined ? {} : { signal }),
-      legacyLocal: async () => {
-        const r = await regenerateSentenceIndices({
-          sessionId: session.sessionId!, sessionDir: session.sessionDir!, settings,
-          indices, targetSentencesDir: base, takeTemperatures,
-          sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
-        });
-        if (!r.success) anyError = r.error;
-      },
     });
-    if (at.venue.where === 'crucible') {
-      // The takes arrive in one job each rather than one file at a time, so the
-      // caller's per-unit tally is caught up here from what actually landed.
-      for (let n = 0; n < (at.crucible?.written ?? 0); n += 1) onProg();
-      note = `These takes were rendered on crucible "${at.venue.server}" and vary by the engine's own `
-        + 'unseeded sampling only: a Crucible tts render has no per-request temperature, so the '
-        + 'wider spread the local narrator uses was not asked for. Turn on the legacy local-render '
-        + 'switch (Settings → Crucible Servers) to re-roll with it.';
-    }
+    // The takes arrive in one job each rather than one file at a time, so the
+    // caller's per-unit tally is caught up here from what actually landed.
+    for (let n = 0; n < (at.crucible?.written ?? 0); n += 1) onProg();
+    note = `These takes were rendered on crucible "${at.venue.server}" and vary by the engine's own `
+      + 'unseeded sampling only: a Crucible tts render has no per-request temperature, so the '
+      + 'per-take spread this app asks for was not applied. That channel is the retake ladder\'s '
+      + 'owed sampling field (ROLLOUT_PLAN B4), not a switch.';
   };
 
   try {

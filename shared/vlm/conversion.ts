@@ -244,7 +244,7 @@ export interface VlmConvertRequest {
   destination?: VlmConvertDestination;
   /**
    * THE VENUE THE QUEUE ASSIGNED THE RUN THIS CONVERSION BELONGS TO — a
-   * registered Crucible server's name, or `legacy-local-narrator`.
+   * registered Crucible server's name.
    *
    * Absent is the ordinary case and means there is no run to follow: a
    * conversion pressed on the versions page, or the headless CLI. The routing
@@ -565,15 +565,17 @@ export type VlmRoute =
 /**
  * Where the app has decided this conversion's pages are read, as
  * `electron/crucible/pages.ts`'s `decideWherePagesRun` answers it — the caller's
- * name, then the ONE legacy switch, then the routing record.
+ * name, then the routing record.
  *
- * `null` is "the decision itself refused" (no enabled server and the switch
- * off), which is a real answer with its own sentence and NOT the same as "the
- * legacy local reader". A renderer passes through what main told it.
+ * ONE MEMBER: the local page readers (MLX here, the WSL server there) went with
+ * the legacy spawn layer (docs/LEGACY-REMOVAL.md). What did NOT go is the typed
+ * endpoint in Settings → AI → Reading pages, which is a deliberate choice of GPU
+ * and is asked BEFORE this decision — see `electron/vlm-convert.ts`.
+ *
+ * `null` is "the decision itself refused" (no enabled server), which is a real
+ * answer with its own sentence. A renderer passes through what main told it.
  */
-export type VlmVenue =
-  | { where: 'crucible'; server: string; because: string }
-  | { where: 'legacy-local-narrator'; because: string };
+export type VlmVenue = { where: 'crucible'; server: string; because: string };
 
 export function resolveVlmRoute(facts: {
   platform: string;
