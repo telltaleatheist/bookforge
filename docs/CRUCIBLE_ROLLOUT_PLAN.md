@@ -64,6 +64,33 @@ render through the WSL engine; `crucible install tts --narrator-engine higgs-v3 
 `systemctl restart user@1000` → unit owns the server; `envpack build host` → tray restart → the
 orchestrator claims the engine (`managed_by` set); T2 full pytest; then hand back to whoever needs it.
 
+**The card window, 07:25–08:xx (Training pc's clear message came at 07:25):**
+- **PC takes proven on cuda-linux:** take 0 = 11.30 s / 264,174 B (byte-identical to last night's — seeded),
+  take 1 = 12.02 s / 275,887 B (differs: the rung reaches SGLang), take 2 refused `unknown_take`.
+  **Zero-shot load OK on the PC** (116 s, reference registered). The zero-shot RENDER on the resident voice
+  refused `accelerator_busy` → root-fixed (crucible a87badab: a render on a resident voice never asks the card
+  for room; on cuda-linux the guard owns narrator's whole process group).
+- **A regression from the full `install tts --build --force`, found and fixed the same hour:** pip reinstalled
+  upstream vllm/vllm-omni 0.28.0 pristine and WIPED the two site-packages patches narrator needs
+  (`higgs-sentinel-filter`, `vllm-negative-token-id`) — every Higgs load then failed "sentinel proof holds no
+  records"; nothing re-applied them. Now `narratorpatches.apply()` runs the vendored appliers after pip and the env
+  is not stamped without the doctor's marker (958ddab / 7e29922). Rebuilt in 137 s; verified under the unit:
+  `load-voice owen` 118 s, one render 3.9 s, 96 sentinel records. (There never was a 0.29.0 env — the banner reads
+  0.28.0 on both the working and the failing runs.)
+- **The WSL engine belongs to its systemd unit again:** `systemctl restart user@1000` as root (07:34) gave the
+  user manager its bus; from a `wsl --exec` session the working form is
+  `env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user <verb> crucible.service` (the missing variable and a
+  missing socket print the identical "Failed to connect to bus"). The unit file's `Environment=PATH` is still the
+  unquoted one on disk (`service.py` now quotes it) — regenerate with `crucible service install` from Owen's OWN
+  login shell, never from an agent's.
+- **T2 full pytest PASS in 415 s** on the tip (seed lane, Phase 17, uninstall route, patches).
+- **Windows orchestrator:** the Phase 17 pack rebuilt (sha 0da51e6d…) with a NEW consent setting —
+  `%LOCALAPPDATA%\Crucible\config.toml` `[orchestrator] distro = "Ubuntu"` names the distro the orchestrator may
+  manage (watch + claim + unit restart widen; destructive recipes stay refused by rootfs) — and the unit probe /
+  start / restart / tray Stop all carry `XDG_RUNTIME_DIR`. Tray swap + claim verification running as this is written.
+- Two things for later rulings: the tray has no shutdown route (PHASE17 §4.4 owed: `POST /quit`); `recipe_sha256` in
+  envpacks.json is line-ending dependent (CRLF checkout vs LF) — one line to fix in release machinery.
+
 **Owen, in the morning:** the in-app pass on both machines (first-run wizard, Settings → AI, Crucible
 Servers doors, the extension's Options + Load voice, a Listen, a render, Correct Sentences); the
 release that publishes the host pack (`./scripts/release.sh --branch feat/phase6-remote-render`,
