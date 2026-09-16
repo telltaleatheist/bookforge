@@ -71,7 +71,7 @@ import {
 import { FormsModule } from '@angular/forms';
 
 import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible-doors.component';
-import { coordinationWords } from '../../core/crucible-words';
+import { cardWords, coordinationWords } from '../../core/crucible-words';
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import { ANY_SLOT } from '@shared/slots';
 import type {
@@ -179,7 +179,7 @@ interface EditableServer extends CrucibleServerView {
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {
                 <p class="small ok">
-                  {{ probe.serverName }} {{ probe.version }} — {{ probe.backend }}, {{ probe.gpu }}
+                  {{ probe.serverName }} {{ probe.version }} — {{ probe.backend }}, {{ cardWords(probe) }}
                 </p>
                 <!--
                   Reached through an orchestrator (crucible
@@ -354,6 +354,9 @@ interface EditableServer extends CrucibleServerView {
 })
 export class ServersCardComponent {
   private readonly queue = inject(QueueService);
+
+  /** The words file's, exposed because a template cannot call a bare import. */
+  protected readonly cardWords = cardWords;
 
   protected readonly rows = signal<EditableServer[]>([]);
   protected readonly slots = signal<ComputeSlot[]>([]);

@@ -664,6 +664,62 @@ export function clampCrucibleUrl(value: unknown): string | null {
   }
 }
 
+/**
+ * ARE THESE TWO ENTRIES THE SAME ADDRESS? The registry's one duplicate rule.
+ *
+ * ── The fact it guards ────────────────────────────────────────────────────
+ *
+ * Since the slot wave, EVERY enabled entry draws its own GPU lane
+ * (electron/crucible-registry.ts `slotsFrom`). Two enabled rows at one address
+ * therefore tell the queue it has two cards when it has one, and it schedules
+ * both lanes onto the same GPU — the machine is oversubscribed and nothing on
+ * screen says so, because two rows is exactly what two machines looks like.
+ *
+ * ── Why the string compare it replaces was not enough ─────────────────────
+ *
+ * {@link clampCrucibleUrl} answers the TRIMMED ORIGINAL, not a normal form: it
+ * drops a trailing slash and a `/v1`, and stops. So `http://LOCALHOST:7100` and
+ * `http://localhost:7100` are two different strings and were two different
+ * servers. `URL.origin` settles the rest for free — it lower-cases the host and
+ * drops a port that is the scheme's default, so `http://host:80` and
+ * `http://host` are one address.
+ *
+ * ── `localhost` AND `127.0.0.1` ARE DELIBERATELY NOT FOLDED ───────────────
+ *
+ * They can genuinely differ — a hosts-file entry, a server bound to IPv6 only —
+ * and folding them would be this app making a guess about somebody's machine
+ * and then refusing a row on the strength of it. BookForge took the same
+ * decision for the same reason (bookforge e70f30f6), so one registry rule holds
+ * across both apps. The ordinary version of that mistake is caught anyway: it
+ * arrives under the same name, and the name rule has always refused it.
+ *
+ * ── ON ADD, NEVER ON READ ─────────────────────────────────────────────────
+ *
+ * Nothing calls this while loading a settings file, and nothing re-validates
+ * one at startup. A registry that ALREADY holds a duplicate keeps working
+ * exactly as it did — badly, with two lanes over one card, but unchanged — and
+ * no file becomes unopenable because this rule arrived. That is what makes the
+ * rule additive rather than a migration: fixing the registries that already
+ * have one is the lane half, which is a separate decision.
+ */
+export function sameCrucibleAddress(a: string, b: string): boolean {
+  const origin = (value: string): string | null => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  };
+  const left = origin(a);
+  const right = origin(b);
+  // An address neither side can parse is compared as written. Both doors clamp
+  // before they get here, so reaching this means something stored a row this
+  // build cannot read, and guessing two of those are the same machine is worse
+  // than letting a duplicate through.
+  if (left === null || right === null) return a === b;
+  return left === right;
+}
+
 /** Step ids, deduplicated and capped. A stale id is harmless; a corpus is not. */
 export function clampSkipped(value: unknown): string[] {
   if (!Array.isArray(value)) return [];

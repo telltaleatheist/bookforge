@@ -110,7 +110,7 @@ import type {
   CrucibleUninstallAvailability,
   CrucibleUninstallPlan,
 } from '@shared/uninstall-wire';
-import { diskWords, sizeWords } from '../../core/crucible-words';
+import { cardWords, diskWords, sizeWords } from '../../core/crucible-words';
 import { api } from '../../core/foundry';
 
 /** Which door is open. `null` is all three closed, which is how it starts. */
@@ -194,7 +194,7 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
           @if (probe(); as result) {
             @if (result.outcome === 'ok') {
               <p class="small ok">
-                {{ result.serverName }} {{ result.version }} — {{ result.backend }}, {{ result.gpu }}
+                {{ result.serverName }} {{ result.version }} — {{ result.backend }}, {{ cardWords(result) }}
               </p>
               <!--
                 The engine was reached through an orchestrator (crucible
@@ -561,6 +561,9 @@ export class CrucibleDoorsComponent {
   readonly canUninstall = input(false);
 
 
+  /** The words file's, exposed because a template cannot call a bare import. */
+  protected readonly cardWords = cardWords;
+
   protected readonly isWindows = api?.platform === 'win32';
   protected readonly open = signal<DoorId | null>(null);
   protected readonly name = signal('');
@@ -886,7 +889,15 @@ export class CrucibleDoorsComponent {
         );
         this.changed.emit();
       } else {
-        this.localFailed.set(true);
+        /*
+         * `already_registered` IS NOT A FAILURE ON THIS DOOR. The door asks for
+         * the engine on this machine to be connected; a registry that already
+         * holds its address is that request already satisfied, and painting it
+         * red tells somebody a working setup is broken. Every other code is a
+         * genuine refusal — no config file, a file that will not parse, a WSL
+         * read that failed — and keeps the colour.
+         */
+        this.localFailed.set(answer.code !== 'already_registered');
         this.localNote.set(answer.message);
       }
     } finally {

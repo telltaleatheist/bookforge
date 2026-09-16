@@ -27,6 +27,7 @@ import type { Pairing } from '@crucible/client';
 import { actGates } from './act-gates';
 import {
   clampCrucibleUrl,
+  sameCrucibleAddress,
   readAppSettings,
   writeAppSettings,
   type CrucibleServerEntry,
@@ -797,12 +798,22 @@ export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
     return { outcome: 'failed', code: 'config_unreadable', message: read.message };
   }
   /*
-   * THE ADDRESS DECIDES, NOT THE ADDRESS'S SHAPE. Compared through
-   * `clampCrucibleUrl` because that is what the registry stored its own rows
-   * through, so a trailing slash on one side is not a second server.
+   * THE ADDRESS DECIDES, NOT THE ADDRESS'S SHAPE. Clamped first because that is
+   * what the registry stored its own rows through, then compared with
+   * `sameCrucibleAddress` — the registry's one duplicate rule, which also
+   * settles host case and a default port.
+   *
+   * IT MUST BE THE SAME RULE THE WRITER USES, and that is not tidiness. Since
+   * the writer began refusing a duplicate address, a check here that was even
+   * slightly narrower would let a line through to `registerPairing` that the
+   * writer then THREW on — turning this function's clean "already registered,
+   * nothing to do" into a caught `config_unreadable`, on the startup path, on
+   * every launch. The two rules being one is what keeps that unreachable.
    */
   const url = clampCrucibleUrl(read.pairing.url);
-  const already = crucibleServers().find((entry) => entry.url === url);
+  const already = crucibleServers().find(
+    (entry) => url !== null && sameCrucibleAddress(entry.url, url),
+  );
   if (already !== undefined) {
     return {
       outcome: 'failed',
@@ -843,6 +854,92 @@ export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
     url: read.pairing.url,
     configPath: read.path,
   };
+}
+
+/**
+ * THE ENGINE ON THIS MACHINE, CONNECTED WITHOUT ANYBODY BEING ASKED.
+ *
+ * Owen, 2026-09-15, on opening the wizard to three doors over a Crucible that
+ * was already running here: *"this should be idiot proof. it should check to
+ * see if a server is installed here. if it is, it just connects. seamlessly…
+ * it shouldnt talk about crucible unless it needs to, or to ask the user to add
+ * a crucible server."*
+ *
+ * ── WHY TWO READS AND NOT ONE ─────────────────────────────────────────────
+ *
+ * There are two files a Crucible on this machine may have left, and which one
+ * exists is not something a person should have to know:
+ *
+ *   * `<CRUCIBLE_HOME>/pairing` — the connect code, written by the installer.
+ *     {@link adoptPairingFile}. Present on a machine somebody installed with a
+ *     current Crucible.
+ *   * that server's own `config.toml` — {@link addLocalCrucible}, the door
+ *     labelled "Use the Crucible on this machine". Present on every machine
+ *     with a server on it, including ones whose pairing file was never written
+ *     or has been tidied away.
+ *
+ * The pairing file goes first because it is PHASE15 §5.1's own order and it
+ * carries the server's chosen name; the config is the fallback that catches the
+ * rest. A machine with neither has no engine here, which is a fact and the one
+ * case where the wizard has something to say.
+ *
+ * ── `already_registered` IS A SUCCESS HERE, AND THAT IS THE WHOLE POINT ───
+ *
+ * Both doors refuse an address the registry already holds, and they are right
+ * to: adding it twice would be two GPU lanes over one card. But the question
+ * THIS function asks is not "did I write a row", it is *"is the engine on this
+ * machine connected"* — and a door refusing because the row is already there
+ * answers that with yes. Owen pressed the local door on exactly this machine
+ * and was shown *"http://127.0.0.1:7100 is already registered as \"local\".
+ * Rename or remove that entry first"*, which is a true sentence about the
+ * registry and a useless one about his situation: he was connected and was
+ * being told to dismantle it. So the refusal is READ rather than shown, the
+ * second read is skipped, and nothing is drawn.
+ *
+ * ── IT SPENDS NOTHING AND CANNOT REJECT ───────────────────────────────────
+ *
+ * Two file reads and, at most, one registry write. No model is loaded, no job
+ * is placed, and the network is touched only by the coordination the writers
+ * already start for a server this app has just met (PHASE14 §4a). Every arm
+ * answers a {@link LocalCrucibleAdd}, so `mount.ts` can call it unawaited on a
+ * path that runs before the window exists.
+ */
+export async function connectLocalEngine(): Promise<LocalCrucibleAdd> {
+  const paired = await adoptPairingFile();
+  if (paired.outcome === 'added') return paired;
+  if (paired.code === 'already_registered') {
+    console.log(`[engine] ${paired.message} Nothing to connect.`);
+    return paired;
+  }
+  /*
+   * A pairing file that is PRESENT and unreadable stops here rather than
+   * falling through. `config_unreadable` means a file exists and says something
+   * this app could not use — a corrupt line, a name the registry refuses — and
+   * quietly registering a different file instead would hide a defect somebody
+   * needs to see. Only `no_local_config`, which means there was no file at all,
+   * is a reason to look in the other place.
+   */
+  if (paired.code !== 'no_local_config') return paired;
+
+  const local = await addLocalCrucible('');
+  if (local.outcome === 'added') {
+    console.log(`[engine] registered "${local.serverName}" at ${local.url} from ${local.configPath}.`);
+    await afterRegistryChanged();
+    /*
+     * THE SAME MOMENT THE DOOR TAKES, because this IS that door: finding a
+     * server is the request (PHASE14 §4a), and a row that arrived without
+     * anybody pressing anything still has to be coordinated with or the tiles
+     * stay dark until something else asks.
+     */
+    void coordinateWithServer(local.serverName, 'a Crucible was found on this machine');
+    return local;
+  }
+  if (local.code === 'already_registered') {
+    console.log(`[engine] ${local.message} Nothing to connect.`);
+    return local;
+  }
+  console.log(`[engine] no Crucible on this machine: ${local.message}`);
+  return local;
 }
 
 /**

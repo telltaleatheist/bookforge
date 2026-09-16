@@ -33,16 +33,15 @@
  *
  * `UiService.dialogs` is the one-modal list, and this is deliberately not on
  * it (see `setupOpen` there). A modal is a question with an answer; this is
- * several steps, most of which START WORK THAT OUTLIVES THE STEP — an env
- * install goes into the queue and finishes whether or not this screen is
- * looking, and a page-reader download keeps what it has already fetched even
- * when it is cancelled. So:
+ * several steps, one of which STARTS WORK THAT OUTLIVES THE STEP — a
+ * page-reader download keeps what it has already fetched even when it is
+ * cancelled. So:
  *
  *   * it does not go through `only()`, which would let any dialog opened over
  *     it clear the boolean and take a half-finished setup off the screen;
  *   * it is MOUNTED UNCONDITIONALLY by the shell and holds its own `@if`,
  *     because an `@if` around this component is a DESTROY, and destroying it
- *     mid-install would drop the progress subscriptions that are the only
+ *     mid-download would drop the progress subscription that is the only
  *     thing telling somebody their download is alive;
  *   * closing it is never a failure. `setup:finish` is called on the way out
  *     however it is left, and what was skipped is written down.
@@ -65,35 +64,35 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
-import type { CrucibleServerView } from '@shared/slots';
-import type {
-  EnvCatalogItem,
-  EnvInstallProgress,
-  EnvTarget,
-  Job,
-  PageReaderProgress,
-  PageReaderState,
-} from '@shared/types';
+import type { CrucibleProbe, CrucibleServerView } from '@shared/slots';
+import type { PageReaderProgress, PageReaderState } from '@shared/types';
 import {
   LLM_CLASSES,
   defaultEngineServer,
+  splitUpstreamModel,
   type CapabilityRecord,
+  type CapabilityRow,
   type LlmClass,
   type SettingsDocument,
   type SettingsPatch,
 } from '@shared/engine-settings';
 import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
-import { coordinationWords } from '../../core/crucible-words';
+import {
+  FOUNDRY_ACTS,
+  actWords,
+  cardWords,
+  coordinationWords,
+  shortfallWords,
+} from '../../core/crucible-words';
 import {
   EngineUpstreamsComponent,
   type UpstreamApply,
 } from '../engine-upstreams/engine-upstreams.component';
-import { QueueService } from '../../core/queue.service';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
 type StepId =
-  | 'welcome' | 'library' | 'crucible' | 'routes' | 'envs' | 'reading' | 'done';
+  | 'welcome' | 'library' | 'crucible' | 'routes' | 'reading' | 'done';
 
 interface StepDef {
   id: StepId;
@@ -107,16 +106,39 @@ interface StepDef {
  * The order, and the only place it is written down.
  *
  * Library first because it is free and it is the one answer everything else
- * lands beside. The engine before the environments because it is a decision
- * rather than a download: somebody who connects to an engine here has changed
- * what the rest of setup means, and finding that out after paying for two
- * Pythons would be finding it out too late.
+ * lands beside, then the engine, then what runs where, and that is the whole of
+ * it.
+ *
+ * ── THE PYTHON STEP IS GONE, AND SO IS THE HARDWARE LINE ──────────────────
+ *
+ * Owen, 2026-09-15, reading this wizard on a machine with a Crucible already
+ * running on it: *"not sure what all this stuff is for… but it should all be
+ * automatic. the user doesnt need to see this stuff about crucible to set it
+ * up."* Two screens went on that ruling:
+ *
+ *   * **Python environments.** `electron/env-provision.ts` has provisioned
+ *     these at startup since it was written — *"the app provisions ITSELF. A
+ *     user who installs foundry and opens a PDF should not first have to read a
+ *     settings screen and press a button labelled with a word ('rasteriser')
+ *     they have no reason to know"* — so the step was asking permission for a
+ *     download that had already been decided, in that exact word. The one pack
+ *     startup does NOT queue (the analysis worker, 528 MB) keeps its row in
+ *     Settings › Python environments, which is where somebody who wants it will
+ *     look. Nothing is deleted here and no download changed.
+ *   * **The machine's own card, on the welcome page.** `system:probe` runs
+ *     `nvidia-smi` on this computer, and since Wave 67 this computer's card is
+ *     not where anything runs: *"one gpu slot in the queue per connected
+ *     crucible server."* The card a person needs to see is the one the ENGINE
+ *     reports, and it is on the engine step now, in that server's own words.
+ *     `probeSystem` keeps its two honest callers — `crucible-install.ts`, which
+ *     describes the machine that would HOST a server, and the held local page
+ *     reader.
  */
 const STEPS: readonly StepDef[] = [
   {
     id: 'welcome',
     title: 'Welcome',
-    blurb: 'A library folder, a GPU engine, the Python environments and the page reader. Each one can be skipped, and each one can be done later from Settings.',
+    blurb: 'A library folder and a GPU engine. Each one can be skipped, and each one can be done later from Settings.',
   },
   {
     id: 'library',
@@ -169,11 +191,21 @@ const STEPS: readonly StepDef[] = [
     blurb: 'What the engine cannot do on its own card, it can do through an account you connect here.',
   },
   {
-    id: 'envs',
-    title: 'Python environments',
-    blurb: 'Prebuilt, hash-checked, and the exact versions foundry was measured with.',
-  },
-  {
+    /*
+     * ── DRAWN ONLY WHEN NO CONNECTED ENGINE READS PAGES ──────────────────
+     *
+     * This step is the FALLBACK path and says so in its own prose: three
+     * gigabytes of dots.ocr weights for *"a machine that has no engine of its
+     * own"*. An engine whose capability record has `pages` enabled already
+     * reads pages, so offering the download beside it is offering somebody a
+     * second copy of something they have — which is the shape of Owen's
+     * complaint about this wizard, one screen along.
+     *
+     * HIDDEN RATHER THAN DELETED: Wave 68 held the local page reader
+     * deliberately, on a gate that has not been met, because it is the only
+     * road to an EPUB on a machine that cannot install WSL. A machine like that
+     * has no engine serving `pages`, so it still sees this step.
+     */
     id: 'reading',
     title: 'The page reader',
     blurb: 'What actually reads the pages. On most machines this is the one download that matters.',
@@ -225,9 +257,6 @@ const STEPS: readonly StepDef[] = [
               Nothing on the next screens downloads until you press the button that downloads it,
               and the size is always beside the button.
             </p>
-            @if (profileSaid(); as said) {
-              <p class="machine">{{ said }}</p>
-            }
           }
 
           <!-- ── Library ─────────────────────────────────────────────────── -->
@@ -245,51 +274,120 @@ const STEPS: readonly StepDef[] = [
             </div>
           }
 
-          <!-- ── Crucible ────────────────────────────────────────────────── -->
+          <!-- ── The engine, in two faces ────────────────────────────────── -->
+          <!--
+            OWEN OPENED THIS STEP ON A MACHINE ALREADY RUNNING AN ENGINE AND WAS
+            SHOWN THREE DOORS AND THEN A REFUSAL: *"i tried to connect to the
+            crucible server but it gave me an error. this should be idiot proof…
+            it shouldnt talk about crucible unless it needs to, or to ask the
+            user to add a crucible server."* So the step has two faces and the
+            connected one is the common case: main connects the engine on this
+            machine at startup without being asked (connectLocalEngine in main), and
+            what is left to show is what he asked for — the card, what it can
+            do, and what it cannot.
+
+            THE WORD "CRUCIBLE" IS IN THE SECOND FACE ONLY. A person with a
+            working engine never needs it; a person who has to install one is
+            about to run an installer with that name on it, and hiding it there
+            would be hiding the one word they need to search for.
+          -->
           @if (current() === 'crucible') {
-            <!--
-              THIS SCREEN USED TO SAY *"Foundry does not need it"*, and Owen's
-              ruling of Wave 66 made that untrue: *"everything goes through a
-              crucible server now, including local… there should be no local gpu
-              listed in the queue."* Every act that meets a model is a Crucible's
-              work, so the step says what it actually is — the one that decides
-              whether translation, simplification, cleanup, analysis and page
-              reading can run at all — rather than offering itself as optional
-              polish.
-            -->
-            <p class="lead">
-              Crucible is a separate program that serves models over the network — on this
-              machine or on another one. Every GPU slot in Foundry's queue is one of these,
-              including one installed here, so this is the step that decides whether
-              translation, simplification, cleanup, analysis and page reading can run at all.
-              Compiling a book and exporting it never need one.
-            </p>
-            <p class="line">
-              A Crucible on a machine with a bigger card runs the work there; a Crucible on this
-              machine runs it here and holds its models properly instead of loading and
-              unloading per job. Registering both gives the queue two GPU slots and it will use
-              whichever is free.
-            </p>
-            @if (crucibleServers().length > 0) {
-              <p class="ok-note">
-                Already registered: {{ crucibleNames() }}. Settings › Servers is where these are
-                ranked and switched off.
+            @if (engineProbe(); as engine) {
+              <p class="lead">
+                Ready. Translation, simplification, cleanup, analysis and page reading run on
+                <strong>{{ engine.serverName }}</strong>, and nothing here needs setting up.
               </p>
+              <div class="engine">
+                <p class="engine-card">{{ cardWords(engine) }}</p>
+                <p class="small">
+                  {{ engine.backend }} · version {{ engine.version }}
+                  @if (engine.via; as via) { · reached through {{ via }} }
+                </p>
+              </div>
+
+              @if (engineActs().length > 0) {
+                <p class="line">What it can do with that card:</p>
+                <div class="acts">
+                  @for (act of engineActs(); track act.act) {
+                    <div class="act" [attr.data-ok]="act.enabled">
+                      <span class="dotstate" [attr.data-ok]="act.enabled"></span>
+                      <span class="act-name">{{ act.act }}</span>
+                      @if (act.enabled) {
+                        <span class="act-by mono">{{ act.by }}</span>
+                      } @else if (act.shortfall; as short) {
+                        <span class="act-by">needs {{ short }}</span>
+                      } @else {
+                        <span class="act-by">will not run here</span>
+                      }
+                    </div>
+                    @if (!act.enabled) { <p class="act-why small">{{ act.reason }}</p> }
+                  }
+                </div>
+              }
+
+              @if (engineNeedsAccount()) {
+                <!--
+                  OWEN'S OWN EXAMPLE, AND THE OFFER HE ASKED FOR: *"if the
+                  crucible server isnt powerful enough to run translate, because
+                  it's running on an 8 gb gpu and cant run the 27b, it can prompt
+                  them for claude or chatgpt api key for that."* It POINTS at the
+                  next step instead of growing a key box, because that step is
+                  PHASE15 §5.2's panel and the key belongs in the engine, once.
+                -->
+                <p class="line">
+                  What this card cannot run, an Anthropic or OpenAI account can. The next step is
+                  where that key goes — it is stored in the engine, not in foundry.
+                </p>
+              }
+
               <!--
-                AND WHAT FOUNDRY HAS ALREADY SAID TO EACH OF THEM.
-                crucible docs/PHASE14-ENVPACKS.md §4a: finding an engine is the
-                request, so this step offers nothing to press about it — it says
-                what is happening. One line per REGISTERED server, and a server
-                nothing has asked about yet draws none, because "idle" written
-                out is a screen announcing the absence of news.
+                STILL REACHABLE, NEVER IN THE WAY. A second machine is a second
+                GPU slot in the queue and is the whole reason somebody buys a Mac
+                Studio; a person who has one working engine is not looking for it
+                on this screen.
               -->
-              @for (server of crucibleServers(); track server.name) {
-                @if (coordinationOf(server.name); as said) {
-                  <p class="small">{{ server.name }} — {{ said }}</p>
+              @if (moreDoors()) {
+                <app-crucible-doors (changed)="loadCrucible()" />
+              } @else {
+                <div class="actions">
+                  <button class="ghost" type="button" (click)="moreDoors.set(true)">
+                    Add another machine
+                  </button>
+                </div>
+              }
+            } @else if (engineAsking()) {
+              <p class="lead">Looking for an engine…</p>
+            } @else {
+              <p class="lead">
+                Translation, simplification, cleanup, analysis and page reading run on a GPU
+                engine — a program called Crucible, on this machine or another one. Foundry
+                looked and found none here. Compiling a book and exporting it never need one.
+              </p>
+              <p class="line">
+                An engine on a machine with a bigger card runs the work there; one on this
+                machine runs it here and holds its models properly instead of loading and
+                unloading per job. Registering both gives the queue two GPU slots and it will
+                use whichever is free.
+              </p>
+              @if (crucibleServers().length > 0) {
+                <!--
+                  A REGISTERED SERVER THAT WOULD NOT ANSWER. It is named, with
+                  whatever the last coordination sweep said about it, because
+                  "foundry found none here" beside a row somebody added by hand
+                  would read as the app having forgotten it.
+                -->
+                <p class="ok-note">
+                  Registered but not answering just now: {{ crucibleNames() }}. Settings › Servers
+                  tests these and says why.
+                </p>
+                @for (server of crucibleServers(); track server.name) {
+                  @if (coordinationOf(server.name); as said) {
+                    <p class="small">{{ server.name }} — {{ said }}</p>
+                  }
                 }
               }
+              <app-crucible-doors (changed)="loadCrucible()" />
             }
-            <app-crucible-doors (changed)="loadCrucible()" />
           }
 
           <!-- ── Where the text work runs ────────────────────────────────── -->
@@ -330,52 +428,6 @@ const STEPS: readonly StepDef[] = [
               }
             } @else if (routeProblem() === null) {
               <p class="line">Asking the engine…</p>
-            }
-          }
-
-          <!-- ── Python environments ─────────────────────────────────────── -->
-          @if (current() === 'envs') {
-            <p class="line">
-              These are complete Pythons with the exact package versions foundry was measured
-              against, downloaded from foundry's own release and checked against a hash before
-              anything is unpacked.
-            </p>
-            @for (item of envItems(); track item.target) {
-              <div class="env">
-                <div class="env-head">
-                  <span class="dotstate" [attr.data-ok]="item.installedPath !== null"></span>
-                  <span class="env-title">{{ item.label }}</span>
-                  @if (!item.published) { <span class="badge warn-badge">not yet published</span> }
-                  @else if (item.installedPath !== null) { <span class="badge held">installed</span> }
-                </div>
-                <p class="small">{{ item.purpose }}</p>
-                <p class="small mono">{{ item.pythonVersion }} · {{ item.packages.join(', ') }}</p>
-                @if (envJob(item.target); as job) {
-                  @if (job.state === 'running' || job.state === 'queued') {
-                    <div class="bar" [class.indeterminate]="!envCounting(item.target)">
-                      <div class="fill" [style.width.%]="envPercent(item.target)"></div>
-                    </div>
-                    <p class="small">{{ envWord(item.target, job) }} — {{ job.message }}</p>
-                  } @else if (job.state === 'failed') {
-                    <p class="small bad">{{ job.message }}</p>
-                  } @else {
-                    <p class="small">{{ job.message }}</p>
-                  }
-                }
-                @if (item.installedPath === null && item.published) {
-                  <div class="actions">
-                    <button class="ghost" type="button" [disabled]="envBusy()" (click)="installEnv(item)">
-                      Download {{ sizeOf(item) }} and install
-                    </button>
-                  </div>
-                }
-                @if (!item.published) {
-                  <p class="small">This one has not been published yet, so there is no hash to check a download against. It is not offered.</p>
-                }
-              </div>
-            }
-            @if (envItems().length === 0) {
-              <p class="line">Nothing on this platform needs a prebuilt Python.</p>
             }
           }
 
@@ -546,15 +598,6 @@ const STEPS: readonly StepDef[] = [
     .small.bad, .bad { color: var(--error); }
     .ok-note { margin: 0; font-size: 12px; color: var(--ok); }
     .mono { font-family: var(--font-mono); word-break: break-all; }
-    .machine {
-      margin: 0;
-      font-size: 12px;
-      color: var(--text-secondary);
-      background: var(--bg-sunken);
-      border-radius: var(--radius-sm);
-      padding: 8px 10px;
-    }
-
     .field { display: flex; flex-direction: column; gap: 6px; }
     .label {
       font-size: 10px;
@@ -598,17 +641,34 @@ const STEPS: readonly StepDef[] = [
     .badge.held { color: var(--ok); background: var(--ok-soft); }
     .badge.warn-badge { color: var(--warn); background: var(--warn-soft); }
 
-    .env {
+    .engine {
       display: flex;
       flex-direction: column;
-      gap: 5px;
+      gap: 3px;
       padding: 10px;
       background: var(--bg-sunken);
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-sm);
     }
-    .env-head { display: flex; align-items: center; gap: 8px; }
-    .env-title { font-family: var(--font-display); font-weight: 600; font-size: 13px; }
+    .engine-card {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+
+    .acts { display: flex; flex-direction: column; gap: 2px; }
+    .act { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    /* The dot sits on a text baseline everywhere else in this card; on these
+       rows it sits in a flex line of its own, so the nudge has to come off. */
+    .act .dotstate { margin-top: 0; }
+    .act-name { color: var(--text-primary); }
+    .act-by { margin-left: auto; color: var(--text-tertiary); text-align: right; }
+    .act[data-ok="false"] .act-by { color: var(--warn); }
+    /* The server's own sentence about a refusal, indented under its row so it
+       reads as an explanation of that line rather than a new one. */
+    .act-why { padding: 0 0 4px 16px; }
 
     .bar { height: 4px; background: var(--bg-sunken); border-radius: 2px; overflow: hidden; }
     .fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
@@ -662,20 +722,97 @@ const STEPS: readonly StepDef[] = [
 })
 export class SetupWizardComponent {
   private readonly ui = inject(UiService);
-  private readonly queue = inject(QueueService);
 
   protected readonly current = signal<StepId>('welcome');
   /** The four llm classes, in the order the routes step draws them. */
   protected readonly classes = LLM_CLASSES;
   protected readonly libraryDir = signal('');
-  protected readonly envItems = signal<EnvCatalogItem[]>([]);
   protected readonly readingSaid = signal('');
   protected readonly warming = signal(false);
   protected readonly reader = signal<PageReaderState | null>(null);
   protected readonly readerSaid = signal<PageReaderProgress | null>(null);
-  protected readonly profileSaid = signal('');
   /** The registry, so the Crucible step can say what is already there. */
   protected readonly crucibleServers = signal<CrucibleServerView[]>([]);
+  /**
+   * WHAT THE CONNECTED ENGINE IS AND WHAT IT CAN DO — `loadEngineFacts`.
+   *
+   * `null` on both means "there is nothing to show about an engine", which
+   * covers an empty registry AND a registered server that would not answer, and
+   * the step draws the doors for both. They are never half-set.
+   */
+  protected readonly engineProbe = signal<Extract<CrucibleProbe, { outcome: 'ok' }> | null>(null);
+  protected readonly engineCap = signal<CapabilityRecord | null>(null);
+  protected readonly engineAsking = signal(false);
+  /**
+   * Whether the three doors are open on the CONNECTED face.
+   *
+   * It starts closed and there is no reason to persist it: a person who came
+   * here to add a second machine adds it, and the next time this screen opens
+   * the second machine is why they are not looking for the button.
+   */
+  protected readonly moreDoors = signal(false);
+  /** The words file's, exposed because a template cannot call a bare import. */
+  protected readonly cardWords = cardWords;
+
+  /**
+   * THE FIVE ACTS THIS APP HAS, each with the engine's own verdict, in
+   * {@link FOUNDRY_ACTS} order — and a class the server did not mention at all
+   * is DROPPED rather than drawn as a refusal.
+   *
+   * An absent row means the server is older than that class, not that the card
+   * is too small, and "Analyse claims — will not run here" over a server that
+   * has simply never heard of analysis would send somebody to buy a graphics
+   * card for a problem an upgrade fixes.
+   */
+  protected readonly engineActs = computed(() => {
+    const record = this.engineCap();
+    if (record === null) return [];
+    return FOUNDRY_ACTS
+      .map((name) => record.classes.find((row) => row.capability === name))
+      .filter((row): row is CapabilityRow => row !== undefined)
+      .map((row) => ({
+        act: actWords(row.capability),
+        enabled: row.enabled,
+        /*
+         * WHAT IS RUNNING IT, and the two routes read differently on purpose.
+         * A local class names the MODEL, because that is the thing on the card
+         * and the thing whose speed somebody is about to notice. An upstream
+         * class names the ACCOUNT rather than the model id, because
+         * `anthropic/claude-sonnet-5` in a list of five rows is an id, and "via
+         * your Anthropic account" is the fact that explains why that row is
+         * lit when the card could not do it.
+         */
+        by: row.route === 'upstream'
+          ? `via your ${splitUpstreamModel(row.selected)?.upstream ?? 'connected'} account`
+          : row.selected,
+        reason: row.reason,
+        shortfall: shortfallWords(row.shortfallBytes),
+        /* `pages` cannot route upstream (PHASE15 §1), so it is never offered a key. */
+        routable: (LLM_CLASSES as readonly string[]).includes(row.capability),
+      }));
+  });
+
+  /**
+   * Whether any TEXT act is refused, which is the one case Owen named as
+   * deserving an offer: *"if the crucible server isnt powerful enough to run
+   * translate, because it's running on an 8 gb gpu and cant run the 27b, it can
+   * prompt them for claude or chatgpt api key for that."*
+   *
+   * It POINTS at the next step rather than growing a key field of its own. The
+   * routes step is PHASE15 §5.2's panel and already holds the whole of this —
+   * the upstream child, the write-through, the test button — and a second key
+   * box two screens earlier would be a second owner of the one fact this app is
+   * forbidden to store twice.
+   */
+  protected readonly engineNeedsAccount = computed(
+    () => this.engineActs().some((act) => !act.enabled && act.routable));
+
+  /**
+   * Does a connected engine already read pages? Decides whether the page-reader
+   * step is drawn at all — see its entry in {@link STEPS}.
+   */
+  protected readonly engineReadsPages = computed(
+    () => this.engineCap()?.classes.some((row) => row.capability === 'pages' && row.enabled) === true);
   /**
    * And what Foundry has already said to each of them, by stored name.
    *
@@ -728,7 +865,6 @@ export class SetupWizardComponent {
   /** Step ids moved past without doing the thing. A Set would not survive JSON. */
   protected readonly skipped = signal<string[]>([]);
 
-  private readonly live = signal<Record<string, EnvInstallProgress>>({});
 
   protected readonly up = computed(() => this.ui.setupOpen());
   /**
@@ -749,14 +885,15 @@ export class SetupWizardComponent {
    */
   protected readonly visible = computed<readonly StepDef[]>(() => {
     const hasEngine = this.crucibleServers().length > 0;
-    return STEPS.filter((step) => step.id !== 'routes' || hasEngine);
+    const readsPages = this.engineReadsPages();
+    return STEPS.filter((step) => {
+      if (step.id === 'routes') return hasEngine;
+      if (step.id === 'reading') return !readsPages;
+      return true;
+    });
   });
   protected readonly index = computed(() => Math.max(0, this.indexOf(this.current())));
   protected readonly def = computed(() => this.visible()[this.index()] ?? STEPS[0]!);
-  private readonly envJobs = computed(() =>
-    this.queue.jobs().filter((job) => job.kind === 'env-install'));
-  protected readonly envBusy = computed(() =>
-    this.envJobs().some((job) => job.state === 'running' || job.state === 'queued'));
 
   /**
    * Welcome and Ready are not skippable because there is nothing on them to
@@ -772,9 +909,6 @@ export class SetupWizardComponent {
   constructor() {
     if (!api) return;
 
-    api.env.onInstallProgress((progress) => {
-      this.live.update((all) => ({ ...all, [progress.target]: progress }));
-    });
     api.pageReader.onProgress((progress) => {
       this.readerSaid.set(progress);
       if (progress.phase === 'done' || progress.phase === 'error') {
@@ -812,7 +946,19 @@ export class SetupWizardComponent {
      */
     void Promise.all([api.hosted(), api.setup.state()]).then(([inHost, state]) => {
       if (inHost || state.completed) return;
-      this.skipped.set([...state.skipped]);
+      /*
+       * A STORED ID THIS BUILD NO LONGER HAS IS DROPPED, not carried.
+       *
+       * The Ready screen falls back to printing the raw id for a step it cannot
+       * name, which is right for a typo and wrong for a step that was DELETED:
+       * somebody who skipped "Python environments" before 2026-09-15 would be
+       * told, in a later run, that they skipped "envs" — a word this app no
+       * longer uses about a screen it no longer has. It is the same rule the
+       * routes step is hidden by: a wizard must not say somebody skipped a step
+       * that was never offered.
+       */
+      const known = new Set<string>(STEPS.map((step) => step.id));
+      this.skipped.set(state.skipped.filter((id) => known.has(id)));
       /*
        * THE REGISTRY IS READ BEFORE THE FIRST FRAME, not when the Crucible step
        * is reached, because the rail is drawn from it: `visible()` hides the
@@ -824,46 +970,61 @@ export class SetupWizardComponent {
       this.ui.openSetup();
     });
 
+    /*
+     * ── THE STEP LIST CAN SHRINK NOW, SO STANDING ON ONE HAS TO BE CHECKED ──
+     *
+     * Until 2026-09-15 `visible()` could only GROW: the routes step appeared
+     * when a server was registered and nothing ever took a step away. The page
+     * reader step is hidden when a connected engine serves `pages`, and that
+     * answer arrives from a network probe — so a step somebody is standing on
+     * can stop existing under them.
+     *
+     * What that looked like without this: `indexOf` answers -1, `index()`
+     * clamps it to 0, the heading and the rail say "Welcome" while `current()`
+     * still says `reading` and the body draws the page reader. A card whose
+     * title and contents disagree.
+     *
+     * FORWARD, not back. A step disappears here because it was ANSWERED — the
+     * engine reads pages, so there is nothing to download — and sending
+     * somebody backwards would re-ask them a question that has just been
+     * settled.
+     *
+     * THE POSITION COMES FROM `STEPS`, NOT FROM `index()`. `index()` is
+     * `max(0, indexOf(current))` and `indexOf` answers -1 for a step that is no
+     * longer drawn, so reading the landing out of it puts everybody on Welcome
+     * — which is the bug this effect exists to prevent, wearing a different
+     * face. The full order is the one place a vanished step still has a
+     * position, so the landing is the first VISIBLE step at or after it.
+     */
+    effect(() => {
+      const steps = this.visible();
+      const here = this.current();
+      if (steps.some((step) => step.id === here)) return;
+      const was = STEPS.findIndex((step) => step.id === here);
+      const order = new Map(STEPS.map((step, at) => [step.id, at]));
+      const landing = steps.find((step) => (order.get(step.id) ?? 0) >= was)
+        ?? steps[steps.length - 1];
+      if (landing !== undefined) this.current.set(landing.id);
+    });
+
     // Each step loads only what it can read for free. Nothing here fetches.
     effect(() => {
       if (!this.up()) return;
       const here = this.current();
-      if (here === 'welcome') void this.loadProfile();
       if (here === 'library') void this.loadLibrary();
       if (here === 'crucible') void this.loadCrucible();
       if (here === 'routes') void this.loadRoutes();
-      if (here === 'envs') void this.loadEnvs();
       if (here === 'reading') void this.loadReader();
     });
 
-    // An env install that lands is a card that should stop saying "not
-    // installed" — the queue adjudicates, the event only animates.
-    let settled = 0;
-    effect(() => {
-      const finished = this.envJobs().filter((job) => job.state === 'done').length;
-      if (finished > settled) {
-        settled = finished;
-        void this.loadEnvs();
-      }
-    });
   }
 
   // ── Reading what is free to read ───────────────────────────────────────────
 
-  private async loadProfile(): Promise<void> {
-    if (!api) return;
-    const profile = await api.setup.probe();
-    this.profileSaid.set(profile.detail);
-  }
 
   private async loadLibrary(): Promise<void> {
     if (!api) return;
     this.libraryDir.set(await api.library.dir());
-  }
-
-  private async loadEnvs(): Promise<void> {
-    if (!api) return;
-    this.envItems.set(await api.env.catalog());
   }
 
   /**
@@ -879,6 +1040,69 @@ export class SetupWizardComponent {
     const view = await api.crucible.settings();
     this.crucibleServers.set(view.servers);
     this.coordination.set(await api.crucible.coordination());
+    await this.loadEngineFacts();
+  }
+
+  /**
+   * THE TWO FACTS THE ENGINE STEP SHOWS WHEN THERE IS AN ENGINE — the card, and
+   * what it can do with it.
+   *
+   * Owen, 2026-09-15, opening this wizard on a machine already running one:
+   * *"since crucible is already set up on our machine, it should just connect to
+   * the server and then show what gpu is registered with the existing crucible
+   * server… things the user might need to know about crucible setup: the GPU
+   * it's connected to and how powerful it is, the functions that will be
+   * available and the functions that wont be available because it isnt powerful
+   * enough, what might need an API key to run."*
+   *
+   * ── BOTH READS ARE THE ONES THAT ALREADY EXIST ───────────────────────────
+   *
+   * `crucible:test` is `info()` — the server's name, its version, its backend
+   * and THE CARD IN ITS OWN WORDS — and `crucible:engine-capability` is
+   * `readCapability`, the dispatcher's own reader, which is what the routes step
+   * one screen along already draws from. Neither places a job, neither loads a
+   * model, and no third door was added for this: a second way to ask an engine
+   * what it is would be a second answer to drift from the first.
+   *
+   * ── A FAILURE IS NOT A BLANK ─────────────────────────────────────────────
+   *
+   * Both are set together and cleared together, for the reason `loadRoutes`
+   * gives about its own pair: a card kept beside a capability record that failed
+   * to read would let this step print "this engine can do everything" from an
+   * EMPTY list of refusals, which is the sentence "nothing was measured" said as
+   * though it were good news. When they clear, the step falls back to the doors,
+   * which is the honest face for an engine that will not answer.
+   */
+  private async loadEngineFacts(): Promise<void> {
+    if (!api) return;
+    const server = defaultEngineServer(this.crucibleServers());
+    if (server === null) {
+      this.engineProbe.set(null);
+      this.engineCap.set(null);
+      return;
+    }
+    this.engineAsking.set(true);
+    try {
+      const [probe, capability] = await Promise.all([
+        api.crucible.test(server.name),
+        api.crucible.engineCapability(server.name),
+      ]);
+      this.engineProbe.set(probe.outcome === 'ok' ? probe : null);
+      this.engineCap.set(probe.outcome === 'ok' ? capability : null);
+    } catch {
+      /*
+       * SWALLOWED, and the step draws the doors instead. Every reason this can
+       * throw — the engine is asleep, the token was rotated, the machine is off
+       * the network — is already said out loud one screen along in Settings ›
+       * Servers, which has a Test button and prints the SDK's own sentence. A
+       * wizard that stopped on an exception here would be a wizard somebody
+       * cannot get past because a laptop in another room is shut.
+       */
+      this.engineProbe.set(null);
+      this.engineCap.set(null);
+    } finally {
+      this.engineAsking.set(false);
+    }
   }
 
   // ── Where the text work runs (PHASE15-HOST.md §5.2) ───────────────────────
@@ -1071,48 +1295,6 @@ export class SetupWizardComponent {
     // Main's value wins: it clamps, and a renderer holding an optimistic copy
     // would show a folder nothing writes to.
     this.libraryDir.set(await api.library.set(chosen));
-  }
-
-  // ── Environments ──────────────────────────────────────────────────────────
-
-  protected sizeOf(item: EnvCatalogItem): string {
-    if (item.bytes === null) return 'it';
-    const gb = item.bytes / 1e9;
-    return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(item.bytes / 1e6)} MB`;
-  }
-
-  protected envJob(target: EnvTarget): Job | null {
-    const mine = this.envJobs().filter((job) => job.inputPath === target);
-    return mine[mine.length - 1] ?? null;
-  }
-
-  protected envCounting(target: EnvTarget): boolean {
-    return this.live()[target]?.phase === 'download';
-  }
-
-  protected envPercent(target: EnvTarget): number {
-    return this.live()[target]?.percent ?? 0;
-  }
-
-  protected envWord(target: EnvTarget, job: Job): string {
-    const phase = this.live()[target]?.phase ?? job.envProgress?.phase;
-    switch (phase) {
-      case 'download': return `Downloading ${this.envPercent(target)}%`;
-      case 'verify': return 'Checking the hash';
-      case 'unpack': return 'Unpacking';
-      case 'configure': return 'Configuring';
-      default: return job.state === 'queued' ? 'Waiting for the queue' : 'Starting…';
-    }
-  }
-
-  protected async installEnv(item: EnvCatalogItem): Promise<void> {
-    if (!api || !item.published) return;
-    this.live.update((all) => {
-      const next = { ...all };
-      delete next[item.target];
-      return next;
-    });
-    await api.env.install({ target: item.target });
   }
 
   // ── The page reader ───────────────────────────────────────────────────────

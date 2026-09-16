@@ -53,6 +53,7 @@ import {
   readAppSettings,
   writeAppSettings,
   clampCrucibleUrl,
+  sameCrucibleAddress,
   CRUCIBLE_SERVER_MAX,
   type CrucibleServerEntry,
 } from './app-settings';
@@ -319,9 +320,38 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
  * state, which is `addLocalCrucible`'s rule for the same reason: somebody
  * re-adding a server they already have is fixing its token, and a second entry
  * beside the first would leave the stale one in the picker.
+ *
+ * ── AND A SECOND NAME FOR ONE ADDRESS IS REFUSED, SINCE 2026-09-15 ────────
+ *
+ * This door compared NAMES and nothing else, so a registry already holding
+ * `127.0.0.1:7100` as "3090 Ti" would take a second row for the same address
+ * under any other name and hand the queue two GPU lanes over one card.
+ * `addLocalCrucible` has always compared addresses, which made it worse than a
+ * missing rule: a person who pressed the local button got a safety that a
+ * person who pasted a connect code did not, for a reason nobody could infer
+ * from either screen. One rule now ({@link sameCrucibleAddress}), consulted by
+ * both, which is the shape the slot-name fix took for the same kind of split.
+ *
+ * REPLACING THE ROW AT THAT ADDRESS IS STILL FINE — that is the token refresh
+ * above, and it is why the test excludes the row this call is replacing rather
+ * than asking whether the address is present at all.
+ *
+ * It THROWS, like every other refusal this file makes, because the doors that
+ * call it already print what they catch. There is no arm for "added it anyway".
  */
 export function addCrucibleServer(name: string, url: string, token: string): CrucibleServerView[] {
   const label = tidySlotName(name);
+  const clash = crucibleServers().find(
+    (entry) => entry.name.toLowerCase() !== label.toLowerCase()
+      && sameCrucibleAddress(entry.url, url),
+  );
+  if (clash !== undefined) {
+    throw new Error(
+      `${url} is already registered as "${clash.name}". One engine wants one entry — `
+      + 'two would give the queue two GPU slots over the same card. Rename that entry, '
+      + 'or remove it if this is meant to replace it.',
+    );
+  }
   const kept = crucibleServers()
     .filter((entry) => entry.name.toLowerCase() !== label.toLowerCase())
     .map((entry): CrucibleServerEdit => ({
@@ -1010,6 +1040,29 @@ export async function probeCrucibleAt(url: string, token: string): Promise<Cruci
  * Both arrive as {@link CrucibleOrchestratorError}, whose sentences name what to
  * do, and both fall through the named catch below like every other refusal.
  */
+/**
+ * The card, named once.
+ *
+ * This was `${vendor} ${name}`, which on every NVIDIA machine there is produces
+ * *"nvidia NVIDIA GeForce RTX 3090 Ti"* — the vendor twice, once in lower case.
+ * The prefix is not useless, though, and is why the join was there: a Mac
+ * answers vendor `apple` with name `M1 Ultra`, and "M1 Ultra" alone on a card
+ * beside three NVIDIA rows is the one row that does not say whose it is.
+ *
+ * So it is prefixed only when the name does not already say it. Compared case-
+ * insensitively because the two fields disagree on case by convention — the
+ * vendor is a lower-case key, the name is the marketing string — and that
+ * disagreement is exactly what made the duplicate invisible to whoever wrote
+ * the join.
+ */
+function gpuWords(vendor: string, name: string): string {
+  const card = name.trim();
+  const who = vendor.trim();
+  if (who.length === 0) return card;
+  if (card.length === 0) return who;
+  return card.toLowerCase().startsWith(who.toLowerCase()) ? card : `${who} ${card}`;
+}
+
 async function probeEntry(entry: CrucibleServerEntry): Promise<CrucibleProbe> {
   try {
     const target = await resolveEngine(entry);
@@ -1019,7 +1072,8 @@ async function probeEntry(entry: CrucibleServerEntry): Promise<CrucibleProbe> {
       serverName: info.server.name,
       version: info.server.version,
       backend: info.host.backend,
-      gpu: `${info.host.gpu.vendor} ${info.host.gpu.name}`.trim(),
+      gpu: gpuWords(info.host.gpu.vendor, info.host.gpu.name),
+      vramBytes: info.host.gpu.vramBytes,
       via: target.hop === null
         ? null
         : `through the orchestrator ${target.hop.orchestratorName} at ${target.hop.orchestratorUrl} `
@@ -1084,12 +1138,32 @@ export async function addLocalCrucible(name: string): Promise<LocalCrucibleAdd> 
   const wanted = tidySlotName(name);
   const label = wanted.length > 0 ? wanted : read.serverName;
   const existing = crucibleServers();
-  const clash = existing.find((entry) => entry.url === read.url && entry.name !== label);
+  /*
+   * ── ALREADY THERE IS GOOD NEWS, AND IT USED TO BE PHRASED AS A FAULT ─────
+   *
+   * This arm said *"Rename or remove that entry first"*, and Owen pressed this
+   * button on a machine whose engine was registered and working: *"i tried to
+   * connect to the crucible server but it gave me an error. this should be
+   * idiot proof."* The refusal itself is right — a second row on one address
+   * would draw two GPU lanes over one card (docs/PLAN.md, the slot wave) — but
+   * the instruction was to dismantle a working connection in order to satisfy
+   * a button, which is the app serving its own bookkeeping.
+   *
+   * SO THE ROW IS STILL NOT WRITTEN AND THE ROW IS STILL NOT RENAMED (Wave 66:
+   * the app must not rename somebody's row), and what changed is that the
+   * answer says what is actually true — it is connected, there is nothing to
+   * do. The caller decides how loudly to say it: `connectLocalEngine`
+   * (electron/ipc.ts) reads this code as success and shows nothing at all.
+   */
+  const clash = existing.find(
+    (entry) => entry.name !== label && sameCrucibleAddress(entry.url, read.url),
+  );
   if (clash !== undefined) {
     return {
       outcome: 'failed',
       code: 'already_registered',
-      message: `${read.url} is already registered as "${clash.name}". Rename or remove that entry first.`,
+      message: `The Crucible on this machine is already connected, as "${clash.name}" `
+        + `(${read.url}). There is nothing to do.`,
     };
   }
   /*

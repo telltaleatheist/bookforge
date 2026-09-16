@@ -101,7 +101,7 @@ import { type FoundryHost, recordHost } from './host';
 import {
   type HostOperation, recordHostNodeActions, recordHostOperations, recordHostStatusOpen,
 } from './host-ops';
-import { adoptPairingFile, registerIpc } from './ipc';
+import { connectLocalEngine, registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
 import * as pageReader from './page-reader';
@@ -540,6 +540,12 @@ export function mountFoundry(host?: FoundryHost): void {
    * is *"the user shouldn't have to interact with crucible almost at all"* — a
    * machine whose installer already wrote a token has nothing left to type.
    *
+   * SINCE 2026-09-15 THE CONFIG FILE IS READ TOO, when there is no pairing file,
+   * because Owen opened this app on a machine running a Crucible and was offered
+   * three doors and then a refusal: *"it should check to see if a server is
+   * installed here. if it is, it just connects. seamlessly."* `connectLocalEngine`
+   * is both reads in the contract's order and argues the whole of it.
+   *
    * NO RESERVED NAME AND NO LOCALITY TEST, per Owen's ruling (*"a local crucible
    * server shouldnt be treated any differently than a remote crucible server"*):
    * see `adoptPairingFile`, which argues both.
@@ -559,11 +565,11 @@ export function mountFoundry(host?: FoundryHost): void {
    * finished; the Servers card and the wizard read the registry when they mount,
    * and the button in `app-crucible-doors` is the second chance §3.6 asks for.
    *
-   * IT CANNOT REJECT — `adoptPairingFile` answers a `LocalCrucibleAdd` for every
-   * outcome including "there is no file", which is a FACT and not a fallback —
-   * so there is no catch here to swallow one.
+   * IT CANNOT REJECT — every arm answers a `LocalCrucibleAdd`, including "there
+   * is no file", which is a FACT and not a fallback — so there is no catch here
+   * to swallow one.
    */
-  if (host === undefined) void adoptPairingFile();
+  if (host === undefined) void connectLocalEngine();
 }
 
 /**

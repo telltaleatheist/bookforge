@@ -10,10 +10,52 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **75e53b3** — *feat(app)!: Foundry keeps no models — the local text path is deleted and the engine decides* |
+| Source sha | **44b5b8a** — *fix(registry): one engine, one entry — both doors refuse a duplicate address* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-15 |
-| Copied by | `git -C <foundry> archive 75e53b3 app | tar -x --strip-components=1`, then the three deletions below by hand |
+| Copied by | `git -C <foundry> archive 44b5b8a app | tar -x --strip-components=1` — no deletions in this range |
+
+## The `75e53b3 → 44b5b8a` re-vendor (2026-09-16)
+
+Three commits, none of them deleting a file:
+
+- **`aafaf3b`** — the setup wizard describes the CONNECTED ENGINE rather than
+  this computer. Owen opened `electron:dev` against a perfectly healthy Crucible
+  and was shown his own GPU from nvidia-smi, three connect doors over a
+  connection that already existed, and a page of Python env cards.
+- **`778a57c`** — a wizard step that vanishes under you moves you FORWARD rather
+  than to Welcome. Hiding the page-reader step made the step list shrink for the
+  first time, so `indexOf` went to -1. Foundry's first fix read the landing out
+  of the clamped index and put everybody on Welcome — the same bug wearing the
+  fix's face.
+- **`44b5b8a`** — both of Foundry's registry doors refuse a duplicate ADDRESS.
+  The mirror of bookforge `e70f30f6`; see below.
+
+**169/169 blobs hash-verified** against `44b5b8a:app/<path>`, zero mismatched, and
+the orphan check (`git ls-tree -r` against `git ls-files`) found no deletions and
+no new files — the only two files here that are not Foundry's are `VENDORED.md`
+and `IPC-CHANNELS.md`, which are ours. `package-lock.json` is Foundry's own bytes
+(`65d40ac2`), unchanged by the rebuild, and its `".."` entry is still absent —
+that is the field `npm install` corrupts, not the top-level `name`.
+
+**`dist/` WAS REBUILT THIS TIME, and the previous re-vendor is why.** This
+directory is gitignored and `build:electron` does not rebuild it, so vendoring
+`75e53b3` left the hosted window running the `40aaa42` bundle: source and bundle
+diverged silently, and nothing in either tree said so. Rebuilding is now part of
+the re-vendor rather than something to remember.
+
+### What this range cost us, and it was worth more than the diff
+
+`44b5b8a` came out of a cross-session exchange that found a real defect on THIS
+side. Foundry asked whether our registry refused a duplicate address; it refused
+a duplicate NAME and never looked at the URL, so two rows could point at one
+engine and the bench would draw two GPU lanes over one card (`e70f30f6`). They
+then warned that a pre-check duplicating the registry's rule is where the same
+shape hides — and ours had one, on the STARTUP path, narrower than the new rule
+and bypassing the door entirely (`e875c9a5`).
+
+Their failure was loud (a throw on every launch); ours was silent (a duplicate
+row). Same cause: a second copy of a rule that has an owner.
 
 ## The `40aaa42 → 75e53b3` re-vendor (2026-09-15)
 

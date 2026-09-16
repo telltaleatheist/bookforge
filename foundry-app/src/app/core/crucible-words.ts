@@ -33,6 +33,7 @@ import type {
   CrucibleMissingEntry,
   CrucibleUnmetClass,
 } from '@shared/coordinate-wire';
+import type { CrucibleProbe } from '@shared/slots';
 
 /** The product name, for the one place per panel that earns a first mention. */
 export const ENGINE_FIRST = 'GPU engine (Crucible)';
@@ -333,4 +334,92 @@ function preparingWords(
   return total === null
     ? `${head} — downloading ${progress.bytes.file} ${done} GB`
     : `${head} — downloading ${progress.bytes.file} ${done} of ${total} GB`;
+}
+
+/*
+ * ── WHAT AN ENGINE CAN AND CANNOT DO, IN THE FIVE ACTS FOUNDRY HAS ─────────
+ *
+ * Owen, 2026-09-15, on opening setup to a local hardware probe and a page of
+ * Python: *"things the user might need to know about crucible setup: the GPU
+ * it's connected to and how powerful it is, the functions that will be
+ * available and the functions that wont be available because it isnt powerful
+ * enough, what might need an API key to run."*
+ *
+ * `GET /v1/capability` already answers all three, per class, in the SERVER's
+ * own sentences — *"qwen3.8-27b-4bit fits: it needs 20.1 GiB and there is 21.0
+ * GiB available (24.0 GiB card less a 3.0 GiB desktop allowance)"*. So nothing
+ * here re-derives a verdict or recomputes a fit; what is here is the two things
+ * the server cannot know: WHICH of its classes this app has any use for, and
+ * what this app calls them.
+ */
+
+/**
+ * THE FIVE, IN THE ORDER A BOOK MEETS THEM, and the answer to "which rows does
+ * Foundry draw".
+ *
+ * A current Crucible reports eleven classes — `tts`, `asr`, `align`, `rvc`,
+ * `denoise` and `echo` among them. Those are BookForge's work and Owen's
+ * complaint about this screen was precisely that it showed him things that were
+ * not his business, so a setup page listing a voice engine under "what this can
+ * do" would be the same defect in the other direction. The engine still serves
+ * them and BookForge still draws them; this app has no act behind any of them.
+ *
+ * `pages` first because it is the one every book needs before anything else can
+ * read it, then the four llm classes in the order the routes step draws them.
+ */
+export const FOUNDRY_ACTS = ['pages', 'clean', 'translate', 'simplify', 'analysis'] as const;
+
+/**
+ * What Foundry's menu calls the act a class serves.
+ *
+ * Deliberately NOT {@link CLASS_WORDS}, which names the MODEL ("the text
+ * model") for a download row. This names the WORK, because a person reading
+ * "what this engine can do" is looking for the thing they press, and three rows
+ * all saying "the text model" would tell them nothing about which of the three
+ * they are about to lose.
+ */
+const ACT_WORDS: Readonly<Record<string, string>> = {
+  pages: 'Read the pages of a scan',
+  clean: 'Clean up narration text',
+  translate: 'Translate',
+  simplify: 'Simplify',
+  analysis: 'Analyse claims',
+};
+
+/** A class with no words here is NAMED, on {@link classWords}'s argument. */
+export function actWords(capability: string): string {
+  return ACT_WORDS[capability] ?? capability;
+}
+
+/**
+ * How much bigger the card would have to be, as a phrase, or null when the
+ * server did not say.
+ *
+ * `shortfall_bytes` is 0 on an enabled class AND on a class refused for a
+ * reason that is not size — an absent model, a backend that cannot run it — so
+ * zero is "no figure to quote" rather than "it fits by nothing". The server's
+ * own `reason` is printed either way and is the sentence that actually explains
+ * it; this is the part a person can act on, because it is the one that names a
+ * different machine.
+ */
+export function shortfallWords(bytes: number): string | null {
+  if (bytes <= 0) return null;
+  return `${sizeWords(bytes)} more video memory than this card has`;
+}
+
+/**
+ * THE CARD AND ITS SIZE, on one line: "NVIDIA GeForce RTX 3090 Ti · 24.0 GB".
+ *
+ * Three screens say this — the wizard's engine step, Settings › Servers' test
+ * result, and the connect door's test result — and they are three views of one
+ * probe, so the sentence is composed once. Two of them used to print the bare
+ * name, which answered "which card" and not Owen's other half of the question,
+ * *"and how powerful it is"*.
+ *
+ * A host that declared no size draws the name alone: `vramBytes` is 0 there,
+ * and "· 0.0 GB" beside a working engine reads as a card that is full rather
+ * than a figure nobody reported.
+ */
+export function cardWords(probe: Extract<CrucibleProbe, { outcome: 'ok' }>): string {
+  return probe.vramBytes > 0 ? `${probe.gpu} · ${sizeWords(probe.vramBytes)}` : probe.gpu;
 }

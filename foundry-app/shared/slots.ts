@@ -365,6 +365,22 @@ export type CrucibleProbe =
     /** The card, in the server's own words. */
     gpu: string;
     /**
+     * HOW BIG THAT CARD IS, as a number — the third of the three things Owen
+     * asked a person be told about an engine (2026-09-15: *"the GPU it's
+     * connected to and how powerful it is"*).
+     *
+     * A NUMBER AND NOT A PHRASE, because this file is the wire and the wording
+     * belongs to the screen (`core/crucible-words.ts` states that rule for
+     * everything a person reads about a server). `gpu` beside it is already a
+     * borderline case and stays as it is only because the server itself is the
+     * one naming the card.
+     *
+     * 0 for a host that declared none, which is a real answer — an engine can
+     * be running on a machine whose accelerator the probe could not size — and
+     * the screen draws the name alone rather than "0.0 GB".
+     */
+    vramBytes: number;
+    /**
      * THE ORCHESTRATOR THIS ANSWER CAME THROUGH, or null for an address that is
      * the engine itself.
      *
