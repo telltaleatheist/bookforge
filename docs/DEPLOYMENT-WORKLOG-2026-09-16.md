@@ -68,3 +68,9 @@ Exact archives from core commit `d363eaf27cefe26e1487813a7528ce332d23dde5` were 
 - Bootstrap: `0UA8gfbvvtrsMFsPWh0TLqlYKSIxwiN2WlX4YjVcJxEPcz5sMchrW8WqQu33uL8V8/cEqbxyA2TnVpZBvv8GUA==`.
 
 The generated BookForge module is `0.6.2+a37ab17a8f1e`. Focused checks against these packages passed: first-run/connections 22, coordination 54, installation 41. The final Electron compile and full keeper run passed **168 suites, one external fixture skip, zero failures** (`release/bookforge-0.6.2-test.log`). Embedded Foundry is version 2.0.2 at source `24f586bbcb0fcaf8064fb2948b724126f84f7cb9`.
+
+### POSIX service readiness follow-up
+
+Real Mac installer acceptance exposed a launchd timing seam: the SDK installer can finish registering the service before the engine answers authenticated requests. BookForge now awaits the SDK's local start/readiness operation, using the installation's explicit home, before adoption. An unhealthy status or an identity/address differing from the installed configuration fails setup visibly. This does not start model downloads.
+
+Electron compilation and **44 installation checks passed**, including scripted real-SDK Mac/Linux delayed startup, unhealthy startup and wrong identity. The initial Windows package completed successfully, but is superseded by a rebuild from this correction. Fresh dependency installation and both production builds also passed in the isolated Mac checkout; signing remains blocked and no Mac artifact is published.

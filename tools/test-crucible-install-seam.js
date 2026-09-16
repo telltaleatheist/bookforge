@@ -279,6 +279,72 @@ const HOST_CONFIG = 'C:\\Users\\t\\AppData\\Local\\Crucible\\config.toml';
 
 const { startFakeCrucible } = require('./fake-crucible.js');
 
+// Exercise the published SDK's real POSIX install and lifecycle driver with a
+// scripted host. No process, filesystem write, or network request can escape.
+function posixRunner(platform, start) {
+  const home = '/isolated/crucible';
+  const command = `${home}/envs/server/bin/python3`;
+  const sha = 'a'.repeat(64);
+  const files = {
+    [`${home}/config.toml`]: '[server]\nname="fixture"\nhost="127.0.0.1"\nport=7100\n[auth]\ntoken="fixture-secret"',
+    [`${home}/installation.json`]: JSON.stringify({ schema_version: 1, platform, home, release: install.CRUCIBLE_RELEASE,
+      control: { command, args: ['-m', 'crucible.cli', 'local'], cwd: home } }),
+    [command]: 'fixture',
+  };
+  return winRunner({ files, runner: {
+    platform, homedir: '/unused', env: {},
+    run: async (argv, opts) => {
+      let stdout;
+      if (argv[0] === 'bash') stdout = `home=${home}\nuser=fixture\nfree_kib=99999999\ncrucible=${home}/envs/server/bin/crucible\nsha256=${sha}\nrelease=${install.CRUCIBLE_RELEASE}\n`;
+      else if (argv[0] === 'curl') stdout = JSON.stringify({ schema: 1, version: install.CRUCIBLE_RELEASE,
+        packs: [{ name: 'server', backend: platform === 'darwin' ? 'mlx-darwin' : 'cuda-linux', python: '3.11', bytes: 1,
+          unpacked_bytes: 1, sha256: sha, parts: ['fixture.tar.zst'] }] });
+      else {
+        assert.deepStrictEqual(argv, [command, '-m', 'crucible.cli', 'local', 'start', '--json']);
+        assert.deepStrictEqual(opts.env, { CRUCIBLE_HOME: home });
+        stdout = JSON.stringify(await start());
+      }
+      return { code: 0, failure: null, stderr: '', stdout };
+    },
+    stream: async argv => {
+      assert.ok(argv[0].endsWith('/bin/crucible'), `Unexpected command ${argv}`);
+      return { code: 0, failure: null, stderr: '', stdout: '' };
+    },
+  }});
+}
+
+for (const platform of ['darwin', 'linux']) {
+  checkAsync(`${platform} install awaits healthy local start before returning`, async () => {
+    let releaseStart;
+    const waiting = new Promise(resolve => { releaseStart = resolve; });
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const steps = [];
+    const r = posixRunner(platform, async () => { entered(); return waiting; });
+    let returned = false;
+    const pending = install.driveCrucibleInstall({ ...install.bookforgeInstallOptions(() => {}, { onStep: s => steps.push(`${s.name}:${s.status}`) }),
+      home: '/isolated/crucible' }, r).then(value => { returned = true; return value; });
+    await started;
+    assert.strictEqual(returned, false, 'service registration alone is not readiness');
+    assert.ok(steps.includes('local-readiness:running'));
+    releaseStart({ schema_version: 1, state: 'running', name: 'fixture', url: 'http://127.0.0.1:7100', detail: 'ready' });
+    const result = await pending;
+    assert.strictEqual(result.steps.at(-1).name, 'local-readiness');
+    assert.strictEqual(result.steps.at(-1).status, 'ok');
+  });
+}
+
+checkAsync('POSIX installation cannot succeed when startup reports unhealthy or a different engine', async () => {
+  for (const status of [
+    { state: 'unhealthy', name: 'fixture', detail: 'Startup failed: inspect Crucible logs' },
+    { state: 'running', name: 'unrelated', detail: 'ready' },
+  ]) {
+    await assert.rejects(install.driveCrucibleInstall({ ...install.bookforgeInstallOptions(() => {}), home: '/isolated/crucible' },
+      posixRunner('darwin', async () => ({ schema_version: 1, url: 'http://127.0.0.1:7100', ...status }))),
+    /Startup failed|differs from the installed/);
+  }
+});
+
 checkAsync('fresh Windows install runs the native installer, verifies lifecycle, and never requests WSL', async () => {
   const fake = await startFakeCrucible((req, res, ctx) => {
     if (ctx.url.pathname !== '/v1/info') return false;

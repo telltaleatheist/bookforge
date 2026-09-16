@@ -222,7 +222,21 @@ export async function driveCrucibleInstall(
 ): Promise<BootstrapInstallResult> {
   const bootstrap = await import('@crucible/bootstrap');
   const host = runner ?? bootstrap.processRunner();
-  if (host.platform !== 'win32') return bootstrap.install(options, host);
+  if (host.platform !== 'win32') {
+    const installed = await bootstrap.install(options, host);
+    // Service registration can return before launchd/systemd has a healthy
+    // engine. Let its owner wait for authenticated readiness before adoption.
+    const step: InstallStep = { name: 'local-readiness', argv: [], status: 'running', detail: 'Waiting for Crucible to start' };
+    options.onStep?.(step);
+    const status = await bootstrap.startLocal(options.home === undefined ? {} : { home: options.home }, host);
+    if (status.state !== 'running') throw new CrucibleInstallError('install_failed', status.detail);
+    if (status.name !== installed.server.name || status.url !== installed.server.url) {
+      throw new CrucibleInstallError('install_failed', 'The running engine differs from the installed configuration.');
+    }
+    const done: InstallStep = { ...step, status: 'ok', detail: 'Crucible is running' };
+    options.onStep?.(done);
+    return { ...installed, steps: [...installed.steps, done] };
+  }
 
   const step: InstallStep = { name: 'native-install', argv: [], status: 'running', detail: 'Installing Crucible on Windows' };
   options.onStep?.(step);
