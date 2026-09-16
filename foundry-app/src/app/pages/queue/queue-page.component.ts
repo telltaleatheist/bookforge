@@ -1,12 +1,13 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import { ANY_SLOT } from '@shared/slots';
+import { ANY_SLOT, GPU_DIAL_ANY } from '@shared/slots';
 import type { Job } from '@shared/types';
 
+import { NoticeService } from '../../core/notice.service';
 import { QueueService } from '../../core/queue.service';
 import { QueueViewService, type SlotView } from '../../core/queue-view.service';
-import { hosted } from '../../core/foundry';
+import { api, hosted } from '../../core/foundry';
 
 /**
  * ONE BLOCK OF THE SLOT PICKER'S OPTION LIST — see `pickerGroups`.
@@ -150,6 +151,28 @@ interface PickerGroup {
       <section class="band">
         <header class="band-head">
           <h2>On the bench</h2>
+          <!--
+            THE LIVE QUEUE'S OWN MACHINE — Owen's *"on a global queue level,
+            theres a crucible server option, too"*, and it lives HERE because
+            this band is the machines: a dial about where work goes, drawn over
+            the cards it sends work to.
+
+            IT RESTRICTS RATHER THAN REDIRECTS, which is why the label says
+            "runs on" and not "prefers". A row that named a different machine
+            waits for this dial to widen (Owen: *"the queue doesnt process it
+            until the global queue unlocks the 3090 ti"*) — it is not quietly
+            sent somewhere else.
+          -->
+          @if (dialOptions().length > 1) {
+            <label class="dial">
+              <span class="dial-label">Live queue runs on</span>
+              <select [ngModel]="dial()" (ngModelChange)="setDial($event)">
+                @for (option of dialOptions(); track option) {
+                  <option [value]="option">{{ dialLabel(option) }}</option>
+                }
+              </select>
+            </label>
+          }
           <span class="note">{{ view.busySlots() }} of {{ view.slots().length }} slots in use</span>
         </header>
 
@@ -613,6 +636,22 @@ interface PickerGroup {
     /* ── Bands ─────────────────────────────────────────────────────────── */
 
     .band { margin-top: 20px; }
+    /* The FIRST auto margin in a flex row absorbs the free space, so this one
+       pushes the dial and the count together to the right and the .note rule's
+       own auto below becomes inert. When the dial is hidden — one option, so
+       there is nothing to choose — .note's auto does the job alone. Both
+       states are right; the order is what makes them right, so it is stated. */
+    .dial { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    .dial-label { font-size: 11px; color: var(--text-tertiary); }
+    .dial select {
+      font: inherit;
+      font-size: 11px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 2px 6px;
+    }
     .band-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
     .band-head h2 {
       margin: 0;
@@ -1024,6 +1063,33 @@ interface PickerGroup {
 export class QueuePageComponent {
   /** The route already refuses hosted; this is the other half. See the header. */
   protected readonly hosted = hosted;
+  private readonly notices = inject(NoticeService);
+
+  /*
+   * ── THE LIVE QUEUE'S DIAL (Owen, 2026-09-15) ─────────────────────────────
+   *
+   * Read from the registry's own view rather than from `view.slots()`, because
+   * the dial names a CRUCIBLE SERVER and the slot list is wider than that — it
+   * carries a `[cloud]` lane per server and, when there are cloud providers, a
+   * slot for each. A dial offering "Anthropic" would be a control that parks
+   * every GPU row on a lane no card belongs to.
+   *
+   * ENABLED ROWS ONLY in the picker, and that is not the same as refusing a
+   * disabled one in the file: main deliberately KEEPS a dial naming a server
+   * somebody has switched off (see the door in electron/ipc.ts), because
+   * switching a server off must not silently re-point the whole queue. So the
+   * stored value is added back below if it is not in the list — the select
+   * shows what the queue is actually using, which is the state somebody needs
+   * to see in order to leave it.
+   */
+  protected readonly dial = signal(GPU_DIAL_ANY);
+  private readonly dialServers = signal<readonly string[]>([]);
+  protected readonly dialOptions = computed(() => {
+    const names = [GPU_DIAL_ANY, ...this.dialServers()];
+    const current = this.dial();
+    return names.includes(current) ? names : [...names, current];
+  });
+
   protected readonly queue = inject(QueueService);
   protected readonly view = inject(QueueViewService);
 
@@ -1132,9 +1198,52 @@ export class QueuePageComponent {
     return this.slots().some((slot) => slot.name === option) ? option : `${option} (not available)`;
   }
 
+  /**
+   * AND THE REFUSAL IS SPOKEN, because the only way to reach one is a race a
+   * person cannot see.
+   *
+   * The picker is not drawn on a running row, so a refusal here means the pump
+   * admitted this row between the frame that was read and the click that was
+   * sent (electron/job-queue.ts `setWaitFor` argues it). Dropping that left the
+   * select showing a machine the row is not going to, with nothing to say so.
+   * Main's sentence already names what took it and what to do instead, so it is
+   * printed as it arrives rather than summarised.
+   */
+  constructor() {
+    /*
+     * HOSTED, THE REGISTRY IS THE HOST'S and so is the dial — this window does
+     * not add, remove or re-point somebody else's servers (docs/SLOTS.md §3).
+     * Reading nothing leaves `dialOptions()` at one entry, which is what hides
+     * the control, so there is no second hosted branch in the template.
+     */
+    if (!api || hosted()) return;
+    void api.crucible.settings().then((view) => {
+      this.dialServers.set(view.servers.filter((row) => row.enabled).map((row) => row.name));
+      this.dial.set(view.queueGpuDial);
+    });
+  }
+
+  /** "Any machine", or the server's own name. */
+  protected dialLabel(option: string): string {
+    if (option === GPU_DIAL_ANY) return 'Any machine';
+    return this.dialServers().includes(option) ? option : `${option} (not available)`;
+  }
+
+  /**
+   * Answered with what main STORED, not with what was sent — the clamp tidies
+   * the name, and a select redrawn from its own argument would show a dial the
+   * queue is not using.
+   */
+  protected setDial(dial: string): void {
+    if (!api || dial === this.dial()) return;
+    void api.crucible.setQueueGpuDial(dial).then((stored) => { this.dial.set(stored); });
+  }
+
   protected sendTo(job: Job, waitFor: string): void {
     if (waitFor === (job.waitFor ?? ANY_SLOT)) return;
-    void this.queue.setWaitFor(job.id, waitFor);
+    void this.queue.setWaitFor(job.id, waitFor).catch((err: unknown) => {
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
+    });
   }
 
   /** How many rows are waiting, across every book — the band's own count. */

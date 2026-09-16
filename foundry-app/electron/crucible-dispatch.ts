@@ -67,10 +67,17 @@ import {
   resolveEngine,
   slotAvailability,
 } from './crucible-registry';
-import type { CrucibleServerEntry } from './app-settings';
+import { readAppSettings, type CrucibleServerEntry } from './app-settings';
 import type { CapabilityRecord, CapabilityRow } from '../shared/engine-settings';
 import { upstreamLaneName } from '../shared/queue-board';
-import { ANY_SLOT, slotNamed, type ComputeSlot, type SlotRefusal } from '../shared/slots';
+import {
+  ANY_SLOT,
+  GPU_DIAL_ANY,
+  slotNamed,
+  type ComputeSlot,
+  type SlotRefusal,
+  type VenueSource,
+} from '../shared/slots';
 import type { LlmServerKind } from '../shared/pipeline';
 import type { JobKind, ModelClass } from '../shared/types';
 
@@ -489,8 +496,77 @@ export async function placeJob(
     return { verdict: 'refuse', reason: noEngineReason(available.refusal) };
   }
 
-  const pinned = waitFor !== undefined && waitFor !== ANY_SLOT ? waitFor : null;
-  if (pinned !== null) {
+  /*
+   * ── THE LIVE QUEUE'S DIAL, AND THE ONE PLACE THE TWO CONTROLS MEET ───────
+   *
+   * Owen, 2026-09-15: *"a queue item is in pending, then the crucible server is
+   * chosen (even if thats 'any'), and it's sent to the live queue. the live
+   * queue distributes it to the correct crucible server depending on what the
+   * live queue is set to — any, or a specific crucible server."* And the gate:
+   * *"if the queue has 'm1 ultra' set as the crucible server, but the job item
+   * is set to 3090 ti … the queue doesnt process it until the global queue
+   * unlocks the 3090 ti."*
+   *
+   * THE DIAL RESTRICTS; IT DOES NOT REDIRECT. A row that named a machine and
+   * disagrees with the dial WAITS. Sending it to the dial's machine instead
+   * would be this app overruling a choice somebody made on purpose, silently,
+   * and the row would finish on a card they did not pick.
+   *
+   * HERE AND NOT IN THE PUMP, because this is the function that already owns
+   * "which machine does this row want" and every sentence about not getting
+   * one. A second gate in `canStart` would be a second answer to that question,
+   * and `canStart` has no sentence to say — it returns a boolean, so a row it
+   * refused would sit queued with nothing on it (`docs/SLOTS.md`: *"a row that
+   * neither fails nor finishes is worse than either"*).
+   *
+   * THE SOURCE TRAVELS WITH THE CHOICE from this line onwards. `row` when the
+   * book named the machine, `dial` when the book said Any and the dial chose —
+   * see {@link VenueSource}, and `orAnyWords`, which is the only reason the
+   * distinction is carried at all.
+   *
+   * ── AND IT IS ONE VALUE, NOT TWO, SO A SOURCE CANNOT OUTLIVE ITS VENUE ────
+   *
+   * This was `let pinned` beside `let source: VenueSource = 'row'`, which was
+   * correct only by an argument: `source` is read where `pinned` is non-null,
+   * and in the both-open case (the book says Any and so does the dial) `pinned`
+   * is null, so the `'row'` initialiser — the WRONG tail for that case, since
+   * the book already says Any — was never reached. Safe, and safe by reasoning
+   * about a path rather than by construction.
+   *
+   * BookForge's module has no such initialiser and said plainly why: their
+   * `source` is a REQUIRED parameter, so *"if I had written a default it would
+   * have been 'row' and it would have had exactly your bug. The thing that saved
+   * it was making the parameter required."* The same shape here is one nullable
+   * object: there is no source without the machine it describes, so the default
+   * that could be wrong has nowhere to live.
+   */
+  const dial = readAppSettings().queueGpuDial;
+  const asked = waitFor !== undefined && waitFor !== ANY_SLOT ? waitFor : null;
+  if (dial !== GPU_DIAL_ANY && asked !== null && asked.toLowerCase() !== dial.toLowerCase()) {
+    /*
+     * THE DISAGREEMENT, and it is a TRANSIENT wait rather than a refusal: the
+     * dial is one control away from agreeing, and failing the row would throw
+     * its queue position away for a gesture somebody is about to make. It is
+     * `dial`-sourced, so the tail says to turn the dial — telling somebody to
+     * set this book to Any would be telling them to abandon the machine they
+     * deliberately chose.
+     */
+    return transientWait(
+      `waiting for "${asked}", and the queue's GPU dial is set to "${dial}"`
+      + `${orAnyWords('dial')}`,
+    );
+  }
+  /*
+   * Past the disagreement there are exactly three shapes, and each carries its
+   * own source: the dial chose (the book asked for nothing), the book chose
+   * (with the dial open, or agreeing), or nobody chose and the walk decides.
+   */
+  const venue: { name: string; source: VenueSource } | null = dial !== GPU_DIAL_ANY
+    ? { name: dial, source: asked === null ? 'dial' : 'row' }
+    : asked === null ? null : { name: asked, source: 'row' };
+
+  if (venue !== null) {
+    const pinned = venue.name;
     const slot = slotNamed(slots, pinned);
     if (slot === null) {
       /*
@@ -515,8 +591,16 @@ export async function placeJob(
        * "any") at the moment the switch is flipped, so nobody has to find this
        * sentence to learn what happened.
        */
+      /*
+       * THE SOURCE IS WHY THIS SENTENCE IS NOT A CONSTANT. The machine that is
+       * switched off may be the one the BOOK named or the one the DIAL named,
+       * the cause reads identically either way, and the two want opposite
+       * gestures. Before the dial existed there was only one source and the
+       * tail could be assumed; it cannot be now.
+       */
       return transientWait(
-        `waiting for "${pinned}", which is switched off or no longer registered`,
+        `waiting for "${pinned}", which is switched off or no longer registered`
+        + `${orAnyWords(venue.source)}`,
       );
     }
     /*
@@ -567,6 +651,28 @@ export async function placeJob(
       reason: `no slot can ${capability} — ${reasons.join('; ')}. ${whatToDoAbout(capability)}`,
     }
     : transientWait(`no slot is free — ${reasons.join('; ')}`);
+}
+
+/**
+ * THE TAIL OF EVERY PARKED SENTENCE — and the ONE thing it has to get right is
+ * which control the person should reach for.
+ *
+ * BookForge's `orAny(source)`, adopted on their advice that it is the single
+ * most important thing to copy from their queue. The failure it prevents is
+ * silent: every cause a row can park for arises under BOTH sources, the cause
+ * does not say which, and telling somebody whose book already says Any to *"set
+ * this book to Any"* is telling them to do the thing they have already done. A
+ * person who follows that instruction, finds it changes nothing, and reads the
+ * same sentence again has been told to fix the wrong control by an app that
+ * sounded certain.
+ *
+ * See {@link VenueSource}. It is a space-prefixed clause rather than a sentence
+ * so the caller composes one sentence and not two.
+ */
+function orAnyWords(source: VenueSource): string {
+  return source === 'dial'
+    ? ". Turn the queue's GPU dial to Any to let it run anywhere"
+    : '. Set this job to Any to let it run anywhere';
 }
 
 /**

@@ -1576,6 +1576,41 @@ export function seedHostQueueRows(projectDir: string): void {
  * start already says so from inside `executeJob`, through `runJob` as much as
  * through `pump`, and a busy signal always beats a pending idle timer.
  */
+/**
+ * THE RULES ABOUT WHERE WORK MAY GO HAVE CHANGED — the live queue's dial moved.
+ *
+ * ── Why every park is forgotten and not just one ──────────────────────────
+ *
+ * `setWaitFor` forgets ONE row's park, because one row was re-pointed. The dial
+ * is the other control (`GPU_DIAL_ANY`, shared/slots.ts) and it applies to the
+ * whole board: turning it from "3090 Ti" to Any can free every row that was
+ * parked for disagreeing with it, and turning it TO a machine can park rows that
+ * were about to run. So the backoff every parked row is sitting out is now a
+ * timer counting down against a question that has changed, and making somebody
+ * wait thirty seconds for a decision they made with a click is the app arguing
+ * with the gesture — `setWaitFor`'s own reasoning, one control along.
+ *
+ * ── AND THE STALE SENTENCE GOES WITH IT ───────────────────────────────────
+ *
+ * A parked row wears the reason it was turned away ("the queue's GPU dial is set
+ * to X"). Leaving that on a row after the dial moved would be the shelf
+ * reporting a wait that has been resolved — the defect `setWaitFor` deletes
+ * `job.message` to avoid. The next pass writes a true one, or starts the row.
+ */
+export function venueRulesChanged(): void {
+  let woke = false;
+  for (const job of jobs) {
+    if (job.state !== 'queued') continue;
+    forgetPark(job.id);
+    if (job.message !== undefined) {
+      delete job.message;
+      woke = true;
+    }
+  }
+  if (woke) changed();
+  if (jobs.some((job) => job.state === 'queued')) void pump();
+}
+
 export function hostQueueDrained(): void {
   noteQueueIdle(readAppSettings().keepServerWarmMinutes);
   // AND IT IS NEWS TOO, on `setHostQueueRows`' reasoning and more sharply: the
@@ -2148,6 +2183,33 @@ export function start(): number {
 }
 
 /**
+ * A ROUTING GESTURE THIS QUEUE WILL NOT PERFORM, with the reason as a NAME.
+ *
+ * The name is the contract and the sentence is the surface: BookForge throws the
+ * same `venue_fixed_at_admission` from its own `setWaitFor`, agreed 2026-09-15,
+ * so two queues refusing one state refuse it with one word. A caller that wants
+ * to branch reads `code`; a caller that wants to tell somebody prints `message`,
+ * which is already a whole sentence and needs nothing added to it.
+ *
+ * IT IS A THROW rather than a returned union because every OTHER outcome of
+ * `setWaitFor` is "it happened", and an `{outcome}` union would make all three
+ * callers unwrap a success they cannot act on. The two doors that a person
+ * drives catch it; the push door does not, because there is nobody there to
+ * tell (electron/ipc.ts says so at the handler).
+ */
+export class QueueRoutingRefusal extends Error {
+  constructor(readonly code: 'venue_fixed_at_admission' | 'already_finished', message: string) {
+    super(message);
+    this.name = 'QueueRoutingRefusal';
+  }
+}
+
+/** What the shelf calls a row — `labelFor`'s fallback, in one place. */
+function rowName(job: Job): string {
+  return job.title ?? path.basename(job.outputPath);
+}
+
+/**
  * SEND THIS ROW SOMEWHERE ELSE — the picker's one gesture.
  *
  * ── Only a row that has not started ────────────────────────────────────────
@@ -2156,8 +2218,28 @@ export function start(): number {
  * atomic."* A `running` row has an engine talking to a server, a records file
  * filling up with that server's answers, and a stamp about to record the model
  * that produced them; moving it would mean one book translated by two machines
- * and one file claiming both. So this refuses silently — the picker is not drawn
- * on a running row, and this is the door behind that.
+ * and one file claiming both.
+ *
+ * ── IT USED TO REFUSE SILENTLY, AND THE RACE IS WHY THAT WAS WRONG ─────────
+ *
+ * The argument for silence was *"the picker is not drawn on a running row, and
+ * this is the door behind that"* — a guard behind a control nobody is offered.
+ * That holds for a row somebody can see is running. It does NOT hold for the one
+ * case that actually reaches here: the picker IS drawn on a `queued` row, and
+ * since `3b13392` a start *"marks running before its first await"*, so the pump
+ * can admit that row between the frame a person read and the message their click
+ * sent. The edit then vanished — no change, no sentence, and a picker still
+ * showing the machine they had just chosen.
+ *
+ * So a row that has started refuses BY NAME, and the name is BookForge's:
+ * `venue_fixed_at_admission`, agreed 2026-09-15 so that two queues describe one
+ * state with one word. Their sentence says the three things a person needs —
+ * what took it, that nothing was altered, and the way out — and this says the
+ * same three in Foundry's vocabulary.
+ *
+ * A FINISHED ROW GETS ITS OWN SENTENCE rather than that one. "A GPU took it
+ * before your change arrived" is false about a row that ran an hour ago, and a
+ * refusal that misdescribes why is worse than none.
  *
  * ── A PARKED ROW IS FREED THE MOMENT IT IS REASSIGNED ──────────────────────
  *
@@ -2176,7 +2258,21 @@ export function start(): number {
 export function setWaitFor(id: string, waitFor: string): void {
   const job = jobs.find((row) => row.id === id);
   if (job === undefined) return;
-  if (job.state !== 'held' && job.state !== 'queued') return;
+  if (job.state === 'running') {
+    throw new QueueRoutingRefusal(
+      'venue_fixed_at_admission',
+      `"${rowName(job)}" was taken by a GPU on ${job.ranOn ?? 'a server'} before this change `
+      + 'arrived, and a book finishes on the machine it started on. Nothing has been '
+      + 'altered. Cancel it and add it again to send it somewhere else.',
+    );
+  }
+  if (job.state !== 'held' && job.state !== 'queued') {
+    throw new QueueRoutingRefusal(
+      'already_finished',
+      `"${rowName(job)}" has already ${job.state === 'cancelled' ? 'been cancelled' : 'finished'}, `
+      + 'so there is nowhere left to send it. Add it again to run it somewhere else.',
+    );
+  }
   const wanted = waitFor.trim();
   if (wanted.length === 0 || wanted === job.waitFor) return;
   /*

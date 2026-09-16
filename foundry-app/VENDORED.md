@@ -10,10 +10,40 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **44b5b8a** — *fix(registry): one engine, one entry — both doors refuse a duplicate address* |
+| Source sha | **3b65be5** — *refactor(dispatch): fuse the venue source to the venue so no default can be wrong* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-15 |
-| Copied by | `git -C <foundry> archive 44b5b8a app | tar -x --strip-components=1` — no deletions in this range |
+| Copied by | `git -C <foundry> archive 3b65be5 app | tar -x --strip-components=1` — no deletions in this range |
+
+## The `44b5b8a → 3b65be5` re-vendor (2026-09-16)
+
+Three commits, no deletions, 169/169 blobs verified, `dist/` rebuilt.
+
+- **`3452e71`** — an edit racing admission refuses BY NAME instead of vanishing.
+  Foundry's `setWaitFor` opened with a bare return for any state but held or
+  queued; the picker IS drawn on a queued row and their pump marks running before
+  its first await, so a click could land between the frame a person read and the
+  row being admitted — and the edit silently did nothing. They took BookForge's
+  `venue_fixed_at_admission` for the running case and added `already_finished`
+  for terminal ones, because "a GPU took it before your change arrived" is false
+  about a row that ran an hour ago.
+- **`d3529bd`** — the live queue's GPU dial, mirroring
+  `docs/PENDING-QUEUE-AND-GPU-DIAL.md`. Owen ruled that Foundry's existing `held`
+  state IS the pending band rather than a second band in front of it. Their dial
+  RESTRICTS and does not redirect, independently matching `decideWaitFor`.
+- **`3b65be5`** — `{name, source} | null` instead of a venue with a defaulted
+  source beside it.
+
+The third one came out of a BookForge observation and is worth keeping. Our
+`VenueSource` has no default — not by foresight, but because the parameter is
+required and every call site passes a literal. Said plainly to Foundry, whose
+version was safe only because a path could not be reached, which is a claim that
+decays the moment somebody adds a branch. They restructured so the wrong default
+has nowhere to LIVE rather than nowhere to be read.
+
+That is the same shape as `waitForResolved` being its own lock: no separate flag
+beside a resolved venue, no separate source beside a venue that might be absent.
+Both make the bad state unconstructible instead of unreachable.
 
 ## The `75e53b3 → 44b5b8a` re-vendor (2026-09-16)
 

@@ -103,6 +103,55 @@ export interface SlotAvailability {
 export const ANY_SLOT = 'any';
 
 /**
+ * THE LIVE QUEUE'S OWN CHOICE OF MACHINE — Owen's *"global crucible server
+ * option"*, and the second of the two controls that decide where a row runs.
+ *
+ * Owen, 2026-09-15, settling the shape: *"a queue item is in pending, then the
+ * crucible server is chosen (even if thats 'any'), and it's sent to the live
+ * queue. the live queue distributes it to the correct crucible server depending
+ * on what the live queue is set to — any, or a specific crucible server, from
+ * the list."* And the gate, from the same ruling: *"if the queue has 'm1 ultra'
+ * set as the crucible server, but the job item is set to 3090 ti, and it's added
+ * to the queue, the queue doesnt process it until the global queue unlocks the
+ * 3090 ti."*
+ *
+ * So the dial is a RESTRICTION and not merely a fallback. A row whose own choice
+ * disagrees with it WAITS — it does not get quietly sent somewhere else, because
+ * somebody named that machine on purpose and moving the work would be the app
+ * overruling them silently.
+ *
+ * ── IT IS THE SAME LITERAL AS {@link ANY_SLOT}, DELIBERATELY ───────────────
+ *
+ * BookForge aliases theirs the same way (`GPU_DIAL_ANY` = `WAIT_FOR_ANY`) and
+ * warned us to: two controls that both mean "whatever is free" and spell it
+ * differently are two spellings that drift, and then one screen's "Any" stops
+ * matching the other's. One literal, two names, and the names exist so a reader
+ * can see WHICH control a given call site is talking about.
+ */
+export const GPU_DIAL_ANY = ANY_SLOT;
+
+/**
+ * WHO CHOSE THE MACHINE A PARKED ROW IS WAITING FOR — and the reason the
+ * parked sentences are a 2xN rather than a list.
+ *
+ * BookForge's `VenueSource`, adopted verbatim on their advice — *"if Foundry
+ * only mirrors one thing from this message, make it VenueSource"* — and the
+ * argument is the failure it prevents:
+ *
+ *   `row`  — the BOOK names the server. The way out is to re-point the book.
+ *   `dial` — the book said Any and THE QUEUE'S DIAL chose. The way out is to
+ *            turn the dial.
+ *
+ * Every cause a row can be parked for (the machine is switched off, unreachable,
+ * no longer registered, nothing enabled at all) can arise under either source,
+ * and the CAUSE does not tell you which. Telling somebody whose book already
+ * says Any to *"set this book to Any"* is telling them to do the thing they have
+ * already done — a wrong-cause sentence that is invisible unless the source
+ * travels beside the cause. {@link orAnyWords} renders the tail.
+ */
+export type VenueSource = 'row' | 'dial';
+
+/**
  * THE LONGEST A SLOT NAME MAY BE — 48 characters, and the number is shared with
  * BookForge so that a name accepted in one app is accepted in the other.
  *
@@ -501,6 +550,15 @@ export interface CrucibleSettingsView {
   /** The slot list as it stands — what the pickers will show. */
   slots: ComputeSlot[];
   newJobsWaitFor: NewJobsWaitFor;
+  /**
+   * THE LIVE QUEUE'S OWN MACHINE — {@link GPU_DIAL_ANY} or a server's name.
+   *
+   * Beside the slot list rather than in a read of its own, because the control
+   * that sets it is a picker OVER that list: a screen that read the dial and the
+   * slots separately could draw a dial naming a server its own list does not
+   * have, which is the state the picker exists to let somebody out of.
+   */
+  queueGpuDial: string;
   /**
    * The WSL distro the local-Crucible read looks in. Empty means unset, and
    * unset is refused rather than defaulted: *"the default distro"* is whatever

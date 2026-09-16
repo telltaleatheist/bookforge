@@ -3407,10 +3407,15 @@ export function registerIpc(): void {
    * THE ROW PICKER'S ONE DOOR — send this row to a different slot.
    *
    * `waitFor` is a slot name or `any` (`ANY_SLOT`, shared/slots.ts). Nothing is
-   * answered: the change publishes on `queue:changed` like every other change to
-   * a row, and a handler returning the row would be a second copy of it racing
-   * the push. Refused silently for a row that has started — see `setWaitFor`,
-   * which carries the atomicity argument.
+   * answered on the way OUT: the change publishes on `queue:changed` like every
+   * other change to a row, and a handler returning the row would be a second
+   * copy of it racing the push.
+   *
+   * A REFUSAL IS NOT NOTHING, THOUGH, and it is deliberately not swallowed here.
+   * `setWaitFor` throws a `QueueRoutingRefusal` for a row a GPU has already
+   * taken — the race it argues at length — and the throw crosses the preload as
+   * a rejected invoke so the picker that sent it can say the sentence. Catching
+   * it here would restore exactly the silence that made the race invisible.
    */
   ipcMain.handle('queue:set-wait-for', (_event, id: string, waitFor: string) => {
     queue.setWaitFor(id, waitFor);
@@ -3940,6 +3945,26 @@ export function registerIpc(): void {
   });
   ipcMain.handle('crucible:set-wsl-distro', (_event, distro: string) =>
     writeAppSettings({ wslDistro: distro }).wslDistro);
+  /**
+   * THE LIVE QUEUE'S DIAL — Owen's *"global crucible server option"*.
+   *
+   * ANY NAME IS ACCEPTED, including one no server currently answers to, and the
+   * clamp is the only thing between the argument and the file. That is the same
+   * decision BookForge took and for the reason they gave: a dial pointing at a
+   * machine somebody has switched off must KEEP its value, or turning a server
+   * off would silently re-point the queue at a different one. "Switched off",
+   * "renamed" and "never existed" are one state to a settings writer, and the
+   * PLACEMENT is where they are told apart and said out loud.
+   *
+   * The pump is woken because a dial that has just been widened is a dial that
+   * may have unparked something, and a board that has gone quiet would otherwise
+   * sit on that row until somebody pressed something else.
+   */
+  ipcMain.handle('crucible:set-queue-gpu-dial', (_event, dial: string) => {
+    const stored = writeAppSettings({ queueGpuDial: dial }).queueGpuDial;
+    queue.venueRulesChanged();
+    return stored;
+  });
   ipcMain.handle('crucible:set-new-jobs-wait-for', (_event, choice: NewJobsWaitFor) =>
     writeAppSettings({ newJobsWaitFor: choice }).newJobsWaitFor);
   /*

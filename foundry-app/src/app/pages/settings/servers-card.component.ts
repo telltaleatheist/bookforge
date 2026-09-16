@@ -71,6 +71,7 @@ import {
 import { FormsModule } from '@angular/forms';
 
 import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible-doors.component';
+import { NoticeService } from '../../core/notice.service';
 import { cardWords, coordinationWords } from '../../core/crucible-words';
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import { ANY_SLOT } from '@shared/slots';
@@ -353,6 +354,8 @@ interface EditableServer extends CrucibleServerView {
   `],
 })
 export class ServersCardComponent {
+  private readonly notices = inject(NoticeService);
+
   private readonly queue = inject(QueueService);
 
   /** The words file's, exposed because a template cannot call a bare import. */
@@ -562,10 +565,34 @@ export class ServersCardComponent {
     );
   }
 
-  /** One press, one row at a time, each through the same door the picker uses. */
+  /**
+   * One press, one row at a time, each through the same door the picker uses.
+   *
+   * ── A ROW THAT CANNOT BE MOVED MUST NOT STOP THE ONES THAT CAN ───────────
+   *
+   * `setWaitFor` refuses a row a GPU has already taken (`QueueRoutingRefusal`,
+   * electron/job-queue.ts), and in a LOOP that refusal is likely rather than
+   * exotic: this press exists because a server was switched off, which is
+   * exactly when the other slots are picking work up. An unguarded `await` would
+   * abort on the first such row and silently leave every row after it pinned to
+   * a machine that is gone — the press half-done, reporting success.
+   *
+   * So each row is caught on its own and the ones that would not move are
+   * COUNTED and named. Owen's rule for a server going away is *"told, never
+   * moved silently"*, and a row that is mid-run on another machine is a row the
+   * person should be told about rather than one this press should keep trying.
+   */
   protected async freeOrphans(): Promise<void> {
     if (!api) return;
-    for (const job of this.orphans()) await api.queue.setWaitFor(job.id, ANY_SLOT);
+    const stuck: string[] = [];
+    for (const job of this.orphans()) {
+      try {
+        await api.queue.setWaitFor(job.id, ANY_SLOT);
+      } catch (err) {
+        stuck.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (stuck.length > 0) this.notices.notice.set(stuck.join(' '));
     await this.refreshOrphans();
   }
 }

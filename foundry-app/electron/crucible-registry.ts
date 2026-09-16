@@ -1481,6 +1481,7 @@ export function crucibleSettingsView(): CrucibleSettingsView {
     servers: crucibleServerViews(),
     slots: computeSlots(),
     newJobsWaitFor: settings.newJobsWaitFor,
+    queueGpuDial: settings.queueGpuDial,
     wslDistro: settings.wslDistro,
     hosted: hosted(),
   };

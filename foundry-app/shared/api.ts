@@ -1457,6 +1457,14 @@ export interface FoundryApi {
     /** What a new row's `waitFor` starts as. Answered with what was stored. */
     setNewJobsWaitFor(choice: NewJobsWaitFor): Promise<NewJobsWaitFor>;
     /**
+     * THE LIVE QUEUE'S DIAL — a server name or `any` (`GPU_DIAL_ANY`).
+     *
+     * Answered with what was STORED, like every other setting door in this
+     * app: the clamp tidies the name, and a control that redrew from what it
+     * sent would show a dial the queue is not actually using.
+     */
+    setQueueGpuDial(dial: string): Promise<string>;
+    /**
      * THE HAND SEQUENCE FOR INSTALLING A CRUCIBLE ON THIS MACHINE — every
      * command, in order, with the elevated ones listed apart.
      *

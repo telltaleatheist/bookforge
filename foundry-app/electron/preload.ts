@@ -254,6 +254,7 @@ const api: FoundryApi = {
     setWslDistro: (distro) => ipcRenderer.invoke('crucible:set-wsl-distro', distro),
     open: (name) => ipcRenderer.invoke('crucible:open', name),
     setNewJobsWaitFor: (choice) => ipcRenderer.invoke('crucible:set-new-jobs-wait-for', choice),
+    setQueueGpuDial: (dial) => ipcRenderer.invoke('crucible:set-queue-gpu-dial', dial),
     installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
     install: () => ipcRenderer.invoke('crucible:install'),
     /*

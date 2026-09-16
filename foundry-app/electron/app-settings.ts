@@ -23,6 +23,7 @@ import { hostedLibraryDir } from './host';
 import { readJson } from '../shared/json';
 import {
   ANY_SLOT,
+  GPU_DIAL_ANY,
   slotNameRefusal,
   tidySlotName,
   type CloudProviderKind,
@@ -257,6 +258,30 @@ export interface AppSettings {
    */
   newJobsWaitFor: NewJobsWaitFor;
   /**
+   * THE LIVE QUEUE'S OWN MACHINE — Owen's *"global crucible server option"*, a
+   * registered server's name or {@link GPU_DIAL_ANY}.
+   *
+   * ── Why it is here and not in a file of its own ──────────────────────────
+   *
+   * BookForge keeps theirs in `queue-gpu-dial.json`. This app has ONE settings
+   * file with ONE clamping reader, and the dial is the same KIND of fact as the
+   * field above it — a standing choice about where work goes, made once, read by
+   * the queue. A second file would be a second place to look, a second corrupt-
+   * file story and a second migration, for one string.
+   *
+   * ── AN UNKNOWN NAME IS KEPT, NOT DROPPED, AND THAT IS THE HARD PART ──────
+   *
+   * {@link clampQueueGpuDial} cannot ask the registry — this module IS the
+   * registry's storage and a clamp that read the server list would be a cycle.
+   * So a name that is not a server survives the read, and the PLACEMENT says so
+   * by name. That is the right division anyway: a dial naming a server somebody
+   * has temporarily switched off must keep its value (BookForge accepts a
+   * disabled server for exactly this reason — refusing here would force somebody
+   * to resolve two controls in one particular order), and "switched off" and
+   * "never existed" are not distinguishable at the moment of a file read.
+   */
+  queueGpuDial: string;
+  /**
    * WHICH WSL GUEST THE LOCAL CRUCIBLE LIVES IN — Windows only, and read for
    * exactly one thing: `cat`ting that server's own `config.toml`.
    *
@@ -470,6 +495,24 @@ export function clampAnalysisCategories(value: unknown): CustomAnalysisCategory[
  */
 export function clampNewJobsWaitFor(value: unknown): NewJobsWaitFor {
   return value === ANY_SLOT ? ANY_SLOT : 'top';
+}
+
+/**
+ * THE LIVE QUEUE'S DIAL, or {@link GPU_DIAL_ANY} for anything unreadable.
+ *
+ * A MISSING RECORD IS "ANY", which is the only safe default: a dial that
+ * defaulted to a machine would silently pin every row on a fresh install to
+ * whichever server happened to be named, and nobody would have chosen it.
+ *
+ * The name is put through {@link tidySlotName} so the stored dial is comparable
+ * to a stored server name by the same rule the registry stores one under — a
+ * dial carrying trailing whitespace would match no slot and park every row with
+ * a sentence naming a server that looks exactly right.
+ */
+export function clampQueueGpuDial(value: unknown): string {
+  if (typeof value !== 'string') return GPU_DIAL_ANY;
+  const tidied = tidySlotName(value);
+  return tidied.length === 0 ? GPU_DIAL_ANY : tidied;
 }
 
 /**
@@ -743,6 +786,7 @@ export function readAppSettings(): AppSettings {
     crucibleServers: clampCrucibleServers(raw?.['crucibleServers']),
     cloudProviders: clampCloudProviders(raw?.['cloudProviders']),
     newJobsWaitFor: clampNewJobsWaitFor(raw?.['newJobsWaitFor']),
+    queueGpuDial: clampQueueGpuDial(raw?.['queueGpuDial']),
     wslDistro: clampWslDistro(raw?.['wslDistro']),
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
