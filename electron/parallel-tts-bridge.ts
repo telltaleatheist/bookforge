@@ -3920,6 +3920,8 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
     if (mainWindow) {
       rendererSend('parallel-tts:progress', {
         jobId: session.jobId,
+        // NO STAGE AT ALL when there is no aligner: an empty bar labelled
+        // "Aligning" would report a step this run is never going to take.
         progress: postRenderAlignProgress(session, 'Chunk alignment skipped — no aligner env'),
       });
     }
@@ -3936,12 +3938,24 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
     progress: { percentage: number; processed?: number; total?: number; message?: string };
   }>('coverage-align:progress', (event) => {
     if (event.jobId !== stepId) return;
-    const counted = event.progress.total
-      ? ` (chunk ${event.progress.processed ?? 0}/${event.progress.total})`
-      : '';
+    const total = event.progress.total ?? 0;
+    const processed = event.progress.processed ?? 0;
+    const counted = total > 0 ? ` (chunk ${processed}/${total})` : '';
+    /*
+     * THE BAR READS THE CHUNKS, not the job's own `percentage`. The aligner
+     * reports both and the chunk pair is the one that is about THIS stage;
+     * `percentage` is its share of a run it does not know the shape of. A total
+     * of 0 is "it has not said yet", which is a running stage at 0 rather than
+     * a division nobody would see fail.
+     */
+    const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
     rendererSend('parallel-tts:progress', {
       jobId: session.jobId,
-      progress: postRenderAlignProgress(session, `Aligning chunks (qwen3)…${counted}`),
+      progress: postRenderAlignProgress(session, `Aligning chunks (qwen3)…${counted}`, {
+        pct,
+        status: 'running',
+        label: 'Aligning transcript (qwen3)',
+      }),
     });
   });
 
@@ -3978,10 +3992,40 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
         + `estimated transcript: ${result.error}`;
       console.warn(`[PARALLEL-TTS] ${message}`);
       await logger.log('WARN', session.jobId, message);
+      /*
+       * AND INTO THE TTS LOG, which is the one a person actually opens.
+       *
+       * `logger` here is the AUDIOBOOK logger, which writes into the LIBRARY's
+       * own `logs/` directory — and on 2026-09-15 that directory held nothing
+       * newer than August, so this reason had been going nowhere for a month.
+       * The renderer got "Chunk alignment failed — estimated transcript" and the
+       * only copy of WHY was on a console nobody was attached to. A refusal that
+       * names its cause into a file that is never written is a refusal that
+       * names nothing.
+       */
+      getTTSLogger().warn(message);
       if (mainWindow) {
         rendererSend('parallel-tts:progress', {
           jobId: session.jobId,
-          progress: postRenderAlignProgress(session, 'Chunk alignment failed — estimated transcript'),
+          /*
+           * A FAILED ALIGN IS A FINISHED STAGE, and the label is where it says
+           * so. There is no `failed` among the three stage statuses, and
+           * leaving it `running` would spin a bar over a stage that has
+           * stopped — so it completes, and carries the outcome in its name.
+           * The audiobook is fine; it has the estimated transcript.
+           */
+          /*
+           * THE REASON TRAVELS TO THE PAGE. It used to read "Chunk alignment
+           * failed — estimated transcript" and stop, which tells somebody that
+           * something went wrong and nothing about what, on the one surface
+           * they are actually looking at. Trimmed, because this is a row label
+           * and the untruncated form is in the log beside it.
+           */
+          progress: postRenderAlignProgress(session, alignFailureLine(result.error), {
+            pct: 100,
+            status: 'complete',
+            label: 'Aligning transcript — failed, estimate kept',
+          }),
         });
       }
       return;
@@ -3992,6 +4036,22 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
       + (retake.length > 0 ? ` — retake: ${retake.join(',')}` : '');
     console.log(`[PARALLEL-TTS] ${message}`);
     await logger.log('INFO', session.jobId, message);
+    /*
+     * AND THE STAGE CLOSES. Without this the bar stops wherever the last chunk
+     * event left it — 263 of 376 if the final events arrive together — and a
+     * finished pass reads as one that stalled. The failure path above closes it
+     * too; every way out of this function leaves the stage at 100.
+     */
+    if (mainWindow) {
+      rendererSend('parallel-tts:progress', {
+        jobId: session.jobId,
+        progress: postRenderAlignProgress(session, message, {
+          pct: 100,
+          status: 'complete',
+          label: 'Aligning transcript (qwen3)',
+        }),
+      });
+    }
   } finally {
     unsubscribe();
   }
@@ -4007,18 +4067,59 @@ async function runPostRenderAlignment(session: ConversionSession): Promise<void>
  * post-render pass is running" state and the MESSAGE says which pass — the same
  * decision `denoiseSentences` and `enhanceSentences` made above.
  */
-function postRenderAlignProgress(session: ConversionSession, message: string): AggregatedProgress {
+/**
+ * The TTS row during the post-render align.
+ *
+ * `align` IS THE POINT AND IT USED NOT TO EXIST. The aligner reports
+ * `processed`/`total` on every chunk and this function used to throw both away,
+ * hardcode `percentage: 95` and put the count in the MESSAGE — so the page said
+ * "Aligning chunks (qwen3)… (chunk 263/376)" beside a bar that had not moved
+ * since conversion ended and would not move again. The numbers were always
+ * there; nothing carried them to a bar.
+ */
+/**
+ * The one line the queue row shows when the align fails, reason and all.
+ *
+ * The audiobook is FINE and the sentence says so first: the estimated
+ * transcript is what it would have had anyway, and the align is the pass that
+ * improves it. What follows is the cause, trimmed to something a row can hold.
+ */
+function alignFailureLine(error: unknown): string {
+  const reason = String(error ?? '').replace(/\s+/g, ' ').trim();
+  if (reason === '') {
+    // NOT "unknown error". If the aligner failed and said nothing, that is
+    // itself the thing to report, and it is a different bug from a failure
+    // that explained itself.
+    return 'Chunk alignment failed and gave no reason — estimated transcript kept';
+  }
+  const short = reason.length > 160 ? `${reason.slice(0, 157)}…` : reason;
+  return `Chunk alignment failed — estimated transcript kept: ${short}`;
+}
+
+function postRenderAlignProgress(
+  session: ConversionSession,
+  message: string,
+  align?: AlignStageState,
+): AggregatedProgress {
   return {
     phase: 'enhancing',
     totalSentences: session.prepInfo!.totalSentences,
     completedSentences: session.prepInfo!.totalSentences,
     completedInSession: session.isResumeJob
       ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
+    /*
+     * The OVERALL bar still moves through the align, because `aligning` now
+     * carries a weight of its own — 95 was a number picked to mean "nearly
+     * done" and it stuck there for the entire model call.
+     */
     percentage: 95,
     activeWorkers: 0,
     workers: session.workers,
     estimatedRemaining: 0,
     message,
+    ...(align === undefined ? {} : {
+      stages: buildTtsStages(session, { convertPct: 100, align }),
+    }),
   };
 }
 
@@ -5477,14 +5578,35 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
  * so the two can never drift apart.
  */
 function ttsStageWeights(skipAssembly: boolean): Record<string, number> {
+  /*
+   * `aligning` earns a share of its own because it is a MODEL CALL, not
+   * bookkeeping — Qwen3 over every chunk of the book, minutes of it. Owen,
+   * 2026-09-15: *"i thought aligning text after it's rendered was its own step.
+   * its fine that its not... but if we're going to keep it as part of the
+   * broader TTS step, which is defensible, then it should get its own progress
+   * bar. especially since it's its own model call."* Taken out of `converting`,
+   * which had been quietly paying for it: the overall bar used to sit at 95%
+   * through the whole align with nothing moving.
+   */
   return skipAssembly
-    ? { preparing: 0.05, loading: 0.10, converting: 0.85 }
-    : { preparing: 0.04, loading: 0.08, converting: 0.73, assembling: 0.15 };
+    ? { preparing: 0.05, loading: 0.10, converting: 0.80, aligning: 0.05 }
+    : { preparing: 0.04, loading: 0.08, converting: 0.68, aligning: 0.05, assembling: 0.15 };
+}
+
+/**
+ * The align stage's state, when the run has reached it. Absent before that, and
+ * absent for a run with no aligner env at all — a bar that can only ever read
+ * 0% is the same lie the assembly bar refuses to tell below.
+ */
+interface AlignStageState {
+  readonly pct: number;
+  readonly status: JobStageProgress['status'];
+  readonly label: string;
 }
 
 function buildTtsStages(
   session: ConversionSession,
-  opts: { convertPct: number; assemblyPct?: number; done?: boolean }
+  opts: { convertPct: number; assemblyPct?: number; done?: boolean; align?: AlignStageState }
 ): JobStageProgress[] {
   const weights = ttsStageWeights(session.config.skipAssembly === true);
   const stage = (
@@ -5531,6 +5653,17 @@ function buildTtsStages(
       opts.convertPct,
       assembling || opts.convertPct >= 100 ? 'complete' : (converting ? 'running' : 'pending')),
   ];
+
+  /*
+   * ALIGNING, BETWEEN CONVERTING AND ASSEMBLING, which is where it runs
+   * (`runPostRenderAlignment` is awaited before `runAssembly`). Present only
+   * once the run has reached it: the aligner env may not exist, in which case
+   * the phase is skipped outright and a stage nobody will ever fill has no
+   * business on the page.
+   */
+  if (opts.align !== undefined) {
+    stages.push(stage('aligning', opts.align.label, opts.align.pct, opts.align.status));
+  }
 
   // When a separate assembly STEP follows in the chain, this job never assembles —
   // showing a bar that can only ever read 0% would be a lie.
