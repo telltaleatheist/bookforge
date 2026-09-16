@@ -210,6 +210,25 @@ export const RESERVED_SET_IDS: readonly string[] = [
  * fallback. The pair simply cannot exist, which is what makes the exact lookup
  * safe.
  */
+/**
+ * A URL reduced to the thing that decides whether two rows are one engine.
+ *
+ * Scheme, host and port, lower-cased, with the default port made explicit and
+ * any path dropped — so `http://localhost:7100/`, `http://LOCALHOST:7100` and
+ * `http://localhost:7100` are one address. A URL that does not parse answers
+ * itself, so an unparseable pair still collides with an identical unparseable
+ * pair rather than silently being allowed twice.
+ */
+export function originKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const port = parsed.port !== '' ? parsed.port : (parsed.protocol === 'https:' ? '443' : '80');
+    return `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
 export function serverNameKey(name: string): string {
   return name.trim().toLowerCase();
 }
@@ -445,6 +464,45 @@ export class ServerRegistry {
     }
 
     const registry = this.read();
+
+    /*
+     * ── ONE ENGINE, ONE ROW — refused by ADDRESS as well as by name ──────────
+     *
+     * The name check below has been here since the registry was written, and it
+     * is not the one that protects the card. Two rows may carry two different
+     * NAMES and the same URL — "3090 Ti" and "wsl", both `127.0.0.1:7100` — and
+     * nothing here noticed. `slotSets` then draws one GPU row per registered
+     * server, so that machine gets TWO lanes over ONE card, the scheduler
+     * admits to both, and two renders land on the same 24 GB with nothing
+     * arbitrating between them. Everything reports success until the card runs
+     * out.
+     *
+     * Surfaced 2026-09-15 by the Foundry session, whose own local-connect door
+     * refuses by address and which asked whether ours did. It did not.
+     *
+     * COMPARED AS NORMALISED ORIGINS, not as typed. A trailing slash, a
+     * different case in the host, and the default port written out
+     * (`http://localhost:7100/` vs `http://LOCALHOST:7100`) are the same engine,
+     * and a check that missed them would be a check somebody works around by
+     * accident rather than on purpose.
+     *
+     * `localhost` and `127.0.0.1` are deliberately NOT folded together. They can
+     * genuinely differ — a hosts-file entry, an IPv6-only bind — and treating a
+     * name as an address is a guess about somebody's machine. The name check
+     * below is what catches the ordinary version of that mistake.
+     */
+    const incoming = originKey(url);
+    const sameAddress = registry.servers.find((entry) => originKey(entry.url) === incoming);
+    if (sameAddress !== undefined) {
+      throw new CrucibleRegistryError(
+        'duplicate_server',
+        `crucible "${sameAddress.name}" is already registered at that address (${sameAddress.url}). `
+          + 'One engine gets one row: a second row on the same address draws a second GPU lane '
+          + 'over the same card, and the queue would admit work to both. Rename or remove '
+          + `"${sameAddress.name}" instead (--crucible-remove --name "${sameAddress.name}").`,
+      );
+    }
+
     const key = serverNameKey(name);
     const collision = registry.servers.find((entry) => serverNameKey(entry.name) === key);
     if (collision !== undefined) {

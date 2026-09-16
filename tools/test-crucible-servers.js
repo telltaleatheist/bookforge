@@ -245,6 +245,52 @@ check('two names that differ only by case cannot both exist, and lookup stays EX
   assert.strictEqual(reg.get('Mac').url, 'http://mac:7100');
 });
 
+check('ONE ENGINE, ONE ROW: a second row on the same address is refused', () => {
+  /*
+   * The check that protects the card, and it is not the name check above.
+   * `slotSets` draws one GPU row per registered server, so two rows on one
+   * address give that machine TWO lanes over ONE card: the scheduler admits to
+   * both, two renders land on the same 24 GB, and nothing arbitrates. Every
+   * screen reports success until the card runs out.
+   *
+   * Surfaced 2026-09-15 by the Foundry session, whose local-connect door refuses
+   * by address. Ours refused only by name, so "3090 Ti" and "wsl" could both
+   * point at 127.0.0.1:7100.
+   */
+  const reg = fresh();
+  reg.add({ name: '3090 Ti', url: 'http://127.0.0.1:7100', token: 't1' });
+  const err = refuses(
+    () => reg.add({ name: 'wsl', url: 'http://127.0.0.1:7100', token: 't2' }),
+    servers.CrucibleRegistryError, 'duplicate_server');
+  assert.ok(err.message.includes('second GPU lane'), err.message);
+  assert.ok(err.message.includes('"3090 Ti"'), 'the refusal must name the row already there');
+});
+
+check('the same address written differently is still the same address', () => {
+  // A trailing slash, host case, and the port written out are not a new engine.
+  // A check that missed these is one somebody works around by accident.
+  const reg = fresh();
+  reg.add({ name: 'a', url: 'http://localhost:7100', token: 't1' });
+  refuses(() => reg.add({ name: 'b', url: 'http://localhost:7100/', token: 't2' }),
+    servers.CrucibleRegistryError, 'duplicate_server');
+  refuses(() => reg.add({ name: 'c', url: 'http://LOCALHOST:7100', token: 't3' }),
+    servers.CrucibleRegistryError, 'duplicate_server');
+  assert.strictEqual(servers.originKey('http://localhost:7100/'), 'http://localhost:7100');
+  assert.strictEqual(servers.originKey('https://box'), 'https://box:443');
+});
+
+check('localhost and 127.0.0.1 are NOT folded together', () => {
+  /*
+   * They can genuinely differ — a hosts-file entry, an IPv6-only bind — and
+   * treating a name as an address is a guess about somebody's machine. The name
+   * check is what catches the ordinary version of that mistake.
+   */
+  const reg = fresh();
+  reg.add({ name: 'by-name', url: 'http://localhost:7100', token: 't1' });
+  reg.add({ name: 'by-number', url: 'http://127.0.0.1:7100', token: 't2' });
+  assert.strictEqual(reg.list().length, 2);
+});
+
 check('the unchanged refusals still refuse: no scheme, /v1 suffix, empty token', () => {
   const reg = fresh();
   refuses(() => reg.add({ name: 'd', url: 'elsewhere:7100', token: 't' }), servers.CrucibleRegistryError, 'invalid_url');
