@@ -43,7 +43,7 @@ import type {
  * The Crucible release tested with this app's vendored client and bootstrap.
  * The installation keeper verifies this matches the dependency pins.
  */
-export const CRUCIBLE_RELEASE = '0.6.2';
+export const CRUCIBLE_RELEASE = '0.6.3';
 
 /** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
