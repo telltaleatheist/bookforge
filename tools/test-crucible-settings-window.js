@@ -164,8 +164,8 @@ const PANEL = read('src', 'app', 'features', 'ai-setup', 'ai-setup-wizard.compon
  * that enforces the rule in general; this list is what this suite is about.
  */
 const CHANNELS = [
-  'crucible:engine-settings',
-  'crucible:engine-settings-write',
+  'bookforge:crucible-engine-settings',
+  'bookforge:crucible-engine-settings-write',
   'crucible:upstream-test',
   'crucible:capability',
 ];

@@ -69,6 +69,9 @@ export interface CrucibleUninstallTarget {
   kind: 'host' | 'guest' | 'native';
   /** The full argv prefix, `crucible uninstall` excluded. */
   argv: string[];
+  /** Installed lifecycle invocation context, supplied by the Crucible SDK. */
+  env?: Record<string, string>;
+  cwd?: string;
   /** One line naming it, for the screen. */
   describe: string;
   /** How `discovery.ts` found the Crucible this belongs to: `pairing`, `file` or `wsl`. */

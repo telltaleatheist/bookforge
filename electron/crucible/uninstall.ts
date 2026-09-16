@@ -58,7 +58,7 @@
  * every name on the wire, exactly as PHASE15 is for the settings door.
  */
 
-import type { Runner } from '@crucible/bootstrap';
+import { localUninstallCommand, LocalInstallationError, type Runner } from '@crucible/bootstrap';
 
 import type { DiscoveredCrucible } from './discovery';
 import {
@@ -73,9 +73,6 @@ import type {
   CrucibleUninstallRefusalCode,
   CrucibleUninstallTarget,
 } from '../../shared/crucible/uninstall-wire';
-
-/** The subdirectory a server pack unpacks into, as `@crucible/bootstrap` spells it. */
-const SERVER_SUBDIR = 'server';
 
 /**
  * How long a dry run and a real run are each given.
@@ -115,17 +112,9 @@ export class CrucibleUninstallError extends Error {
 /**
  * WHICH `crucible` OWNS THE ENGINE ON THIS MACHINE, or `uninstall_not_local`.
  *
- * Three answers and no fourth, each tied to how `discovery.ts` found the server
- * — because the thing that found it is the thing that knows where it lives:
- *
- *   - **win32, host present.** `%LOCALAPPDATA%\Crucible\host\crucible.cmd`, the
- *     host pack's entry point (PHASE15 §4.4). It uninstalls the Windows side,
- *     and `--wsl-too` carries the same flags into the guest first.
- *   - **win32, read through `wsl.exe`.** There is no host on this machine yet
- *     (Owen's PC today), so the only Crucible CLI here is the guest's own and
- *     it is reached the way `discovery.ts` reached its config.
- *   - **darwin / linux.** `<CRUCIBLE_HOME>/server/bin/crucible` — the machine
- *     IS the server, and there is no host anywhere but Windows.
+ * The installed lifecycle record owns the runtime command, working directory,
+ * and Crucible home. The SDK reads and validates it; this app never guesses a
+ * host-pack layout or reaches into a WSL guest to manufacture a CLI path.
  *
  * THE NAMED ROW MUST BE THE MACHINE. `server` is a registry name like any
  * other now, so the first thing this does is look up its URL and compare it
@@ -202,81 +191,20 @@ export function crucibleUninstallTarget(
     );
   }
 
-  if (runner.platform === 'win32') {
-    const appData = runner.env['LOCALAPPDATA'];
-    if (appData === undefined || appData === '') {
-      throw new CrucibleUninstallError(
-        'uninstall_no_localappdata',
-        'LOCALAPPDATA is not set in this process\'s environment, so the Crucible host\'s own '
-        + 'directory cannot be named. It is read from the environment and never assembled from '
-        + 'a username.',
-      );
-    }
-    const hostCli = `${appData}\\Crucible\\host\\crucible.cmd`;
-    if (runner.fileExists(hostCli)) {
-      return { kind: 'host', argv: [hostCli], describe: hostCli, via: local.via };
-    }
-    if (local.via === 'wsl') {
-      if (distro === undefined || distro.trim() === '') {
-        throw new CrucibleUninstallError(
-          'uninstall_no_distro',
-          'this machine\'s Crucible was read through WSL and no distro is named. Set it in '
-          + 'Settings → Add-ons → WSL distro. "The default distro" is whatever `wsl --set-default` '
-          + 'last said, and an uninstall run in the wrong guest is the worst possible guess.',
-        );
-      }
-      /*
-       * The GUEST'S OWN CLI, because there is no host on this machine. The
-       * home is the guest's default (`~/.crucible`), which is where
-       * `discovery.ts` read the config from, so the binary beside it owns it.
-       */
-      return {
-        kind: 'guest',
-        argv: ['wsl.exe', '-d', distro, '--exec', `${guestHome(local.configPath)}/${SERVER_SUBDIR}/bin/crucible`],
-        describe: `${distro}: ${guestHome(local.configPath)}/${SERVER_SUBDIR}/bin/crucible`,
-        via: local.via,
-      };
-    }
+  try {
+    const command = localUninstallCommand({ dryRun: false, purgeWeights: false, wslToo: false }, {}, runner);
+    return {
+      kind: command.platform === 'win32' ? 'host' : 'native',
+      argv: command.argv.slice(0, -2), // uninstall --json are added with the requested flags below.
+      describe: command.argv[0], via: local.via, env: command.env, cwd: command.cwd,
+    };
+  } catch (err) {
+    if (!(err instanceof LocalInstallationError)) throw err;
     throw new CrucibleUninstallError(
-      'uninstall_not_available',
-      `this machine's Crucible was found at ${local.configPath}, and there is no Crucible CLI `
-      + `here to uninstall it with: no host at ${hostCli}, and the config was not read through a `
-      + 'WSL guest either. Install the host — it is the thing that owns an install on Windows — '
-      + 'and this door works from its CLI.',
-      { detail: `via=${local.via}` },
+      err.code === 'local_home_missing' ? 'uninstall_no_localappdata' : 'uninstall_not_available',
+      err.message, { detail: err.code },
     );
   }
-
-  const home = nativeHome(local.configPath);
-  const cli = `${home}/${SERVER_SUBDIR}/bin/crucible`;
-  if (!runner.fileExists(cli)) {
-    throw new CrucibleUninstallError(
-      'uninstall_not_available',
-      `there is no server pack at ${cli}, so this machine has a Crucible config with no Crucible `
-      + 'CLI beside it. That is what a server installed some other way looks like, and it is not '
-      + 'something this app can take apart: uninstall it the way it was installed.',
-    );
-  }
-  return { kind: 'native', argv: [cli], describe: cli, via: local.via };
-}
-
-/** `<home>/config.toml` → `<home>`, as the GUEST spells it (forward slashes). */
-function guestHome(configPath: string): string {
-  const normalised = configPath.replace(/\\/g, '/');
-  const cut = normalised.lastIndexOf('/');
-  if (cut <= 0) {
-    throw new CrucibleUninstallError(
-      'uninstall_home_unreadable',
-      `"${configPath}" is not a path with a directory in it, so the Crucible home it names cannot `
-      + 'be read out of it.',
-    );
-  }
-  return normalised.slice(0, cut);
-}
-
-/** The same, on the machine this process runs on. */
-function nativeHome(configPath: string): string {
-  return guestHome(configPath);
 }
 
 /** The flags one run carries, spelled once so the dry run and the real run agree. */
@@ -331,8 +259,8 @@ export async function crucibleUninstall(
   const argv = uninstallArgv(target, options);
   const timeoutMs = options.dryRun ? UNINSTALL_DRY_RUN_TIMEOUT_MS : UNINSTALL_RUN_TIMEOUT_MS;
   const result = onLine === undefined
-    ? await runner.run(argv, { timeoutMs })
-    : await runner.stream(argv, { timeoutMs, onLine });
+    ? await runner.run(argv, { timeoutMs, env: target.env, cwd: target.cwd })
+    : await runner.stream(argv, { timeoutMs, env: target.env, cwd: target.cwd, onLine });
 
   if (result.failure !== null) {
     throw new CrucibleUninstallError(

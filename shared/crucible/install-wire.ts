@@ -9,12 +9,8 @@
  *
  * ── WHY THE RENDERER IS GIVEN FACTS AND NOT A PROBE ────────────────────────
  *
- * Every question the install story asks — is there a WSL2 distro, does the
- * guest see a card, is there already a `config.toml` — is answerable only by a
- * process that may spawn `wsl.exe`. So main composes the whole picture in one
- * read and the renderer draws it. A screen that asked for the platform branch,
- * the WSL probe and the step list separately would draw a Windows sequence
- * beside a "no WSL found" that had not arrived yet.
+ * Main reads local installation facts and composes the plan; the renderer
+ * draws it. Windows setup uses its native engine without probing WSL or a GPU.
  *
  * ── AND WHY THE CODES ARE `@crucible/bootstrap`'S OWN ──────────────────────
  *
@@ -35,8 +31,8 @@ import type { CrucibleDiscoveryVia } from './settings-wire';
  *
  * `NodeJS.Platform` would be exact and is deliberately not used: this file is
  * imported by the RENDERER, whose tsconfig carries no node types. `other` is a
- * platform Crucible has no backend for — Windows is never a backend either, but
- * Windows has a guest to install into and so is its own case.
+ * platform Crucible has no backend for. Windows installs the native engine;
+ * the optional WSL upgrade is managed separately by Crucible.
  */
 export type InstallPlatform = 'win32' | 'darwin' | 'linux' | 'other';
 
@@ -165,24 +161,7 @@ export interface CrucibleInstallStep {
   done: boolean;
 }
 
-/**
- * CAN THIS MACHINE HOLD A CRUCIBLE — yes, no, or a question that cannot be
- * asked yet.
- *
- * THREE VALUES AND NOT A BOOLEAN, because on Windows the honest answer is
- * sometimes the third one and a boolean would have to lie. Whether a Crucible
- * can run here is whether the GUEST sees a card, and `crucibleHostFacts` will
- * not answer that from the Windows-side `nvidia-smi` — a Windows driver that
- * answers says nothing about whether the passthrough works. So a machine with
- * no WSL2 guest, or one where nobody has said which guest, is `unknown`: not
- * "no" (that would send somebody with a 4090 to the connect-only door) and not
- * "yes" (that would be a guess about hardware nobody measured).
- *
- * `unknown` draws the SAME face as `yes` — the install document, whose first
- * step is the thing that would settle it. That is not a maybe: the sentence in
- * {@link CrucibleInstallPlan.hostableWhy} says exactly what is not known and
- * what would answer it (crucible ARCHITECTURE.md R3).
- */
+/** Whether this platform can host Crucible. Windows native setup requires no WSL probe. */
 export type CrucibleHostability = 'yes' | 'no' | 'unknown';
 
 /** EVERYTHING THE "INSTALL ONE HERE" DOOR DRAWS, in one read. */

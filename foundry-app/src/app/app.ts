@@ -462,9 +462,57 @@ export class App {
   protected readonly dropping = signal(false);
   private dragDepth = 0;
 
+  /**
+   * Ask main whether there is anything to offer, wait out the wizard if one is
+   * open, then ask the person — and say what came of it.
+   *
+   * THE RESULT IS ALWAYS SPOKEN, both halves. A start that worked is the only
+   * confirmation that the tiles are about to light; a start that has not
+   * answered yet is not a failure and says so in main's own words. Silence after
+   * pressing a button is the thing this whole evening has been removing.
+   */
+  private async offerToStartCrucible(): Promise<void> {
+    if (!api) return;
+    /*
+     * ASKED OF MAIN, not read off `ui.setupOpen()`. That signal is set by the
+     * wizard's own bootstrap, which is a promise racing this constructor — so
+     * reading it here would answer "closed" on exactly the run where the wizard
+     * is about to open. `setup.state()` is the fact the wizard itself decides
+     * from, and asking the same question of the same door cannot lose the race.
+     */
+    const [inHost, setup] = await Promise.all([api.hosted(), api.setup.state()]);
+    if (inHost || !setup.completed) return;
+    if (await api.crucible.offerStart() !== 'start') return;
+    this.notices.notice.set('Starting Crucible…');
+    const result = await api.crucible.startCrucible();
+    this.notices.notice.set(result.detail);
+  }
+
   constructor() {
     // The File menu's Settings item. Main cannot route; it can only say where.
     api?.onNavigate((route) => { void this.router.navigateByUrl(route); });
+
+    /*
+     * ── CRUCIBLE IS HERE AND IS NOT RUNNING. OFFER TO START IT. ─────────────
+     *
+     * Owen, 2026-09-15 (relayed through BookForge): *"the foundry app should ask
+     * if they want to start crucible."* Standalone only, and that is enforced in
+     * MAIN rather than here — `crucible:offer-start` answers `later` outright
+     * when the window is hosted, when an engine is already answering, and when
+     * there is none installed, so three startups out of four draw nothing and
+     * this call costs one ping.
+     *
+     * NOT ON A FIRST RUN, AND NOT DEFERRED UNTIL AFTER ONE EITHER. The wizard is
+     * not in `UiService.dialogs` (its own header says why: it is a flow, not a
+     * question), so a confirm card would happily open on top of it — and
+     * somebody meeting this app for the first time would be asked about a
+     * program they have not been introduced to yet, over the screen that was
+     * about to introduce it. **The wizard's own engine step is where that person
+     * is served**, and it serves them better than a yes/no card: it shows the
+     * card, what it can do, and the doors. So a run that opens the wizard skips
+     * this entirely rather than queueing behind it.
+     */
+    void this.offerToStartCrucible();
 
     /*
      * The hosted door onto a book. A press of Edit-in-Foundry in the host

@@ -568,7 +568,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
       -->
       <p class="hint">
         {{ p.platform === 'win32'
-          ? 'On Windows there is one install sequence and it belongs to the Crucible host — it walks the WSL state table, raises the elevation prompts and survives the reboot. BookForge runs none of it.'
+          ? 'Install Crucible runs its Windows installer, which sets up the native engine and desktop controls. You can choose the optional WSL upgrade later in Crucible.'
           : 'Each step runs on this machine. The server arrives as one pack with its own interpreter inside it; nothing is built from source and there is no conda to find.' }}
         Nothing that an engine RUNS is here: BookForge installs what it needs the moment it
         connects to one.

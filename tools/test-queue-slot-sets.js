@@ -881,6 +881,41 @@ test('TWO BOOKS FOR ONE MACHINE TAKE TURNS — the second waits on the slot, not
   assert.strictEqual(gpu.runs.length, 2, 'the slot freed and the queue took it');
 });
 
+test('a host address uses its engine lane, and registering that engine twice never doubles capacity', async () => {
+  for (const direct of [false, true]) {
+    routes.forgetCrucibleRoutes();
+    const gpu = fakeModule('tts-conversion', { travels: true });
+    const ranked = [{ name: 'tray', enabled: true }];
+    if (direct) ranked.push({ name: 'gpu', enabled: true });
+    const host = fakeHost({ ranked, defaultWaitFor: 'tray', serversOnThisMachine: [],
+      reach: { tray: { reachable: true }, gpu: { reachable: true } } });
+    await fresh(`host-engine-alias-${direct}`, [gpu], host);
+    try {
+      routes.noteCrucibleRole('tray', { role: 'orchestrator', engine: {
+        name: 'native-engine', url: 'http://127.0.0.1:7100', backend: 'llama-windows', owner: 'native',
+      } });
+      routes.noteCrucibleEngineUrl('tray', 'http://127.0.0.1:7100');
+      routes.noteCrucibleUpstreams('tray', false);
+      if (direct) {
+        routes.noteCrucibleRole('gpu', { role: 'engine' });
+        routes.noteCrucibleEngineUrl('gpu', 'http://127.0.0.1:7100');
+        routes.noteCrucibleUpstreams('gpu', false);
+      }
+      const first = enqueueSent(narrate('First', 'tray'));
+      enqueueSent(narrate('Second', direct ? 'gpu' : 'tray'));
+      engine.start(); await settle(40);
+      assert.strictEqual(gpu.runs.length, 1, 'one engine admits one BookForge run');
+      const visible = engine.snapshot().slotSets.filter((set) => set.gpu > 0);
+      assert.deepStrictEqual(visible.map((set) => set.id), [direct ? 'gpu' : 'tray']);
+      assert.strictEqual(jobById(first.id).steps[0].venue, visible[0].id);
+      assert.strictEqual(jobById(first.id).waitForResolved, 'tray', 'the requested connection remains recorded');
+      gpu.runs[0].resolve(); await settle(40);
+      assert.strictEqual(gpu.runs.length, 2, 'the next alias takes the same freed slot');
+      gpu.runs[1].resolve(); await settle(30);
+    } finally { routes.forgetCrucibleRoutes(); }
+  }
+});
+
 test('`any` skips a machine we are already using and takes the next in rank order', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });

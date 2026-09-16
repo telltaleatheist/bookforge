@@ -384,6 +384,8 @@ export const PAGE_CONCURRENCY_BY_BACKEND: Readonly<Record<string, number>> = {
 export interface PagesVenueHost extends VenueHost {
   /** One server WITH its token: `local` from its config, a remote from the registry. */
   server(name: string): ResolvedServer;
+  /** The resolved engine, which may differ from the registered orchestrator. */
+  engineUrl(name: string): Promise<string>;
   /** `GET /v1/models` on that server. */
   models(name: string): Promise<ModelInfo[]>;
   /**
@@ -404,11 +406,14 @@ export function processPagesVenueHost(): PagesVenueHost {
     enabled: (): RankedServerRow[] => venue.enabled(),
     ping: (name: string): Promise<CruciblePingResult> => venue.ping(name),
     server: getServer,
+    async engineUrl(name: string): Promise<string> {
+      return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).url;
+    },
     async models(name: string): Promise<ModelInfo[]> {
-      return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).models();
+      return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).models();
     },
     async backend(name: string): Promise<string> {
-      return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).info()).host.backend;
+      return (await (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).info()).host.backend;
     },
   };
 }
@@ -590,7 +595,7 @@ export async function resolveCruciblePageReader(
   const entry = host.server(server);
   return {
     server,
-    endpoint: cruciblePagesEndpoint(entry.url),
+    endpoint: cruciblePagesEndpoint(await host.engineUrl(server)),
     model,
     act: CRUCIBLE_PAGES_ACT,
     env: pagesEndpointHeadersEnv(entry.token),

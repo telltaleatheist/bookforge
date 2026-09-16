@@ -150,7 +150,7 @@ import {
   CrucibleVersionError,
   SDK_VERSION,
 } from '@crucible/client';
-import { CRUCIBLE_CLIENT_NAME, getServer } from './servers';
+import { CRUCIBLE_CLIENT_NAME, crucibleClientFor, getServer } from './servers';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The numbers
@@ -569,13 +569,14 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
   const takeRoute = leaseRoute(leased);
   const ttlSeconds = options.ttlSeconds ?? CRUCIBLE_LEASE_TTL_SECONDS;
   const log = options.onLog ?? ((line: string) => console.log(`[CRUCIBLE-LEASE] ${line}`));
+  const engine = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
 
   // Resolved at CALL time, and resolved again on a re-lease: `local`'s token
   // lives in the server's own config.toml and `crucible init --force` mints a new
   // one, so a copy cached across a run is a copy that can go stale mid-book.
   const where = (): { url: string; token: string } => {
     const entry = getServer(server);
-    return { url: entry.url, token: entry.token };
+    return { url: engine.url, token: entry.token };
   };
 
   const acquire = async (): Promise<string> => {
@@ -605,9 +606,13 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
   log(`crucible "${server}" leased the ${kind} ${leased} for ${act} (${id}, ttl ${ttlSeconds}s)`);
 
   let released = false;
+  let heartbeat: Promise<void> | null = null;
   const beat = options.heartbeatMs ?? crucibleHeartbeatIntervalMs(ttlSeconds);
   const timer = setInterval(() => {
-    void leaseRequest(where(), `/v1/leases/${encodeURIComponent(id)}/heartbeat`, { method: 'POST' })
+    if (released || heartbeat !== null) return;
+    heartbeat = Promise.resolve()
+      .then(() => leaseRequest(where(), `/v1/leases/${encodeURIComponent(id)}/heartbeat`, { method: 'POST' }))
+      .then(() => undefined)
       .catch(async (err: unknown) => {
         /*
          * THE SERVER FORGOT THE LEASE, which is what a restart does. Leases are
@@ -640,7 +645,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
          */
         log(`the lease heartbeat for ${leased} on crucible "${server}" failed: `
           + `${failure instanceof Error ? failure.message : String(failure)}`);
-      });
+      }).finally(() => { heartbeat = null; });
   }, beat);
   // The heartbeat must never be the reason a CLI process stays alive after its
   // work is done.
@@ -657,6 +662,9 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
       released = true;
       clearInterval(timer);
       openLeases.delete(lease);
+      // A heartbeat may already be replacing a lease forgotten by a restarted
+      // engine. Wait for that receipt before choosing the id to release.
+      await heartbeat;
       try {
         await leaseRequest(where(), `/v1/leases/${encodeURIComponent(id)}`, { method: 'DELETE' });
         log(`crucible "${server}" released the lease on ${leased} (${id})`);

@@ -58,6 +58,7 @@ import {
 } from './crucible-registry';
 import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
+import { crucibleRunState, startCrucible } from './crucible-start';
 import type {
   SettingsDocument,
   SettingsPatch,
@@ -79,7 +80,6 @@ import type {
 import { pairingFileRead, readConnectCode } from './crucible-pairing';
 import { forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
 import {
-  CRUCIBLE_WHEEL,
   tidySlotName,
   type CloudProviderEdit,
   type ConnectCodePreview,
@@ -905,22 +905,8 @@ export async function adoptPairingFile(): Promise<LocalCrucibleAdd> {
  * path that runs before the window exists.
  */
 export async function connectLocalEngine(): Promise<LocalCrucibleAdd> {
-  const paired = await adoptPairingFile();
-  if (paired.outcome === 'added') return paired;
-  if (paired.code === 'already_registered') {
-    console.log(`[engine] ${paired.message} Nothing to connect.`);
-    return paired;
-  }
-  /*
-   * A pairing file that is PRESENT and unreadable stops here rather than
-   * falling through. `config_unreadable` means a file exists and says something
-   * this app could not use — a corrupt line, a name the registry refuses — and
-   * quietly registering a different file instead would hide a defect somebody
-   * needs to see. Only `no_local_config`, which means there was no file at all,
-   * is a reason to look in the other place.
-   */
-  if (paired.code !== 'no_local_config') return paired;
-
+  if (hosted()) return { outcome: 'failed', code: 'no_local_config',
+    message: 'The local connection belongs to the host application.' };
   const local = await addLocalCrucible('');
   if (local.outcome === 'added') {
     console.log(`[engine] registered "${local.serverName}" at ${local.url} from ${local.configPath}.`);
@@ -3873,11 +3859,15 @@ export function registerIpc(): void {
    * released with Crucible's next version; see crucible-install.ts for the
    * four-step change that turns this on.
    */
-  ipcMain.handle('crucible:install', () => driveCrucibleInstall({
-    jobTypes: ['llm'],
-    wheel: CRUCIBLE_WHEEL,
-    onLine: () => { /* nothing to relay while the door refuses. */ },
-  }));
+  ipcMain.handle('crucible:install', async (event) => {
+    await driveCrucibleInstall((line) => {
+      if (!event.sender.isDestroyed()) event.sender.send('crucible:install-line', line);
+    });
+    await afterRegistryChanged();
+    for (const entry of crucibleServers().filter((entry) => entry.enabled)) {
+      void coordinateWithServer(entry.name, 'Crucible was installed');
+    }
+  });
   /*
    * ── UNINSTALL: THREE DOORS, AND THE FIRST ONE DECIDES THE OTHER TWO ───────
    *
@@ -3960,6 +3950,69 @@ export function registerIpc(): void {
    * may have unparked something, and a board that has gone quiet would otherwise
    * sit on that row until somebody pressed something else.
    */
+  /**
+   * IS THERE A CRUCIBLE HERE THAT IS NOT RUNNING, AND SHALL WE START IT?
+   *
+   * Owen, 2026-09-15 (relayed): *"the foundry app should ask if they want to
+   * start crucible."* Standalone only — `crucibleRunState` answers `not-ours`
+   * hosted, and that becomes `answered: 'later'` below, so the vendored copy
+   * inside BookForge draws no card. BookForge has already offered by the time
+   * anybody reaches Foundry there.
+   *
+   * ANSWERED RATHER THAN ASKED IS THE ORDINARY CASE, and it is why this is a
+   * question door rather than a state read the renderer branches on: running,
+   * absent and hosted all resolve without a card, so nothing flickers on the
+   * three startups out of four where there is nothing to say. Only
+   * `installed && not running` composes one.
+   *
+   * THE CARD NAMES THE TRAY, NOT THE ENGINE, because that is what will be
+   * started (electron/crucible-start.ts argues why at length) and because the
+   * thing a person is agreeing to is a program that stays running and keeps the
+   * engine up — which is a different promise from "run this once".
+   */
+  ipcMain.handle('crucible:offer-start', async (): Promise<Asked<'start' | 'later'>> => {
+    const state = await crucibleRunState();
+    if (state.kind === 'problem') return {
+      kind: 'ask', question: {
+        title: 'Crucible needs attention', message: state.why,
+        detail: ['Open Crucible to repair its local installation or connection.'],
+        choices: [{ key: 'later', label: 'Close' }], preferred: 'later',
+        dismissed: 'later', checkbox: null,
+      },
+    };
+    if (state.kind !== 'stopped') return { kind: 'answered', answer: 'later' };
+    return {
+      kind: 'ask',
+      question: {
+        title: 'Start Crucible?',
+        message: 'Crucible is installed on this computer and is stopped.',
+        detail: [
+          'Crucible is the GPU engine. Translation, simplification, cleanup, analysis and page '
+          + 'reading all run on it, and none of them can run while it is stopped. Opening a book, '
+          + 'compiling one and exporting one are unaffected.',
+          'Crucible starts its managed service. It stays running after Foundry closes.',
+        ],
+        choices: [
+          { key: 'start', label: 'Start Crucible' },
+          { key: 'later', label: 'Not now' },
+        ],
+        preferred: 'start',
+        dismissed: 'later',
+        checkbox: null,
+      },
+    };
+  });
+  /**
+   * THE PRESS. Answered with a SENTENCE and never with a throw: every way this
+   * can end — started, launched-but-still-coming-up, nothing here to start — is
+   * a fact somebody should read, and a rejected invoke would arrive at the
+   * renderer as an unhandled error with the interesting half missing.
+   */
+  ipcMain.handle('crucible:start', async () => {
+    const result = await startCrucible();
+    if (result.started) await connectLocalEngine();
+    return result;
+  });
   ipcMain.handle('crucible:set-queue-gpu-dial', (_event, dial: string) => {
     const stored = writeAppSettings({ queueGpuDial: dial }).queueGpuDial;
     queue.venueRulesChanged();

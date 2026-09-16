@@ -427,7 +427,7 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
   // BEFORE the upload: a server with no asr, or without this manifest, says so
   // now rather than after 900 MB have crossed (`crucible_asr_not_offered`,
   // `crucible_asr_model_not_offered`).
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   await assertCrucibleModelOffered(client, server, 'asr', model);
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-crucible-asr-'));

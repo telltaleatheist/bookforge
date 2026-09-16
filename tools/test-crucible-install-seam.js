@@ -1,54 +1,8 @@
 #!/usr/bin/env node
-/**
- * test-crucible-install-seam.js — the install story: the installer is really
- * there, the plan is the sequence it will walk, and four doors say honest
- * things about this machine.
- *
- * Drives the COMPILED `dist/electron/crucible/install.js` (build first:
- * `npx tsc -p tsconfig.electron.json`) over a SCRIPTED host, so nothing here
- * spawns `wsl.exe`, reads `<userData>`, queries a driver or touches a guest.
- * Every branch of "what is on this machine" is driven from a fixture.
- *
- * ── WHAT IT PINS, AND WHY EACH ONE IS WORTH A TEST ──────────────────────────
- *
- * **THE PACKAGE IS REALLY IMPORTED, AND THE TYPES ARE REALLY ITS OWN.** The
- * seam this file used to guard — a hand-transcribed surface behind a
- * `DRIVEN_INSTALL_AVAILABLE = false` — is GONE (2026-09-15):
- * `vendor/crucible-bootstrap-0.6.0.tgz` is pinned in package.json and
- * `loadBootstrap()` does the real `await import`. What is guarded now is the
- * opposite failure: a button that goes live over an installer that is not
- * installed. So `loadBootstrap()` must RESOLVE, with a real `install`, and the
- * package's own `install.ps1` line must be the one the Windows door hands over.
- *
- * **WINDOWS INSTALLS ONE WAY AND IT IS THE HOST'S (PHASE15-HOST.md 4.3).** No
- * `%LOCALAPPDATA%\Crucible\host\` -> `host_not_installed` carrying
- * `hostInstallCommand()`; a host that IS there -> `POST /install` on 127.0.0.1:7101
- * and its events relayed. Driven here over a SCRIPTED runner and a SCRIPTED
- * host door, so nothing spawns, downloads, elevates or opens a socket. The
- * regression this catches is BookForge growing a second install sequence of
- * its own — PHASE14 4a: two descriptions of one install "cannot differ".
- *
- * **NO WHEEL, NO CONDA, NO COPYABLE SHELL SEQUENCE.** All three were correct
- * about a pre-PHASE14 install and are now wrong: the server arrives as an env
- * pack with its own interpreter. The plan's steps carry NO commands at all,
- * and the ONE line a person still types is Windows's install.ps1, which comes
- * from the package rather than from a string in this app.
- *
- * **THE FOUR DOORS' STATES.** Door 1 is the registry and is
- * `test-crucible-servers`'s. Doors 2, 3 and 4 are this file's: "there is a
- * config here" vs the NAMED state when there is not, "install one here" with a
- * verdict that always says why, and — new — "remove it from this computer",
- * which is `tools/test-crucible-uninstall.js`'s. `no_local_config` must NOT be
- * reported as a refusal — a machine that only renders on the Mac is not
- * broken — while an unreadable config must.
- *
- * **AND THE CARD NAMES THE MACHINE.** The small gap the page-reader work left:
- * `vlm:reader-status` answered only `wslRefusal`, so every card drew a local
- * route and said "this machine's GPU (WSL)" for a run about to go to a
- * Crucible. `resolveVlmRouteWithVenue` asks the same three questions
- * `planVlmConversion` asks, in the same order.
- *
- * Run:  node tools/test-crucible-install-seam.js
+/** BookForge installation contract: native Windows first, SDK-owned runtime,
+ * lifecycle verification, refusal propagation, and first-run plan/UI gates.
+ * All machine reads and installer processes are scripted; the info protocol
+ * is exercised against a loopback fake. No GPU, WSL or real install is used.
  */
 'use strict';
 require('../cli/electron-stub.js');
@@ -144,7 +98,7 @@ checkAsync('loadBootstrap RESOLVES — the package is vendored, not a seam', asy
   assert.strictEqual(
     typeof bootstrap.install, 'function',
     'loadBootstrap did not hand back an installer. @crucible/bootstrap is pinned in '
-    + 'package.json to vendor/crucible-bootstrap-0.6.0.tgz; if that pin is gone this is a '
+    + 'package.json to vendor/crucible-bootstrap-0.6.1.tgz; if that pin is gone this is a '
     + 'build that cannot install anything and the button must not be live over it.',
   );
 });
@@ -323,129 +277,75 @@ function winRunner(overrides) {
 const HOST_CLI = 'C:\\Users\\t\\AppData\\Local\\Crucible\\host\\crucible.cmd';
 const HOST_CONFIG = 'C:\\Users\\t\\AppData\\Local\\Crucible\\config.toml';
 
-checkAsync('no host on this Windows box: host_not_installed, carrying install.ps1', async () => {
-  let caught = null;
-  try {
-    await install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), winRunner());
-  } catch (err) { caught = err; }
-  assert.ok(caught, 'the install resolved on a machine with no host — it installed nothing');
-  const refusal = install.installRefusalOf(caught);
-  assert.strictEqual(
-    refusal.code, 'host_not_installed',
-    `Windows has ONE install sequence and it is the host's: ${refusal.code} — ${refusal.message}`,
-  );
-  assert.ok(refusal.command, 'a refusal with nothing to type leaves a person with nowhere to go');
-  assert.match(refusal.command, /install\.ps1/, `the line is not install.ps1: ${refusal.command}`);
-  assert.ok(
-    refusal.command.includes(install.CRUCIBLE_RELEASE),
-    `the line does not name the release this build speaks: ${refusal.command}`,
-  );
-});
+const { startFakeCrucible } = require('./fake-crucible.js');
 
-checkAsync('the install.ps1 line comes from the PACKAGE, not from a string in this app', async () => {
-  const bootstrap = await import_bootstrap();
-  let caught = null;
+checkAsync('fresh Windows install runs the native installer, verifies lifecycle, and never requests WSL', async () => {
+  const fake = await startFakeCrucible((req, res, ctx) => {
+    if (ctx.url.pathname !== '/v1/info') return false;
+    assert.strictEqual(req.headers.authorization, 'Bearer test-token-abcd');
+    ctx.send(res, 200, {
+      server: { name: 'native', version: '0.6.0', api_version: 1 },
+      host: { platform: 'win32', arch: 'x86_64', backend: 'llama-windows', gpu: { vendor: 'none', name: 'CPU', vram_bytes: 0 } },
+      job_types: ['echo'], capabilities: [], role: 'engine', managed_by: null,
+    });
+    return true;
+  });
   try {
-    await install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), winRunner());
-  } catch (err) { caught = err; }
-  assert.strictEqual(
-    install.installRefusalOf(caught).command,
-    bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE),
-    'the app composed its own install line. One machine, one installer, one line — a second '
-    + 'spelling here is the drift PHASE14 4a forbids.',
-  );
-});
-
-checkAsync('a host that IS there is asked over its loopback door, and its events relayed', async () => {
-  const bootstrap = await import_bootstrap();
-  const events = [
-    { id: 1, event: 'state', data: { code: 'wsl_missing', sentence: 'WSL is not installed.', action: 'run-elevated' } },
-    { id: 2, event: 'step', data: { name: 'server-pack', index: 2, total: 7 } },
-    { id: 3, event: 'progress', data: { bytes_done: 1024, bytes_total: 4096, file: 'pack.part0' } },
-    { id: 4, event: 'line', data: { text: 'unpacking', stream: 'stdout' } },
-    {
-      id: 5,
-      event: 'done',
-      data: {
-        server: { name: 'crucible@pc', url: 'http://127.0.0.1:7100', config_path: '/home/t/.crucible/config.toml' },
-        release: install.CRUCIBLE_RELEASE,
-        backend: 'cuda-linux',
-        crucible: '/home/t/.crucible/server/bin/crucible',
-        steps: [{ name: 'server-pack', argv: [], status: 'ok', detail: '' }],
+    const bootstrap = await import_bootstrap();
+    const home = 'C:\\Users\\t\\AppData\\Local\\Crucible';
+    const exe = 'C:\\relocated\\python.exe';
+    const cwd = 'C:\\relocated\\source';
+    const files = {};
+    const calls = [];
+    const steps = [];
+    const lines = [];
+    const r = winRunner({ files, runner: {
+      stream: async (argv, opts) => {
+        calls.push(argv);
+        assert.strictEqual(argv[0], 'powershell.exe');
+        assert.ok(argv.at(-1).endsWith(bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE)));
+        opts.onLine('native installed', 'stdout');
+        files[exe] = 'python';
+        files[path.win32.join(home, 'installation.json')] = JSON.stringify({ schema_version: 1, platform: 'win32', home,
+          release: '0.6.0', control: { command: exe, args: ['-m', 'crucible.cli', 'local'], cwd } });
+        files[path.win32.join(home, 'pairing')] = `crucible://native@${new URL(fake.url).host}/#test-token-abcd`;
+        return { code: 0, stdout: '', stderr: '', failure: null };
       },
-    },
-  ];
-  let posted = null;
-  const fetchImpl = async (url, init) => {
-    posted = { url: String(url), init };
-    const body = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
-    return new Response(body, { status: 200, headers: { 'content-type': 'application/x-ndjson' } });
-  };
-
-  const seenSteps = [];
-  const seenHost = [];
-  const options = install.bookforgeInstallOptions(
-    () => {},
-    { onStep: (step) => seenSteps.push(step.name), onHostEvent: (e) => seenHost.push(e.event) },
-  );
-  const result = await install.driveCrucibleInstall(
-    Object.assign({}, options, { fetchImpl }),
-    winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
-  );
-
-  assert.ok(posted, 'the host door was never asked');
-  assert.strictEqual(posted.url, `${bootstrap.HOST_DOOR_URL}${bootstrap.HOST_INSTALL_PATH}`);
-  // THE TOKEN IS THE ENGINE'S, read from the host's own config — there is no
-  // second token and none is minted (PHASE15 3.5).
-  assert.strictEqual(posted.init.headers.authorization, 'Bearer abc');
-  const sent = JSON.parse(posted.init.body);
-  assert.strictEqual(sent.target, 'wsl');
-  assert.strictEqual(sent.release, install.CRUCIBLE_RELEASE);
-  assert.ok(Array.isArray(sent.job_types) && sent.job_types.length > 0);
-
-  // EVERY KIND REACHES THE APP. `state` and `progress` have no place in
-  // onLine/onStep, and dropping either is how a 6 GB download becomes a screen
-  // that says nothing for ten minutes.
-  assert.deepStrictEqual(seenHost, ['state', 'step', 'progress', 'line', 'done']);
-  assert.ok(seenSteps.includes('server-pack'), 'the step callback saw nothing');
-  assert.strictEqual(result.backend, 'cuda-linux');
-  assert.strictEqual(result.server.name, 'crucible@pc');
+      run: async (argv, opts) => {
+        calls.push(argv);
+        assert.deepStrictEqual(argv, [exe, '-m', 'crucible.cli', 'local', 'start', '--json']);
+        assert.strictEqual(opts.cwd, cwd);
+        assert.deepStrictEqual(opts.env, { CRUCIBLE_HOME: home });
+        return { code: 0, failure: null, stderr: '', stdout: JSON.stringify({ schema_version: 1, state: 'running', name: 'native', url: fake.url, detail: 'ready' }) };
+      },
+    }});
+    const result = await install.driveCrucibleInstall(install.bookforgeInstallOptions((line) => lines.push(line), { onStep: (s) => steps.push(s.status) }), r);
+    assert.strictEqual(result.backend, 'llama-windows');
+    assert.strictEqual(result.server.name, 'native');
+    assert.strictEqual(result.server.configPath, path.win32.join(home, 'pairing'));
+    assert.strictEqual(calls.length, 2);
+    assert.deepStrictEqual(steps, ['running', 'ok']);
+    assert.deepStrictEqual(lines, ['native installed']);
+  } finally { await fake.close(); }
 });
 
-checkAsync('a stream that ends without `done` is a FAILURE, named, not a success', async () => {
-  const fetchImpl = async () => new Response(
-    JSON.stringify({ id: 1, event: 'step', data: { name: 'init', index: 1, total: 7 } }) + '\n',
-    { status: 200 },
-  );
-  let caught = null;
-  try {
-    await install.driveCrucibleInstall(
-      Object.assign({}, install.bookforgeInstallOptions(() => {}), { fetchImpl }),
-      winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
-    );
-  } catch (err) { caught = err; }
-  assert.ok(caught, 'a truncated install stream was read as a finished install');
-  assert.strictEqual(install.installRefusalOf(caught).code, 'host_install_failed');
+checkAsync('native installer failure is surfaced before lifecycle or pairing is queried', async () => {
+  const r = winRunner({ runner: {
+    stream: async () => ({ code: 9, failure: null, stdout: '', stderr: 'download failed' }),
+    run: async () => { throw new Error('must not start after failure'); },
+    readFile: () => { throw new Error('must not read after failure'); },
+  }});
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /download failed/);
 });
 
-checkAsync('a second install while one is in flight is refused by NAME', async () => {
-  // The host's own word for it (409 host_install_running), which main.ts
-  // repeats for the machines that have no door to refuse it — one install per
-  // machine, and the second caller waits rather than starting a second walk
-  // over the same distro.
-  const fetchImpl = async () => new Response(
-    JSON.stringify({ code: 'host_install_running', message: 'one already running' }),
-    { status: 409, headers: { 'content-type': 'application/json' } },
-  );
-  let caught = null;
-  try {
-    await install.driveCrucibleInstall(
-      Object.assign({}, install.bookforgeInstallOptions(() => {}), { fetchImpl }),
-      winRunner({ files: { [HOST_CLI]: '@echo off', [HOST_CONFIG]: '[auth]\ntoken = "abc"\n' } }),
-    );
-  } catch (err) { caught = err; }
-  assert.ok(caught);
-  assert.strictEqual(install.installRefusalOf(caught).code, 'host_install_running');
+checkAsync('an interrupted native installer cannot be reported as success', async () => {
+  const r = winRunner({ runner: { stream: async () => ({ code: null, failure: 'timeout', stdout: '', stderr: '' }) }});
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /timeout/);
+});
+
+checkAsync('installer success without a published installation is a failure', async () => {
+  const r = winRunner({ runner: { readFile: () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); } }});
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /register|Repair/);
 });
 
 check('main.ts refuses a concurrent install itself, with the host\'s own name', () => {
@@ -501,16 +401,11 @@ checkAsync('the plan names no wheel and no conda, on any platform', async () => 
   }
 });
 
-checkAsync('on Windows the ONE line a person types is install.ps1, and nothing else', async () => {
+checkAsync('Windows install needs no manually typed WSL or elevated command', async () => {
   const plan = await install.crucibleInstallPlan(host());
-  const bootstrap = await import_bootstrap();
-  const elevated = plan.elevated.flatMap((s) => s.commands);
-  assert.deepStrictEqual(
-    elevated, [bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE)],
-    '`wsl --install` and `enable-linger` are the HOST\'s to raise now (PHASE15 4.3): it walks '
-    + 'the state table, prompts for elevation by name and survives the reboot. A second copy '
-    + 'in this list is a person running a command the host was about to run.',
-  );
+  assert.deepStrictEqual(plan.elevated, []);
+  assert.ok(plan.steps.some(s => /native Windows engine/.test(s.detail)));
+  assert.ok(plan.steps.some(s => /optional upgrade/.test(s.detail)));
 });
 
 checkAsync('macOS needs no typed line at all — its service is a launchd agent', async () => {
@@ -555,63 +450,24 @@ checkAsync('the non-Windows steps are the PACKAGE\'s step list, in its order', a
 // 3. The measured machine — every null carries a named refusal
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('the happy PC: a WSL2 guest, a card, no config yet, and no refusals', () => {
-  const facts = install.crucibleHostFacts(host());
-  assert.strictEqual(facts.platform, 'win32');
-  assert.strictEqual(facts.wsl.probed, 'Ubuntu');
-  assert.strictEqual(facts.gpu.vendor, 'nvidia');
-  assert.strictEqual(facts.gpu.name, 'NVIDIA GeForce RTX 3090 Ti');
-  assert.strictEqual(facts.gpu.vramBytes, 24564 * 1024 * 1024);
-  // `no_local_config` is the ORDINARY state of a machine that has not installed
-  // one — it is the reason this screen exists, not a fault to report.
-  assert.deepStrictEqual(facts.refusals, []);
-  assert.strictEqual(facts.discovered.present, false);
-});
+for (const state of ['no WSL', 'WSL1', 'broken WSL', 'no distro selected', 'no GPU']) {
+  check(`Windows native setup is available with ${state} and probes no guest or GPU`, () => {
+    const facts = install.crucibleHostFacts(host({ wslDistro: undefined,
+      listWsl: () => { throw new Error('must not query WSL for native setup'); },
+      queryGpu: () => { throw new Error('must not query GPU for native setup'); },
+    }));
+    assert.strictEqual(facts.platform, 'win32');
+    assert.strictEqual(facts.wsl, null);
+    assert.strictEqual(facts.gpu, null);
+    assert.deepStrictEqual(facts.refusals, []);
+    assert.strictEqual(install.hostabilityOf(facts).hostable, 'yes');
+  });
+}
 
-check('the WSL1-only machine is refused as wsl_missing, with the command', () => {
-  const facts = install.crucibleHostFacts(host({
-    listWsl: () => ({ status: 0, stdout: '  NAME   STATE     VERSION\n* legacy Stopped   1\n', stderr: '' }),
-  }));
-  const refusal = facts.refusals.find((r) => r.code === 'wsl_missing');
-  assert.ok(refusal, 'a WSL1-only machine passed as installable — only WSL2 passes the card through');
-  assert.strictEqual(refusal.command, 'wsl --install -d Ubuntu');
-});
-
-check('"wsl.exe could not be run" is wsl_missing, not "no distros"', () => {
-  const facts = install.crucibleHostFacts(host({
-    listWsl: () => ({ status: null, stdout: '', stderr: '', error: new Error('ENOENT') }),
-  }));
-  assert.ok(facts.refusals.some((r) => r.code === 'wsl_missing'));
-  assert.strictEqual(facts.wsl.distros.length, 0);
-});
-
-check('"wsl.exe answered and failed" is wsl_read_failed — about the LISTING, not the guest', () => {
-  const facts = install.crucibleHostFacts(host({
-    listWsl: () => ({ status: 1, stdout: '', stderr: 'catastrophic failure' }),
-  }));
-  const refusal = facts.refusals.find((r) => r.code === 'wsl_read_failed');
-  assert.ok(refusal, 'a failed listing was read as an answer about whether a distro is there');
-  assert.strictEqual(refusal.detail, 'catastrophic failure');
-});
-
-check('WSL2 present but nobody said WHICH is no_wsl_distro — there is no default here', () => {
-  const facts = install.crucibleHostFacts(host({ wslDistro: undefined }));
-  const refusal = facts.refusals.find((r) => r.code === 'no_wsl_distro');
-  assert.ok(refusal, '"the default distro" was used as a default');
-  assert.ok(refusal.message.includes('Ubuntu'), 'the refusal does not list what it could be set to');
-  assert.strictEqual(facts.gpu, null, 'a card was reported for a guest nobody named');
-});
-
-check('the GUEST\'s nvidia-smi is what is asked, and a missing one is named', () => {
-  let askedIn = null;
-  const facts = install.crucibleHostFacts(host({
-    queryGpu: (distro) => { askedIn = distro; return { status: 3, stdout: '', stderr: '' }; },
-  }));
-  assert.strictEqual(askedIn, 'Ubuntu', 'the Windows-side driver was asked instead of the guest');
-  const refusal = facts.refusals.find((r) => r.code === 'no_nvidia_driver');
-  assert.ok(refusal, 'a guest with no nvidia-smi passed as having a card');
-  assert.ok(refusal.command, 'nothing to do about it was said');
-  assert.strictEqual(facts.gpu, null);
+check('Linux still names a missing NVIDIA driver', () => {
+  const facts = install.crucibleHostFacts(host({ platform: 'linux', queryGpu: () => ({ status: 3, stdout: '', stderr: '' }) }));
+  assert.ok(facts.refusals.some(r => r.code === 'no_nvidia_driver'));
+  assert.strictEqual(install.hostabilityOf(facts).hostable, 'no');
 });
 
 check('an Intel Mac is not_apple_silicon — mlx-darwin is Apple Silicon only', () => {

@@ -218,29 +218,12 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
       <button class="door" type="button" (click)="toggle('local')">
         <span class="door-name">Use the Crucible on this machine</span>
         <span class="door-note">
-          One that is already installed here. Its token is read from its own config file.
+          One that is already installed here. Crucible publishes the connection for Foundry.
         </span>
       </button>
       @if (open() === 'local') {
         <div class="panel">
-          @if (isWindows) {
-            <!--
-              NO DEFAULT DISTRO, deliberately: "the default" is whatever
-              "wsl --set-default" last said, and a token read out of the wrong
-              guest is a wrong token. (NO BACKTICKS ANYWHERE IN THIS TEMPLATE —
-              it is a template literal and one would end it mid-comment.)
-            -->
-            <label class="field">
-              <span class="label">WSL distro</span>
-              <input type="text" name="cDistro" placeholder="Ubuntu"
-                     [ngModel]="distro()" (ngModelChange)="distro.set($event)"
-                     (blur)="saveDistro()">
-            </label>
-            <p class="small">
-              Crucible's backend is Linux, so on Windows the server lives inside WSL. Name the
-              distribution it is installed in — there is no default on purpose.
-            </p>
-          }
+          <p class="small">Crucible manages its engine and publishes its address and credentials here.</p>
           <div class="actions">
             <button class="primary" type="button" [disabled]="busy()" (click)="addLocal()">
               {{ busy() === 'local' ? 'Reading…' : 'Use the Crucible on this machine' }}
@@ -269,7 +252,7 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
           @if (isWindows) {
             <p class="small">
               On Windows the engine is installed by Crucible's own installer, install.ps1 from
-              the release. It sets up WSL and leaves a connect code on this machine, and Foundry
+              the release. It installs a native engine and publishes a connection on this machine, and Foundry
               finds the engine through that — there is nothing to paste afterwards.
             </p>
           } @else {
@@ -317,8 +300,8 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
               }
 
               <div class="actions">
-                <button class="primary" type="button" [disabled]="!it.driven" (click)="drive()">
-                  Install it for me
+                <button class="primary" type="button" [disabled]="!it.driven || busy() !== null" (click)="drive()">
+                  {{ busy() === 'install' ? 'Installing…' : 'Install it for me' }}
                 </button>
               </div>
               @if (!it.driven) { <p class="small">{{ it.drivenWhy }}</p> }
@@ -569,7 +552,6 @@ export class CrucibleDoorsComponent {
   protected readonly name = signal('');
   protected readonly url = signal('');
   protected readonly token = signal('');
-  protected readonly distro = signal('');
   protected readonly probe = signal<CrucibleProbe | null>(null);
   protected readonly plan = signal<CrucibleInstallPlan | null>(null);
   protected readonly localNote = signal<string | null>(null);
@@ -657,9 +639,6 @@ export class CrucibleDoorsComponent {
 
   constructor() {
     if (!api) return;
-    // The stored WSL distro, so opening door 2 on a machine that has answered
-    // this before shows the answer rather than an empty box.
-    void api.crucible.settings().then((view) => this.distro.set(view.wslDistro));
     /*
      * AND MAIN'S PROOF FOR DOOR 4, once. It is a read — a file test, and one
      * wsl.exe call only on the machine that has Crucible in a guest and no
@@ -853,11 +832,6 @@ export class CrucibleDoorsComponent {
     }
   }
 
-  protected async saveDistro(): Promise<void> {
-    if (!api) return;
-    this.distro.set(await api.crucible.setWslDistro(this.distro()));
-  }
-
   /**
    * Read that server's own config and register it.
    *
@@ -919,13 +893,16 @@ export class CrucibleDoorsComponent {
     if (!api) return;
     this.busy.set('install');
     this.installSaid.set(null);
+    const unsubscribe = api.crucible.onInstallLine((line) => this.installSaid.set(line));
     try {
       await api.crucible.install();
+      this.installSaid.set('Crucible is running and connected.');
       await this.loadPlan();
       this.changed.emit();
     } catch (err) {
       this.installSaid.set(err instanceof Error ? err.message : String(err));
     } finally {
+      unsubscribe();
       this.busy.set(null);
     }
   }

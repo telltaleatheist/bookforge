@@ -255,8 +255,17 @@ const api: FoundryApi = {
     open: (name) => ipcRenderer.invoke('crucible:open', name),
     setNewJobsWaitFor: (choice) => ipcRenderer.invoke('crucible:set-new-jobs-wait-for', choice),
     setQueueGpuDial: (dial) => ipcRenderer.invoke('crucible:set-queue-gpu-dial', dial),
+    /*
+     * The offer, through the same `ask` every other question in this app uses:
+     * main composes or answers outright, and 'later' is what a window with no
+     * card to draw on answers — the safe half, because a question nobody saw
+     * was not agreed to.
+     */
+    offerStart: () => ask<'start' | 'later'>('crucible:offer-start', null, 'later'),
+    startCrucible: () => ipcRenderer.invoke('crucible:start'),
     installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
     install: () => ipcRenderer.invoke('crucible:install'),
+    onInstallLine: (listener) => subscribe<string>('crucible:install-line', listener),
     /*
      * The uninstall door's three. The FIRST one is what decides whether the
      * other two are ever drawn — crucible docs/INSTALL-UNINSTALL.md §6.1: the

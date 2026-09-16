@@ -69,7 +69,7 @@
  * `driveCrucibleInstall` refuses on every machine until that package ships, so
  * no session of this app has ever installed a server.
  */
-export type CrucibleUninstallProof = 'pairing-file' | 'windows-host' | 'wsl-guest';
+export type CrucibleUninstallProof = 'installation-record' | 'pairing-file' | 'windows-host' | 'wsl-guest';
 
 /**
  * WHICH COMMAND WILL BE RUN — §6.2's three lines, chosen by what is on this

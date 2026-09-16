@@ -62,6 +62,9 @@ if (newestSource > newestCompiled) {
 }
 
 const SUITES = [
+  'test-crucible-engine-routing',
+  'test-crucible-connect-code',
+  'test-crucible-module-backend',
   // The two facts found with two owners and nothing comparing them on
   // 2026-09-13 (crucible/docs/ARCHITECTURE.md R1): the caps fold's keep-set,
   // which narrator and Listen read DIFFERENT subsets of out of one JSON — "Nasa"
@@ -409,7 +412,7 @@ const SUITES = [
   // PHASE 15 §5.2, the half of it that reaches a person: "settings are the
   // engine's; the app draws a window". The suite above proves the wire; this
   // one proves the WINDOW. Four IPC doors — and the two new read/write ones
-  // are `crucible:engine-settings*` rather than `crucible:settings`, because
+  // are `bookforge:crucible-engine-settings*` rather than `crucible:settings`, because
   // the vendored Foundry owns that name and a duplicate `ipcMain.handle`
   // stops the app booting. It drives the main-process doors against the fake
   // (one PUT that configures an account AND routes a class to it, a Test that

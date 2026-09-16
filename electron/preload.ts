@@ -1285,7 +1285,7 @@ export interface ElectronAPI {
      * THE METHOD NAMES AND THE CHANNEL NAMES DIFFER, as they already do for
      * `add`/`crucible:add-server`. The vendored Foundry claims
      * `crucible:settings` for its own Servers card, so ours are
-     * `crucible:engine-settings` and `crucible:engine-settings-write`; the
+     * `bookforge:crucible-engine-settings` and `bookforge:crucible-engine-settings-write`; the
      * renderer only ever spells the method, so the skew stops at this file and
      * `tools/test-ipc-collision.js` is what guards it.
      */
@@ -2897,9 +2897,9 @@ const electronAPI: ElectronAPI = {
     // NOT `crucible:settings`, which the vendored Foundry (e6d5424) registers
     // for its Servers card — a duplicate `ipcMain.handle` name throws at
     // registration and the app would not boot with that window mounted.
-    engineSettings: (name: string) => ipcRenderer.invoke('crucible:engine-settings', name),
+    engineSettings: (name: string) => ipcRenderer.invoke('bookforge:crucible-engine-settings', name),
     writeEngineSettings: (name: string, patch: CrucibleEngineSettingsPatch) =>
-      ipcRenderer.invoke('crucible:engine-settings-write', name, patch),
+      ipcRenderer.invoke('bookforge:crucible-engine-settings-write', name, patch),
     testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe) =>
       ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
     // The operator door. `open-ui`, `coordination`, `coordinate`,
@@ -2910,15 +2910,15 @@ const electronAPI: ElectronAPI = {
     parsePairing: (line: string) => ipcRenderer.invoke('crucible:parse-pairing', line),
     openUi: (name: string) => ipcRenderer.invoke('crucible:open-ui', name),
     module: () => ipcRenderer.invoke('crucible:module'),
-    coordination: () => ipcRenderer.invoke('crucible:coordination'),
-    coordinate: (name: string) => ipcRenderer.invoke('crucible:coordinate', name),
+    coordination: () => ipcRenderer.invoke('bookforge:crucible-coordination'),
+    coordinate: (name: string) => ipcRenderer.invoke('bookforge:crucible-coordinate', name),
     cancelSetUp: (name: string, taskId: string) =>
       ipcRenderer.invoke('crucible:cancel-setup', name, taskId),
     onCoordination: (callback: (state: CrucibleCoordinationState) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: CrucibleCoordinationState) =>
         callback(state);
-      ipcRenderer.on('crucible:coordination-state', listener);
-      return () => { ipcRenderer.removeListener('crucible:coordination-state', listener); };
+      ipcRenderer.on('bookforge:crucible-coordination-state', listener);
+      return () => { ipcRenderer.removeListener('bookforge:crucible-coordination-state', listener); };
     },
   },
   foundry: {

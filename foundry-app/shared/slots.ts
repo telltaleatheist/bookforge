@@ -369,6 +369,22 @@ export interface CrucibleServerView {
    * local-config read is about.
    */
   loopback: boolean;
+  /**
+   * THE ENTRY THIS ONE TURNED OUT TO SHARE A MACHINE WITH, or null.
+   *
+   * Owen's pass-through ruling (2026-09-15) means a Windows tray and the WSL
+   * engine behind it are ONE card reachable two ways, so registering both draws
+   * one slot and not two. This is the row's half of saying so: the entry is
+   * still listed, still enabled and still editable — what it does not have is a
+   * lane of its own, and a row that silently stopped being a slot would be the
+   * app disagreeing with somebody's registry behind their back.
+   *
+   * DERIVED FROM THE LAST SLOT DERIVATION, never stored: the hop cache expires
+   * and the answer changes with it. Null covers both "it has its own machine"
+   * and "nobody has resolved it yet", which are the same thing to this card —
+   * in both cases the row draws a slot.
+   */
+  sharesEngineWith: string | null;
 }
 
 /**
@@ -460,6 +476,24 @@ export type CrucibleProbe =
     outcome: 'failed';
     message: string;
   };
+
+/**
+ * WHAT PRESSING "Start Crucible" CAME TO.
+ *
+ * ── Why there is no `failed` arm, and a sentence instead ──────────────────
+ *
+ * Because the interesting outcome is neither started nor failed. Launching the
+ * tray SUCCEEDS long before the engine answers — on Windows the tray has to
+ * claim its engine and wait for a systemd unit inside a WSL guest that may be
+ * cold — so a run that timed out waiting has still done the thing it was asked
+ * to do, and calling that a failure would send somebody to fix a machine that is
+ * two seconds from working. `started` is "an engine is answering NOW"; `detail`
+ * is what to tell them either way, already a whole sentence.
+ */
+export interface CrucibleStartResult {
+  started: boolean;
+  detail: string;
+}
 
 /**
  * What "Add local Crucible" answered — the entry it made, or why it could not.
@@ -756,20 +790,6 @@ export type CloudProbe =
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * THE WHEEL, NAMED ONCE.
- *
- * Crucible's server is published as a wheel on its GitHub release, and the
- * version here is the same 0.5.0 that `@crucible/client` is pinned to in
- * `app/package.json` — the SDK, the bootstrap package and the server are cut
- * together and their versions are the same number by design. Written here rather
- * than in the install module because the sequence a person copies and the
- * sequence `@crucible/bootstrap` would run must name the same file, and two
- * spellings of a filename is how they stop doing that.
- */
-export const CRUCIBLE_WHEEL =
-  'https://github.com/telltaleatheist/crucible/releases/download/v0.5.0/crucible-0.5.0-py3-none-any.whl';
-
-/**
  * One numbered step of the hand sequence, or one of the elevated commands beside
  * it.
  *
@@ -837,13 +857,7 @@ export interface CrucibleInstallPlan {
   elevated: CrucibleInstallStep[];
   /** Crucible's own README — the argument behind the sequence. */
   readme: string;
-  /** The release wheel the sequence installs. {@link CRUCIBLE_WHEEL}. */
-  wheel: string;
-  /**
-   * Whether the driven install can run. FALSE ON EVERY MACHINE TODAY —
-   * `@crucible/bootstrap` is released with Crucible's next version and is
-   * deliberately not a dependency until it exists.
-   */
+  /** Whether this platform supports installing from this standalone window. */
   driven: boolean;
   /** The sentence the disabled button wears. Always set, whether driven or not. */
   drivenWhy: string;

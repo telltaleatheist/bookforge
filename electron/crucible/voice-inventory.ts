@@ -117,14 +117,14 @@ export interface VoiceInventory {
  */
 export async function readVoiceInventory(
   ranked: readonly { readonly name: string; readonly enabled: boolean }[] = readRouting().ranked,
-  clientFor: (server: string) => Pick<CrucibleClient, 'voices'> =
+  clientFor: (server: string) => Pick<CrucibleClient, 'voices'> | Promise<Pick<CrucibleClient, 'voices'>> =
     (server) => crucibleClientFor(server, CRUCIBLE_CLIENT_NAME),
 ): Promise<VoiceInventory> {
   const servers = await Promise.all(ranked.map(async (row): Promise<ServerVoices> => {
     if (!row.enabled) return { server: row.name, state: 'disabled' };
     let rows: readonly VoiceInfo[];
     try {
-      rows = await clientFor(row.name).voices();
+      rows = await (await clientFor(row.name)).voices();
     } catch (err) {
       /*
        * A SERVER'S REFUSAL BECOMES A STATE; OUR OWN BUG DOES NOT.

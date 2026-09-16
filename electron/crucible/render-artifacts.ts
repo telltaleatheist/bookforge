@@ -72,7 +72,7 @@
  */
 
 import * as fsSync from 'fs';
-import type { JobEvent, RenderResult, WrittenArtifact } from '@crucible/client';
+import type { CrucibleClient, JobEvent, RenderResult, WrittenArtifact } from '@crucible/client';
 import { readRenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
@@ -90,6 +90,8 @@ import {
 const CLIENT_NAME = CRUCIBLE_CLIENT_NAME;
 
 export interface DownloadRenderArtifactsOptions {
+  /** The submitting client pins this job to its engine for its entire lifetime. */
+  readonly client?: CrucibleClient;
   /** Names an entry in `<userData>/crucible-servers.json`. */
   readonly server: string;
   /** The Crucible job whose artifacts to fetch. */
@@ -181,7 +183,7 @@ export async function downloadRenderArtifacts(
       + 'an empty one would pool every book\'s chunks into a single summary.');
   }
 
-  const client = crucibleClientFor(server, CLIENT_NAME);
+  const client = options.client === undefined ? await crucibleClientFor(server, CLIENT_NAME) : options.client;
 
   const writeOptions: { lastEventId?: number; signal?: AbortSignal } = {};
   if (options.lastEventId !== undefined) writeOptions.lastEventId = options.lastEventId;

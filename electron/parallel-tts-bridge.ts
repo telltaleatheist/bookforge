@@ -3298,7 +3298,7 @@ async function venueBandForPrep(
   const model = higgsModelForJob(settings);
   const voice = crucibleVoiceFor(settings.ttsEngine, model.id);
   const { band } = await crucibleVoiceBand(
-    crucibleClientFor(server, CRUCIBLE_CLIENT_NAME), server, voice,
+    await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME), server, voice,
   );
   // The local row's TARGET is the one number the catalog may still contribute,
   // and `venuePackingTarget` clamps it to the venue's ceiling. Read from THIS
@@ -4321,6 +4321,7 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
       const { crucibleVoiceFor, runCrucibleRender } = await import('./crucible/render.js');
       const voice = crucibleVoiceFor(settings.ttsEngine, higgsModelForJob(settings).id);
       const chunks = await crucibleChunksForSession(session);
+      if (session.cancelled) return;
       if (chunks.length === 0) {
         // Every chunk this session was assigned already has audio. That is a
         // finished generation step, not an empty submit — the local path
@@ -4346,6 +4347,13 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
         onStarted: ({ jobId: crucibleJobId, cancel }) => {
           session.crucibleJobId = crucibleJobId;
           session.crucibleCancel = cancel;
+          // Stop can arrive while submission is in flight, before the remote
+          // job has an id. The newly admitted job must still receive DELETE.
+          if (session.cancelled) {
+            void cancel().catch((err) => {
+              getTTSLogger().error(`Crucible job ${crucibleJobId} could not be cancelled: ${String(err)}`);
+            });
+          }
         },
         onProgress: (progress) => {
           // THE SERVER'S OWN FRACTION drives the stage line. The chunk tally

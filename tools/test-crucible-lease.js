@@ -72,38 +72,8 @@ const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers
 const textVenue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-venue.js'));
 const job = require(path.join(REPO, 'dist', 'electron', 'crucible', 'job.js'));
 
-/**
- * Name a fake through `getServer`, which is the ONE function `lease.ts` resolves
- * a server's url and token with — deliberately the same door the rest of the app
- * uses, so every byte still crosses a real socket to the real fake.
- *
- * `fakeNamer` in fake-crucible.js patches `crucibleClientFor` for the SDK-shaped
- * doors; the lease routes have no SDK method, so they need this one instead.
- */
-const realGetServer = servers.getServer;
-const fakesByName = new Map();
-servers.getServer = function getServerWithFakes(name) {
-  const fake = fakesByName.get(name);
-  if (!fake) return realGetServer(name);
-  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
-};
-let registered = 0;
-function nameFake(url) {
-  const name = `fake${++registered}`;
-  fakesByName.set(name, { url });
-  return name;
-}
-
-/**
- * The SDK-shaped half of the same naming.
- *
- * `crucibleClientFor` reaches its module's OWN `getServer` rather than the
- * exported binding, so the patch above cannot reach it — and `runCrucibleJob`
- * builds its client through it. `fakeNamer` is the door fake-crucible.js already
- * provides for that, and the job check below needs both halves pointed at the
- * same fake so one server answers the jobs AND the lease routes.
- */
-const registerSdkFake = fakeNamer(servers);
+// The shared fake names both the resolved SDK client and its lease token source.
+const nameFake = fakeNamer(servers);
 
 /** A wait of `ms`, for the checks that watch a heartbeat actually arrive. */
 const after = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -360,6 +330,36 @@ const { check, summary } = makeChecker();
     }
   });
 
+  await check('release waits for an in-flight replacement lease and deletes the new id', async () => {
+    const routes = leaseRoutes({
+      refuseHeartbeat: (id, n) => n === 1 ? unknownLeaseRefusal(id, 'engine restarted') : null,
+    });
+    let allowReplacement;
+    const replacementGate = new Promise((resolve) => { allowReplacement = resolve; });
+    let replacementStarted;
+    const started = new Promise((resolve) => { replacementStarted = resolve; });
+    let takes = 0;
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (/^\/v1\/models\/[^/]+\/lease$/.test(ctx.url.pathname) && req.method === 'POST') {
+        takes++;
+        if (takes === 2) { replacementStarted(); await replacementGate; }
+      }
+      return routes.handler(req, res, ctx);
+    });
+    try {
+      const held = await lease.takeCrucibleLease({
+        server: nameFake(fake.url), kind: 'model', id: 'qwen3.5-9b', act: 'clean', heartbeatMs: 10, onLog() {},
+      });
+      await started;
+      const releasing = held.release();
+      allowReplacement();
+      await releasing;
+      assert.deepStrictEqual(routes.lease.taken.map((r) => r.leaseId), ['lease-1', 'lease-2']);
+      assert.deepStrictEqual(routes.lease.released.map((r) => r.leaseId), ['lease-2']);
+      assert.strictEqual(lease.openCrucibleLeaseCount(), 0);
+    } finally { allowReplacement(); await fake.close(); }
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // 6. 409 model_leased is a wait with a name
   // ───────────────────────────────────────────────────────────────────────────
@@ -515,8 +515,7 @@ const { check, summary } = makeChecker();
     // Named through BOTH doors, at the same address: `runCrucibleJob` reaches the
     // fake through the SDK, and anything that leased would reach the same server's
     // lease routes — so a lease taken behind the job's back would show up here.
-    const server = registerSdkFake(fake.url);
-    fakesByName.set(server, { url: fake.url });
+    const server = nameFake(fake.url);
     try {
       const outcome = await job.runCrucibleJob({
         server, type: 'asr', params: {}, inputs: {}, onLog: () => {},

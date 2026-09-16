@@ -4110,6 +4110,7 @@ async function runInSlot(job: Job, slot: Slot): Promise<void> {
       request = await materializeDeferred(held, job);
       if (request !== held) requests.set(job.id, request);
     } catch (err) {
+      if (jobs.find((row) => row.id === job.id)?.state === 'cancelled') return;
       job.state = 'failed';
       job.error = err instanceof Error ? err.message : String(err);
       job.finishedAt = Date.now();
@@ -4262,6 +4263,7 @@ async function placeRun(
     return true;
   };
   const say = (line: string): void => {
+    if (next.state === 'cancelled') return;
     next.message = line;
     changed();
     if (wires.watch !== undefined) {
@@ -4274,7 +4276,29 @@ async function placeRun(
     }
   };
   for (;;) {
-    const outcome = await placeJob(request.kind, next.waitFor, say, claim);
+    const placementAbort = new AbortController();
+    wires.claim(() => {
+      placementAbort.abort();
+      // No child exists yet. Drop this callback before the normal cancel path
+      // marks and settles the row, otherwise cancelHere calls it again.
+      wires.release();
+      cancelHere(next.id);
+    });
+    let outcome: Awaited<ReturnType<typeof placeJob>>;
+    try {
+      outcome = await placeJob(request.kind, next.waitFor, say, claim, placementAbort.signal);
+    } finally {
+      wires.release();
+    }
+    // Placement can wait for a remote model load for minutes. A cancellation
+    // in that interval has already settled this row; never revive it, and give
+    // back a lease that arrived after the settle could see it.
+    if (next.state === 'cancelled') {
+      if (outcome.verdict === 'go' && outcome.placement.lease !== null) {
+        await outcome.placement.lease.release();
+      }
+      return null;
+    }
     if (outcome.verdict === 'go') {
       forgetPark(next.id);
       /*
@@ -4378,6 +4402,7 @@ async function placeRun(
  * this queue already understands.
  */
 async function executeJob(next: Job, request: EngineRequest, wires: RunWires): Promise<void> {
+  if (next.state === 'cancelled') return;
   /*
    * ── THE JOB THAT LANDS IN THE TRAY INSTEAD OF THE WORKSHOP ────────────────
    *
@@ -4958,6 +4983,9 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       args.push('--vlm-concurrency', String(localReader.concurrency));
     }
   }
+  // File preparation above also awaits. Cancelling before the child exists
+  // must never turn into a late spawn after the cancellation was acknowledged.
+  if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return;
   console.log(`[job] ${next.kind} ${args.join(' ')}`);
   let handle = runEngine(args, watch, placement.env);
   /*
@@ -5768,6 +5796,10 @@ async function runDetached(
     spawning = await materializeDeferred(request, job);
     if (spawning !== request) requests.set(job.id, spawning);
   } catch (err) {
+    if (jobs.find((row) => row.id === job.id)?.state === 'cancelled') {
+      opts.signal?.removeEventListener('abort', abort);
+      return copyOf(job);
+    }
     job.state = 'failed';
     job.error = err instanceof Error ? err.message : String(err);
     job.finishedAt = Date.now();

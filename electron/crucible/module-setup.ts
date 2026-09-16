@@ -136,7 +136,7 @@ export function moduleForBackend(backend: string): CrucibleModule {
 }
 
 export async function postBookForgeModule(server: string): Promise<string> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   /*
    * ASKED OF THE SERVER, not read from a cache. Which backend a name resolves
    * to is the SERVER's fact (crucible's division of knowledge: the client knows
@@ -182,7 +182,7 @@ export async function followModuleTask(
   taskId: string,
   onProgress: (progress: CrucibleModuleProgress) => void,
 ): Promise<CrucibleModuleProgress> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
 
   let last: CrucibleModuleProgress = {
     server,
@@ -282,6 +282,6 @@ export async function followModuleTask(
 
 /** Cancel the running task on a server. Answers `cancelling`, never `cancelled`. */
 export async function cancelServerSetup(server: string, taskId: string): Promise<void> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   await client.cancelTask(taskId);
 }

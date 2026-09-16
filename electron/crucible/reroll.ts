@@ -249,7 +249,7 @@ export async function runCrucibleReroll(
   // Throws CrucibleRenderRefused by name for a non-Higgs engine, an override
   // checkpoint that lives only on this machine, and a zero-shot voice.
   const voice = crucibleVoiceFor(options.ttsEngine, options.voiceId);
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   // Before the first submit: does this server serve that voice, and can it load
   // it. One GET for the whole pass rather than one per take.
   await assertCrucibleVoiceAvailable(client, server, voice);

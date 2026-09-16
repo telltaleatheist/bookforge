@@ -108,18 +108,19 @@ import {
   longformAlignCharged,
   LONGFORM_ALIGN_SET,
   slotSetForStep,
+  serverOfCloudLane,
   slotSetOccupancy,
   slotSets,
   slotsOf,
   thisMachinesCardHeldBy,
   LOCAL_WORK_SET,
   WAIT_STEP_CAP,
-  type EngineRole,
   type EngineUpstreams,
   type SetOccupancy,
   type SlotSet,
 } from '../shared/queue/slot-sets';
-import { crucibleRoleOf, crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
+import { crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
+import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -602,8 +603,10 @@ function currentSlotSets(): SlotSet[] {
    * *"crucible on windows is a passthrough orchestrator so it shouldnt show
    * up."* Same record, same reason it is read here and not through the host.
    */
-  const roles: Record<string, EngineRole> = {};
-  for (const name of enabledServers) roles[name] = crucibleRoleOf(name);
+  const lanes = engineLanes(rankedServers, undefined, occupied.map((id) => serverOfCloudLane(id) ?? id));
+  const roles = lanes.roles;
+  rankedServers = lanes.ranked;
+  for (const row of rankedServers) if (row.enabled) upstreams[row.name] = crucibleUpstreamsOf(row.name);
 
   /*
    * AND WHETHER THE LEGACY GPU ROW EXISTS AT ALL — read off the same jobs the
@@ -2269,7 +2272,23 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
  * and then find nothing to name.
  */
 function gpuSlotTakenAt(server: string): string | null {
-  return gpuSlotHolder(server, currentSlotSets());
+  return gpuSlotHolder(engineLaneId(server), currentSlotSets());
+}
+
+/** Charge host and direct-engine aliases to the same verified engine's lane. */
+function engineLaneId(server: string): string {
+  if (crucibleHost === null) return server;
+  const cloudServer = serverOfCloudLane(server);
+  const named = cloudServer === null ? server : cloudServer;
+  const occupied = jobs.flatMap((job) => job.steps
+    .filter((step) => step.status === 'running')
+    .map((step) => slotSetForStep(job, step))
+    .filter((id): id is string => id !== null)
+    .map((id) => serverOfCloudLane(id) ?? id));
+  const lanes = engineLanes(crucibleHost.routing().ranked, undefined, occupied);
+  const owner = lanes.owner.get(named);
+  if (owner === undefined) return server;
+  return cloudServer === null ? owner : cloudLaneOf(owner);
 }
 
 function gpuAdmission(): { ok: true } | { ok: false; reason: string } {
@@ -2655,6 +2674,7 @@ export function pump(): void {
         // WHERE THIS STEP ITSELF WENT, written once — it is the slot set the
         // step occupies while it runs, and a run can hold two steps at two
         // venues while the migration is half done.
+        venue = engineLaneId(venue);
         step.venue = venue;
 
         /*
@@ -2702,7 +2722,7 @@ export function pump(): void {
          * unread. `admissionBlocked` is not set either: a slot frees when a
          * step settles, and settling pumps.
          */
-        if (gpuSlotHolder(routed.venue, sets) !== null) {
+        if (gpuSlotHolder(venue, sets) !== null) {
           clearAdmissionHold(step);
           continue;
         }
@@ -2716,7 +2736,7 @@ export function pump(): void {
          * running two models.
          */
         const alsoHere = thisMachinesCardHeldBy({
-          venue: routed.venue,
+          venue,
           serversOnThisMachine: serversOnThisMachine(),
           occupancy: currentOccupancy(),
         });

@@ -151,7 +151,17 @@ const NO_LOCAL = () => {
 };
 
 const HOST_CLI = 'C:\\Users\\t\\AppData\\Local\\Crucible\\host\\crucible.cmd';
-const SERVER_CLI = `${MAC_HOME.replace(/\\/g, '/')}/server/bin/crucible`;
+const SERVER_CLI = '/relocated/crucible-runtime/python';
+const CLI_ARGS = ['-m', 'crucible.cli'];
+const INSTALL_HOME = '/Users/test/.crucible';
+const INSTALL_CWD = '/relocated/crucible-source';
+function installationFiles(platform, home, executable) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  return { [executable]: 'runtime', [paths.join(home, 'installation.json')]: JSON.stringify({
+    schema_version: 1, platform, home, release: 'test',
+    control: { command: executable, args: [...CLI_ARGS, 'local'], cwd: platform === 'win32' ? 'C:\\relocated\\source' : INSTALL_CWD },
+  }) };
+}
 
 /** The `--json` document `crucible uninstall --dry-run` prints, as it prints it. */
 function doc(overrides) {
@@ -176,23 +186,24 @@ function doc(overrides) {
 
 function runner(overrides) {
   const o = overrides || {};
-  const files = o.files || { [SERVER_CLI]: '#!/bin/sh' };
+  const files = o.files || installationFiles('darwin', INSTALL_HOME, SERVER_CLI);
   const calls = [];
   const answer = o.answer || (() => ({ code: 0, stdout: JSON.stringify(doc()), stderr: '', failure: null }));
   return {
     calls,
     platform: o.platform || 'darwin',
     env: o.env || {},
-    homedir: TMP,
-    run: async (argv) => { calls.push(argv); return answer(argv); },
-    stream: async (argv, options) => {
-      calls.push(argv);
+    homedir: '/Users/test',
+    options: [],
+    run: async function (argv, options) { calls.push(argv); this.options.push(options); return answer(argv); },
+    stream: async function (argv, options) {
+      calls.push(argv); this.options.push(options);
       if (options && options.onLine) options.onLine('removing …', 'stdout');
       return answer(argv);
     },
     fileExists: (file) => Object.prototype.hasOwnProperty.call(files, file),
     readFile: (file) => {
-      if (!Object.prototype.hasOwnProperty.call(files, file)) throw new Error(`ENOENT ${file}`);
+      if (!Object.prototype.hasOwnProperty.call(files, file)) throw Object.assign(new Error(`ENOENT ${file}`), { code: 'ENOENT' });
       return files[file];
     },
     realpathNative: (file) => file,
@@ -245,13 +256,15 @@ check('no Crucible on this machine at all is uninstall_not_local, with the reaso
 // 2. Which CLI owns the engine on this machine
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('darwin/linux: the server pack\'s own binary, beside the config it wrote', () => {
+check('darwin/linux: the runtime and cwd from the installed lifecycle record', () => {
   const target = uninstall.crucibleUninstallTarget(HERE_NAME, runner(), undefined, LOCAL_HERE, REGISTRY);
   assert.strictEqual(target.kind, 'native');
-  assert.deepStrictEqual(target.argv, [SERVER_CLI]);
+  assert.deepStrictEqual(target.argv, [SERVER_CLI, ...CLI_ARGS]);
+  assert.deepStrictEqual(target.env, { CRUCIBLE_HOME: INSTALL_HOME });
+  assert.strictEqual(target.cwd, INSTALL_CWD);
 });
 
-check('a config with no server pack beside it is uninstall_not_available', () => {
+check('a config with no installed lifecycle record is uninstall_not_available', () => {
   // That is what a Crucible installed some other way looks like, and it is not
   // something this app can take apart: it says so rather than guessing a path.
   let caught = null;
@@ -260,14 +273,15 @@ check('a config with no server pack beside it is uninstall_not_available', () =>
   assert.strictEqual(caught.code, 'uninstall_not_available');
 });
 
-check('win32 with a host: the host pack\'s entry point (PHASE15 4.4)', () => {
+check('win32 uses the registered local runtime without guessing a pack layout', () => {
   const target = uninstall.crucibleUninstallTarget(HERE_NAME, runner({
     platform: 'win32',
     env: { LOCALAPPDATA: 'C:\\Users\\t\\AppData\\Local' },
-    files: { [HOST_CLI]: '@echo off' },
+    files: installationFiles('win32', 'C:\\Users\\t\\AppData\\Local\\Crucible', 'C:\\relocated\\python.exe'),
   }), undefined, LOCAL_HERE, REGISTRY);
   assert.strictEqual(target.kind, 'host');
-  assert.deepStrictEqual(target.argv, [HOST_CLI]);
+  assert.deepStrictEqual(target.argv, ['C:\\relocated\\python.exe', ...CLI_ARGS]);
+  assert.strictEqual(target.cwd, 'C:\\relocated\\source');
 });
 
 check('win32 with no LOCALAPPDATA is refused, never assembled from a username', () => {
@@ -321,7 +335,9 @@ checkAsync('the dry run answers the CLI\'s plan, with `kept` on it', async () =>
   const plan = await uninstall.crucibleUninstall(
     HERE_NAME, { dryRun: true, purgeWeights: false, wslToo: false }, r, undefined, LOCAL_HERE, REGISTRY,
   );
-  assert.deepStrictEqual(r.calls, [[SERVER_CLI, 'uninstall', '--json', '--dry-run']]);
+  assert.deepStrictEqual(r.calls, [[SERVER_CLI, ...CLI_ARGS, 'uninstall', '--json', '--dry-run']]);
+  assert.deepStrictEqual(r.options[0].env, { CRUCIBLE_HOME: INSTALL_HOME });
+  assert.strictEqual(r.options[0].cwd, INSTALL_CWD);
   assert.strictEqual(plan.dryRun, true);
   assert.strictEqual(plan.mechanism, 'launchd');
   assert.strictEqual(plan.backendKind, 'mlx-darwin');
@@ -374,7 +390,7 @@ checkAsync('the real run streams its lines and reports what was freed', async ()
     HERE_NAME, { dryRun: false, purgeWeights: false, wslToo: false }, r,
     (text) => lines.push(text), LOCAL_HERE, REGISTRY,
   );
-  assert.deepStrictEqual(r.calls, [[SERVER_CLI, 'uninstall', '--json']]);
+  assert.deepStrictEqual(r.calls, [[SERVER_CLI, ...CLI_ARGS, 'uninstall', '--json']]);
   assert.deepStrictEqual(lines, ['removing …']);
   assert.strictEqual(plan.dryRun, false);
   assert.strictEqual(plan.removedBytes, 900000000);
@@ -582,10 +598,8 @@ check('the uninstall doors in main.ts use the HARDENED runner, not the package\'
 });
 
 check('the INSTALL door spawns no .cmd today, and shares the runner anyway', () => {
-  // On win32 `install()` reaches the host over HTTP and only ever calls
-  // fileExists/readFile on the entry point — the `.cmd` appears as the TEXT of
-  // a `host_not_installed` refusal and nothing else. Pinned so that the day
-  // the package starts spawning it, this says so rather than EINVAL does.
+  // The native installer is invoked through PowerShell; runtime lifecycle
+  // calls use the SDK's published executable. Neither spawns a .cmd directly.
   const install = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'install.ts'), 'utf-8');
   assert.ok(
     !/spawn\w*\([^)]*\.cmd/.test(install),

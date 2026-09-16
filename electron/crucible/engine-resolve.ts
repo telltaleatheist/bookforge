@@ -52,7 +52,7 @@
  */
 import { CrucibleClient, CrucibleProtocolError, engineOf } from '@crucible/client';
 import type { EngineRef, ServerInfo } from '@crucible/client';
-import { noteCrucibleRole } from './routes';
+import { noteCrucibleEngineUrl, noteCrucibleRole } from './routes';
 
 /** One registry row, as much of it as resolving needs. */
 export interface EngineEntry {
@@ -92,7 +92,7 @@ interface CacheRow {
 }
 
 const byName = new Map<string, CacheRow>();
-const inFlight = new Map<string, Promise<ResolvedEngine>>();
+const inFlight = new Map<string, { key: string; promise: Promise<ResolvedEngine> }>();
 
 function keyOf(entry: EngineEntry): string {
   return `${entry.name}\n${entry.url}`;
@@ -140,18 +140,32 @@ export async function resolveEngine(entry: EngineEntry, clientName: string): Pro
   if (cached !== undefined && cached.key !== keyOf(entry)) byName.delete(entry.name);
 
   const running = inFlight.get(entry.name);
-  if (running !== undefined) return running;
+  if (running !== undefined && running.key === keyOf(entry)) return running.promise;
 
-  const run = resolveNow(entry, clientName).finally(() => { inFlight.delete(entry.name); });
-  inFlight.set(entry.name, run);
-  return run;
+  const request: Promise<ResolvedEngine> = resolveNow(entry, clientName, (front) => {
+    if (inFlight.get(entry.name)?.promise === request) noteCrucibleRole(entry.name, front);
+  }).then((resolved) => {
+    // A forgotten/replaced request may finish, but must not republish its old
+    // route or erase the newer request that replaced it.
+    if (inFlight.get(entry.name)?.promise === request) {
+      remember(entry, resolved);
+      noteCrucibleEngineUrl(entry.name, resolved.url);
+    }
+    return resolved;
+  }).finally(() => {
+    if (inFlight.get(entry.name)?.promise === request) inFlight.delete(entry.name);
+  });
+  inFlight.set(entry.name, { key: keyOf(entry), promise: request });
+  return request;
 }
 
-async function resolveNow(entry: EngineEntry, clientName: string): Promise<ResolvedEngine> {
+async function resolveNow(
+  entry: EngineEntry, clientName: string, onFront: (front: ServerInfo) => void,
+): Promise<ResolvedEngine> {
   const front = await new CrucibleClient({ url: entry.url, token: entry.token, clientName }).info();
   // The record is filled from the FIRST document, which is the one that says
   // what the registered address is. The second says what the engine is.
-  noteCrucibleRole(entry.name, front);
+  onFront(front);
 
   let ref: EngineRef | null;
   try {
@@ -168,7 +182,6 @@ async function resolveNow(entry: EngineEntry, clientName: string): Promise<Resol
   }
   if (ref === null) {
     const resolved: ResolvedEngine = { server: entry.name, url: entry.url, info: front, through: null };
-    remember(entry, resolved);
     return resolved;
   }
 
@@ -187,7 +200,6 @@ async function resolveNow(entry: EngineEntry, clientName: string): Promise<Resol
     );
   }
   const resolved: ResolvedEngine = { server: entry.name, url: ref.url, info: behind, through: ref };
-  remember(entry, resolved);
   return resolved;
 }
 

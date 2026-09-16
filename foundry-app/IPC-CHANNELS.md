@@ -1,5 +1,267 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+**TWELVE DOORS AND ONE PUSH REMOVED ON 2026-09-15 — FOUNDRY KEEPS NO MODEL.
+COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 133 `ipcMain.handle` call sites,
+133 distinct channel names, zero `ipcMain.on`.** Nothing was added, nothing was
+renamed, and no surviving shape narrowed. The figure was 145 before this change
+and 145 − 12 = 133, which is the whole of the arithmetic.
+
+**Owen, verbatim:** *"we dont have any local models. crucible handles all model
+orchestration. if theres no connected crucible server then tiles should be
+disabled. crucible is a service that foundry installs locally and connects to."*
+And, sharpening it: *"crucible should handle model orchestration right? so
+crucible is where which models to use is decided. but foundry does pass through
+settings to crucible."*
+
+**REMOVED — the `ollama:` family, entire (six doors and one push).**
+`ollama:facts`, `ollama:choices`, `ollama:install`, `ollama:install-cancel`,
+`ollama:pull`, `ollama:pull-cancel`, and the `ollama:progress` push. Foundry
+pulls no models, so it has no standing to install the thing that pulls them; the
+first-run wizard step these served is deleted with them. Ollama is still PROBED
+in main, by one caller that is not a door — `machine-models.ts`, the "Models on
+this machine" inventory (docs/SLOTS.md §5b), which counts weights already on the
+disk and says nothing about where work runs.
+
+**REMOVED — the `llm:` family, entire (six doors).** `llm:defaults`,
+`llm:stored`, `llm:set-model`, `llm:set-clean-model`, `llm:ollama-url`,
+`llm:set-ollama-url`. The model a request names is the ENGINE's capability
+record's `selected` (crucible docs/PHASE15-HOST.md §3.3), applied over the
+request at the spawn by the placement (`doorArgs`, electron/job-queue.ts) — so a
+model chosen in Foundry was a choice that was then ignored, which is the defect
+rather than the feature. `AppSettings.defaultLlmModel`, `cleanTextModel` and
+`ollamaUrl` went with them; the engine's own `upstreams.ollama.url`
+(PHASE15-HOST.md §3.2) is the surviving owner of that last fact.
+
+**THE PASS-THROUGH IS UNTOUCHED, and it is the other half of Owen's ruling.**
+`crucible:engine-settings`, `crucible:engine-settings-save` and
+`crucible:engine-capability` write the ENGINE's own settings through
+`PUT /v1/settings` — the route per llm class (`local` or `<upstream>/<model>`)
+and the upstream keys. A route row legitimately contains a model NAME chosen by
+a person; that is Foundry drawing the engine's store, not keeping one. No door,
+shape or field of that family changed.
+
+**FOR BOOKFORGE:** every name above is gone from the preload bridge and from
+`FoundryApi` (`app/shared/api.ts`), whose `ollama` and `llm` namespaces are
+deleted outright. A vendored bridge entry for any of the twelve should be
+removed; there is no successor to point it at.
+
+**THREE DOORS ON 2026-09-15 — WAVE 64 POINT 3, THE UNINSTALL DOOR. COUNTED BY
+SCRIPT OVER `app/electron/ipc.ts`: 145 `ipcMain.handle` call sites, 145 distinct
+channel names, zero `ipcMain.on`.** Nothing was removed, nothing was renamed, and
+no existing shape narrowed. One shared file is new — `app/shared/uninstall-wire.ts`,
+crucible `docs/INSTALL-UNINSTALL.md` §6.3 mirrored field for field.
+
+**AND THE STANDING FAILURE, A FOURTH TIME.** The head below said **138** and the
+source measured **142** before this change — four doors added under a stale
+figure, which every dated paragraph in this file has now had to record. The
+figure above is a measurement, taken by the script it names over the source in
+this worktree.
+
+- **`crucible:uninstall-availability` → `CrucibleUninstallAvailability`** — may
+  the door be drawn at all. §6.1, and Owen's ruling with it: *the door only for a
+  server the app can prove is this machine's; never a registry entry.* ONE
+  function in main answers it and both doors below refuse on the same answer,
+  because a hidden control over an open door is a decoration. It answers TWO
+  questions, because on one machine they have different answers: what PROVED the
+  server is this machine's (`pairing-file` — this machine's pairing file, read
+  through the SDK, matching a registry entry on BOTH url and token, the name
+  deliberately not having to match, since this PC's file says
+  `crucible@owens-pc-wsl` and the same engine is registered as `local`;
+  `windows-host` — `%LOCALAPPDATA%\Crucible\host\crucible.cmd` exists, which is
+  what "the host is installed" MEANS; `wsl-guest` — win32 with no host pack and a
+  Crucible in the distro door 2 names), and what would RUN (`via`, §6.2's three
+  lines). Owen's PC is proved by its pairing file and run through the host pack.
+  §6.1's remaining proof — a server this app installed this session — is NOT
+  implemented and cannot be: `crucible:install` refuses on every machine until
+  `@crucible/bootstrap` ships. `:7101` is never knocked on: §6.2 says the host's
+  loopback door was never extended with an uninstall, so there is no route there
+  and asserting one would be inventing an endpoint. Hosted: always false. A READ.
+- **`crucible:uninstall-dry-run` ({purgeWeights, wslToo}) → `CrucibleUninstallPlan`**
+  — `crucible uninstall --json --dry-run`, §6.4 step 1. Touches nothing. The door
+  asks it again whenever a checkbox moves, which is the contract's own
+  instruction: the kept-models figure has to move, and the dry run is the only
+  thing that knows the new number. Exit **1 is still a plan** — `ok: false` names
+  the one step that failed and the others happened.
+- **`crucible:uninstall` ({purgeWeights, wslToo}) → `CrucibleUninstallRun`** — the
+  same flags, performed, §6.4 step 2: the same rows with `done` filling in. AND
+  the one act that is Foundry's rather than the verb's — §2's box, *"THE TOKEN
+  ALWAYS GOES, on every uninstall"* — so a run that stopped the engine removes the
+  registry row the proof named, through the registry's one writer
+  (`removeCrucibleServer`, new, `addCrucibleServer`'s twin), followed by
+  `afterRegistryChanged`. `unregistered` names the row that went, or null when the
+  proof named none (a `windows-host` proof names no row) or the engine was not
+  stopped. Coordination state for that name is LEFT to the next connect: the map
+  is keyed by registry name, the Servers card looks a row's state up by the row's
+  name, and there is no row any more — so the stale entry draws nothing anywhere,
+  and registering that name again coordinates afresh over it.
+
+**THE APP-SIDE REFUSAL NAMES ARE AGREED WITH BOOKFORGE** (2026-09-15) so two apps
+name one situation one way: `uninstall_not_local`, `uninstall_not_available`,
+`uninstall_no_localappdata`, `uninstall_no_distro`, `uninstall_home_unreadable`,
+`uninstall_wsl_too_needs_host`, `uninstall_unrun`, `uninstall_unreadable`,
+`uninstall_failed`. They are facts about THIS APP's reach and are a different
+layer from the CLI's own refusals, which arrive per step inside the plan in the
+engine's words (§6.3's table) and are never translated.
+
+**No token is in any of the three answers or in any line they log.** The plan's
+paths — `home`, `kept.paths`, each step's `target` — are directories, which is
+what a person reading a plan needs to see; the verb prints no credential, because
+`remove-config` deletes the file holding the bearer token and never echoes it.
+
+**FOUR DOORS ON 2026-09-14 — WAVE 62 PACKAGE J, CONNECT THREE WAYS. COUNTED BY
+SCRIPT OVER `app/electron/ipc.ts` AFTER THE MERGE WITH PACKAGE H BELOW: 138
+`ipcMain.handle` call sites, 138 distinct channel names, zero `ipcMain.on`.** Nothing was removed, nothing was renamed, and
+no existing shape narrowed. One shared type gained a member
+(`LocalCrucibleAdd` is now the pairing file's answer as well — see below).
+
+**THE STANDING FAILURE, A THIRD TIME, AND IT IS RECORDED RATHER THAN QUIETLY
+FIXED.** The head of this file said **130** and the source at `5d37806` measured
+**132** — two doors added under a stale figure, which is the exact thing the
+2026-08-22, 2026-08-23 and Wave 61 paragraphs below already record. **The figure above is a
+measurement**, taken with the script over the source in this worktree; every
+name in it is in the per-family tables, which are and remain the authority.
+
+- **`crucible:add-from-pairing-file` → `LocalCrucibleAdd`** — look for the
+  connect code Crucible leaves on this machine (`<CRUCIBLE_HOME>/pairing`,
+  crucible `docs/PHASE15-HOST.md` §3.6, pinned in Crucible `3bcd003`) and
+  **register it under the name the line itself carries** — the same writer, the
+  same name source and the same clamp as `crucible:add-connect-code`, because a
+  pairing file IS a connect code the machine left on disk. There is no reserved
+  name: Owen, 2026-09-15 — *"it shouldnt be named 'local' anywhere. it might not
+  be local. a local crucible server shouldnt be treated any differently than a
+  remote crucible server. it should all be entered the exact same way."*
+  (BookForge deleted its own reserved identity in `24b7bf67`.) It declines when
+  **the address in the line is already registered** — the clamped URL, not the
+  name and not whether the URL looks loopback, because `127.0.0.1` is as likely
+  to be a tunnel to somebody else's card as it is to be this machine.
+  **The same read runs once at start**
+  (electron/mount.ts, standalone only — hosted the registry is the host's), so
+  this door is §3.6's SECOND CHANCE: an engine installed after this app opened.
+  `LocalCrucibleAdd` is REUSED rather than given a twin, because the two doors
+  say the same three things — added, nothing here (`no_local_config`, and an
+  absent file is a FACT, not a fallback), or something here that will not read
+  (`config_unreadable`, carrying the SDK's own `invalid_pairing` sentence).
+  **No token crosses**: main reads the line, writes the entry, answers the view.
+- **`crucible:parse-connect-code` (line) → `ConnectCodePreview`** — what a pasted
+  connect code says, **name and address only**. Pure: the SDK's `parsePairing`
+  (PHASE13-OPERATOR.md §2.1) and no network, so the door runs on every change of
+  the paste field. The person typed the token, but the answer does not carry it
+  back — the renderer never holds a credential it did not type into a field for
+  that purpose, and a preview carrying one would put a token in a signal for as
+  long as the door stayed open.
+- **`crucible:test-connect-code` (line) → `CrucibleProbe`** — `crucible:test-at`
+  for a pasted line, and it exists BECAUSE that door cannot serve this one: it
+  takes a token, and handing the code's token back so it could be handed forward
+  is exactly what the preview refuses. Writes nothing. An unreadable line is a
+  RESULT (`outcome: 'failed'` with the SDK's sentence), not a rejection.
+- **`crucible:add-connect-code` (line, name) → `CrucibleSettingsView`** — add what
+  the code names, through the registry's one writer. The NAME is the caller's
+  (the preview filled the box and somebody may have renamed it); empty falls back
+  to the name inside the code. Rejects by name on a line that will not parse, and
+  answers the whole view for `crucible:add`'s reason. It now also **coordinates**
+  with what it added (PHASE14 §4a: a server being added is the moment), which it
+  did not before it and the pairing file's road were made one writer.
+
+The line takes **the same road three times** rather than a token being handed
+back and forth: preview, Test and Add each send the LINE into main, which parses
+it afresh. Parsing is pure and costs nothing, and the alternative is a secret
+making two extra crossings of the preload for no gain.
+
+**TWO DOORS AND ONE PUSH ON 2026-09-14 — AUTOMATIC COORDINATION WITH EVERY
+CONNECTED CRUCIBLE. COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 134
+`ipcMain.handle` call sites, 134 distinct channel names, zero `ipcMain.on`.**
+Nothing was removed, nothing was renamed, and no existing shape narrowed.
+
+**AND THE STANDING FAILURE HAPPENED AGAIN, WHICH IS THE THIRD TIME THIS FILE
+HAS HAD TO SAY SO.** The head below said **130** and the source measured **132**
+before this change — two doors added under a stale figure. The figure above was
+measured by the same script it names, over the file as it now stands. A FIGURE
+QUOTED AS A GATE IS A MEASUREMENT OR IT IS DECORATION.
+
+- **`crucible:coordination` → `CrucibleCoordinationMap`** — where coordination
+  stands with every server it has anything to say about, keyed by registry
+  name. A server absent from the map has not been asked yet, which is a real
+  answer and deliberately not a member of the state union: "idle" drawn as a row
+  would be a screen announcing the absence of news. A READ — it starts nothing.
+- **`crucible:coordinate` (name) → `CrucibleCoordinationState`** — coordinate
+  with one named server now. Idempotent and concurrency-safe: a second call
+  while one is in flight joins the first rather than racing it into the
+  `task_busy` the whole design exists to avoid. It does not reject — every way a
+  conversation with a machine can end is a STATE, "there is no server called
+  that" included. **There is no button behind it**: coordination runs by itself
+  on every enabled server at app start, on `crucible:add`, on
+  `crucible:add-local`, and on every entry a `crucible:save` added by name or
+  switched back on (crucible `docs/PHASE14-ENVPACKS.md` §4a, Owen 2026-09-14:
+  presence of the app is the request, and the enable switch in Settings is the
+  one opt-out). This door exists for a screen that has just learnt about a
+  server and would otherwise wait for a push already sent.
+- **`crucible:coordination-changed` (push, `CrucibleCoordinationState`)** — one
+  server's state, every time it moves. It CARRIES A PAYLOAD where
+  `acts:gates-changed` and `models:changed` deliberately do not, and the reason
+  is the shape of the news: those two say "ask again" about a composed answer
+  that costs a probe, while this is a single small value the renderer already
+  holds a mirror of — a push that only said "something moved" would make every
+  window re-read the whole map on every byte of a download. Broadcast to every
+  window, because coordination starts at APP START, before any window has asked
+  for anything. **The payload gained `unmet` on 2026-09-14** (crucible
+  `docs/PHASE15-HOST.md` §5.3a, crucible `e342fee`): the vendored module names
+  CAPABILITY CLASSES rather than model ids now, and a class the engine has
+  disabled is neither missing nor a refusal — it is a fact about that machine,
+  and it travels on `stocked`, `preparing` and `waiting` as `{class, reason}`
+  with the capability row's own reason verbatim. `CrucibleModuleProgress.unmet`
+  carries the same thing off the finished task (`TaskStatus.unmet`), null until
+  the task is terminal, because the server is the one that resolved the classes.
+  A server with nothing missing and classes unmet is still `stocked`: the word
+  means "nothing to download", and there is nothing.
+
+**NO TOKEN CROSSES EITHER DOOR, in either direction**, which is the rule the
+whole `crucible:` family keeps: a state names a server, a phase, what is
+missing, and whatever sentence the SERVER itself wrote about the holder of its
+card. The vendored module (`app/shared/foundry.module.json`) is read in main and
+posted from main; the renderer is never told what is in it, and does not need to
+be — the words are composed from the MISSING list in
+`app/src/app/core/crucible-words.ts`.
+**FOUR DOORS ON 2026-09-14 — WAVE 62 PACKAGE I, THE SETTINGS WINDOW. COUNTED BY
+SCRIPT OVER `app/electron/ipc.ts` AFTER THE MERGE WITH PACKAGES H AND J: 142
+`ipcMain.handle` call sites, 142 distinct channel names, zero `ipcMain.on`.**
+Nothing was removed, nothing was renamed, and no existing shape narrowed.
+
+**AND THE FIGURE BELOW WAS STALE AGAIN BY TWO.** The head of this file said
+**130** and the source measured **132** before this change — two doors added
+under a stale figure, which is the failure the paragraph under this one and the
+2026-08-22 / 2026-08-23 paragraphs below already record three times. A FIGURE
+QUOTED AS A GATE IS A MEASUREMENT OR IT IS DECORATION. The per-family tables
+remain the authority for the NAMES; where a total contradicts them, the tables
+win.
+
+- **ADDED: `crucible:engine-settings`, `crucible:engine-settings-put`,
+  `crucible:engine-upstream-test`, `crucible:engine-capability`** — the window
+  onto ONE registered server's own settings (crucible `docs/PHASE15-HOST.md`
+  §3.1, §3.2, §3.3, §5.2). Owen's ruling: the GPU engine is the SINGLE SOURCE OF
+  TRUTH for AI settings, so these four read and write a store that lives on the
+  SERVER and touch `app-settings.json` not at all — *"every control in these
+  sections is a request to the engine, and its result is the engine's answer
+  re-read. There is no Save button that writes an app file and syncs later."*
+  Each row is described in the `crucible:` table below.
+
+  **`engine-` rather than four more bare `crucible:` members**, because that
+  family already means "this app's registry of servers" and these are not about
+  the registry: they are about what ONE of those servers has been configured to
+  do. **They take a server NAME**, like `crucible:open` and for the same reason —
+  the address and the token are looked up in main, so nothing a renderer holds
+  could send a key to an engine this app has not been told about. **And no answer
+  on any of the four carries a credential**: `SettingsDocument` has `keyHint`,
+  the last four characters, where the engine has a key, which is
+  `CrucibleServerView.tokenSet`'s rule one wire along. The wire types live in
+  `app/shared/engine-settings.ts`; `CapabilityRow`/`CapabilityRecord` MOVED there
+  from `electron/crucible-dispatch.ts` unchanged, and that file re-exports them,
+  so every existing importer is untouched and there is still one declaration.
+
+  **No push was added.** A settings write moves the dock's tiles when it touched
+  a route, and the existing `acts:gates-changed` (through `afterRegistryChanged`)
+  is what says so — a second push for the same news would be two writers of one
+  fact.
+
 **THREE DOORS AND A NEW FAMILY ON 2026-09-14 — WAVE 61 PACKAGE F (APP HALF).
 COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 130 `ipcMain.handle` call sites,
 130 distinct channel names, zero `ipcMain.on`.** Nothing was removed, nothing was
@@ -67,16 +329,14 @@ payloads widened.
   with the whole settings view rather than a list, because adding a loopback
   server changes the SLOTS. An existing name is replaced in place, keeping its
   rank and its enabled state.
-- **`crucible:install-plan` → `CrucibleInstallPlan`** — the hand sequence for
-  installing a Crucible on this machine, composed for this platform. A READ: the
-  only process it spawns is `wsl.exe -l -v`, which lists. Everything else in the
-  answer is a string for a person to read and run.
-- **`crucible:install` → rejects** — the driven install, and it refuses on every
-  machine today with `CrucibleInstallPlan.drivenWhy`'s sentence.
-  `@crucible/bootstrap` is released with Crucible's next version and is
-  deliberately not a dependency until it exists. The button is disabled with the
-  same sentence AND the door refuses, because something reachable by an IPC
-  message must refuse at the door or the disabling is a decoration.
+- **`crucible:install-plan` → `CrucibleInstallPlan`** — reads the native
+  installation plan. Windows does not require WSL; the optional upgrade belongs
+  to Crucible's own console.
+- **`crucible:install` → void** — runs Crucible's installer, checks readiness and
+  registers its published connection. Refuses hosted, unsupported platforms and
+  concurrent installations. Errors preserve the installer's failure.
+- **`crucible:install-line` (push, string)** — live installer output, sent only
+  to the window that started the operation.
 - **`models:changed` (push, no payload)** — the weights on this disk moved. The
   one thing that moves them without somebody pressing a button on the card is
   SLOTS.md §5b's automatic removal, which fires from `crucible:save` and once at
@@ -639,16 +899,60 @@ resolving `ok` means the installer was OPENED**, never that ollama is
 installed — that happens minutes later in a window this app does not own, so
 `ollama:facts` is the only thing that ever says so.
 
+### Three names added on 2026-09-15 — the Uninstall door (Wave 64 point 3)
+
+`crucible:uninstall-availability`, `crucible:uninstall-dry-run`,
+`crucible:uninstall`. Built to crucible `docs/INSTALL-UNINSTALL.md` §6 (6.1–6.4),
+which is the contract. The renderer is a FOURTH DOOR inside
+`app-crucible-doors`, behind a `canUninstall` input the Servers card passes and
+the first-run wizard does not: the child is mounted by both screens, and offering
+to remove Crucible to somebody who has not installed it is a wizard arguing with
+itself. Its words are BookForge's verbatim (agreed 2026-09-15) — two apps that
+remove one engine off one machine must not describe it two ways.
+
+Four things worth naming rather than leaving in the table.
+
+**A `.cmd` cannot be spawned without a shell on this Node, and that is measured.**
+Node 20.19.5 and Electron 33's Node both carry the CVE-2024-27980 fix, so
+`spawn('…\\crucible.cmd', argv)` throws `EINVAL` outright — verified on this
+machine before the module was written. So the win32 host arm takes §6.2's
+documented fallback: `cmd.exe /d /s /c "<every token quoted>"` with
+`windowsVerbatimArguments`, assembled from an argv array so nothing a person typed
+can reach it, and a `%LOCALAPPDATA%` carrying a quote or a percent sign is refused
+by name rather than escaped by guesswork. The WSL arm goes through `bash -c` with
+a fixed script, for the reason `addLocalCrucible` already does: only the guest can
+expand its own `CRUCIBLE_HOME`.
+
+**Strict about fields, open about values.** A field §6.3 says is always there and
+is not there is `uninstall_unreadable` — a plan with an invented `ok` is a plan
+that says the wrong thing about a machine somebody is about to change. An OPTIONAL
+field arrives as null and means what §6.3 says: an absent `bytes` is *"the target
+is not a path"*, which is not zero. An unknown STEP NAME or action word is carried
+through as a string and drawn, because two of §6.3's name shapes are open-ended
+(`weights:<catalog kind>` is the server's list, `keep-unknown:<name>` is a file
+Crucible did not write) and nothing in this app switches on one.
+
+**`ok: false` is never "uninstall failed".** §6.3 is explicit that a fatal step does
+not stop the run, so the door marks one row and says *a step refused, above, by
+name; everything that DID finish is gone; nothing is half-removed silently* — and
+there is no arrangement of that component that produces the other sentence.
+
+**Both checkboxes default off, and changing either clears the plan before asking
+for a new one.** Both halves matter: clearing is what stops a Remove button
+sitting over rows priced for other flags, and the re-ask is §6.4's own instruction
+so the kept figure moves with the box. Closing the door clears it too, and
+reopening asks again.
+
 ## Doors the renderer knocks on
 
-All 130 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
+All 133 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
 purpose: a renderer that cannot tell whether main heard it is a renderer that
 cannot report a failure. They are registered in one function, `registerIpc`
 (`app/electron/ipc.ts`), which `mountFoundry` calls.
 
 | Channel | What it does |
 | --- | --- |
-| `acts:gates` | May each of the five acts run on THIS MACHINE, and the sentence either way — translate, simplify, analysis, clean, read. What is installed, what fits, what is serving. Not the stage gate: whether an act applies where somebody is standing is `shared/stages.ts`, in the renderer, and a tile needs both. |
+| `acts:gates` | Is anything SERVING each of the five acts, and the sentence either way — translate, simplify, analysis, clean, read. An enabled engine whose capability row says so, a connected cloud provider, or (for `read` alone) the page reader on this disk. It measured this machine — the card, the catalogue floor, Ollama's library — until 2026-09-15, and does not any more: Foundry runs no model. Not the stage gate: whether an act applies where somebody is standing is `shared/stages.ts`, in the renderer, and a tile needs both. |
 | `analysis:read-categories` | The analysis categories this user wrote themselves, from `app-settings.json`. App-level: they are the reader's, not one project's. |
 | `analysis:write-categories` | Replace that list, and answer with it as stored — ids re-derived from names, fields capped, collisions with a built-in or with each other dropped. |
 | `app:hosted` | Whether another app mounted Foundry, so the renderer can drop the controls the host already answers. |
@@ -672,7 +976,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `capture:pdf-stage-page` | One rasterized PDF page's PNG, renderer to main, staged under a checked basename; answers the path `capture:intake` will copy from. |
 | `capture:pdf-stage-release` | The staged pages are in a project, or abandoned: delete the directory. Releasing twice is releasing once. |
 | `cloud:settings` | Every configured cloud provider, the slots as they now stand, and whether this window is hosted — the Cloud providers card's one read. No key crosses: the renderer is told `keySet`. |
-| `cloud:save` | Replace the whole provider list. `apiKey: null` keeps the stored key. Answered with the whole view, because enabling a provider changes the slots. Refused while hosted. |
+| `cloud:save` | Replace the whole provider list. `apiKey: null` keeps the stored key. Provider names are refused by `crucible:save`'s one rule, because both lists feed one picker. Answered with the whole view, because enabling a provider changes the slots. Refused while hosted. |
 | `cloud:test` | List that provider's models and say whether the chosen id is among them — a plain GET with the right header per kind, so it costs no usage credits. Takes the UNSAVED edit; the key goes one way, into main, and no answer carries it back. |
 | `capture:recipe-load` | The recipe plus a fresh door token — how a reopened project gets its light table back. |
 | `capture:recipe-save` | The whole recipe document, validated before it touches disk. |
@@ -707,11 +1011,6 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
-| `llm:defaults` | What the language dialogs open with — the LOCAL slot's answers, and only those: `model` (translate/simplify/analyse), `cleanModel` (Clean text's own `cleanTextModel`), and `ollama`, the URL of the Ollama on this machine. Nothing is resolved behind it any more; a job sent to a Crucible takes its model and its address from that server at the spawn. |
-| `llm:ollama-url` | Where Ollama is. The one server address this app still keeps by itself. |
-| `llm:set-ollama-url` | Write it. Answers with what was STORED, never with what was sent. |
-| `llm:set-clean-model` | Set the Clean text model. Answers with the tag AS STORED, same rule. |
-| `llm:set-model` | Set the default model. Answers with the tag AS STORED — a name main clamped comes back changed. |
 | `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone; a host that throws REJECTS in its own words so the form can say so. |
 | `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |
 | `meta:mint-stamp` | The whole block onto ONE finished export, in place — the metadata tile's Save over an EPUB. Tray-gated like the flat writer. |
@@ -722,18 +1021,12 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `meta:write-pdf` | Write it to the project's working copy, and record the metadata step. |
 | `models:inventory` | Every store of weights on this machine, with sizes — Foundry's own downloads, Ollama's list, a local Crucible's residency (docs/SLOTS.md §5b). Measured, never cached. Carries `pageReader`, §5b's offer: what has been or would be removed, the bytes, and the remote server page reading would then need. |
 | `models:remove-page-reader` | Delete the page reader Foundry downloaded — that directory and nothing else — stopping the server first if this app started it, and answer with the gigabytes freed. The one door in this app that deletes model files. A refusal is a result with a sentence, not a rejection. |
-| `ollama:choices` | This machine, ollama's state, the Qwen lineup with one row badged, and today's model — the setup wizard's model step in one answer. |
 | `page-reader:install` | Fetch whatever the local page reader is missing — a llama.cpp build for this machine and the two dots.ocr GGUF files — verify each against its published sha256, and unpack. Streams over `page-reader:progress`. A failure is a result, not a rejection. |
 | `page-reader:install-cancel` | Stop that. What has already been fetched is KEPT: the next attempt resumes from it. |
 | `page-reader:set-keep-warm` | Minutes an app-started page reader outlives a drained queue, clamped; answers with the value as stored. The read is on `page-reader:state`. |
 | `page-reader:start` | Start it now, or adopt whatever is already answering on the port. Pre-warming, so the first book of an evening does not pay the load. Rejects with the server's own log tail. |
 | `page-reader:state` | EVERYTHING THE SETTINGS ROW AND THE SETUP STEP NEED, IN ONE READ: supported on this platform, installed, which llama.cpp release and accelerator, both model files by name and size, what a download would cost right now, the server's status, and the keep-warm minutes. One call because every one of those is measured off the same directory at the same moment. |
 | `page-reader:stop` | Stop it, if this app started it. A server it merely found is left alone and says so. |
-| `ollama:facts` | Is ollama running, and is its binary here at all. Two different questions; never cached. |
-| `ollama:install` | Fetch ollama's own installer and hand it to the OS. `ok` means it was OPENED, never that ollama is installed. |
-| `ollama:install-cancel` | Abort that download. |
-| `ollama:pull` | `POST /api/pull`, streamed. A failure is a result, not a rejection. Never routed to a queue. |
-| `ollama:pull-cancel` | Abort that pull. |
 | `projects:delete` | Delete a project directory, for real. |
 | `projects:describe` | What that project delete would destroy, in words and bytes. |
 | `projects:list` | Home's listing: one row per book, with what is in it. |
@@ -747,18 +1040,32 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `queue:run` | Run an export NOW and resolve with the settled row — the Export dialog's door. Never routed to a host queue; the row leaves the list at the settle, so nothing lingers in the shelf. Refuses a `read` by name. |
 | `queue:set-wait-for` | Send a held or queued row to a different SLOT — a slot name, or `any` (docs/SLOTS.md §3). Answers nothing; the row arrives on `queue:changed` like every other change. Refused silently on a row that has started, because a job is atomic on one slot. NOT forwarded to a host queue: a host's placement is the host's. |
 | `queue:start` | Release everything held at this moment. Forwarded to the host's queue where one is registered. |
-| `slots:list` | Every slot, in priority order — where compute-heavy work may go: this machine, one per enabled Crucible, then one per enabled cloud provider (`kind: 'cloud'`, and carrying no `url`, deliberately — see docs/SLOTS.md §7, Package F). Hosted, this is the host's own list (`FoundryHost.slots`). One entry or none is the ordinary answer and draws no picker anywhere. |
+| `slots:list` | `SlotAvailability` — the slots in priority order AND, when there is one, the reason there are none. The slots are where compute-heavy work may go: one per enabled Crucible server, then one per enabled cloud provider (`kind: 'cloud'`, and carrying no `url`, deliberately — see docs/SLOTS.md §7, Package F). **There is no local slot** (Wave 66, Owen: *"there should be no local gpu listed in the queue… one gpu slot in the queue per connected crucible server. including the local crucible, which is indistinguishable from the remote crucible server"*), so `kind` is `'crucible'` or `'cloud'` and never `'local'`, and an EMPTY list is the ordinary state of a machine with no engine registered — GPU work in that state is refused by name rather than run here, while CPU work (exports, compiles, rasterising) is unaffected. An entry whose address resolves to an orchestrator with no engine behind it is not listed, read from the resolver's cache only (never a network hop behind this door); an unprobed entry is listed. Hosted, they are derived from the host's own registry (`FoundryHost.servers`). One entry or none is the ordinary answer and draws no picker anywhere. **The answer is an object, not an array** (changed 2026-09-14): an empty array could not tell "no servers were added" from "there was nobody to ask", and a hosted window whose host offers no registry was drawing the second as the first. `refusal` is `null` in the ordinary case, else `{code, sentence}` with `code` one of `host_provides_no_registry` (the seam is missing from the host's build) or `host_registry_unavailable` (it is there and the call failed — BookForge throws before its first snapshot — and may answer on the next read). |
 | `slots:rows-waiting-for` | The waiting rows of OURS that name one slot — what the Servers card shows before it offers to move any of them. Running rows are deliberately not included. |
 | `crucible:settings` | Everything the Servers card draws in one read: the registry (with `tokenSet`, never a token), the derived slots, the new-jobs default, the WSL distro, and whether this window is hosted. |
-| `crucible:save` | REPLACE the whole registry, in order — the array position IS the rank, so a drag is a save. `token: null` on an entry keeps what is stored. Rejects with a sentence naming the entry it cannot store. Refused outright while hosted. |
-| `crucible:test` | Test connection (`client.info()`). A failure is a RESULT carrying the SDK's own sentence, not a rejection. |
+| `crucible:save` | REPLACE the whole registry, in order — the array position IS the rank, so a drag is a save. `token: null` on an entry keeps what is stored. Rejects with a sentence naming the entry it cannot store. A NAME IS REFUSED BY ONE RULE — `slotNameRefusal` (app/shared/slots.ts): trimmed, 1-48 characters, no control character, no `:` (it is the mark between a slot and its upstream lane, so `3090:cloud` would be the same string as server `3090`'s lane), no `/` or `\` (a server name becomes a browser session partition), and not `any`, which the queue has already spent. (`This computer` was reserved beside it until Wave 66 deleted the local slot; a name nothing uses is not reserved, and the CPU lane needs no reservation because it has no name in this namespace — it is a count, `CPU_LANE_SLOTS`.) The same function is the clamp on the way to disk, so the writer and the file can no longer disagree. Refused outright while hosted. |
+| `crucible:test` | Test connection (`client.info()`). A failure is a RESULT carrying the SDK's own sentence, not a rejection. **The probe FOLLOWS the orchestrator hop** (crucible `docs/PHASE17-ORCHESTRATOR.md` §6): a registered address that turns out to be an orchestrator is resolved to the engine it manages and the `ok` arm reports THAT engine's name, version, backend and card, with `via` — a present-null field, new 2026-09-15 — naming the orchestrator in front of it. An orchestrator fronting an engine is a SUCCESS and the card says both; an orchestrator with no engine, and a hop that points at a second orchestrator, are failures carrying `orchestrator_has_no_engine` / `orchestrator_engine_is_not_an_engine`'s own sentence. `crucible:test-at` and `crucible:test-connect-code` share the type and the behaviour. |
+| `crucible:open` | Open a REGISTERED server's own operator page, by name. The window has no preload, is sandboxed, keeps its own session partition, refuses navigation off the server's origin and denies every popup and permission — it is a remote page this app merely hosts (electron/crucible-ui.ts argues each setting). By name rather than by URL so no token reaches the renderer. Deliberately NOT `crucible:open-ui`, which is BookForge's name for their own. **It opens the REGISTERED address and never the resolved engine** — the one door in this app that does not follow crucible `docs/PHASE17-ORCHESTRATOR.md` §6's hop, because a console is a person going to look at the process they named and the orchestrator's console is where §4's install/restart/quit buttons are (electron/crucible-ui.ts argues it). |
 | `crucible:test-at` | The same probe against an address and token that are NOT in the registry — the wizard's Connect door, which has nothing saved to test. Writes nothing. The token goes one way, into main, and no answer carries it back. |
 | `crucible:add` | Add ONE server, through the registry's one writer. Answers with the whole settings view, because adding a loopback entry changes the slots. An existing name is replaced in place, keeping its rank. |
-| `crucible:add-local` | Register the Crucible on this machine by reading its own `config.toml` — on Windows through `wsl.exe -d <distro> --exec`. The token is read and stored in main and never crosses this wire. Refused while hosted. |
+| `crucible:add-local` | Register the connection Crucible published on this computer through the SDK pairing reader. Works with native Windows and WSL-managed engines; no distro choice. Existing address keeps its name, rank and enabled state while its token refreshes. Hosted is refused. |
+| `crucible:add-from-pairing-file` | Look for the connect code Crucible leaves on this machine (`$CRUCIBLE_HOME/pairing`; `~/.crucible/pairing` on linux/darwin, `%LOCALAPPDATA%\Crucible\pairing` on win32 — PHASE15 §3.6, pinned in Crucible `3bcd003`) and register it under the NAME THE LINE CARRIES — the same writer, name source and clamp as `crucible:add-connect-code`, because a pairing file is a connect code the machine left on disk. There is no reserved name: Owen, 2026-09-15 — *"it shouldnt be named 'local' anywhere. it might not be local. a local crucible server shouldnt be treated any differently than a remote crucible server. it should all be entered the exact same way."* The read also runs once at app start (electron/mount.ts), standalone only; this door is §3.6's second chance, for an engine installed after the app opened. It declines when THE ADDRESS IN THE LINE is already registered (the clamped URL, never the name and never whether the URL looks loopback), because that is one engine with two rows. Answers `LocalCrucibleAdd`, reused: `added`, `no_local_config` (no file — a FACT the app shows, never a fallback it fills), `config_unreadable` (the SDK's `invalid_pairing` sentence, fragment already elided), `already_registered`. No token crosses. |
+| `crucible:parse-connect-code` | What a pasted connect code says — **name and address only**, through the SDK's `parsePairing`. Pure and networkless, so the connect door runs it on every change of the paste field. The token is deliberately not in the answer, though the person pasted it: the renderer never holds a credential it did not type into a field for that purpose. `ConnectCodePreview`: `read` with name+url, or `refused` with the SDK's sentence. |
+| `crucible:test-connect-code` | `crucible:test-at` for a pasted line. It exists because that door takes a TOKEN, and handing the code's token back to the renderer so it could be handed forward again is the one thing the preview refuses to do — so main re-reads the line instead. Writes nothing. An unreadable line is a RESULT with the SDK's sentence, not a rejection. |
+| `crucible:add-connect-code` | Add what a pasted connect code names, through the registry's one writer — the SAME one `crucible:add-from-pairing-file` uses, and it coordinates with what it added (PHASE14 §4a) as that door does. Takes the line and a NAME — the preview filled the name box and somebody may have renamed the server before pressing; empty falls back to the name inside the code. Rejects by name on a line that will not parse. Answers the whole settings view, because a loopback code changes the slots. |
 | `crucible:set-wsl-distro` | Which WSL guest that read looks in. Empty is a real answer and means unset; there is no default. |
 | `crucible:set-new-jobs-wait-for` | `top` or `any` — what a new row's `waitFor` starts as. Answers with what was stored. |
-| `crucible:install-plan` | The hand sequence for installing a Crucible on this machine, composed for this platform: the numbered steps with every command copyable, the elevated ones listed apart, the README link and the wheel. A read — the only process it spawns is `wsl.exe -l -v`. |
-| `crucible:install` | The driven install. REJECTS on every machine today with the same sentence the disabled button wears — `@crucible/bootstrap` ships with Crucible's next release. The door refuses as well as the button, because a disabled control over an open door is a decoration. |
+| `crucible:install-plan` | Read the native installation plan and platform availability. Windows WSL migration belongs to the Crucible console. |
+| `crucible:install` | Run the shared Crucible installer, verify readiness, register its published connection, and refresh capabilities. Installer progress goes to the requesting window. |
+| `crucible:uninstall-availability` | May the Uninstall door be drawn at all — crucible `docs/INSTALL-UNINSTALL.md` §6.1, and Owen's ruling with it: **the door only for a server the app can prove is this machine's; never a registry entry.** A registry row says where a server is and what its token is, not whose machine it is on, and a loopback-looking address proves nothing (a tailnet, a port-forward or an SSH tunnel all put 127.0.0.1:7100 in front of somebody else's card). Answers what PROVED it (`pairing-file` / `windows-host` / `wsl-guest`) and, separately, what would RUN (`via`, §6.2's three lines) — two questions with different answers on one machine: Owen's PC is proved by its pairing file and run through the host pack. Also carries the registry name the proof named, or null, and whether `--wsl-too` may be offered (only the host drives the guest). Hosted: always false. A READ — a file test, and one `wsl.exe` call on the guest arm alone. |
+| `crucible:uninstall-dry-run` | ({purgeWeights, wslToo}) → `CrucibleUninstallPlan` — `crucible uninstall --json --dry-run` (§6.2's verbatim argv). Touches nothing. Asked again whenever a checkbox moves, because the kept-models figure has to move and the dry run is the only thing that knows the new number. Exit **1 is still a plan** — `ok: false` names the one step that failed, the others happened, and a rejection there would tell somebody nothing happened when most of it did; exit **2 is `uninstall_not_available`**, an older Crucible that has no uninstall verb. |
+| `crucible:uninstall` | ({purgeWeights, wslToo}) → `CrucibleUninstallRun` — the same flags, performed (§6.4 step 2): the same rows with `done` filling in. Then the one act that is Foundry's and not the verb's — §2's box, *"THE TOKEN ALWAYS GOES, on every uninstall"* — so a run that stopped the engine removes the registry row the proof named, through the registry's one writer, followed by `afterRegistryChanged`. `unregistered` names it or is null. The WRAPPER (`install.ps1 -Uninstall` / `install.sh --uninstall`) is never called from here: §6.2 — the verb is the machine-readable surface, and the door says in its own last line that the pack and the home stay, quoting the plan's `pack:server` / `pack:host` row. |
+| `crucible:coordination` | Where coordination stands with every server it has anything to say about, keyed by registry name. A server absent from the map has not been asked yet. A read — it starts nothing. |
+| `crucible:coordinate` | Coordinate with one named server NOW: read `/v1/info`, `/v1/catalog` and `/v1/capability`, compare the vendored module (whose `needs` are CLASSES the engine's capability record resolves, PHASE15-HOST.md §5.3a), and post a `module` task ONLY when something is missing — a class that engine has disabled is `unmet`, not missing, and posts nothing. Idempotent — a second call while one is in flight joins the first. It never rejects; every ending is a state. There is no button behind it, because coordination is automatic on every enabled server (§4a). |
+| `crucible:engine-settings` | (serverName) → `SettingsDocument` — one server's OWN settings (`GET /v1/settings`, crucible docs/PHASE15-HOST.md §3.1): the route and model of each of the four llm classes, which of the three upstreams are configured, the desktop allowance and the backend kind. A REMOTE store — nothing in it is kept in `app-settings.json`. **No key comes back**: the document carries `keyHint`, the last four characters, where the engine carries a key. |
+| `crucible:engine-settings-put` | (serverName, patch) → `SettingsDocument` — write through (`PUT /v1/settings`, §3.2). Any subset; `upstreams.<name>: null` REMOVES one. Answered with the whole document AFTER the write, so no window ever guesses what took. Rejects with a sentence naming the field for `route_not_routable` / `route_bad_model` / `route_upstream_unconfigured` / `upstream_in_use`. Runs the registry's own pass (`afterRegistryChanged`) when the patch touched a ROUTE — §2 recomputes capability on such a write and the dock's tiles are drawn from it — and not when it only saved a key, which moves no capability row. **The key crosses one way**, into main, out of a box somebody is typing in. |
+| `crucible:engine-upstream-test` | (serverName, upstream, probe?) → `UpstreamTestResult` — `POST /v1/settings/upstreams/{name}/test`, the upstream's own model listing, unbilled. `probe` is an UNSAVED `{key}` or `{url}`; absent tests the configured one. This is the ONLY list of cloud model ids anywhere in this app — §2: *"the server does not ship a cloud model list"*, and a catalog compiled into a build is wrong by the next release. A failure is a RESULT carrying the engine's own sentence and its code (`upstream_unreachable` / `upstream_rejected` / `upstream_unconfigured`), not a rejection, so a card can print it beside the box. |
+| `crucible:engine-capability` | (serverName) → `CapabilityRecord` — `GET /v1/capability` for one REGISTERED server, by name. The setup wizard's routes step reads it for the one thing `/v1/settings` does not carry: the server's own sentence about why a class will not run on its card (§5.2). It is `readCapability`, the dispatcher's own reader, exported rather than written twice. |
 | `reading:confirm-re-read` | Compose the "read this book again?" card, which spends GPU on a yes. |
 | `recents:clear` | Forget every recent. |
 | `recents:forget` | Forget one. |
@@ -789,16 +1096,25 @@ push, payload `{projectDir, done, total, file}`.
 
 ## Pushes main makes at the renderer
 
-Seventeen, and every one of them is a state change the renderer holds a mirror of
-or a question it has to answer. Eleven go to every window through `broadcast`
+Eighteen, and every one of them is a state change the renderer holds a mirror of
+or a question it has to answer. Twelve go to every window through `broadcast`
 (`app/electron/window.ts`); the other six are sent to one window's `webContents`.
+(It was nineteen until `ollama:progress` went with the model pull on 2026-09-15.)
+
+(The head of this section said "Seventeen … Eleven … six", which does not add up
+and did not match the table below it before `crucible:coordination-changed` was
+added to either. The figures above were counted over the table and over
+`broadcast(` in `app/electron/`, on the same rule the door count keeps: a figure
+quoted as a gate is a measurement or it is decoration.)
 
 | Channel | What it says |
 | --- | --- |
-| `acts:gates-changed` | Something that decides a tile moved — a model pulled, the page reader installed or removed, the language server repointed. No payload: the renderer asks again on `acts:gates`, so the shape has one composer and no pushed copy to go stale. |
+| `acts:gates-changed` | Something that decides a tile moved — a server registered, enabled, renamed or removed, or the page reader installed or removed. (It also fired on a model pull until 2026-09-15, when Foundry stopped pulling models.) No payload: the renderer asks again on `acts:gates`, so the shape has one composer and no pushed copy to go stale. |
 | `models:changed` | The weights on this disk moved without this window doing it — docs/SLOTS.md §5b's automatic removal, which fires from `crucible:save` and once at startup. No payload, for `acts:gates-changed`'s reason: the inventory costs a directory walk and has one composer. |
 | `app:navigate` | Go to a route — File→Settings, and nothing else today. |
 | `capture:intake-progress` | One dropped photograph copied, hashed and decoded — one push per path asked for, plus a closing one. |
+| `crucible:install-line` | One installer output line, sent only to its requesting window. |
+| `crucible:coordination-changed` | Where coordination with one server got to, every time it moves — checking, stocked, preparing (with the module task's own frames), waiting on a named holder, refused, unreachable. The three phases that compared carry `unmet`: the classes this engine does not serve, each with the capability row's own reason (PHASE15-HOST.md §5.3a). It CARRIES the state where `acts:gates-changed` carries nothing, because this is a small value the renderer mirrors rather than a composed answer that costs a probe: a payload-free push would make every window re-read the whole map on every byte of a download. Broadcast, because coordination starts at app start, before any window has asked anything. |
 | `document:opened` | A document was admitted and should open in a tab. |
 | `document:relocated` | An opened document moved onto the project's working copy; the tab follows. |
 | `env:install-progress` | An environment install changed phase. |
@@ -806,8 +1122,7 @@ or a question it has to answer. Eleven go to every window through `broadcast`
 | `host-ops:offers-changed` | The host revised what it OFFERS — the whole `{operations, nodeActions}` answer again, replacing what `host-ops:offers` said. |
 | `host-ops:status-changed` | The host pushed what it is doing at all — the whole value, every time. Null clears the chrome's chip. |
 | `menu:action` | A menu item the renderer has to carry out, because it acts on a tab. |
-| `ollama:progress` | The ollama installer download AND a model pull, on one channel — the wizard is the only thing that draws either, and one shape means one bar. |
-| `page-reader:progress` | One file of the page reader's install, phase by phase — the llama.cpp archive, the CUDA runtime beside it on Windows, and each GGUF. Same five-phase shape as `ollama:progress`, deliberately: the wizard draws both and one shape means one bar. |
+| `page-reader:progress` | One file of the page reader's install, phase by phase — the llama.cpp archive, the CUDA runtime beside it on Windows, and each GGUF. It was cut to the same five-phase shape as `ollama:progress`, deliberately, so the wizard could draw both with one bar; it is the half that survived, and the shape is kept as it is. |
 | `page-reader:status-changed` | The local page reader's status changed — coming up, serving, stopped, or failed with its own log tail on it. |
 | `project:open` | Stand in this project — the hosted deep link, sent once as the window loads. |
 | `projects:changed` | Something in the library moved. No payload: the renderer asks for the list. |

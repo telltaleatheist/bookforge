@@ -223,10 +223,10 @@ export function processTextVenueHost(): TextVenueHost {
       return (await resolveEngine(getServer(name), CRUCIBLE_CLIENT_NAME)).url;
     },
     async models(name: string): Promise<ModelInfo[]> {
-      return crucibleClientFor(name, CRUCIBLE_CLIENT_NAME).models();
+      return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).models();
     },
     async loadModel(name: string, model: string): Promise<void> {
-      const client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+      const client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
       const jobId = await client.loadModel(model);
       for await (const event of client.events(jobId)) {
         if (event.event === 'done') return;

@@ -10,10 +10,36 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **3b65be5** — *refactor(dispatch): fuse the venue source to the venue so no default can be wrong* |
+| Source sha | **3938e31** — *Fix Crucible lifecycle, dispatch cancellation, and native setup* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
-| Copied on | 2026-09-15 |
-| Copied by | `git -C <foundry> archive 3b65be5 app | tar -x --strip-components=1` — no deletions in this range |
+| Copied on | 2026-09-16 |
+| Copied by | Mechanical source sync, verified against Foundry `3938e31:app/`; details below |
+
+## Crucible integration audit sync (2026-09-16)
+
+Mechanically copied all **19 changed/new authoritative `foundry/app` files**,
+including client/bootstrap **0.6.1** tarballs, package/lock files, the generated
+module manifest and lifecycle/race tests. Removed superseded 0.6.0 tarballs.
+Every copied file was SHA-256 checked against its source after restoring the
+embedded lockfile following npm install; `IPC-CHANNELS.md` was refreshed from
+Foundry's documentation. The resulting source is committed at **3938e31**.
+All 173 authoritative app files were checked: 110 were byte-exact and 63 differed
+only in line endings, with no missing source files or semantic differences.
+Standalone and embedded runtime bundles were rebuilt
+successfully after this sync; Foundry's 847 tests passed.
+
+The authoritative app bootstrap and Settings server card were also refreshed:
+those two files had real pre-existing drift (other apparent differences were
+line endings). The stale server card lacked the required shared-engine field
+and prevented the embedded renderer from building.
+
+This sync removes Foundry's WSL-only local discovery and hardcoded startup,
+wires Crucible's shared lifecycle/native installation flow, and repairs
+cancellation, lease renewal and duplicate-engine alias handling. See Foundry's
+`docs/CRUCIBLE-INTEGRATION-AUDIT-2026-09-16.md` for evidence and limitations.
+The 0.6.1 binary release is unpublished: fresh installs request that version and
+fail explicitly until its corrected runtime packs are published. This source
+sync does not deploy or validate a clean-machine binary installation.
 
 ## The `44b5b8a → 3b65be5` re-vendor (2026-09-16)
 

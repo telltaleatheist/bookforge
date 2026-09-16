@@ -32,6 +32,7 @@ import type {
   CrucibleProbe,
   CrucibleServerEdit,
   CrucibleSettingsView,
+  CrucibleStartResult,
   LocalCrucibleAdd,
   NewJobsWaitFor,
   SlotAvailability,
@@ -1465,29 +1466,22 @@ export interface FoundryApi {
      */
     setQueueGpuDial(dial: string): Promise<string>;
     /**
-     * THE HAND SEQUENCE FOR INSTALLING A CRUCIBLE ON THIS MACHINE — every
-     * command, in order, with the elevated ones listed apart.
+     * IS THERE A STOPPED CRUCIBLE HERE — and does the person want it started?
      *
-     * A READ. The only process it spawns is `wsl.exe -l -v`, which lists; it
-     * changes nothing and downloads nothing. See `CrucibleInstallPlan`.
+     * `'later'` covers every case that is not a yes, INCLUDING the three where
+     * no card is drawn at all: it is running, there is none installed, or this
+     * window is hosted and the engines are somebody else's. A caller only ever
+     * has to branch on `'start'`.
      */
+    offerStart(): Promise<'start' | 'later'>;
+    /** Ask Crucible's own controller to start and verify the service. */
+    startCrucible(): Promise<CrucibleStartResult>;
+    /** Read the platform's native installation plan without changing the machine. */
     installPlan(): Promise<CrucibleInstallPlan>;
-    /**
-     * RUN THAT SEQUENCE — and it REJECTS on every machine today, with
-     * `CrucibleInstallPlan.drivenWhy`'s sentence.
-     *
-     * `@crucible/bootstrap` is released with Crucible's next version and is
-     * deliberately not a dependency until it exists. The button that calls this
-     * is disabled with the same sentence; the door refuses anyway, because
-     * something reachable by an IPC message must refuse at the door as well or
-     * the disabling is a decoration.
-     *
-     * `Promise<void>` and not `Promise<never>`: this door is expected to RESOLVE
-     * the day the bootstrap package lands, and typing today's refusal into the
-     * signature would make turning it on a change every caller has to be edited
-     * for. The caller's shape is the same either way — `await`, and catch.
-     */
+    /** Install through Crucible, verify readiness, and register its published connection. */
     install(): Promise<void>;
+    /** Installer progress from the operation started by this window. */
+    onInstallLine(listener: (line: string) => void): () => void;
     /**
      * MAY THE UNINSTALL DOOR BE DRAWN AT ALL — crucible
      * `docs/INSTALL-UNINSTALL.md` §6.1, and Owen's ruling with it: *the door

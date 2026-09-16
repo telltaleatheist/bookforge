@@ -61,7 +61,7 @@ const os = require('os');
 const path = require('path');
 
 const {
-  REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes,
+  REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, fakeNamer,
 } = require('./fake-crucible.js');
 
 const LEASE = path.join(REPO, 'dist', 'electron', 'crucible', 'lease.js');
@@ -77,19 +77,7 @@ const lease = require(LEASE);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
 const engine = require(path.join(REPO, 'dist', 'electron', 'queue-engine.js'));
 
-const realGetServer = servers.getServer;
-const fakesByName = new Map();
-servers.getServer = function getServerWithFakes(name) {
-  const fake = fakesByName.get(name);
-  if (!fake) return realGetServer(name);
-  return { name, url: fake.url, token: 'test-token-abcd', source: 'registry' };
-};
-let registered = 0;
-function nameFake(url) {
-  const name = `fake${++registered}`;
-  fakesByName.set(name, { url });
-  return name;
-}
+const nameFake = fakeNamer(servers);
 
 const { check, summary } = makeChecker();
 const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Promise((r) => setTimeout(r, 0)); };

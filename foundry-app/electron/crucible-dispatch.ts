@@ -63,6 +63,7 @@ import {
   clientFor,
   crucibleServerNamed,
   engineClientFor,
+  engineSharedWith,
   enginelessServers,
   resolveEngine,
   slotAvailability,
@@ -463,6 +464,7 @@ export async function placeJob(
   waitFor: string | undefined,
   say: PlacementProgress,
   claim: LaneClaim,
+  signal?: AbortSignal,
 ): Promise<PlacementOutcome> {
   const available = slotAvailability();
   const slots = available.slots;
@@ -540,8 +542,11 @@ export async function placeJob(
    * object: there is no source without the machine it describes, so the default
    * that could be wrong has nowhere to live.
    */
-  const dial = readAppSettings().queueGpuDial;
-  const asked = waitFor !== undefined && waitFor !== ANY_SLOT ? waitFor : null;
+  // The registry can collapse an orchestrator and its engine onto one lane.
+  // Existing queue selections remain valid aliases for that same engine.
+  const canonical = (name: string): string => engineSharedWith(name) ?? name;
+  const dial = canonical(readAppSettings().queueGpuDial);
+  const asked = waitFor !== undefined && waitFor !== ANY_SLOT ? canonical(waitFor) : null;
   if (dial !== GPU_DIAL_ANY && asked !== null && asked.toLowerCase() !== dial.toLowerCase()) {
     /*
      * THE DISAGREEMENT, and it is a TRANSIENT wait rather than a refusal: the
@@ -610,7 +615,7 @@ export async function placeJob(
      * twice a minute until somebody noticed the row. It FAILS, with the server's
      * own reason and the two things a person can do about it.
      */
-    const outcome = await placeOn(slot, capability, say, claim);
+    const outcome = await placeOn(slot, capability, say, claim, signal);
     return outcome.verdict === 'wait' && outcome.standing
       ? { verdict: 'refuse', reason: `${outcome.reason}. ${whatToDoAbout(capability)}` }
       : outcome;
@@ -638,7 +643,7 @@ export async function placeJob(
       reasons.push(`"${slot.name}" is a cloud provider, and cloud slots are chosen on purpose`);
       continue;
     }
-    const outcome = await placeOn(slot, capability, say, claim);
+    const outcome = await placeOn(slot, capability, say, claim, signal);
     if (outcome.verdict === 'go') return outcome;
     if (outcome.verdict === 'refuse') return outcome;
     if (!outcome.standing) allStanding = false;
@@ -730,7 +735,9 @@ async function placeOn(
   capability: CapabilityClass,
   say: PlacementProgress,
   claim: LaneClaim,
+  signal?: AbortSignal,
 ): Promise<PlacementOutcome> {
+  if (signal?.aborted) return transientWait('The request was cancelled.');
   if (slot.kind === 'cloud') {
     if (!claim(slot.name)) return transientWait(busyWithOurs(slot.name));
     return placeOnCloud(slot, capability);
@@ -743,7 +750,7 @@ async function placeOn(
     return transientWait(`"${slot.name}" is no longer registered`);
   }
   try {
-    return await placeOnCrucible(entry, slot, capability, say, claim);
+    return await placeOnCrucible(entry, slot, capability, say, claim, signal);
   } catch (err) {
     return interpretFailure(err, slot.name, capability);
   }
@@ -843,6 +850,7 @@ async function placeOnCrucible(
   capability: CapabilityClass,
   say: PlacementProgress,
   claim: LaneClaim,
+  signal?: AbortSignal,
 ): Promise<PlacementOutcome> {
   /*
    * ── THE ADDRESS IN THE REGISTRY MAY NOT BE THE ENGINE'S ───────────────────
@@ -984,6 +992,7 @@ async function placeOnCrucible(
    * a minute after it started.
    */
   const models = await client.models();
+  signal?.throwIfAborted();
   const resident = models.find((model) => model.id === row.selected);
   if (resident === undefined) {
     return {
@@ -995,22 +1004,33 @@ async function placeOnCrucible(
   if (!resident.resident) {
     say(`Loading ${row.selected} on ${slot.name}…`);
     const jobId = await client.loadModel(row.selected);
-    for await (const event of client.events(jobId)) {
-      if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
-      else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
-      else if (event.event === 'failed') {
-        const code = event.data.error.code;
-        /*
-         * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
-         * machine, right now" travel to the next server; anything else is about
-         * the model and would fail the same way everywhere.
-         */
-        return isServerSpecificRefusal(code)
-          ? transientWait(`"${slot.name}" could not load ${row.selected}: ${event.data.error.message}`)
-          : { verdict: 'refuse', reason: `"${slot.name}" could not load ${row.selected}: ${event.data.error.message}` };
-      } else if (event.event === 'cancelled') {
-        return transientWait(`the load of ${row.selected} on "${slot.name}" was cancelled`);
+    const cancelLoad = (): void => {
+      void client.cancel(jobId).catch((err: unknown) => {
+        console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
+      });
+    };
+    signal?.addEventListener('abort', cancelLoad, { once: true });
+    if (signal?.aborted) cancelLoad();
+    try {
+      for await (const event of client.events(jobId)) {
+        if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
+        else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
+        else if (event.event === 'failed') {
+          const code = event.data.error.code;
+          /*
+           * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
+           * machine, right now" travel to the next server; anything else is about
+           * the model and would fail the same way everywhere.
+           */
+          return isServerSpecificRefusal(code)
+            ? transientWait(`"${slot.name}" could not load ${row.selected}: ${event.data.error.message}`)
+            : { verdict: 'refuse', reason: `"${slot.name}" could not load ${row.selected}: ${event.data.error.message}` };
+        } else if (event.event === 'cancelled') {
+          return transientWait(`the load of ${row.selected} on "${slot.name}" was cancelled`);
+        }
       }
+    } finally {
+      signal?.removeEventListener('abort', cancelLoad);
     }
   }
 
@@ -1025,6 +1045,7 @@ async function placeOnCrucible(
    * spawn would leave a window in which another client's load evicts the model
    * this run is three blocks into using.
    */
+  signal?.throwIfAborted();
   const lease = await takeLease(engine, row.selected, capability);
 
   return {
@@ -1183,7 +1204,7 @@ const LEASE_HEARTBEAT_MS = (LEASE_TTL_SECONDS / 3) * 1000;
  * the load must be on the same process, and two resolutions is two chances for
  * them not to be.
  */
-async function takeLease(
+export async function takeLease(
   entry: CrucibleServerEntry,
   model: string,
   capability: CapabilityClass,
@@ -1194,7 +1215,22 @@ async function takeLease(
   ).leaseId;
   let id = await acquire();
   let stopped = false;
+  let beating = false;
+  const releaseId = async (leaseId: string): Promise<void> => {
+    try {
+      await client.release(leaseId);
+    } catch (err) {
+      if (err instanceof CrucibleRefused && err.code === 'unknown_lease') return;
+      console.error(
+        `[slots] the lease on ${model} at ${entry.name} could not be released `
+        + `(it expires in ${LEASE_TTL_SECONDS}s): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
   const timer = setInterval(() => {
+    // A slow heartbeat must not start multiple concurrent replacement leases.
+    if (stopped || beating) return;
+    beating = true;
     void client.heartbeat(id)
       .catch(async (err: unknown) => {
         /*
@@ -1210,7 +1246,14 @@ async function takeLease(
          */
         if (err instanceof CrucibleRefused && err.code === 'unknown_lease' && !stopped) {
           try {
-            id = await acquire();
+            const replacement = await acquire();
+            // Cancellation may have released the old id while acquire awaited.
+            // The new receipt belongs to this run too, even after it has ended.
+            if (stopped) {
+              await releaseId(replacement);
+              return;
+            }
+            id = replacement;
             console.error(
               `[slots] ${entry.name} had forgotten the lease on ${model} (restarted?); took a new one`,
             );
@@ -1232,7 +1275,8 @@ async function takeLease(
           `[slots] the lease heartbeat for ${model} on ${entry.name} failed: `
           + `${err instanceof Error ? err.message : String(err)}`,
         );
-      });
+      })
+      .finally(() => { beating = false; });
   }, LEASE_HEARTBEAT_MS);
   timer.unref?.();
   return {
@@ -1241,17 +1285,7 @@ async function takeLease(
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
-      try {
-        await client.release(id);
-      } catch (err) {
-        // Already gone — released by a restart or expired — is exactly the state
-        // a release wants, and not a failure to report.
-        if (err instanceof CrucibleRefused && err.code === 'unknown_lease') return;
-        console.error(
-          `[slots] the lease on ${model} at ${entry.name} could not be released `
-          + `(it expires in ${LEASE_TTL_SECONDS}s): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      await releaseId(id);
     },
   };
 }

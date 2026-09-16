@@ -60,7 +60,7 @@ const { check, summary } = makeChecker();
  *   'cancel'   one artifact, then holds until DELETE, then `cancelled`
  *   'malformed' a done frame the SDK cannot read
  */
-function startFake(behaviour) {
+function startFake(behaviour, onSubmit = () => {}) {
   return startFakeCrucible(async (req, res, ctx) => {
     const { state, send, sseWriter, url } = ctx;
     const route = url.pathname;
@@ -85,6 +85,7 @@ function startFake(behaviour) {
       }
       const id = ctx.newJobId();
       state.jobs.set(id, { body });
+      onSubmit();
       send(res, 200, { job_id: id });
       return true;
     }
@@ -328,6 +329,24 @@ async function refusals() {
 }
 
 async function cancellation() {
+  await check('an abort during submit still DELETEs the newly admitted job', async () => {
+    const controller = new AbortController();
+    const fake = await startFake('cancel', () => controller.abort());
+    const server = registerFake(fake.url);
+    // End the fake if this regresses, so a missed DELETE fails instead of
+    // hanging the suite forever waiting for a terminal SSE frame.
+    const timeout = setTimeout(() => fake.close(), 2000);
+    try {
+      await assert.rejects(job.runCrucibleJob({
+        server, type: 'asr', model: 'm', params: {}, inputs: { a: Buffer.from('a') },
+        signal: controller.signal,
+      }), (err) => err instanceof job.CrucibleJobCancelled && err.jobId === 'job-1');
+      assert.deepStrictEqual(fake.state.cancelled, ['job-1']);
+    } finally {
+      clearTimeout(timeout);
+      await fake.close();
+    }
+  });
   {
     const fake = await startFake('cancel');
     const server = registerFake(fake.url);

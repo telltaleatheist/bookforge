@@ -364,7 +364,7 @@ async function runCoordination(
   let catalog: readonly CatalogRow[];
   let capability: CrucibleCapabilityView;
   try {
-    const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
     /*
      * THREE READS, AND THE THIRD ANSWERS TWO QUESTIONS.
      *
@@ -594,7 +594,7 @@ async function prepare(
 async function waitForSettle(server: string, deps: CoordinateDeps): Promise<void> {
   await deps.sleep(SETTLE_POLL_MS);
   try {
-    const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
     for (;;) {
       const activity = await client.activity();
       if (activity.slots.accelerated.acceptsWork) return;
@@ -613,7 +613,7 @@ async function waitForSettle(server: string, deps: CoordinateDeps): Promise<void
 
 /** The id of whatever task is running on this server, or null. */
 async function runningTaskId(server: string): Promise<string | null> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   const tasks = await client.tasks();
   const running = tasks.find((task) => task.state === 'running');
   return running === undefined ? null : running.taskId;

@@ -433,7 +433,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     throw new CrucibleJobCancelled(server, null, `the ${type} job was cancelled before it was submitted`);
   }
 
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   const verb = `the ${type} job`;
 
   let jobId: string;
@@ -481,6 +481,9 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   };
   const onAbort = (): void => { void cancel(); };
   options.signal?.addEventListener('abort', onAbort, { once: true });
+  // Submission is asynchronous. An abort while its response was in flight
+  // predates this listener, but the admitted job still needs its DELETE.
+  if (options.signal?.aborted) onAbort();
   options.onStarted?.({ jobId, cancel });
 
   let terminal: JobEvent | null = null;

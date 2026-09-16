@@ -7870,7 +7870,7 @@ function setupIpcHandlers(): void {
   // its own Servers card (foundry-app/IPC-CHANNELS.md), and two
   // `ipcMain.handle` calls of one name in one Electron main process throw at
   // registration — BookForge would not start with the Foundry window mounted.
-  // So ours are `crucible:engine-settings` and `crucible:engine-settings-write`,
+  // So ours are `bookforge:crucible-engine-settings` and `bookforge:crucible-engine-settings-write`,
   // which also read better: what they carry is the ENGINE's document, not this
   // app's settings. `tools/test-ipc-collision.js` is what guards the pair.
   //
@@ -7880,7 +7880,7 @@ function setupIpcHandlers(): void {
   // the panel can put the sentence next to the field the server named instead
   // of parsing an English string it was handed.
 
-  ipcMain.handle('crucible:engine-settings', async (_event, name: string) => {
+  ipcMain.handle('bookforge:crucible-engine-settings', async (_event, name: string) => {
     try {
       const { crucibleEngineSettings } = await import('./crucible/engine-settings.js');
       return { success: true, data: await crucibleEngineSettings(name) };
@@ -7906,7 +7906,7 @@ function setupIpcHandlers(): void {
    * re-draws from — never the patch it sent, which would show a save that the
    * server may have shaped differently.
    */
-  ipcMain.handle('crucible:engine-settings-write', async (
+  ipcMain.handle('bookforge:crucible-engine-settings-write', async (
     _event,
     name: string,
     patch: CrucibleEngineSettingsPatch,
@@ -8107,14 +8107,7 @@ function setupIpcHandlers(): void {
           },
         },
       );
-      /*
-       * THE SAME RUNNER, THOUGH THE INSTALL DOES NOT NEED IT TODAY. On win32
-       * `install()` reaches the host over HTTP and only ever calls
-       * `fileExists` and `readFile` on the `.cmd` — it never spawns it (the
-       * keeper pins that). Handing it the hardened runner anyway means this
-       * app has ONE runner rather than two that differ in a way nobody would
-       * notice until the package started spawning the host's entry point.
-       */
+      // Installation and uninstall share the runner that preserves Windows argv and cwd.
       const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
       const result = await driveCrucibleInstall(options, crucibleProcessRunner());
       send({
@@ -8296,7 +8289,7 @@ function setupIpcHandlers(): void {
    * these two doors start a run and read the map, and neither composes a
    * sentence, because the words are the renderer's (§3 of the brief; R1).
    */
-  ipcMain.handle('crucible:coordination', async () => {
+  ipcMain.handle('bookforge:crucible-coordination', async () => {
     try {
       const { coordinationStates } = await import('./crucible/coordinate.js');
       return { success: true, data: coordinationStates() };
@@ -8313,7 +8306,7 @@ function setupIpcHandlers(): void {
    * and app start both calling it for one server is one run, not two — which is
    * the `task_busy` this whole design exists to avoid, manufactured by us.
    */
-  ipcMain.handle('crucible:coordinate', async (_event, name: string) => {
+  ipcMain.handle('bookforge:crucible-coordinate', async (_event, name: string) => {
     try {
       const { coordinateServer } = await import('./crucible/coordinate.js');
       return { success: true, data: await coordinateServer(name) };
@@ -8334,7 +8327,7 @@ function setupIpcHandlers(): void {
       const { onCoordination } = await import('./crucible/coordinate.js');
       onCoordination((state) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('crucible:coordination-state', state);
+          if (!win.isDestroyed()) win.webContents.send('bookforge:crucible-coordination-state', state);
         }
       });
     } catch (err) {
@@ -12946,6 +12939,14 @@ app.whenReady().then(async () => {
    * ever publishes.
    */
   void (async () => {
+    try {
+      const { offerLocalCrucibleStart } = await import('./crucible/engine-presence.js');
+      await offerLocalCrucibleStart();
+    } catch (err) {
+      logger.warn('Local Crucible startup check failed; continuing with configured remote servers', {
+        error: (err as Error).message,
+      });
+    }
     try {
       const { coordinateServersOnStart } = await import('./crucible/coordinate.js');
       const asked = await coordinateServersOnStart();

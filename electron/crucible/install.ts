@@ -1,79 +1,8 @@
-/**
- * THE INSTALL STORY'S MAIN-PROCESS HALF — a measured machine, the driven
- * install, and the one line a Windows box runs before either is possible.
- *
- * ── WHAT THIS IS, STATED PLAINLY ───────────────────────────────────────────
- *
- *   1. MEASURES what this app can measure on its own — the WSL2 distros,
- *      whether the guest sees an NVIDIA card, whether a `config.toml` or a
- *      pairing file is already there ({@link crucibleHostFacts}).
- *   2. COMPOSES the plan the setup page and the settings door both draw
- *      ({@link crucibleInstallPlan}): the machine, the verdict, the sequence
- *      that will run, and the commands this app cannot run for anybody.
- *   3. RUNS IT ({@link driveCrucibleInstall}) through `@crucible/bootstrap`,
- *      streaming every step, every line and every WSL state to the caller.
- *
- * ── THE SEAM IS GONE (2026-09-15) ──────────────────────────────────────────
- *
- * This file used to transcribe `@crucible/bootstrap`'s surface by hand and
- * refuse `bootstrap_not_installed` from a `DRIVEN_INSTALL_AVAILABLE = false`
- * that no machine could flip, because no Crucible release carried the package.
- * `vendor/crucible-bootstrap-0.6.0.tgz` — `npm pack` of the crucible checkout's
- * `sdk/bootstrap` at the commit the v0.6.0 release will be cut from, exactly as
- * `vendor/crucible-client-0.6.0.tgz` already is — ends that. The types below
- * are now IMPORTED, so a shape that changes in the package is a compile error
- * here rather than a transcription that drifted.
- *
- * ── WHO ACTUALLY INSTALLS, PER PLATFORM (crucible PHASE15-HOST.md §4.3) ────
- *
- * **Windows installs one way and it is not this app.** `install()` on win32 is
- * two branches and no third: no `%LOCALAPPDATA%\Crucible\host\` → refuse
- * `host_not_installed` and hand over the one `install.ps1` line, because a
- * library that downloads and elevates an installer from a background call is a
- * dialog nobody asked for; a host that IS there → `POST /install` on its
- * loopback door and relay its events. The HOST walks the WSL state table,
- * raises the UAC prompts, survives the reboot and imports the distro. BookForge
- * runs none of that and must never grow a second copy of it (PHASE14 §4a: two
- * descriptions of one install "cannot differ").
- *
- * **macOS and Linux** are the machine itself, and the package walks the step
- * list there directly — a server pack with its own interpreter, `crucible
- * init`, `crucible service install`, linger.
- *
- * ── THE DIVISION OF LABOUR, WHICH IS THE PACKAGE'S OWN RULE ────────────────
- *
- * From its README: *"A missing prerequisite is a named refusal carrying the
- * exact command the host must run. Elevation, a reboot, a sudo password — those
- * are the app's to obtain. This package never attempts them, never falls back
- * past them, and never guesses a value it could not read."*
- *
- * So there are exactly two commands BookForge owns on Windows and one on Linux,
- * and they are listed apart from the sequence rather than buried in it:
- * `wsl --install -d Ubuntu` (elevated PowerShell, then a reboot) and
- * `sudo loginctl enable-linger "$USER"` (so the server survives logout and
- * comes up at boot — PHASE12 §6 ruling 4 leaves *when* an app shows that to the
- * app; this one shows it once, in the plan, beside the step that creates the
- * service).
- *
- * ── WHAT THIS FILE NO LONGER SAYS, AND WHO SAYS IT NOW ─────────────────────
- *
- * It used to end with three steps and eleven copyable commands: install the
- * five job environments, measure the card, pull six named weights. All of that
- * is DELETED (2026-09-14, PHASE13-OPERATOR.md §0 and §5.4). It was a second
- * copy of two things that already have owners — `shared/crucible/
- * bookforge.module.json`, generated in the crucible repo from its manifests,
- * for WHAT this app needs; and Crucible's own operator page, for the doing of
- * it. Two copies of one fact kept in step by hand is R1's shape, in the one
- * file whose job is to be correct about ids.
- *
- * So the sequence here is exactly the PRE-SERVER MINUTE, the chicken-and-egg a
- * page cannot do for itself: a guest, a Python, the wheel, `crucible init`, the
- * service. Its last step is "Open Crucible", and everything after that happens
- * there or through the **Set up for BookForge** button beside the server's row
- * (`electron/crucible/module-setup.ts`).
- */
-
+/** Crucible owns installation. Windows installs its native engine first;
+ * the operator may later choose the WSL upgrade in Crucible's console. */
 import { spawnSync } from 'child_process';
+import * as path from 'path';
+import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
 
 import type {
   HostEvent,
@@ -90,6 +19,7 @@ import {
   processDiscoveryHost,
 } from './discovery';
 import { getWslDistro } from '../tool-paths';
+import { readCruciblePairingFile } from './pairing-file';
 import { BOOKFORGE_MODULE } from './module-setup';
 import type {
   CrucibleGpuFacts,
@@ -112,12 +42,11 @@ import type {
 /**
  * The Crucible version this app's client pin and this plan both name.
  *
- * `0.6.0` since 2026-09-14: the operator door (PHASE13-OPERATOR.md §3.6) landed
- * in that version's SDK and this app is built against it. The pin itself is a
- * LABELLED STOPGAP — a tarball in `vendor/`, packed from the same commit the
- * release will be cut from — see `package.json`'s `//crucible-client` key.
+ * 0.6.1 includes the native lifecycle commands required by this installer.
+ * The source candidate is vendored locally; fresh installs must request its
+ * release and fail explicitly until its verified runtime packs are published.
  */
-export const CRUCIBLE_RELEASE = '0.6.0';
+export const CRUCIBLE_RELEASE = '0.6.1';
 
 /** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
@@ -125,23 +54,7 @@ export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
 /** Crucible's own README — the argument behind the sequence. */
 export const CRUCIBLE_README = 'https://github.com/telltaleatheist/crucible';
 
-/*
- * `CRUCIBLE_WHEEL` AND `CRUCIBLE_BOOTSTRAP_TARBALL` ARE GONE (2026-09-15).
- *
- * The wheel is not how a Crucible is installed any more and has not been since
- * PHASE14: the server arrives as an ENV PACK with its own interpreter inside
- * it (`crucible-env-server-<backend>-<version>.tar.zst`), which is what
- * `@crucible/bootstrap`'s `server-pack` step fetches and verifies. A constant
- * naming a `.whl` was a second, wrong answer to "what gets installed", and the
- * plan's `wheel` field went with it.
- *
- * The bootstrap tarball URL was the `command` of a refusal this app can no
- * longer reach: the package IS installed (`vendor/crucible-bootstrap-0.6.0.tgz`,
- * pinned in package.json). The one line a person still types is Windows's
- * `install.ps1`, and that line has exactly one owner — the package's own
- * `hostInstallCommand()`, carried on the `host_not_installed` refusal — so this
- * file does not compose a second copy of it.
- */
+// Runtime packs and installer command spelling belong to @crucible/bootstrap.
 
 /**
  * WHETHER THE DRIVEN INSTALL CAN RUN ON THIS MACHINE.
@@ -293,7 +206,7 @@ export class CrucibleInstallError extends Error {
  *
  * There is no `require.resolve` probe and no try/catch around the import. A
  * missing package is a BUILD that is wrong, not a state to report at runtime:
- * `package.json` pins `vendor/crucible-bootstrap-0.6.0.tgz` and
+ * `package.json` pins `vendor/crucible-bootstrap-0.6.1.tgz` and
  * `tools/test-crucible-install-seam.js` fails the day it is not there.
  */
 export async function loadBootstrap(): Promise<BootstrapModule> {
@@ -305,28 +218,42 @@ export async function loadBootstrap(): Promise<BootstrapModule> {
   };
 }
 
-/**
- * RUN THE SEQUENCE.
- *
- * On win32 this is the host's door and nothing else (PHASE15 §4.3): a machine
- * with no host refuses `host_not_installed` and carries the one `install.ps1`
- * line to type. On darwin and linux the package walks the step list here.
- *
- * `runner` is passed through for ONE caller — the keeper, which scripts a
- * Windows machine and a fake host door without touching either. An app never
- * passes it; the package's own `processRunner()` is the default.
- *
- * A `BootstrapStepFailed` carries `step`, `exitCode`, `tail` and `stepsDone`,
- * and {@link installRefusalOf} puts all four on the wire: partial work survives
- * a failure (crucible ARCHITECTURE.md R6), and telling somebody WHICH step did
- * not finish is the difference between resuming and starting again.
- */
+/** Run Crucible's own installer, then verify the local engine. WSL upgrades are separate. */
 export async function driveCrucibleInstall(
   options: BootstrapInstallOptions,
   runner?: Runner,
 ): Promise<BootstrapInstallResult> {
-  const bootstrap = await loadBootstrap();
-  return bootstrap.install(options, runner);
+  const bootstrap = await import('@crucible/bootstrap');
+  const host = runner ?? bootstrap.processRunner();
+  if (host.platform !== 'win32') return bootstrap.install(options, host);
+
+  const step: InstallStep = { name: 'native-install', argv: [], status: 'running', detail: 'Installing Crucible on Windows' };
+  options.onStep?.(step);
+  const result = await host.stream([
+    'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference = 'Stop'; " + bootstrap.hostInstallCommand(options.release ?? CRUCIBLE_RELEASE),
+  ], { timeoutMs: 3_600_000, onLine: (line, stream) => options.onLine?.(line, stream, step.name) });
+  if (result.failure !== null || result.code !== 0) {
+    throw new CrucibleInstallError('install_failed', result.failure ?? `Crucible installer exited ${result.code}: ${result.stderr.trim()}`);
+  }
+  const status = await bootstrap.startLocal({}, host);
+  if (status.state !== 'running') throw new CrucibleInstallError('install_failed', status.detail);
+  const installed = bootstrap.readLocalInstallation({}, host);
+  if (installed === null) throw new CrucibleInstallError('install_failed', 'Crucible did not publish its installation record.');
+  const configPath = path.win32.join(installed.home, PAIRING_FILE);
+  const pairing = parsePairing(host.readFile(configPath).trim());
+  if (pairing.name !== status.name) throw new CrucibleInstallError('install_failed', 'The local pairing and running engine identities differ.');
+  const info = await new CrucibleClient({ url: status.url, token: pairing.token, clientName: 'bookforge-installer' }).info();
+  if (info.server.name !== status.name) throw new CrucibleInstallError('install_failed', 'The responding engine identity changed during verification.');
+  const backend = info.host.backend;
+  if (backend !== 'llama-windows' && backend !== 'cuda-linux' && backend !== 'mlx-darwin') {
+    throw new CrucibleInstallError('install_failed', `The installed engine reported an unsupported backend: ${backend}`);
+  }
+  const done: InstallStep = { ...step, status: 'ok', detail: 'Crucible is running' };
+  options.onStep?.(done);
+  return { steps: [done], server: { name: status.name, url: status.url, configPath },
+    release: info.server.version, backend, crucible: installed.control.command };
+
 }
 
 /**
@@ -443,13 +370,7 @@ export interface HostRunResult {
   error?: Error;
 }
 
-/**
- * Everything {@link crucibleHostFacts} reads from the world.
- *
- * Injectable for the reason `discovery.ts`, `generation-venue.ts` and `pages.ts`
- * all are: a keeper must be able to drive "no WSL", "WSL1 only", "no card",
- * "config already there" without a guest, a driver or a disk.
- */
+/** Machine reads are injectable; Windows setup never needs a WSL or GPU probe. */
 export interface InstallHost {
   platform: NodeJS.Platform;
   arch: string;
@@ -490,6 +411,11 @@ export function processInstallHost(): InstallHost {
     },
     discovered: () => {
       try {
+        if (process.platform === 'win32') {
+          const paired = readCruciblePairingFile();
+          if (paired === null) return { present: false, code: 'no_local_config', reason: 'No local Crucible connection has been published. Install Crucible to create one.' };
+          return { present: true, serverName: paired.pairing.name, url: paired.pairing.url, configPath: paired.file, via: 'pairing' };
+        }
         const server = discoverCrucible(processDiscoveryHost(getWslDistro()));
         return {
           present: true,
@@ -605,20 +531,7 @@ export function installPlatformOf(platform: NodeJS.Platform): InstallPlatform {
   }
 }
 
-/**
- * WHAT THIS MACHINE CAN RUN A CRUCIBLE WITH, as far as this app can measure it.
- *
- * `detectHost()`'s shape and `detectHost()`'s discipline: **every null carries a
- * named refusal beside it, with the command that clears it.** Nothing is
- * inferred from a null, and a probe that could not RUN is never reported as an
- * answer about the thing probed — "wsl.exe could not be spawned" is
- * `wsl_read_failed`, not "there are no distros".
- *
- * What it does NOT answer is conda and the server interpreter. Those are
- * `probeInterpreter`'s one guest-side script, and a second copy of it here
- * would be exactly the duplication the seam exists to avoid — so they are STEPS
- * of the plan instead, which is what a person runs to make them go away.
- */
+/** Native Windows installation is available independently of WSL and NVIDIA. */
 export function crucibleHostFacts(host: InstallHost = processInstallHost()): CrucibleHostFacts {
   const platform = installPlatformOf(host.platform);
   const refusals: CrucibleHostRefusal[] = [];
@@ -638,8 +551,7 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
   if (platform === 'other') {
     refuse(
       'unsupported_platform',
-      `there is no Crucible backend for ${host.platform}: cuda-linux (Linux, or WSL2 on Windows) `
-      + 'and mlx-darwin are the two.',
+      `there is no Crucible backend for ${host.platform}: cuda-linux, mlx-darwin and llama-windows are supported.`,
     );
     return {
       platform,
@@ -652,72 +564,11 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
     };
   }
 
-  // ── WSL, on Windows only ───────────────────────────────────────────────────
-  let wsl: CrucibleWslFacts | null = null;
-  let probed: string | null = null;
+  const wsl: CrucibleWslFacts | null = null;
   if (platform === 'win32') {
-    const listed = host.listWsl();
-    if (listed.error !== undefined) {
-      wsl = {
-        distros: [],
-        default: null,
-        probed: null,
-        detail: `wsl.exe could not be run: ${listed.error.message}`,
-      };
-      refuse(
-        'wsl_missing',
-        'wsl.exe could not be run on this machine, so there is no guest to install a Crucible '
-        + 'into. Crucible\'s backend is Linux — Windows is never one.',
-        { command: 'wsl --install -d Ubuntu', detail: listed.error.message },
-      );
-    } else if (listed.status !== 0) {
-      wsl = {
-        distros: [],
-        default: null,
-        probed: null,
-        detail: `wsl.exe -l -v exited ${listed.status ?? 'without a code'}`,
-      };
-      refuse(
-        'wsl_read_failed',
-        `wsl.exe answered but could not list distributions (exit ${listed.status ?? 'none'}). `
-        + 'That is a fact about the listing, not about whether a distro is there.',
-        { detail: (listed.stderr || listed.stdout).trim() },
-      );
-    } else {
-      const parsed = parseWslList(listed.stdout);
-      const two = parsed.distros.filter((d) => d.version === 2);
-      probed = host.wslDistro !== undefined && host.wslDistro.trim() !== '' ? host.wslDistro : null;
-      wsl = {
-        distros: parsed.distros,
-        default: parsed.default,
-        probed,
-        detail: parsed.distros.length === 0
-          ? 'wsl.exe answered, and no WSL distribution is installed.'
-          : `${two.length} WSL2 ${two.length === 1 ? 'distribution' : 'distributions'}`
-            + `${two.length === parsed.distros.length ? '' : ` of ${parsed.distros.length} listed`}.`,
-      };
-      if (two.length === 0) {
-        refuse(
-          'wsl_missing',
-          parsed.distros.length === 0
-            ? 'there is no WSL distribution on this machine. Crucible\'s backend is Linux — Windows '
-              + 'is never one — so this comes first, and it needs elevation and a reboot.'
-            : 'every WSL distribution here is version 1, and only WSL2 has the GPU passthrough a '
-              + 'Crucible needs.',
-          { command: 'wsl --install -d Ubuntu' },
-        );
-      } else if (probed === null) {
-        // NOT the same refusal as "no distro". There is a guest; nobody has said
-        // which one, and `discovery.ts`'s rule is that there is no default here on
-        // purpose — a server read from the wrong guest is a wrong server.
-        refuse(
-          'no_wsl_distro',
-          'this machine has WSL2 but BookForge has not been told which distro the Crucible lives '
-          + `in (${two.map((d) => d.name).join(', ')}). Settings → Add-ons → WSL distro. There is `
-          + 'no default here on purpose: a server read from the wrong guest is a wrong server.',
-        );
-      }
-    }
+    const discovered = host.discovered();
+    if (!discovered.present && discovered.code !== 'no_local_config') refuse(discovered.code, discovered.reason);
+    return { platform, platformName: host.platform, arch: host.arch, wsl, gpu: null, discovered, refusals };
   }
 
   // ── The card ───────────────────────────────────────────────────────────────
@@ -740,30 +591,22 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
        */
       gpu = null;
     }
-  } else if (platform === 'win32' && (wsl === null || wsl.probed === null)) {
-    // No guest named: the card question cannot be asked, and MUST NOT be
-    // answered from the Windows-side nvidia-smi. What matters is whether the
-    // GUEST sees a card, and a Windows driver that answers says nothing about
-    // whether the passthrough works.
-    gpu = null;
   } else {
-    const queried = host.queryGpu(platform === 'win32' ? (wsl?.probed ?? undefined) : undefined);
+    const queried = host.queryGpu(undefined);
     if (queried.error !== undefined) {
       refuse(
         'no_nvidia_driver',
-        `the NVIDIA probe could not be run${platform === 'win32' ? ` inside "${wsl?.probed}"` : ''}: `
+        `the NVIDIA probe could not be run: `
         + `${queried.error.message}`,
         { detail: queried.error.message },
       );
     } else if (queried.status === 3) {
       refuse(
         'no_nvidia_driver',
-        `no nvidia-smi${platform === 'win32' ? ` inside WSL distro "${wsl?.probed}"` : ' on this machine'}`
+        'no nvidia-smi on this machine'
         + ', on PATH or at /usr/lib/wsl/lib. A cuda-linux Crucible needs the driver to see the card.',
         {
-          command: platform === 'win32'
-            ? 'Install the NVIDIA Windows driver with WSL support, then: wsl --shutdown'
-            : 'Install the NVIDIA driver for this machine',
+          command: 'Install the NVIDIA driver for this machine',
         },
       );
     } else if (queried.status !== 0) {
@@ -830,23 +673,7 @@ export async function crucibleInstallPlan(
   };
 }
 
-/**
- * COULD A CRUCIBLE LIVE HERE — yes, no, or a question that cannot be asked yet.
- *
- * Composed in MAIN so the wizard's three-faced step (PHASE13-OPERATOR.md §5.5)
- * reads a decision instead of making a second one out of the same nulls. Every
- * branch answers from something measured; none of them infers from a null.
- *
- * THE THIRD VALUE IS THE HONEST ONE ON WINDOWS. What decides hostability there
- * is whether the GUEST sees a card, and `crucibleHostFacts` refuses to answer
- * that from the Windows-side `nvidia-smi` — a Windows driver that answers says
- * nothing about whether the passthrough works. So a machine with no WSL2, or
- * one where nobody has named the distro, is `unknown` rather than `no`: the
- * install door is the document whose first step is the thing that would settle
- * it, and telling somebody with a 4090 "this machine cannot host one" because
- * they have not installed Ubuntu yet would be a wrong answer stated
- * confidently.
- */
+/** Windows native setup is independent of an optional WSL/GPU probe. */
 export function hostabilityOf(
   facts: CrucibleHostFacts,
 ): { hostable: CrucibleHostability; why: string } {
@@ -874,42 +701,11 @@ export function hostabilityOf(
     };
   }
 
-  // Linux and Windows both end at cuda-linux, and both are decided by whether
-  // the thing that would run the server can see an NVIDIA card.
-  if (facts.gpu !== null) {
-    return {
-      hostable: 'yes',
-      why: `${facts.gpu.name}, ${(facts.gpu.vramBytes / 1024 ** 3).toFixed(1)} GB, visible to the `
-        + `${facts.platform === 'win32' ? `WSL2 guest "${facts.wsl?.probed}"` : 'machine'} that `
-        + 'would run the server.',
-    };
-  }
-
   if (facts.platform === 'win32') {
-    const two = facts.wsl?.distros.filter((d) => d.version === 2) ?? [];
-    if (two.length === 0) {
-      return {
-        hostable: 'unknown',
-        why: 'there is no WSL2 guest here yet, so nobody can ask whether the card is visible to '
-          + 'one — and BookForge will not answer that from the Windows-side nvidia-smi, because a '
-          + 'Windows driver that answers says nothing about whether the passthrough works. The '
-          + 'first step below is what settles it.',
-      };
-    }
-    if ((facts.wsl?.probed ?? null) === null) {
-      return {
-        hostable: 'unknown',
-        why: `this machine has WSL2 (${two.map((d) => d.name).join(', ')}) but BookForge has not `
-          + 'been told which guest the Crucible lives in, so the card question was not asked. '
-          + 'There is no default here on purpose: a server read from the wrong guest is a wrong '
-          + 'server.',
-      };
-    }
-    return {
-      hostable: 'no',
-      why: `the WSL2 guest "${facts.wsl?.probed}" does not see an NVIDIA card, and a cuda-linux `
-        + 'Crucible needs one. The refusals above name what would change that.',
-    };
+    return { hostable: 'yes', why: 'Crucible runs natively on Windows. WSL is an optional upgrade managed from its console; it is not required to install or connect.' };
+  }
+  if (facts.gpu !== null) {
+    return { hostable: 'yes', why: `${facts.gpu.name}, ${(facts.gpu.vramBytes / 1024 ** 3).toFixed(1)} GB, visible to this machine.` };
   }
 
   return {
@@ -936,22 +732,7 @@ export function describeMachine(facts: CrucibleHostFacts): string {
   return `${parts.join(' · ')}.`;
 }
 
-/**
- * WHAT THE BUTTON WILL DO, IN ORDER — the package's own step list, rendered.
- *
- * THESE ARE NOT LINES TO TYPE ANY MORE, and that is the correction. This
- * function used to compose eleven copyable commands — `conda create`, `pip
- * install <wheel>`, `crucible init` — which was a SECOND description of an
- * install that `@crucible/bootstrap` already owns. PHASE14 §4a: two
- * descriptions of one install "cannot differ", and these two had: the wheel
- * became an env pack, and conda stopped being involved at all, and nothing
- * here noticed.
- *
- * So the sequence is read from `installSteps()` — the same data the installer
- * walks — and shown with NO commands. The one line a person still types is
- * Windows's, and it is in {@link elevatedFor}, from the package's own
- * `hostInstallCommand()`.
- */
+/** Show the native Windows installer or the SDK's platform step list. */
 async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]> {
   if (facts.platform === 'other') {
     return [{
@@ -968,47 +749,13 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
 
   const bootstrap = await import('@crucible/bootstrap');
 
-  /*
-   * ON WINDOWS THE SEQUENCE IS THE HOST'S, NOT THIS LIST'S (PHASE15 §4.3).
-   *
-   * A Windows machine gets a host, the host starts the `llama-windows` server
-   * within seconds, and the WSL2 engine is then a TASK on the engine's own
-   * page (§4.7) — the state table, the UAC prompts, the distro import, the
-   * reboot. None of that is a step BookForge walks, so none of it is listed
-   * as one. What IS listed is what the host will do once it is there.
-   */
   if (facts.platform === 'win32') {
-    return [
-      {
-        title: 'Install the Crucible host',
-        detail:
-          'One line in PowerShell, listed below. It downloads the host, writes a Startup item so '
-          + 'the engine comes back after a reboot, and starts it. BookForge does not run it: a '
-          + 'library that downloads and elevates an installer from a background call is a dialog '
-          + 'nobody asked for.',
-        commands: [],
-        done: false,
-      },
-      {
-        title: 'The host starts the Windows engine',
-        detail:
-          'Within seconds, and it opens its own console. That engine is `llama-windows` — '
-          + 'llama.cpp over GGUF — and it serves the text classes and page reading on this '
-          + "machine's card with no WSL at all.",
-        commands: [],
-        done: false,
-      },
-      {
-        title: 'Move it to WSL2, from the engine console',
-        detail:
-          'What WSL2 adds is vLLM/SGLang and the five Python job types — narration, '
-          + 'transcription, alignment, voice matching, noise removal. It is a task on the '
-          + "console, not a step here: only the host can run wsl.exe, raise the two UAC prompts "
-          + 'and survive the reboot.',
-        commands: [],
-        done: (facts.wsl?.distros ?? []).some((d) => d.version === 2),
-      },
-    ];
+    return [{ title: 'Install Crucible on Windows',
+      detail: 'Install the native Windows engine, desktop controls and login startup through Crucible’s installer. No WSL setup is required.',
+      commands: [], done: false },
+    { title: 'Verify and connect',
+      detail: 'Verify the running service and its published connection. Choose a name to add it to BookForge. WSL remains an optional upgrade in Crucible’s console.',
+      commands: [], done: false }];
   }
 
   const plan = bootstrap.planJobTypes(bookforgeJobTypes());
@@ -1032,28 +779,8 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
   }));
 }
 
-/**
- * THE COMMANDS BOOKFORGE CANNOT RUN FOR YOU.
- *
- * Each needs a privilege this app does not have and must not ask for
- * silently. `@crucible/bootstrap` draws the same line — it refuses by name and
- * hands the command over — and this list is that refusal's `command` field, in
- * advance, taken from the package rather than spelled a second time.
- */
+/** Linux linger requires the operator's privilege; native desktop installation does not. */
 async function elevatedFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]> {
-  if (facts.platform === 'win32') {
-    const bootstrap = await import('@crucible/bootstrap');
-    return [{
-      title: 'The one line: install the Crucible host',
-      detail:
-        'Run this in PowerShell. Everything else on Windows happens through the host — the WSL '
-        + 'state table, the UAC prompts, the distro, the reboot — because there is one install '
-        + 'sequence on a machine and it is the host\'s. `wsl --install` is NOT listed here any '
-        + 'more: the host raises it itself, by name, with the sentence that explains why.',
-      commands: [bootstrap.hostInstallCommand(CRUCIBLE_RELEASE)],
-      done: false,
-    }];
-  }
   if (facts.platform === 'linux') {
     return [{
       title: 'To keep the server up when you are logged out',

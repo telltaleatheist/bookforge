@@ -212,6 +212,7 @@ function launchVerbatim(
     const child = (() => {
       try {
         return spawn(plan.program, plan.args, {
+          cwd: options.cwd,
           windowsHide: true,
           windowsVerbatimArguments: true,
           env: options.env === undefined ? process.env : { ...process.env, ...options.env },

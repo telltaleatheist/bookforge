@@ -279,7 +279,7 @@ check('the in-app GPU bench row survives, named for its ONE remaining tenant', (
   assert.strictEqual(slots.LONGFORM_ALIGN_SET, 'local-longform-align');
   assert.strictEqual(typeof slots.longformAlignCharged, 'function');
   const drawn = slots.slotSets({
-    enabledServers: ['mac'], upstreams: { mac: 'none' }, roles: { mac: 'engine' },
+    rankedServers: [{ name: 'mac', enabled: true }], upstreams: { mac: 'none' }, roles: { mac: 'engine' },
     occupied: [], alignerCharged: true, serversOnThisMachine: [],
   });
   const row = drawn.find((s) => s.id === slots.LONGFORM_ALIGN_SET);

@@ -120,6 +120,7 @@ function scriptedHost(over) {
     enabled: () => [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
     ping: async () => ({ outcome: 'ok', message: 'ok' }),
     server: (name) => ({ name, url: URL, token: TOKEN, source: 'local' }),
+    engineUrl: async () => URL,
     models: async () => [row(), { id: 'qwen3.5-9b', modalities: ['text'], backendSupported: true, installed: true, resident: false, loadable: true, fingerprint: null }],
     // `GET /v1/info` → `host.backend`. The default is the one backend that
     // actually serves dots-ocr through vLLM today; the llama.cpp arm is scripted
@@ -436,7 +437,7 @@ async function main() {
     // (PAGE_CONCURRENCY_BY_BACKEND) and it changes nothing on the server.
     assert.deepStrictEqual(
       Object.keys(pages.processPagesVenueHost()).sort(),
-      ['backend', 'enabled', 'models', 'ping', 'server', 'view']);
+      ['backend', 'enabled', 'engineUrl', 'models', 'ping', 'server', 'view']);
   });
 
   // ── 8. The venue: one record, no silent local run ─────────────────────────

@@ -205,7 +205,7 @@ export function crucibleBlockSeparator(options: CrucibleBlockSeparatorOptions): 
     },
 
     async start(_workDir: string, blocks: number): Promise<string> {
-      const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+      const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
       await assertCrucibleModelOffered(client, server, 'denoise', CRUCIBLE_DENOISE_MODEL);
       checked = true;
       return `Final denoise: crucible "${server}" offers ${CRUCIBLE_DENOISE_MODEL} — `

@@ -333,7 +333,7 @@ export async function runCrucibleRvc(options: RunCrucibleRvcOptions): Promise<Cr
   // BEFORE a book's worth of FLACs crosses: a server with no `rvc` (the type is
   // off, or its env was never installed) or without this manifest says so now
   // (`crucible_rvc_not_offered`, `crucible_rvc_model_not_offered`).
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   await assertCrucibleModelOffered(client, server, 'rvc', model);
 
   const inputs: Record<string, string> = {};

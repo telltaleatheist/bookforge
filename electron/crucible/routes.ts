@@ -103,6 +103,18 @@ const upstreamsByServer = new Map<string, boolean>();
  * document.
  */
 const rolesByServer = new Map<string, { role: EngineRole; engine: EngineRef | null }>();
+const resolvedEngineUrls = new Map<string, string>();
+
+/** The verified engine endpoint, published only after the resolver reads it. */
+export function noteCrucibleEngineUrl(server: string, url: string): void {
+  const before = resolvedEngineUrls.get(server);
+  resolvedEngineUrls.set(server, url);
+  if (before !== url) recordChanged();
+}
+
+export function crucibleEngineUrlOf(server: string): string | null {
+  return resolvedEngineUrls.get(server) ?? null;
+}
 
 /**
  * WHO WANTS TO KNOW WHEN ANY OF THIS CHANGES.
@@ -359,10 +371,11 @@ export function crucibleRouteOf(server: string, capability: string): CrucibleRou
  */
 export function forgetCrucibleRoutes(server?: string): void {
   if (server === undefined) {
-    const had = byServer.size > 0 || upstreamsByServer.size > 0 || rolesByServer.size > 0;
+    const had = byServer.size > 0 || upstreamsByServer.size > 0 || rolesByServer.size > 0 || resolvedEngineUrls.size > 0;
     byServer.clear();
     upstreamsByServer.clear();
     rolesByServer.clear();
+    resolvedEngineUrls.clear();
     // The remembered half goes with it, or a removed server would come back at
     // the next launch as a fact about a machine that is not there.
     saveUpstreams();
@@ -372,8 +385,9 @@ export function forgetCrucibleRoutes(server?: string): void {
   const had = byServer.delete(server);
   const hadUpstream = upstreamsByServer.delete(server);
   const hadRole = rolesByServer.delete(server);
+  const hadEngine = resolvedEngineUrls.delete(server);
   saveUpstreams();
-  if (had || hadUpstream || hadRole) recordChanged();
+  if (had || hadUpstream || hadRole || hadEngine) recordChanged();
 }
 
 /**
@@ -430,6 +444,7 @@ export function noteCrucibleRole(server: string, info: ServerInfo): void {
   }
   const before = rolesByServer.get(server);
   rolesByServer.set(server, entry);
+  if (entry.role === 'orchestrator' && entry.engine === null) resolvedEngineUrls.delete(server);
   if (before === undefined || before.role !== entry.role || before.engine?.url !== entry.engine?.url) {
     recordChanged();
   }

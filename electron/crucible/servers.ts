@@ -74,7 +74,7 @@ import * as path from 'path';
 import { CrucibleClient } from '@crucible/client';
 import { isLoopbackUrl } from './discovery';
 import { forgetCrucibleRoutes } from './routes';
-import { forgetResolvedEngine } from './engine-resolve';
+import { engineClientFor, forgetResolvedEngine } from './engine-resolve';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets';
 import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
@@ -619,7 +619,12 @@ export function serversOnThisMachine(): string[] {
  * requires it: an unnamed client in a shared server's log is an unanswerable
  * question.
  */
-export function crucibleClientFor(name: string, clientName: string): CrucibleClient {
+export async function crucibleClientFor(name: string, clientName: string): Promise<CrucibleClient> {
+  return engineClientFor(getServer(name), clientName);
+}
+
+/** Inspect the registered process itself, including an orchestrator with no engine. */
+export function crucibleAddressClientFor(name: string, clientName: string): CrucibleClient {
   const entry = getServer(name);
   return new CrucibleClient({ url: entry.url, token: entry.token, clientName });
 }

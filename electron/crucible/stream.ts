@@ -397,7 +397,7 @@ export interface CrucibleStreamingEngineDeps {
   /** Which Listen engine is selected — decides which catalog the voice ids belong to. */
   selectedEngine(): StreamEngineName;
   /** A client bound to a registered server (or `local`), named `bookforge`. */
-  clientFor(server: string): CrucibleClient;
+  clientFor(server: string): CrucibleClient | Promise<CrucibleClient>;
 }
 
 /**
@@ -445,7 +445,7 @@ export class CrucibleStreamingEngine {
    * its rows on one server and its next sentence on another.
    */
   bind(server: string): void {
-    if (this.live !== null && this.server !== server) {
+    if ((this.live !== null || this.starting || this.opening) && this.server !== server) {
       throw new CrucibleStreamRefused(
         'crucible_stream_rebind_refused',
         `a Listen session is open on crucible "${this.server}"; it cannot be re-pointed at "${server}" `
@@ -454,7 +454,7 @@ export class CrucibleStreamingEngine {
     }
     if (this.server !== server) {
       this.server = server;
-      this.client = this.deps.clientFor(server);
+      this.client = null;
       this.serverRows = null;
     }
   }
@@ -470,7 +470,7 @@ export class CrucibleStreamingEngine {
   };
 
   startSession = async (): Promise<{ success: boolean; voices?: string[]; error?: string }> => {
-    if (this.server === null || this.client === null) {
+    if (this.server === null) {
       return {
         success: false,
         error: 'crucible_stream_no_venue: no Crucible server is bound for this Listen. The venue is '
@@ -486,6 +486,7 @@ export class CrucibleStreamingEngine {
       // One GET, before anything else: is it a Crucible, does the token work,
       // does it serve `tts`, and which voices does it advertise. The answer is
       // what the pickers show from here on.
+      this.client = await this.deps.clientFor(this.server);
       this.serverRows = await this.client.voices();
     } catch (err) {
       this.starting = false;

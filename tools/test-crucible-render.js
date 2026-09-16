@@ -463,7 +463,12 @@ async function happyPathChecks() {
       language: 'en',
       chunks: CHUNKS,
       sentencesDir,
-      onStarted: (s) => { started = s; },
+      onStarted: (s) => {
+        started = s;
+        // Simulate a host moving its advertised engine after admission. The
+        // running job and its artifacts still belong to the submitting client.
+        fakesByName.set(server, { url: 'http://127.0.0.1:1', token: 'test-token-abcd' });
+      },
       onProgress: (p) => progress.push(p),
       onChunkWritten: (index) => written.push(index),
     });
@@ -483,6 +488,11 @@ async function happyPathChecks() {
     assert.deepStrictEqual(body.params.chunks, CHUNKS,
       'every chunk, with its own index and text, unchanged');
     assert.deepStrictEqual(body.inputs, {}, 'a render carries no uploaded inputs');
+  });
+
+  await check('a render keeps following the submitting engine after its registered address changes', () => {
+    assert.strictEqual(outcome.written, CHUNKS.length);
+    assert.strictEqual(fake.state.submitted.length, 1);
   });
 
   await check('the server is asked whether it has the voice BEFORE the book is sent', () => {

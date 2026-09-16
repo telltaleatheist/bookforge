@@ -293,9 +293,16 @@ check('the post-render phase runs BEFORE the session is cached, and never fails 
     'the alignment must run BEFORE the session is copied to the project cache: the report '
     + 'and the measured transcript are SESSION files, and written after the copy they would '
     + 'never reach it — see runPostRenderAlignment');
-  const phase = bridge.slice(bridge.indexOf('async function runPostRenderAlignment'),
-    bridge.indexOf('function postRenderAlignProgress(session'));
-  assert.ok(!/throw /.test(phase),
+  const ts = require('typescript');
+  const parsed = ts.createSourceFile('parallel-tts-bridge.ts', bridge, ts.ScriptTarget.Latest, true);
+  const phaseNode = parsed.statements.find((node) => ts.isFunctionDeclaration(node)
+    && node.name?.text === 'runPostRenderAlignment');
+  assert.ok(phaseNode, 'the post-render alignment function must exist');
+  const phase = phaseNode.getText(parsed);
+  let throws = false;
+  const visit = (node) => { if (ts.isThrowStatement(node)) throws = true; ts.forEachChild(node, visit); };
+  visit(phaseNode);
+  assert.ok(!throws,
     'the phase must never throw: no aligner is an announced SKIP and a failed '
     + 'align is an announced failure, and the audiobook ships either way with '
     + 'the proportional estimate');

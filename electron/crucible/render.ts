@@ -536,7 +536,7 @@ export async function runCrucibleRender(
   }
 
   const log = options.onLog ?? (() => undefined);
-  const client = crucibleClientFor(server, CLIENT_NAME);
+  const client = await crucibleClientFor(server, CLIENT_NAME);
 
   let jobId: string;
   let lastEventId = options.attachTo?.lastEventId ?? 0;
@@ -591,6 +591,7 @@ export async function runCrucibleRender(
 
   let downloaded = 0;
   const outcome = await downloadRenderArtifacts({
+    client,
     server,
     jobId,
     renderId,

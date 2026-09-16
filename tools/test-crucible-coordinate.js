@@ -822,8 +822,8 @@ async function main() {
       assert.strictEqual(fake.seen.posts.length, 1,
         `exactly one post, got ${fake.seen.posts.length}`);
       assert.strictEqual(fake.seen.posts[0].type, 'module');
-      assert.deepStrictEqual(fake.seen.posts[0].module, MODULE,
-        'the vendored file is posted byte for byte');
+      assert.deepStrictEqual(fake.seen.posts[0].module, moduleSetup.moduleForBackend('cuda-linux'),
+        'the module is filtered for the backend that answered');
       assert.strictEqual(state.phase, 'preparing');
       assert.strictEqual(state.progress.state, 'done');
       assert.strictEqual(state.followed, false);
@@ -1159,7 +1159,7 @@ async function main() {
         coordinate.coordinateServer(name, deps()),
       ]);
       assert.strictEqual(fake.seen.posts.length, 1, 'one post for two callers');
-      assert.strictEqual(fake.seen.info, 1, 'one read for two callers');
+      assert.strictEqual(fake.seen.info, 2, 'one coordination read plus the backend read before module installation');
       assert.strictEqual(both[0], both[1], 'both callers got the same run');
     } finally { await fake.close(); }
   });
@@ -1392,6 +1392,37 @@ async function main() {
       'the sentence for an engine with a class it cannot serve should be there');
     assert.ok(/return `Not on this engine: \$\{joinWords\(parts\)\}`/.test(text),
       'and the unmet line names the engine\'s own reason after the class');
+  });
+
+  await check('a broken local lifecycle response cannot prevent remote startup coordination', async () => {
+    const ts = require('typescript');
+    const vm = require('vm');
+    const source = ts.createSourceFile('main.ts', fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8'), ts.ScriptTarget.Latest, true);
+    let startup;
+    function visit(node) {
+      if (ts.isArrowFunction(node) && node.body.getText(source).includes('await offerLocalCrucibleStart()')
+          && node.body.getText(source).includes('await coordinateServersOnStart()')) startup = node;
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    assert.ok(startup, 'the startup sequence was not found');
+    const code = ts.transpileModule(`(${startup.getText(source)})()`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    const warnings = [];
+    let asked = 0;
+    await vm.runInNewContext(code, {
+      require: (name) => {
+        if (name.endsWith('engine-presence.js')) return { offerLocalCrucibleStart: async () => { throw new Error('local_protocol_invalid'); } };
+        if (name.endsWith('coordinate.js')) return { coordinateServersOnStart: async () => { asked += 1; return ['remote']; } };
+        throw new Error(`unexpected import ${name}`);
+      },
+      logger: { warn: (...args) => warnings.push(args), info: () => {} },
+    });
+    assert.strictEqual(asked, 1);
+    assert.strictEqual(warnings.length, 1);
+    assert.ok(warnings[0][0].includes('Local Crucible startup check failed'));
+    assert.strictEqual(warnings[0][1].error, 'local_protocol_invalid');
   });
 
   summary('crucible coordination');

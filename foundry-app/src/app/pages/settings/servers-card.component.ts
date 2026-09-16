@@ -209,6 +209,26 @@ interface EditableServer extends CrucibleServerView {
               <p class="small">{{ said }}</p>
             }
             <!--
+              TWO DOORWAYS ONTO ONE MACHINE. Owen, 2026-09-15: *"the windows
+              crucible instance should act as a passthrough for the WSL crucible
+              … it's just a passthrough to the real engine."* So this row and
+              the one it names are one card, and the queue draws ONE lane for
+              them — otherwise it would start two jobs on one GPU believing it
+              had two.
+
+              THE ROW STAYS, and that is the point of saying it. It is still
+              listed, still enabled, still editable, and work sent to either
+              address arrives at the same engine. What it does not have is a
+              lane of its own, and a row that quietly stopped being a slot would
+              be the app disagreeing with somebody's registry behind their back.
+            -->
+            @if (row.sharesEngineWith; as shared) {
+              <p class="small">
+                Same engine as "{{ shared }}" — one machine reached two ways, so the queue gives
+                them one GPU slot between them. Work sent here still arrives.
+              </p>
+            }
+            <!--
               THE SENTENCE THAT WAS HERE SAID *"This is the engine on this
               machine, so it replaces the local GPU slot rather than sitting
               beside it"*, and Owen's ruling made every clause of it false:
@@ -448,7 +468,18 @@ export class ServersCardComponent {
     this.saved.set(false);
     this.rows.update((rows) => [
       ...rows,
-      { key: this.nextKey++, name: '', url: '', enabled: true, tokenSet: false, loopback: false, token: null },
+      {
+        key: this.nextKey++,
+        name: '',
+        url: '',
+        enabled: true,
+        tokenSet: false,
+        loopback: false,
+        // A row nobody has saved has no engine to share; main answers this the
+        // moment the address is stored and the resolver has met it.
+        sharesEngineWith: null,
+        token: null,
+      },
     ]);
   }
 

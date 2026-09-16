@@ -1,0 +1,42 @@
+# BookForge / Crucible integration audit — 2026-09-16
+
+This audit traced BookForge's production work paths against the Crucible SDK and server contract. It covers BookForge; Foundry and Crucible lifecycle/install work were reviewed separately by the other agents. Windows native operation is the baseline. WSL and GPU availability are not prerequisites for connection or routing.
+
+## Confirmed failures and fixes
+
+1. **Work bypassed engine resolution.** Most BookForge doors built SDK clients directly from the registered address. Registering an orchestrator therefore sent engine-only jobs, uploads, settings, inventory, and leases to its control port. The common work-client factory now resolves and validates the engine first. Only explicit front-door probes retain direct-address access. OCR's raw endpoint and resident-model activity queries use the resolved endpoint too. Streaming waits for resolution before opening its session.
+2. **An outdated lookup could overwrite a newer route.** Changing a saved URL while discovery was in flight could reuse or publish the earlier result. In-flight requests are now keyed by the registered URL; only the current request may publish or clear its entry.
+3. **The queue counted addresses instead of engines.** A host-only registration lost its work lane after being classified as an orchestrator; registering both host and engine could expose two lanes for one engine. Queue projection now groups verified engine endpoints, retains a stable occupied lane, and maps registered aliases to that lane. A host with no engine still receives no engine lane. The originally requested registry address remains the job's routing choice.
+4. **Cancellation during submission could leave an admitted job running.** The generic job helper and narration bridge now cancel a newly returned job when cancellation occurred while submission was in flight. The narration bridge also checks cancellation after asynchronous preparation.
+5. **Artifact retrieval could switch engines after admission.** Render artifact downloads now use the submitting client, matching the job's event stream even if its registry entry changes.
+6. **A heartbeat could recreate a lease after release.** Release now waits for an in-flight heartbeat/reacquisition and deletes its final lease ID. Heartbeats do not overlap.
+7. **Uninstall guessed installation paths.** BookForge now obtains the runtime, working directory, and Crucible home from the SDK's installed lifecycle record. The strict registry-versus-local-address proof, preview, retention/purge choices, WSL flag rules, progress stream, and structured refusal parsing remain intact. An unregistered legacy install is explicitly refused with repair guidance.
+8. **Hosted Foundry claimed the same IPC names.** Refreshing Foundry's channel inventory exposed three collisions that would throw during handler registration. BookForge's coordination and engine-settings channels, including their related notifications/write operation, now use a BookForge prefix in both main and preload.
+9. **First-run Windows setup still entered the WSL installer.** The install button used the SDK's legacy Windows upgrade route, which either required an existing host or posted a WSL install task. It now runs Crucible's native Windows installer command, streams its output, starts and validates the published local service, and verifies authenticated engine information before reporting success. The Windows plan neither probes WSL/GPU nor requires them; it reads the local pairing without waking a guest. Settings and the shared first-run wizard present native installation with WSL as a later optional upgrade.
+
+10. **A malformed local status response could block remote startup.** Local lifecycle checks and remote coordination now have separate error boundaries. A failed local check preserves its diagnostic in the log and still attempts coordination of registered remote engines. A regression executes the real startup function with a failing local check and verifies the remote call and diagnostic.
+
+## Verification
+
+- Final stable-source rerun after the 0.6.1 SDK re-vendor: `npm test` passed
+  (Electron TypeScript compile, 167 keeper suites passed, one external EPUB
+  fixture skipped). `npm run build:prod` also passed; its existing 500 kB
+  initial-bundle budget warning remains (674.63 kB).
+
+- Electron TypeScript compilation: `node node_modules/typescript/bin/tsc -p tsconfig.electron.json`.
+- Broad keeper run: `node tools/run-keepers.js` — **167 suites ran, 1 skipped, 0 failing** after the uninstall, IPC, and native-first installer changes. The subsequent startup error-isolation change passed its focused executable regression and TypeScript compilation.
+- New routing regression suite uses the real SDK and registry against loopback fake HTTP services: **4 checks**. It verifies host-to-engine uploads, jobs, events, artifacts, leases and voice inventory; a native direct engine without WSL/GPU; lane identity; and stale-resolution races.
+- Queue slot suite: **68 checks**, including host-only and host-plus-engine registrations, one-at-a-time dispatch to the shared lane, and requested-address preservation.
+- Job cancellation: **20 checks**; render/artifact pinning: **28 checks**; lease lifetime: **19 checks**; row-scoped leases: **20 checks**; OCR/pages: **29 checks**; coordination: **46 checks**.
+- Final uninstall regression suite: **29 checks**, including a relocated runtime published by the lifecycle record, invocation environment/cwd, remote refusal, preview/real-run flags, failure documents, and spawn handling.
+- Final IPC collision check: **6/6**; engine settings window: **20 checks**; coordination: **46 checks**.
+- Final native-first installation suite: **41 checks**, including a scripted fresh Windows install with no WSL/GPU, the real SDK against a loopback engine, published runtime environment/cwd, progress, install failure, timeout, and missing lifecycle registration. Electron TypeScript compilation passed again after this follow-up.
+- Existing keeper guards were repaired where their fixtures had drifted from current contracts: ranked server input, backend-filtered module expectations, and an AST-based post-render throw check replacing a broken source slice. The routing suite and existing connect-code/backend-module suites are now listed by the keeper runner.
+
+The skipped keeper requires the external Killing America EPUB via `BOOKFORGE_KA_EPUB`; that fixture is not in the repository. No real model inference, GPU work, app GUI run, service restart, or WSL restart was performed by this audit agent. CPU protocol tests establish routing and lifetime behavior, not model quality or full audiobook production. The root agent owns live lifecycle validation and the coordinated final build/commit.
+
+## Independent lifecycle review
+
+A bounded review of Crucible's new local status/control code found three status-contract defects: HTTP errors classified as unreachable, malformed authenticated info classified as healthy, and failed engine probing classified as an intentional stop. These were reproduced without touching services and passed to the root agent, who fixed them with regression tests. The standalone tray delegates start/stop to the controller; closing the tray does not itself call stop. Installer `host` compatibility dispatch reaches that standalone tray. A follow-up migration review fixed acceptance of an unvalidated authenticated info response: switching to WSL now checks engine identity, API version, and the cuda-linux backend before publishing the guest connection; the local lifecycle suite passed 18 checks. A separate reproduced action-path issue, HTTP 404 on the controller port being treated as an absent process and triggering a spawn, was reported to the root agent for its local.py changes.
+
+A final shutdown review reproduced a native process ownership bug with a test-owned sleeping Python process: terminating the `.cmd` wrapper left its Python child alive. The controller now launches installed Python directly and owns a private stdin pipe. Closing it, or controller death, requests graceful Uvicorn shutdown so ASGI lifespan cleanup stops worker processes. Six CPU-only regressions cover normal stop, stop before readiness, controller death, direct launch/pipe opt-in, retaining the child handle after a timeout, and cleaning up when the controller cannot bind its port. No live service or model worker was used.

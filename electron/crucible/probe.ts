@@ -55,7 +55,7 @@ import type {
   CrucibleServersView,
   ServerFacts,
 } from '../../shared/crucible/settings-wire';
-import { crucibleClientFor, getServer, listServers, maskToken, CRUCIBLE_CLIENT_NAME } from './servers';
+import { crucibleAddressClientFor, crucibleClientFor, getServer, listServers, maskToken, CRUCIBLE_CLIENT_NAME } from './servers';
 import { CrucibleDiscoveryError, discoverCrucible, processDiscoveryHost } from './discovery';
 import { getWslDistro } from '../tool-paths';
 import { readRouting } from './routing';
@@ -241,7 +241,7 @@ export async function probeAddress(url: string, token: string): Promise<Crucible
 export async function pingServer(name: string): Promise<CruciblePingResult> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = crucibleAddressClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -257,7 +257,7 @@ export async function pingServer(name: string): Promise<CruciblePingResult> {
 export async function probeServer(name: string): Promise<CrucibleProbeResult> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = crucibleAddressClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     // An unknown name, or a corrupt registry: each is already a named refusal
     // with its own fix in the message.
@@ -277,7 +277,7 @@ export async function activityOf(
 ): Promise<{ outcome: 'ok'; activity: CrucibleActivityView } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -358,7 +358,7 @@ export async function modelsOf(
 ): Promise<{ outcome: 'ok'; models: CrucibleModelRow[] } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -437,7 +437,7 @@ export async function loadHiggsVoiceOn(
 ): Promise<{ outcome: 'ok'; loaded: CrucibleVoiceLoaded } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -493,7 +493,9 @@ export async function residentClipOn(
 > {
   let entry;
   try {
-    entry = getServer(name);
+    const registered = getServer(name);
+    const client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    entry = { ...registered, url: client.url };
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -553,7 +555,7 @@ async function operate(
 ): Promise<{ outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
-    client = crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }

@@ -341,7 +341,7 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
 
 /** `GET /v1/settings` — the whole document, read, never cached. */
 export async function crucibleEngineSettings(server: string): Promise<CrucibleEngineSettings> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   try {
     return projectSettings(await client.settings(), server);
   } catch (err) {
@@ -409,7 +409,7 @@ export async function putCrucibleEngineSettings(
     );
   }
 
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   let after: CrucibleEngineSettings;
   try {
     after = projectSettings(await client.putSettings(sent), server);
@@ -452,7 +452,7 @@ export async function testCrucibleUpstream(
   name: CrucibleUpstreamName,
   probe: CrucibleUpstreamProbe,
 ): Promise<CrucibleUpstreamTestResult> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   let result: UpstreamTestResult;
   try {
     result = await client.testUpstream(name, probe);
@@ -522,7 +522,7 @@ export async function crucibleCapabilityWithRoutes(
   server: string,
   timeoutMs?: number,
 ): Promise<CrucibleCapabilityView> {
-  const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   let record: CapabilityRecord;
   try {
     record = await client.capability(timeoutMs === undefined ? undefined : { timeoutMs });
