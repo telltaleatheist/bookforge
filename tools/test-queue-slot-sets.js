@@ -128,9 +128,13 @@ const epubAlignStep = (over = {}) => stepOf({
  * running `slotSetForStep` over the jobs. `jobs` defaults to none, which is the
  * bench Owen asked for — one GPU slot per registered server and nothing else.
  */
-const factsOf = ({ servers = [], off = [], upstreams, roles, occupied = [], jobs = [] }) => ({
-  enabledServers: servers,
-  disabledServers: off,
+const factsOf = ({ servers = [], off = [], ranked, upstreams, roles, occupied = [], jobs = [] }) => ({
+  // RANK ORDER, one list. `servers` and `off` are a convenience for the many
+  // tests that do not care about order; `ranked` is for the ones that do.
+  rankedServers: ranked ?? [
+    ...servers.map((name) => ({ name, enabled: true })),
+    ...off.map((name) => ({ name, enabled: false })),
+  ],
   upstreams: upstreams ?? unknownUpstreams(servers),
   roles: roles ?? allEngines(servers),
   occupied,
@@ -245,14 +249,14 @@ test('an engine nobody has ASKED keeps its lane — not knowing is not knowing t
 test('a server the caller said NOTHING about is refused by name, never defaulted', () => {
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], disabledServers: [], upstreams: {}, roles: { mac: 'engine' },
+      rankedServers: [{ name: 'mac', enabled: true }], upstreams: {}, roles: { mac: 'engine' },
       occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], disabledServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
+    () => slots.slotSets({ rankedServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -264,14 +268,14 @@ test('a caller that said nothing about the LEGACY row is refused by name too', (
     // only thing missing — otherwise this asserts whichever guard happens to
     // run first, which is what it did when `serversOnThisMachine` was added.
     () => slots.slotSets({
-      enabledServers: [], disabledServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
+      rankedServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
     }),
     /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], disabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
+      rankedServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
     }),
     /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
@@ -409,7 +413,7 @@ test('a caller that said nothing about ROLES is refused by name, never defaulted
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], disabledServers: [], upstreams: { mac: 'none' }, roles: {},
+      rankedServers: [{ name: 'mac', enabled: true }], upstreams: { mac: 'none' }, roles: {},
       occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" is an engine or an orchestrator/,
@@ -1372,21 +1376,45 @@ test('a switched-off server draws NO cloud lane', () => {
   assert.strictEqual(sets.some((set) => set.id === 'mac:cloud'), false);
 });
 
-test('a name that is both enabled and disabled is refused, not drawn twice', () => {
-  assert.throws(
-    () => slots.slotSets(factsOf({ servers: ['mac'], off: ['mac'] })),
-    /named as both enabled and disabled/,
-    'both lists come off one routing read, so a name in both is a caller that built them twice',
-  );
+test('the rows keep their RANK ORDER when a switch is flipped', () => {
+  /*
+   * Owen, 2026-09-15: "the crucible slots shouldnt switch positions. i just
+   * re-checked one and they switched where they were... whichever is at the top
+   * shoudl be on the left. from left to right, like a book."
+   *
+   * The first draft drew every enabled server and then every disabled one, so
+   * unchecking a row moved its card to the end — the one thing a row somebody
+   * is pointing at must not do.
+   */
+  const ranked = [
+    { name: '3090 Ti', enabled: true },
+    { name: 'mac', enabled: true },
+    { name: 'droplet', enabled: true },
+  ];
+  const order = (rows) => slots
+    .slotSets(factsOf({ ranked: rows, servers: rows.map((r) => r.name) }))
+    .map((set) => set.id)
+    .filter((id) => rows.some((r) => r.name === id));
+
+  assert.deepStrictEqual(order(ranked), ['3090 Ti', 'mac', 'droplet']);
+
+  // The MIDDLE one goes off: it must stay in the middle.
+  const middleOff = ranked.map((r) => (r.name === 'mac' ? { ...r, enabled: false } : r));
+  assert.deepStrictEqual(order(middleOff), ['3090 Ti', 'mac', 'droplet'],
+    'a switched-off row keeps its place');
+
+  // And the FIRST one: still first, still leftmost.
+  const firstOff = ranked.map((r) => (r.name === '3090 Ti' ? { ...r, enabled: false } : r));
+  assert.deepStrictEqual(order(firstOff), ['3090 Ti', 'mac', 'droplet']);
 });
 
 test('a caller that says nothing about what is switched off is refused', () => {
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, roles: {}, occupied: [],
+      upstreams: {}, roles: {}, occupied: [],
       alignerCharged: false, serversOnThisMachine: [],
     }),
-    /`disabledServers` was not supplied/,
+    /`rankedServers` was not supplied/,
     'an empty list is a claim that nothing is off, and every greyed row would vanish again',
   );
 });

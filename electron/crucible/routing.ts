@@ -64,6 +64,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { listServers } from './servers';
+import { announceCrucibleRecordChanged } from './routes';
 // The wire shapes, owned once in shared/ because the settings row reads them
 // too (see that file's header). This module owns the RECORD; the view it hands
 // back is the wire's.
@@ -426,9 +427,22 @@ export function setRoutingOrder(next: readonly string[]): RoutingView {
   return store().setOrder(next, knownServers());
 }
 
-/** Enable or disable one server for the queue. See {@link Routing.setEnabled}. */
+/**
+ * Enable or disable one server for the queue. See {@link Routing.setEnabled}.
+ *
+ * AND THE BENCH IS TOLD. `slotSets` reads this switch — a disabled server is
+ * drawn greyed rather than dropped since 2026-09-15 — and nothing else was
+ * going to republish for it, so the row kept its old look until some unrelated
+ * change caused a publish. `announceCrucibleRecordChanged` is the same door the
+ * routing RECORD uses when it learns, for the same reason.
+ *
+ * Here rather than in the IPC handler, so every caller gets it: the rank
+ * reorder below wants it too the day the bench draws rank.
+ */
 export function setServerEnabled(name: string, enabled: boolean): RoutingView {
-  return store().setEnabled(name, enabled, knownServers());
+  const view = store().setEnabled(name, enabled, knownServers());
+  announceCrucibleRecordChanged();
+  return view;
 }
 
 /** Set what a new queue row waits for. See {@link Routing.setNewJobsWaitFor}. */

@@ -81,9 +81,71 @@ export function bookforgeModuleSubjects(): string[] {
  * A function that flattened all three into an `Error` would force the caller to
  * read the sentence back out of it.
  */
+/**
+ * THE MODULE AS THIS BACKEND CAN HOLD IT — subjects scoped to it, `backends`
+ * stripped.
+ *
+ * ── Why a module is not one list any more ──────────────────────────────────
+ *
+ * `crucible/modules.py` used to say a module "is posted to a Mac and a PC alike
+ * and must name the same subjects on both". That is true of every subject in
+ * the build except the transcribers, and there it is permanently false:
+ * CTranslate2 has no Metal backend, so `faster-whisper-*` exists only on
+ * cuda-linux and `mlx-whisper-*` only on mlx-darwin. BookForge named the first
+ * and the Mac refused the WHOLE module rather than part of it —
+ *
+ *   invalid_module: subjects[0]: this server has no model called
+ *   'faster-whisper-large-v3' for mlx-darwin
+ *
+ * — which is `validate_module` behaving exactly as designed ("read a whole
+ * module or refuse the whole of it. Never half.") on a file that was wrong.
+ *
+ * ── Why the filtering is here and not on the server ────────────────────────
+ *
+ * `backends` is a GENERATED field: the id and the backends it exists on both
+ * come from the manifests, so nothing here chooses anything — the choice of
+ * large-v3 over distil is still stated once, in `modules/bookforge.toml`.
+ *
+ * And the key is STRIPPED because `validate_module` refuses a subject carrying
+ * an unknown key. That is what lets this ship today against Crucibles that are
+ * already installed — including the Mac's, which is a pip install in a conda
+ * env and not a checkout somebody can pull. A server-side `backends` would be
+ * the tidier place for this rule and would require every engine to be updated
+ * before any app could post the new file at all.
+ */
+export function moduleForBackend(backend: string): CrucibleModule {
+  const subjects = BOOKFORGE_MODULE.subjects
+    .filter((subject) => {
+      const where = (subject as { backends?: string[] }).backends;
+      /*
+       * A subject with NO `backends` is one this build wrote before the field
+       * existed, and it means what it always meant: everywhere. Refusing it
+       * here would make an older vendored file unpostable, which is the
+       * opposite of what stripping the key is for.
+       */
+      return where === undefined || where.includes(backend);
+    })
+    .map((subject) => {
+      // Rebuilt from its two wire fields rather than spread-minus-`backends`:
+      // the wire shape is `{kind, id}` exactly, and a future generated field
+      // should reach a server only when somebody has decided it should.
+      const { kind, id } = subject as { kind: CrucibleModule['subjects'][number]['kind']; id: string };
+      return { kind, id };
+    });
+  return { ...BOOKFORGE_MODULE, subjects };
+}
+
 export async function postBookForgeModule(server: string): Promise<string> {
   const client = crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-  return client.submitTask({ type: 'module', module: BOOKFORGE_MODULE });
+  /*
+   * ASKED OF THE SERVER, not read from a cache. Which backend a name resolves
+   * to is the SERVER's fact (crucible's division of knowledge: the client knows
+   * the order and the server, the server knows the engine), and this is one
+   * cheap read immediately before a multi-gigabyte install decides what to
+   * fetch. A stale answer here installs the wrong transcriber.
+   */
+  const backend = (await client.info()).host.backend;
+  return client.submitTask({ type: 'module', module: moduleForBackend(backend) });
 }
 
 /**

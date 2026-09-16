@@ -142,6 +142,27 @@ export function onCrucibleRecordChanged(listener: RecordListener): () => void {
   return () => { recordListeners = recordListeners.filter((l) => l !== listener); };
 }
 
+/**
+ * Announce, from OUTSIDE this module, that something the bench reads has moved.
+ *
+ * The listener above is described as being about "this record's answer", and
+ * for a while that was the only answer the bench had that could change behind
+ * its back. It is not: the queue's own `routing.json` carries the RANK and the
+ * ENABLED switch, and `slotSets` reads both.
+ *
+ * Owen, 2026-09-15, having unchecked a server on the bench: *"right now, it
+ * stays lit up if its unchecked, but it goes gray if i choose the other server
+ * on a job."* Both halves of that are one bug. The greying was right and it was
+ * LATE — nothing republished the bench when the switch was written, so the row
+ * kept its old look until some unrelated change (picking a server for a book)
+ * caused a publish, and the uncheck appeared then. The header above says the
+ * rule this broke: "a fact nobody is told about is a fact the bench cannot act
+ * on."
+ */
+export function announceCrucibleRecordChanged(): void {
+  recordChanged();
+}
+
 /** Announce a change. A listener that throws is REPORTED, never swallowed silently. */
 function recordChanged(): void {
   for (const listener of recordListeners) {

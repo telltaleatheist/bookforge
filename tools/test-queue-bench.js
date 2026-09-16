@@ -104,10 +104,7 @@ function snap(jobs, running = true, servers = []) {
     jobs,
     running,
     slotSets: slots.slotSets({
-      enabledServers: servers,
-      // Nor about the switch: these tests hand the bench the servers they mean
-      // to draw, and none of them is switched off.
-      disabledServers: [],
+      rankedServers: servers.map((name) => ({ name, enabled: true })),
       // Not what these tests are about: `unknown` is what an engine nobody has
       // asked answers, and it draws the same bench they were written against.
       upstreams: Object.fromEntries(servers.map((n) => [n, 'unknown'])),

@@ -545,14 +545,10 @@ function currentSlotSets(): SlotSet[] {
     }
   }
 
+  let rankedServers: { name: string; enabled: boolean }[] = [];
+  //: Still derived, for the upstream and role reads below — those are asked of
+  //: the servers the queue may actually use.
   let enabledServers: string[] = [];
-  /*
-   * AND THE ONES SWITCHED OFF, which the bench now DRAWS instead of dropping
-   * (Owen, 2026-09-15: greyed until re-checked). Split out of the SAME `ranked`
-   * array as the line above rather than read again, so the two can never
-   * disagree about a server — `slotSets` refuses a name that reaches it in both.
-   */
-  let disabledServers: string[] = [];
   /*
    * Which of them answer on THIS box. Read from the same `host.routing()` call
    * as the ranked list so the two cannot come from different moments, and left
@@ -566,8 +562,11 @@ function currentSlotSets(): SlotSet[] {
   if (host !== null) {
     try {
       const record = host.routing();
-      enabledServers = record.ranked.filter((row) => row.enabled).map((row) => row.name);
-      disabledServers = record.ranked.filter((row) => !row.enabled).map((row) => row.name);
+      // THE RANKED ARRAY, WHOLE AND IN ORDER. Splitting it into on/off lists is
+      // what made a card jump when its switch was flipped: two lists cannot
+      // interleave, so every disabled row landed after every enabled one.
+      rankedServers = record.ranked.map((row) => ({ name: row.name, enabled: row.enabled }));
+      enabledServers = rankedServers.filter((row) => row.enabled).map((row) => row.name);
       serversHere = record.serversOnThisMachine;
     } catch {
       /*
@@ -619,8 +618,7 @@ function currentSlotSets(): SlotSet[] {
    * step kinds, so this and the bench cannot disagree about a row.
    */
   return slotSets({
-    enabledServers,
-    disabledServers,
+    rankedServers,
     upstreams,
     roles,
     occupied,

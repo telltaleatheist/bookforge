@@ -266,7 +266,7 @@ export interface SlotSet {
    * where work goes changes here.
    *
    * What changes is that it is DRAWN. A disabled server used to be filtered out
-   * of `enabledServers` before this function ever saw it, so the row vanished —
+   * of the ranked list before this function ever saw it, so the row vanished —
    * and a card you own silently missing from the bench is indistinguishable
    * from one BookForge cannot see, which is the reading somebody debugs for
    * twenty minutes. It is now a greyed lane with its switch on it, which says
@@ -500,6 +500,29 @@ export type EngineUpstreams = 'configured' | 'none' | 'unknown';
  */
 export type EngineRole = 'engine' | 'orchestrator' | 'unknown';
 
+/**
+ * A registered server, in the person's own priority order, with its switch.
+ *
+ * ONE ORDERED LIST AND NOT TWO. It was `enabledServers` plus `disabledServers`
+ * for a few hours, and Owen found what that costs: *"the crucible slots
+ * shouldnt switch positions. i just re-checked one and they switched where they
+ * were."* Two lists cannot interleave, so the bench drew every enabled card and
+ * then every disabled one, and flipping a switch MOVED the card somebody was
+ * pointing at — the one thing a row under the cursor must not do.
+ *
+ * The order is the registry's RANK, which is the order the person dragged the
+ * rows into in Settings: *"whichever is at the top shoudl be on the left. from
+ * left to right, like a book."*
+ *
+ * It also makes the disjointness this used to check impossible rather than
+ * merely checked: a server is one row carrying a boolean, so it cannot be named
+ * as both on and off.
+ */
+export interface RankedServer {
+  readonly name: string;
+  readonly enabled: boolean;
+}
+
 export interface SlotSetFacts {
   /**
    * Every ENABLED registered server, in rank order — and since 2026-09-15 that
@@ -507,18 +530,11 @@ export interface SlotSetFacts {
    * set: §4.2.2's enable switch is a capacity switch, so turning it off takes its
    * slots away and new claims stop going there.
    */
-  readonly enabledServers: readonly string[];
-  /**
-   * The registered servers the operator has switched OFF — `routing.disabled`.
-   *
-   * Disjoint from {@link enabledServers} and checked to be: the two come out of
-   * one `host.routing()` read, and a name in both would be a row that is drawn
-   * twice and told two different stories about itself.
-   */
-  readonly disabledServers: readonly string[];
+  readonly rankedServers: readonly RankedServer[];
+
   /**
    * PER ENGINE: can it send work elsewhere at all. One entry for every name in
-   * {@link enabledServers} — a name missing from here is REFUSED BY NAME rather
+   * {@link rankedServers} — a name missing from here is REFUSED BY NAME rather
    * than assumed either way, because the two guesses are a lane that never
    * fills and a lane that vanishes under a running row.
    *
@@ -687,11 +703,19 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * "everything not enabled" would invent rows for servers that are simply not
    * registered.
    */
-  if (!Array.isArray(facts.disabledServers)) {
+  if (!Array.isArray(facts.rankedServers)) {
     throw new Error(
-      'slotSets: `disabledServers` was not supplied. Split it out of the same `ranked` array '
-        + 'that gives `enabledServers` — an empty list is a claim that nothing is switched off, '
-        + 'and it is not one to make on a caller\'s behalf.',
+      'slotSets: `rankedServers` was not supplied. It is the routing record\'s `ranked` array '
+        + '— every registered server, best first, each saying whether it is switched on.',
+    );
+  }
+  const notRows = facts.rankedServers.filter(
+    (row) => typeof row?.name !== 'string' || typeof row?.enabled !== 'boolean',
+  );
+  if (notRows.length > 0) {
+    throw new Error(
+      'slotSets: `rankedServers` holds something that is not a {name, enabled} row. A bare list '
+        + 'of names loses the switch, and the switch is what decides whether a row is drawn grey.',
     );
   }
   if (typeof facts.alignerCharged !== 'boolean') {
@@ -717,22 +741,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     );
   }
 
-  /*
-   * ON AND OFF ARE DISJOINT. Both lists come out of one `host.routing()` read
-   * (`queue-engine.ts`), so a name in both is a caller that built them two
-   * different ways, not a server in two states — and the row it would draw is
-   * one told two stories about itself in the same pass.
-   */
-  const bothWays = facts.enabledServers.filter((name) => facts.disabledServers.includes(name));
-  if (bothWays.length > 0) {
-    throw new Error(
-      `slotSets: ${bothWays.join(', ')} ${bothWays.length === 1 ? 'is' : 'are'} named as both `
-        + 'enabled and disabled. Both lists are read off one routing record — derive them from '
-        + 'the same `ranked` array rather than assembling them separately.',
-    );
-  }
-
-  for (const name of facts.enabledServers) {
+  for (const { name, enabled } of facts.rankedServers) {
     if (seen.has(name)) continue;
 
     /*
@@ -748,7 +757,18 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
      * is placed there. A row is never yanked out from under a running step.
      */
     const role = facts.roles[name];
-    if (role === undefined) {
+    /*
+     * ASKED OF THE ENABLED ONES, which is what this refusal always said —
+     * "Every ENABLED server needs an entry in `roles`" — and what it now does.
+     *
+     * A switched-off server may never have been coordinated with at all: the
+     * role is read from that server's own `/v1/info`, and one the queue will
+     * not use is one nothing has asked. Demanding it would refuse to draw the
+     * WHOLE bench because a row somebody turned off has not been introduced,
+     * which is the same "absence of knowledge is not absence of an engine"
+     * mistake `unknown` exists to avoid.
+     */
+    if (enabled && role === undefined) {
       throw new Error(
         `slotSets: nothing was said about whether "${name}" is an engine or an orchestrator. `
           + 'Every enabled server needs an entry in `roles` — a name with no entry is a caller '
@@ -763,10 +783,40 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       label: labelFor(name),
       gpu: SERVER_GPU_SLOTS,
       cpu: SERVER_CPU_SLOTS,
-      retiring: false,
-      disabled: false,
+      /*
+       * SWITCHED OFF WHILE IT WAS WORKING IS BOTH THINGS AT ONCE. §4.3 keeps a
+       * job on the machine it started on, so flipping the switch mid-render
+       * does not take the render off that card — it stops the NEXT one going
+       * there. `retiring` is the bench's word for that ("finishing — no new
+       * work goes here") and it stays true until the occupant lands, because
+       * the alternative is a greyed row with a live progress bar in it and no
+       * sentence saying why work is still moving on a machine you just turned
+       * off.
+       */
+      retiring: !enabled && facts.occupied.includes(name),
+      /*
+       * SWITCHED OFF DRAWS THE SAME ROW, GREY — Owen, 2026-09-15: *"if a
+       * crucible slot is unchecked, it grays it out until it's
+       * re-checked/re-enabled."* And it draws it HERE, in rank order, rather
+       * than in a pass of its own: a second pass put every disabled card after
+       * every enabled one, so flipping a switch MOVED the card somebody was
+       * pointing at. *"the crucible slots shouldnt switch positions."*
+       *
+       * Nothing about placement is decided here and none of it changed:
+       * `decideWaitFor` already refuses a disabled server by name
+       * (`holdDisabled`) and already tries only enabled rows for `any`.
+       */
+      disabled: !enabled,
       onThisMachine: facts.serversOnThisMachine.includes(name),
     });
+    if (!enabled) {
+      /*
+       * NO CLOUD LANE FOR A SWITCHED-OFF ENGINE. The lane exists because that
+       * engine forwards work somewhere; one the queue will not send to forwards
+       * nothing, and drawing the lane would offer a route through a shut door.
+       */
+      continue;
+    }
     /*
      * ITS CLOUD LANE — WHEN THE ENGINE HAS SOMEWHERE TO SEND WORK, and still
      * not conditional on a particular class being routed there today. The whole
@@ -846,59 +896,6 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * facts are checked against each other at the top rather than papered over
    * with a third branch in this expression.
    */
-  /*
-   * THE SWITCHED-OFF SERVERS, DRAWN AND GREY — Owen, 2026-09-15: *"if a crucible
-   * slot is unchecked, it grays it out until it's re-checked/re-enabled."*
-   *
-   * These used to be filtered out before this function ran, so the row simply
-   * vanished. That is the one rendering a registered card must never have: a
-   * machine you own and switched off looks exactly like a machine BookForge
-   * cannot find, and the two have completely different remedies.
-   *
-   * NOTHING ABOUT PLACEMENT IS DECIDED HERE and none is changed by this.
-   * `decideWaitFor` already refuses a disabled server by name (`holdDisabled`)
-   * and already tries only enabled rows for `any`. This draws a lane; it does
-   * not open one.
-   *
-   * AFTER the enabled pass and guarded by `seen`, so a name that is somehow in
-   * both keeps the row that can actually take work — though the check above
-   * means it cannot reach here.
-   */
-  for (const name of facts.disabledServers) {
-    if (seen.has(name)) continue;
-    seen.add(name);
-    sets.push({
-      id: name,
-      label: labelFor(name),
-      gpu: SERVER_GPU_SLOTS,
-      cpu: SERVER_CPU_SLOTS,
-      /*
-       * SWITCHED OFF WHILE IT WAS WORKING IS BOTH THINGS AT ONCE, and the row
-       * has to say both. §4.3: a job finishes on the machine it started on, so
-       * flipping the switch mid-render does not take the render off that card —
-       * it stops the NEXT one going there. `retiring` is the word the bench
-       * already has for that ("finishing — no new work goes here") and it stays
-       * true here, because the alternative is a greyed row with a live progress
-       * bar in it and no sentence explaining why work is still moving on a
-       * machine the operator just turned off.
-       *
-       * Caught by `a DISABLED server finishes what it has and takes nothing
-       * new`, which this pass broke on its first draft: claiming the name here
-       * left the occupied pass below nothing to mark, and the row lost the one
-       * sentence that explained itself.
-       */
-      retiring: facts.occupied.includes(name),
-      disabled: true,
-      onThisMachine: facts.serversOnThisMachine.includes(name),
-    });
-    /*
-     * NO CLOUD LANE FOR A SWITCHED-OFF ENGINE. The lane exists because that
-     * engine forwards work somewhere; an engine the queue will not send to
-     * forwards nothing, and drawing the lane would offer a route through a
-     * door that is shut.
-     */
-  }
-
   for (const id of facts.occupied) {
     if (id === LOCAL_WORK_SET || seen.has(id)) continue;
     seen.add(id);
