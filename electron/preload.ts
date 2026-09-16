@@ -1243,6 +1243,12 @@ export interface ElectronAPI {
     setOrder: (order: string[]) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /** The capacity switch: may the queue use this server at all. */
     setEnabled: (name: string, enabled: boolean) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
+    /**
+     * Put one server's `crucible://` line on the clipboard. `copied` is that
+     * line with its token replaced by `****` — the real one is written in main
+     * and never crosses this boundary.
+     */
+    copyConnectCode: (name: string) => Promise<{ success: boolean; data?: { copied: string }; error?: string }>;
     /** What a NEW queue row waits for: the top-ranked server, or any. */
     setWaitFor: (value: CrucibleWaitForDefault) => Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }>;
     /**
@@ -2846,6 +2852,8 @@ const electronAPI: ElectronAPI = {
     setOrder: (order: string[]) => ipcRenderer.invoke('crucible:set-order', order),
     setEnabled: (name: string, enabled: boolean) =>
       ipcRenderer.invoke('crucible:set-enabled', name, enabled),
+    copyConnectCode: (name: string) =>
+      ipcRenderer.invoke('crucible:copy-connect-code', name),
     setWaitFor: (value: CrucibleWaitForDefault) =>
       ipcRenderer.invoke('crucible:set-wait-for', value),
     forget: (name: string) => ipcRenderer.invoke('crucible:forget', name),

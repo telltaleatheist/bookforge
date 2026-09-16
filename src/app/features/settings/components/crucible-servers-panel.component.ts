@@ -140,6 +140,27 @@ import { coordinationWords } from './crucible-words';
               row shows where that got to (below) instead of offering a thing
               to press. What is drawn is the coordination state for this row.
             -->
+            <!--
+              COPY CONNECT CODE, which three surfaces have been telling people
+              to find somewhere else.
+
+              The extension says "copy a connect code from that server's
+              operator page, or from BookForge's Settings -> Crucible"; the hint
+              below this list says "open its console and copy its connect code".
+              The console does have that button - behind the token. It asks for
+              the token before it will show you the token, so the only way in is
+              'crucible token --url' in a terminal ON that machine, which is
+              where Owen ran aground on a Mac that has no 'crucible' on PATH.
+
+              This app is already talking to every server in this list. The
+              name, the address and the token are ones it holds and sends on
+              every request, so the line costs nothing to emit and breaks the
+              circle. The token does NOT cross this seam: main builds the line,
+              writes the clipboard, and answers with it masked.
+            -->
+            <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="copyCode(row.name)">
+              {{ copied()[row.name] ? 'Copied' : 'Copy connect code' }}
+            </desktop-button>
             <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="test(row.name)">
               {{ busy()[row.name] ? 'Testing…' : 'Test' }}
             </desktop-button>
@@ -394,6 +415,7 @@ import { coordinationWords } from './crucible-words';
       <p class="cru-sub">
         Only engines on OTHER machines are added here — the one on this machine is read from its
         own settings. On that machine, open its console and copy its <strong>connect code</strong>
+        &mdash; or, for a server already listed above, press its <strong>Copy connect code</strong>
         (the <code>crucible token --url</code> line). It carries the name, the address and the
         key, so nothing has to be typed out.
       </p>
@@ -528,6 +550,8 @@ export class CrucibleServersPanelComponent {
   readonly rowError = signal<Record<string, string>>({});
   readonly rowNote = signal<Record<string, string>>({});
   readonly busy = signal<Record<string, boolean>>({});
+  /** Which rows have just been copied, so the button can say so for a moment. */
+  readonly copied = signal<Record<string, boolean>>({});
 
   readonly confirmRemove = signal<string | null>(null);
   readonly confirmOp = signal<string | null>(null);
@@ -639,6 +663,32 @@ export class CrucibleServersPanelComponent {
     await this.test(name);
     await this.refreshActivity(name);
     await this.refreshModels(name);
+  }
+
+  /**
+   * PUT THIS SERVER'S CONNECT CODE ON THE CLIPBOARD.
+   *
+   * The line is built and copied in MAIN (`crucible/connect-code.ts`) because
+   * this layer never holds a token; what comes back is that line with its token
+   * masked, which is enough to confirm what was copied and useless to anyone
+   * reading over a shoulder.
+   *
+   * A refusal is SHOWN on the row. The only way to reach one is a panel and a
+   * registry that have come apart, and a Copy button that silently did nothing
+   * is the worst possible way to learn that.
+   */
+  async copyCode(name: string): Promise<void> {
+    const res = await this.electron.crucible.copyConnectCode(name);
+    if (!res.success) {
+      this.setRowError(name, res.error
+        ?? 'Copying that connect code failed and said nothing about why.');
+      return;
+    }
+    this.copied.update((map) => ({ ...map, [name]: true }));
+    window.setTimeout(
+      () => this.copied.update((map) => ({ ...map, [name]: false })),
+      1600,
+    );
   }
 
   async refreshActivity(name: string): Promise<void> {

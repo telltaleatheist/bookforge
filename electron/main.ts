@@ -7737,6 +7737,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /*
+   * COPY A SERVER'S CONNECT CODE — and the LINE NEVER COMES BACK.
+   *
+   * `shared/crucible/settings-wire.ts` opens with "Nothing here carries a
+   * token", and that boundary is why this writes the clipboard in MAIN and
+   * answers with the same line masked. A handler that returned the real one
+   * would put a live credential for every registered server into the renderer
+   * to serve a button somebody presses twice a year.
+   */
+  ipcMain.handle('crucible:copy-connect-code', async (_event, name: string) => {
+    try {
+      const { copyConnectCode } = await import('./crucible/connect-code.js');
+      return { success: true, data: copyConnectCode(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('crucible:set-wait-for', async (_event, value: 'top-ranked' | 'any') => {
     try {
       const { setNewJobsWaitFor } = await import('./crucible/routing.js');

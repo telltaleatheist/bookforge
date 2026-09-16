@@ -3993,6 +3993,19 @@ export class ElectronService {
         ? (window as any).electron.crucible.setEnabled(name, enabled)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
+    /**
+     * Put one registered server's connect code on the clipboard.
+     *
+     * `data.copied` is the line with its token masked — the real one is built
+     * and written in the main process, because this layer deliberately never
+     * holds a token (`shared/crucible/settings-wire.ts`: "Nothing here carries
+     * a token").
+     */
+    copyConnectCode: (name: string): Promise<{ success: boolean; data?: { copied: string }; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.copyConnectCode(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
     setWaitFor: (value: CrucibleWaitForDefault): Promise<{ success: boolean; data?: CrucibleRoutingView; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.setWaitFor(value)
