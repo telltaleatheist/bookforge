@@ -163,14 +163,14 @@ function snapOf(sets, jobs = []) {
 
 const SERVER_SET = (id) => ({ id, label: id, gpu: 1, cpu: 0, retiring: false });
 const LOCAL_WORK = {
-  id: slotSets.LOCAL_WORK_SET, label: 'BookForge itself', gpu: 0, cpu: 2, retiring: false,
+  id: slotSets.LOCAL_WORK_SET, label: 'CPU slots', gpu: 0, cpu: 2, retiring: false, disabled: false,
 };
 
 check('two sections: the engines\' cards first, then what BookForge does itself', () => {
   const sections = bench.benchSections(snapOf([SERVER_SET('3090 Ti'), SERVER_SET('M1 Ultra'), LOCAL_WORK]));
   assert.deepStrictEqual(sections.map((s) => s.group), ['gpu', 'cpu']);
   assert.match(sections[0].heading, /^GPU — the Crucible engines$/);
-  assert.match(sections[1].heading, /^CPU — BookForge itself$/);
+  assert.match(sections[1].heading, /^CPU slots$/);
   assert.strictEqual(sections[0].lanes.length, 2, 'one card per engine');
   assert.deepStrictEqual(sections[0].lanes.map((l) => l.setId), ['3090 Ti', 'M1 Ultra']);
   assert.strictEqual(sections[1].lanes.length, 2, 'local-work\'s two CPU slots');
@@ -194,7 +194,7 @@ check('the in-app aligner is filed by its RESOURCE, so it lands with the cards',
 });
 
 check('a cloud lane is neither section — it holds no card and is not BookForge', () => {
-  // "CPU — BookForge itself" would be a heading that lies about what is in it:
+  // "CPU slots" would be a heading that lies about what is in it:
   // the work is on somebody's API and the engine is only forwarding it.
   const lane = {
     id: slotSets.cloudLaneOf('3090 Ti'), label: '3090 Ti — routed elsewhere',

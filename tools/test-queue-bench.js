@@ -105,6 +105,9 @@ function snap(jobs, running = true, servers = []) {
     running,
     slotSets: slots.slotSets({
       enabledServers: servers,
+      // Nor about the switch: these tests hand the bench the servers they mean
+      // to draw, and none of them is switched off.
+      disabledServers: [],
       // Not what these tests are about: `unknown` is what an engine nobody has
       // asked answers, and it draws the same bench they were written against.
       upstreams: Object.fromEntries(servers.map((n) => [n, 'unknown'])),
@@ -479,6 +482,48 @@ test('a failed run appears in history AND in needsYou — they answer different 
   const s = snap([job([failed])]);
   assert.strictEqual(bench.finishedSince(s, 0).length, 1);
   assert.strictEqual(bench.needsYou(s).length, 1);
+});
+
+
+// ── The bench grid ──────────────────────────────────────────────────────────
+// Owen, 2026-09-15, by example: 1 across, then 2, then 3, "if there are four,
+// drop the third and fourth down to a second row and split it in half. if there
+// are five, row 1 gets 3, row 2 gets 2. if 6, row 1 gets 3, row 2 gets 3, etc."
+// Four is the case that rules out filling rows of three greedily, which gives
+// 3+1; his four is 2+2, so the rule is evenness, not greed.
+
+test('the grid is the numbers Owen gave, and stays even past them', () => {
+  const want = {
+    1: [1], 2: [2], 3: [3],
+    4: [2, 2], 5: [3, 2], 6: [3, 3],
+    7: [3, 2, 2], 8: [3, 3, 2], 9: [3, 3, 3], 10: [3, 3, 2, 2],
+  };
+  for (const [count, rows] of Object.entries(want)) {
+    assert.deepStrictEqual(bench.benchRowSizes(Number(count)), rows, `${count} lanes`);
+  }
+});
+
+test('no row is ever wider than three, and the rows always total the count', () => {
+  for (let n = 0; n <= 40; n += 1) {
+    const rows = bench.benchRowSizes(n);
+    assert.ok(rows.every((r) => r >= 1 && r <= bench.BENCH_ROW_MAX), `${n} has a bad row`);
+    assert.strictEqual(rows.reduce((a, b) => a + b, 0), n, `${n} loses or invents a lane`);
+    // Even: no row is more than one wider than any other, which is what stops
+    // a lonely lane sitting under two full rows.
+    if (rows.length > 0) {
+      assert.ok(Math.max(...rows) - Math.min(...rows) <= 1, `${n} is lopsided: ${rows}`);
+    }
+  }
+});
+
+test('benchRows cuts the lanes into those rows, in order', () => {
+  assert.deepStrictEqual(bench.benchRows(['a', 'b', 'c', 'd', 'e']), [['a', 'b', 'c'], ['d', 'e']]);
+  assert.deepStrictEqual(bench.benchRows([]), []);
+});
+
+test('a lane count that is not one is refused rather than drawn', () => {
+  assert.throws(() => bench.benchRowSizes(-1), /not a lane count/);
+  assert.throws(() => bench.benchRowSizes(2.5), /not a lane count/);
 });
 
 (async () => {

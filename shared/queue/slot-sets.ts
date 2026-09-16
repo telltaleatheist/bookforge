@@ -249,7 +249,7 @@ export interface SlotSet {
    * cannot drift.
    */
   readonly id: string;
-  /** The set's heading on the bench — "mac", "BookForge itself". */
+  /** The set's heading on the bench — "mac", "CPU slots". */
   readonly label: string;
   readonly gpu: number;
   readonly cpu: number;
@@ -259,6 +259,24 @@ export interface SlotSet {
    * the set stays on the bench until its occupant lands, and then it is gone.
    */
   readonly retiring: boolean;
+  /**
+   * THE OPERATOR SWITCHED THIS ONE OFF — `routing.disabled`, the same flag the
+   * Settings panel has always written and `decideWaitFor` has always honoured
+   * (`holdDisabled`, and `any` only ever tries enabled rows). Nothing about
+   * where work goes changes here.
+   *
+   * What changes is that it is DRAWN. A disabled server used to be filtered out
+   * of `enabledServers` before this function ever saw it, so the row vanished —
+   * and a card you own silently missing from the bench is indistinguishable
+   * from one BookForge cannot see, which is the reading somebody debugs for
+   * twenty minutes. It is now a greyed lane with its switch on it, which says
+   * both things at once: this machine exists, and you are the reason it is idle.
+   *
+   * NOT `retiring`. That means "finishing what it holds and then gone", a
+   * transition nobody chose and cannot undo; this is a switch, and the row it
+   * draws is waiting to be switched back.
+   */
+  readonly disabled: boolean;
   /**
    * DOES THIS SET'S WORK RUN ON THE CARD IN THIS BOX.
    *
@@ -293,7 +311,10 @@ export interface SlotSet {
  * `stillReason`'s sentence on the row waiting for it.
  */
 function labelFor(id: string): string {
-  if (id === LOCAL_WORK_SET) return 'BookForge itself';
+  // Owen, 2026-09-15: *"it shouldnt be called 'BookForge itself', it can be
+  // called 'CPU slots'."* The old name answered "whose slots are these"; the
+  // question somebody actually has in front of the bench is "what runs here".
+  if (id === LOCAL_WORK_SET) return 'CPU slots';
   if (id === LONGFORM_ALIGN_SET) return 'the local long-form aligner';
   const cloud = serverOfCloudLane(id);
   if (cloud !== null) return `${cloud} — routed elsewhere`;
@@ -488,6 +509,14 @@ export interface SlotSetFacts {
    */
   readonly enabledServers: readonly string[];
   /**
+   * The registered servers the operator has switched OFF — `routing.disabled`.
+   *
+   * Disjoint from {@link enabledServers} and checked to be: the two come out of
+   * one `host.routing()` read, and a name in both would be a row that is drawn
+   * twice and told two different stories about itself.
+   */
+  readonly disabledServers: readonly string[];
+  /**
    * PER ENGINE: can it send work elsewhere at all. One entry for every name in
    * {@link enabledServers} — a name missing from here is REFUSED BY NAME rather
    * than assumed either way, because the two guesses are a lane that never
@@ -650,6 +679,21 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * `false` strands a step that can run nowhere else on a set with nought slots,
    * which the scheduler would never launch and nothing would explain.
    */
+  /*
+   * THE SWITCHED-OFF LIST IS REQUIRED TOO, and for the same reason the others
+   * are: the only two guesses are both wrong in a way nobody would see. `[]`
+   * says the operator has switched nothing off, so every greyed row silently
+   * disappears again — the exact rendering this field was added to stop. Taking
+   * "everything not enabled" would invent rows for servers that are simply not
+   * registered.
+   */
+  if (!Array.isArray(facts.disabledServers)) {
+    throw new Error(
+      'slotSets: `disabledServers` was not supplied. Split it out of the same `ranked` array '
+        + 'that gives `enabledServers` — an empty list is a claim that nothing is switched off, '
+        + 'and it is not one to make on a caller\'s behalf.',
+    );
+  }
   if (typeof facts.alignerCharged !== 'boolean') {
     throw new Error(
       'slotSets: `alignerCharged` was not supplied. Compute it with '
@@ -670,6 +714,21 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       'slotSets: `occupied` says the local long-form aligner is holding something of ours while '
         + '`alignerCharged` says nothing charges it. Both are read off the same steps — compute '
         + 'the second with `longformAlignCharged(snapshot)` rather than by hand.',
+    );
+  }
+
+  /*
+   * ON AND OFF ARE DISJOINT. Both lists come out of one `host.routing()` read
+   * (`queue-engine.ts`), so a name in both is a caller that built them two
+   * different ways, not a server in two states — and the row it would draw is
+   * one told two stories about itself in the same pass.
+   */
+  const bothWays = facts.enabledServers.filter((name) => facts.disabledServers.includes(name));
+  if (bothWays.length > 0) {
+    throw new Error(
+      `slotSets: ${bothWays.join(', ')} ${bothWays.length === 1 ? 'is' : 'are'} named as both `
+        + 'enabled and disabled. Both lists are read off one routing record — derive them from '
+        + 'the same `ranked` array rather than assembling them separately.',
     );
   }
 
@@ -705,6 +764,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       gpu: SERVER_GPU_SLOTS,
       cpu: SERVER_CPU_SLOTS,
       retiring: false,
+      disabled: false,
       onThisMachine: facts.serversOnThisMachine.includes(name),
     });
     /*
@@ -738,6 +798,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
         gpu: 0,
         cpu: CLOUD_LANE_SLOTS,
         retiring: false,
+        disabled: false,
         // A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even for an engine that is
         // on it: the work runs on somebody's API and the engine forwarding it
         // holds nothing. Same rule `gpuHeldElsewhere` states one screen down.
@@ -774,6 +835,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       // work `local-work` already owns.
       cpu: 0,
       retiring: false,
+      disabled: false,
     });
   }
 
@@ -784,6 +846,59 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * facts are checked against each other at the top rather than papered over
    * with a third branch in this expression.
    */
+  /*
+   * THE SWITCHED-OFF SERVERS, DRAWN AND GREY — Owen, 2026-09-15: *"if a crucible
+   * slot is unchecked, it grays it out until it's re-checked/re-enabled."*
+   *
+   * These used to be filtered out before this function ran, so the row simply
+   * vanished. That is the one rendering a registered card must never have: a
+   * machine you own and switched off looks exactly like a machine BookForge
+   * cannot find, and the two have completely different remedies.
+   *
+   * NOTHING ABOUT PLACEMENT IS DECIDED HERE and none is changed by this.
+   * `decideWaitFor` already refuses a disabled server by name (`holdDisabled`)
+   * and already tries only enabled rows for `any`. This draws a lane; it does
+   * not open one.
+   *
+   * AFTER the enabled pass and guarded by `seen`, so a name that is somehow in
+   * both keeps the row that can actually take work — though the check above
+   * means it cannot reach here.
+   */
+  for (const name of facts.disabledServers) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    sets.push({
+      id: name,
+      label: labelFor(name),
+      gpu: SERVER_GPU_SLOTS,
+      cpu: SERVER_CPU_SLOTS,
+      /*
+       * SWITCHED OFF WHILE IT WAS WORKING IS BOTH THINGS AT ONCE, and the row
+       * has to say both. §4.3: a job finishes on the machine it started on, so
+       * flipping the switch mid-render does not take the render off that card —
+       * it stops the NEXT one going there. `retiring` is the word the bench
+       * already has for that ("finishing — no new work goes here") and it stays
+       * true here, because the alternative is a greyed row with a live progress
+       * bar in it and no sentence explaining why work is still moving on a
+       * machine the operator just turned off.
+       *
+       * Caught by `a DISABLED server finishes what it has and takes nothing
+       * new`, which this pass broke on its first draft: claiming the name here
+       * left the occupied pass below nothing to mark, and the row lost the one
+       * sentence that explained itself.
+       */
+      retiring: facts.occupied.includes(name),
+      disabled: true,
+      onThisMachine: facts.serversOnThisMachine.includes(name),
+    });
+    /*
+     * NO CLOUD LANE FOR A SWITCHED-OFF ENGINE. The lane exists because that
+     * engine forwards work somewhere; an engine the queue will not send to
+     * forwards nothing, and drawing the lane would offer a route through a
+     * door that is shut.
+     */
+  }
+
   for (const id of facts.occupied) {
     if (id === LOCAL_WORK_SET || seen.has(id)) continue;
     seen.add(id);
@@ -794,6 +909,11 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       gpu: cloud ? 0 : SERVER_GPU_SLOTS,
       cpu: cloud ? CLOUD_LANE_SLOTS : SERVER_CPU_SLOTS,
       retiring: true,
+      // A retiring set is not a switched-off one: nobody chose this and
+      // nothing switches it back. See `SlotSet.disabled`.
+      disabled: false,
+      // A retiring set is not a switched-off one: nobody chose this and
+      // nothing switches it back. See `SlotSet.disabled`.
       // A retiring set's server may have been REMOVED from the registry, so it
       // is not in `serversOnThisMachine` any more. Its running occupant is still
       // wherever it started (§4.3), and a cloud lane is never here.
@@ -809,6 +929,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     // BookForge itself: CPU work, and no card to report a temperature for.
     onThisMachine: false,
     retiring: false,
+    disabled: false,
   });
 
   return sets;

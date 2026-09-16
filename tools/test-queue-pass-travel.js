@@ -187,7 +187,8 @@ function passConfig(kind, ai) {
     assert.strictEqual(slots.isCloudLane('mac'), false, 'the engine itself is not its own lane');
     assert.strictEqual(slots.CLOUD_LANE_SLOTS, 2);
     const lane = slots.slotSets({
-      enabledServers: ['mac'], upstreams: { mac: 'configured' }, roles: { mac: 'engine' },
+      enabledServers: ['mac'], disabledServers: [], upstreams: { mac: 'configured' },
+      roles: { mac: 'engine' },
       occupied: [],
       // Nothing is queued in this check, so no in-app GPU row is drawn — which
       // is not what it is about either way.

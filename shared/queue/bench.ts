@@ -401,7 +401,7 @@ export interface BenchLane {
    * would swap one machine's occupant onto the other's card on every redraw.
    */
   setId: string;
-  /** The set's heading, as the user reads it — "mac", "BookForge itself". */
+  /** The set's heading, as the user reads it — "mac", "CPU slots". */
   setLabel: string;
   /**
    * This set takes no new work and disappears when its occupant lands: its
@@ -409,6 +409,12 @@ export interface BenchLane {
    * machine it started on).
    */
   retiring: boolean;
+  /**
+   * The operator switched this server off — {@link SlotSet.disabled}. The lane
+   * is drawn greyed with its switch on it rather than removed, so a card you
+   * own and turned off never looks like one BookForge cannot find.
+   */
+  disabled: boolean;
   resource: StepResource;
   /** 1-based within its pool, with the pool's size: "CPU · slot 2 of 2". */
   index: number;
@@ -505,6 +511,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           setId: set.id,
           setLabel: set.label,
           retiring: set.retiring,
+          disabled: set.disabled,
           resource,
           index,
           of,
@@ -553,9 +560,9 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
  * `local-work` slots") and then places the aligner row "with the section its
  * resource says it is" — GPU, which is where {@link laneGroup} puts it. A cloud
  * lane (`<server>:cloud`, crucible PHASE15 §5.3) is a `cpu` lane that belongs to
- * neither tenant: it holds no card, and it is emphatically not BookForge itself
- * — the work is on somebody's API and the engine is forwarding it. Filing it
- * under "BookForge itself" would be a heading that lies about what is in it,
+ * neither tenant: it holds no card, and it is emphatically not this machine's
+ * own CPU — the work is on somebody's API and the engine is forwarding it.
+ * Filing it under "CPU slots" would be a heading that lies about what is in it,
  * which is the failure this whole document is about. It is drawn only when such
  * a lane exists, which is the ruling's own rule for empty sections.
  */
@@ -583,10 +590,14 @@ const SECTION_ORDER: readonly BenchGroup[] = ['gpu', 'cpu', 'cloud'];
 const SECTION_WORDS: Readonly<Record<BenchGroup, { heading: string; note: string }>> = {
   gpu: {
     heading: 'GPU — the Crucible engines',
-    note: 'One card per registered engine. This is what the queue’s GPU dial steers.',
+    note: 'One card per registered engine. Switch one off to keep new work away from it.',
   },
   cpu: {
-    heading: 'CPU — BookForge itself',
+    // Owen, 2026-09-15: *"it shouldnt be called 'BookForge itself', it can be
+    // called 'CPU slots'."* These two have no switch either — they are what
+    // this machine does for itself, and there is nowhere else for that work to
+    // go, so an off position would only ever mean "stop working".
+    heading: 'CPU slots',
     note: 'Assembly, muxing, exports — work this machine does and never sends anywhere.',
   },
   cloud: {
@@ -606,6 +617,58 @@ const SECTION_WORDS: Readonly<Record<BenchGroup, { heading: string; note: string
  * groups them, it does not re-derive them. The overall "N of M slots in use"
  * stays the page's, computed off the same list.
  */
+/**
+ * THE BENCH GRID — how many lanes sit on each row, Owen's rule of 2026-09-15.
+ *
+ * *"if theres one gpu available, the gpu slot stretches across the whole screen,
+ * left to right. if there are two, the two are split... if there are three,
+ * split it into thirds... if there are four, drop the third and fourth down to a
+ * second row and split it in half. if there are five, row 1 gets 3, row 2 gets
+ * 2. if 6, row 1 gets 3, row 2 gets 3, etc."*
+ *
+ * Three per row at most, and then AS EVEN AS THEY GO. Both halves are load
+ * bearing and the second one is why this is a function rather than a
+ * `repeat(3, 1fr)`: filling rows of three greedily would put four lanes at 3+1,
+ * and Owen's four is 2+2. Evenness is the rule his examples actually describe —
+ * `rows = ceil(n / 3)`, then n spread across them, bigger rows first —
+ * and it reproduces every number he gave:
+ *
+ *   1 -> [1]      4 -> [2,2]     7 -> [3,2,2]
+ *   2 -> [2]      5 -> [3,2]     8 -> [3,3,2]
+ *   3 -> [3]      6 -> [3,3]     9 -> [3,3,3]
+ *
+ * A row is drawn as its own grid of exactly this many columns, so the two lanes
+ * on a 3+2 second row take half the width each rather than sitting under the
+ * first two columns with a hole on the right. That is what "row 2 gets 2" reads
+ * as on a bench, and it is the whole reason the row sizes are computed here
+ * instead of left to `grid-auto-flow`.
+ */
+export const BENCH_ROW_MAX = 3;
+
+export function benchRowSizes(count: number): number[] {
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(`benchRowSizes: ${count} is not a lane count`);
+  }
+  if (count === 0) return [];
+  const rows = Math.ceil(count / BENCH_ROW_MAX);
+  const base = Math.floor(count / rows);
+  // The remainder goes one lane to each of the FIRST rows, which is what makes
+  // 5 read 3 then 2 rather than 2 then 3.
+  const wide = count % rows;
+  return Array.from({ length: rows }, (_, i) => base + (i < wide ? 1 : 0));
+}
+
+/** The lanes of one section, cut into {@link benchRowSizes} rows. */
+export function benchRows<T>(lanes: readonly T[]): T[][] {
+  const out: T[][] = [];
+  let at = 0;
+  for (const size of benchRowSizes(lanes.length)) {
+    out.push(lanes.slice(at, at + size));
+    at += size;
+  }
+  return out;
+}
+
 export function benchSections(snapshot: QueueSnapshot): BenchSection[] {
   const lanes = benchLanes(snapshot);
   const sections: BenchSection[] = [];

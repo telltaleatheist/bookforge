@@ -128,8 +128,9 @@ const epubAlignStep = (over = {}) => stepOf({
  * running `slotSetForStep` over the jobs. `jobs` defaults to none, which is the
  * bench Owen asked for — one GPU slot per registered server and nothing else.
  */
-const factsOf = ({ servers = [], upstreams, roles, occupied = [], jobs = [] }) => ({
+const factsOf = ({ servers = [], off = [], upstreams, roles, occupied = [], jobs = [] }) => ({
   enabledServers: servers,
+  disabledServers: off,
   upstreams: upstreams ?? unknownUpstreams(servers),
   roles: roles ?? allEngines(servers),
   occupied,
@@ -244,14 +245,14 @@ test('an engine nobody has ASKED keeps its lane — not knowing is not knowing t
 test('a server the caller said NOTHING about is refused by name, never defaulted', () => {
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], upstreams: {}, roles: { mac: 'engine' },
+      enabledServers: ['mac'], disabledServers: [], upstreams: {}, roles: { mac: 'engine' },
       occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
+    () => slots.slotSets({ enabledServers: [], disabledServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -263,14 +264,14 @@ test('a caller that said nothing about the LEGACY row is refused by name too', (
     // only thing missing — otherwise this asserts whichever guard happens to
     // run first, which is what it did when `serversOnThisMachine` was added.
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
+      enabledServers: [], disabledServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
     }),
     /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
+      enabledServers: [], disabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
     }),
     /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
@@ -314,7 +315,7 @@ test('WITH NOTHING QUEUED there is no legacy row: one GPU slot per server, and t
  *
  * Measured 2026-09-15: he launched and read *"0 of 8 slots in use"* over
  * `local · GPU`, `local — routed elsewhere · CPU ×2`, `mac · GPU`,
- * `mac — routed elsewhere · CPU ×2` and `BookForge itself · CPU ×2`, with a
+ * `mac — routed elsewhere · CPU ×2` and `CPU slots · CPU ×2`, with a
  * record on disk saying NEITHER engine has an upstream. His ruling: *"i should
  * see two cpu slots (local) and two gpu slots (one wsl crucible engine, one mlx
  * crucible engine)."*
@@ -333,8 +334,8 @@ test('no engine has an upstream: the bench is FOUR lanes and not one says "route
     [
       'local · gpu · slot 1 of 1',
       'mac · gpu · slot 1 of 1',
-      'BookForge itself · cpu · slot 1 of 2',
-      'BookForge itself · cpu · slot 2 of 2',
+      'CPU slots · cpu · slot 1 of 2',
+      'CPU slots · cpu · slot 2 of 2',
     ],
   );
   assert.ok(!lanes.some((l) => l.setLabel.includes('routed elsewhere')),
@@ -408,7 +409,7 @@ test('a caller that said nothing about ROLES is refused by name, never defaulted
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], upstreams: { mac: 'none' }, roles: {},
+      enabledServers: ['mac'], disabledServers: [], upstreams: { mac: 'none' }, roles: {},
       occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" is an engine or an orchestrator/,
@@ -934,8 +935,22 @@ test('a DISABLED server finishes what it has and takes nothing new', async () =>
 
   gpu.runs[0].resolve({ kind: 'epub', path: '/out/a' });
   await settle(40);
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === 'mac'),
-    'and the set is gone once its occupant lands');
+  /*
+   * AND THE ROW STAYS, GREY — changed 2026-09-15 on Owen's ruling: *"if a
+   * crucible slot is unchecked, it grays it out until it's re-checked/
+   * re-enabled."*
+   *
+   * It used to vanish here, and that was the reading worth fixing: a machine
+   * you own and switched off became indistinguishable from one BookForge
+   * cannot see, and those have completely different remedies. The row is now
+   * the switch's own home, so the thing you turned off is the thing you turn
+   * back on.
+   */
+  const after = engine.snapshot().slotSets.find((s) => s.id === 'mac');
+  assert.ok(after, 'a switched-off server keeps its row so it can be switched back on');
+  assert.strictEqual(after.disabled, true, 'and it reads as off, not as missing');
+  assert.strictEqual(after.retiring, false,
+    'nothing is finishing on it any more — it is simply off');
 });
 
 /*
@@ -1328,6 +1343,63 @@ test('a step with no capability class is untouched by any of this', async () => 
   assert.strictEqual(jobById(a.id).steps[0].venue, 'mac');
 });
 
+// ── The switched-off servers, drawn and grey ────────────────────────────────
+// Owen, 2026-09-15: "if a crucible slot is unchecked, it grays it out until
+// it's re-checked/re-enabled." Before this they were filtered out upstream and
+// the row vanished, which reads exactly like a machine BookForge cannot see.
+
+test('a switched-off server still draws its row, marked disabled', () => {
+  const sets = slots.slotSets(factsOf({ servers: ['3090 Ti'], off: ['mac'] }));
+  const mac = sets.find((set) => set.id === 'mac');
+  assert.ok(mac, 'a server you own and switched off must not vanish from the bench');
+  assert.strictEqual(mac.disabled, true);
+  assert.strictEqual(mac.retiring, false,
+    'retiring means finishing and then gone; this is a switch waiting to be flipped back');
+  assert.strictEqual(mac.gpu, 1, 'the row keeps its shape so it can be switched back on');
+});
+
+test('an enabled server is not marked disabled', () => {
+  const sets = slots.slotSets(factsOf({ servers: ['3090 Ti'] }));
+  assert.strictEqual(sets.find((set) => set.id === '3090 Ti').disabled, false);
+});
+
+test('a switched-off server draws NO cloud lane', () => {
+  // The lane exists because that engine forwards work somewhere. An engine the
+  // queue will not send to forwards nothing.
+  const sets = slots.slotSets(factsOf({
+    servers: [], off: ['mac'], upstreams: { mac: 'cloud' }, roles: { mac: 'engine' },
+  }));
+  assert.strictEqual(sets.some((set) => set.id === 'mac:cloud'), false);
+});
+
+test('a name that is both enabled and disabled is refused, not drawn twice', () => {
+  assert.throws(
+    () => slots.slotSets(factsOf({ servers: ['mac'], off: ['mac'] })),
+    /named as both enabled and disabled/,
+    'both lists come off one routing read, so a name in both is a caller that built them twice',
+  );
+});
+
+test('a caller that says nothing about what is switched off is refused', () => {
+  assert.throws(
+    () => slots.slotSets({
+      enabledServers: [], upstreams: {}, roles: {}, occupied: [],
+      alignerCharged: false, serversOnThisMachine: [],
+    }),
+    /`disabledServers` was not supplied/,
+    'an empty list is a claim that nothing is off, and every greyed row would vanish again',
+  );
+});
+
+test('the CPU set is called CPU slots, not BookForge itself', () => {
+  // Owen, 2026-09-15: "it shouldnt be called 'BookForge itself', it can be
+  // called 'CPU slots'."
+  const sets = slots.slotSets(factsOf({}));
+  const local = sets.find((set) => set.id === slots.LOCAL_WORK_SET);
+  assert.strictEqual(local.label, 'CPU slots');
+  assert.strictEqual(local.disabled, false, 'the CPU slots have no switch — there is nowhere else for that work to go');
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {
@@ -1344,6 +1416,7 @@ test('a step with no capability class is untouched by any of this', async () => 
   engine.setCrucibleRoutingHost(null);
   routes.forgetCrucibleRoutes();
   try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* scratch */ }
-  console.log(`\nqueue slot-sets: ${passed} test(s) passed, ${failures.length} failed`);
+  
+console.log(`\nqueue slot-sets: ${passed} test(s) passed, ${failures.length} failed`);
   process.exitCode = failures.length === 0 ? 0 : 1;
 })();

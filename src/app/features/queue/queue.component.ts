@@ -41,8 +41,9 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
-import { prepFraction, prepLabel } from '@shared/queue/bench';
+import { benchRows, prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
+import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -52,7 +53,7 @@ import { stagesFor } from './models/job-stages';
 import { JobEtaService } from './services/job-eta.service';
 import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
-import type { BookPlanView } from './services/queue-tray.service';
+import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-tray.service';
 
 @Component({
   selector: 'app-queue',
@@ -117,38 +118,67 @@ import type { BookPlanView } from './services/queue-tray.service';
             <h3>{{ section.heading }}</h3>
             <span class="sect-note">{{ section.note }}</span>
             <!--
-              THE QUEUE'S GPU DIAL, on the heading of the section it acts on.
+              THE DIAL IS GONE FROM HERE, replaced by the per-slot switches
+              above each card (Owen, 2026-09-15: *"instead of having a dropdown
+              that chooses whether to have 'any' or the given crucible servers,
+              lets have a big checkbox above each gpu slot"*).
 
-              docs/PENDING-QUEUE-AND-GPU-DIAL.md: "This is the section the dial
-              acts on." It is here rather than in the toolbar because a control
-              belongs on the thing it governs — and because a dial floating above
-              a page of books would read as being about the book you are looking
-              at, which is the per-item picker's job and a different question.
-
-              It DEFERS: a book naming a machine is never sent elsewhere by it,
-              a book on Any takes its machine, and a running job ignores it
-              entirely. So turning it can never take work off a card.
+              They are not the same control wearing different clothes and the
+              swap is the point. The dial STEERED — one machine at a time, every
+              book, and a book that named another waited. The switches say what
+              each machine is FOR, independently, so two cards can be on and a
+              third off; "any" stops being a setting and becomes what is left
+              switched on. The per-book picker is untouched and still chooses
+              between them (Owen: *"the dropdown can remain for queue items"*).
             -->
-            @if (section.group === 'gpu') {
-              <label class="dial">
-                <span class="dial-word">Send work to</span>
-                <select
-                  [value]="tray.gpuDial()"
-                  (change)="chooseGpuDial($any($event.target).value)"
-                  title="Steer new runs at one machine. A book that names a server is never sent somewhere else — it waits until this agrees with it. Anything already running is unaffected."
-                >
-                  <option value="any">Any — let each book decide</option>
-                  @for (name of waitForChoices(); track name) {
-                    <option [value]="name">{{ name }}</option>
-                  }
-                </select>
-              </label>
-            }
-            <span class="sect-count">{{ section.inUse }} of {{ section.lanes.length }} in use</span>
+            <!-- OF THE ONES THAT ARE ON. Counting a switched-off card among
+                 the slots you have would make "1 of 3 in use" read as two idle
+                 machines when one of them is off on purpose. -->
+            <span class="sect-count">{{ section.inUse }} of {{ liveLanes(section) }} in use</span>
           </div>
 
-        <div class="lanes" [class.one-up]="section.lanes.length === 1">
-          @for (lane of section.lanes; track lane.setId + lane.resource + lane.index) {
+        <!--
+          THE GRID, Owen 2026-09-15: one across, then two, then three, then
+          2+2, 3+2, 3+3. 'benchRows' owns the arithmetic (and a keeper holds it
+          to his numbers); this draws each row as its own grid of exactly that
+          many columns, which is what makes the two lanes of a 3+2 second row
+          take half the width each instead of sitting under the first two
+          columns with a hole on the right.
+        -->
+        @for (row of rowsOf(section.lanes); track $index) {
+        <div class="lane-row" [style.grid-template-columns]="'repeat(' + row.length + ', minmax(0, 1fr))'">
+          @for (lane of row; track lane.setId + lane.resource + lane.index) {
+          <div class="lane-cell">
+            <!--
+              THE SWITCH, ABOVE THE SLOT IT GOVERNS, and only above a slot it
+              can govern. Owen: "each one should have an enable/disable checkbox
+              above it with its name" — and of the CPU pair, "those belong to
+              the local system... they obviously cant be disabled."
+              'switchOf' answers with the SERVER NAME or null, so the local
+              aligner's GPU row gets no switch either: there is no registered
+              server behind it to switch off.
+
+              It writes 'routing.disabled' through the same 'setEnabled' the
+              Settings panel has always called. One fact, two doors — and the
+              queue has honoured it all along ('decideWaitFor' holds a named
+              server that is off, and 'any' never tries one).
+            -->
+            @if (switchOf(lane); as server) {
+              <label class="lane-switch" [class.off]="lane.disabled">
+                <input
+                  type="checkbox"
+                  [checked]="!lane.disabled"
+                  [disabled]="switching() === server"
+                  (change)="toggleServer(server, $any($event.target).checked)"
+                />
+                <span class="lane-switch-name">{{ server }}</span>
+                @if (lane.disabled) { <span class="lane-switch-word">off</span> }
+              </label>
+            } @else {
+              <div class="lane-switch none">
+                <span class="lane-switch-name">{{ lane.setLabel }}</span>
+              </div>
+            }
             <article
               class="lcard"
               [class.gpu]="lane.resource === 'gpu'"
@@ -312,8 +342,10 @@ import type { BookPlanView } from './services/queue-tray.service';
                 </div>
               }
             </article>
+          </div>
           }
         </div>
+        }
         </div>
         }
       </section>
@@ -807,10 +839,13 @@ import type { BookPlanView } from './services/queue-tray.service';
       color: var(--text-primary);
     }
 
-    /* A section with one lane must not stretch it across the whole page: the
-       GPU card is 1.7fr of three columns, and alone it would be six times the
-       width of the words in it. */
-    .lanes.one-up { grid-template-columns: minmax(0, 420px); }
+    /* ONE LANE NOW DOES STRETCH, reversing the cap that used to be here.
+       It read: "a section with one lane must not stretch it across the whole
+       page... alone it would be six times the width of the words in it", and
+       capped it at 420px. Owen, 2026-09-15, ruled the other way: *"if theres one
+       gpu available, the gpu slot stretches across the whole screen, left to
+       right."* His is the later call on his own bench, and the card has more in
+       it now than it did — a switch, a name, a thermal reading and an ETA. */
 
     /* ── Pending ───────────────────────────────────────────────────────────
        Dashed, because nothing about a staged book is committed: it is a plan on
@@ -943,13 +978,73 @@ import type { BookPlanView } from './services/queue-tray.service';
 
     /* ── Lanes ─────────────────────────────────────────────────────────── */
 
-    .lanes {
+    /* ── The grid ──────────────────────────────────────────────────────────
+       One ROW at a time, each its own grid of exactly the columns that row
+       holds — the count comes from 'benchRows' and is written inline on the
+       element. Columns are equal ('1fr' each, 'minmax(0, …)' so a long book
+       title cannot push its lane wider than its share), because Owen's rule is
+       about halves and thirds of the width: *"if there are two, the two are
+       split so the left half is taken up by slot 1 and the right half by slot
+       2."* The old three-column '1.7fr 1fr 1fr' is gone with the flat list it
+       belonged to. */
+    .lane-row {
       display: grid;
-      grid-template-columns: 1.7fr 1fr 1fr;
       gap: 12px;
+      margin-bottom: 12px;
+    }
+    .lane-row:last-child { margin-bottom: 0; }
+
+    .lane-cell { display: flex; flex-direction: column; min-width: 0; }
+
+    /* NARROW: one lane per row, whatever the arithmetic said. The inline
+       'grid-template-columns' is overridden here on purpose — three cards side
+       by side under 1000px is three unreadable cards. */
+    @media (max-width: 1000px) {
+      .lane-row { grid-template-columns: minmax(0, 1fr) !important; }
     }
 
-    @media (max-width: 1000px) { .lanes { grid-template-columns: 1fr; } }
+    /* ── The switch above each slot ────────────────────────────────────────
+       Owen: *"each one should have an enable/disable checkbox above it with its
+       name."* Big enough to hit without aiming — it is the control that decides
+       whether a machine works at all. */
+    .lane-switch {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+    }
+    .lane-switch input { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
+    .lane-switch input:disabled { cursor: progress; }
+    .lane-switch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lane-switch-word {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    .lane-switch.off { opacity: 0.75; }
+    /* The CPU pair and the local aligner: a name, no box, and NOT a disabled
+       checkbox — an unclickable control invites the question of how to click
+       it. Padded to the same height so the cards below stay on one line. */
+    .lane-switch.none { cursor: default; background: transparent; border-color: transparent; }
+
+    /* SWITCHED OFF: greyed, still legible, still there. Owen: *"if a crucible
+       slot is unchecked, it grays it out until it's re-checked/re-enabled."* */
+    .lane-cell:has(.lane-switch.off) .lcard {
+      opacity: 0.45;
+      filter: grayscale(1);
+    }
 
     .lcard {
       background: var(--bg-surface);
@@ -1537,6 +1632,71 @@ export class QueueComponent {
       await this.tray.setGpuDial(value);
     } catch (err) {
       this.toasts.problem((err as Error)?.message || 'The GPU dial could not be turned.');
+    }
+  }
+
+  /** The section's lanes, cut into Owen's rows. The arithmetic lives in `bench`. */
+  rowsOf(lanes: readonly LaneView[]): LaneView[][] {
+    return benchRows(lanes);
+  }
+
+  /** How many of this section's lanes are switched ON — the honest denominator. */
+  liveLanes(section: BenchSectionView): number {
+    return section.lanes.filter((lane) => !lane.disabled).length;
+  }
+
+  /**
+   * THE SERVER THIS LANE'S SWITCH WOULD GOVERN, or null when it has none.
+   *
+   * A switch is only honest above a lane whose work the registry can actually
+   * be told to stop sending. Two GPU lanes have no server behind them —
+   * `local-longform-align` is this app's own aligner (until it becomes a
+   * Crucible job) and `local-work` is the CPU pair — and a checkbox over either
+   * would be one that writes nothing, or worse, writes `routing.disabled` for a
+   * name no registry has.
+   *
+   * Owen on the CPU pair: *"those belong to the local system... they obviously
+   * cant be disabled. no enable/disable button for them."* The same reasoning
+   * reaches the aligner row, which he did not name: there is nowhere else for
+   * that work to go either.
+   */
+  switchOf(lane: LaneView): string | null {
+    if (lane.resource !== 'gpu') return null;
+    if (lane.setId === LOCAL_WORK_SET || lane.setId === LONGFORM_ALIGN_SET) return null;
+    return lane.setId;
+  }
+
+  /** The server whose switch is mid-flight, so its box cannot be double-clicked. */
+  readonly switching = signal<string | null>(null);
+
+  /**
+   * FLIP ONE MACHINE ON OR OFF — `routing.disabled`, through the same
+   * `setEnabled` the Settings panel writes. Nothing here decides where work
+   * goes: `decideWaitFor` has always held a named server that is off and has
+   * always skipped one for `any`. This is the switch, not the rule.
+   *
+   * It DEFERS, exactly as the dial it replaces did: a render already on that
+   * card keeps it (§4.3 — a job finishes where it started), and the row says so
+   * by staying `retiring` until its occupant lands. Switching a machine off can
+   * never take work off it.
+   *
+   * A refusal is SAID. The only one main can give is a name this machine does
+   * not have, which would mean the bench and the registry had come apart — and
+   * a checkbox that silently sprang back would be the worst way to learn it.
+   */
+  async toggleServer(server: string, enabled: boolean): Promise<void> {
+    if (this.switching() !== null) return;
+    this.switching.set(server);
+    try {
+      const res = await this.electronService.crucible.setEnabled(server, enabled);
+      if (!res.success) {
+        this.toasts.problem(res.error || `"${server}" could not be switched ${enabled ? 'on' : 'off'}.`);
+      }
+    } catch (err) {
+      this.toasts.problem((err as Error)?.message
+        || `"${server}" could not be switched ${enabled ? 'on' : 'off'}.`);
+    } finally {
+      this.switching.set(null);
     }
   }
 
