@@ -153,8 +153,9 @@ if (RELEASE) {
     notarizeArg = `-c.mac.notarize.teamId=${APPLE_TEAM_ID}`;
     console.log(`[build-dmg] RELEASE: signing AND notarizing (${credSource} creds, notarytool --wait ~10-15 min).`);
   } else {
-    console.log('[build-dmg] RELEASE requested but signing only — NO notarize creds in env or keychain.');
-    console.log(`[build-dmg]   store once: security add-generic-password -a <apple-id> -s ${KEYCHAIN_SERVICE} -U -w <app-specific-pw>`);
+    console.error('[build-dmg] RELEASE requires notarization, but its credentials are unavailable.');
+    console.error(`[build-dmg] Unlock the build account keychain for ${KEYCHAIN_SERVICE}, or provide APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.`);
+    process.exit(1);
   }
 }
 
@@ -180,7 +181,7 @@ const ATTEMPTS = RELEASE ? 1 : MAX_ATTEMPTS;
 for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${signArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
+    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${signArg} ${RELEASE ? '-c.forceCodeSigning=true' : ''}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
     process.exit(0);
   } catch {
     if (attempt === ATTEMPTS) {
