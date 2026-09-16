@@ -260,6 +260,8 @@ function unmetOf(state: CrucibleCoordinationState): string | null {
 
 function phaseWords(state: CrucibleCoordinationState): string {
   switch (state.phase) {
+    case 'awaiting-setup':
+      return 'Choose where text work runs in setup before models are prepared.';
     case 'checking':
       return 'Checking what this engine has…';
 

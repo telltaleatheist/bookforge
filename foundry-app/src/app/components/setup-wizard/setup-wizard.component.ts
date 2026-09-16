@@ -188,7 +188,7 @@ const STEPS: readonly StepDef[] = [
      */
     id: 'routes',
     title: 'Where the text work runs',
-    blurb: 'What the engine cannot do on its own card, it can do through an account you connect here.',
+    blurb: 'Use this engine’s models, an existing Ollama model, or a connected account.',
   },
   {
     /*
@@ -394,38 +394,30 @@ const STEPS: readonly StepDef[] = [
           @if (current() === 'routes') {
             <p class="lead">
               The GPU engine (Crucible) runs cleanup, translation, simplification and analysis.
-              What it cannot run on its own card, it can run through an account you connect —
+              Choose its own models or connect an existing model or account —
               the key is stored in the engine, not in Foundry, and BookForge uses the same one.
             </p>
             @if (routeProblem(); as why) { <p class="line bad">{{ why }}</p> }
 
             @if (routeDoc(); as settings) {
-              @if (unservedClasses().length === 0) {
-                <p class="ok-note">
-                  This engine can run all four on its own card. Nothing to connect.
-                </p>
-                @for (cls of classes; track cls) {
-                  <p class="small">{{ classLabel(cls) }} — {{ routeLine(cls) }}</p>
-                }
-              } @else {
-                <p class="line">
-                  These will not run on this engine's card. Its own words for why:
-                </p>
-                @for (row of unservedClasses(); track row.cls) {
-                  <p class="small"><strong>{{ classLabel(row.cls) }}</strong> — {{ row.reason }}</p>
-                }
-                <p class="line">
-                  Connect one account below and Test it; the models it lists are the ones your key
-                  can use. Saving sets every class above to run there, in one go.
-                </p>
-                <app-engine-upstreams
-                  [serverName]="routeServer()"
-                  [doc]="settings"
-                  [busy]="routeBusy()"
-                  [wantsModel]="true"
-                  applyLabel="Use it for these"
-                  (apply)="applyRoutes($event)" />
+              @for (cls of classes; track cls) {
+                <p class="small">{{ classLabel(cls) }} — {{ routeLine(cls) }}</p>
               }
+              @for (row of unservedClasses(); track row.cls) {
+                <p class="small"><strong>{{ classLabel(row.cls) }}</strong> — {{ row.reason }}</p>
+              }
+              <p class="line">
+                Keep these choices and continue, or use an existing Ollama model, OpenAI or
+                Anthropic for text work. Ollama keeps its own model files; Crucible connects
+                through its API. Models are prepared after you finish setup.
+              </p>
+              <app-engine-upstreams
+                [serverName]="routeServer()"
+                [doc]="settings"
+                [busy]="routeBusy()"
+                [wantsModel]="true"
+                applyLabel="Use for text work"
+                (apply)="applyRoutes($event)" />
             } @else if (routeProblem() === null) {
               <p class="line">Asking the engine…</p>
             }
@@ -1166,25 +1158,24 @@ export class SetupWizardComponent {
    * applies nothing"*. Two requests would leave a key stored against routes that
    * were refused — a half-configured engine nobody asked for.
    *
-   * IT ROUTES EVERY CLASS THE ENGINE SAID IT CANNOT SERVE, not the one the
-   * person happened to be looking at. That is the step's whole offer: the rows
-   * above it are the classes with no local answer, and a press that fixed one of
-   * four would leave three rows saying the same thing with the same button under
-   * them.
+   * This setup action applies the selected provider/model to all four text
+   * classes. It remains available when local models fit, so an existing Ollama
+   * model can be reused before any separate Crucible weights are downloaded.
+   * Per-class choices remain available in the engine settings card.
    */
   protected async applyRoutes(event: UpstreamApply): Promise<void> {
     const server = this.routeServer();
     if (!api || server.length === 0 || event.model === null) return;
-    const classes = this.unservedClasses();
-    if (classes.length === 0) return;
+    const classes = LLM_CLASSES;
     const model = `${event.upstream}/${event.model}`;
     const patch: SettingsPatch = {
       ...(event.upstreams === undefined ? {} : { upstreams: event.upstreams }),
-      routes: Object.fromEntries(classes.map((row) => [row.cls, model])),
+      routes: Object.fromEntries(classes.map((cls) => [cls, model])),
     };
     this.routeBusy.set(true);
     try {
       this.routeDoc.set(await api.crucible.engineSettingsPut(server, patch));
+      this.skipped.update(steps => steps.filter(step => step !== 'routes'));
       this.routeProblem.set(null);
       /*
        * AND CAPABILITY AGAIN, because §2 recomputes it in-process on every write
@@ -1286,7 +1277,9 @@ export class SetupWizardComponent {
   }
 
   private async close(skipped: string[]): Promise<void> {
-    await api?.setup.finish(skipped);
+    const choicesNotSeen = this.routeDoc() === null;
+    const finished = choicesNotSeen && !skipped.includes('routes') ? [...skipped, 'routes'] : skipped;
+    await api?.setup.finish(finished);
     this.ui.closeSetup();
   }
 

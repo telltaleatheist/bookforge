@@ -124,6 +124,13 @@ export class RuntimeService {
 
   private unsubscribe?: () => void;
 
+  async completeSetup(): Promise<void> {
+    const api = (window as unknown as { electron?: { runtime?: RuntimeBridge } }).electron?.runtime;
+    if (!api) return; // Browser preview has no model service.
+    const result = await api.completeSetup();
+    if (!result.success) throw new Error(result.error ?? 'Could not finish model setup.');
+  }
+
   /**
    * Resolves once the bundled runtime has settled — ready OR errored. Used to
    * gate env-dependent downloads (voices / language packs spawn the bundled
@@ -184,6 +191,7 @@ export class RuntimeService {
 }
 
 interface RuntimeBridge {
+  completeSetup: () => Promise<{ success: boolean; error?: string }>;
   getStatus: () => Promise<{ success: boolean; data?: RuntimeStatus; error?: string }>;
   onStatus: (callback: (status: RuntimeStatus) => void) => () => void;
   usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;

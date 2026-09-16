@@ -136,3 +136,83 @@ test('uninstall preview runs the published custom installation command without p
     timeoutMs: 120_000, env: command.env, cwd: command.cwd,
   }]);
 });
+
+
+test('native Windows setup restores the engine even when all model weights survived reinstall', async () => {
+  const { missingForFoundry } = await import('../electron/crucible-coordinate');
+  const classes = ['clean', 'translate', 'simplify', 'analysis', 'pages'];
+  const record = {
+    backendKind: 'llama-windows', totalBytes: 24e9, desktopAllowanceBytes: 2e9,
+    classes: classes.map(capability => ({ capability, enabled: true,
+      selected: capability === 'pages' ? 'dots-ocr' : 'qwen3.5-9b',
+      reason: 'native Windows', shortfallBytes: 0, route: 'local' as const })),
+  };
+  const row = (kind: 'model' | 'engine', id: string, installed: boolean) => ({
+    kind, id, name: id, jobType: 'llm', installed, installedBytes: installed ? 1 : null,
+    expectedBytes: 1, floors: [], license: null, source: 'fixture', resident: false,
+  });
+  const catalog = [row('model', 'dots-ocr', true), row('model', 'qwen3.5-9b', true),
+    row('engine', 'llama-cpp', false)];
+  const missing = missingForFoundry(['llm'], catalog, record);
+  expect(missing.unmet).toEqual([]);
+  expect(missing.missing).toEqual([{ what: 'subject', kind: 'engine', id: 'llama-cpp',
+    name: 'llama-cpp', jobType: 'llm', expectedBytes: 1, inCatalog: true }]);
+  expect(missingForFoundry(['llm'], catalog.map(r => ({ ...r, installed: true })), record).missing).toEqual([]);
+});
+
+test('upstream-only Foundry work does not install an unused native engine or weights', async () => {
+  const { missingForFoundry } = await import('../electron/crucible-coordinate');
+  const record = { backendKind: 'llama-windows', totalBytes: 1, desktopAllowanceBytes: 0,
+    classes: ['clean', 'translate', 'simplify', 'analysis', 'pages'].map(capability => ({
+      capability, enabled: capability !== 'pages', selected: capability === 'pages' ? '' : 'ollama/existing-model',
+      reason: 'fixture', shortfallBytes: 0, route: 'upstream' as const,
+    })) };
+  const result = missingForFoundry(['llm'], [{ kind: 'engine', id: 'llama-cpp', name: 'llama.cpp',
+    jobType: 'llm', installed: false, installedBytes: null, expectedBytes: 1,
+    floors: [], license: null, source: 'fixture', resident: false }], record);
+  expect(result.missing).toEqual([]);
+  expect(result.unmet.map(row => row.class)).toEqual(['pages']);
+});
+
+
+test('first-run coordination waits until model choices are finished, including a dismissed wizard', async () => {
+  const { coordinateServer } = await import('../electron/crucible-coordinate');
+  const setup = await import('../electron/setup');
+  spyOn(host, 'foundryHost').mockReturnValue(null);
+  const read = spyOn(settings, 'readAppSettings').mockReturnValue({
+    setupCompleted: false, setupSkipped: [],
+  } as never);
+  const lookup = spyOn(registry, 'crucibleServerNamed').mockReturnValue(null);
+  expect(await coordinateServer('first-run-gate')).toEqual({server: 'first-run-gate', phase: 'awaiting-setup'});
+  expect(lookup).not.toHaveBeenCalled();
+  read.mockReturnValue({setupCompleted: true, setupSkipped: ['routes']} as never);
+  expect(setup.modelPreparationReady()).toBe(false);
+  read.mockReturnValue({setupCompleted: true, setupSkipped: []} as never);
+  expect(setup.modelPreparationReady()).toBe(true);
+  expect((await coordinateServer('first-run-gate')).phase).toBe('unreachable');
+  expect(lookup).toHaveBeenCalledWith('first-run-gate');
+});
+
+test('hosted Foundry honors the host first-run choices before preparing models', async () => {
+  const setup = await import('../electron/setup');
+  let ready = false;
+  spyOn(host, 'foundryHost').mockReturnValue({modelPreparationReady: () => ready} as never);
+  expect(setup.modelPreparationReady()).toBe(false);
+  ready = true;
+  expect(setup.modelPreparationReady()).toBe(true);
+});
+
+
+test('generated backend annotations filter preparation and never reach the module task API', async () => {
+  const { foundryModuleForBackend } = await import('../electron/crucible-coordinate');
+  const module = { name: 'fixture', version: '1', needs: [{ class: 'pages' }], subjects: [], job_types: [
+    { type: 'llm', backends: ['llama-windows', 'cuda-linux'] },
+    { type: 'asr', backends: ['cuda-linux'] },
+    { type: 'tts', narrator_engine: 'higgs-v3', backends: ['cuda-linux'] },
+  ] };
+  expect(foundryModuleForBackend('llama-windows', module).job_types).toEqual([{ type: 'llm' }]);
+  expect(foundryModuleForBackend('cuda-linux', module).job_types).toEqual([
+    { type: 'llm' }, { type: 'asr' }, { type: 'tts', narrator_engine: 'higgs-v3' },
+  ]);
+  expect(JSON.stringify(foundryModuleForBackend('cuda-linux', module))).not.toContain('backends');
+});

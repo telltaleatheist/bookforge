@@ -335,6 +335,8 @@ export interface FoundryHost {
    * strand a job.
    */
   servers?(): readonly CrucibleServerEntry[];
+  /** False while the host is still collecting first-run model/upstream choices. */
+  modelPreparationReady?(): boolean;
 }
 
 let host: FoundryHost | null = null;

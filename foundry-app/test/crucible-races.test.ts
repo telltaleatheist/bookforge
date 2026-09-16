@@ -127,3 +127,47 @@ test('cancelling during a Crucible model load cancels that server job and takes 
   expect(client.cancel).toHaveBeenCalledWith('load-123');
   expect(client.lease).not.toHaveBeenCalled();
 });
+
+
+for (const [kind, capability, model] of [
+  ['read', 'pages', 'dots-ocr'], ['clean', 'clean', 'qwen3.5-9b'],
+  ['translate', 'translate', 'qwen3.8-27b-4bit'],
+  ['simplify', 'simplify', 'qwen3.8-27b-4bit'],
+  ['analysis', 'analysis', 'qwen3.8-27b-4bit'],
+] as const) {
+  test(`native Windows ${kind} uses its selected engine model through the controller registration`, async () => {
+    const controller = { name: 'Windows', url: 'http://windows-pc:7101', token: 'fixture-token', enabled: true };
+    const native = { ...controller, url: 'http://windows-pc:7100' };
+    const client = {
+      models: mock(async () => [{ id: model, resident: false }]),
+      loadModel: mock(async () => 'load-native'),
+      events: async function* () { yield { event: 'done', data: {} }; },
+      lease: mock(async () => ({ leaseId: 'native-lease' })),
+      release: mock(async () => {}),
+      capability: async () => ({ backendKind: 'llama-windows', totalBytes: 24e9, classes: [{
+        capability, enabled: true, selected: model, reason: 'native Windows', shortfallBytes: 0, route: 'local',
+      }] }),
+    };
+    spyOn(settings, 'readAppSettings').mockReturnValue({ queueGpuDial: 'any' } as never);
+    spyOn(registry, 'slotAvailability').mockReturnValue({ slots: [{ kind: 'crucible', name: 'Windows' }], refusal: null } as never);
+    spyOn(registry, 'engineSharedWith').mockReturnValue(null);
+    spyOn(registry, 'crucibleServerNamed').mockReturnValue(controller);
+    spyOn(registry, 'resolveEngine').mockResolvedValue({ entry: native, hop: null });
+    spyOn(registry, 'clientFor').mockReturnValue(client as never);
+    spyOn(registry, 'engineClientFor').mockResolvedValue(client as never);
+    const result = await dispatch.placeJob(kind, 'Windows', () => {}, () => true);
+    expect(result.verdict).toBe('go');
+    if (result.verdict !== 'go') throw Error('native route was refused');
+    try {
+      expect(client.loadModel).toHaveBeenCalledWith(model);
+      expect(client.lease).toHaveBeenCalledWith(model, expect.objectContaining({ act: capability, ttlSeconds: expect.any(Number) }));
+      expect(result.placement.model).toBe(model);
+      expect(result.placement.endpoint).toBe('http://windows-pc:7100/openai');
+      expect(result.placement.door).toBe('openai');
+      const headers = JSON.parse(result.placement.env['FOUNDRY_ENDPOINT_HEADERS']!);
+      expect(headers['Authorization']).toBe('Bearer fixture-token');
+      expect(headers['X-Crucible-Act']).toBe(capability);
+    } finally { await result.placement.lease?.release(); }
+    expect(client.release).toHaveBeenCalledWith('native-lease');
+  });
+}

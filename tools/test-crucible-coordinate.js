@@ -1070,6 +1070,24 @@ async function main() {
     } finally { await fake.close(); }
   });
 
+  await check('an existing Ollama upstream never requests duplicate local LLM weights', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({
+      uncatalogued: [CLASS_MODELS.clean],
+      settings: {
+        routes: { clean: 'ollama/qwen3:8b' },
+        upstreams: { ollama: { url: 'http://127.0.0.1:11434' } },
+      },
+    });
+    try {
+      const state = await coordinate.coordinateServer(registerFake(fake.url), deps());
+      assert.strictEqual(state.phase, 'stocked');
+      assert.deepStrictEqual(state.unmet, []);
+      assert.strictEqual(fake.seen.posts.length, 0,
+        'an upstream model absent from the local catalog must not trigger a module pull');
+    } finally { await fake.close(); }
+  });
+
   await check("the SERVER's unmet is read off the task document and WINS", async () => {
     /*
      * §5.3a puts `unmet` on `TaskStatus` and on no frame of the stream, so
@@ -1223,16 +1241,54 @@ async function main() {
     assert.strictEqual(without.missing[0].jobType, 'align');
   });
 
-  await check('a subject this backend has no block for is carried, not dropped', () => {
+  await check('a subject declared for this backend but absent from its catalog remains missing', () => {
     const all = MODULE.job_types.map((j) => j.type);
     const { missing } = coordinate.missingForBookForge(all, [], fullCapability());
     const subjects = missing.filter((m) => m.what === 'subject');
-    assert.strictEqual(subjects.length, MODULE.subjects.length);
+    assert.deepStrictEqual(subjects.map(({ kind, id }) => ({ kind, id })),
+      moduleSetup.moduleForBackend('cuda-linux').subjects);
     assert.ok(subjects.every((m) => m.inCatalog === false && m.expectedBytes === null),
       'uncatalogued subjects say so rather than inventing a size');
   });
 
+  for (const backendKind of ['cuda-linux', 'mlx-darwin', 'llama-windows']) {
+    await check(`a stocked ${backendKind} engine does not request other backends' subjects`, () => {
+      const module = moduleSetup.moduleForBackend(backendKind);
+      const catalog = fullCatalog().filter((row) =>
+        Object.values(CLASS_MODELS).includes(row.id)
+        || module.subjects.some((subject) => subject.kind === row.kind && subject.id === row.id));
+      assert.ok(catalog.length < fullCatalog().length, 'fixture omits another backend\'s subjects');
+      const result = coordinate.missingForBookForge(module.job_types.map((job) => job.type),
+        catalog, { ...fullCapability(), backendKind });
+      assert.deepStrictEqual(result, { missing: [], unmet: [] });
+    });
+  }
+
   // ── §5.3a: the module names CLASSES and the SERVER resolves them ─────────
+  await check('restored native LLM weights still require the missing engine executable', () => {
+    const engine = { kind: 'engine', id: 'llama-cpp', name: 'llama.cpp', jobType: 'llm',
+      installed: false, installedBytes: null, expectedBytes: 1024, floors: [], license: null,
+      source: 'github:test', resident: false };
+    const result = coordinate.missingForBookForge(MODULE.job_types.map((job) => job.type),
+      [...fullCatalog(), engine], { ...fullCapability(), backendKind: 'llama-windows' });
+    assert.deepStrictEqual(result.missing, [{ what: 'subject', kind: 'engine', id: 'llama-cpp',
+      name: 'llama.cpp', jobType: 'llm', expectedBytes: 1024, inCatalog: true }]);
+    assert.deepStrictEqual(result.unmet, []);
+  });
+
+  await check('an Ollama route does not require a missing local engine executable', () => {
+    const engine = { kind: 'engine', id: 'llama-cpp', name: 'llama.cpp', jobType: 'llm',
+      installed: false, installedBytes: null, expectedBytes: 1024, floors: [], license: null,
+      source: 'github:test', resident: false };
+    const upstream = capabilityView([capabilityRow('clean', {
+      selected: 'ollama/qwen3:8b', route: 'upstream',
+    })]);
+    const result = coordinate.missingForBookForge(MODULE.job_types.map((job) => job.type),
+      [...fullCatalog().filter((row) => row.id !== CLASS_MODELS.clean), engine],
+      { ...upstream, backendKind: 'llama-windows' });
+    assert.deepStrictEqual(result, { missing: [], unmet: [] });
+  });
+
   await check('a class with NO ROW is unmet BY NAME — never assumed local', () => {
     /*
      * THE §4.6 FINDING, IN THE SHAPE BOOKFORGE MEETS IT.
@@ -1419,6 +1475,7 @@ async function main() {
         throw new Error(`unexpected import ${name}`);
       },
       logger: { warn: (...args) => warnings.push(args), info: () => {} },
+      firstRunModels: { pending: false },
     });
     assert.strictEqual(asked, 1);
     assert.strictEqual(warnings.length, 1);

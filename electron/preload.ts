@@ -1168,6 +1168,7 @@ export interface ElectronAPI {
     onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => () => void;
     usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
     isFreshInstall: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    completeSetup: () => Promise<{ success: boolean; error?: string }>;
   };
   higgsModels: {
     /** The Higgs narration roster as a picker wants it. A voice whose artifact has
@@ -2778,6 +2779,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('runtime:using-bundled-env'),
     isFreshInstall: () =>
       ipcRenderer.invoke('runtime:is-fresh-install'),
+    completeSetup: () => ipcRenderer.invoke('bookforge:setup-complete'),
   },
   /*
    * THE VOICE CATALOG, AND NOTHING THAT DOWNLOADS ONE.

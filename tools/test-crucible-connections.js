@@ -6,12 +6,65 @@ installElectronStub('bf-connect-');
 const { autoConnectLocal } = require('../dist/electron/crucible/auto-connect');
 const { CrucibleConnections } = require('../dist/electron/crucible/connect');
 const { upgradeWsl } = require('../dist/electron/crucible/engine-upgrade');
+const { FirstRunModels } = require('../dist/electron/crucible/first-run-models');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { check, summary } = makeChecker();
 const pairing = { name: 'desk', url: 'http://127.0.0.1:7100', token: 'private-token' };
 const request = { ...pairing, id: 'server-request', userCode: 'CODE-1234', deviceCode: 'private-device', expiresIn: 60, interval: 1 };
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 async function main() {
+  await check('first-run model preparation waits across restart until AI choices are finished', () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bf-model-setup-')), 'pending');
+    const fresh = new FirstRunModels(marker, true);
+    assert.equal(fresh.pending, true);
+    const restartedAfterLibraryChoice = new FirstRunModels(marker, false);
+    assert.equal(restartedAfterLibraryChoice.pending, true);
+    assert.equal(restartedAfterLibraryChoice.complete(), true);
+    assert.equal(restartedAfterLibraryChoice.pending, false);
+    assert.equal(restartedAfterLibraryChoice.complete(), false);
+    assert.equal(new FirstRunModels(marker, false).pending, false);
+    fs.rmdirSync(path.dirname(marker));
+  });
+  await check('a failed setup marker update keeps model preparation deferred', () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bf-model-setup-')), 'pending');
+    const gate = new FirstRunModels(marker, true);
+    fs.unlinkSync(marker);
+    assert.throws(() => gate.complete(), /ENOENT/);
+    assert.equal(gate.pending, true);
+    fs.rmdirSync(path.dirname(marker));
+  });
+  await check('connect and renderer coordination entrypoints cannot pull during unfinished setup', async () => {
+    const ts = require('typescript');
+    const vm = require('node:vm');
+    const source = ts.createSourceFile('main.ts', fs.readFileSync(path.join(__dirname, '../electron/main.ts'), 'utf8'),
+      ts.ScriptTarget.Latest, true);
+    const entrypoints = [];
+    function visit(node) {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'coordinateWithServer') entrypoints.push(node.initializer);
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'ipcMain.handle'
+        && node.arguments[0]?.getText(source) === "'bookforge:crucible-coordinate'") entrypoints.push(node.arguments[1]);
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    assert.equal(entrypoints.length, 2);
+    for (const entrypoint of entrypoints) {
+      for (const pending of [true, false]) {
+        let requests = 0;
+        const code = ts.transpileModule(`(${entrypoint.getText(source)})('desk', 'connected')`, {
+          compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+        }).outputText;
+        await vm.runInNewContext(code, {
+          firstRunModels: { pending },
+          require: () => ({ coordinateServer: async () => { requests++; return { phase: 'stocked' }; } }),
+          getMainLogger: () => ({ info() {}, warn() {} }),
+        });
+        assert.equal(requests, pending ? 0 : 1);
+      }
+    }
+  });
   await check('first launch verifies and adds the existing engine as an ordinary row', async () => {
     const calls = [];
     const name = await autoConnectLocal(false, { registryExists: () => false, pairing: () => pairing,

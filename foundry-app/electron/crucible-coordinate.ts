@@ -129,10 +129,27 @@ import type {
  * its manifests and vendored here byte for byte (PHASE13 §5.4); nothing in this
  * app edits it, and the ids in it are the manifests', not a second list.
  */
+import { modelPreparationReady } from './setup';
 import foundryModule from '../shared/foundry.module.json';
 
 /** What Foundry asks a Crucible for. The generated file, unedited. */
-export const FOUNDRY_MODULE: CrucibleModule = foundryModule as CrucibleModule;
+type ScopedModule = Omit<CrucibleModule, 'job_types' | 'subjects'> & {
+  job_types: readonly (CrucibleModule['job_types'][number] & { backends?: readonly string[] })[];
+  subjects: readonly (CrucibleModule['subjects'][number] & { backends?: readonly string[] })[];
+};
+export const FOUNDRY_MODULE: ScopedModule = foundryModule as ScopedModule;
+
+/** Generated backend annotations are app metadata, not fields in the task API. */
+export function foundryModuleForBackend(backend: string, source: ScopedModule = FOUNDRY_MODULE): CrucibleModule {
+  const supported = (entry: { backends?: readonly string[] }) => entry.backends === undefined || entry.backends.includes(backend);
+  return {
+    name: source.name, version: source.version, needs: source.needs,
+    job_types: source.job_types.filter(supported).map(entry => ({
+      type: entry.type, ...(entry.narrator_engine === undefined ? {} : { narrator_engine: entry.narrator_engine }),
+    })),
+    subjects: source.subjects.filter(supported).map(entry => ({ kind: entry.kind, id: entry.id })),
+  };
+}
 
 /**
  * How long between two asks about a held card, and how many asks.
@@ -249,8 +266,8 @@ function publish(state: CrucibleCoordinationState): void {
  *     the class is missing exactly when that machine's catalog says it is not
  *     installed. The catalog row's `name`, `kind` and `expectedBytes` travel
  *     with it, as they always have; `kind` is the catalog's word, `model` on
- *     every backend but a `llama-windows` one, where `pages` resolves to the
- *     llama.cpp binaries as `{kind: "engine", id: "llama-cpp"}` (§3.10, fact 1).
+ *     every backend. Native Windows also needs the separate `llama-cpp` engine
+ *     subject, even when the selected model weights are already installed.
  *
  * **Job types are compared on the TYPE alone**, not on the narrator engine, and
  * that is the server's own rule rather than a shortcut: a `module`'s install
@@ -273,8 +290,10 @@ export function missingForFoundry(
 ): { missing: CrucibleMissingEntry[]; unmet: CrucibleUnmetClass[] } {
   const missing: CrucibleMissingEntry[] = [];
   const unmet: CrucibleUnmetClass[] = [];
+  const localJobTypes = new Set<string>();
+  const module = foundryModuleForBackend(capability.backendKind);
 
-  for (const entry of FOUNDRY_MODULE.job_types) {
+  for (const entry of module.job_types) {
     if (installedJobTypes.includes(entry.type)) continue;
     missing.push({
       what: 'job-type',
@@ -283,7 +302,7 @@ export function missingForFoundry(
     });
   }
 
-  for (const need of FOUNDRY_MODULE.needs) {
+  for (const need of module.needs) {
     const row = capability.classes.find((item) => item.capability === need.class);
     if (row === undefined) {
       unmet.push({
@@ -311,6 +330,7 @@ export function missingForFoundry(
     const subject = catalog.find(
       (item) => item.id === row.selected && (item.kind === 'model' || item.kind === 'engine'),
     );
+    if (subject !== undefined) localJobTypes.add(subject.jobType);
     if (subject !== undefined && subject.installed) continue;
     missing.push({
       what: 'class',
@@ -324,9 +344,21 @@ export function missingForFoundry(
     });
   }
 
-  for (const subject of FOUNDRY_MODULE.subjects) {
+  // A model's weights and the executable that serves them are separate catalog
+  // subjects. Restoring weights after reinstalling Crucible must still restore
+  // the native engine, even when /info already advertises the llm job type.
+  for (const engine of catalog) {
+    if (engine.kind !== 'engine' || engine.installed || !localJobTypes.has(engine.jobType)) continue;
+    missing.push({
+      what: 'subject', kind: engine.kind, id: engine.id, name: engine.name,
+      jobType: engine.jobType, expectedBytes: engine.expectedBytes, inCatalog: true,
+    });
+  }
+
+  for (const subject of module.subjects) {
     const row = catalog.find((item) => item.kind === subject.kind && item.id === subject.id);
     if (row !== undefined && row.installed) continue;
+    if (missing.some(item => item.what === 'subject' && item.kind === subject.kind && item.id === subject.id)) continue;
     missing.push({
       what: 'subject',
       kind: subject.kind,
@@ -400,6 +432,7 @@ export function coordinateEveryServer(): Promise<CrucibleCoordinationState[]> {
 }
 
 async function runCoordination(server: string): Promise<CrucibleCoordinationState> {
+  if (!modelPreparationReady()) return report({ server, phase: 'awaiting-setup' });
   const entry = crucibleServerNamed(server);
   if (entry === null) {
     /*
@@ -664,7 +697,9 @@ function report(state: CrucibleCoordinationState): CrucibleCoordinationState {
 async function postFoundryModule(server: string): Promise<string> {
   const entry = crucibleServerNamed(server);
   if (entry === null) throw new Error(`There is no server called "${server}".`);
-  return (await engineClientFor(entry)).submitTask({ type: 'module', module: FOUNDRY_MODULE });
+  const client = await engineClientFor(entry);
+  const capability = await client.capability();
+  return client.submitTask({ type: 'module', module: foundryModuleForBackend(capability.backendKind) });
 }
 
 /**

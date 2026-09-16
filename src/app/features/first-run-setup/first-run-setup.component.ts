@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, effect } from '@angular/core';
+import { Component, inject, signal, computed, effect, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 
@@ -205,6 +205,10 @@ interface SetupStep {
                    hosts pass embedded, so that input cannot tell them apart;
                    everything else on the panel is identical here and in
                    Settings on purpose. -->
+              @if (firstRun()) {
+                <p>Choose where AI jobs run, including any models you already use through Ollama.
+                  BookForge prepares the required local models after you finish setup.</p>
+              }
               <app-ai-setup-wizard [embedded]="true" [wizard]="true" />
             }
             @case ('crucible') {
@@ -271,6 +275,7 @@ interface SetupStep {
         </div>
 
         <!-- Footer controls -->
+        @if (completionError()) { <p role="alert">{{ completionError() }}</p> }
         <footer class="card-foot">
           @if (active().id === 'library') {
             <!-- On a true first run the library is a one-way gate: a folder must be
@@ -302,15 +307,15 @@ interface SetupStep {
           <button
             type="button"
             class="btn ghost"
-            [disabled]="currentStep() <= 0"
+            [disabled]="currentStep() <= 0 || aiSaving()"
             (click)="back()"
           >
             Back
           </button>
           <div class="spacer"></div>
           @if (!isLast()) {
-            <button type="button" class="btn ghost" (click)="next()">Skip</button>
-            <button type="button" class="btn primary" (click)="next()">Next</button>
+            <button type="button" class="btn ghost" [disabled]="aiSaving()" (click)="next()">Skip</button>
+            <button type="button" class="btn primary" [disabled]="aiSaving()" (click)="next()">Next</button>
           } @else {
             <!-- Add-ons already started downloading as the user advanced; the last
                  page is just an acknowledgement. -->
@@ -825,6 +830,10 @@ export class FirstRunSetupComponent {
   // the last page showing prominent progress instead of dropping them onto a
   // half-ready home; the effect below sends them to Studio the moment it's ready.
   protected readonly finishing = signal(false);
+  private readonly aiWizard = viewChild(AiSetupWizardComponent);
+  protected readonly aiSaving = computed(() => this.aiWizard()?.engineBusy() === true);
+  protected readonly completionError = signal('');
+  private completing = false;
 
   constructor() {
     // Auto-advance to the home page once the engine finishes preparing, if the
@@ -839,6 +848,7 @@ export class FirstRunSetupComponent {
   }
 
   back(): void {
+    if (this.aiSaving()) return;
     // Backing out of the "finishing" wait returns to configuring — let the user
     // revisit earlier steps while the engine keeps preparing in the background.
     if (this.finishing()) this.finishing.set(false);
@@ -851,6 +861,7 @@ export class FirstRunSetupComponent {
    *  immediately queues that step's selected add-ons (they download in the corner),
    *  so by the last page everything is already in flight. */
   next(): void {
+    if (this.aiSaving()) return;
     this.sel.enqueueSelected();
     if (this.isLast()) {
       this.complete();
@@ -862,7 +873,18 @@ export class FirstRunSetupComponent {
   /** Finish: head to Studio. Selected add-ons are already downloading in the
    *  corner; if the engine itself is still preparing, wait on the last page first
    *  (the effect above leaves once it's ready). */
-  complete(): void {
+  async complete(): Promise<void> {
+    if (this.completing) return;
+    this.completing = true;
+    this.completionError.set('');
+    try {
+      await this.runtime.completeSetup();
+    } catch (error) {
+      this.completionError.set((error as Error).message);
+      return;
+    } finally {
+      this.completing = false;
+    }
     this.sel.enqueueSelected(); // catch anything picked on the final step
     if (!this.runtime.ready()) { this.enterFinishing(); return; }
     this.leaveForStudio();

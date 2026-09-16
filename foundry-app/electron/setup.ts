@@ -27,6 +27,7 @@
  * not completed" is not.
  */
 import { readAppSettings, writeAppSettings } from './app-settings';
+import { foundryHost } from './host';
 import type { SetupState } from '../shared/types';
 
 export function setupState(): SetupState {
@@ -45,4 +46,12 @@ export function setupState(): SetupState {
 export function finishSetup(skipped: string[]): SetupState {
   const settings = writeAppSettings({ setupCompleted: true, setupSkipped: skipped });
   return { completed: settings.setupCompleted, skipped: settings.setupSkipped };
+}
+
+/** Discovery is free; model preparation starts after existing setup choices. */
+export function modelPreparationReady(): boolean {
+  const host = foundryHost();
+  if (host !== null) return host.modelPreparationReady === undefined || host.modelPreparationReady();
+  const settings = readAppSettings();
+  return settings.setupCompleted && !settings.setupSkipped.includes('routes');
 }

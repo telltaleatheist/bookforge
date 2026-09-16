@@ -85,7 +85,7 @@ import {
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, getServer } from './servers';
 import { resolveEngine } from './engine-resolve';
 import { crucibleCapabilityWithRoutes, crucibleEngineSettings } from './engine-settings';
-import { BOOKFORGE_MODULE, followModuleTask, postBookForgeModule } from './module-setup';
+import { followModuleTask, moduleForBackend, postBookForgeModule } from './module-setup';
 import { noteCrucibleRole } from './routes';
 import { rankedServers } from './routing';
 import type {
@@ -229,12 +229,13 @@ export function resetCoordinationForTests(): void {
  * one a client compares against. A second opinion here — "installed, but with
  * the wrong engine" — would be this app deciding something the server decides.
  *
- * **Explicit `subjects` keep the comparison they always had.** §5.3a keeps them
+ * **Explicit `subjects` are filtered by the generated backend declarations,
+ * exactly as the posted module is.** §5.3a keeps them
  * for *"genuine app choices"* — the Higgs voice, the whisper size, the rvc
  * base — and the asymmetry is the point: a class is "give me whatever serves
  * this", which a machine may answer "nothing here does"; an id is "give me
- * this one", which it may not, so an explicit id a backend cannot hold is
- * still `unknown_subject` and still refuses the whole module.
+ * this one". A declared subject absent from this backend's catalog remains a
+ * missing subject; a subject declared only for another backend is not requested.
  */
 export function missingForBookForge(
   installedJobTypes: readonly string[],
@@ -243,8 +244,10 @@ export function missingForBookForge(
 ): { missing: CrucibleMissingEntry[]; unmet: CrucibleUnmetClass[] } {
   const missing: CrucibleMissingEntry[] = [];
   const unmet: CrucibleUnmetClass[] = [];
+  const module = moduleForBackend(capability.backendKind);
+  const localJobTypes = new Set<string>();
 
-  for (const entry of BOOKFORGE_MODULE.job_types) {
+  for (const entry of module.job_types) {
     if (installedJobTypes.includes(entry.type)) continue;
     missing.push({
       what: 'job-type',
@@ -253,7 +256,7 @@ export function missingForBookForge(
     });
   }
 
-  for (const need of BOOKFORGE_MODULE.needs) {
+  for (const need of module.needs) {
     const row = capability.classes.find((item) => item.capability === need.class);
     if (row === undefined) {
       /*
@@ -284,6 +287,7 @@ export function missingForBookForge(
     const subject = catalog.find(
       (item) => item.id === row.selected && (item.kind === 'model' || item.kind === 'engine'),
     );
+    if (subject !== undefined && subject.jobType !== null) localJobTypes.add(subject.jobType);
     if (subject !== undefined && subject.installed) continue;
     missing.push({
       what: 'class',
@@ -297,7 +301,7 @@ export function missingForBookForge(
     });
   }
 
-  for (const subject of BOOKFORGE_MODULE.subjects) {
+  for (const subject of module.subjects) {
     const row = catalog.find((item) => item.kind === subject.kind && item.id === subject.id);
     if (row !== undefined && row.installed) continue;
     missing.push({
@@ -308,6 +312,18 @@ export function missingForBookForge(
       jobType: row === undefined ? null : row.jobType,
       expectedBytes: row === undefined ? null : row.expectedBytes,
       inCatalog: row !== undefined,
+    });
+  }
+
+  // Restored weights do not imply the executable serving them is installed.
+  // The engine catalog owns these dependencies; upstream routes need none.
+  for (const engine of catalog) {
+    if (engine.kind !== 'engine' || engine.installed || !localJobTypes.has(engine.jobType)) continue;
+    if (missing.some((entry) => entry.what !== 'job-type'
+      && entry.kind === engine.kind && entry.id === engine.id)) continue;
+    missing.push({
+      what: 'subject', kind: engine.kind, id: engine.id, name: engine.name,
+      jobType: engine.jobType, expectedBytes: engine.expectedBytes, inCatalog: true,
     });
   }
 

@@ -3603,8 +3603,11 @@ export function registerIpc(): void {
    * pressing Check again — see the cache argument in system-probe.ts.
    */
   ipcMain.handle('setup:state', () => setupState());
-  ipcMain.handle('setup:finish', (_event, skipped: string[]) =>
-    finishSetup(Array.isArray(skipped) ? skipped : []));
+  ipcMain.handle('setup:finish', (_event, skipped: string[]) => {
+    const state = finishSetup(Array.isArray(skipped) ? skipped : []);
+    void coordinateEveryServer();
+    return state;
+  });
 
   ipcMain.handle('system:probe', (_event, force?: boolean) => probeSystem(force === true));
 
@@ -3862,7 +3865,12 @@ export function registerIpc(): void {
     patch: SettingsPatch,
   ): Promise<SettingsDocument> => {
     const document = await writeEngineSettings(namedServerOr(serverName), patch);
-    if (patch.routes !== undefined) await afterRegistryChanged();
+    if (patch.routes !== undefined) {
+      const settings = readAppSettings();
+      writeAppSettings({ setupSkipped: settings.setupSkipped.filter(step => step !== 'routes') });
+      await afterRegistryChanged();
+      void coordinateWithServer(serverName, 'its model routes were selected');
+    }
     return document;
   });
   /**

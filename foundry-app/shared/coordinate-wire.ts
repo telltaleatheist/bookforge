@@ -290,6 +290,7 @@ export interface CrucibleModuleProgress {
  * nothing — the engine cannot be made to serve a class by downloading anything.
  */
 export type CrucibleCoordinationState =
+  | { readonly server: string; readonly phase: 'awaiting-setup' }
   /** Reading `/v1/info`, `/v1/catalog` and `/v1/capability`. No task, no card. */
   | { readonly server: string; readonly phase: 'checking' }
   /** The read said nothing is missing. ZERO posts. `unmet` may still have rows. */

@@ -1073,3 +1073,6 @@ export function stopFoundry(): Promise<void> {
     : Promise.resolve();
   return stopping;
 }
+
+/** The host calls this after committing its first-run model/upstream choices. */
+export { coordinateEveryServer as resumeModelPreparation } from './crucible-coordinate';

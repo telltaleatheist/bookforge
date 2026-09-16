@@ -53,12 +53,30 @@ check('the subjects every backend shares are on both', () => {
 });
 
 check('`backends` NEVER reaches a server — validate_module refuses a stray key', () => {
-  for (const backend of ['cuda-linux', 'mlx-darwin']) {
+  for (const backend of ['cuda-linux', 'mlx-darwin', 'llama-windows']) {
     for (const subject of moduleForBackend(backend).subjects) {
       assert.deepStrictEqual(Object.keys(subject).sort(), ['id', 'kind'],
         `a subject went out as ${JSON.stringify(subject)}`);
     }
+    for (const job of moduleForBackend(backend).job_types) {
+      assert.deepStrictEqual(Object.keys(job).sort(),
+        job.narrator_engine === undefined ? ['type'] : ['narrator_engine', 'type']);
+    }
   }
+});
+
+check('native Windows requests only the job types the core generator declares supported', () => {
+  const generated = BOOKFORGE_MODULE.job_types.filter((job) => job.backends.includes('llama-windows'));
+  assert.deepStrictEqual(moduleForBackend('llama-windows').job_types.map((job) => job.type), generated.map((job) => job.type));
+  assert.ok(!moduleForBackend('llama-windows').job_types.some((job) => job.type === 'tts' || job.type === 'align'));
+});
+
+check('an older unscoped job type remains universal and its wire keys are preserved', () => {
+  const before = BOOKFORGE_MODULE.job_types;
+  try {
+    BOOKFORGE_MODULE.job_types = [{ type: 'tts', narrator_engine: 'higgs-v3' }];
+    assert.deepStrictEqual(moduleForBackend('mlx-darwin').job_types, BOOKFORGE_MODULE.job_types);
+  } finally { BOOKFORGE_MODULE.job_types = before; }
 });
 
 check('the vendored file still carries the scope the generator derived', () => {

@@ -82,8 +82,8 @@ export function bookforgeModuleSubjects(): string[] {
  * read the sentence back out of it.
  */
 /**
- * THE MODULE AS THIS BACKEND CAN HOLD IT — subjects scoped to it, `backends`
- * stripped.
+ * The module this backend can serve: job types and subjects are scoped by
+ * generated `backends` metadata, which is stripped before submission.
  *
  * ── Why a module is not one list any more ──────────────────────────────────
  *
@@ -114,6 +114,13 @@ export function bookforgeModuleSubjects(): string[] {
  * before any app could post the new file at all.
  */
 export function moduleForBackend(backend: string): CrucibleModule {
+  const job_types = BOOKFORGE_MODULE.job_types
+    .filter((entry) => {
+      const where = (entry as { backends?: string[] }).backends;
+      return where === undefined || where.includes(backend);
+    })
+    .map(({ type, narrator_engine }) => narrator_engine === undefined
+      ? { type } : { type, narrator_engine });
   const subjects = BOOKFORGE_MODULE.subjects
     .filter((subject) => {
       const where = (subject as { backends?: string[] }).backends;
@@ -132,7 +139,7 @@ export function moduleForBackend(backend: string): CrucibleModule {
       const { kind, id } = subject as { kind: CrucibleModule['subjects'][number]['kind']; id: string };
       return { kind, id };
     });
-  return { ...BOOKFORGE_MODULE, subjects };
+  return { ...BOOKFORGE_MODULE, job_types, subjects };
 }
 
 export async function postBookForgeModule(server: string): Promise<string> {

@@ -5,6 +5,7 @@ import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import { CrucibleConnections } from './crucible/connect';
+import { FirstRunModels } from './crucible/first-run-models';
 import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getPluginRegistry } from './plugins/plugin-registry';
 // The engine table is in shared/ precisely so MAIN can read it — see its header.
@@ -428,6 +429,7 @@ interface FoundryHostOpField {
 }
 
 interface FoundryHostRecord {
+  modelPreparationReady(): boolean;
   /**
    * Where Foundry's projects/ root lives. Read LIVE by Foundry on every settings
    * read (`hostedLibraryDir()`), so this is a getter rather than a captured
@@ -564,6 +566,7 @@ interface FoundryHostRecord {
 }
 
 interface FoundryMountModule {
+  resumeModelPreparation(): Promise<unknown>;
   /** Register everything Foundry owns in this main process. Once, after ready. */
   mountFoundry(host?: FoundryHostRecord): void;
   /**
@@ -822,6 +825,7 @@ let runtimeStatus: RuntimeStatus = { state: 'preparing', message: 'Starting the 
 // True when the bundled environment had to be unpacked from scratch this launch
 // (fresh install or post-"Remove all data"). Set in the first-run setup block.
 let runtimeWasFresh = false;
+let firstRunModels: FirstRunModels;
 
 function setRuntimeStatus(next: RuntimeStatus): void {
   runtimeStatus = next;
@@ -7412,6 +7416,23 @@ function setupIpcHandlers(): void {
     return { success: true, data: runtimeWasFresh };
   });
 
+  ipcMain.handle('bookforge:setup-complete', async () => {
+    try {
+      if (firstRunModels.complete()) {
+        const { coordinateServersOnStart } = await import('./crucible/coordinate.js');
+        void coordinateServersOnStart().catch((error) => {
+          getMainLogger().warn('Crucible model preparation after setup failed', { error: String(error) });
+        });
+        void foundryMount.resumeModelPreparation().catch((error) => {
+          getMainLogger().warn('Foundry model preparation after setup failed', { error: String(error) });
+        });
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
   // Whether spawns use the bundled relocatable env (packaged) vs a conda env
   // (dev / BYO Orpheus). Lets the renderer hide the "Conda — required for TTS"
   // tool row when conda is irrelevant.
@@ -7571,6 +7592,7 @@ function setupIpcHandlers(): void {
    * machine, and that is the coordination STATE's to say, in the row.
    */
   const coordinateWithServer = async (name: string, because: string): Promise<void> => {
+    if (firstRunModels.pending) return;
     try {
       const { coordinateServer } = await import('./crucible/coordinate.js');
       const state = await coordinateServer(name);
@@ -8375,6 +8397,7 @@ function setupIpcHandlers(): void {
    */
   ipcMain.handle('bookforge:crucible-coordinate', async (_event, name: string) => {
     try {
+      if (firstRunModels.pending) return { success: true, deferred: true };
       const { coordinateServer } = await import('./crucible/coordinate.js');
       return { success: true, data: await coordinateServer(name) };
     } catch (err) {
@@ -12764,6 +12787,11 @@ app.whenReady().then(async () => {
   registerPageProtocol();
   registerAudioProtocol();
 
+  // Persist an unfinished wizard before any window can connect an engine.
+  const { bundledRuntimeReady: setupRuntimeReady } = await import('./tools-env-bootstrap.js');
+  firstRunModels = new FirstRunModels(path.join(app.getPath('userData'), 'model-setup.pending'),
+    loadPersistedLibraryRoot() === null || !setupRuntimeReady());
+  runtimeWasFresh = firstRunModels.pending;
   setupIpcHandlers();
   registerClipforgeIpc();
   registerDocumentIpc();
@@ -12828,7 +12856,7 @@ app.whenReady().then(async () => {
     // runtimeWasFresh drives the renderer's guided first-run Setup page. False in
     // dev (nothing ships/downloads) and on a normal up-to-date launch.
     const runtimeReady = bundledRuntimeReady();
-    runtimeWasFresh = !runtimeReady;
+    runtimeWasFresh = firstRunModels.pending || !runtimeReady;
 
     if (runtimeReady) {
       // Already fully installed (returning launch) → ready immediately; still bring
@@ -13028,7 +13056,7 @@ app.whenReady().then(async () => {
     }
     try {
       const { coordinateServersOnStart } = await import('./crucible/coordinate.js');
-      const asked = await coordinateServersOnStart();
+      const asked = firstRunModels.pending ? [] : await coordinateServersOnStart();
       logger.info(asked.length === 0
         ? 'Crucible coordination: no enabled server is registered, so there was nothing to ask.'
         : `Crucible coordination at startup with: ${asked.join(', ')}`);
@@ -13040,6 +13068,7 @@ app.whenReady().then(async () => {
   })();
 
   foundryMount.mountFoundry({
+    modelPreparationReady: () => !firstRunModels.pending,
     // A GETTER, not a captured string. Foundry answers `readAppSettings()` from
     // this property on every read (`hostedLibraryDir()`), so a live one means
     // moving the library moves the hosted window's data with it — the same rule
