@@ -28,6 +28,7 @@
  */
 
 import {
+  EngineStatus,
   IDLE_RECORDING,
   PlaybackStatus,
   QueueSnapshot,
@@ -52,6 +53,79 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const dot = $('dot');
 const statusText = $('statusText');
 const serverBtn = $('server') as HTMLButtonElement;
+const workBox = $('work') as HTMLElement;
+const workSay = $('workSay') as HTMLElement;
+
+/**
+ * WHAT THIS POPUP ITSELF JUST ASKED FOR, before any answer has come back.
+ *
+ * Owen, 2026-09-15: *"i hit unload and it took a minute to actually do
+ * anything. maybe show that it was clicked and its working on it."*
+ *
+ * The button's busy states were already here and already correct — and every
+ * one of them was read off the SNAPSHOT, which arrives when the background
+ * next publishes one. So between the press and that publication the button sat
+ * there looking unpressed, which reads as a click that missed. Pressing again
+ * is the natural thing to do and the worst thing to do.
+ *
+ * So the press is recorded HERE, immediately, and the snapshot takes over when
+ * it arrives. This is not a second opinion about the engine's state: it says
+ * only "this popup has asked and has not been answered yet", which is a fact
+ * about this window that no snapshot can carry.
+ */
+let asked: 'loading' | 'unloading' | null = null;
+let askedTimer: number | null = null;
+
+/**
+ * How long this window will claim a press the background never acknowledged.
+ *
+ * NOT A GUESS AT HOW LONG A LOAD TAKES — a cold Higgs load is 85 seconds on
+ * Owen's own card, and a timer racing that would flip the button back to "Load
+ * voice" while the voice was still loading, which is a worse lie than the one
+ * this whole change is fixing. What it bounds is the OTHER failure: the message
+ * never reached the background at all, so `busy` is never coming and nothing
+ * would ever clear the spinner. `busy` appears as soon as the job is posted, so
+ * if it has not appeared by now the press did not take.
+ */
+const ASKED_GIVE_UP_MS = 12000;
+
+function stopAskedTimer(): void {
+  if (askedTimer === null) return;
+  clearTimeout(askedTimer);
+  askedTimer = null;
+}
+
+/**
+ * Stop waiting locally once the server's own state accounts for the press.
+ *
+ * `busy` is the background saying the job is in flight — the moment the truth
+ * arrives, this window's guess must get out of its way, including when the
+ * answer is "it failed" or "it was already loaded". A local flag that outlived
+ * the fact it stood in for would be a spinner nothing could stop.
+ */
+/**
+ * The mark a working button wears.
+ *
+ * A DISABLED BUTTON ALONE IS AMBIGUOUS: greyed out reads as "you cannot do this
+ * right now", which is what an unconnected server's Load button also looks like.
+ * The spinner is what separates "not available" from "already working on it",
+ * and it is the difference between waiting and pressing again.
+ */
+function spinner(): HTMLElement {
+  const mark = document.createElement('span');
+  mark.className = 'spin';
+  mark.setAttribute('aria-hidden', 'true');
+  return mark;
+}
+
+function settleAsked(engine: EngineStatus | null | undefined): void {
+  if (asked === null) return;
+  // `busy` is the background saying it has the job. From here the SNAPSHOT is
+  // the truth and this window's guess must get out of its way.
+  if (engine?.busy) { asked = null; stopAskedTimer(); return; }
+  if (asked === 'loading' && engine?.resident) { asked = null; stopAskedTimer(); return; }
+  if (asked === 'unloading' && !engine?.resident) { asked = null; stopAskedTimer(); }
+}
 const toggleUiBtn = $('toggleUi') as HTMLButtonElement;
 const playPauseBtn = $('playPause') as HTMLButtonElement;
 const stopBtn = $('stopBtn') as HTMLButtonElement;
@@ -112,16 +186,39 @@ function render(): void {
   }
 
   // Load / Unload
-  if (engine?.busy === 'unloading') {
-    serverBtn.textContent = 'Unloading…';
+  //
+  // THIS WINDOW'S OWN PRESS COMES FIRST. `asked` is set by the click handler and
+  // cleared the moment the server's state accounts for it; until then it is the
+  // only thing that knows a press happened, because `busy` cannot arrive before
+  // the background has published a snapshot.
+  settleAsked(engine);
+  const working: 'loading' | 'unloading' | null = engine?.busy ?? asked;
+
+  // THE BAR, for both directions. An unload is usually quick and sometimes is
+  // not — Owen pressed one and waited a minute — so it gets the same treatment
+  // as a load rather than being assumed fast.
+  workBox.hidden = working === null;
+  if (working !== null) {
+    // The SERVER'S words when there are any, and a plain statement when there
+    // are none yet. Not "please wait": that says nothing this does not.
+    workSay.textContent = engine?.note
+      ?? (working === 'loading' ? 'Asking the server to load it…' : 'Asking the server to unload…');
+  }
+
+  if (working === 'unloading') {
+    serverBtn.replaceChildren(spinner(), document.createTextNode('Unloading…'));
     serverBtn.className = 'danger';
+    serverBtn.disabled = true;
+  } else if (working === 'loading') {
+    serverBtn.replaceChildren(spinner(), document.createTextNode('Loading…'));
+    serverBtn.className = 'primary';
     serverBtn.disabled = true;
   } else if (state === 'running') {
     serverBtn.textContent = 'Unload';
     serverBtn.className = 'danger';
     serverBtn.disabled = false;
   } else if (state === 'starting') {
-    serverBtn.textContent = 'Loading…';
+    serverBtn.replaceChildren(spinner(), document.createTextNode('Loading…'));
     serverBtn.className = 'primary';
     serverBtn.disabled = true;
   } else {
@@ -594,6 +691,33 @@ serverBtn.addEventListener('click', () => {
   // starts or stops a process, and neither takes the card from anyone: a
   // refusal names the holder and stops there.
   const op = snapshot?.engineState === 'running' ? 'unload' : 'load';
+  /*
+   * RECORDED BEFORE THE MESSAGE GOES, and rendered immediately.
+   *
+   * `send` is fire-and-forget across a port; the answer comes back as a
+   * snapshot whenever the background next publishes one, and on a cold server
+   * that was a minute. Setting this first is what makes the press visible in
+   * the same frame as the click.
+   */
+  asked = op === 'unload' ? 'unloading' : 'loading';
+  stopAskedTimer();
+  askedTimer = window.setTimeout(() => {
+    // Only reached when `busy` never arrived — see ASKED_GIVE_UP_MS. Said
+    // rather than silently reverted: a button that quietly un-pressed itself
+    // is how somebody ends up loading a voice twice.
+    if (asked !== null) {
+      asked = null;
+      render();
+      /*
+       * AFTER the render, not before: `render()` hides the work box when
+       * nothing is in flight, and it would take this line down with it. The
+       * note is the surface that survives a redraw — and it is the one the
+       * engine's own refusals already use, so this reads where those read.
+       */
+      setNote('The extension did not hear back about that press — try it again.', 'bad');
+    }
+  }, ASKED_GIVE_UP_MS);
+  render();
   send({ target: 'background', cmd: 'engine', op, voice: selectedVoice || undefined });
 });
 

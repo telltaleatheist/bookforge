@@ -54,6 +54,46 @@
       .wrow { display: flex; gap: 8px; align-items: center; }
       .wrow input[type="number"] { width: 70px; flex: none; }
       .wrow button { flex: 1; }
+      /* The load/unload bar and the spinner on its button. */
+      .work { margin: 6px 0 2px; }
+      .work[hidden] { display: none; }
+      .work-bar {
+        height: 3px;
+        border-radius: 2px;
+        background: #8883;
+        overflow: hidden;
+      }
+      .work-bar i {
+        display: block;
+        height: 100%;
+        width: 38%;
+        border-radius: 2px;
+        background: #f0a020;
+        animation: work-slide 1.15s ease-in-out infinite;
+      }
+      @keyframes work-slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(320%); }
+      }
+      .work-say { font-size: 11px; opacity: 0.7; margin-top: 4px; min-height: 13px; }
+      /* A button that is working says so with a mark of its own, because a
+         greyed-out button alone reads as "not available", not as "busy". */
+      .spin {
+        display: inline-block;
+        width: 9px; height: 9px;
+        margin-right: 6px;
+        vertical-align: -1px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .work-bar i { animation: none; width: 100%; opacity: 0.55; }
+        .spin { animation: none; }
+      }
+
       .note { font-size: 11px; opacity: 0.6; margin-top: 5px; }
       .note.good { color: #3ec46d; opacity: 0.9; }
       .note.bad { color: #ef6b6b; opacity: 0.9; }
@@ -103,6 +143,21 @@
     <div class="status">
       <span class="dot" id="dot"></span>
       <span class="text" id="statusText">Checking…</span>
+    </div>
+
+    <!--
+      THE WORK BAR — shown only while a load or unload is in flight.
+
+      INDETERMINATE ON PURPOSE. `load-voice` reports `warming` MESSAGES and a
+      queue position, and no fraction at all: a percentage here would be a
+      number this extension made up about somebody else's card. The stripe says
+      "something is happening", the line under it is the SERVER'S own words
+      ("Loading Orpheus model...", "Warming up voice...", "queued (position 2)"),
+      and between them they say everything that is actually known.
+    -->
+    <div class="work" id="work" hidden>
+      <div class="work-bar"><i></i></div>
+      <div class="work-say" id="workSay"></div>
     </div>
 
     <!-- NO ENGINE SELECTOR. A voice implies its engine (plan §4a): every row of
