@@ -48,6 +48,7 @@ credential is service-wide; per-client scopes and revocation remain future work.
 - Corrected Crucible [0.6.2 candidate](https://github.com/telltaleatheist/crucible/releases/tag/v0.6.2)
   is published from `d363eaf`, not promoted. All 29 assets (17,348,272,397 bytes)
   were checked against remote SHA256 and size; the manifest was uploaded last.
+  Stable/latest remains 0.6.0 pending the remaining acceptance work.
   Parser and Mac dependency
   fixes are in `db9b2b7`; rebuilt Mac fresh-home initialization passed in
   <https://github.com/telltaleatheist/crucible/actions/runs/35061594490>.
@@ -56,7 +57,9 @@ credential is service-wide; per-client scopes and revocation remain future work.
   It preserves the native executable and records interrupted cleanup. Background
   cleanup cannot start a download or delete sources whose destination is missing.
   Lifecycle, migration and uninstall regression checks: 216 passed, one skipped.
-- BookForge target: `0.1.2927`, same version for Windows and Apple Silicon.
+- BookForge [0.1.2927 Windows candidate](https://github.com/telltaleatheist/bookforge/releases/tag/v0.1.2927)
+  is published from `7f3bfbed`, with the remote installer digest and size verified.
+  Stable/latest remains 0.1.905; a signed/notarized Mac installer is still absent.
   Source `7f3bfbed` waits for selected supported models to be ready before Finish,
   including embedded Foundry, retains a pending marker on failure, and waits for
   authenticated POSIX service readiness. New setup no longer offers the separate
@@ -86,7 +89,9 @@ credential is service-wide; per-client scopes and revocation remain future work.
   the published SDK, so they cover the short service-startup delay already.
 - CI Python 3.12 lacked setuptools for the wheel fixtures' `--no-isolation` build.
   `4948204` provisions the backend explicitly. The frozen candidate's Linux 3.11
-  full suite passed; subsequent full matrix results must be checked separately.
+  full suite passed. After the fix, [CI run 35064195077](https://github.com/telltaleatheist/crucible/actions/runs/35064195077)
+  passed on source `ce2684e`: the complete Linux and Mac Python 3.11/3.12 matrix,
+  SDK checks, and sdist/wheel build all succeeded.
 - An exploratory broader native Windows test run was not a full pass: a POSIX
   fake aligner cancellation stalled on `os.killpg`; a later API selection had
   151 passes and eight failures from executable-shebang installer fixtures and a
@@ -146,3 +151,20 @@ The Mac's preserved configuration selects the supported but uninstalled unquanti
 selected an installed model and did not change defaults or download weights. Mac
 page-image OCR is unsupported by the current manifests; native Windows OCR and
 WSL migration/inference remain separate acceptance work once the local GPU is free.
+
+## Real existing-Ollama route
+
+An isolated Mac Crucible 0.6.2 process was configured through its settings API to
+route translation to the existing Ollama `qwen3.5:0.8b` model. The completion
+returned the expected answer `4` with reasoning disabled, and the response retained
+the provider/model identity. Its temporary home contained only configuration and
+pairing metadata: no model or inference-environment files. Ollama's model/digest
+inventory and the installed Crucible configuration/pairing hashes were unchanged.
+
+The first request proved transport but used its entire 256-token budget on reasoning
+and returned no final content. The second explicitly disabled reasoning and passed
+the known-answer assertion in 1.978 seconds. Both attempts are recorded. The temporary
+server exited normally, the model was unloaded from Ollama, and both Ollama and the
+installed Crucible were checked idle. This proves reuse of an existing Ollama model;
+it does not claim live OpenAI or Anthropic account testing.
+See the [Ollama acceptance report](https://github.com/telltaleatheist/crucible/blob/main/docs/MAC-UPSTREAM-ACCEPTANCE-0.6.2.md).
