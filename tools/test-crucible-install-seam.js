@@ -98,7 +98,7 @@ checkAsync('loadBootstrap RESOLVES — the package is vendored, not a seam', asy
   assert.strictEqual(
     typeof bootstrap.install, 'function',
     'loadBootstrap did not hand back an installer. @crucible/bootstrap is pinned in '
-    + 'package.json to vendor/crucible-bootstrap-0.6.1.tgz; if that pin is gone this is a '
+    + 'package.json to its versioned vendor/crucible-bootstrap tarball; if that pin is gone this is a '
     + 'build that cannot install anything and the button must not be live over it.',
   );
 });
@@ -206,7 +206,7 @@ check('something that is NOT a refusal is install_failed, in its own words', () 
  * exactly what the module asks for, so a person who pressed the button and a
  * person whose app coordinated get the same server.
  */
-check('the driven install asks for exactly what the vendored module asks for', () => {
+check('the service install is lightweight and model requirements stay in the later module', () => {
   const module_ = JSON.parse(fs.readFileSync(
     path.join(REPO, 'shared', 'crucible', 'bookforge.module.json'), 'utf-8'));
   const options = install.bookforgeInstallOptions(() => {});
@@ -222,13 +222,13 @@ check('the driven install asks for exactly what the vendored module asks for', (
 
   const asked = options.jobTypes.map((t) => (typeof t === 'string' ? t : t.type));
   assert.deepStrictEqual(
-    asked, module_.job_types.map((e) => e.type),
-    'the driven install and the module ask for different job types',
+    asked, ['echo'],
+    'first-launch AI choices must precede app runtime/model preparation',
   );
 
   // `tts` must carry its engine: cuda-linux has one venv per narrator engine
   // and the package refuses a bare `tts` by name.
-  const tts = options.jobTypes.find((t) => typeof t === 'object' && t.type === 'tts');
+  const tts = install.bookforgeJobTypes().find((t) => typeof t === 'object' && t.type === 'tts');
   const declared = module_.job_types.find((e) => e.type === 'tts');
   assert.ok(tts, '`tts` is a bare string — the package refuses that by name');
   assert.strictEqual(tts.narratorEngine, declared.narrator_engine);

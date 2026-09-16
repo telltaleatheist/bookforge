@@ -731,3 +731,31 @@ export async function coordinateServersOnStart(
   ]));
   return [...enabled];
 }
+
+/** First-run Finish succeeds only after preparation and a fresh read-only check. */
+export async function prepareBookForgeFirstRun(
+  deps: CoordinateDeps = defaultDeps(),
+  enabledServers?: () => readonly string[],
+): Promise<void> {
+  const names = await coordinateServersOnStart(deps, enabledServers);
+  for (const name of names) {
+    const state = states.get(name);
+    if (state === undefined || !(state.phase === 'stocked'
+      || (state.phase === 'preparing' && state.progress.state === 'done'))) {
+      const detail = state?.phase === 'refused' || state?.phase === 'unreachable' ? state.message
+        : state?.phase === 'preparing' ? state.progress.error?.message ?? state.progress.state
+        : state?.phase ?? 'no preparation result';
+      throw new Error(`Preparing ${name} did not finish: ${detail}. Check this engine and retry Finish.`);
+    }
+    const client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    const [info, catalog, capability] = await Promise.all([
+      client.info(), client.catalog(), crucibleCapabilityWithRoutes(name),
+    ]);
+    const { missing, unmet } = missingForBookForge(info.capabilities.map((row) => row.jobType), catalog, capability);
+    if (missing.length > 0) {
+      const required = missing.map((entry) => entry.what === 'job-type' ? entry.jobType : entry.id).join(', ');
+      throw new Error(`${name} is still preparing or missing ${required}. Check this engine and retry Finish.`);
+    }
+    publish({ server: name, phase: 'stocked', checkedAt: new Date().toISOString(), unmet });
+  }
+}

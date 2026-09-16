@@ -1296,7 +1296,7 @@ export interface FoundryApi {
     /** Has this machine been through it, and what was declined. */
     state(): Promise<SetupState>;
     /** Mark it over — FINISHED OR DISMISSED — and record what was skipped. */
-    finish(skipped: string[]): Promise<SetupState>;
+    finish(skipped: string[], prepare?: boolean): Promise<SetupState>;
     /**
      * What this computer is. Cached in main for the life of the process;
      * `force` re-reads it, which is only worth doing after somebody has

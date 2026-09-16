@@ -65,6 +65,59 @@ async function main() {
       }
     }
   });
+  await check('Finish waits for readiness, retains restart state on failure, and retries once', async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bf-model-ready-')), 'pending');
+    const gate = new FirstRunModels(marker, true);
+    const delayed = defer(); let calls = 0; let completed = false;
+    const pending = gate.finish(async () => { calls++; await delayed.promise; throw Error('model download failed'); });
+    assert.equal(gate.pending, false, 'coordinators may run while preparing');
+    assert.equal(gate.finish(async () => { calls++; }), pending, 'duplicate Finish joins the same preparation');
+    pending.then(() => { completed = true; }, () => {});
+    await Promise.resolve();
+    assert.equal(completed, false);
+    assert.equal(fs.existsSync(marker), true, 'restart must resume unfinished preparation');
+    delayed.resolve();
+    await assert.rejects(pending, /model download failed/);
+    assert.equal(gate.pending, true);
+    assert.equal(new FirstRunModels(marker, false).pending, true);
+    await gate.finish(async () => { calls++; });
+    assert.equal(gate.pending, false);
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(calls, 2);
+    fs.rmdirSync(path.dirname(marker));
+  });
+  await check('new setup refuses legacy downloads and selects the engine-owned cleanup route', async () => {
+    const ts = require('typescript');
+    const vm = require('node:vm');
+    const file = fs.readFileSync(path.join(__dirname, '../src/app/features/ai-setup/ai-setup-wizard.component.ts'), 'utf8');
+    const source = ts.createSourceFile('wizard.ts', file, ts.ScriptTarget.Latest, true);
+    const klass = source.statements.find((node) => ts.isClassDeclaration(node) && node.name.text === 'AiSetupWizardComponent');
+    const methods = klass.members.filter((node) => ts.isMethodDeclaration(node)
+      && ['download', 'useCrucible'].includes(node.name.getText(source)));
+    assert.equal(methods.length, 2);
+    const code = ts.transpileModule(`class WizardProbe { ${methods.map((node) => node.getText(source)).join('\n')} }; WizardProbe;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    const Probe = vm.runInNewContext(code);
+    const probe = new Probe(); let downloads = 0; let saved;
+    Object.assign(probe, {
+      wizard: () => true, confirmIfTooBig: async () => true, _progress: { update() {} },
+      ai: { downloadModel: async () => { downloads++; }, refresh: async () => {} },
+      crucibleServer: () => 'desk', managedCleanupModel: () => 'ollama/existing-27b',
+      crucibleModel: () => 'old-local-choice', settings: { updateAIConfig: (value) => { saved = value; } },
+    });
+    await assert.rejects(probe.download('cogito'), /managed by Crucible/);
+    assert.equal(downloads, 0);
+    probe.useCrucible();
+    assert.equal(saved.provider, 'crucible');
+    assert.equal(saved.crucible.server, 'desk');
+    assert.equal(saved.crucible.model, 'ollama/existing-27b');
+    probe.wizard = () => false;
+    await probe.download('cogito');
+    assert.equal(downloads, 1, 'legacy maintenance remains available outside first-run');
+    assert.match(file, /@if \(!wizard\(\)\) \{\s*<section class="card">/,
+      'the legacy download card is excluded from setup');
+  });
   await check('first launch verifies and adds the existing engine as an ordinary row', async () => {
     const calls = [];
     const name = await autoConnectLocal(false, { registryExists: () => false, pairing: () => pairing,

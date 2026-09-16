@@ -2,6 +2,8 @@
 
 Target app version: **0.1.2927**, explicitly set with `BOOKFORGE_BUILD_COUNT=2927` on both build hosts. The source package version is 0.1.7; packaging normally replaces its patch with the Git commit count. The explicit release number avoids publishing a version below the existing 0.1.2174 Windows build or letting the two build hosts choose different versions.
 
+The product acceptance contract is [Crucible's canonical intent](https://github.com/telltaleatheist/crucible/blob/main/docs/INTENT.md). This worklog records implementation and evidence, not satisfaction of every acceptance scenario.
+
 ## What the installer and first launch do
 
 Windows production packaging uses electron-builder NSIS through `packaging/package-win.js`. `packaging/installer.nsh` creates an uninstall shortcut and removes BookForge app data on a deliberate uninstall, retaining app data during an upgrade. It does **not** download Crucible or install WSL. The old Inno Setup script is not the production packaging path.
@@ -14,7 +16,7 @@ WSL is an explicit optional **Enable WSL acceleration** action in BookForge. It 
 
 Remote connections accept an IP address or hostname. The shared SDK chooses Crucible's canonical port unless a URL or explicit port is supplied. BookForge displays a short matching code; an already connected BookForge or Foundry approves it through **Connection requests** in Settings. The private device code and eventual bearer token remain in Electron main. Approval resolves the registered endpoint to its engine, because the controller does not own a pairing store. The optional maintenance console and existing connect-code import still work.
 
-AI routes and upstream credentials use Crucible's authenticated settings API from BookForge. On first run, connecting an engine does not start model downloads: the existing AI step applies choices first, and Finish starts automatic module coordination. A persisted pending marker resumes unfinished setup even after a library was chosen. Existing configured installations continue coordinating at startup. Crucible remains the owner of installation and model state; its bare installer selects no models.
+AI routes and upstream credentials use Crucible's authenticated settings API from BookForge. On first run, connecting an engine does not start model downloads: the existing AI step applies choices first, and Finish starts automatic module coordination. Finish waits for both BookForge and embedded Foundry preparation, then fresh catalog/capability verification, before leaving setup. Failures show a retry action. A persisted pending marker survives restart until that verification succeeds. Existing configured installations continue coordinating at startup. Crucible remains the owner of installation and model state; its bare installer selects no models. The POSIX service bootstrap requests only `echo`, deferring app runtimes and weights to the later module.
 
 ## Build and publication sequence
 
@@ -34,7 +36,7 @@ Build results, artifact hashes and release URLs will be appended when available.
 
 ### Completed checks
 
-- Final SDK client tarball SHA-512: `8eeeZv9xTbmygVI/z2JeWDIniAPWP5HdE59wa1gHGqg8Vx6SugULgCWMyRi0dRnGTgLvp/nDi1x1ydmO869sig==`; the lockfile integrity matches.
+- Initial 0.6.1 SDK client tarball SHA-512: `8eeeZv9xTbmygVI/z2JeWDIniAPWP5HdE59wa1gHGqg8Vx6SugULgCWMyRi0dRnGTgLvp/nDi1x1ydmO869sig==`; this candidate was superseded by 0.6.2 before publication.
 - `npm test`: Electron TypeScript compile succeeded; **168 keeper suites passed, one external EPUB fixture skipped, zero failures**. The new first-launch/connection/WSL suite passed **17 checks**. Log: `release/bookforge-0.1.2927-test.log`.
 - Angular production build succeeded. The existing initial bundle budget warning remains (approximately 675 kB against a 500 kB warning threshold).
 - Windows MuPDF and llama.cpp binary staging completed. Seed staging correctly reports that the old ebook2audiobook payload is no longer shipped.
@@ -49,3 +51,20 @@ The model audit found and corrected three setup seams: the readiness comparison 
 An explicit fake-server Ollama route with no local LLM weights produces zero module requests. A routed upstream also requires no local inference executable. Existing Ollama models are used through the configured service URL, without importing or copying weights. BookForge's current AI panel exposes account testing and model choices even when the local engine has a GPU. Wizard navigation waits for a settings write to finish before moving to review.
 
 Verification after these changes and the embedded Foundry sync at `a34b3b7`: Electron compilation and **168 keeper suites passed, one external EPUB fixture skipped, zero failures** (`release/bookforge-model-setup-test.log`). First-run/connection tests passed 20 checks, coordination passed 52, backend module filtering passed nine. Angular production compilation passed again. Final packaging remains pending the coordinated core version. No publication or live GPU acceptance was performed during this audit.
+
+### Remaining acceptance gaps against the canonical intent
+
+- The initial background-preparation gap was closed before final packaging: Finish now awaits both apps and a fresh read-only readiness check. A task's `done` frame with still-missing catalog weights is rejected, without blindly submitting another module. Unsupported optional backend capabilities remain named as unavailable; readiness does not turn them into supported capabilities.
+- CPU fixtures verify setup ordering and upstream no-download decisions, but do not prove fresh-machine inference, voice quality, Ollama/cloud requests, remote network pairing or native-to-WSL storage migration. Those require the recorded live acceptance scenarios owned by the coordinated release validation.
+- The Windows NSIS deliberate-uninstall hook deletes BookForge app data. Preserving-data uninstall/reinstall acceptance must use an isolated profile and explicitly preserve data; it is not validated by the candidate build. The installer does preserve app data during an upgrade.
+- Mac compilation passed, but no signed/notarized release artifact is available while the keychain denies signing and credential access. A Windows-only prerelease must say that plainly and must not replace the stable cross-platform release.
+- The legacy offline Cogito store and its maintenance remain for existing users. New setup no longer offers or permits that download path; it selects the connected Crucible's cleanup capability and provider route instead. Existing working offline configuration/weights are preserved. Migrating legacy weights and retiring the remaining maintenance path is not claimed in this release.
+
+### Final 0.6.2 dependency freeze
+
+Exact archives from core commit `d363eaf27cefe26e1487813a7528ce332d23dde5` were installed without repacking. Their SHA-512 values match the lockfile:
+
+- Client: `ZF4bqMqVzW88hwy8rcoTK5A2+7s9CAHXiM28AJ8kaW79+sCwegxOuV0oeFeVNjl9QPy/kn/PDgXotIcGATG6Hg==`.
+- Bootstrap: `0UA8gfbvvtrsMFsPWh0TLqlYKSIxwiN2WlX4YjVcJxEPcz5sMchrW8WqQu33uL8V8/cEqbxyA2TnVpZBvv8GUA==`.
+
+The generated BookForge module is `0.6.2+a37ab17a8f1e`. Focused checks against these packages passed: first-run/connections 22, coordination 54, installation 41. The final Electron compile and full keeper run passed **168 suites, one external fixture skip, zero failures** (`release/bookforge-0.6.2-test.log`). Embedded Foundry is version 2.0.2 at source `24f586bbcb0fcaf8064fb2948b724126f84f7cb9`.

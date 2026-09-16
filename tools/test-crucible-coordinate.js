@@ -1483,6 +1483,26 @@ async function main() {
     assert.strictEqual(warnings[0][1].error, 'local_protocol_invalid');
   });
 
+  await check('first-run readiness rechecks the catalog without another module request', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({});
+    try {
+      const name = registerFake(fake.url);
+      await coordinate.prepareBookForgeFirstRun(deps(), () => [name]);
+      assert.strictEqual(fake.seen.catalog, 2, 'a fresh verification read follows preparation');
+      assert.strictEqual(fake.seen.posts.length, 0);
+    } finally { await fake.close(); }
+  });
+  await check('a task done frame cannot finish setup while required weights remain absent', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ missing: ['denoise-roformer'] });
+    try {
+      const name = registerFake(fake.url);
+      await assert.rejects(coordinate.prepareBookForgeFirstRun(deps(), () => [name]), /still preparing or missing denoise-roformer/);
+      assert.strictEqual(fake.seen.posts.length, 1, 'verification does not submit another module');
+      assert.strictEqual(fake.seen.catalog, 2);
+    } finally { await fake.close(); }
+  });
   summary('crucible coordination');
 }
 

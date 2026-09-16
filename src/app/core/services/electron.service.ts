@@ -4247,7 +4247,7 @@ export class ElectronService {
      * Coordinate with one server now. Joins a run already in flight rather
      * than starting a second, so calling it on arrival at a screen is safe.
      */
-    coordinate: (name: string): Promise<{ success: boolean; data?: CrucibleCoordinationState; error?: string }> =>
+    coordinate: (name: string): Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: boolean; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.coordinate(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),

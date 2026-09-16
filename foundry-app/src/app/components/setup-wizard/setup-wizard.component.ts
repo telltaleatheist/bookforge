@@ -212,7 +212,7 @@ const STEPS: readonly StepDef[] = [
   },
   {
     id: 'done',
-    title: 'Ready',
+    title: 'Finish setup',
     blurb: 'Everything here stays changeable in Settings.',
   },
 ];
@@ -409,7 +409,7 @@ const STEPS: readonly StepDef[] = [
               <p class="line">
                 Keep these choices and continue, or use an existing Ollama model, OpenAI or
                 Anthropic for text work. Ollama keeps its own model files; Crucible connects
-                through its API. Models are prepared after you finish setup.
+                through its API. Models are prepared when you finish setup.
               </p>
               <app-engine-upstreams
                 [serverName]="routeServer()"
@@ -468,7 +468,13 @@ const STEPS: readonly StepDef[] = [
 
           <!-- ── Done ────────────────────────────────────────────────────── -->
           @if (current() === 'done') {
-            <p class="lead">That is everything foundry needs to be asked for.</p>
+            <p class="lead">Your choices are saved. Foundry will prepare the selected models before opening.</p>
+            @if (finishing()) {
+              @for (server of crucibleServers(); track server.name) {
+                <p class="line">{{ server.name }}: {{ coordinationOf(server.name) }}</p>
+              }
+            }
+            @if (finishError()) { <p class="line bad">{{ finishError() }}</p> }
             @if (skipped().length > 0) {
               <p class="line">
                 Skipped: {{ skippedTitles() }}. Settings has a button that opens this again, and
@@ -488,7 +494,7 @@ const STEPS: readonly StepDef[] = [
           }
           <span class="spacer"></span>
           @if (current() === 'done') {
-            <button class="primary" type="button" (click)="finish()">Start using Foundry</button>
+            <button class="primary" type="button" [disabled]="finishing()" (click)="finish()">{{ finishing() ? 'Preparing models…' : finishError() ? 'Retry preparation' : 'Start using Foundry' }}</button>
           } @else {
             @if (skippable()) {
               <button class="ghost" type="button" (click)="skip()">Skip this</button>
@@ -1262,7 +1268,11 @@ export class SetupWizardComponent {
    * happened — and the settings screen naming them is the whole reason the list
    * is kept. Coming back is one button there.
    */
+  protected readonly finishing = signal(false);
+  protected readonly finishError = signal('');
+
   protected async dismiss(): Promise<void> {
+    if (this.finishing()) return;
     const from = this.index();
     const rest = this.visible().slice(from)
       .filter((step) => step.id !== 'welcome' && step.id !== 'done')
@@ -1273,13 +1283,18 @@ export class SetupWizardComponent {
   }
 
   protected async finish(): Promise<void> {
-    await this.close(this.skipped());
+    if (this.finishing()) return;
+    this.finishing.set(true);
+    this.finishError.set('');
+    try { await this.close(this.skipped(), true); }
+    catch (error) { this.finishError.set(error instanceof Error ? error.message : String(error)); }
+    finally { this.finishing.set(false); }
   }
 
-  private async close(skipped: string[]): Promise<void> {
+  private async close(skipped: string[], prepare = false): Promise<void> {
     const choicesNotSeen = this.routeDoc() === null;
     const finished = choicesNotSeen && !skipped.includes('routes') ? [...skipped, 'routes'] : skipped;
-    await api?.setup.finish(finished);
+    await api?.setup.finish(finished, prepare);
     this.ui.closeSetup();
   }
 

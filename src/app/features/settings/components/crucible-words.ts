@@ -641,7 +641,7 @@ function preparingWords(
   const what = joinWords(state.missing.map(missingWords));
 
   if (progress.state === 'done') {
-    return `Ready — this engine now has ${what}.`;
+    return `Preparation finished for ${what}.`;
   }
   if (progress.state === 'cancelled') {
     return `Stopped preparing ${what}. Everything that finished is still there.`;

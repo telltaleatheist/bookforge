@@ -40,13 +40,10 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The Crucible version this app's client pin and this plan both name.
- *
- * 0.6.1 includes the native lifecycle commands required by this installer.
- * The source candidate is vendored locally; fresh installs must request its
- * release and fail explicitly until its verified runtime packs are published.
+ * The Crucible release tested with this app's vendored client and bootstrap.
+ * The installation keeper verifies this matches the dependency pins.
  */
-export const CRUCIBLE_RELEASE = '0.6.1';
+export const CRUCIBLE_RELEASE = '0.6.2';
 
 /** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
@@ -206,7 +203,7 @@ export class CrucibleInstallError extends Error {
  *
  * There is no `require.resolve` probe and no try/catch around the import. A
  * missing package is a BUILD that is wrong, not a state to report at runtime:
- * `package.json` pins `vendor/crucible-bootstrap-0.6.1.tgz` and
+ * `package.json` pins the versioned bootstrap tarball and
  * `tools/test-crucible-install-seam.js` fails the day it is not there.
  */
 export async function loadBootstrap(): Promise<BootstrapModule> {
@@ -317,9 +314,8 @@ function requireNarratorEngine(entry: { type: string; narrator_engine?: string }
  * THE JOB TYPES BOOKFORGE ASKS AN ENGINE FOR, from the vendored module.
  *
  * `shared/crucible/bookforge.module.json` is the one place this app states
- * what it needs (PHASE13-OPERATOR.md §5.4), so the driven install and the
- * coordination that follows it ask for exactly the same things — one file,
- * generated from the crucible manifests, read by both.
+ * what it needs. These requirements are prepared by module coordination after
+ * the first-run AI choices; the service installer itself remains lightweight.
  */
 export function bookforgeJobTypes(): BootstrapJobTypeRequest[] {
   return BOOKFORGE_MODULE.job_types.map((entry) =>
@@ -350,7 +346,8 @@ export function bookforgeInstallOptions(
   } = {},
 ): BootstrapInstallOptions {
   return {
-    jobTypes: bookforgeJobTypes(),
+    // A bare service first; app modules prepare runtimes/models after AI choices.
+    jobTypes: ['echo'],
     release: CRUCIBLE_RELEASE,
     onLine,
     ...(handlers.onStep === undefined ? {} : { onStep: handlers.onStep }),

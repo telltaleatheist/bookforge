@@ -10,10 +10,18 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **a34b3b7** — *Connect remote Crucible engines in Foundry and prepare 2.0.1 releases* |
+| Source sha | **24f586b** — *Wait for selected model readiness and prepare Foundry 2.0.2* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-16 |
-| Copied by | Mechanical source sync, verified against Foundry `a34b3b7:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `24f586b:app/`; details below |
+
+## Corrected 2.0.2 source sync (2026-09-16)
+
+All 180 tracked authoritative app files are byte-exact copies of Foundry 24f586b.
+Client/bootstrap archives are the frozen Crucible 0.6.2 bytes; old 0.6.1 archives
+were removed. Finish waits for preparation and fresh stock verification; the host
+uses the same readiness-guaranteed resumeModelPreparation() export. Source tests:
+870 pass. IPC documentation remains a separately copied authoritative document.
 
 ## Native model preparation and first-run sync (2026-09-16)
 

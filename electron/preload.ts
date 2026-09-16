@@ -1429,7 +1429,7 @@ export interface ElectronAPI {
      * "connected", and a driven install that has just finished. Joins a run
      * already in flight rather than starting a second.
      */
-    coordinate: (name: string) => Promise<{ success: boolean; data?: CrucibleCoordinationState; error?: string }>;
+    coordinate: (name: string) => Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: boolean; error?: string }>;
     /** Stop the module task this server is running. Answers `cancelling`. */
     cancelSetUp: (name: string, taskId: string) => Promise<{ success: boolean; error?: string }>;
     /** Every coordination state change, for every server, as main learns it. */

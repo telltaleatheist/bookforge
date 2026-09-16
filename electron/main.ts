@@ -7418,15 +7418,14 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('bookforge:setup-complete', async () => {
     try {
-      if (firstRunModels.complete()) {
-        const { coordinateServersOnStart } = await import('./crucible/coordinate.js');
-        void coordinateServersOnStart().catch((error) => {
-          getMainLogger().warn('Crucible model preparation after setup failed', { error: String(error) });
-        });
-        void foundryMount.resumeModelPreparation().catch((error) => {
-          getMainLogger().warn('Foundry model preparation after setup failed', { error: String(error) });
-        });
-      }
+      await firstRunModels.finish(async () => {
+        const { prepareBookForgeFirstRun } = await import('./crucible/coordinate.js');
+        const results = await Promise.allSettled([
+          prepareBookForgeFirstRun(), foundryMount.resumeModelPreparation(),
+        ]);
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failures.length > 0) throw new Error(failures.map((result) => String(result.reason)).join('\n'));
+      });
       return { success: true };
     } catch (error) {
       return { success: false, error: (error as Error).message };

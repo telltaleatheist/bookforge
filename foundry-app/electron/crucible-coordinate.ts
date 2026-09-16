@@ -431,6 +431,26 @@ export function coordinateEveryServer(): Promise<CrucibleCoordinationState[]> {
   return Promise.all(enabled.map((entry) => coordinateServer(entry.name)));
 }
 
+/** Preparation completion includes a fresh read; a task's done event alone is insufficient. */
+export async function prepareFoundryForUse(): Promise<CrucibleCoordinationState[]> {
+  const states = await coordinateEveryServer();
+  for (const state of states) {
+    if (state.phase !== 'stocked' && !(state.phase === 'preparing' && state.progress.state === 'done')) {
+      const detail = 'message' in state ? state.message : state.phase === 'preparing' ? state.progress.error?.message ?? state.progress.state : state.phase;
+      throw new Error(`${state.server}: model preparation is not ready (${detail}). Check the engine and retry.`);
+    }
+    const entry = crucibleServerNamed(state.server);
+    if (entry === null || !entry.enabled) throw new Error(`${state.server}: the engine connection changed. Retry setup.`);
+    const client = await engineClientFor(entry);
+    const [info, catalog, capability] = await Promise.all([client.info(), client.catalog(), readCapability(entry)]);
+    const { missing } = missingForFoundry(info.capabilities.map(row => row.jobType), catalog, capability);
+    if (missing.length !== 0) {
+      throw new Error(`${state.server}: ${missing.length} required model or runtime item(s) are still missing. Retry preparation.`);
+    }
+  }
+  return states;
+}
+
 async function runCoordination(server: string): Promise<CrucibleCoordinationState> {
   if (!modelPreparationReady()) return report({ server, phase: 'awaiting-setup' });
   const entry = crucibleServerNamed(server);

@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, effect, viewChild } from '@angular/core';
+import { Component, DestroyRef, inject, signal, computed, effect, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 
@@ -12,6 +12,8 @@ import { SetupDownloadService } from '../../core/services/setup-download.service
 import { LibraryService } from '../../core/services/library.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
+import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
+import { coordinationWords } from '../settings/components/crucible-words';
 
 interface SetupStep {
   id: 'library' | 'ai' | 'crucible' | 'review';
@@ -76,9 +78,9 @@ interface SetupStep {
                    repeated on every step) — declutters the body. -->
               <span class="engine-pill" [class.ready]="runtime.ready()">
                 @if (runtime.ready()) {
-                  <span class="engine-check">&#10003;</span> Engine ready
+                  <span class="engine-check">&#10003;</span> Local tools ready
                 } @else {
-                  <span class="engine-spinner"></span> Engine setting up…
+                  <span class="engine-spinner"></span> Local tools setting up…
                 }
               </span>
               <!-- First run is mandatory — no skip. Reopened later as
@@ -104,7 +106,17 @@ interface SetupStep {
           </div>
         </header>
 
-        @if (finishing()) {
+        @if (modelPreparing()) {
+          <div class="finishing" role="status" aria-live="polite">
+            <span class="engine-spinner big"></span>
+            <h2>Preparing your models</h2>
+            <p>BookForge and Foundry are preparing your selected capabilities. Setup finishes after they are verified ready.</p>
+            @for (state of modelProgress(); track state.server) {
+              <p><strong>{{ state.server }}</strong>: {{ modelProgressWords(state) }}</p>
+            }
+            <p>You can close BookForge and resume setup later.</p>
+          </div>
+        } @else if (finishing()) {
           <!-- Finishing view: the user hit Done/Finish but the engine is still
                unpacking. Sit here with prominent progress; the effect navigates
                to Studio automatically once it's ready. Back returns to configuring. -->
@@ -320,7 +332,7 @@ interface SetupStep {
             <!-- Add-ons already started downloading as the user advanced; the last
                  page is just an acknowledgement. -->
             <button type="button" class="btn primary" (click)="complete()">
-              {{ runtime.ready() ? 'Done' : 'Finish' }}
+              {{ completionError() ? 'Retry setup' : runtime.ready() ? 'Done' : 'Finish' }}
             </button>
           }
           }
@@ -833,9 +845,16 @@ export class FirstRunSetupComponent {
   private readonly aiWizard = viewChild(AiSetupWizardComponent);
   protected readonly aiSaving = computed(() => this.aiWizard()?.engineBusy() === true);
   protected readonly completionError = signal('');
+  protected readonly modelPreparing = signal(false);
+  protected readonly modelProgress = signal<CrucibleCoordinationState[]>([]);
+  protected readonly modelProgressWords = coordinationWords;
   private completing = false;
 
   constructor() {
+    const stop = this.electron.crucible.onCoordination((state) => {
+      this.modelProgress.update((states) => [...states.filter((row) => row.server !== state.server), state]);
+    });
+    inject(DestroyRef).onDestroy(stop);
     // Auto-advance to the home page once the engine finishes preparing, if the
     // user already hit Finish while it was still working. Selected add-ons are
     // already downloading in the corner (queued on each step) — nothing to start here.
@@ -876,6 +895,7 @@ export class FirstRunSetupComponent {
   async complete(): Promise<void> {
     if (this.completing) return;
     this.completing = true;
+    this.modelPreparing.set(true);
     this.completionError.set('');
     try {
       await this.runtime.completeSetup();
@@ -884,6 +904,7 @@ export class FirstRunSetupComponent {
       return;
     } finally {
       this.completing = false;
+      this.modelPreparing.set(false);
     }
     this.sel.enqueueSelected(); // catch anything picked on the final step
     if (!this.runtime.ready()) { this.enterFinishing(); return; }

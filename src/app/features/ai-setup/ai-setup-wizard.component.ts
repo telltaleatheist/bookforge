@@ -92,7 +92,7 @@ import {
       <div class="status-banner" [class.ok]="ai.available()">
         @if (ai.available()) {
           <span class="dot ok"></span>
-          <span>AI is ready. {{ activeSummary() }}</span>
+          <span>AI route configured. {{ activeSummary() }}</span>
         } @else {
           <span class="dot"></span>
           <span>No AI configured yet. Set up one of the options below.</span>
@@ -100,6 +100,7 @@ import {
       </div>
 
       <!-- ── Bundled local AI ── -->
+      @if (!wizard()) {
       <section class="card">
         <div class="card-head">
           <h2>&#128187; Bundled local AI</h2>
@@ -184,6 +185,7 @@ import {
           }
         }
       </section>
+      }
 
       <!-- ── Crucible ── -->
       <section class="card">
@@ -195,14 +197,12 @@ import {
         @if (crucibleServers().length === 0) {
           <p class="muted">
             No Crucible server is enabled for this machine. Add one — or enable one — in
-            Settings &rarr; Crucible Servers. This app never starts a server and never loads a
-            model on one: both are the operator's, on purpose.
+            the previous setup step or Settings &rarr; Crucible Servers.
           </p>
         } @else {
           <p class="muted">
-            A cleanup runs on the model that is ALREADY resident on the server you pick. Nothing
-            here loads one: a load takes that machine's card, so it is done deliberately in
-            Settings &rarr; Crucible Servers.
+            Crucible manages local models and configured Ollama or cloud routes. Choose the routes
+            below; setup prepares the required models once, shared with Foundry.
           </p>
 
           <div class="setting-row">
@@ -218,7 +218,7 @@ import {
             </desktop-button>
           </div>
 
-          @if (crucibleServer()) {
+          @if (crucibleServer() && !wizard()) {
             <div class="setting-row">
               <label class="setting-label">Model</label>
               <select class="key-input" [value]="crucibleModel()" (change)="setCrucibleModel($any($event.target).value)">
@@ -253,7 +253,7 @@ import {
             <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
           }
 
-          @if (crucibleServer() && crucibleModel() && !usingCrucible()) {
+          @if (crucibleServer() && (wizard() ? managedCleanupModel() : crucibleModel()) && !usingCrucible()) {
             <div class="use-row">
               <desktop-button variant="primary" (click)="useCrucible()">Use this Crucible for cleanup</desktop-button>
             </div>
@@ -806,6 +806,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
 
   async download(id: string): Promise<void> {
+    if (this.wizard()) throw new Error('First-run model downloads are managed by Crucible.');
     if (!(await this.confirmIfTooBig(id, 'Download'))) return;
     // Seed an immediate 0% bar so the UI reacts before the first progress tick.
     this._progress.update((m) => ({ ...m, [id]: { modelId: id, pct: 0, receivedBytes: 0, totalBytes: 0, phase: 'download' } }));
@@ -856,6 +857,10 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly crucibleTesting = signal(false);
 
   readonly usingCrucible = computed(() => this.settings.getAIConfig().provider === 'crucible');
+  readonly managedCleanupModel = computed(() => {
+    const clean = this.capability()?.classes.find((row) => row.capability === 'clean');
+    return clean?.enabled ? clean.selected : '';
+  });
 
   crucibleServer(): string { return this.settings.getAIConfig().crucible?.server ?? ''; }
   crucibleModel(): string { return this.settings.getAIConfig().crucible?.model ?? ''; }
@@ -888,7 +893,11 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.crucibleServers.set(res.data.routing.ranked.filter((row) => row.enabled).map((row) => row.name));
-    const chosen = this.settings.getAIConfig().crucible?.server;
+    let chosen = this.settings.getAIConfig().crucible?.server;
+    if (!chosen && this.wizard() && this.crucibleServers().length > 0) {
+      chosen = this.crucibleServers()[0];
+      this.settings.updateAIConfig({ crucible: { server: chosen, model: '' } });
+    }
     if (chosen) await this.loadCrucibleModels(chosen);
   }
 
@@ -983,6 +992,10 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.capability.set(res.data);
+    if (this.wizard() && this.managedCleanupModel()
+      && (this.usingCrucible() || !this.ai.localUsable())) {
+      this.useCrucible();
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1566,7 +1579,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   /** Make this the app's AI. The model must be resident when a run starts. */
   useCrucible(): void {
     const server = this.crucibleServer();
-    const model = this.crucibleModel();
+    const model = this.wizard() ? this.managedCleanupModel() : this.crucibleModel();
     if (!server || !model) return;
     this.settings.updateAIConfig({ provider: 'crucible', crucible: { server, model } });
     void this.ai.refresh();

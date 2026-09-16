@@ -38,6 +38,7 @@ import { probeCloud, writeCloudProviders } from './cloud-providers';
 import { openCrucibleUi } from './crucible-ui';
 import {
   coordinateEveryServer,
+  prepareFoundryForUse,
   coordinateServer,
   coordinationStates,
   onCoordination,
@@ -137,7 +138,7 @@ import {
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
 import { applyPageReaderRemoval, machineModels, removeFoundryDownloads } from './machine-models';
-import { finishSetup, setupState } from './setup';
+import { finishSetup, finishPreparedSetup, setupState } from './setup';
 import { probeSystem } from './system-probe';
 import {
   createCaptureProject,
@@ -3603,10 +3604,10 @@ export function registerIpc(): void {
    * pressing Check again — see the cache argument in system-probe.ts.
    */
   ipcMain.handle('setup:state', () => setupState());
-  ipcMain.handle('setup:finish', (_event, skipped: string[]) => {
-    const state = finishSetup(Array.isArray(skipped) ? skipped : []);
-    void coordinateEveryServer();
-    return state;
+  ipcMain.handle('setup:finish', (_event, skipped: string[], prepare?: boolean) => {
+    const choices = Array.isArray(skipped) ? skipped : [];
+    if (prepare === true && !choices.includes('routes')) return finishPreparedSetup(choices, prepareFoundryForUse);
+    return finishSetup(choices);
   });
 
   ipcMain.handle('system:probe', (_event, force?: boolean) => probeSystem(force === true));

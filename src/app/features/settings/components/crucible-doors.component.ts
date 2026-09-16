@@ -99,9 +99,13 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
                 <strong>{{ serverNames() }}</strong>
               </p>
               <p class="hint">
+                @if (coordinationDeferred()) {
+                  Choose your AI routes on the next step. Models are prepared when you finish setup.
+                } @else {
                 BookForge is checking and preparing these engines for your projects.
                 Progress appears below. Which one a book goes to is the order in
                 Settings → Crucible Servers.
+                }
               </p>
               <!--
                 NOTHING TO PRESS. Coordination is not a decision (the brief of
@@ -841,6 +845,7 @@ export class CrucibleDoorsComponent {
    * state belongs to its row in the servers panel.
    */
   readonly coordination = signal<CrucibleCoordinationState | null>(null);
+  readonly coordinationDeferred = signal(false);
   /** A stop that refused. Its own line, because it is about the STOP. */
   readonly setupError = signal<string | null>(null);
   /** Has the connected face already asked? One ask per mount, not one per paint. */
@@ -934,7 +939,10 @@ export class CrucibleDoorsComponent {
 
     void this.readCoordination();
     const stop = this.electron.crucible.onCoordination((state) => {
-      if (state.server === this.registeredHere()) this.coordination.set(state);
+      if (state.server === this.registeredHere()) {
+        this.coordinationDeferred.set(false);
+        this.coordination.set(state);
+      }
     });
     this.destroyRef.onDestroy(stop);
 
@@ -1285,6 +1293,7 @@ export class CrucibleDoorsComponent {
    */
   private async coordinateHere(name: string): Promise<void> {
     const res = await this.electron.crucible.coordinate(name);
+    this.coordinationDeferred.set(res.deferred === true);
     if (!res.success) {
       this.setupError.set(res.error
         ?? 'BookForge could not tell this machine\u2019s engine what it needs, and nothing said why.');

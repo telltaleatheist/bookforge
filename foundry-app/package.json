@@ -1,8 +1,8 @@
 {
   "name": "foundry-app",
   "productName": "Foundry",
-  "version": "2.0.1",
-  "description": "Foundry desktop \u2014 read a scanned PDF, cast a clean EPUB.",
+  "version": "2.0.2",
+  "description": "Foundry desktop — read a scanned PDF, cast a clean EPUB.",
   "private": true,
   "main": "dist/electron/main.js",
   "scripts": {
@@ -71,7 +71,7 @@
       "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
     }
   },
-  "_crucibleClientNote": "Crucible 0.6.1 source candidate, vendored as npm-pack tarball files. The corresponding binary release is not published yet; fresh installs request 0.6.1 and fail explicitly until its verified runtime packs are available. Never replace these files with directory dependencies or old 0.6.0 release bytes.",
+  "_crucibleClientNote": "Crucible SDKs are vendored as immutable npm-pack tarballs matching the pinned installer release. Update both packages, integrity hashes, and generated module metadata together; directory dependencies are not supported.",
   "dependencies": {
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
@@ -79,8 +79,8 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
-    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-0.6.1.tgz",
-    "@crucible/client": "file:vendor/crucible-client-0.6.1.tgz",
+    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-0.6.2.tgz",
+    "@crucible/client": "file:vendor/crucible-client-0.6.2.tgz",
     "libheif-js": "1.19.8",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "^6.2.108",

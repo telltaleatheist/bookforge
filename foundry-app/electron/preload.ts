@@ -357,7 +357,7 @@ const api: FoundryApi = {
 
   setup: {
     state: () => ipcRenderer.invoke('setup:state'),
-    finish: (skipped) => ipcRenderer.invoke('setup:finish', skipped),
+    finish: (skipped, prepare) => ipcRenderer.invoke('setup:finish', skipped, prepare),
     probe: (force) => ipcRenderer.invoke('system:probe', force === true),
   },
 

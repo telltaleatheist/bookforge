@@ -14,7 +14,7 @@ export function installationSteps(platform: InstallPlatform): CrucibleInstallSte
     title: 'Install Crucible',
     detail: platform === 'win32'
       ? 'Crucible installs its native Windows engine and the tray that manages it. WSL is an optional upgrade in Crucible.'
-      : 'Crucible installs its runtime, service and desktop controls. Foundry asks for text and page reading.',
+      : 'Crucible installs its runtime, service and desktop controls. Models are prepared after you choose where work runs.',
     command: platform === 'win32' ? hostInstallCommand(BOOTSTRAP_VERSION) : null,
     done: false,
   }, {
@@ -58,7 +58,7 @@ export async function driveCrucibleInstall(
       }
     } else if (runner.platform === 'darwin' || runner.platform === 'linux') {
       await install({
-        release: BOOTSTRAP_VERSION, jobTypes: ['llm'],
+        release: BOOTSTRAP_VERSION, jobTypes: ['echo'],
         onLine: (line, _stream, step) => onLine(`${step}: ${line}`),
       }, runner);
     } else {

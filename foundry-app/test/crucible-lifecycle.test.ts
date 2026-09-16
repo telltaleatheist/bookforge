@@ -216,3 +216,60 @@ test('generated backend annotations filter preparation and never reach the modul
   ]);
   expect(JSON.stringify(foundryModuleForBackend('cuda-linux', module))).not.toContain('backends');
 });
+
+
+test('POSIX initial installation prepares only the lightweight core before model choices', async () => {
+  spyOn(host, 'hosted').mockReturnValue(false);
+  spyOn(bootstrap, 'startLocal').mockResolvedValue(status('running'));
+  spyOn(registry, 'addLocalCrucible').mockResolvedValue({ outcome: 'added', servers: [],
+    serverName: 'local', url: 'http://127.0.0.1:7100', configPath: 'pairing' });
+  const install = spyOn(bootstrap, 'install').mockResolvedValue({} as never);
+  await installer.driveCrucibleInstall(() => {}, { platform: 'darwin' } as bootstrap.Runner);
+  expect(install.mock.calls[0]![0].jobTypes).toEqual(['echo']);
+});
+
+test('first-run completion persists only after readiness and resets its gate after failure', async () => {
+  const setup = await import('../electron/setup');
+  spyOn(host, 'foundryHost').mockReturnValue(null);
+  spyOn(settings, 'readAppSettings').mockReturnValue({setupCompleted: false, setupSkipped: []} as never);
+  const write = spyOn(settings, 'writeAppSettings').mockReturnValue({setupCompleted: true, setupSkipped: []} as never);
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const completion = setup.finishPreparedSetup([], () => pending);
+  expect(setup.modelPreparationReady()).toBe(true);
+  expect(write).not.toHaveBeenCalled();
+  release();
+  await completion;
+  expect(write).toHaveBeenCalledWith({setupCompleted: true, setupSkipped: []});
+  write.mockClear();
+  await expect(setup.finishPreparedSetup([], async () => { throw new Error('download failed'); })).rejects.toThrow('download failed');
+  expect(write).not.toHaveBeenCalled();
+  expect(setup.modelPreparationReady()).toBe(false);
+});
+
+
+test('readiness verifies current stock without posting again and rejects a disappeared runtime', async () => {
+  const coordinate = await import('../electron/crucible-coordinate');
+  const dispatch = await import('../electron/crucible-dispatch');
+  const setup = await import('../electron/setup');
+  spyOn(setup, 'modelPreparationReady').mockReturnValue(true);
+  const entry = {name:'readiness-fixture',url:'http://fixture:7100',token:'fixture',enabled:true};
+  spyOn(registry, 'crucibleServers').mockReturnValue([entry]);
+  spyOn(registry, 'crucibleServerNamed').mockReturnValue(entry);
+  const capability = {backendKind:'llama-windows',totalBytes:24e9,desktopAllowanceBytes:0,
+    classes:['clean','translate','simplify','analysis','pages'].map(capability => ({capability,
+      enabled:true,selected:'fixture-model',reason:'fixture',shortfallBytes:0,route:'local' as const}))};
+  spyOn(dispatch, 'readCapability').mockResolvedValue(capability);
+  const rows = [{kind:'model',id:'fixture-model',name:'fixture',jobType:'llm',installed:true,
+    installedBytes:1,expectedBytes:1,floors:[],license:null,source:'fixture',resident:false}];
+  const catalog = mock(async () => rows);
+  const submitTask = mock(async () => 'should-not-post');
+  spyOn(registry, 'engineClientFor').mockResolvedValue({info:async()=>({capabilities:[{jobType:'llm'}]}),
+    catalog,submitTask} as never);
+  expect((await coordinate.prepareFoundryForUse())[0]!.phase).toBe('stocked');
+  expect(catalog).toHaveBeenCalledTimes(2);
+  expect(submitTask).not.toHaveBeenCalled();
+  catalog.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows.map(row=>({...row,installed:false})));
+  await expect(coordinate.prepareFoundryForUse()).rejects.toThrow('still missing');
+  expect(submitTask).not.toHaveBeenCalled();
+});
