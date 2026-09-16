@@ -2301,6 +2301,22 @@ class OrpheusStreamServer:
             # index would be dropped as stale.
             for it in items:
                 if id(it) not in emitted:
+                    # RECORDED, NOT ONLY SENT. Without this the `finally` below
+                    # sees the row as unanswered and emits a SECOND batch_item
+                    # for it, and the caller refuses the pair by name:
+                    # "narrator answered row N twice. One answer per row is
+                    # narrator's own guarantee" (crucible jobs/tts/render.py).
+                    #
+                    # MEASURED 2026-09-15 on Owen's 3090 Ti: a real mid-batch
+                    # exception became a `narrator_protocol` failure, and the
+                    # duplicate MASKED the true cause — this message carries the
+                    # exception, the `finally`'s says only "No audio generated",
+                    # and the caller failed on the pair before either was read.
+                    # So the defect cost the diagnosis as well as the batch.
+                    #
+                    # The comment above this block already stated the rule; only
+                    # the line that keeps it was missing.
+                    emitted.add(id(it))
                     send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
         finally:
             # Same one-answer-per-item guarantee as the MLX path. vLLM's
