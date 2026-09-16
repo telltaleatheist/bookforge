@@ -539,6 +539,7 @@ async function prepare(
   deps: CoordinateDeps,
 ): Promise<CrucibleCoordinationState> {
   let attempts = 0;
+  const settleBudget = { remaining: SETTLE_POLL_ATTEMPTS };
 
   // The wait loop. Every turn of it is one POST attempt; a `server_busy` turns
   // into one slow settle check, never a tight poll.
@@ -556,7 +557,9 @@ async function prepare(
           server, phase: 'waiting', missing, unmet, holder, attempts, stopped,
         });
         if (stopped) return waiting;
-        await waitForSettle(server, deps);
+        if (!await waitForSettle(server, deps, settleBudget)) {
+          return report({ server, phase: 'waiting', missing, unmet, holder, attempts, stopped: true });
+        }
         continue;
       }
       if (err instanceof CrucibleRefused && err.code === 'task_busy') {
@@ -594,6 +597,10 @@ async function prepare(
     const last = await followModuleTask(server, taskId, (progress) => {
       report({ server, phase: 'preparing', missing, unmet, progress, followed });
     });
+    // A shared engine may have been preparing the other app's module. Its
+    // success only releases the task slot; re-read our demand before deciding
+    // whether another task is needed. Never blindly repeat an accepted task.
+    if (followed && last.state === 'done') return runCoordination(server, deps);
     return report({ server, phase: 'preparing', missing, unmet, progress: last, followed });
   }
 }
@@ -607,15 +614,18 @@ async function prepare(
  * post is still the only authority — it is simply the cheapest honest signal
  * that asking again is worth a round trip.
  */
-async function waitForSettle(server: string, deps: CoordinateDeps): Promise<void> {
-  await deps.sleep(SETTLE_POLL_MS);
+async function waitForSettle(
+  server: string, deps: CoordinateDeps, budget: { remaining: number },
+): Promise<boolean> {
   try {
     const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-    for (;;) {
-      const activity = await client.activity();
-      if (activity.slots.accelerated.acceptsWork) return;
+    while (budget.remaining > 0) {
+      budget.remaining -= 1;
       await deps.sleep(SETTLE_POLL_MS);
+      const activity = await client.activity();
+      if (activity.slots.accelerated.acceptsWork) return true;
     }
+    return false;
   } catch {
     /*
      * The settle check could not be made. Returning is right: the POST that
@@ -624,6 +634,7 @@ async function waitForSettle(server: string, deps: CoordinateDeps): Promise<void
      * error here is not hiding a failure — it is declining to invent a second
      * outcome for a question the next line asks properly.
      */
+    return true;
   }
 }
 

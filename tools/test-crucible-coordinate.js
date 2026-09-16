@@ -284,6 +284,7 @@ function startFake(options) {
       sse.frame('progress', { bytes_done: 3435973836, bytes_total: 9126805504, file: 'denoise-roformer' });
       sse.frame('skipped', { reason: 'llm is installed' });
       sse.frame('step', { name: 'reload', index: 2, total: 2, job_types: ['llm', 'tts'] });
+      opts.onTaskDone?.(taskId);
       sse.frame('done', {});
       sse.end();
       return true;
@@ -883,10 +884,11 @@ async function main() {
   });
 
   // ── 3. task_busy is FOLLOWED ─────────────────────────────────────────────
-  await check('a task already running is FOLLOWED, never re-posted', async () => {
+  await check('a followed task that satisfies our demand needs no additional POST', async () => {
     coordinate.resetCoordinationForTests();
+    const missing = ['denoise-roformer'];
     const fake = await startFake({
-      missing: ['denoise-roformer'],
+      missing, onTaskDone: () => { missing.length = 0; },
       refuse: (n) => (n === 1
         ? { status: 409, code: 'task_busy', message: 'a module task is already running' }
         : null),
@@ -899,8 +901,37 @@ async function main() {
       assert.strictEqual(fake.seen.taskLists, 1, 'the running task is looked up');
       assert.deepStrictEqual(fake.seen.eventStreams, ['task-already-running'],
         'its own stream is the one joined');
-      assert.strictEqual(state.phase, 'preparing');
-      assert.strictEqual(state.followed, true, 'the state says it joined somebody else\'s task');
+      assert.strictEqual(state.phase, 'stocked');
+      assert.strictEqual(fake.seen.catalog, 2, 'the joined task is checked against our actual demand');
+    } finally { await fake.close(); }
+  });
+
+  await check('first-run follows another app then prepares its own remaining requirements', async () => {
+    coordinate.resetCoordinationForTests();
+    const missing = ['denoise-roformer'];
+    const fake = await startFake({ missing,
+      refuse: n => n === 1 ? { status: 409, code: 'task_busy', message: 'Foundry preparation in progress' } : null,
+      onTaskDone: taskId => { if (taskId !== 'task-already-running') missing.length = 0; },
+    });
+    try {
+      await coordinate.prepareBookForgeFirstRun(deps(), () => [registerFake(fake.url)]);
+      assert.strictEqual(fake.seen.posts.length, 2, 'one busy response, then our genuinely missing requirements');
+      assert.deepStrictEqual(fake.seen.eventStreams, ['task-already-running', 'task-2']);
+    } finally { await fake.close(); }
+  });
+
+  await check('continuous activity polling has a bounded wait and preserves the holder', async () => {
+    coordinate.resetCoordinationForTests();
+    const fake = await startFake({ missing: ['denoise-roformer'], refuse: BUSY, acceptsWorkAfter: Infinity });
+    let sleeps = 0;
+    try {
+      const state = await coordinate.coordinateServer(registerFake(fake.url), deps({ sleep: async () => {
+        if (++sleeps > coordinate.SETTLE_POLL_ATTEMPTS) throw Error('activity wait exceeded its bound');
+      } }));
+      assert.strictEqual(state.phase, 'waiting');
+      assert.strictEqual(state.stopped, true);
+      assert.strictEqual(state.holder.who, BUSY.details.who);
+      assert.strictEqual(fake.seen.posts.length, 1, 'a continuously held card must not receive repeated POSTs');
     } finally { await fake.close(); }
   });
 
@@ -1502,6 +1533,26 @@ async function main() {
       assert.strictEqual(fake.seen.posts.length, 1, 'verification does not submit another module');
       assert.strictEqual(fake.seen.catalog, 2);
     } finally { await fake.close(); }
+  });
+  await check('failed first-run readiness survives restart and succeeds only after a verified retry', async () => {
+    coordinate.resetCoordinationForTests();
+    const { FirstRunModels } = require('../dist/electron/crucible/first-run-models');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-prepare-resume-'));
+    const marker = path.join(directory, 'pending');
+    const missing = ['denoise-roformer'];
+    const fake = await startFake({ missing, onTaskDone: id => { if (id === 'task-2') missing.length = 0; } });
+    try {
+      const name = registerFake(fake.url);
+      const prepare = () => coordinate.prepareBookForgeFirstRun(deps(), () => [name]);
+      await assert.rejects(new FirstRunModels(marker, true).finish(prepare), /still preparing or missing/);
+      assert.ok(fs.existsSync(marker));
+      const resumed = new FirstRunModels(marker, false);
+      assert.strictEqual(resumed.pending, true);
+      await resumed.finish(prepare);
+      assert.strictEqual(fs.existsSync(marker), false);
+      assert.strictEqual(fake.seen.posts.length, 2);
+      assert.strictEqual(coordinate.coordinationStates()[name].phase, 'stocked');
+    } finally { await fake.close(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
   summary('crucible coordination');
 }
