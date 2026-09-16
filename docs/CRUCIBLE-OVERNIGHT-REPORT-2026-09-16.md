@@ -1,5 +1,9 @@
 # Crucible integration cleanup — September 16, 2026
 
+Historical snapshot: for subsequent release work and current limitations, see
+[release validation](CRUCIBLE-RELEASE-VALIDATION-2026-09-16.md). Product direction
+is defined by [the intent of Crucible](https://github.com/telltaleatheist/crucible/blob/main/docs/INTENT.md).
+
 The audit found real integration and installation defects and corrected them across
 BookForge, Crucible, and Foundry. The intended product shape is preserved: install
 Crucible on Windows, use its native engine immediately, and optionally let Crucible
@@ -120,8 +124,3 @@ success from that old executable is not claimed.
 - [Crucible installation and networking](../../crucible/docs/INSTALL-NETWORK-AUDIT-2026-09-16.md)
 - [Crucible release readiness](../../crucible/docs/PATCH-RELEASE-READINESS-2026-09-16.md)
 - [Foundry integration](../../foundry/docs/CRUCIBLE-INTEGRATION-AUDIT-2026-09-16.md)
-# Historical snapshot
-
-For subsequent release work and current limitations, see
-[release validation](CRUCIBLE-RELEASE-VALIDATION-2026-09-16.md). Product direction
-is defined by [the intent of Crucible](https://github.com/telltaleatheist/crucible/blob/main/docs/INTENT.md).

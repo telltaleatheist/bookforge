@@ -78,8 +78,9 @@ installation or full production workflow has passed.
 
 ## Training and test boundary
 
-The latest confirmed Claude Orpheus status says training ended at 01:26 Eastern,
-with the pause screen and subsequent ladder still using the local GPU. The user
+Claude's 02:10 Eastern update says the pause screen is still active and the ladder
+has not started; estimated whole-chain completion moved to about 04:45. Training
+ended at 01:26. The estimate is not authorization to assume completion. The user
 subsequently authorized service downtime while in bed. GPU interruption still
 requires checking that the ladder has finished. No local live service, GPU
 workload, or WSL installation has been changed during this release phase.
