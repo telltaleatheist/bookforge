@@ -260,6 +260,21 @@ include = ["narrator*"]
 
 [tool.setuptools.package-data]
 narrator = ["**/*.md"]
+
+# THE ACRONYM LIST, which is DATA THE RENDER READS and not documentation.
+#
+# It was undeclared from the day it landed (2026-09-13) until a render died on
+# it, and the two-day delay is the whole lesson: `paragraph_packer` loads this
+# file at MODULE IMPORT, and the only importer on the render path is
+# `truncation.split_halves`, which imports it LAZILY - so a git-installed
+# narrator started, loaded its weights, reported ready, rendered 82 chunks, and
+# only then met a chunk long enough to need splitting:
+#
+#     FileNotFoundError: .../narrator/text/caps_acronyms.json
+#
+# Every earlier chunk had proved nothing. `**/*.md` above shipped the prose
+# beside it and this file was the one thing in `text/` that the render needs.
+"narrator.text" = ["*.json"]
 # NARRATOR'S OWN HIGGS v3 LAUNCHER, shipped as package data so a `pip install`
 # from git carries it. `engine/higgs/v3_served.py` resolves the pair through
 # `importlib.resources` when the caller names neither NARRATOR_HIGGS3_URL nor

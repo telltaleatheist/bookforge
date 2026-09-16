@@ -353,6 +353,22 @@ CAPS_ACRONYMS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 def _load_caps_acronyms(path: str = CAPS_ACRONYMS_PATH) -> frozenset:
     import json
+    if not os.path.isfile(path):
+        # NAMED, BECAUSE OF WHERE THIS IS REACHED FROM. This runs at module
+        # import, and on the render path the only importer is
+        # `truncation.split_halves` - imported lazily, so it is first reached by
+        # the first chunk long enough to need splitting. A bare
+        # FileNotFoundError there reads as a bug in the retake logic that had
+        # just worked 82 times; it is neither, and it is not fixable from the
+        # render side.
+        raise FileNotFoundError(
+            f'{path} is missing: this narrator was installed without its '
+            'package data. caps_acronyms.json is data the RENDER reads, not '
+            'documentation - it is declared in python/pyproject.toml under '
+            '[tool.setuptools.package-data] as "narrator.text" = ["*.json"], '
+            'and an install predating that declaration carries every .py file '
+            'and not this one. Reinstall narrator from a commit that declares '
+            'it.')
     with open(path, 'r', encoding='utf-8') as handle:
         document = json.load(handle)
     for key in ('lettered', 'spokenAsWord'):
