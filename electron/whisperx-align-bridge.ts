@@ -551,7 +551,15 @@ export async function runEpubAlign(
   const epubPath = manifestService.resolveManifestPath(config.projectId, variant.path);
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
 
-  return runEpubAlignOnFiles(jobId, win, epubPath, config.m4bPath, config.language);
+  /*
+   * THE VENUE THE QUEUE ASSIGNED, passed through rather than re-decided. The row
+   * already carries it (`GenerateSentencesConfig.runVenue`, written by the pump
+   * at admission), and asking again here would be a second answer to "which
+   * machine is this book on" — the thing §4.4 exists to make one answer.
+   */
+  return runEpubAlignOnFiles(jobId, win, epubPath, config.m4bPath, config.language, {
+    ...(config.runVenue === undefined ? {} : { crucibleServer: config.runVenue.server }),
+  });
 }
 
 /**
@@ -595,6 +603,12 @@ export async function runEpubAlignOnFiles(
   opts?: {
     reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number; device?: string;
     paragraphAware?: boolean; snapSilenceS?: number; reportHoleMinS?: number;
+    /**
+     * A registered Crucible server's NAME, when the queue assigned this run to
+     * one. Absent means the local spawn below, which is still the only road on
+     * a machine with no server.
+     */
+    crucibleServer?: string;
   },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
   const reportPath = opts?.reportPath;
@@ -617,6 +631,69 @@ export async function runEpubAlignOnFiles(
   const headingCount = sentences.filter((s) => s.kind === 'heading').length;
   glog(`[epub-align] extracted ${sentences.length} sentences (${headingCount} heading-like, ` +
     `paragraph-aware=${paragraphAware})`);
+
+  /*
+   * 2b. THE SAME ALIGNMENT, ON A SERVER — when the queue assigned one.
+   *
+   * Crucible's `align-longform` runs these four stages with the SAME code for
+   * the two heavy ones: `coarse_align` and `snap_boundaries` were ported
+   * verbatim from `align_audiobook.py` and are held to it by a differential test
+   * over 27 books and 200 seam layouts. So this is not a second implementation
+   * of the alignment, it is the alignment somewhere else.
+   *
+   * ONLY THE SENTENCES AND THE AUDIO CROSS. The EPUB stays here — it is this
+   * app's book, and what the server needs from it is text, which the extraction
+   * above has already produced with its headings stamped. Sending the EPUB would
+   * mean the server parsing it a second way.
+   *
+   * THE LOCAL SPAWN BELOW IS NOT A FALLBACK. A run assigned to a server that
+   * fails there FAILS: silently re-running hours of compute on this machine
+   * would be a different venue than the one the queue charged a slot for, and
+   * the bench would be wrong about which card is busy.
+   */
+  if (opts?.crucibleServer !== undefined) {
+    const { runLongformAlign } = await import('./crucible/align-longform.js');
+    glog(`[epub-align] on crucible "${opts.crucibleServer}": `
+      + `${sentences.length} sentence(s), ${path.basename(audioPath)}`);
+    const outcome = await runLongformAlign({
+      server: opts.crucibleServer,
+      audioPath,
+      sentences: sentences.map((sentence, index) => ({
+        index, text: sentence.text, kind: sentence.kind,
+      })),
+      language: language && language !== 'auto' ? language : 'en',
+      outputDir: path.dirname(reportPath ?? audioPath),
+      onProgress: (p) => sendProgress(
+        win, jobId,
+        Math.round(p.fraction * 100),
+        p.message || stageMessage(p.stage ?? ''),
+      ),
+      onLog: (line) => glog(`[epub-align/crucible] ${line}`),
+    });
+    /*
+     * THE COUNT IS THE SERVER'S OWN, out of `align-report.json`'s `placed`, and
+     * not re-derived by parsing the VTT here. The server counted what it wrote;
+     * a second count on this side is a second answer to one question, and the
+     * two would disagree the first time a cue carries a NOTE.
+     *
+     * A report that cannot be read is a failure rather than a zero: `cues: 0`
+     * flows downstream as a successful alignment that placed nothing.
+     */
+    let cues: number;
+    try {
+      const report = JSON.parse(fs.readFileSync(outcome.reportPath, 'utf8')) as { placed?: unknown };
+      if (typeof report.placed !== 'number') throw new Error('no `placed` count');
+      cues = report.placed;
+    } catch (err) {
+      throw new Error(
+        `crucible "${opts.crucibleServer}" wrote an alignment report this build cannot read `
+        + `(${outcome.reportPath}): ${(err as Error).message}. The cue count is the server's own `
+        + 'number and is not guessed at here.',
+      );
+    }
+    glog(`[epub-align] crucible "${opts.crucibleServer}" placed ${cues} cue(s)`);
+    return { vttPath: outcome.vttPath, cues, reportPath: outcome.reportPath };
+  }
 
   /*
    * 3. THE TWO INTERPRETERS, both named, neither guessed.

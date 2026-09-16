@@ -53,46 +53,44 @@ export const generateSentencesStep: StepModule = {
   produces: 'vtt',
   resource: () => 'gpu',
   /**
-   * THE WHISPER METHOD TRAVELS; `epub-align` DOES NOT (crucible
-   * `docs/PHASE7-LANES.md` §4).
+   * BOTH METHODS TRAVEL, since 2026-09-15.
    *
-   * Transcription is a Crucible `asr` job — `electron/crucible/asr.ts`, taken
-   * through `transcribeAtVenue` below — so a book assigned to the Mac has its
-   * transcript made on the Mac. `epub-align` is a different act entirely: it
-   * reads the project's EPUB off this machine's disk and aligns against it with
-   * a local aligner, and Crucible has no job type for it. Declaring `any` for
-   * that method would hand it a machine that cannot see the book.
+   * `whisper` always did — it is a Crucible `asr` job, taken through
+   * `transcribeAtVenue`. `epub-align` did not, and the reason was real: Crucible
+   * had no job of that shape. Its `align` job takes
+   * `{chunks:[{index,text}], inputs:{"<index>.flac"}}` — a caller who ALREADY
+   * KNOWS which seconds hold which sentences, which is true of a render and is
+   * precisely what this act must DISCOVER.
    *
-   * ── "NO JOB TYPE FOR IT" IS A SHAPE, NOT AN OMISSION (measured 2026-09-15) ─
+   * Crucible now has `align-longform` (crucible `jobs/alignlongform/`), which is
+   * that discovery: transcribe -> coarse-align -> align -> write, all four on
+   * the server. Owen ruled it on 2026-09-15 — *"align longform, is that the
+   * generate-sentences logic? that should be a gpu job"* — and the WHOLE step
+   * travels, CPU stages included, by the same ruling that sends a whole TTS step
+   * (*"even if it's cpu"*). One slot, its own, for the duration.
    *
-   * Crucible's `align` job is
-   * `{type:"align", model:"qwen3-aligner", params:{language, chunks:[{index,text}]},
-   * inputs:{"<index>.flac":{blob_id}}}` — one audio input PER chunk, matched by
-   * index. That is a caller who ALREADY KNOWS which seconds of audio go with
-   * which sentences, which is true of a render (narrator wrote the chunks) and
-   * is exactly what this act has to DISCOVER. `align_audiobook.py`'s stages are
-   * `transcribe` (faster-whisper over the whole m4b, CPU env) → `coarse-align`
-   * (a DTW of the ebook's sentences onto that rough transcript, which is what
-   * produces the chunk spans) → `align` (Qwen3 per chunk, on the card) →
-   * whisper-authority gate, monotonic clamps, drift correction, silence snap,
-   * `write`. Only the third stage has the shape Crucible offers, and the two
-   * before it are most of the wall clock and all of the knowledge.
+   * IT IS THE SAME ALIGNMENT AND NOT A SECOND ONE. The server's two heavy stages
+   * are `coarse_align` and `snap_boundaries`, ported verbatim from
+   * `electron/scripts/align_audiobook.py` and held to it by a differential test
+   * over 27 books and 200 seam layouts. Only the sentences and the audio cross;
+   * the EPUB stays here, because what the server needs from it is text this app
+   * has already extracted with its headings stamped.
    *
-   * So this cannot be flipped to `any` by routing it through
-   * `electron/crucible/align.ts`; it needs a Crucible job of a different shape
-   * (`align-longform`), which is a RULING in `docs/CRUCIBLE_ROLLOUT_PLAN.md`
-   * §B7 and not something to invent here. `electron/crucible/align.ts`'s own
-   * header already says the same thing from the other side: *"that bridge keeps
-   * its local CPU spawn until it is deleted, not moved."* Until then this
-   * method is one of the reasons the bench still draws a legacy GPU row
-   * (`shared/queue/slot-sets.ts`).
+   * ANSWERED UNCONDITIONALLY NOW, where it used to be asked of the config. The
+   * per-method question is gone because the answer stopped differing — and a
+   * ternary whose arms agree is a reader's invitation to look for a difference
+   * that is not there.
    *
-   * Asked of the CONFIG rather than answered unconditionally because the two
-   * methods are one row type, and §4's safety default is per step: a step that
-   * has not been taught to travel does not travel.
+   * WHAT THIS EMPTIES. `LONGFORM_ALIGN_SET` was the bench's last GPU row that is
+   * not a registered server, and `epub-align` was its only remaining tenant
+   * (`video-assembly` left when it was measured as CPU; the legacy render venue
+   * is deleted). With this, no GPU row is drawn for anything but a Crucible
+   * engine — which is Owen's *"without a crucible server, there is no gpu slot"*
+   * reached completely rather than conditionally. The set and its migration stay
+   * readable for queues written before today; `tools/test-queue-slot-sets.js`
+   * pins both halves.
    */
-  machines: (config: Record<string, unknown>): 'local' | 'any' =>
-    (config as unknown as GsStepConfig).method === 'epub-align' ? 'local' : 'any',
+  machines: (): 'local' | 'any' => 'any',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as GsStepConfig;

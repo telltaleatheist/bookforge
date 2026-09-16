@@ -130,12 +130,48 @@ const STEPS = {
 
   // ── 2. Where the CONFIG decides ──────────────────────────────────────────
 
-  await check('generate-sentences travels for whisper and never for epub-align', () => {
+  await check('generate-sentences travels for BOTH methods since 2026-09-15', () => {
+    /*
+     * This asserted `epub-align` -> 'local' with the reason "Crucible has no job
+     * type for it", which was true and stopped being true: crucible's
+     * `align-longform` (jobs/alignlongform/) runs all four stages server-side
+     * and is proven on the card. Owen ruled it — "align longform, is that the
+     * generate-sentences logic? that should be a gpu job" — and the BookForge
+     * side dispatches through `crucible/align-longform.ts`.
+     *
+     * The premise is the thing that moved, not the rule. Both methods travel now,
+     * so `machines()` answers unconditionally and there is nothing left for the
+     * config to decide.
+     */
     const mod = STEPS['generate-sentences']();
-    assert.strictEqual(mod.machines({ method: 'whisper' }), 'any');
-    assert.strictEqual(mod.machines({}), 'any', 'absent is the whisper default the step reads');
-    assert.strictEqual(mod.machines({ method: 'epub-align' }), 'local',
-      'it aligns against the project EPUB on THIS disk, and Crucible has no job type for it');
+    for (const config of [{ method: 'whisper' }, {}, { method: 'epub-align' }]) {
+      assert.strictEqual(mod.machines(config), 'any', JSON.stringify(config));
+    }
+  });
+
+  await check('epub-align travelling is what empties the last non-server GPU row', () => {
+    /*
+     * The consequence, pinned where somebody changing `machines()` back will see
+     * it. `LONGFORM_ALIGN_SET` is the bench's only GPU row that is not a
+     * registered server, and `epub-align` was its last tenant — `video-assembly`
+     * left when it was measured as CPU, and the legacy render venue is deleted.
+     * A step that does not travel charges that set, so answering 'local' here
+     * again would bring the row back.
+     */
+    const slots = require(path.join(REPO, 'dist', 'shared', 'queue', 'slot-sets.js'));
+    const job = { id: 'j', steps: [] };
+    const step = { id: 's', resource: 'gpu', travels: true, status: 'queued', progress: {} };
+    assert.notStrictEqual(
+      slots.slotSetForStep({ ...job, waitForResolved: 'mac' }, step),
+      slots.LONGFORM_ALIGN_SET,
+      'a travelling GPU step must not charge the local aligner set',
+    );
+    assert.strictEqual(
+      slots.slotSetForStep(job, { ...step, travels: false }),
+      slots.LONGFORM_ALIGN_SET,
+      'and a step that does NOT travel still charges it — the migration path for '
+      + 'queues written before today',
+    );
   });
 
   await check('an AI step travels only against a Crucible, and both read one rule', () => {
