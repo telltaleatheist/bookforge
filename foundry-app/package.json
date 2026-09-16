@@ -1,7 +1,7 @@
 {
   "name": "foundry-app",
   "productName": "Foundry",
-  "version": "0.1.0",
+  "version": "2.0.1",
   "description": "Foundry desktop \u2014 read a scanned PDF, cast a clean EPUB.",
   "private": true,
   "main": "dist/electron/main.js",
@@ -18,7 +18,8 @@
     "build:engine:win-x64": "bash ../tools/release-build.sh windows-x64",
     "build:engine:mac": "bash ../tools/release-build.sh darwin-arm64",
     "package:win-x64": "npm run build:engine:win-x64 && npm run build && electron-builder --win --x64",
-    "package:mac": "npm run build:engine:mac && npm run build && electron-builder --mac --arm64"
+    "package:mac": "npm run build:engine:mac && npm run build && electron-builder --mac --arm64",
+    "package:mac:signed": "npm run build:engine:mac && npm run build && node tools/package-mac.cjs"
   },
   "build": {
     "appId": "com.telltale.foundry",
@@ -55,7 +56,8 @@
           "to": "foundry.exe"
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "artifactName": "Foundry-${version}-windows-${arch}.${ext}"
     },
     "mac": {
       "target": "dmg",
@@ -65,7 +67,8 @@
           "to": "foundry"
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
     }
   },
   "_crucibleClientNote": "Crucible 0.6.1 source candidate, vendored as npm-pack tarball files. The corresponding binary release is not published yet; fresh installs request 0.6.1 and fail explicitly until its verified runtime packs are available. Never replace these files with directory dependencies or old 0.6.0 release bytes.",
@@ -78,7 +81,6 @@
     "@angular/router": "^21.0.0",
     "@crucible/bootstrap": "file:vendor/crucible-bootstrap-0.6.1.tgz",
     "@crucible/client": "file:vendor/crucible-client-0.6.1.tgz",
-    "foundry": "file:..",
     "libheif-js": "1.19.8",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "^6.2.108",

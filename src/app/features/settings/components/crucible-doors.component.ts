@@ -16,6 +16,8 @@ import type {
   CrucibleInstallPlan,
 } from '@shared/crucible/install-wire';
 import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
+import type { CruciblePairingPrompt } from '@shared/crucible/connect-wire';
+import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
 
 /**
  * HOW A PERSON GETS A CRUCIBLE — and, since PHASE13, how little of that is
@@ -82,7 +84,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
 @Component({
   selector: 'app-crucible-doors',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleEngineControlsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (mode() === 'probing') {
@@ -97,8 +99,8 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
                 <strong>{{ serverNames() }}</strong>
               </p>
               <p class="hint">
-                BookForge renders and cleans on those and nowhere else, and it has already made
-                sure each of them has what it needs. Which one a book goes to is the order in
+                BookForge is checking and preparing these engines for your projects.
+                Progress appears below. Which one a book goes to is the order in
                 Settings → Crucible Servers.
               </p>
               <!--
@@ -108,6 +110,9 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
                 on this step is Next, which belongs to the wizard.
               -->
               <ng-container [ngTemplateOutlet]="coordinationState" />
+              @if (registeredHere(); as name) {
+                <app-crucible-engine-controls [server]="name" />
+              }
             </div>
           } @else if (face() === 'adopt') {
             <!-- ── There is one on this computer; it just is not added ──── -->
@@ -138,7 +143,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
               <p class="hint">{{ p.hostableWhy }}</p>
               <div class="driven">
                 <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
-                  {{ busy() === 'install' ? 'Installing…' : 'Set one up on this machine' }}
+                  {{ busy() === 'install' ? 'Installing Crucible…' : 'Install Crucible (recommended)' }}
                 </desktop-button>
                 <!--
                   THE REASON COMES FROM MAIN, NOT FROM HERE. A sentence written
@@ -254,8 +259,8 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
         <button class="door" type="button" (click)="toggle('install')">
           <span class="door-name">Set an engine up on this machine</span>
           <span class="door-note">
-            The first minute, the part no page can do for itself. Then its own console does the
-            rest.
+            Install the shared engine and connect it automatically. BookForge manages its
+            settings and the models your projects need.
           </span>
         </button>
         @if (open() === 'install') {
@@ -386,6 +391,27 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
     <!-- ══ THE PIECES, WRITTEN ONCE AND USED BY BOTH FACES ════════════════ -->
 
     <ng-template #connectForm>
+      <label class="field">
+        <span class="flabel">Other computer's IP address or hostname</span>
+        <input type="text" placeholder="192.168.1.20" [(ngModel)]="draftAddress" name="cruPairAddress"
+          [disabled]="busy() !== null" (keyup.enter)="connectAddress()" />
+      </label>
+      <div class="actions">
+        <desktop-button variant="primary" size="sm" [disabled]="busy() !== null || !draftAddress.trim()" (click)="connectAddress()">
+          {{ busy() === 'pair' ? 'Waiting for approval…' : 'Connect' }}
+        </desktop-button>
+        @if (busy() === 'pair') {
+          <desktop-button variant="ghost" size="sm" (click)="cancelPairing()">Cancel</desktop-button>
+        }
+      </div>
+      @if (pairPrompt(); as request) {
+        <p class="ok">Match this code: <strong>{{ request.userCode }}</strong></p>
+        <p class="hint">On <strong>{{ request.name }}</strong>, open BookForge or Foundry Settings,
+          choose Connection requests for this engine, and approve only if the code matches.
+          Crucible's maintenance console can also approve it. Waiting for approval…</p>
+      }
+      <details>
+        <summary>Use an existing connect code or access key</summary>
       <!--
         PHASE13 §5.1. The PASTED LINE IS FIRST because it is the path that
         cannot be mistyped: "crucible token --url" on the other machine prints
@@ -474,6 +500,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
           <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
         }
       }
+      </details>
       @if (error(); as e) { <p class="bad">{{ e }}</p> }
     </ng-template>
 
@@ -531,7 +558,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
       -->
       <div class="driven">
         <desktop-button variant="primary" size="sm" [disabled]="!p.driven || busy() !== null" (click)="runInstall()">
-          {{ busy() === 'install' ? 'Installing…' : 'Set one up for me' }}
+          {{ busy() === 'install' ? 'Installing Crucible…' : 'Install Crucible' }}
         </desktop-button>
         @if (!p.driven && p.drivenWhy) { <span class="driven-why">{{ p.drivenWhy }}</span> }
       </div>
@@ -568,7 +595,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
       -->
       <p class="hint">
         {{ p.platform === 'win32'
-          ? 'Install Crucible runs its Windows installer, which sets up the native engine and desktop controls. You can choose the optional WSL upgrade later in Crucible.'
+          ? 'Install Crucible runs its Windows installer, which sets up the native engine and desktop controls. You can enable optional WSL acceleration here afterward.'
           : 'Each step runs on this machine. The server arrives as one pack with its own interpreter inside it; nothing is built from source and there is no conda to find.' }}
         Nothing that an engine RUNS is here: BookForge installs what it needs the moment it
         connects to one.
@@ -757,7 +784,7 @@ export class CrucibleDoorsComponent {
 
   readonly open = signal<'connect' | 'here' | 'install' | 'uninstall' | null>(null);
   readonly busy = signal<
-    'test' | 'add' | 'adopt' | 'here' | 'install' | 'paste' | 'uninstall-plan' | 'uninstall' | null
+    'test' | 'add' | 'adopt' | 'here' | 'install' | 'paste' | 'pair' | 'uninstall-plan' | 'uninstall' | null
   >(null);
   readonly error = signal<string | null>(null);
   /**
@@ -768,6 +795,10 @@ export class CrucibleDoorsComponent {
   readonly manual = signal(false);
 
   draftPaste = '';
+  draftAddress = '';
+  readonly pairPrompt = signal<CruciblePairingPrompt | null>(null);
+  private pairTimer: ReturnType<typeof setTimeout> | null = null;
+  private pairGeneration = 0;
   draftName = '';
   /** What the engine on this computer would be called. Prefilled, never imposed. */
   draftAdoptName = '';
@@ -872,6 +903,7 @@ export class CrucibleDoorsComponent {
   });
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.cancelPairing());
     // The wizard's step measures on arrival; the settings page does not. One
     // effect rather than a lifecycle hook, because `mode` is a signal input and
     // a host could in principle change it.
@@ -963,6 +995,59 @@ export class CrucibleDoorsComponent {
       this.uninstallRefusal.set(null);
       this.uninstallLine.set(null);
     }
+  }
+
+  async connectAddress(): Promise<void> {
+    if (this.busy() !== null || !this.draftAddress.trim()) return;
+    const generation = ++this.pairGeneration;
+    this.error.set(null);
+    this.busy.set('pair');
+    try {
+      const result = await this.electron.crucible.pairStart(this.draftAddress.trim());
+      if (generation !== this.pairGeneration) return;
+      if (!result.success || !result.data) throw new Error(result.error ?? 'Crucible did not return a connection request.');
+      this.pairPrompt.set(result.data);
+      this.schedulePairPoll(generation, result.data);
+    } catch (error) {
+      if (generation !== this.pairGeneration) return;
+      this.error.set((error as Error).message);
+      this.cancelPairing();
+    }
+  }
+
+  cancelPairing(): void {
+    ++this.pairGeneration;
+    if (this.pairTimer !== null) clearTimeout(this.pairTimer);
+    this.pairTimer = null;
+    this.pairPrompt.set(null);
+    if (this.busy() === 'pair') this.busy.set(null);
+    void this.electron.crucible.pairCancel();
+  }
+
+  private schedulePairPoll(generation: number, request: CruciblePairingPrompt): void {
+    this.pairTimer = setTimeout(async () => {
+      this.pairTimer = null;
+      try {
+        const result = await this.electron.crucible.pairPoll(request.requestId);
+        if (generation !== this.pairGeneration) return;
+        if (!result.success || !result.data) throw new Error(result.error ?? 'The connection check failed.');
+        if (result.data.status === 'pending') { this.schedulePairPoll(generation, request); return; }
+        this.cancelPairing();
+        if (result.data.status === 'approved') {
+          await this.loadServers();
+          this.open.set(null);
+          this.changed.emit();
+        } else {
+          this.error.set(result.data.status === 'denied'
+            ? 'The connection was declined on the other computer.'
+            : 'The connection code expired. Press Connect for a new code.');
+        }
+      } catch (error) {
+        if (generation !== this.pairGeneration) return;
+        this.error.set((error as Error).message);
+        this.cancelPairing();
+      }
+    }, request.interval * 1000);
   }
 
   private async loadPlan(): Promise<void> {
@@ -1245,14 +1330,7 @@ export class CrucibleDoorsComponent {
         this.changed.emit();
         await this.loadPlan();
         this.busy.set(null);
-        /*
-         * A FRESH INSTALL IS NOT YET A SERVER. It writes a config and a connect
-         * code on this computer, which is exactly what discovery reads — so the
-         * registry read below turns the wizard's face to `adopt`, one field and
-         * one button, and coordination happens when it is ADDED (main does it
-         * on the way past `crucible:add-discovered`). Coordinating with a
-         * machine that has no name here yet would be this button inventing one.
-         */
+        // Main verifies and registers the installed engine before reporting success.
         await this.loadServers();
         return;
       }

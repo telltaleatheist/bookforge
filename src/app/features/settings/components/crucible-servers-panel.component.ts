@@ -5,6 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
 import { CrucibleDoorsComponent } from './crucible-doors.component';
+import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
 import type {
   CrucibleActivityView,
   CrucibleModelRow,
@@ -67,7 +68,7 @@ import { coordinationWords } from './crucible-words';
 @Component({
   selector: 'app-crucible-servers-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleDoorsComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleDoorsComponent, CrucibleEngineControlsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="cru">
@@ -77,7 +78,7 @@ import { coordinationWords } from './crucible-words';
         §3): the code keeps its names, the copy stops using them.
       -->
       <p class="cru-intro">
-        A <strong>GPU engine (Crucible)</strong> is one piece of software that runs the models
+        A <strong>model engine (Crucible)</strong> is one piece of software that runs the models
         every app on a machine needs — narration, transcription, text. BookForge uses the engine
         on this machine and any you connect to below, over the network, the same way either way.
         When it connects to one it makes sure that engine has what BookForge needs, without
@@ -132,7 +133,7 @@ import { coordinationWords } from './crucible-words';
               read the token. The token is read in MAIN from the registry and
               never crosses this seam.
             -->
-            <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Open</desktop-button>
+            <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Maintenance console</desktop-button>
             <!--
               THERE IS NO "SET UP FOR BOOKFORGE" BUTTON — crucible
               docs/PHASE14-ENVPACKS.md §4a. Presence of the app is the request:
@@ -187,6 +188,7 @@ import { coordinationWords } from './crucible-words';
           @if (urlOf(row.name); as url) {
             <p class="cru-meta">{{ url }} · token {{ maskOf(row.name) }}</p>
           }
+          <app-crucible-engine-controls [server]="row.name" [enabled]="row.enabled" />
 
           <!--
             QUEUED ROWS THAT NAME THIS SERVER (crucible docs/PHASE7-LANES.md
@@ -411,13 +413,11 @@ import { coordinationWords } from './crucible-words';
       <app-crucible-doors (changed)="recheck()"></app-crucible-doors>
 
       <!-- ── Add (the quick form, for a server whose details are to hand) ── -->
-      <h4 class="cru-group">Connect to an engine on another machine</h4>
+      <details>
+      <summary>Advanced manual connection</summary>
       <p class="cru-sub">
-        Only engines on OTHER machines are added here — the one on this machine is read from its
-        own settings. On that machine, open its console and copy its <strong>connect code</strong>
-        &mdash; or, for a server already listed above, press its <strong>Copy connect code</strong>
-        (the <code>crucible token --url</code> line). It carries the name, the address and the
-        key, so nothing has to be typed out.
+        Use an existing connect code or access key. The Connect door above can pair by address
+        without copying an access key.
       </p>
       <!--
         PHASE13-OPERATOR.md §5.1. The line is parsed in MAIN by the SDK's
@@ -463,6 +463,7 @@ import { coordinationWords } from './crucible-words';
       @if (addError(); as err) {
         <p class="cru-refusal">{{ err }}</p>
       }
+      </details>
     </div>
   `,
   styles: [`

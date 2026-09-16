@@ -10,10 +10,24 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **3938e31** — *Fix Crucible lifecycle, dispatch cancellation, and native setup* |
+| Source sha | **963e5ff** — *Connect remote Crucible engines in Foundry and prepare 2.0.1 releases* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-16 |
-| Copied by | Mechanical source sync, verified against Foundry `3938e31:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `963e5ff:app/`; details below |
+
+## Foundry 2.0.1 connection and release sync (2026-09-16)
+
+All 180 tracked authoritative app files were mechanically copied and verified byte
+for byte against Foundry 963e5ff, including the final Crucible client 0.6.1 SDK
+from Crucible 407886b. IPC documentation is copied separately from Foundry docs.
+A pre-existing incorrect asar package integrity was corrected against the official
+npm registry so fresh installs validate correctly. New first-run refresh, address pairing, in-app approval and optional WSL engine
+task controls have CPU regression coverage; Foundry's 857 tests pass. Standalone
+and embedded Electron/Angular production builds pass (existing bundle warning).
+The unused `foundry: file:..` dependency was removed in authoritative source;
+older historical notes below about intentionally recreating its junction and
+rewriting the embedded lock describe the former package layout, not current work.
+The lock remains a mechanical source copy after installing dependencies.
 
 ## Crucible integration audit sync (2026-09-16)
 

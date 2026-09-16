@@ -1218,6 +1218,13 @@ export interface ElectronAPI {
    * named, tested, ranked and removed by exactly these calls.
    */
   crucible: {
+    pairStart: (address: string) => Promise<{ success: boolean; data?: import('../shared/crucible/connect-wire').CruciblePairingPrompt; error?: string }>;
+    pairPoll: (requestId: string) => Promise<{ success: boolean; data?: import('../shared/crucible/connect-wire').CruciblePairingDecision; error?: string }>;
+    pairCancel: () => Promise<{ success: boolean }>;
+    pairRequests: (server: string) => Promise<{ success: boolean; data?: import('../shared/crucible/engine-controls-wire').CrucibleConnectionApproval[]; error?: string }>;
+    pairDecide: (server: string, id: string, userCode: string, allow: boolean) => Promise<{ success: boolean; error?: string }>;
+    upgradeWsl: (server: string) => Promise<{ success: boolean; error?: string }>;
+    onUpgradeProgress: (callback: (progress: import('../shared/crucible/engine-controls-wire').CrucibleEngineUpgradeProgress) => void) => () => void;
     /** Every registered server, the rank record, and the OFFER of one found on this computer. */
     servers: () => Promise<{ success: boolean; data?: CrucibleServersView; error?: string }>;
     /** Record a server. Refuses exactly as the registry refuses; the row shows its message. */
@@ -2842,6 +2849,17 @@ const electronAPI: ElectronAPI = {
     // what guards the pair, and it reads BOTH sides' channel strings.
     add: (server: { name: string; url: string; token: string }) =>
       ipcRenderer.invoke('crucible:add-server', server),
+    pairStart: (address: string) => ipcRenderer.invoke('bookforge:crucible-pair-start', address),
+    pairPoll: (requestId: string) => ipcRenderer.invoke('bookforge:crucible-pair-poll', requestId),
+    pairCancel: () => ipcRenderer.invoke('bookforge:crucible-pair-cancel'),
+    pairRequests: (server: string) => ipcRenderer.invoke('bookforge:crucible-pair-requests', server),
+    pairDecide: (server: string, id: string, userCode: string, allow: boolean) => ipcRenderer.invoke('bookforge:crucible-pair-decide', server, id, userCode, allow),
+    upgradeWsl: (server: string) => ipcRenderer.invoke('bookforge:crucible-upgrade-wsl', server),
+    onUpgradeProgress: (callback: (progress: import('../shared/crucible/engine-controls-wire').CrucibleEngineUpgradeProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: import('../shared/crucible/engine-controls-wire').CrucibleEngineUpgradeProgress) => callback(progress);
+      ipcRenderer.on('bookforge:crucible-upgrade-progress', listener);
+      return () => ipcRenderer.removeListener('bookforge:crucible-upgrade-progress', listener);
+    },
     addDiscovered: (name: string) => ipcRenderer.invoke('crucible:add-discovered', name),
     remove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
     testAddress: (url: string, token: string) =>

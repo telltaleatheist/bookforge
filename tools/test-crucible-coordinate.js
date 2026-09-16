@@ -1332,17 +1332,17 @@ async function main() {
       `the button's label survives in: ${hits.join(', ')}`);
   });
 
-  await check('the wizard\'s connected face offers no button when local resolves', () => {
+  await check('the wizard connects automatically and offers its engine console for optional upgrades', () => {
     const text = fs.readFileSync(
       path.join(REPO, 'src', 'app', 'features', 'settings', 'components', 'crucible-doors.component.ts'),
       'utf-8');
     const start = text.indexOf("@if (face() === 'connected')");
     assert.ok(start > 0, 'the connected face should still exist');
-    const end = text.indexOf("} @else if (face() === 'install')", start);
+    const end = text.indexOf("} @else if (face() === 'adopt')", start);
     assert.ok(end > start, 'the install face should follow it');
     const face = text.slice(start, end);
-    assert.ok(!face.includes('<desktop-button'),
-      'the connected face must offer nothing to press but the wizard\'s own Next');
+    assert.ok(face.includes('<app-crucible-engine-controls [server]="name"'));
+    assert.ok(!face.includes('(click)="coordinate'), 'coordination must remain automatic');
   });
 
   await check('every job type the module asks for has words a person can read', () => {
@@ -1414,6 +1414,7 @@ async function main() {
     await vm.runInNewContext(code, {
       require: (name) => {
         if (name.endsWith('engine-presence.js')) return { offerLocalCrucibleStart: async () => { throw new Error('local_protocol_invalid'); } };
+        if (name.endsWith('auto-connect.js')) return { autoConnectLocal: async () => null };
         if (name.endsWith('coordinate.js')) return { coordinateServersOnStart: async () => { asked += 1; return ['remote']; } };
         throw new Error(`unexpected import ${name}`);
       },

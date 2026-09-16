@@ -1,5 +1,5 @@
 /** Crucible owns installation. Windows installs its native engine first;
- * the operator may later choose the WSL upgrade in Crucible's console. */
+ * the operator may later choose the WSL upgrade through its authenticated task API. */
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
@@ -702,7 +702,7 @@ export function hostabilityOf(
   }
 
   if (facts.platform === 'win32') {
-    return { hostable: 'yes', why: 'Crucible runs natively on Windows. WSL is an optional upgrade managed from its console; it is not required to install or connect.' };
+    return { hostable: 'yes', why: 'Crucible runs natively on Windows. BookForge can add optional WSL acceleration after installation; WSL is not required to install or connect.' };
   }
   if (facts.gpu !== null) {
     return { hostable: 'yes', why: `${facts.gpu.name}, ${(facts.gpu.vramBytes / 1024 ** 3).toFixed(1)} GB, visible to this machine.` };
@@ -754,7 +754,7 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
       detail: 'Install the native Windows engine, desktop controls and login startup through Crucible’s installer. No WSL setup is required.',
       commands: [], done: false },
     { title: 'Verify and connect',
-      detail: 'Verify the running service and its published connection. Choose a name to add it to BookForge. WSL remains an optional upgrade in Crucible’s console.',
+      detail: 'Verify the running service and connect it to BookForge automatically. Optional WSL acceleration is available afterward in BookForge Settings.',
       commands: [], done: false }];
   }
 

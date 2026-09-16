@@ -382,6 +382,7 @@ const SUITES = [
   // from every renderer source, the wizard's connected face offers nothing to
   // press, and every job type the module asks for has words a person can read.
   'test-crucible-coordinate',
+  'test-crucible-connections',
   // PHASE 15: the engine's own settings document, driven through the REAL SDK
   // against a fake server. This suite used to keep a dated seam alive — its first
   // check asserted that `vendor/crucible-client-0.6.0.tgz` still lacked the four

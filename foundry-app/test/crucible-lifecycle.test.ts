@@ -86,6 +86,20 @@ test('published local pairing refreshes a token without moving the preferred ser
   expect(write).toHaveBeenCalledWith('local', 'http://127.0.0.1:9191', 'new-token');
 });
 
+test('first-run empty registry automatically adopts the SDK-published local connection', async () => {
+  spyOn(host, 'hosted').mockReturnValue(false);
+  spyOn(pairing, 'pairingFileRead').mockResolvedValue({ found: 'pairing', path: 'published/pairing',
+    pairing: { name: 'My computer', url: 'http://127.0.0.1:9191', token: 'published-token' } });
+  spyOn(settings, 'readAppSettings').mockReturnValue({ crucibleServers: [], cloudProviders: [] } as never);
+  const write = spyOn(registry, 'writeCrucibleServers').mockReturnValue([]);
+  const result = await registry.addLocalCrucible('');
+  expect(result.outcome).toBe('added');
+  expect(write).toHaveBeenCalledWith([
+    { name: 'My computer', url: 'http://127.0.0.1:9191', token: 'published-token', enabled: true },
+  ]);
+  expect(JSON.stringify(result)).not.toContain('published-token');
+});
+
 test('refreshing a registered server preserves its rank, spelling and disabled state', () => {
   spyOn(registry, 'crucibleServers').mockReturnValue([
     { name: 'local', url: 'http://127.0.0.1:9191', token: 'old', enabled: false },

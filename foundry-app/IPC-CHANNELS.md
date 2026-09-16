@@ -1,5 +1,22 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## Approved remote connection (2026-09-16)
+
+| Channel | Request/result |
+| --- | --- |
+| `foundry:crucible-pair-start` | Computer address → public request ID, short approval code, name, URL, expiry and poll interval. Standalone only. |
+| `foundry:crucible-pair-poll` | Request ID → pending/approved/denied/expired. Main registers approved credentials and coordinates the server. Requests belong to the initiating window. |
+| `foundry:crucible-pair-cancel` | Cancels this window's pending local exchange state. Server requests expire independently. |
+| `foundry:crucible-pair-requests` | Registered server name → pending approval codes, client names/addresses and expirations, through its authenticated front-door client, where pairing was requested. |
+| `foundry:crucible-pair-decide` | Registered server, request ID, matching code, allow/deny → approval decision. Credentials remain in main. |
+| `foundry:crucible-wsl-upgrade` | Registered native Windows engine → controller-owned `engine/wsl` task. Re-resolves and verifies an authenticated CUDA Linux engine before completion. |
+| `foundry:crucible-wsl-progress` | Progress push to the requesting window: engine name, state and message. Foundry does not execute WSL commands locally. |
+
+The private device code and approved bearer token never cross the preload into
+the renderer. Closing a window, cancelling or replacing a request prevents a
+late HTTP result from registering a server. Existing pasted connect codes remain
+available. These prefixed channels do not collide with BookForge's pairing flow.
+
 **TWELVE DOORS AND ONE PUSH REMOVED ON 2026-09-15 — FOUNDRY KEEPS NO MODEL.
 COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 133 `ipcMain.handle` call sites,
 133 distinct channel names, zero `ipcMain.on`.** Nothing was added, nothing was

@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as os from 'os';
+import { CrucibleConnections } from './crucible/connect';
 import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getPluginRegistry } from './plugins/plugin-registry';
 // The engine table is in shared/ precisely so MAIN can read it — see its header.
@@ -7581,8 +7582,70 @@ function setupIpcHandlers(): void {
     }
   };
 
+  const crucibleConnections = new CrucibleConnections();
+  const pairingWindows = new WeakSet<Electron.WebContents>();
+  ipcMain.handle('bookforge:crucible-pair-start', async (event, address: string) => {
+    try {
+      if (!pairingWindows.has(event.sender)) {
+        pairingWindows.add(event.sender);
+        const owner = event.sender.id;
+        event.sender.once('destroyed', () => crucibleConnections.cancel(owner));
+      }
+      return { success: true, data: await crucibleConnections.start(event.sender.id, address) };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+  ipcMain.handle('bookforge:crucible-pair-poll', async (event, requestId: string) => {
+    try {
+      const decision = await crucibleConnections.poll(event.sender.id, requestId);
+      if (decision.status === 'approved') {
+        await refreshHostedFoundryRegistry('after approving a Crucible connection');
+        void coordinateWithServer(decision.name, 'its connection was approved');
+      }
+      return { success: true, data: decision };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+  ipcMain.handle('bookforge:crucible-pair-cancel', (event) => {
+    crucibleConnections.cancel(event.sender.id);
+    return { success: true };
+  });
+  const upgradingEngines = new Set<string>();
+  ipcMain.handle('bookforge:crucible-pair-requests', async (_event, server: string) => {
+    try {
+      const { crucibleClientFor } = await import('./crucible/servers.js');
+      return { success: true, data: await (await crucibleClientFor(server, 'BookForge')).listPairingRequests() };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+  ipcMain.handle('bookforge:crucible-pair-decide', async (_event, server: string, id: string, userCode: string, allow: boolean) => {
+    try {
+      const { crucibleClientFor } = await import('./crucible/servers.js');
+      return { success: true, data: await (await crucibleClientFor(server, 'BookForge')).decidePairing(id, userCode, allow) };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+  ipcMain.handle('bookforge:crucible-upgrade-wsl', async (event, server: string) => {
+    if (upgradingEngines.has(server)) return { success: false, error: 'The WSL upgrade is already running for this engine.' };
+    upgradingEngines.add(server);
+    try {
+      const { upgradeWsl } = await import('./crucible/engine-upgrade.js');
+      await upgradeWsl(server, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('bookforge:crucible-upgrade-progress', progress);
+      });
+      void coordinateWithServer(server, 'its WSL upgrade finished');
+      return { success: true };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+    finally { upgradingEngines.delete(server); }
+  });
+
   ipcMain.handle('crucible:servers', async () => {
     try {
+      try {
+        const { autoConnectLocal } = await import('./crucible/auto-connect.js');
+        const connected = await autoConnectLocal();
+        if (connected !== null) void coordinateWithServer(connected, 'it was discovered');
+      } catch (err) {
+        getMainLogger().warn('Automatic local connection failed; the Servers panel remains available', {
+          error: (err as Error).message,
+        });
+      }
       const { serversView } = await import('./crucible/probe.js');
       const view = serversView();
       // The panel's read is the moment a person looks at the list, so it is the
@@ -8110,6 +8173,10 @@ function setupIpcHandlers(): void {
       // Installation and uninstall share the runner that preserves Windows argv and cwd.
       const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
       const result = await driveCrucibleInstall(options, crucibleProcessRunner());
+      const { autoConnectLocal } = await import('./crucible/auto-connect.js');
+      const connected = await autoConnectLocal(true);
+      await refreshHostedFoundryRegistry('after installing and connecting Crucible');
+      if (connected !== null) void coordinateWithServer(connected, 'it was installed');
       send({
         kind: 'done',
         server: result.server,
@@ -12944,6 +13011,18 @@ app.whenReady().then(async () => {
       await offerLocalCrucibleStart();
     } catch (err) {
       logger.warn('Local Crucible startup check failed; continuing with configured remote servers', {
+        error: (err as Error).message,
+      });
+    }
+    try {
+      const { autoConnectLocal } = await import('./crucible/auto-connect.js');
+      const connected = await autoConnectLocal();
+      if (connected !== null) {
+        hostRegistry.refreshHostCrucibleRegistry();
+        logger.info(`Connected to the existing Crucible: ${connected}`);
+      }
+    } catch (err) {
+      logger.warn('Could not connect the existing local Crucible; open Settings > Crucible Servers', {
         error: (err as Error).message,
       });
     }

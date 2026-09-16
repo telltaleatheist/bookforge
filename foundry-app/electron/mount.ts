@@ -540,11 +540,9 @@ export function mountFoundry(host?: FoundryHost): void {
    * is *"the user shouldn't have to interact with crucible almost at all"* — a
    * machine whose installer already wrote a token has nothing left to type.
    *
-   * SINCE 2026-09-15 THE CONFIG FILE IS READ TOO, when there is no pairing file,
-   * because Owen opened this app on a machine running a Crucible and was offered
-   * three doors and then a refusal: *"it should check to see if a server is
-   * installed here. if it is, it just connects. seamlessly."* `connectLocalEngine`
-   * is both reads in the contract's order and argues the whole of it.
+   * Discovery and the pairing path belong to the Crucible SDK. Foundry does
+   * not guess credentials or inspect WSL: a published connection is registered
+   * even on the first run, when Foundry's own registry is empty.
    *
    * NO RESERVED NAME AND NO LOCALITY TEST, per Owen's ruling (*"a local crucible
    * server shouldnt be treated any differently than a remote crucible server"*):
@@ -562,8 +560,8 @@ export function mountFoundry(host?: FoundryHost): void {
    * before the window opens: this reads a small file and then probes servers over
    * the network, and a window that waited for a probe would be a window that did
    * not appear because an engine was slow. Nothing on screen depends on it having
-   * finished; the Servers card and the wizard read the registry when they mount,
-   * and the button in `app-crucible-doors` is the second chance §3.6 asks for.
+   * finished; the wizard re-reads the registry when main announces gate changes,
+   * so discovery finishing after its first read still appears automatically.
    *
    * IT CANNOT REJECT — every arm answers a `LocalCrucibleAdd`, including "there
    * is no file", which is a FACT and not a fallback — so there is no catch here

@@ -61,7 +61,7 @@
  * and `library:set` refuses outright. A first-run wizard there would be five
  * steps of asking for things somebody else already decided.
  */
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, signal } from '@angular/core';
 
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import type { CrucibleProbe, CrucibleServerView } from '@shared/slots';
@@ -907,7 +907,11 @@ export class SetupWizardComponent {
   });
 
   constructor() {
+    const destroyRef = inject(DestroyRef);
     if (!api) return;
+    // Startup discovery may finish after the wizard's first registry read.
+    // Re-read the same source when main announces the registration.
+    destroyRef.onDestroy(api.acts.onChanged(() => { void this.loadCrucible(); }));
 
     api.pageReader.onProgress((progress) => {
       this.readerSaid.set(progress);

@@ -767,29 +767,27 @@ export class FirstRunSetupComponent {
         'Pick where BookForge keeps your books, projects, and finished audiobooks. You can use the default folder or choose your own — these are your files and stay put if you ever uninstall.'
     },
     {
+      // WHERE THE GPU WORK HAPPENS. Not an optional aside any more: once the
+      // legacy local-engine layer is deleted, this is the step that decides
+      // whether anything renders at all. It PROBES ON ENTRY and shows one face
+      // (PHASE13-OPERATOR.md §5.5).
+      id: 'crucible',
+      title: 'Set up model processing',
+      subtitle:
+        'BookForge uses the shared Crucible engine for narration, transcription, alignment and '
+        + 'text cleanup. Install it on this computer or connect to another computer. You can '
+        + 'skip this step and connect an engine later in Settings.'
+    },
+    {
       // It was titled "AI and cloud keys" until 2026-09-14. There are no cloud
       // keys in this app any more — they are the engine's, set on the engine —
       // so a step that promised them was a door onto a room that had moved.
       id: 'ai',
       title: 'AI',
       subtitle:
-        'Which engine does the reading and writing. Pick the GPU engine (Crucible) that runs '
+        'Which engine does the reading and writing. Pick the model engine (Crucible) that runs '
         + 'the text work, or use the model BookForge ships. Skippable — a machine with no text '
         + 'model still narrates.'
-    },
-    {
-      // WHERE THE GPU WORK HAPPENS. Not an optional aside any more: once the
-      // legacy local-engine layer is deleted, this is the step that decides
-      // whether anything renders at all. It PROBES ON ENTRY and shows one face
-      // (PHASE13-OPERATOR.md §5.5).
-      id: 'crucible',
-      title: 'Where the GPU work happens',
-      subtitle:
-        'A Crucible is one inference server a machine runs for every app on it — narration, '
-        + 'transcription, alignment, text cleanup. Connect to one somewhere else, or get one on '
-        + 'this machine. Skippable, and honestly so: a laptop that renders on the Mac is a laptop '
-        + 'with one remote server, and one that renders nowhere yet is not broken — it just does '
-        + 'not render yet.'
     },
     {
       id: 'review',

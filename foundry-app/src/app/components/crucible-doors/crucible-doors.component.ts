@@ -102,10 +102,11 @@
  * these doors. The wizard's step around it is still skippable, because a person
  * is allowed to look at the app before furnishing it.
  */
-import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import type { CrucibleInstallPlan, CrucibleProbe } from '@shared/slots';
+import type { RemotePairingProgress } from '@shared/remote-pairing';
 import type {
   CrucibleUninstallAvailability,
   CrucibleUninstallPlan,
@@ -152,6 +153,31 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
       </button>
       @if (open() === 'connect') {
         <div class="panel">
+          <label class="field">
+            <span class="label">Computer address</span>
+            <input type="text" name="remoteAddress" placeholder="192.168.1.20 or mac-studio"
+                   [ngModel]="remoteAddress()" (ngModelChange)="remoteAddress.set($event)"
+                   [disabled]="remotePairing()?.status === 'pending'">
+          </label>
+          <div class="actions">
+            <button class="primary" type="button" [disabled]="busy() || remotePairing()?.status === 'pending'"
+                    (click)="beginRemotePairing()">Connect by address</button>
+            @if (remotePairing()?.status === 'pending') {
+              <button class="ghost" type="button" (click)="cancelRemotePairing()">Cancel</button>
+            }
+          </div>
+          @if (remotePairing(); as pairing) {
+            @if (pairing.status === 'pending') {
+              <p class="small">In BookForge or Foundry on {{ pairing.name }}, open Settings → Servers → Connection requests and approve code
+                <strong>{{ pairing.userCode }}</strong>. Waiting for approval…</p>
+            } @else if (pairing.status === 'approved') {
+              <p class="small ok">Connected to {{ pairing.name }}.</p>
+            } @else {
+              <p class="small warn">Pairing {{ pairing.status }}. Connect again to request a new code.</p>
+            }
+          }
+          @if (remotePairingError(); as error) { <p class="small warn">{{ error }}</p> }
+          <p class="small">Or use an existing connect code:</p>
           <label class="field">
             <span class="label">Paste a connect code</span>
             <input type="text" name="cCode" placeholder="crucible://…"
@@ -559,6 +585,56 @@ export class CrucibleDoorsComponent {
   protected readonly installSaid = signal<string | null>(null);
   protected readonly pairingNote = signal<string | null>(null);
   protected readonly pairingFailed = signal(false);
+  protected readonly remoteAddress = signal('');
+  protected readonly remotePairing = signal<RemotePairingProgress | null>(null);
+  protected readonly remotePairingError = signal<string | null>(null);
+  private readonly destroyRef = inject(DestroyRef);
+  private remotePollTimer: ReturnType<typeof setTimeout> | null = null;
+  private remoteGeneration = 0;
+
+  protected async beginRemotePairing(): Promise<void> {
+    if (!api) return;
+    const generation = ++this.remoteGeneration;
+    this.busy.set('pairing');
+    this.remotePairingError.set(null);
+    this.remotePairing.set(null);
+    try {
+      const progress = await api.crucible.beginRemotePairing(this.remoteAddress());
+      if (generation !== this.remoteGeneration) return;
+      this.remotePairing.set(progress);
+      this.scheduleRemotePoll(progress, generation);
+    } catch (error) {
+      if (generation === this.remoteGeneration) this.remotePairingError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === this.remoteGeneration) this.busy.set(null);
+    }
+  }
+
+  private scheduleRemotePoll(progress: RemotePairingProgress, generation: number): void {
+    this.remotePollTimer = setTimeout(async () => {
+      if (!api || generation !== this.remoteGeneration) return;
+      try {
+        const next = await api.crucible.pollRemotePairing(progress.id);
+        if (generation !== this.remoteGeneration) return;
+        this.remotePairing.set(next);
+        if (next.status === 'pending') this.scheduleRemotePoll(next, generation);
+        else if (next.status === 'approved') this.changed.emit();
+      } catch (error) {
+        if (generation !== this.remoteGeneration) return;
+        this.remotePairing.set(null);
+        this.remotePairingError.set(error instanceof Error ? error.message : String(error));
+      }
+    }, progress.pollAfterMs);
+  }
+
+  protected cancelRemotePairing(): void {
+    ++this.remoteGeneration;
+    if (this.remotePollTimer !== null) clearTimeout(this.remotePollTimer);
+    this.remotePollTimer = null;
+    this.remotePairing.set(null);
+    this.busy.set(null);
+    void api?.crucible.cancelRemotePairing();
+  }
 
   // ── The fourth door ──────────────────────────────────────────────────────
 
@@ -638,6 +714,7 @@ export class CrucibleDoorsComponent {
   >(null);
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.cancelRemotePairing());
     if (!api) return;
     /*
      * AND MAIN'S PROOF FOR DOOR 4, once. It is a read — a file test, and one
@@ -658,6 +735,7 @@ export class CrucibleDoorsComponent {
    */
   protected toggle(door: DoorId): void {
     this.open.update((current) => (current === door ? null : door));
+    if (this.open() !== 'connect' && this.remotePairing()?.status === 'pending') this.cancelRemotePairing();
     // The install plan is read the first time that door is opened and not
     // before: it spawns wsl.exe, and a wizard step that probed WSL on arrival
     // would be doing work for somebody who is about to press Skip.

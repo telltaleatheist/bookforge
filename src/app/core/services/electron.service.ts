@@ -3931,6 +3931,26 @@ export class ElectronService {
   };
 
   readonly crucible = {
+    pairRequests: (server: string): Promise<{ success: boolean; data?: import('@shared/crucible/engine-controls-wire').CrucibleConnectionApproval[]; error?: string }> =>
+      this.isElectron ? (window as any).electron.crucible.pairRequests(server)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+    pairDecide: (server: string, id: string, userCode: string, allow: boolean): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron ? (window as any).electron.crucible.pairDecide(server, id, userCode, allow)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+    upgradeWsl: (server: string): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron ? (window as any).electron.crucible.upgradeWsl(server)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+    onUpgradeProgress: (callback: (progress: import('@shared/crucible/engine-controls-wire').CrucibleEngineUpgradeProgress) => void): (() => void) =>
+      this.isElectron ? (window as any).electron.crucible.onUpgradeProgress(callback) : () => {},
+    pairStart: (address: string): Promise<{ success: boolean; data?: import('@shared/crucible/connect-wire').CruciblePairingPrompt; error?: string }> =>
+      this.isElectron ? (window as any).electron.crucible.pairStart(address)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+    pairPoll: (requestId: string): Promise<{ success: boolean; data?: import('@shared/crucible/connect-wire').CruciblePairingDecision; error?: string }> =>
+      this.isElectron ? (window as any).electron.crucible.pairPoll(requestId)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+    pairCancel: (): Promise<{ success: boolean }> =>
+      this.isElectron ? (window as any).electron.crucible.pairCancel()
+        : Promise.resolve({ success: false }),
     /** Every registered server, the rank record, and the OFFER of one found on this computer. */
     servers: (): Promise<{ success: boolean; data?: CrucibleServersView; error?: string }> =>
       this.isElectron

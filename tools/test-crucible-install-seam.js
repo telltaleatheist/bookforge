@@ -405,7 +405,7 @@ checkAsync('Windows install needs no manually typed WSL or elevated command', as
   const plan = await install.crucibleInstallPlan(host());
   assert.deepStrictEqual(plan.elevated, []);
   assert.ok(plan.steps.some(s => /native Windows engine/.test(s.detail)));
-  assert.ok(plan.steps.some(s => /optional upgrade/.test(s.detail)));
+  assert.ok(plan.steps.some(s => /Optional WSL acceleration/.test(s.detail)));
 });
 
 checkAsync('macOS needs no typed line at all — its service is a launchd agent', async () => {

@@ -83,6 +83,7 @@ import type {
   NewJobsWaitFor,
 } from '@shared/slots';
 import type { Job } from '@shared/types';
+import type { IncomingPairingRequest } from '@shared/remote-pairing';
 import { api } from '../../core/foundry';
 import { QueueService } from '../../core/queue.service';
 
@@ -175,8 +176,24 @@ interface EditableServer extends CrucibleServerView {
                 with one; a saved row is the only kind that has one.
               -->
               <button class="ghost" [disabled]="!row.tokenSet || row.token !== null"
-                      (click)="openUi(row.name)">Open engine console</button>
+                      (click)="openUi(row.name)">Advanced engine console</button>
+              <button class="ghost" [disabled]="!row.tokenSet || row.token !== null || pairingBusy() === row.name"
+                      (click)="loadPairingRequests(row.name)">Connection requests</button>
             </div>
+            @if (pairingRequests()[row.name]; as requests) {
+              <div class="small">
+                <p>Approve only when this code matches the one shown by the connecting app.</p>
+                @for (request of requests; track request.id) {
+                  <p>{{ request.clientName }} from {{ request.address }} — <strong>{{ request.userCode }}</strong></p>
+                  <button class="primary" [disabled]="pairingBusy() === row.name"
+                          (click)="decidePairing(row.name, request, true)">Approve</button>
+                  <button class="ghost" [disabled]="pairingBusy() === row.name"
+                          (click)="decidePairing(row.name, request, false)">Deny</button>
+                } @empty {
+                  <p>No pending connection requests. Press Connection requests to refresh.</p>
+                }
+              </div>
+            }
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {
                 <p class="small ok">
@@ -374,6 +391,32 @@ interface EditableServer extends CrucibleServerView {
   `],
 })
 export class ServersCardComponent {
+  protected readonly pairingRequests = signal<Record<string, IncomingPairingRequest[]>>({});
+  protected readonly pairingBusy = signal<string | null>(null);
+
+  protected async loadPairingRequests(server: string): Promise<void> {
+    if (!api) return;
+    this.pairingBusy.set(server);
+    this.problem.set(null);
+    try {
+      const requests = await api.crucible.incomingPairingRequests(server);
+      this.pairingRequests.update((all) => ({ ...all, [server]: requests }));
+    } catch (error) {
+      this.problem.set(error instanceof Error ? error.message : String(error));
+    } finally { this.pairingBusy.set(null); }
+  }
+
+  protected async decidePairing(server: string, request: IncomingPairingRequest, allow: boolean): Promise<void> {
+    if (!api) return;
+    this.pairingBusy.set(server);
+    this.problem.set(null);
+    try {
+      await api.crucible.decidePairing(server, request.id, request.userCode, allow);
+      this.pairingRequests.update((all) => ({ ...all, [server]: (all[server] ?? []).filter((p) => p.id !== request.id) }));
+    } catch (error) {
+      this.problem.set(error instanceof Error ? error.message : String(error));
+    } finally { this.pairingBusy.set(null); }
+  }
   private readonly notices = inject(NoticeService);
 
   private readonly queue = inject(QueueService);

@@ -37,7 +37,7 @@
  * else's; the SETTINGS are the engine's either way, and a hosted window editing
  * them is editing the same store from the same distance.
  */
-import { ChangeDetectionStrategy, Component, computed, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import {
@@ -131,6 +131,11 @@ const CUSTOM = 'an-upstream-model';
           }
 
           <p class="small">{{ backendLine(settings) }}</p>
+          @if (settings.backendKind === 'llama-windows') {
+            <p class="small">Optional: use WSL acceleration for additional model support. The engine on {{ chosen() }} manages setup, downloads and any Windows restart requirement.</p>
+            <button class="primary" [disabled]="working()" (click)="upgradeWindows()">Set up WSL acceleration</button>
+          }
+          @if (upgradeMessage(); as message) { <p class="small">{{ message }}</p> }
 
           <!-- ── The three upstream cards, shared with the wizard ───────── -->
           <p class="detail">
@@ -184,6 +189,19 @@ const CUSTOM = 'an-upstream-model';
   `],
 })
 export class EngineSettingsCardComponent {
+  protected readonly upgradeMessage = signal<string | null>(null);
+
+  protected async upgradeWindows(): Promise<void> {
+    if (!api) return;
+    this.working.set(true);
+    this.problem.set(null);
+    try {
+      await api.crucible.upgradeWindowsEngine(this.chosen());
+      await this.read();
+    } catch (error) {
+      this.problem.set(error instanceof Error ? error.message : String(error));
+    } finally { this.working.set(false); }
+  }
   protected readonly classes = LLM_CLASSES;
   protected readonly custom = signal<LlmClass | null>(null);
   protected readonly customValue = CUSTOM;
@@ -197,7 +215,11 @@ export class EngineSettingsCardComponent {
   protected readonly typed = signal('');
 
   constructor() {
+    const destroyRef = inject(DestroyRef);
     if (!api) return;
+    destroyRef.onDestroy(api.crucible.onEngineUpgrade((progress) => {
+      if (progress.server === this.chosen()) this.upgradeMessage.set(progress.message);
+    }));
     void this.load();
   }
 

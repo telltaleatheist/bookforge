@@ -8,6 +8,8 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { CustomAnalysisCategory } from './analysis-categories';
+import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pairing';
+import type { EngineUpgradeProgress } from './engine-upgrade';
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
 import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './host-ops';
@@ -1453,6 +1455,13 @@ export interface FoundryApi {
      * that will not parse.
      */
     addConnectCode(line: string, name: string): Promise<CrucibleSettingsView>;
+    beginRemotePairing(address: string): Promise<RemotePairingProgress>;
+    pollRemotePairing(id: string): Promise<RemotePairingProgress>;
+    cancelRemotePairing(): Promise<void>;
+    incomingPairingRequests(server: string): Promise<IncomingPairingRequest[]>;
+    decidePairing(server: string, id: string, userCode: string, allow: boolean): Promise<void>;
+    upgradeWindowsEngine(server: string): Promise<void>;
+    onEngineUpgrade(listener: (progress: EngineUpgradeProgress) => void): () => void;
     /** Answered with what was stored. Empty is a real answer and means unset. */
     setWslDistro(distro: string): Promise<string>;
     /** What a new row's `waitFor` starts as. Answered with what was stored. */

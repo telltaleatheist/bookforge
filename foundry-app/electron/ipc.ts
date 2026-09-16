@@ -22,7 +22,9 @@ import * as path from 'node:path';
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
-import type { Pairing } from '@crucible/client';
+import { startPairing, pollPairing, type Pairing } from '@crucible/client';
+import { RemotePairingSessions } from './crucible-remote-pairing';
+import { upgradeWindowsEngine } from './crucible-engine-upgrade';
 
 import { actGates } from './act-gates';
 import {
@@ -50,6 +52,8 @@ import {
   crucibleSettingsView,
   computeSlots,
   forgetEngineTargets,
+  clientFor,
+  engineClientFor,
   probeCrucible,
   slotAvailability,
   probeCrucibleAt,
@@ -961,6 +965,64 @@ function registerPairing(pairing: Pairing, typed: string): string {
 }
 
 export function registerIpc(): void {
+  const pairingSessions = new RemotePairingSessions(async (pairing) => {
+    const existing = crucibleServers().find((entry) => sameCrucibleAddress(entry.url, pairing.url));
+    const stored = registerPairing(pairing, existing === undefined ? '' : existing.name);
+    await afterRegistryChanged();
+    void coordinateWithServer(stored, 'remote pairing was approved');
+  }, startPairing, pollPairing);
+  const pairingWindows = new Set<number>();
+  ipcMain.handle('foundry:crucible-pair-start', async (event, address: string) => {
+    if (hosted()) throw new Error('Manage server connections in the host application.');
+    if (typeof address !== 'string' || !address.trim()) throw new Error('Enter the other computer’s address.');
+    const owner = event.sender.id;
+    if (!pairingWindows.has(owner)) {
+      pairingWindows.add(owner);
+      event.sender.once('destroyed', () => {
+        pairingSessions.cancelOwner(owner);
+        pairingWindows.delete(owner);
+      });
+    }
+    return pairingSessions.begin(owner, address.trim());
+  });
+  ipcMain.handle('foundry:crucible-pair-poll', (event, id: string) => {
+    if (hosted()) throw new Error('Manage server connections in the host application.');
+    return pairingSessions.poll(event.sender.id, id);
+  });
+  ipcMain.handle('foundry:crucible-pair-cancel', (event) => pairingSessions.cancelOwner(event.sender.id));
+  ipcMain.handle('foundry:crucible-pair-requests', async (_event, name: string) => {
+    const entry = crucibleServerNamed(name);
+    if (!entry) throw new Error('Choose a registered Crucible server.');
+    const client = await engineClientFor(entry);
+    return client.listPairingRequests();
+  });
+  ipcMain.handle('foundry:crucible-pair-decide', async (_event, name: string, id: string, code: string, allow: boolean) => {
+    if (typeof allow !== 'boolean') throw new Error('Choose Approve or Deny.');
+    const entry = crucibleServerNamed(name);
+    if (!entry) throw new Error('Choose a registered Crucible server.');
+    const client = await engineClientFor(entry);
+    await client.decidePairing(id, code, allow);
+  });
+  const upgradingEngines = new Set<string>();
+  ipcMain.handle('foundry:crucible-wsl-upgrade', async (event, name: string) => {
+    if (upgradingEngines.has(name)) throw new Error('This engine upgrade is already running.');
+    upgradingEngines.add(name);
+    try {
+      await upgradeWindowsEngine(name, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('foundry:crucible-wsl-progress', progress);
+      }, {
+        async client(server) {
+          const entry = crucibleServerNamed(server);
+          if (!entry) throw new Error('Choose a registered Crucible server.');
+          return engineClientFor(entry);
+        },
+        forget: forgetEngineTargets,
+        pause: () => new Promise((resolve) => setTimeout(resolve, 2000)),
+      });
+      await afterRegistryChanged();
+      void coordinateWithServer(name, 'its WSL upgrade completed');
+    } finally { upgradingEngines.delete(name); }
+  });
   /**
    * Is this window Foundry's own, or is it standing inside another app?
    *
