@@ -74,3 +74,14 @@ The generated BookForge module is `0.6.2+a37ab17a8f1e`. Focused checks against t
 Real Mac installer acceptance exposed a launchd timing seam: the SDK installer can finish registering the service before the engine answers authenticated requests. BookForge now awaits the SDK's local start/readiness operation, using the installation's explicit home, before adoption. An unhealthy status or an identity/address differing from the installed configuration fails setup visibly. This does not start model downloads.
 
 Electron compilation and **44 installation checks passed**, including scripted real-SDK Mac/Linux delayed startup, unhealthy startup and wrong identity. The initial Windows package completed successfully, but is superseded by a rebuild from this correction. Fresh dependency installation and both production builds also passed in the isolated Mac checkout; signing remains blocked and no Mac artifact is published.
+
+### Published Windows preview
+
+[BookForge v0.1.2927](https://github.com/telltaleatheist/bookforge/releases/tag/v0.1.2927) is public as a **prerelease**, explicitly `latest=false`. The stable release remains `v0.1.905`. Its exact source is `7f3bfbed9aa1247d26f47df881ef832b8a82dede`; later documentation commits do not alter the artifact. Packaged provenance is `7f3bfbed.1789540543137`, built at `2026-09-16T06:35:43.058Z`.
+
+- `BookForge-win-x64.exe`: **175,009,892 bytes**, SHA-256 `db4f3b0c5d3f3588290f1d6ba96ffa0f5bd592fbbd8c7bebc22d18e3174e8781`.
+- `SHA256SUMS.txt`: **89 bytes**, SHA-256 `72954b8ce5cfc6b4757d7b08aaf93afa3a3fd00a10b9e656a8ec3fbe5142cbb2`.
+
+Both GitHub asset digests and sizes match the staged files. The archive's version and clean source stamp were checked; both packaged Crucible SDKs are 0.6.2 and their entrypoints load. First-run coordination/readiness, local adoption, pairing, optional WSL controls and embedded Foundry's readiness export are present. A separate packaged Electron process loaded the shipped native SQLite binary and queried an in-memory database successfully, without launching the application or touching user data. The final compiled source passed **168 keeper suites, one external EPUB fixture skip, zero failures** (`release/bookforge-0.6.2-final-keepers.log`). The NSIS build and all production compilation completed successfully.
+
+The Windows installer is not Authenticode-signed; the release notes disclose that. The same source compiled on the isolated Mac and passed all 44 installation checks there. No signed/notarized Mac DMG is available, and no Mac asset was published. Publication of this Windows preview does not claim clean-profile NSIS uninstall/reinstall or all live inference/migration scenarios have passed.
