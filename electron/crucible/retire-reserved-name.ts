@@ -74,6 +74,7 @@ import {
   CrucibleRegistryError,
   ServerRegistry,
   serverNameKey,
+  originKey,
   validateServerName,
   type CrucibleServerEntry,
 } from './servers';
@@ -198,7 +199,30 @@ export function retireReservedLocalName(host: RetireReservedNameHost): RetireRes
 
   const entries = registry.read().servers;
   const url = discovered.url.replace(/\/+$/, '');
-  const already = entries.find((entry) => entry.url.replace(/\/+$/, '') === url);
+  /*
+   * THE SAME ADDRESS RULE THE REGISTRY USES, and it must be the same one.
+   *
+   * This compared `url.replace(/\/+$/, '')` — a trailing slash and nothing else
+   * — until 2026-09-15, which is strictly NARROWER than `originKey`. A stored
+   * row written `http://LOCALHOST:7100` and a discovered `http://localhost:7100`
+   * are one engine and did not match here, so this fell through to the name
+   * branch and, when the names differed, WROTE A SECOND ROW FOR THE SAME
+   * ADDRESS. The bench then draws two GPU lanes over one card and the queue
+   * schedules onto both.
+   *
+   * And nothing downstream would have caught it: this path writes with
+   * `registry.write(...)` rather than `add()`, so it never meets the duplicate
+   * refusal that door now makes. A startup path, writing silently, reachable by
+   * nothing worse than a cosmetic difference in how a URL was typed.
+   *
+   * Flagged by the Foundry session, which hit the mirror image of this in its own
+   * `adoptPairingFile`: a pre-check narrower than the writer's rule turned an
+   * "already registered, nothing to do" into a thrown error on every launch.
+   * Theirs failed loudly and ours failed silently, from the same cause — a
+   * second copy of a rule that has an owner. Calling `originKey` is what keeps
+   * the two one rule rather than two that agree today.
+   */
+  const already = entries.find((entry) => originKey(entry.url) === originKey(url));
 
   let becameName: string;
   let registered = false;

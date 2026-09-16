@@ -305,6 +305,52 @@ check('that name is already a DIFFERENT machine: REFUSED BY NAME, nothing writte
   assert.deepStrictEqual(snapshot(dir), before);
 });
 
+check('a row at the SAME ADDRESS in a different case is recognised, not duplicated', () => {
+  /*
+   * The startup-path hole, closed 2026-09-15. This pre-check compared
+   * `url.replace(/\/+$/, '')` — a trailing slash and nothing else — which is
+   * strictly NARROWER than the registry's own `originKey` rule. A stored row
+   * written `http://LOCALHOST:7100` and a discovered `http://127.0.0.1:7100`
+   * with different host CASE are one engine; they did not match here, so this
+   * fell through to the name branch and wrote a SECOND row for the same address.
+   *
+   * The bench draws one GPU row per registered server, so that machine would
+   * then have two lanes over one card and the queue would schedule onto both.
+   * And nothing downstream catches it: this path writes with `registry.write`
+   * rather than `add()`, so it never meets the duplicate refusal that door makes.
+   *
+   * Reachable by nothing worse than a cosmetic difference in how a URL was
+   * typed, on every launch, silently.
+   */
+  const dir = owensRecords(path.join(root, 'same-address-other-case'));
+  const registry = readJson(dir, 'crucible-servers.json');
+  /*
+   * A HOSTNAME, because the difference under test is CASE and 127.0.0.1 has no
+   * letters to differ in. The first version of this test used a trailing slash
+   * on the loopback address and passed against the OLD narrow check too — that
+   * check already handled trailing slashes; case is what it missed. A test that
+   * cannot fail is worse than no test, so this one was re-run against the narrow
+   * check until it went red.
+   */
+  const discovered = { ...HERE, url: 'http://owens-pc:7100' };
+  registry.servers.push({
+    name: 'wsl', url: 'http://OWENS-PC:7100', token: 'stored-secret-ZZ9',
+    added: '2026-09-14T00:00:00.000Z',
+  });
+  fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify(registry, null, 2));
+
+  const report = retire.retireReservedLocalName({ userData: dir, discover: () => discovered });
+
+  const after = readJson(dir, 'crucible-servers.json').servers;
+  const atThisAddress = after.filter((row) => /owens-pc:7100/i.test(row.url));
+  assert.strictEqual(atThisAddress.length, 1,
+    'a second row was written for an address already in the registry — that is two GPU '
+    + 'lanes over one card, created at startup, by a trailing slash');
+  assert.strictEqual(report.becameName, 'wsl',
+    'the rows must be re-pointed at the row that is already there, under ITS name');
+  assert.strictEqual(report.registered, false, 'nothing new should have been registered');
+});
+
 check('a record that will not parse is REFUSED, never stepped over', () => {
   const dir = owensRecords(path.join(root, 'corrupt'));
   fs.writeFileSync(path.join(dir, 'crucible-upstreams.json'), '{ not json');
