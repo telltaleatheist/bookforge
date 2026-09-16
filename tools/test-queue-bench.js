@@ -116,6 +116,7 @@ function snap(jobs, running = true, servers = []) {
       // `currentSlotSets` answers it: the legacy row exists while something in
       // the queue can run nowhere else, and is absent otherwise.
       alignerCharged: slots.longformAlignCharged({ jobs }),
+      serversOnThisMachine: [],
     }),
   };
 }
@@ -336,6 +337,33 @@ test('the GPU lane carries the thermal reading; CPU lanes never do', () => {
   assert.strictEqual(lanes[0].thermal.throttleActive, true);
   assert.strictEqual(lanes[1].thermal, null);
   assert.strictEqual(lanes[2].thermal, null);
+});
+
+test("the reading lands on a LOCAL SERVER's row, not only on the aligner", () => {
+  /*
+   * The defect this closes, found 2026-09-15. `isThisMachine` tested
+   * `setId === LONGFORM_ALIGN_SET` and ignored the snapshot it was handed, so
+   * the nvidia-smi reading appeared on the long-form aligner's row — which is
+   * usually empty — and NOT on the registered server that actually renders books
+   * on this card. The WSL engine on this PC answers on loopback and is every bit
+   * as local as the aligner.
+   */
+  const s = snap([job([step({ id: 's_r', status: 'running' })])]);
+  s.gpuThermal = { tempC: 71, fanPct: 60, throttleActive: false, at: '2026-09-15T23:00:00.000Z' };
+  // Two GPU rows: one here, one across the tailnet.
+  s.slotSets = [
+    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, onThisMachine: true },
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, onThisMachine: false },
+  ];
+  const lanes = bench.benchLanes(s);
+  const here = lanes.find((l) => l.setId === 'wsl');
+  const there = lanes.find((l) => l.setId === 'mac');
+  assert.ok(here && there, 'expected a lane for each set');
+  assert.strictEqual(here.thermal.tempC, 71,
+    "a local server renders on THIS card, so its row carries this card's temperature");
+  assert.strictEqual(there.thermal, null,
+    "the Mac's row must never show this PC's fan speed — a reading labelled as "
+    + "somebody else's hardware is a number a person will act on");
 });
 
 test('no reading means no thermal on any lane — absent, not zero', () => {

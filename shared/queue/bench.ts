@@ -645,8 +645,23 @@ export function benchSections(snapshot: QueueSnapshot): BenchSection[] {
  * rule — and that is a RULING about what a bench row shows, not a bench change
  * (docs/LEGACY-REMOVAL.md).
  */
-function isThisMachine(setId: string, _snapshot: QueueSnapshot): boolean {
-  return setId === LONGFORM_ALIGN_SET;
+function isThisMachine(setId: string, snapshot: QueueSnapshot): boolean {
+  /*
+   * READ OFF THE SET, not guessed from its id. This tested `setId ===
+   * LONGFORM_ALIGN_SET` until 2026-09-15 and ignored the snapshot it was handed
+   * — so the nvidia-smi reading appeared on the long-form aligner's row, which
+   * is usually empty, and NOT on the registered server that actually renders
+   * books on this card (the WSL engine on this PC answers on loopback and is
+   * every bit as local as the aligner).
+   *
+   * The registry is what knows, and `shared/` cannot reach it, so the fact rides
+   * on the set — `SlotSet.onThisMachine`, set where `slotSets` is built from
+   * `serversOnThisMachine()`. One owner, which is also what `gpuHeldElsewhere`
+   * reads, so the bench and the scheduler cannot disagree about which machine a
+   * row is on.
+   */
+  const set = snapshot.slotSets.find((candidate) => candidate.id === setId);
+  return set?.onThisMachine === true;
 }
 
 /**

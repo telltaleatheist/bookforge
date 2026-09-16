@@ -259,6 +259,25 @@ export interface SlotSet {
    * the set stays on the bench until its occupant lands, and then it is gone.
    */
   readonly retiring: boolean;
+  /**
+   * DOES THIS SET'S WORK RUN ON THE CARD IN THIS BOX.
+   *
+   * True for {@link LONGFORM_ALIGN_SET} and for a registered server that answers
+   * on loopback (the WSL engine on this PC is one); false for the Mac across the
+   * tailnet, and for {@link LOCAL_WORK_SET}, which is CPU and has no card.
+   *
+   * On the SET rather than re-derived by each reader, because the fact is the
+   * registry's and `shared/` cannot reach it. `bench.ts` drew the nvidia-smi
+   * thermal reading on the aligner row ALONE until 2026-09-15 — its
+   * `isThisMachine` tested only the aligner id and ignored its own snapshot
+   * argument — so the temperature was missing from the row that actually renders
+   * books on this card, and present on a row that is usually empty.
+   *
+   * The same fact decides the cross-set GPU hold (`gpuHeldElsewhere` below), so
+   * carrying it once is what stops the bench and the scheduler disagreeing about
+   * which machine a row is on.
+   */
+  readonly onThisMachine: boolean;
 }
 
 /**
@@ -555,6 +574,14 @@ export interface SlotSetFacts {
    * between two steps of one pump.
    */
   readonly alignerCharged: boolean;
+  /**
+   * The registered servers that answer on THIS machine (loopback), as
+   * `electron/crucible/servers.ts`'s `serversOnThisMachine()` reports them.
+   * Required, like `upstreams` and `roles`: the two guesses are "no row shows a
+   * temperature" and "the Mac's row shows this PC's fan speed", and neither is
+   * a thing to decide on a caller's behalf.
+   */
+  readonly serversOnThisMachine: readonly string[];
 }
 
 /**
@@ -582,6 +609,21 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       'slotSets: `upstreams` was not supplied. Every enabled server needs one of '
         + "'configured' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
         + 'CAN forward work and for one nobody has asked yet, and for no other.',
+    );
+  }
+
+  /*
+   * AND A CALLER THAT SAID NOTHING ABOUT WHICH SERVERS ARE HERE IS REFUSED TOO.
+   * The two guesses are "no row shows a temperature" and "the Mac's row shows
+   * this PC's fan speed", and the second is worse than the first: a reading
+   * labelled as somebody else's hardware is a number a person will act on.
+   */
+  if (facts.serversOnThisMachine === undefined || facts.serversOnThisMachine === null) {
+    throw new Error(
+      'slotSets: `serversOnThisMachine` was not supplied. A set has to know whether its '
+        + "work runs on the card in this box — the thermal reading is nvidia-smi's, taken "
+        + "here, and drawing it on a remote engine's row would be this PC's fan speed "
+        + "labelled as the Mac's.",
     );
   }
 
@@ -663,6 +705,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       gpu: SERVER_GPU_SLOTS,
       cpu: SERVER_CPU_SLOTS,
       retiring: false,
+      onThisMachine: facts.serversOnThisMachine.includes(name),
     });
     /*
      * ITS CLOUD LANE — WHEN THE ENGINE HAS SOMEWHERE TO SEND WORK, and still
@@ -695,6 +738,10 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
         gpu: 0,
         cpu: CLOUD_LANE_SLOTS,
         retiring: false,
+        // A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even for an engine that is
+        // on it: the work runs on somebody's API and the engine forwarding it
+        // holds nothing. Same rule `gpuHeldElsewhere` states one screen down.
+        onThisMachine: false,
       });
     }
   }
@@ -720,6 +767,7 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     sets.push({
       id: LONGFORM_ALIGN_SET,
       label: labelFor(LONGFORM_ALIGN_SET),
+      onThisMachine: true,
       gpu: SERVER_GPU_SLOTS,
       // This row is a GPU venue and nothing else: CPU work has never gone
       // through it, and giving it a CPU lane would invent a second home for
@@ -746,6 +794,10 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       gpu: cloud ? 0 : SERVER_GPU_SLOTS,
       cpu: cloud ? CLOUD_LANE_SLOTS : SERVER_CPU_SLOTS,
       retiring: true,
+      // A retiring set's server may have been REMOVED from the registry, so it
+      // is not in `serversOnThisMachine` any more. Its running occupant is still
+      // wherever it started (§4.3), and a cloud lane is never here.
+      onThisMachine: !cloud && facts.serversOnThisMachine.includes(id),
     });
   }
 
@@ -754,6 +806,8 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     label: labelFor(LOCAL_WORK_SET),
     gpu: 0,
     cpu: LOCAL_WORK_CPU_SLOTS,
+    // BookForge itself: CPU work, and no card to report a temperature for.
+    onThisMachine: false,
     retiring: false,
   });
 

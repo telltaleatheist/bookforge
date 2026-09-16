@@ -546,10 +546,21 @@ function currentSlotSets(): SlotSet[] {
   }
 
   let enabledServers: string[] = [];
+  /*
+   * Which of them answer on THIS box. Read from the same `host.routing()` call
+   * as the ranked list so the two cannot come from different moments, and left
+   * EMPTY when that record is unreadable — the catch below draws the sets that
+   * need no record, and a set that cannot prove it is here simply shows no
+   * temperature. The other way round would put this PC's fan speed on the Mac's
+   * row, which is a number somebody would act on.
+   */
+  let serversHere: readonly string[] = [];
   const host = crucibleHost;
   if (host !== null) {
     try {
-      enabledServers = host.routing().ranked.filter((row) => row.enabled).map((row) => row.name);
+      const record = host.routing();
+      enabledServers = record.ranked.filter((row) => row.enabled).map((row) => row.name);
+      serversHere = record.serversOnThisMachine;
     } catch {
       /*
        * A CORRUPT ROUTING RECORD IS REFUSED AT ADMISSION, in `routing.ts`'s own
@@ -605,6 +616,11 @@ function currentSlotSets(): SlotSet[] {
     roles,
     occupied,
     alignerCharged: longformAlignCharged({ jobs }),
+    // Which registered servers answer on THIS box. The bench draws the
+    // nvidia-smi thermal reading on their rows and on no others, and
+    // `gpuHeldElsewhere` reads the same fact — so it is supplied once, here,
+    // rather than re-derived by either.
+    serversOnThisMachine: serversHere,
   });
 }
 

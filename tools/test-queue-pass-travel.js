@@ -191,7 +191,7 @@ function passConfig(kind, ai) {
       occupied: [],
       // Nothing is queued in this check, so no in-app GPU row is drawn — which
       // is not what it is about either way.
-      alignerCharged: false,
+      alignerCharged: false, serversOnThisMachine: [],
     })
       .find((set) => set.id === slots.cloudLaneOf('mac'));
     // `configured` rather than `unknown`: an engine that ROUTES a class upstream

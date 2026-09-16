@@ -134,6 +134,7 @@ const factsOf = ({ servers = [], upstreams, roles, occupied = [], jobs = [] }) =
   roles: roles ?? allEngines(servers),
   occupied,
   alignerCharged: slots.longformAlignCharged({ jobs }),
+  serversOnThisMachine: [],
 });
 
 test('a CPU step is work BookForge does itself, whatever its run says', () => {
@@ -244,13 +245,13 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
   assert.throws(
     () => slots.slotSets({
       enabledServers: ['mac'], upstreams: {}, roles: { mac: 'engine' },
-      occupied: [], alignerCharged: false,
+      occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], roles: {}, occupied: [], alignerCharged: false }),
+    () => slots.slotSets({ enabledServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -258,13 +259,18 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
 
 test('a caller that said nothing about the LEGACY row is refused by name too', () => {
   assert.throws(
-    () => slots.slotSets({ enabledServers: [], upstreams: {}, roles: {}, occupied: [] }),
+    // Every OTHER required fact is supplied, so the refusal under test is the
+    // only thing missing — otherwise this asserts whichever guard happens to
+    // run first, which is what it did when `serversOnThisMachine` was added.
+    () => slots.slotSets({
+      enabledServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
+    }),
     /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      enabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false,
+      enabledServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
     }),
     /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
@@ -395,7 +401,7 @@ test('a server nobody has asked about its ROLE keeps its row — every older Cru
 test('a caller that said nothing about ROLES is refused by name, never defaulted', () => {
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: false,
+      enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /`roles` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
@@ -403,7 +409,7 @@ test('a caller that said nothing about ROLES is refused by name, never defaulted
   assert.throws(
     () => slots.slotSets({
       enabledServers: ['mac'], upstreams: { mac: 'none' }, roles: {},
-      occupied: [], alignerCharged: false,
+      occupied: [], alignerCharged: false, serversOnThisMachine: [],
     }),
     /nothing was said about whether "mac" is an engine or an orchestrator/,
     'a name with no entry is a caller that forgot, not a server with no role',
