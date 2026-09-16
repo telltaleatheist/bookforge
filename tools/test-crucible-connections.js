@@ -15,7 +15,51 @@ const pairing = { name: 'desk', url: 'http://127.0.0.1:7100', token: 'private-to
 const request = { ...pairing, id: 'server-request', userCode: 'CODE-1234', deviceCode: 'private-device', expiresIn: 60, interval: 1 };
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+function wizardProbe(names) {
+  const ts = require('typescript');
+  const vm = require('node:vm');
+  const source = ts.createSourceFile('wizard.ts', fs.readFileSync(path.join(__dirname,
+    '../src/app/features/ai-setup/ai-setup-wizard.component.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+  const klass = source.statements.find(node => ts.isClassDeclaration(node) && node.name.text === 'AiSetupWizardComponent');
+  const methods = klass.members.filter(node => ts.isMethodDeclaration(node) && names.includes(node.name.getText(source)));
+  assert.equal(methods.length, names.length);
+  const code = ts.transpileModule(`class Probe { ${methods.map(node => node.getText(source)).join('\n')} }; Probe;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  return new (vm.runInNewContext(code))();
+}
+
 async function main() {
+  await check('late engine reads and writes never redraw a newly selected server', async () => {
+    for (const [method, api] of [['loadCapability', 'capability'], ['loadEngineSettings', 'engineSettings'],
+      ['loadCrucibleModels', 'models'], ['writeEngineSettings', 'writeEngineSettings']]) {
+      const probe = wizardProbe([method]); const reply = defer(); let server = 'old';
+      const changed = [];
+      Object.assign(probe, { crucibleServer: () => server,
+        electron: { crucible: { [api]: async () => reply.promise } },
+        capability: { set: v => changed.push(v) }, crucibleModels: { set: v => changed.push(v) },
+        redrawEngineSettings: v => changed.push(v), crucibleStatus: { set: v => changed.push(v) },
+        placeRefusal: v => changed.push(v), engineBusy: { set() {} }, wizard: () => false,
+        loadCapability: method === 'loadCapability' ? probe.loadCapability : async () => changed.push('wrong refresh'),
+      });
+      const pending = probe[method](method === 'loadCrucibleModels' ? 'old' : {});
+      server = 'new';
+      reply.resolve({ success: true, data: { outcome: 'ok', models: ['old-model'] } });
+      await pending;
+      assert.deepEqual(changed, [], `${method} applied an old server's answer`);
+    }
+  });
+  await check('switching servers during provider test cannot forward the old credential to the new engine', async () => {
+    const probe = wizardProbe(['connectAndRoute']); const reply = defer(); let server = 'old'; const writes = [];
+    Object.assign(probe, { crucibleServer: () => server, offerUpstream: () => 'openai',
+      probeFor: () => ({ key: 'old-server-only' }), offerModel: () => 'model', engineBusy: { set() {} },
+      electron: { crucible: { testUpstream: async () => reply.promise } }, testedModels: { update() {} },
+      writeEngineSettings: async patch => writes.push({ server, patch }),
+    });
+    const pending = probe.connectAndRoute('clean'); server = 'new';
+    reply.resolve({ success: true, data: { ok: true, models: ['model'] } }); await pending;
+    assert.deepEqual(writes, []);
+  });
   await check('first-run model preparation waits across restart until AI choices are finished', () => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bf-model-setup-')), 'pending');
     const fresh = new FirstRunModels(marker, true);

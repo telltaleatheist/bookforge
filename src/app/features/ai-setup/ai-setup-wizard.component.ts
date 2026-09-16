@@ -207,7 +207,7 @@ import {
 
           <div class="setting-row">
             <label class="setting-label">Server</label>
-            <select class="key-input" [value]="crucibleServer()" (change)="setCrucibleServer($any($event.target).value)">
+            <select class="key-input" [disabled]="engineBusy()" [value]="crucibleServer()" (change)="setCrucibleServer($any($event.target).value)">
               <option value="">Choose a server…</option>
               @for (name of crucibleServers(); track name) {
                 <option [value]="name">{{ name }}</option>
@@ -903,6 +903,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
   private async loadCrucibleModels(server: string): Promise<void> {
     const res = await this.electron.crucible.models(server);
+    if (server !== this.crucibleServer()) return;
     if (!res.success || !res.data) {
       this.crucibleModels.set([]);
       this.crucibleStatus.set({
@@ -920,6 +921,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
 
   setCrucibleServer(server: string): void {
+    if (this.engineBusy()) return;
     const current = this.settings.getAIConfig().crucible;
     // The model belongs to the server it was listed from, so changing the server
     // clears it rather than carrying an id the new machine may not have.
@@ -981,6 +983,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const server = this.crucibleServer();
     if (!server) { this.capability.set(null); return; }
     const res = await this.electron.crucible.capability(server);
+    if (server !== this.crucibleServer()) return;
     if (!res.success || !res.data) {
       // Never an empty record on failure: an empty class list reads as "this
       // server serves nothing", which is a different and false claim.
@@ -1107,6 +1110,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const server = this.crucibleServer();
     if (!server) { this.redrawEngineSettings(null); return; }
     const res = await this.electron.crucible.engineSettings(server);
+    if (server !== this.crucibleServer()) return;
     if (!res.success || !res.data) {
       this.redrawEngineSettings(null);
       this.placeRefusal(res.refusal, res.error);
@@ -1207,6 +1211,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     this.engineBusy.set(true);
     try {
       const res = await this.electron.crucible.writeEngineSettings(server, patch);
+      if (server !== this.crucibleServer()) return false;
       if (!res.success || !res.data) {
         // NOTHING WAS APPLIED (§3.2: "a refusal applies nothing"), so the
         // document on the screen is still true and is left alone. Only the
@@ -1392,6 +1397,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     this.engineBusy.set(true);
     try {
       const res = await this.electron.crucible.testUpstream(server, name, this.probeFor(name));
+      if (server !== this.crucibleServer()) return;
       if (!res.success || !res.data) { this.placeRefusal(res.refusal, res.error); return; }
       if (!res.data.ok) {
         // The ACCOUNT's own no — a rejected key, an address nothing answers
@@ -1514,6 +1520,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     let models: string[];
     try {
       const test = await this.electron.crucible.testUpstream(server, name, probe);
+      if (server !== this.crucibleServer()) return;
       if (!test.success || !test.data) { this.placeRefusal(test.refusal, test.error); return; }
       if (!test.data.ok) { this.placeRefusal(test.data.refusal, undefined); return; }
       models = test.data.models;
@@ -1562,6 +1569,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     this.crucibleTesting.set(true);
     try {
       const answer = await this.electron.checkAIConnection('crucible', server);
+      if (server !== this.crucibleServer()) return;
       this.crucibleStatus.set({
         ok: answer.available,
         message: answer.available
