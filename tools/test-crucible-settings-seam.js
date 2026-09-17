@@ -298,49 +298,38 @@ async function withFake(behaviour, fn) {
     });
 
   await withFake({ omitRoute: true }, async ({ name }) => {
-    await check('a document where NO row has a route is a PRE-PHASE-15 server: every class is local', async () => {
+    await check('a document where NO row carries a route is REFUSED by name', async () => {
       /*
-       * THE TRIPWIRE THAT USED TO BE HERE HAS EXPIRED, AND THIS IS WHAT IT
-       * BECAME (inverted 2026-09-14, against the re-vendored 0.6.0 SDK).
+       * THIS CHECK HAS NOW BEEN BOTH WAYS ROUND, AND THE HISTORY IS THE POINT.
        *
-       * crucible `eb59f7b` / PHASE15 §3.3 settle the reading for both apps: a
-       * document in which NO row carries `route` comes from a server that
-       * predates the field, and every class on such a server IS local — "a
-       * fact the document states, not a default the client fills … BookForge's
-       * helper and Foundry's package K alike". Owen's live WSL server answers
-       * exactly that way until the phase-15 branch is deployed onto it.
+       * It began as a tripwire: the vendored SDK refused a routeless document
+       * and this PINNED that refusal. On 2026-09-14 it was inverted, because
+       * crucible `eb59f7b` / PHASE15 3.3 ruled such a document came from a
+       * server predating the field, where every class genuinely was local —
+       * Owen's own WSL server answered that way at the time.
        *
-       * Until tonight the vendored SDK refused that document instead, and this
-       * check PINNED the defect rather than working around it — reading
-       * "local" out of a refusal would have put a second opinion about the
-       * document beside the SDK's, which is the two-owners defect the whole
-       * seam was deleted to end (ARCHITECTURE.md R1). The SDK now makes all
-       * three readings itself (`readCapabilityRow`: no row has it ⇒ `local`;
-       * SOME rows have it ⇒ refuse, naming the row; a value that is neither ⇒
-       * refuse, naming the value), so the reading is where it always belonged
-       * and this is a plain agreement check.
+       * On 2026-09-16 he withdrew the population: *"we dont need to worry
+       * about legacy anything. we're the only ones running it."* Crucible
+       * 0.6.7 deleted `readCapabilityRow`'s `route = 'local'` arm and wrote the
+       * reason in its place — it was version tolerance, it made a wrong version
+       * work while saying nothing, and shims go while named refusals stay.
        *
-       * NOTHING IN `electron/crucible/engine-settings.ts` CHANGED FOR THIS,
-       * and that is the point of having refused to work around it: there was
-       * no workaround to delete. Only its header paragraph, which called the
-       * refusal a live defect, is brought up to date.
+       * So it is back to pinning a refusal, and for a better reason than the
+       * first time. NOTHING IN `electron/crucible/engine-settings.ts` changed
+       * for any of the three positions, which is what refusing to work around
+       * the original refusal bought: there has never been a workaround here to
+       * delete, only a test agreeing with whatever the SDK currently reads.
        */
-      const record = await seam.crucibleCapabilityWithRoutes(name);
-      assert.ok(record.classes.length > 0, 'a pre-phase-15 document still lists its classes');
-      for (const row of record.classes) {
-        assert.strictEqual(row.route, 'local',
-          `${row.capability} reads route ${JSON.stringify(row.route)} on a document where no row `
-          + 'carries one. §3.3: every class on such a server IS local.');
-      }
-      // And the route RECORD the read fills says local too — the queue's
-      // `[cloud]` lane asks that record synchronously, so a pre-phase-15
-      // server must not leave it saying `unknown` about a class it listed.
-      const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
-      for (const row of record.classes) {
-        assert.strictEqual(routes.crucibleRouteOf(name, row.capability), 'local',
-          `the route record says ${row.capability} is `
-          + `${routes.crucibleRouteOf(name, row.capability)} on a pre-phase-15 server`);
-      }
+      await assert.rejects(
+        () => seam.crucibleCapabilityWithRoutes(name),
+        (err) => {
+          const said = `${err && err.code} ${err && err.message}`;
+          assert.ok(/route/i.test(said),
+            `the refusal must name "route" — a person fixing the server needs the field: ${said}`);
+          return true;
+        },
+        'a document in which no row carries a route must be refused, not read as all-local',
+      );
     });
   });
 

@@ -10,10 +10,28 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c3489bb** — *fix(settings): place the model card — it was imported and never drawn* |
+| Source sha | **4e8ad65** — *chore(crucible): everything current at 0.6.7* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-16 |
-| Copied by | Mechanical source sync, verified against Foundry `c3489bb:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `4e8ad65:app/`; details below |
+
+## The `c3489bb → 4e8ad65` re-vendor — 0.6.7 everywhere (2026-09-16)
+
+A second refresh the same night, and deliberately so. Owen: *"0.6.0 literally
+doesn't exist anywhere at all in the entire world... everything should be
+brought fully current, including bookforge and foundry everywhere."*
+
+All 184 files byte-exact against Foundry `4e8ad65`, verified per-file with
+`git hash-object` as before. What moved is the version and the three things that
+carry it: the vendored SDK pair to `0.6.7` (0.6.6 removed), and the two
+byte-for-byte files that name what generated them —
+`shared/foundry.module.json` to `0.6.7+92b04d4bd398`, and
+`shared/model-lineup.json` to `generated_from c04ef2c`. BookForge's own
+`shared/crucible/bookforge.module.json` moved the same way in the same commit,
+so all four vendored copies agree with the crucible checkout at one sha.
+
+`npm ci` — NOT `--ignore-scripts`; see the recipe above, and note that the
+recipe is the reason this refresh went cleanly where the last one did not.
 
 ## The `24f586b → c3489bb` re-vendor (2026-09-16)
 
