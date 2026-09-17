@@ -25,7 +25,6 @@ import {
   ENGINE_FIT_CAVEAT,
   ENGINE_KEYS_INTRO,
   ENGINE_LOCAL_MODELS_INTRO,
-  ENGINE_LOCAL_MODELS_UNSUPPORTED,
   ENGINE_ROUTES_INTRO,
   ENGINE_SETTINGS_INTRO,
   ENGINE_SETTINGS_NO_SERVER,
@@ -428,9 +427,7 @@ import {
 
             <!-- ── Which model does each job ── -->
             <h3 class="cru-acts-head">Which model does each job</h3>
-            @if (doc.localModels === null) {
-              <p class="muted">{{ localModelsUnsupportedWords }}</p>
-            } @else if (localClasses().length === 0) {
+            @if (localClasses().length === 0) {
               <p class="muted">{{ capabilityUndecidedWords }}</p>
             } @else {
               <p class="muted">{{ localModelsIntroWords }}</p>
@@ -1091,7 +1088,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly routesIntroWords = ENGINE_ROUTES_INTRO;
   readonly keysIntroWords = ENGINE_KEYS_INTRO;
   readonly localModelsIntroWords = ENGINE_LOCAL_MODELS_INTRO;
-  readonly localModelsUnsupportedWords = ENGINE_LOCAL_MODELS_UNSUPPORTED;
   readonly capabilityUndecidedWords = ENGINE_CAPABILITY_UNDECIDED;
   readonly fitCaveatWords = ENGINE_FIT_CAVEAT;
 

@@ -326,11 +326,6 @@ export const ENGINE_CAPABILITY_UNDECIDED =
   'This engine has not measured its card yet, so it has no candidates to offer and no budget to '
   + 'measure them against. It decides that on its first run.';
 
-/** When the engine predates model assignment altogether. */
-export const ENGINE_LOCAL_MODELS_UNSUPPORTED =
-  'This engine is older than per-job model choice. It still picks a model for each job by itself; '
-  + 'there is just no way to tell it otherwise from here. Upgrading the engine adds these rows.';
-
 /** Above the three upstream cards. */
 export const ENGINE_KEYS_INTRO =
   'Keys and addresses live on the engine. BookForge never stores one, never reads one back and '

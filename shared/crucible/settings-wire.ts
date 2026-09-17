@@ -527,16 +527,20 @@ export interface CrucibleEngineSettings {
   /** `cuda-linux`, `mlx-darwin`, or `none` in host mode. */
   backendKind: string;
   /**
-   * `null` means THIS SERVER PREDATES MODEL ASSIGNMENT — a vintage, stated as a
-   * fact so a panel can say so and disable itself.
+   * Always present. An engine that does not send both maps is refused by the
+   * SDK, by name and with the field path.
    *
-   * It is not a default standing in for a missing value. A 0.6.6 engine always
-   * emits both maps (`crucible/settings.py:document()` writes them
-   * unconditionally, like routes and upstreams), so absence can only mean an
-   * older engine. A document carrying ONE of the two is a defect and
-   * `projectSettings` refuses it by name rather than reading it as either.
+   * It was `| null` for two hours on 2026-09-16, meaning "this server predates
+   * model assignment". Owen ruled that population out of existence the same
+   * evening — nothing is released, so nothing is legacy — and an optional shape
+   * kept for readers who do not exist is a branch every caller pays for.
+   *
+   * `choices` can still be EMPTY, and that is a different thing: an engine
+   * that has not measured its card yet has no candidates to offer and no budget
+   * to measure them against. It is answering with nothing, not failing to
+   * answer.
    */
-  localModels: CrucibleLocalModels | null;
+  localModels: CrucibleLocalModels;
 }
 
 /**

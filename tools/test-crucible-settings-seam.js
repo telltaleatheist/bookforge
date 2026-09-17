@@ -146,27 +146,20 @@ async function withFake(behaviour, fn) {
     });
   });
 
-  await withFake({ localModels: 'absent' }, async ({ name }) => {
-    await check('a server older than model assignment reads as a VINTAGE, not as a refusal', async () => {
-      const doc = await seam.crucibleEngineSettings(name);
-      assert.strictEqual(doc.localModels, null,
-        'neither map present must read as "this server predates model assignment"');
-      // The rest of the document is still readable: a vintage disables one
-      // panel, it does not make the server unreadable.
-      assert.strictEqual(doc.backendKind, 'cuda-linux');
-      assert.strictEqual(doc.routes.clean.route, 'local');
-    });
-  });
-
-  for (const shape of ['selected-only', 'choices-only']) {
+  // A DOCUMENT WITHOUT THEM IS REFUSED, and it used to be read as a vintage.
+  // Owen, 2026-09-16: "Nothing is legacy because nothing exists publicly. There
+  // will be no person trying to access the system with an older version of
+  // crucible other than us." So the older-engine path served nobody and cost a
+  // branch in every reader.
+  for (const shape of ['absent', 'selected-only', 'choices-only']) {
     await withFake({ localModels: shape }, async ({ name }) => {
-      await check(`a PARTIAL document (${shape}) is refused by name, never read as either`, async () => {
+      await check(`a document missing a local-model field (${shape}) is refused by name`, async () => {
         const err = await refuses(
           () => seam.crucibleEngineSettings(name),
           'settings_document_unreadable',
         );
-        assert.match(err.message, /sends NEITHER/,
-          'the refusal must say what a vintage looks like, so the two are told apart');
+        assert.match(err.message, /local_model/,
+          'the refusal must name the field that was missing');
       });
     });
   }

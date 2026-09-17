@@ -341,39 +341,57 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
 }
 
 /**
- * The two model-assignment maps, or `null` for a server that predates them.
+ * The two model-assignment maps, both REQUIRED.
  *
- * THE VINTAGE RULE, and why it is not a fallback. A 0.6.6 engine writes both
- * maps unconditionally — `crucible/settings.py:document()` emits them beside
- * routes and upstreams — so a document with NEITHER can only be an older
- * engine, and that is a fact about the server worth stating: the panel says so
- * and disables itself. A document with exactly ONE of the two is neither a
- * vintage nor a reading: `choices` without `selected` cannot say what is in
- * force, and `selected` without `choices` cannot offer anything else. That is a
- * defect and it is refused by name, the same shape `routesFromCapability` uses
- * for a partial capability record.
+ * This read a document with neither as a VINTAGE — a server older than model
+ * assignment — and drew the panel disabled with a sentence saying so. Owen
+ * ended that on 2026-09-16: *"I won't be releasing any of this until it's
+ * completely done, so we don't need to worry about legacy functionality at all
+ * right now. Nothing is legacy because nothing exists publicly. There will be
+ * no person trying to access the system with an older version of crucible
+ * other than us."*
+ *
+ * So the vintage path served nobody, and it cost a branch in every reader plus
+ * a `null` that each of them had to remember the meaning of. The SDK now reads
+ * both as required and refuses a document without them by name and with the
+ * field path, which means this function keeps only the shape translation.
+ *
+ * The empty case is still real and still different: `local_model_choices` is
+ * `{}` on an engine that has not measured its card yet (`crucible/settings.py`
+ * returns `{}` when `config.capability` is None), and `/v1/capability` says
+ * `capability_undecided` by name. That is an engine answering the question
+ * with nothing, which was always a different claim from not answering it.
  */
 function projectLocalModels(
   doc: SettingsDocument,
   server: string,
 ): CrucibleEngineSettings['localModels'] {
-  const selected = doc.localModels;
-  const choices = doc.localModelChoices;
-  if (selected === undefined && choices === undefined) return null;
-  if (selected === undefined || choices === undefined) {
+  /*
+   * LABELLED STOPGAP — DELETE THIS BLOCK AT THE 0.6.6 RE-VENDOR.
+   *
+   * The vendored SDK is still 0.6.3 and types both fields OPTIONAL, so this
+   * process can still be handed a document without them even though no engine
+   * sends one. The 0.6.6 client reads them as required and refuses such a
+   * document itself, with the field path, which makes this unreachable — and an
+   * unreachable check is a second owner of a rule the SDK holds.
+   *
+   * It is here rather than absent because the alternative is a non-null
+   * assertion, and an assertion that turns out to be wrong crashes a settings
+   * window instead of naming a server.
+   */
+  if (doc.localModels === undefined || doc.localModelChoices === undefined) {
     throw new CrucibleEngineSettingsError(
       'settings_document_unreadable',
-      `"${server}" sent a settings document with `
-        + (selected === undefined ? 'local_model_choices but no local_models' : 'local_models but no local_model_choices')
-        + '. An engine that has one has both — choices with nothing selected cannot say what is in '
-        + 'force, and a selection with no choices cannot offer anything else. A server older than '
-        + 'model assignment sends NEITHER, and that is read as its vintage.',
+      `"${server}" sent a settings document without `
+        + (doc.localModels === undefined ? 'local_models' : 'local_model_choices')
+        + '. Every engine sends both; this one is older than per-job model choice and this '
+        + 'build does not read that vintage. Upgrade the engine.',
     );
   }
   return {
-    selected: { ...selected },
+    selected: { ...doc.localModels },
     choices: Object.fromEntries(
-      Object.entries(choices).map(([capability, rows]) => [
+      Object.entries(doc.localModelChoices).map(([capability, rows]) => [
         capability,
         rows.map((row) => ({
           id: row.id,
