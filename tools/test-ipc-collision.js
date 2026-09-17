@@ -240,9 +240,23 @@ test('this audit says how old the list it audited is', () => {
    * say THAT, rather than letting silence read as freshness.
    */
   const vendored = fs.readFileSync(path.join(REPO, 'foundry-app', 'VENDORED.md'), 'utf-8');
-  const at = /committed at \*\*([0-9a-f]{7,40})\*\*/.exec(vendored);
-  assert.ok(at, 'foundry-app/VENDORED.md no longer records the commit the subtree came from, '
-    + 'which is the only thing that makes this audit datable.');
+  /**
+   * THE TABLE'S `Source sha` ROW, AND NOTHING ELSE.
+   *
+   * The first cut of this matched on the words "committed at" followed by a
+   * bold sha, and found a line in a HISTORICAL section fifty lines down —
+   * reporting the subtree as 19 commits
+   * behind when the table said `24f586b` and the true answer was 14. A file that
+   * keeps its own history is a file where "the first sha I find" is the wrong
+   * sha — the same defect as reading a stated total instead of counting, one
+   * section along, and committed in the very change that was about checks
+   * lagging their input.
+   */
+  const at = /^\|\s*Source sha\s*\|\s*\*\*([0-9a-f]{7,40})\*\*/m.exec(vendored);
+  assert.ok(at, 'foundry-app/VENDORED.md no longer has a `| Source sha | **<sha>** |` row in its '
+    + 'header table, which is the only thing that makes this audit datable. A "committed at" '
+    + 'mention further down is NOT it: those are older vendoring points, and reading one reports '
+    + 'the subtree as staler than it is.');
 
   const sibling = path.resolve(REPO, '..', 'foundry');
   if (!fs.existsSync(path.join(sibling, '.git'))) {
