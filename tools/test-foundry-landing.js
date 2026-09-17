@@ -744,6 +744,92 @@ test('a PDF version is never a TTS target, marked or not', run(async (p) => {
   metadata: { title: 'Test Book' }, addedAt: '2026-01-01T00:00:00.000Z',
 }]));
 
+
+// ── Withdrawal — a tray file that is gone takes its row ────────────────────
+//
+// Owen, 2026-09-17: "if a disk item isnt present, bookforge removes the list
+// item that represented that disk item. simple as that." These pin the four
+// things that sentence must NOT be read to mean.
+
+test('an export deleted from the tray takes its version and its copy', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'CLEANED BYTES');
+  const landed = await land(p, src);
+  assert.ok(landed.success, landed.error);
+  const row = p.variants().find((v) => v.foundrySource);
+  assert.ok(row, 'it landed as an on-loan row');
+  const copy = p.abs(row.path);
+  assert.ok(fs.existsSync(copy), 'the landing made its own copy');
+
+  fs.unlinkSync(src);                       // Foundry deleted the step
+  const res = await sweep(p);
+
+  assert.strictEqual(res.withdrawn, 1, 'the row was withdrawn');
+  assert.strictEqual(p.variants().find((v) => v.foundrySource), undefined, 'the row is gone');
+  assert.strictEqual(fs.existsSync(copy), false,
+    'and so is its copy — leaving it would be an untracked EPUB nothing names');
+  assert.deepStrictEqual(res.changed, [p.projectDir], 'the versions page was told');
+}));
+
+test('a promoted version survives its tray file being deleted', run(async (p) => {
+  const src = p.exportFile('Kept.epub', 'KEPT BYTES');
+  await land(p, src);
+  // Promotion, as `promoteVariantToArchive` leaves it: foundrySource cleared,
+  // promotedFrom kept. The row is the user's own file now.
+  const m = p.read();
+  const landedRow = m.variants.find((v) => v.foundrySource);
+  const promoted = { ...landedRow, promotedFrom: landedRow.foundrySource };
+  delete promoted.foundrySource;
+  m.variants = m.variants.map((v) => (v.id === landedRow.id ? promoted : v));
+  fs.writeFileSync(path.join(p.projectDir, 'manifest.json'), JSON.stringify(m, null, 2));
+  const copy = p.abs(promoted.path);
+
+  fs.unlinkSync(src);
+  const res = await sweep(p);
+
+  assert.strictEqual(res.withdrawn, 0, 'a kept file is not on loan and cannot be recalled');
+  assert.ok(p.variants().some((v) => v.id === promoted.id), 'the row survives');
+  assert.ok(fs.existsSync(copy), 'and so does the file the user pressed Keep on');
+}));
+
+test('a tray that cannot be listed withdraws nothing', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'CLEANED');
+  await land(p, src);
+  const row = p.variants().find((v) => v.foundrySource);
+  const copy = p.abs(row.path);
+  // The whole tray gone is what an unsynced Foundry project looks like on a
+  // second machine — NOT what an emptied tray looks like.
+  fs.rmSync(p.tray, { recursive: true, force: true });
+
+  const res = await sweep(p);
+
+  assert.strictEqual(res.withdrawn, 0,
+    'absent evidence is not evidence of absence — the library is Syncthing-synced');
+  assert.ok(p.variants().some((v) => v.foundrySource), 'the row stands');
+  assert.ok(fs.existsSync(copy), 'and its file is untouched');
+}));
+
+test('a withdrawn row whose file another version still names keeps the file', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'CLEANED');
+  await land(p, src);
+  const row = p.variants().find((v) => v.foundrySource);
+  const copy = p.abs(row.path);
+  // A second row on the same bytes. Two versions may name one file, and the
+  // file belongs to whoever is left.
+  const m = p.read();
+  m.variants.push({
+    id: 'other', kind: 'ebook', format: 'epub', path: row.path,
+    metadata: { title: 'Test Book' }, addedAt: '2026-01-01T00:00:00.000Z',
+  });
+  fs.writeFileSync(path.join(p.projectDir, 'manifest.json'), JSON.stringify(m, null, 2));
+
+  fs.unlinkSync(src);
+  const res = await sweep(p);
+
+  assert.strictEqual(res.withdrawn, 1, 'the on-loan row still comes off');
+  assert.strictEqual(p.variants().find((v) => v.foundrySource), undefined);
+  assert.ok(fs.existsSync(copy), 'but the survivor still needs its bytes');
+}));
+
 (async () => {
   for (const { name, fn } of tests) {
     try { await fn(); passed++; }

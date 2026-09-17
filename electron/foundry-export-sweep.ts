@@ -276,12 +276,37 @@ async function foundryCatalogueSteps(
   return (fileName) => rows.find((r) => sameFoundryExportFile(r.file, fileName))?.stepId;
 }
 
+/**
+ * WHICH STEP CAST ONE EXPORT, asked of Foundry's own catalogue.
+ *
+ * `FoundryVariantSource.stepId` answers this instantly when the landing carried
+ * one — but ABSENT MEANS "I DO NOT KNOW", and it is absent for every version the
+ * tray sweep found (a sweep reads files, not announcements) and for every one
+ * filed before Foundry began announcing the step. Those rows still have a step;
+ * nothing had told BookForge which.
+ *
+ * So this is the fallback the delete door takes, and it is a READ of the same
+ * `final[]` the sweep already consults rather than a guess: the catalogue either
+ * names the step for this file or it does not, and "does not" is returned as
+ * undefined so the caller can refuse by name instead of dropping the wrong step.
+ * Guessing here would delete somebody's history.
+ */
+export async function foundryStepForExport(
+  foundryProjectDir: string,
+  fileName: string,
+): Promise<string | undefined> {
+  return (await foundryCatalogueSteps(foundryProjectDir))(fileName);
+}
+
 /** What a sweep did, for the caller that logs it and for the tests that pin it. */
 export interface FoundrySweepResult {
   /** Books whose tray was read at all — i.e. those with a `foundryProject` mapping. */
   booksVisited: number;
   /** Files that became versions in this sweep. Zero is the normal outcome. */
   landed: number;
+  /** Versions removed because the tray file they represented is gone. Zero is
+   *  the normal outcome; a non-zero here means Foundry deleted a step. */
+  withdrawn: number;
   /** Things named and stepped over: an unlistable tray, a file that would not file. */
   refused: number;
 }
@@ -330,7 +355,7 @@ export async function sweepFoundryExportTrays(
   occasion: string,
   onProjectChanged: (bookDir: string) => void,
 ): Promise<FoundrySweepResult> {
-  const result: FoundrySweepResult = { booksVisited: 0, landed: 0, refused: 0 };
+  const result: FoundrySweepResult = { booksVisited: 0, landed: 0, withdrawn: 0, refused: 0 };
 
   const listed = await manifestService.listProjects();
   if (!listed.success || !listed.projects) {
@@ -355,13 +380,34 @@ export async function sweepFoundryExportTrays(
    */
   const byKey = new Map<string, {
     dir: string;
+    projectId: string;
     landed: { projectKey: string; fileName: string }[];
+    /**
+     * THE ROWS THIS TRAY CAN TAKE BACK — on loan only, never promoted.
+     *
+     * `landed` folds `foundrySource` and `promotedFrom` together because both
+     * answer "this book already has that file". Removal must NOT: a promoted row
+     * is one the user went out of their way to keep, `promoteVariantToArchive`
+     * cleared its `foundrySource` to say so, and a tray it no longer belongs to
+     * has no say in whether it lives. Keying this list on `foundrySource` alone
+     * is the whole of that protection — it is not a rule bolted on, it is what
+     * "on loan" already means.
+     */
+    onLoan: { variantId: string; fileName: string; path: string }[];
   }[]>();
   for (const manifest of listed.projects) {
     const key = manifest.foundryProject?.dir;
     if (key === undefined) continue;
     const claim = {
       dir: manifestService.getProjectPath(manifest.projectId),
+      projectId: manifest.projectId,
+      onLoan: manifestService.getVariants(manifest).variants
+        .filter((v) => v.foundrySource !== undefined)
+        .map((v) => ({
+          variantId: v.id,
+          fileName: v.foundrySource!.fileName,
+          path: v.path,
+        })),
       /*
        * BOTH SPELLINGS OF "THIS BOOK ALREADY HAS THAT FILE".
        *
@@ -482,15 +528,126 @@ export async function sweepFoundryExportTrays(
       }
     }
 
+    /*
+     * ── AND THE OTHER DIRECTION: A TRAY FILE THAT IS GONE TAKES ITS ROW ─────
+     *
+     * Owen, 2026-09-17: "if a disk item isnt present, bookforge removes the list
+     * item that represented that disk item. simple as that."
+     *
+     * The reconcile always said the tray was the truth and the manifest its
+     * record; until now it only ever brought the record UP to the tray, so a
+     * step deleted in Foundry left an indented row under a parent forever. This
+     * is the same sentence read the other way.
+     *
+     * IT RUNS ONLY BECAUSE `readdir` SUCCEEDED. Every path that failed to list
+     * this tray has already `continue`d above — a missing `final/` (the common
+     * case: a book opened in Foundry and never exported from, or a library whose
+     * foundry data has not synced to this machine yet) and an unlistable one
+     * alike. That is not a safeguard bolted onto the rule; it is the difference
+     * between "I read the tray and the file is not in it" and "I could not read
+     * the tray", and only the first is evidence of a deletion. The library is
+     * Syncthing-synced, so the second genuinely happens.
+     *
+     * THE ROW OWNS A COPY, and the copy goes with it. `addFoundryOutputVariant`
+     * lands an export by copying it to `output/<name>`, so the row does not
+     * reference the tray file — it has its own. Removing the record and leaving
+     * the bytes would put an untracked EPUB in the project that nothing names
+     * and nothing will ever clean up, which is the orphan this module's own
+     * header refuses elsewhere.
+     */
+    const withdrawn = book.onLoan.filter(
+      (row) => !entries.some((e) => e.isFile() && sameFoundryExportFile(e.name, row.fileName)),
+    );
+    let removedHere = 0;
+    for (const row of withdrawn) {
+      try {
+        await removeWithdrawnExport(book.projectId, book.dir, row);
+        removedHere++;
+      } catch (err) {
+        // Named and stepped over, like every other refusal here: one row that
+        // will not come off must not cost the rest of the tray.
+        console.error(
+          `[foundry-host] ${row.fileName} is gone from Foundry project "${key}" but its version `
+          + `on ${path.basename(book.dir)} could not be removed: ${(err as Error).message}.`);
+        result.refused++;
+      }
+    }
+
+    if (removedHere > 0) {
+      result.withdrawn += removedHere;
+      console.log(
+        `[foundry-host] Removed ${removedHere} version${removedHere === 1 ? '' : 's'} from `
+        + `${path.basename(book.dir)}: deleted from Foundry project "${key}" (${occasion}).`);
+    }
+
     if (landedHere > 0) {
       result.landed += landedHere;
       console.log(
         `[foundry-host] Reconciled ${landedHere} export${landedHere === 1 ? '' : 's'} from `
         + `Foundry project "${key}" onto ${path.basename(book.dir)} (${occasion}).`);
-      // Per PROJECT, not per file — see `fileFoundryExportAsVersion`.
-      onProjectChanged(book.dir);
     }
+    // Per PROJECT, not per file — see `fileFoundryExportAsVersion`. One
+    // announcement covers both directions: a tray that both gained and lost is
+    // still one project whose versions page has changed.
+    if (landedHere > 0 || removedHere > 0) onProjectChanged(book.dir);
   }
 
   return result;
+}
+
+/**
+ * Take one withdrawn export off a book: the record first, then its file.
+ *
+ * THE RECORD COMES OFF FIRST AND THE FILE ONLY AFTER THE WRITE IS CONFIRMED —
+ * the ordering `variant:delete` states and this borrows. A file unlinked ahead
+ * of a manifest write that then fails leaves a row pointing at nothing, which is
+ * worse than the row this is removing: that one at least names a file the user
+ * can see is missing.
+ *
+ * `stillReferenced` is asked for the same reason it is asked there. Two versions
+ * may name one file — a re-export lands in place, and nothing stops a user
+ * pointing something else at it — and the file belongs to whoever is left.
+ */
+async function removeWithdrawnExport(
+  projectId: string,
+  bookDir: string,
+  row: { variantId: string; fileName: string; path: string },
+): Promise<void> {
+  let stillReferenced = false;
+  const saved = await manifestService.modifyManifest(projectId, (mf) => {
+    const cur = manifestService.getVariants(mf);
+    const recorded = new Set((mf.variants ?? []).map((v) => v.id));
+    const survivors = cur.variants.filter((v) => v.id !== row.variantId);
+    // Only rows already ON the manifest are written back: `getVariants` folds in
+    // synthesized archive mirrors, and persisting those turns ghosts into records.
+    mf.variants = survivors.filter((v) => recorded.has(v.id));
+    if (mf.primaryVariantId === row.variantId) mf.primaryVariantId = survivors[0]?.id;
+    // Cleared rather than moved, exactly as `variant:delete` argues: the TTS mark
+    // is a stated choice about which file to read aloud, and handing it to a
+    // neighbour puts Process on a file the user never picked.
+    if (mf.ttsVariantId === row.variantId) delete mf.ttsVariantId;
+    stillReferenced = survivors.some((v) => samePathish(v.path, row.path))
+      || samePathish(mf.outputs?.epub?.path, row.path)
+      || samePathish(mf.outputs?.ttsEpub?.path, row.path)
+      || samePathish(mf.outputs?.audiobook?.path, row.path);
+  });
+  if (!saved.success) {
+    throw new Error(saved.error ?? `the manifest of ${path.basename(bookDir)} would not save`);
+  }
+  if (stillReferenced) return;
+  try {
+    await fs.unlink(path.join(bookDir, ...row.path.split('/')));
+  } catch (err) {
+    // ALREADY GONE IS THE GOAL, not a failure: the record is off either way, and
+    // a sweep that threw here would report a refusal for work that is done.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+/** Project-relative path equality, tolerant of separators and case as the rest of
+ *  this module is. Undefined never matches: "no record" is not "this record". */
+function samePathish(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false;
+  const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+  return norm(a) === norm(b);
 }

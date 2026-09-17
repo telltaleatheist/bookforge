@@ -136,6 +136,21 @@ export interface FoundryVariantSource {
   parentVariantId: string | null;
   /** ISO timestamp of the landing; refreshed on re-export. */
   landedAt: string;
+  /**
+   * The Foundry ledger step this export was cast from, when the landing said so.
+   *
+   * MIRRORS `FoundryVariantSource.stepId` in electron/manifest-types.ts, which
+   * has written this field since the narrate-from-any-step work and where the
+   * full argument for it lives. The renderer's copy simply did not have it —
+   * a drift, since both files say to keep the two in step — so the one surface
+   * that has to ASK Foundry to drop a step could not read the step to name.
+   *
+   * ABSENT MEANS "I DO NOT KNOW", never "no step": every version filed before
+   * Foundry announced the step has none, and so does every version the tray
+   * sweep found, because a sweep reads files rather than announcements. The
+   * fallback for an absent value is Foundry's own catalogue, never a guess.
+   */
+  stepId?: string;
 }
 
 export interface AudiobookAnalysisManifestEntry {
