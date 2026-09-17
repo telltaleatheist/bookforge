@@ -51,3 +51,19 @@ electron/scripts/vllm/*.sh text eol=lf
 # stronger than `eol=lf` on purpose: it tells git this file's bytes are never
 # translated in either direction, which is the property being asserted.
 shared/crucible/bookforge.module.json -text
+
+# THE SAME CLAIM, THE SAME PIN, FOR THE TWO FILES VENDORED FROM FOUNDRY.
+# Found 2026-09-16 by the Foundry session while it re-vendored at 0.6.6, and
+# MEASURED here rather than assumed: `git -c core.autocrlf=true checkout-index`
+# writes foundry.module.json as 467 bytes with 32 CRLF where canonical is 435
+# LF, and model-lineup.json as 2111 against 2036. Our own module file was
+# already pinned above; these two were not, so a fresh clone on this machine
+# produced files that no longer matched the bytes they claim to be.
+#
+# WHY NOTHING CAUGHT IT, which is the part worth keeping. The JSON still
+# parses, every working copy is whatever that machine's git wrote, and any
+# check that compares PARSED VALUES agrees. It surfaces only in something that
+# hashes the FILE. A blob comparison does not catch it either: git blobs are
+# LF-normalised, so the corruption exists only on the working-tree side.
+foundry-app/shared/foundry.module.json -text
+foundry-app/shared/model-lineup.json -text
