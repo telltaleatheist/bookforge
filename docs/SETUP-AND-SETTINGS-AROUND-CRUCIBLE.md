@@ -15,6 +15,39 @@ rather than guessing.
 > §11 before acting on any row above it: a row's disposition is what was DECIDED, and §11 is
 > what HAPPENED.
 
+> **RULING 3 IS SUPERSEDED — Owen, 2026-09-16, "the Ollama standard."** Read this before
+> §0 below, because one of the five rulings this whole audit is measured against has been
+> reversed by the person who made it.
+>
+> *"the idea is that crucible should be like ollama in that any configurations to ollama
+> systems are done through bookforge and foundry, not by interacting with crucible
+> directly… crucible should be set and forget."* The tray icon and the installer are a
+> person's only direct contact with the engine. Recorded in `crucible/docs/INTENT.md`.
+>
+> **What that does to ruling 3.** Ruling 3 said Crucible has its own page and that
+> installing a job type, pulling weights and watching progress all happen THERE — and it
+> deleted the host probe, the step list and the printed pull list from both apps. The
+> deletion was carried out (§11). It is now the wrong shape: the page it moved that work to
+> is the page Owen says a person should never need to open. The capability comes back into
+> the apps.
+>
+> **What survives, and it is most of it.** Ruling 1 (one Crucible per machine, one copy of
+> each model) is untouched. Ruling 2 (a model is unloaded the moment nothing holds it, so no
+> screen may present a model as "ready") is untouched and matters MORE now that the apps
+> draw model rows again: what they draw is *installed*, never *resident*. Ruling 4 (cloud
+> keys, Foundry owns the slots) and ruling 5 (Orpheus) are untouched. What changed is only
+> WHERE configuration is drawn, not what is true about it.
+>
+> **Landed so far under the new ruling.** Per-job model assignment, in both apps:
+> `local_models` / `local_model_choices` on `GET /v1/settings`, drawn in
+> `ai-setup-wizard` so it appears in first-run step 2 and Settings → AI at once
+> (BookForge `4ceb615e`), and in Foundry's own settings and wizard. Foundry has the pull
+> with progress; BookForge does not yet.
+>
+> **Still to do.** BookForge's pull row. A re-read of every row below whose disposition was
+> justified by ruling 3 — this block supersedes the ruling, not the rows, and each row still
+> has to be decided on its own.
+
 ## 0. The five rulings this audit is measured against
 
 From `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0a/§0b/§2a and `crucible/docs/PHASE13-OPERATOR.md`:
