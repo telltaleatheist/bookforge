@@ -218,6 +218,56 @@ test('the families that overlap are named, so the near-misses stay visible', () 
   console.log(`        shared families (verb-disjoint, by the test above): ${shared.join(', ')}`);
 });
 
+test('this audit says how old the list it audited is', () => {
+  /**
+   * A GREEN CHECK THAT PROVES NOTHING IS WORSE THAN A RED ONE.
+   *
+   * 2026-09-16: Foundry reported nine channels it had just added and asked
+   * whether any collided. This file answered 6/6 passed — against a vendored
+   * `IPC-CHANNELS.md` that was NINETEEN Foundry commits old and listed five of
+   * the nine nowhere. There was no collision (checked by hand against
+   * electron/main.ts and electron/preload.ts), so the answer was right; the
+   * check is not what made it right.
+   *
+   * The design above is NOT the defect and is not changed here. Foundry ruled
+   * the doc is the contract and their sources are theirs to rearrange, and
+   * "refreshing the subtree refreshes what this test checks against" is exactly
+   * right. What was missing is that a reader could not tell, from a pass, WHEN
+   * the thing that passed was written.
+   *
+   * So: when Foundry's own checkout is beside this one — a developer machine,
+   * not CI — say how far behind the vendored point is. When it is not there,
+   * say THAT, rather than letting silence read as freshness.
+   */
+  const vendored = fs.readFileSync(path.join(REPO, 'foundry-app', 'VENDORED.md'), 'utf-8');
+  const at = /committed at \*\*([0-9a-f]{7,40})\*\*/.exec(vendored);
+  assert.ok(at, 'foundry-app/VENDORED.md no longer records the commit the subtree came from, '
+    + 'which is the only thing that makes this audit datable.');
+
+  const sibling = path.resolve(REPO, '..', 'foundry');
+  if (!fs.existsSync(path.join(sibling, '.git'))) {
+    console.log(`        vendored at ${at[1]}; Foundry's checkout is not beside this one, so how `
+      + 'far behind that is was NOT checked.');
+    return;
+  }
+  const { execFileSync } = require('child_process');
+  const git = (...args) => execFileSync('git', ['-C', sibling, ...args], { encoding: 'utf-8' }).trim();
+  let behind;
+  try { behind = Number(git('rev-list', '--count', `${at[1]}..HEAD`)); }
+  catch {
+    console.log(`        vendored at ${at[1]}; that commit is not in the checkout beside this one, `
+      + 'so how far behind it is was NOT checked.');
+    return;
+  }
+  const { names } = foundryChannels();
+  console.log(`        audited ${names.size} channels, vendored at ${at[1]}, `
+    + `${behind} Foundry commit(s) behind that checkout's HEAD.`);
+  // NOT AN ASSERTION. Being behind is the ordinary state — the subtree is
+  // vendored deliberately and on Owen's schedule, not on Foundry's. Failing
+  // here would make an unrelated app's commit turn this repo red, which is the
+  // coupling the vendoring exists to avoid. The number is the point.
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try { await fn(); passed++; }
