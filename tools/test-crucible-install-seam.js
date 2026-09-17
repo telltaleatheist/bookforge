@@ -779,6 +779,54 @@ check('no venue and no refusal is the three LOCAL facts, unchanged', () => {
   assert.strictEqual(route.kind, 'mlx-local');
 });
 
+// --------------------------------------------------- the adoption script
+//
+// `tools/adopt-crucible-release.mjs` is what moves this app from one Crucible
+// release to the next: it fetches the two tarballs, rewrites the two pins and
+// the prose beside them, and relinks. Its one piece of real parsing is reading
+// the version back OUT of a `file:vendor/...tgz` specifier, and if that is
+// wrong it is wrong silently — it would repin from a version nobody is on.
+// So it is asked, here, about the pin this app actually carries.
+
+function import_adopt() {
+  return import('./adopt-crucible-release.mjs');
+}
+
+checkAsync('the adoption script reads the same release out of package.json as the app does', async () => {
+  const adopt = await import_adopt();
+  const manifest = adopt.findManifest();
+  assert.strictEqual(path.resolve(manifest.file), path.join(REPO, 'package.json'),
+    `adopt found ${manifest.file}, not this repo's package.json`);
+  assert.strictEqual(adopt.pinnedVersion(manifest.parsed), install.CRUCIBLE_RELEASE,
+    'the adoption script and the vendored package disagree about what is pinned');
+});
+
+checkAsync('the adoption script refuses two packages pinned to different releases', async () => {
+  const adopt = await import_adopt();
+  const split = {
+    dependencies: {
+      '@crucible/client': 'file:vendor/crucible-client-0.6.7.tgz',
+      '@crucible/bootstrap': 'file:vendor/crucible-bootstrap-0.6.6.tgz',
+    },
+  };
+  // It exits rather than throws, so the refusal is observed by trapping exit.
+  const realExit = process.exit;
+  const realError = console.error;
+  let said = '';
+  process.exit = (code) => { throw new Error(`EXIT ${code}`); };
+  console.error = (message) => { said += String(message); };
+  try {
+    adopt.pinnedVersion(split);
+    assert.fail('a split pin was accepted');
+  } catch (error) {
+    assert.match(error.message, /^EXIT 1$/, `refused in an unexpected way: ${error.message}`);
+    assert.ok(/different releases/.test(said), `the refusal does not say why: ${said}`);
+  } finally {
+    process.exit = realExit;
+    console.error = realError;
+  }
+});
+
 process.on('exit', () => {
   console.log(`\n${ran} checks; ${process.exitCode ? 'FAILURES' : 'all green'}`);
 });

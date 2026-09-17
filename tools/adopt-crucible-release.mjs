@@ -1,0 +1,221 @@
+#!/usr/bin/env node
+/**
+ * Adopt a Crucible release: fetch the two vendored tarballs, repin, relink, prove it.
+ *
+ *   node tools/adopt-crucible-release.js 0.6.8
+ *   node tools/adopt-crucible-release.js --newest
+ *   node tools/adopt-crucible-release.js --check        # what is pinned, and what is newest
+ *
+ * ADOPTING A RELEASE USED TO BE FOUR EDITS AND A DOWNLOAD, done by hand, and the
+ * places do not look alike: two `file:vendor/...tgz` dependency lines that name
+ * the version inside a filename, two `//crucible-*` prose keys that name it in a
+ * sentence, two tarballs to fetch and two to delete. Miss the prose and the
+ * package still installs — it just describes a release it is not pinned to,
+ * which is the failure `tools/test-crucible-install-seam.js` was written for
+ * after it happened.
+ *
+ * THE VERSION IS NEVER TYPED TWICE HERE. Everything downstream of the tarballs
+ * derives from the tarballs: `electron/crucible/install.ts` exports
+ * `CRUCIBLE_RELEASE` as the vendored bootstrap's own `BOOTSTRAP_VERSION`, so
+ * once the right bytes are in `vendor/` the app cannot disagree with them about
+ * what it pinned. That is also how this script CHECKS itself at the end — it
+ * asks the freshly installed package its version rather than trusting that the
+ * download went to the right filename.
+ *
+ * It works unchanged in Foundry, whose package.json is `app/package.json` and
+ * whose prose key is `_crucibleClientNote`. Both are found rather than assumed.
+ * It is `.mjs` for the same reason: BookForge's package.json has no `type`, so a
+ * `.js` file there is CommonJS, while Foundry's says `"type": "module"`, so the
+ * same bytes under the same name would be ESM. One file that must run in both
+ * cannot be ambiguous about which it is.
+ *
+ * Nothing here is reversible by itself: it edits package.json, deletes the old
+ * tarballs and runs `npm install`. It is all inside the repo, so `git checkout`
+ * undoes it, but --check first is free.
+ */
+
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const REPO_SLUG = 'telltaleatheist/crucible';
+const PACKAGES = ['@crucible/client', '@crucible/bootstrap'];
+const SEMVER = /^\d+\.\d+\.\d+$/;
+
+function die(message) {
+  console.error(`adopt: ${message}`);
+  process.exit(1);
+}
+
+/** The package.json that declares the Crucible dependencies, and where its vendor/ is. */
+export function findManifest() {
+  const roots = ['.', 'app'];
+  for (const root of roots) {
+    const file = path.resolve(root, 'package.json');
+    if (!fs.existsSync(file)) continue;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (PACKAGES.every((name) => parsed.dependencies?.[name])) {
+      return { file, dir: path.resolve(root), parsed };
+    }
+  }
+  die(`no package.json in ${roots.join(' or ')} depends on ${PACKAGES.join(' and ')}; ` +
+      'run this from the root of BookForge or Foundry');
+}
+
+/** The version a `file:vendor/crucible-client-X.tgz` specifier names. */
+export function pinnedVersion(parsed) {
+  const found = new Set();
+  for (const name of PACKAGES) {
+    const specifier = parsed.dependencies[name];
+    const match = /crucible-(?:client|bootstrap)-(\d+\.\d+\.\d+)\.tgz$/.exec(specifier);
+    if (!match) die(`${name} is pinned as ${specifier}, which is not a vendored release tarball`);
+    found.add(match[1]);
+  }
+  if (found.size !== 1) {
+    die(`the two Crucible packages are pinned to different releases (${[...found].join(', ')}); ` +
+        'they are cut together and the bootstrapper peer-depends on the client at its exact version');
+  }
+  return [...found][0];
+}
+
+async function newestRelease() {
+  const response = await fetch(
+    `https://api.github.com/repos/${REPO_SLUG}/releases?per_page=1`,
+    { headers: { Accept: 'application/vnd.github+json' } },
+  );
+  if (!response.ok) die(`GitHub answered ${response.status} asking for the newest release`);
+  const releases = await response.json();
+  if (!Array.isArray(releases) || releases.length === 0) die('the repository has no releases');
+  const tag = releases[0].tag_name;
+  if (!/^v\d+\.\d+\.\d+$/.test(tag)) die(`the newest release is tagged ${tag}, which is not vX.Y.Z`);
+  return tag.slice(1);
+}
+
+async function download(version, name, into) {
+  const filename = `crucible-${name}-${version}.tgz`;
+  const url = `https://github.com/${REPO_SLUG}/releases/download/v${version}/${filename}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    die(`${filename} is not published on v${version} (GitHub answered ${response.status}). ` +
+        'A release whose tarballs are missing is one that was never fully cut.');
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length === 0) die(`${filename} downloaded as zero bytes`);
+  const target = path.join(into, filename);
+  fs.writeFileSync(target, bytes);
+  console.log(`  ${filename}  (${bytes.length.toLocaleString()} bytes)`);
+  return filename;
+}
+
+/**
+ * Repin the dependencies AND the prose that explains them.
+ *
+ * The prose is rewritten by replacing the version it names, not by writing a new
+ * sentence: these keys say things this script has no business restating, and a
+ * generated sentence would quietly erase whatever a person put there.
+ */
+function repin(manifest, from, to) {
+  let text = fs.readFileSync(manifest.file, 'utf8');
+  const changed = [];
+  for (const name of PACKAGES) {
+    const short = name.split('/')[1];
+    const before = `"${name}": "file:vendor/crucible-${short}-${from}.tgz"`;
+    const after = `"${name}": "file:vendor/crucible-${short}-${to}.tgz"`;
+    if (!text.includes(before)) die(`could not find the pin line for ${name} (${before})`);
+    text = text.replace(before, after);
+    changed.push(name);
+  }
+  for (const [key, value] of Object.entries(manifest.parsed)) {
+    if (!/crucible/i.test(key) || typeof value !== 'string') continue;
+    if (!value.includes(from)) continue;
+    const before = JSON.stringify(value);
+    const after = JSON.stringify(value.split(from).join(to));
+    if (!text.includes(before)) die(`could not find the prose for ${key} to update`);
+    text = text.replace(before, after);
+    changed.push(key);
+  }
+  fs.writeFileSync(manifest.file, text);
+  return changed;
+}
+
+/** Ask the installed package its own version — the only answer that is not a filename. */
+function installedVersion(manifest) {
+  // Resolved from the manifest's own directory, which is what `npm install`
+  // just linked into — not from this file's, which in Foundry is a level up.
+  const probe = spawnSync(process.execPath, [
+    '-e', "process.stdout.write(require('@crucible/bootstrap/package.json').version)",
+  ], { cwd: manifest.dir, encoding: 'utf8' });
+  if (probe.status !== 0) {
+    die(`@crucible/bootstrap is not resolvable after npm install:\n${probe.stderr || probe.stdout}`);
+  }
+  return probe.stdout.trim();
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const manifest = findManifest();
+  const from = pinnedVersion(manifest.parsed);
+  const vendor = path.join(manifest.dir, 'vendor');
+
+  let to;
+  if (args.includes('--check')) {
+    console.log(`adopt: ${path.relative(process.cwd(), manifest.file) || 'package.json'} pins ${from}`);
+    console.log(`adopt: the newest published release is ${await newestRelease()}`);
+    return;
+  }
+  if (args.includes('--newest')) {
+    to = await newestRelease();
+  } else {
+    to = args.find((value) => SEMVER.test(value));
+    if (!to) die('name a release (0.6.8), or pass --newest, or --check to see both');
+  }
+
+  if (to === from) {
+    console.log(`adopt: already pinned to ${to}; nothing to do`);
+    return;
+  }
+  console.log(`adopt: ${from} -> ${to}`);
+
+  if (!fs.existsSync(vendor)) die(`${vendor} does not exist`);
+  console.log('adopt: fetching');
+  const fetched = [];
+  for (const name of ['client', 'bootstrap']) {
+    fetched.push(await download(to, name, vendor));
+  }
+
+  const changed = repin(manifest, from, to);
+  console.log(`adopt: repinned ${changed.join(', ')}`);
+
+  // Only after the new bytes are safely on disk and the manifest names them.
+  for (const name of ['client', 'bootstrap']) {
+    const stale = path.join(vendor, `crucible-${name}-${from}.tgz`);
+    if (fs.existsSync(stale)) {
+      fs.unlinkSync(stale);
+      console.log(`adopt: removed crucible-${name}-${from}.tgz`);
+    }
+  }
+
+  console.log('adopt: npm install');
+  const install = spawnSync('npm', ['install', '--no-audit', '--no-fund'],
+                            { cwd: manifest.dir, stdio: 'inherit', shell: process.platform === 'win32' });
+  if (install.status !== 0) die('npm install failed; the pin is updated but the link is not');
+
+  const actual = installedVersion(manifest);
+  if (actual !== to) {
+    die(`asked for ${to} but the installed @crucible/bootstrap says ${actual}; ` +
+        'the tarball and the version it carries disagree');
+  }
+  console.log(`adopt: @crucible/bootstrap reports ${actual}`);
+  console.log(`adopt: ${fetched.join(' and ')} adopted. Run the Crucible keepers before committing.`);
+}
+
+// Only when RUN, never when imported. `tools/test-crucible-install-seam.js`
+// imports this to check `pinnedVersion` against the pin the app actually
+// carries — the one piece of parsing here that can silently be wrong — and an
+// import that started downloading tarballs would make that impossible.
+const invokedDirectly = process.argv[1]
+  && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (invokedDirectly) {
+  main().catch((error) => die(error.stack || String(error)));
+}
