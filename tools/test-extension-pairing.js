@@ -116,19 +116,58 @@ function urlCases(pair) {
   });
 }
 
-/** The pairing file on this machine, when there is one. Its token approves. */
-function localEngine() {
+/**
+ * The pairing line on this machine, from wherever the engine's home actually
+ * is.
+ *
+ * TWO PLACES, and the native one first. On Windows the engine lives inside WSL
+ * and only `wsl.exe` can read its home; everywhere else it is this user's own
+ * `~/.crucible/pairing`. Asking WSL and nothing else made the whole handshake
+ * below PC-ONLY: on a Mac running a live engine there is no `wsl.exe` at all,
+ * the catch swallowed the ENOENT, and `localEngine` answered "no engine" about
+ * a machine with one — so four checks skipped while saying the host was the
+ * reason. The skip line is honest about a machine with no engine and was
+ * telling the truth in the only place it had ever been run.
+ */
+function pairingLine() {
+  const native = path.join(os.homedir(), '.crucible', 'pairing');
+  try {
+    if (fs.existsSync(native)) {
+      return fs.readFileSync(native, 'utf8').split('\n')[0].trim();
+    }
+  } catch {
+    // Unreadable is not "absent", but it is equally not an engine this script
+    // can approve with, and WSL is still worth asking on Windows.
+  }
+  if (process.platform !== 'win32') return null;
   const distro = process.env.CRUCIBLE_WSL_DISTRO || 'Ubuntu';
   try {
-    const line = execFileSync('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc',
+    return execFileSync('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc',
       'cat ~/.crucible/pairing 2>/dev/null | head -1'], { encoding: 'utf8' }).trim();
-    if (!line.startsWith('crucible://')) return null;
-    const token = line.split('#')[1];
-    const url = 'http://127.0.0.1:7100';
-    return token ? { url, token } : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The engine this script can approve with, when there is one.
+ *
+ * The PORT comes out of the line rather than being assumed: an engine serving
+ * somewhere other than 7100 is one this keeper should still dial, and a
+ * hardcoded default would fail it for the address instead of the behaviour.
+ */
+function localEngine() {
+  const line = pairingLine();
+  if (line === null || !line.startsWith('crucible://')) return null;
+  const token = line.split('#')[1];
+  if (!token) return null;
+  // One literal `@`: the name before it is percent-encoded, which is the whole
+  // reason `parsePairing` refuses a second one.
+  const authority = line.slice('crucible://'.length).split('/')[0];
+  const at = authority.indexOf('@');
+  const hostPort = at < 0 ? authority : authority.slice(at + 1);
+  const port = hostPort.split(':')[1] || '7100';
+  return { url: `http://127.0.0.1:${port}`, dial: `127.0.0.1:${port}`, token };
 }
 
 (async () => {
@@ -144,7 +183,7 @@ function localEngine() {
   } else {
     let started = null;
     await checkAsync('a typed address starts a handshake and returns a short code', async () => {
-      started = await pair.startPairing('127.0.0.1');
+      started = await pair.startPairing(engine.dial);
       assert.match(started.userCode, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/, 'the code a person reads');
       assert.ok(started.deviceCode.length >= 32, 'the credential a person never sees');
       assert.notStrictEqual(started.userCode, started.deviceCode);
@@ -184,7 +223,7 @@ function localEngine() {
       // rather than treating our own haste as a defect - the first draft of this
       // test failed exactly that way.
       await new Promise((done) => { setTimeout(done, 6000); });
-      const asked = await pair.startPairing('127.0.0.1');
+      const asked = await pair.startPairing(engine.dial);
       await fetch(`${engine.url}/v1/pairing/decision`, {
         method: 'POST',
         headers: {
