@@ -44,7 +44,7 @@ import {
   type ServerEntry,
 } from './servers';
 import { describeRefusal, probe } from './crucible';
-import { pollForToken, startPairing } from './pair';
+import { normaliseServerUrl, pollForToken, startPairing } from './pair';
 import { addClip, listClips, removeClip, type ClipSummary } from './clips';
 import { VoiceReferenceRefused } from '../../shared/crucible/voice-reference';
 
@@ -262,11 +262,22 @@ addBtn.addEventListener('click', async () => {
  * person did something in each case and telling them otherwise would send them
  * back to check an address that was right.
  *
- * The origin permission is asked AFTER approval and not before: Chrome's prompt
- * is about reaching that address at all, and asking for it on behalf of a
- * server that then refuses to pair would be two dialogs for nothing. It costs
- * the gesture — the click is long gone by the time approval lands — so a
- * refusal here is said and not fatal, exactly as the paste path already has it.
+ * THE ORIGIN PERMISSION IS ASKED FIRST, and it has to be. This path differs
+ * from the paste path in the one way that matters: `parsePairing` is pure, so a
+ * pasted code becomes a server with no network at all and Chrome is asked
+ * afterwards — but an address is only a promise until something answers at it,
+ * and the handshake starts by fetching `/v1/ping`. Until the origin is granted,
+ * that fetch does not reach the engine: an extension page without host
+ * permission is an ordinary cross-origin caller, and a Crucible sends no
+ * `Access-Control-Allow-Origin` to let one in. The failure arrives as a bare
+ * `TypeError: Failed to fetch`, which `startPairing` can only report as
+ * "nothing answered" — pointing at a healthy engine and a correct address.
+ *
+ * So the grant is spent on the first thing in the click, while the gesture is
+ * still ours. `request` for an origin already granted resolves true without
+ * prompting, so this costs a returning person nothing. Asking before we know
+ * the address is a Crucible is the price of being able to ask the address
+ * anything at all.
  */
 connectBtn.addEventListener('click', async () => {
   const typed = addressEl.value;
@@ -275,6 +286,14 @@ connectBtn.addEventListener('click', async () => {
   countdownEl.textContent = '';
   setConnectResult('Asking…', 'pending');
   try {
+    const dialling = normaliseServerUrl(typed);
+    if (!(await requestOriginPermission(dialling))) {
+      setConnectResult(
+        `Chrome was not given permission to reach ${dialling}, so nothing was asked of it.`,
+        'bad',
+      );
+      return;
+    }
     const start = await startPairing(typed);
     approveWhere.textContent = start.name;
     userCodeEl.textContent = start.userCode;
