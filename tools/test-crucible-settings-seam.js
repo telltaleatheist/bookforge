@@ -121,6 +121,56 @@ async function withFake(behaviour, fn) {
   // 1. Reading the document (§3.1)
   // ───────────────────────────────────────────────────────────────────────────
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // MODEL ASSIGNMENT (`local_models` / `local_model_choices`), and its vintage
+  // ───────────────────────────────────────────────────────────────────────────
+  //
+  // Owen's Ollama ruling (2026-09-16) puts every Crucible configuration in the
+  // apps, model assignment included. The engine computes what may serve each
+  // capability class; this app draws it and writes a choice back.
+
+  await withFake({}, async ({ name }) => {
+    await check('both maps come through, and a null selection is a decision not an absence', async () => {
+      const doc = await seam.crucibleEngineSettings(name);
+      assert.ok(doc.localModels !== null, 'a server that sent both maps read as a vintage');
+      assert.strictEqual(doc.localModels.selected.clean, 'qwen3.5-9b');
+      // NOT undefined, and not dropped: null is "the engine decides".
+      assert.ok('analysis' in doc.localModels.selected, 'a null selection was dropped');
+      assert.strictEqual(doc.localModels.selected.analysis, null);
+      const rows = doc.localModels.choices.clean;
+      assert.strictEqual(rows.length, 2);
+      assert.deepStrictEqual(rows[0], {
+        id: 'qwen3.5-9b', memoryBytesEstimate: 20950548480, fits: true, installed: true,
+      });
+      assert.strictEqual(rows[1].fits, false);
+    });
+  });
+
+  await withFake({ localModels: 'absent' }, async ({ name }) => {
+    await check('a server older than model assignment reads as a VINTAGE, not as a refusal', async () => {
+      const doc = await seam.crucibleEngineSettings(name);
+      assert.strictEqual(doc.localModels, null,
+        'neither map present must read as "this server predates model assignment"');
+      // The rest of the document is still readable: a vintage disables one
+      // panel, it does not make the server unreadable.
+      assert.strictEqual(doc.backendKind, 'cuda-linux');
+      assert.strictEqual(doc.routes.clean.route, 'local');
+    });
+  });
+
+  for (const shape of ['selected-only', 'choices-only']) {
+    await withFake({ localModels: shape }, async ({ name }) => {
+      await check(`a PARTIAL document (${shape}) is refused by name, never read as either`, async () => {
+        const err = await refuses(
+          () => seam.crucibleEngineSettings(name),
+          'settings_document_unreadable',
+        );
+        assert.match(err.message, /sends NEITHER/,
+          'the refusal must say what a vintage looks like, so the two are told apart');
+      });
+    });
+  }
+
   await withFake({
     routes: { translate: 'anthropic/claude-sonnet-5' },
     upstreams: { anthropic: { key: 'sk-ant-secret-k3A9' }, ollama: { url: 'http://192.168.68.20:11434' } },

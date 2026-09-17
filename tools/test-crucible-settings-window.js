@@ -152,6 +152,7 @@ const MAIN = read('electron', 'main.ts');
 const PRELOAD = read('electron', 'preload.ts');
 const FACADE = read('src', 'app', 'core', 'services', 'electron.service.ts');
 const PANEL = read('src', 'app', 'features', 'ai-setup', 'ai-setup-wizard.component.ts');
+const WORDS = read('src', 'app', 'features', 'settings', 'components', 'crucible-words.ts');
 
 /**
  * THE FOUR CHANNELS, SPELLED ONCE HERE.
@@ -508,6 +509,47 @@ const { check, summary } = makeChecker();
     assert.ok(/panelRefusal\(\)/.test(PANEL),
       'a refusal that names NO field has nowhere to go. It goes to the top, and that is a real '
       + 'case: settings_door_absent and settings_unreachable are about the door.');
+  });
+
+  await check('SOURCE PIN: model assignment is drawn, and it neither ranks nor filters', () => {
+    assert.ok(/Which model does each job/.test(PANEL),
+      'the model rows are gone. Owen ruled 2026-09-16 that every Crucible setting is configured '
+      + 'through the apps, model choice included.');
+    assert.ok(/refusalFor\('local_models\.' \+ capability\)/.test(PANEL),
+      'a no about `local_models.translate` must appear under the translate row, the way the '
+      + 'route rows already do.');
+    // EVERY choice the engine offers is offered. A model it says does not fit
+    // is still listed: the estimate excludes the context cache so it is not a
+    // verdict, the person may be about to free memory, and the engine refuses
+    // by name with local_model_does_not_fit if they are wrong. A filter here
+    // would be a second, worse copy of a rule the engine owns.
+    assert.ok(!/\.filter\(([^)]*)fits/.test(PANEL),
+      'the panel filters the engine\'s choices by `fits`. That makes this app a second opinion '
+      + 'about which models are legal, and the model vanishes with nothing said.');
+    assert.ok(/AUTOMATIC_MODEL = '__automatic__'/.test(PANEL),
+      'the sentinel that means "hand the choice back to the engine" is gone; null on the wire '
+      + 'needs a spelling a <select> can hold.');
+  });
+
+  await check('SOURCE PIN: a refused model choice puts the control back', () => {
+    // A refusal applies nothing, so the document never changes — and a bound
+    // [value] that did not change will not reset a <select> the person already
+    // moved. Control and engine would disagree silently, and the next write
+    // would patch from a baseline that was never true.
+    assert.ok(/if \(!wrote\) element\.value = this\.localSelectValue\(capability\);/.test(PANEL),
+      'a refused choice leaves the control showing the value the engine rejected.');
+  });
+
+  await check('SOURCE PIN: the fit caveat is said once, and says what it leaves out', () => {
+    assert.ok(/fitCaveatWords/.test(PANEL), 'the fit caveat is gone from the panel.');
+    assert.strictEqual((PANEL.match(/fitCaveatWords/g) || []).length, 2,
+      'the caveat is drawn more than once. Per row it reads as a warning about that model; it is '
+      + 'a property of the measurement and true of every row. (Two matches: the field and its '
+      + 'one use in the template.)');
+    assert.ok(/is an estimate/.test(WORDS) && /not counted here/.test(WORDS),
+      'the caveat no longer says that the sizes exclude the context cache, which is the whole '
+      + 'reason it exists: measured 2026-09-16, qwen3.8-27b-4bit reports 20.15 GiB against about '
+      + '21 GiB available and says it fits.');
   });
 
   await check('SOURCE PIN: the wizard step adds the offer, and both hosts draw the same panel', () => {

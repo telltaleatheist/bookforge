@@ -486,6 +486,38 @@ export interface CrucibleUpstreamRow {
 }
 
 /** `GET /v1/settings` — the whole document, and the only copy of it. */
+/**
+ * One model this engine could hold for one capability class, as the ENGINE
+ * computed it — never as this app estimated it.
+ *
+ * `fits` IS AN ESTIMATE AND IT EXCLUDES THE KV CACHE. `memoryBytesEstimate` is
+ * the weights alone; a context window's keys and values are on top of it and
+ * are not counted. Measured 2026-09-16 on Owen's PC: `qwen3.8-27b-4bit` reports
+ * 20.15 GiB and `fits: true` against roughly 21 GiB of allowance — under a
+ * gigabyte of headroom before any cache at all, and a 16k context on a 27B
+ * model is several GiB. So a choice can say it fits and then fail to load.
+ * Anything drawing this must word it as an estimate and say what it leaves out.
+ * (Crucible's own defect; unfixed, and Owen's to rule on.)
+ */
+export interface CrucibleLocalModelChoice {
+  id: string;
+  memoryBytesEstimate: number;
+  fits: boolean;
+  installed: boolean;
+}
+
+/**
+ * Which local model serves each capability class, and what else could.
+ *
+ * `null` for a class means the engine DECIDES — automatic selection, which is a
+ * real answer and not an absent one. The two maps are keyed by capability class
+ * (`clean`, `translate`, `pages`, `tts`, … — more than the four text acts).
+ */
+export interface CrucibleLocalModels {
+  selected: Record<string, string | null>;
+  choices: Record<string, CrucibleLocalModelChoice[]>;
+}
+
 export interface CrucibleEngineSettings {
   /** One entry per llm class, always all four. */
   routes: Record<CrucibleTextActName, CrucibleRouteRow>;
@@ -494,6 +526,17 @@ export interface CrucibleEngineSettings {
   desktopAllowanceBytes: number;
   /** `cuda-linux`, `mlx-darwin`, or `none` in host mode. */
   backendKind: string;
+  /**
+   * `null` means THIS SERVER PREDATES MODEL ASSIGNMENT — a vintage, stated as a
+   * fact so a panel can say so and disable itself.
+   *
+   * It is not a default standing in for a missing value. A 0.6.6 engine always
+   * emits both maps (`crucible/settings.py:document()` writes them
+   * unconditionally, like routes and upstreams), so absence can only mean an
+   * older engine. A document carrying ONE of the two is a defect and
+   * `projectSettings` refuses it by name rather than reading it as either.
+   */
+  localModels: CrucibleLocalModels | null;
 }
 
 /**
@@ -510,6 +553,15 @@ export interface CrucibleEngineSettingsPatch {
   /** A key or a url to set; `null` REMOVES that upstream. */
   upstreams?: Partial<Record<CrucibleUpstreamName, { key: string } | { url: string } | null>>;
   desktopAllowanceBytes?: number;
+  /**
+   * Capability class → a model id, or `null` to hand the choice back to the
+   * engine. The server refuses by name: `local_model_not_selectable` (400) for
+   * a class that has no choice to make, `local_model_unknown` (400) for an id
+   * it does not have, `local_model_does_not_fit` (409), and
+   * `capability_undecided` (503) when nothing has decided anything on that host
+   * yet.
+   */
+  localModels?: Record<string, string | null>;
 }
 
 /**

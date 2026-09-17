@@ -112,7 +112,12 @@ check('the package is PINNED, and to a vendored tarball rather than a directory'
   // node_modules follows it and deletes that repo's SDK source. The same rule
   // package.json already states for the client tarball.
   assert.match(pin, /^file:vendor\/crucible-bootstrap-.*\.tgz$/, `the pin is not a vendored tarball: ${pin}`);
-  assert.ok(pin.includes(install.CRUCIBLE_RELEASE), `the pin is not the release this build names: ${pin}`);
+  // CRUCIBLE_RELEASE is now BOOTSTRAP_VERSION — what the vendored package says
+  // about itself — so this compares the TARBALL ON DISK with the version inside
+  // it. A re-vendor that swapped the file without the pin, or a pin edited
+  // without the file, is red here. The old literal could not be asked that
+  // question: it only ever agreed with itself.
+  assert.ok(pin.includes(install.CRUCIBLE_RELEASE), `vendor/ holds ${pin} but the package inside says ${install.CRUCIBLE_RELEASE}`);
   assert.ok(
     fs.existsSync(path.join(REPO, pin.slice('file:'.length))),
     'the pinned tarball is not in vendor/ — this build cannot be installed from',

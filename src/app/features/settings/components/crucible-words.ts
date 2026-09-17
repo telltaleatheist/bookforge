@@ -297,6 +297,40 @@ export const ENGINE_ROUTES_INTRO =
   + 'server instead and it goes there from then on — chosen now, not reached for later when '
   + 'something fails.';
 
+/** Above the local-model rows. */
+export const ENGINE_LOCAL_MODELS_INTRO =
+  'A job that runs on the engine\'s own card runs on a model that engine chose for itself. These '
+  + 'rows are where you choose instead — and where you can hand the choice back. The list is the '
+  + 'engine\'s: it ships these models for this class on this backend, and BookForge neither adds '
+  + 'to it nor takes anything out of it.';
+
+/**
+ * The fit caveat, said ONCE under the rows.
+ *
+ * Per row it would read as a warning about that model. It is not: it is one
+ * property of how the number is measured, and it is true of every row.
+ *
+ * MEASURED 2026-09-16 on Owen's PC, and this is the case that makes it real:
+ * `qwen3.8-27b-4bit` reports 20.15 GiB against roughly 21 GiB available and
+ * says it fits — under a gigabyte of headroom before any cache at all, while a
+ * 16k context on a 27B model is several gigabytes of keys and values. So the
+ * engine can say a model fits and then fail to load it.
+ */
+export const ENGINE_FIT_CAVEAT =
+  'The sizes are the weights only. A model also needs room for the context it is holding, which '
+  + 'is not counted here and can be several gigabytes on a large model — so "fits" is an estimate, '
+  + 'not a promise, and one near the limit may still fail to load.';
+
+/** When the engine has not measured its own card yet. */
+export const ENGINE_CAPABILITY_UNDECIDED =
+  'This engine has not measured its card yet, so it has no candidates to offer and no budget to '
+  + 'measure them against. It decides that on its first run.';
+
+/** When the engine predates model assignment altogether. */
+export const ENGINE_LOCAL_MODELS_UNSUPPORTED =
+  'This engine is older than per-job model choice. It still picks a model for each job by itself; '
+  + 'there is just no way to tell it otherwise from here. Upgrading the engine adds these rows.';
+
 /** Above the three upstream cards. */
 export const ENGINE_KEYS_INTRO =
   'Keys and addresses live on the engine. BookForge never stores one, never reads one back and '

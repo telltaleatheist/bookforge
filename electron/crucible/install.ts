@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import * as path from 'path';
 import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
 
+import { BOOTSTRAP_VERSION } from '@crucible/bootstrap';
 import type {
   HostEvent,
   InstallOptions,
@@ -40,10 +41,22 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The Crucible release tested with this app's vendored client and bootstrap.
- * The installation keeper verifies this matches the dependency pins.
+ * The Crucible release this build installs — READ FROM THE BOOTSTRAPPER, not
+ * typed here.
+ *
+ * It was a literal until 2026-09-16, and that made it a second owner of a fact
+ * `@crucible/bootstrap` already states about itself: the package ships AT the
+ * server's version (crucible's `release.sh` refuses a cut where the two
+ * disagree), so `BOOTSTRAP_VERSION` IS the release. A hand-typed copy beside a
+ * vendored tarball is a number that can be forgotten on a re-vendor, which is
+ * exactly what happened to the module manifests on the crucible side — they
+ * shipped 0.6.3 still naming 0.6.2 because nothing compared them.
+ *
+ * Foundry has always derived it this way. One fact, one owner, and the owner is
+ * the package. The keeper now checks the vendored TARBALL matches what the
+ * package says it is, which is a question a literal could not be asked.
  */
-export const CRUCIBLE_RELEASE = '0.6.3';
+export const CRUCIBLE_RELEASE: string = BOOTSTRAP_VERSION;
 
 /** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';

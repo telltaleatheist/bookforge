@@ -336,6 +336,53 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
     upstreams,
     desktopAllowanceBytes: doc.desktopAllowanceBytes,
     backendKind: doc.backendKind,
+    localModels: projectLocalModels(doc, server),
+  };
+}
+
+/**
+ * The two model-assignment maps, or `null` for a server that predates them.
+ *
+ * THE VINTAGE RULE, and why it is not a fallback. A 0.6.6 engine writes both
+ * maps unconditionally — `crucible/settings.py:document()` emits them beside
+ * routes and upstreams — so a document with NEITHER can only be an older
+ * engine, and that is a fact about the server worth stating: the panel says so
+ * and disables itself. A document with exactly ONE of the two is neither a
+ * vintage nor a reading: `choices` without `selected` cannot say what is in
+ * force, and `selected` without `choices` cannot offer anything else. That is a
+ * defect and it is refused by name, the same shape `routesFromCapability` uses
+ * for a partial capability record.
+ */
+function projectLocalModels(
+  doc: SettingsDocument,
+  server: string,
+): CrucibleEngineSettings['localModels'] {
+  const selected = doc.localModels;
+  const choices = doc.localModelChoices;
+  if (selected === undefined && choices === undefined) return null;
+  if (selected === undefined || choices === undefined) {
+    throw new CrucibleEngineSettingsError(
+      'settings_document_unreadable',
+      `"${server}" sent a settings document with `
+        + (selected === undefined ? 'local_model_choices but no local_models' : 'local_models but no local_model_choices')
+        + '. An engine that has one has both — choices with nothing selected cannot say what is in '
+        + 'force, and a selection with no choices cannot offer anything else. A server older than '
+        + 'model assignment sends NEITHER, and that is read as its vintage.',
+    );
+  }
+  return {
+    selected: { ...selected },
+    choices: Object.fromEntries(
+      Object.entries(choices).map(([capability, rows]) => [
+        capability,
+        rows.map((row) => ({
+          id: row.id,
+          memoryBytesEstimate: row.memoryBytesEstimate,
+          fits: row.fits,
+          installed: row.installed,
+        })),
+      ]),
+    ),
   };
 }
 
@@ -390,6 +437,16 @@ export async function putCrucibleEngineSettings(
     ...(patch.desktopAllowanceBytes === undefined
       ? {}
       : { desktopAllowanceBytes: patch.desktopAllowanceBytes }),
+    /*
+     * `localModels` PASSES THROUGH WHOLE, keys and all — `null` included,
+     * because null is the value that hands the choice back to the engine and
+     * dropping it would turn "decide this yourself" into "change nothing". The
+     * key is not filtered for the same reason `routes` above is not: which
+     * classes are selectable is the SERVER's to refuse, by name
+     * (`local_model_not_selectable`), and a class quietly removed here would
+     * come back 200 with an unchanged document, which a panel draws as a save.
+     */
+    ...(patch.localModels === undefined ? {} : { localModels: patch.localModels }),
   };
   /*
    * AN EMPTY PATCH NEVER LEAVES THIS PROCESS, and it is refused here rather

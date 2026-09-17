@@ -662,12 +662,33 @@ function settingsRoutes(behaviour) {
         };
       }
     }
-    return {
+    /*
+     * MODEL ASSIGNMENT, in the server's spelling. A 0.6.6 engine emits both
+     * maps unconditionally, so the DEFAULT here emits both — a fake that left
+     * them out would make every other keeper exercise the vintage path by
+     * accident. `behaviour.localModels` names the three shapes worth testing:
+     *   'absent'       — neither map, which is a server older than the feature
+     *   'selected-only' / 'choices-only' — a PARTIAL document, which is a defect
+     */
+    const shape = behaviour.localModels || 'both';
+    const selectedDoc = {};
+    const choicesDoc = {};
+    for (const c of LLM_CLASSES) {
+      selectedDoc[c] = localModelFor(c);
+      choicesDoc[c] = [
+        { id: 'qwen3.5-9b', memory_bytes_estimate: 20950548480, fits: true, installed: true },
+        { id: 'qwen3.8-27b', memory_bytes_estimate: 56368313144, fits: false, installed: false },
+      ];
+    }
+    const doc = {
       routes: routeDoc,
       upstreams: upstreamDoc,
       desktop_allowance_bytes: 3221225472,
       backend_kind: backendKind,
     };
+    if (shape === 'both' || shape === 'selected-only') doc.local_models = selectedDoc;
+    if (shape === 'both' || shape === 'choices-only') doc.local_model_choices = choicesDoc;
+    return doc;
   };
 
   /*

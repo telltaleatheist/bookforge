@@ -13,6 +13,7 @@ import {
   type CrucibleEngineSettings,
   type CrucibleEngineSettingsPatch,
   type CrucibleEngineSettingsRefusal,
+  type CrucibleLocalModelChoice,
   type CrucibleModelRow,
   type CrucibleCapabilityView,
   type CrucibleTextActName,
@@ -20,7 +21,11 @@ import {
   type CrucibleUpstreamProbe,
 } from '@shared/crucible/settings-wire';
 import {
+  ENGINE_CAPABILITY_UNDECIDED,
+  ENGINE_FIT_CAVEAT,
   ENGINE_KEYS_INTRO,
+  ENGINE_LOCAL_MODELS_INTRO,
+  ENGINE_LOCAL_MODELS_UNSUPPORTED,
   ENGINE_ROUTES_INTRO,
   ENGINE_SETTINGS_INTRO,
   ENGINE_SETTINGS_NO_SERVER,
@@ -419,6 +424,50 @@ import {
               @if (refusalFor('routes.' + act); as r) {
                 <p class="vlm-status bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
               }
+            }
+
+            <!-- ── Which model does each job ── -->
+            <h3 class="cru-acts-head">Which model does each job</h3>
+            @if (doc.localModels === null) {
+              <p class="muted">{{ localModelsUnsupportedWords }}</p>
+            } @else if (localClasses().length === 0) {
+              <p class="muted">{{ capabilityUndecidedWords }}</p>
+            } @else {
+              <p class="muted">{{ localModelsIntroWords }}</p>
+
+              @for (capability of localClasses(); track capability) {
+                <div class="setting-row">
+                  <label class="setting-label">{{ classWords(capability) }}</label>
+                  <select
+                    class="key-input"
+                    [value]="localSelectValue(capability)"
+                    [disabled]="engineBusy()"
+                    (change)="chooseLocalModel(capability, $any($event.target))"
+                  >
+                    <option [value]="AUTOMATIC_MODEL">Let the engine choose</option>
+                    <!-- A MODEL THE ENGINE SAYS DOES NOT FIT IS STILL OFFERED.
+                         The estimate excludes the context cache, so it is not a
+                         verdict; the person may be about to free memory or
+                         change the desktop allowance; and the engine refuses by
+                         name with local_model_does_not_fit if they are wrong.
+                         Hiding the row would make this app a second, worse copy
+                         of a rule the engine already owns, and the model would
+                         simply vanish with nothing said. -->
+                    @for (choice of localChoices(capability); track choice.id) {
+                      <option [value]="choice.id">{{ localChoiceWords(choice) }}</option>
+                    }
+                  </select>
+                </div>
+
+                @if (refusalFor('local_models.' + capability); as r) {
+                  <p class="vlm-status bad"><span class="code">{{ r.code }}</span> {{ r.message }}</p>
+                }
+              }
+
+              <!-- ONCE, under the rows. Per row it reads as a warning about
+                   that model; it is a property of the measurement, and true of
+                   every one of them. -->
+              <p class="muted">{{ fitCaveatWords }}</p>
             }
 
             <!-- ── The three accounts ── -->
@@ -1041,6 +1090,19 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly settingsIntroWords = ENGINE_SETTINGS_INTRO;
   readonly routesIntroWords = ENGINE_ROUTES_INTRO;
   readonly keysIntroWords = ENGINE_KEYS_INTRO;
+  readonly localModelsIntroWords = ENGINE_LOCAL_MODELS_INTRO;
+  readonly localModelsUnsupportedWords = ENGINE_LOCAL_MODELS_UNSUPPORTED;
+  readonly capabilityUndecidedWords = ENGINE_CAPABILITY_UNDECIDED;
+  readonly fitCaveatWords = ENGINE_FIT_CAVEAT;
+
+  /**
+   * The option value that means "hand the choice back to the engine".
+   *
+   * A `<select>` speaks strings and `null` is what the wire carries, so the two
+   * need a spelling between them. It is a SENTINEL and never a model id: the
+   * engine's ids come out of the catalog and none of them is this.
+   */
+  readonly AUTOMATIC_MODEL = '__automatic__';
   readonly testBeforeSaveWords = TEST_BEFORE_SAVE_WORDS;
   readonly noServerWords = ENGINE_SETTINGS_NO_SERVER;
   readonly refusedLeadWords = ENGINE_SETTINGS_REFUSED_LEAD;
@@ -1227,6 +1289,68 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     } finally {
       this.engineBusy.set(false);
     }
+  }
+
+  // ── Which model does each job ─────────────────────────────────────────────
+  //
+  // Owen's Ollama ruling (2026-09-16): every Crucible setting is configured
+  // through the apps. The engine computes what may serve each class — it ships
+  // these models for this class on this backend, and measures them against its
+  // own budget — and this draws that and writes a choice back. Nothing here
+  // ranks, filters or validates: `local_model_unknown`,
+  // `local_model_not_selectable`, `local_model_does_not_fit` and
+  // `capability_undecided` are the ENGINE's refusals and they arrive with
+  // `field: local_models.<capability>`, which puts each one under its own row.
+
+  /** The classes this engine offers a choice for, in its own order. */
+  readonly localClasses = computed<string[]>(() => {
+    const models = this.engineSettings()?.localModels;
+    if (!models) return [];
+    return Object.keys(models.choices).sort();
+  });
+
+  localChoices(capability: string): CrucibleLocalModelChoice[] {
+    return this.engineSettings()?.localModels?.choices[capability] ?? [];
+  }
+
+  /**
+   * What the control shows: the engine's selection, or the automatic sentinel.
+   *
+   * `null` is a DECISION — "you choose" — so it maps to the sentinel rather
+   * than to an empty control. A class missing from `selected` entirely would be
+   * a document this app cannot read, and `projectLocalModels` has already
+   * refused that, so it cannot arrive here.
+   */
+  localSelectValue(capability: string): string {
+    const selected = this.engineSettings()?.localModels?.selected[capability];
+    return selected === null || selected === undefined ? this.AUTOMATIC_MODEL : selected;
+  }
+
+  /** `qwen3.5-9b — 19.5 GiB` , or `… — 52.5 GiB, larger than this card`. */
+  localChoiceWords(choice: CrucibleLocalModelChoice): string {
+    const size = `${(choice.memoryBytesEstimate / 1024 ** 3).toFixed(1)} GiB`;
+    const parts = [size];
+    if (!choice.fits) parts.push('larger than this card');
+    if (!choice.installed) parts.push('not downloaded yet');
+    return `${choice.id} — ${parts.join(', ')}`;
+  }
+
+  /**
+   * Write the choice, and PUT THE CONTROL BACK if the engine refuses it.
+   *
+   * A refusal applies nothing, so the engine still holds what it held — but the
+   * `<select>` is by then showing the value the person picked, and the bound
+   * `[value]` will not put it back because the document it reads never changed.
+   * The control and the machine would disagree silently, and the next write
+   * would patch from a baseline that was never true. So the element is reset
+   * from the document by hand. (Foundry hit this first; its card does the same.)
+   */
+  async chooseLocalModel(capability: string, element: HTMLSelectElement): Promise<void> {
+    const chosen = element.value;
+    const wrote = await this.writeEngineSettings({
+      localModels: { [capability]: chosen === this.AUTOMATIC_MODEL ? null : chosen },
+    });
+    if (!wrote) element.value = this.localSelectValue(capability);
   }
 
   // ── The four route rows ──────────────────────────────────────────────────
