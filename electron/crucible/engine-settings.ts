@@ -366,28 +366,6 @@ function projectLocalModels(
   doc: SettingsDocument,
   server: string,
 ): CrucibleEngineSettings['localModels'] {
-  /*
-   * LABELLED STOPGAP — DELETE THIS BLOCK AT THE 0.6.6 RE-VENDOR.
-   *
-   * The vendored SDK is still 0.6.3 and types both fields OPTIONAL, so this
-   * process can still be handed a document without them even though no engine
-   * sends one. The 0.6.6 client reads them as required and refuses such a
-   * document itself, with the field path, which makes this unreachable — and an
-   * unreachable check is a second owner of a rule the SDK holds.
-   *
-   * It is here rather than absent because the alternative is a non-null
-   * assertion, and an assertion that turns out to be wrong crashes a settings
-   * window instead of naming a server.
-   */
-  if (doc.localModels === undefined || doc.localModelChoices === undefined) {
-    throw new CrucibleEngineSettingsError(
-      'settings_document_unreadable',
-      `"${server}" sent a settings document without `
-        + (doc.localModels === undefined ? 'local_models' : 'local_model_choices')
-        + '. Every engine sends both; this one is older than per-job model choice and this '
-        + 'build does not read that vintage. Upgrade the engine.',
-    );
-  }
   return {
     selected: { ...doc.localModels },
     choices: Object.fromEntries(
