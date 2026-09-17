@@ -10,10 +10,48 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **24f586b** — *Wait for selected model readiness and prepare Foundry 2.0.2* |
+| Source sha | **c3489bb** — *fix(settings): place the model card — it was imported and never drawn* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-16 |
-| Copied by | Mechanical source sync, verified against Foundry `24f586b:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `c3489bb:app/`; details below |
+
+## The `24f586b → c3489bb` re-vendor (2026-09-16)
+
+**All 184 tracked authoritative app files are byte-exact copies of Foundry
+`c3489bb`**, verified one at a time by comparing `git hash-object` of each file
+here against `git rev-parse c3489bb:app/<path>` there — the platform-neutral
+check, because `core.autocrlf=true` makes a byte comparison of working trees
+meaningless. 184, not 180: six files arrived (`electron/crucible-models.ts`,
+`shared/model-wire.ts`, `src/app/pages/settings/engine-models-card.component.ts`,
+`test/crucible-http.test.ts`, and the two 0.6.6 archives) and the two 0.6.2
+archives were removed. The refresh recipe below does not delete outside
+`electron/`, `shared/` and `src/`, so superseded `vendor/` archives have to be
+taken out by hand every time — the tracked-file-set diff against
+`git ls-tree -r --name-only <sha> app` is how they are found.
+
+**The SDK moved 0.6.2 → 0.6.6** with it, which is why `package.json` and
+`package-lock.json` are in the diff and why this refresh needed `npm ci` rather
+than a rebuild. `node_modules/foundry` was NOT created: the `foundry: file:..`
+self-link is gone from authoritative source, so the junction hazard the recipe
+warns about no longer applies to this subtree. The check still costs nothing and
+is still worth running.
+
+### This copy fixes a Foundry defect that BookForge's build is what found
+
+Fourteen commits of settings work arrived — a model per act (`c4e0f67`), the
+model panel (`39c8504`), remove-weights (`2a789da`), greyed-but-pressable rows
+(`59a3a8e`) — and **none of it drew anything**. `EngineModelsCardComponent` was
+imported by `settings-page.component.ts` and listed in its `imports:`, and never
+placed in the template. Angular said so on every build, as `NG8113:
+EngineModelsCardComponent is not used within the template of
+SettingsPageComponent`, at `warning` — the default for that check — under a
+bundle-budget warning that is always there, with exit code 0 either side of it.
+
+Per SEALED SUBTREE the fix was made in Foundry (`c3489bb`) and re-copied, not
+made here. It places the card under `<app-engine-settings-card />` and promotes
+`unusedStandaloneImports` to `error` in the subtree's own `tsconfig.json`, so
+the next one fails the build instead of scrolling past. Foundry: 877 pass, 0
+fail; both builds green.
 
 ## Corrected 2.0.2 source sync (2026-09-16)
 
@@ -1075,24 +1113,51 @@ phone photographs), and the lockfile arrives with the copy already naming them.
 `package.json`; `npm install <pkg>` on this machine has been observed rewriting
 a package.json and dropping its `scripts` block entirely.
 
-**AND DELETE `node_modules/foundry` AFTERWARDS, NON-RECURSIVELY. Every time.**
-Since `4beb88b` (and still at `e6d5424`) the subtree's `package.json` carries `"foundry": "file:.."`,
-Foundry's self-link to its own repo root. Here `..` is BookForge's root, so
-`npm ci` creates `foundry-app/node_modules/foundry` as a **JUNCTION to the whole
-checkout** — and the worktree-hygiene rule at the top of `CLAUDE.md` exists
-because a recursive delete follows a junction. Nothing imports the package, so
-the link is pure hazard:
+**PLAIN `npm ci`. NOT `--ignore-scripts`.** This line recommended the flag
+until 2026-09-16, and the flag is what broke the refresh — for the second time,
+in the same way, for the same reason.
 
 ```
 cd foundry-app
-npm ci --ignore-scripts      # our ROOT has a postinstall; a linked target's
-                             # lifecycle is not a thing to gamble on
-powershell -c "$i=Get-Item node_modules\foundry -Force; if ($i.LinkType) { $i.Delete() }"
+npm ci
+powershell -c "$i=Get-Item node_modules\foundry -Force -EA SilentlyContinue; if ($i -and $i.LinkType) { $i.Delete() }"
 powershell -c "Test-Path node_modules\foundry"   # MUST print False
 npm run build
 ```
 
-Reported to the Foundry side; the fix is theirs, per SEALED SUBTREE.
+WHY THE FLAG WAS HERE, AND WHY IT IS NOT NOW. It guarded a self-link. `4beb88b`
+gave the subtree's `package.json` a `"foundry": "file:.."`, and here `..` is
+BookForge's own root, so `npm ci` made `foundry-app/node_modules/foundry` a
+**JUNCTION to the whole checkout** — and the worktree-hygiene rule at the top of
+`CLAUDE.md` exists because a recursive delete follows a junction. Skipping
+lifecycle scripts kept a linked target's `postinstall` from running against our
+root. **That dependency is gone from authoritative source** (recorded in the
+2.0.1 sync note below), so at this sha `npm ci` creates no junction and the flag
+protects nothing. Measured rather than assumed: the check above printed `absent`
+after this refresh.
+
+WHAT IT COSTS WHEN IT IS WRONG. `--ignore-scripts` skips Electron's
+`postinstall`, which is the step that downloads the binary, so
+`node_modules/electron/index.js` throws *"Electron failed to install
+correctly"*. **Nothing in the build notices.** `npm run build` is clean, both
+programs compile, the bundle is the right size — because nothing on the build
+path requires Electron at run time. It surfaces in one place only: the
+subtree's compiled `app-settings.js` requires it, and
+`tools/test-clean-step-door.js` requires that, so a single keeper dies with a
+stack trace naming a file nobody edited.
+
+AND IT HAD ALREADY HAPPENED ONCE. The v0.5.0 sync hit this and wrote the remedy
+down — `npm rebuild electron` — **in its own historical note further down this
+file**, and left the recipe up here still saying `--ignore-scripts`. So the fix
+was in the document and the instruction was still wrong, and the next person to
+follow the instruction was the next person to lose the evening. A note that
+records a fix is not a recipe that prevents it. THIS BLOCK is the recipe; the
+note below is history and stays as written.
+
+THE JUNCTION CHECK IS KEPT even though the self-link is gone. It costs a line
+and a millisecond, it is the cheap half of a rule whose expensive half gutted
+the main checkout's `node_modules` twice, and if Foundry ever re-adds the
+self-link this is the thing that notices.
 
 ## What BookForge imports
 

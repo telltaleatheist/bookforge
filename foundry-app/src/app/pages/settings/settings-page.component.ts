@@ -5,6 +5,7 @@ import type { BackendMode, DoctorReport, EngineInfo, TierReport } from '@shared/
 
 import { api, hosted } from '../../core/foundry';
 import { CloudCardComponent } from './cloud-card.component';
+import { EngineModelsCardComponent } from './engine-models-card.component';
 import { EngineSettingsCardComponent } from './engine-settings-card.component';
 import { EnvCardComponent } from './env-card.component';
 import { LibraryCardComponent } from './library-card.component';
@@ -29,7 +30,8 @@ import { ServersCardComponent } from './servers-card.component';
 @Component({
   selector: 'app-settings-page',
   imports: [
-    CloudCardComponent, EngineSettingsCardComponent, EnvCardComponent, FormsModule,
+    CloudCardComponent, EngineModelsCardComponent, EngineSettingsCardComponent, EnvCardComponent,
+    FormsModule,
     LibraryCardComponent, SetupCardComponent,
     MachineModelsCardComponent, PageReaderCardComponent, ServersCardComponent,
   ],
@@ -195,6 +197,32 @@ import { ServersCardComponent } from './servers-card.component';
             draws the HOST's registry and shows the same engine.
           -->
           <app-engine-settings-card />
+
+          <!--
+            AND WHICH MODEL ON THAT ENGINE RUNS EACH ACT. The card directly above
+            says WHERE a class of work goes; this one says what runs it once it
+            arrives, and it is where weights are fetched and removed. Its own
+            file argues at length why the two are separate cards rather than one
+            table, and the reason they are ADJACENT is that same argument read
+            the other way: they are one question a layer apart, so somebody who
+            changes a route looks straight down to see what will answer it.
+
+            PLACED 2026-09-16, AND IT WAS MISSING UNTIL THEN. The component was
+            written, imported, and listed in this page's imports array by
+            59a3a8e, and never put in the template. The compiler SAID so on
+            every build -- NG8113, "EngineModelsCardComponent is not used within
+            the template of SettingsPageComponent" -- and said it at warning,
+            this check's default, which nothing reads: the build exits 0 and the
+            line scrolls past under a bundle-size warning that is always there.
+            So the whole model panel drew nothing: no model per act, no fetch,
+            no remove. Found by BookForge's re-vendor build. NG8113 is an error
+            in tsconfig.json now, and that note is kept there.
+
+            (No backticks in this comment, deliberately. It sits inside a
+            template literal, and a pair of them ends the string 200 lines early
+            -- which is how this comment was first written and how it failed.)
+          -->
+          <app-engine-models-card />
 
           <!--
             AND THE THIRD ANSWER TO THE SAME QUESTION — somebody else's computer,

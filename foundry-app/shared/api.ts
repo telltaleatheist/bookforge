@@ -23,6 +23,7 @@ import type {
   UpstreamTestResult,
 } from './engine-settings';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
+import type { CrucibleCatalogRow, CruciblePullProgress } from './model-wire';
 import type { ReReadPrompt } from './reread';
 import type {
   CloudProbe,
@@ -1485,6 +1486,25 @@ export interface FoundryApi {
     offerStart(): Promise<'start' | 'later'>;
     /** Ask Crucible's own controller to start and verify the service. */
     startCrucible(): Promise<CrucibleStartResult>;
+    /** What this engine holds and could hold. A read; it fetches nothing. */
+    catalog(server: string): Promise<CrucibleCatalogRow[]>;
+    /**
+     * Start fetching one subject. Answers the TASK ID — the pull itself reports
+     * on {@link onPullProgress}, because a model is gigabytes and no invoke
+     * should be held open that long.
+     */
+    pull(server: string, kind: string, id: string): Promise<string>;
+    /**
+     * Ask before deleting weights. `keep` covers the dismissal and the window
+     * that had no card to draw — a question nobody saw was not agreed to.
+     */
+    confirmRemoveModel(
+      ask: { server: string; id: string; name: string | null; bytes: number | null },
+    ): Promise<'remove' | 'keep'>;
+    /** Delete an installed subject's files. The server's refusals arrive as they are. */
+    removeModel(server: string, kind: string, id: string): Promise<void>;
+    /** Every frame of every pull in flight, each naming its server, kind and id. */
+    onPullProgress(listener: (progress: CruciblePullProgress) => void): () => void;
     /** Read the platform's native installation plan without changing the machine. */
     installPlan(): Promise<CrucibleInstallPlan>;
     /** Install through Crucible, verify readiness, and register its published connection. */

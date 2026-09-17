@@ -2052,6 +2052,22 @@ export interface OllamaFacts {
 export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'pages';
 
 /**
+ * THE FIVE, AS A LIST, in the order a book meets them.
+ *
+ * Beside the type because a union and the array over it drift apart the moment
+ * they live in different files — one gains a member and the other does not, and
+ * the loop that was meant to cover every class quietly covers four of them.
+ *
+ * `pages` first because it is the one every scanned book needs before anything
+ * can read it; then the four text classes in the order the settings card draws
+ * them. A current Crucible reports TEN classes — `tts`, `asr`, `align`, `rvc`
+ * and `denoise` besides these — and those are BookForge's work. This app has no
+ * act behind any of them, so it assigns models for exactly these five.
+ */
+export const MODEL_CLASSES: readonly ModelClass[] =
+  ['pages', 'clean', 'translate', 'simplify', 'analysis'];
+
+/**
  * The acts the dock draws a tile for and this machine can refuse.
  *
  * `read` is the page reader rather than a class name, because the tile says OCR

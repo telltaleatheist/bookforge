@@ -27,7 +27,27 @@
     "enableI18nLegacyMessageIdFormat": false,
     "strictInjectionParameters": true,
     "strictInputAccessModifiers": true,
-    "strictTemplates": true
+    "strictTemplates": true,
+    // NG8113 IS AN ERROR HERE, and it is an error because of what it cost.
+    // `EngineModelsCardComponent` was written, imported and listed in the
+    // settings page's `imports:` on 59a3a8e and never placed in its template,
+    // so the whole model panel -- a model per act, fetch, remove -- drew
+    // nothing. The compiler SAID so on every build, as
+    // "EngineModelsCardComponent is not used within the template of
+    // SettingsPageComponent", and said it at `warning`, which is the default
+    // for this check and which nothing reads: the build exits 0 and the line
+    // scrolls past under a bundle-size warning that is always there.
+    //
+    // A standalone component's `imports:` is a CLAIM about its template, so an
+    // entry the template never uses is the template missing an element, not a
+    // tidiness problem. Promoting it is better than a test that greps for
+    // selectors because the compiler already knows the answer exactly, for
+    // every component, including the ones nobody thought to check.
+    "extendedDiagnostics": {
+      "checks": {
+        "unusedStandaloneImports": "error"
+      }
+    }
   },
   "files": [],
   "references": [

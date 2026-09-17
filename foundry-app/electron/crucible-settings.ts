@@ -69,10 +69,13 @@ import {
 
 import { engineClientFor } from './crucible-registry';
 import type { CrucibleServerEntry } from './app-settings';
+import { MODEL_CLASSES, type ModelClass } from '../shared/types';
 import {
   LLM_CLASSES,
   UPSTREAM_LABEL,
   type LlmClass,
+  type LocalModelChoice,
+  type LocalModels,
   type SettingsDocument,
   type SettingsPatch,
   type UpstreamName,
@@ -190,6 +193,7 @@ export async function testUpstream(
  */
 function patchFor(patch: SettingsPatch): EngineSettingsPatch {
   const out: {
+    localModels?: Record<string, string | null>;
     routes?: Record<string, string>;
     upstreams?: Partial<Record<EngineUpstreamName, { key?: string; url?: string } | null>>;
     desktopAllowanceBytes?: number;
@@ -209,10 +213,68 @@ function patchFor(patch: SettingsPatch): EngineSettingsPatch {
     if (patch.upstreams.ollama !== undefined) upstreams.ollama = patch.upstreams.ollama;
     out.upstreams = upstreams;
   }
+  if (patch.localModels !== undefined) {
+    /*
+     * PRESENT-AND-NULL IS SENT; ABSENT IS NOT. `null` asks the engine to choose
+     * (the SDK: *"null restores the engine's automatic decision"*), so it is a
+     * value this app forwards rather than a gap it skips. Only `undefined` —
+     * a class the person did not touch — is left out of the patch.
+     */
+    const local: Record<string, string | null> = {};
+    for (const cls of MODEL_CLASSES) {
+      const named = patch.localModels[cls];
+      if (named !== undefined) local[cls] = named;
+    }
+    out.localModels = local;
+  }
   if (patch.desktopAllowanceBytes !== undefined) {
     out.desktopAllowanceBytes = patch.desktopAllowanceBytes;
   }
   return out;
+}
+
+/**
+ * THE TWO LOCAL-MODEL FIELDS, INTO ONE VALUE.
+ *
+ * ── THE VINTAGE ARM IS GONE (Owen, 2026-09-16) ───────────────────────────
+ *
+ * This used to answer `{supported:false}` for an engine predating model
+ * assignment. Owen deleted the population that served: *"Nothing is legacy
+ * because nothing exists publicly. There will be no person trying to access the
+ * system with an older version of crucible other than us."* A 0.6.6 engine emits
+ * both fields unconditionally and the 0.6.6 SDK reads them unconditionally,
+ * failing in `settings()` with the field's own name.
+ *
+ * ── THE STOPGAP THAT WAS HERE IS GONE, ON ITS OWN CONDITION ──────────────
+ *
+ * Between the ruling and the 0.6.6 re-vendor this function carried an explicit
+ * refusal for a document missing either field, marked as a stopgap with its
+ * deletion condition written into it: the vendored 0.6.3 client typed both
+ * fields optional, so the compiler would not let them be read without one.
+ *
+ * `@crucible/client` is 0.6.6 now and types both as REQUIRED, refusing such a
+ * document in `settings()` with the field's own name. So the check became
+ * unreachable and went — an unreachable guard is a second owner of a rule the
+ * SDK holds, never exercised, with nothing to tell you when its sentence stopped
+ * being true. The compiler is the proof the condition was met: reading these
+ * two fields without a guard does not typecheck against 0.6.3 and does against
+ * 0.6.6.
+ */
+function localModelsFrom(doc: EngineSettingsDocument): LocalModels {
+  const assignedRaw = doc.localModels;
+  const choicesRaw = doc.localModelChoices;
+  const assigned = {} as Record<ModelClass, string | null>;
+  const choices = {} as Record<ModelClass, LocalModelChoice[]>;
+  for (const cls of MODEL_CLASSES) {
+    assigned[cls] = assignedRaw[cls] ?? null;
+    choices[cls] = (choicesRaw[cls] ?? []).map((row) => ({
+      id: row.id,
+      memoryBytesEstimate: row.memoryBytesEstimate,
+      fits: row.fits,
+      installed: row.installed,
+    }));
+  }
+  return { assigned, choices };
 }
 
 /**
@@ -221,17 +283,39 @@ function patchFor(patch: SettingsPatch): EngineSettingsPatch {
  * THE ONLY SHAPING LEFT. The SDK reads every field and refuses a document that
  * is not API v1's, so there is nothing here to read defensively; what it does
  * NOT do is invent a row the server omitted, and §2 says an omitted row IS an
- * answer (*"absent key = local"*). `local` is also the answer for a class the
- * server named with a route this app has no row for, which is the conservative
- * direction: it does not claim a person's book is being sent to a company.
+ * answer (*"absent key = local"*). That absence is the one thing filled in
+ * below, and it is a CONTRACT rule about a current server, not tolerance of an
+ * old one.
+ *
+ * ── AND IT NO LONGER SECOND-GUESSES THE VALUE ────────────────────────────
+ *
+ * This read `row?.route === 'upstream' ? 'upstream' : 'local'`, defended as
+ * *"the conservative direction: it does not claim a person's book is being sent
+ * to a company"*. That was a good argument against the wrong alternative. The
+ * alternative was never "claim upstream" — it is that **the value cannot
+ * arrive**: `readSettings` parses the field as `oneOf(str(entry, 'route'),
+ * ROUTES, …)` (verified in the vendored 0.6.3 client), so a route that is
+ * neither word throws a protocol error naming `settings.routes.<class>.route`
+ * before this function is reached.
+ *
+ * So the ternary was a SECOND reader of a field the SDK had already validated,
+ * and a weaker one: it turned a value that cannot exist into a silent `local`.
+ * A `local` invented here is exactly the fact the capability path refuses to
+ * invent (`capability_route_unknown`), on the argument that it decides whether
+ * a run costs GPU-minutes or money — two readers of one concept, one refusing
+ * and one defaulting. The SDK's value is used now, and the refusal has one
+ * owner.
  */
 function documentFrom(doc: EngineSettingsDocument): SettingsDocument {
   return {
+    localModels: localModelsFrom(doc),
     routes: Object.fromEntries(
       LLM_CLASSES.map((cls) => {
         const row = doc.routes[cls];
         return [cls, {
-          route: row?.route === 'upstream' ? 'upstream' : 'local',
+          // The SDK has already refused anything that is not one of the two
+          // words; the fallback is for an ABSENT row, which §2 makes an answer.
+          route: row?.route ?? 'local',
           model: row?.model ?? null,
         }];
       }),

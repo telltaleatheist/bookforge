@@ -5,8 +5,8 @@
   "description": "BookForge - Audiobook production pipeline",
   "main": "dist/electron/main.js",
   "private": true,
-  "//crucible-bootstrap": "Exact Crucible 0.6.3 release tarball, vendored for reproducible app installs. The service installer and SDK must name the same release; never replace with a directory dependency or repack these bytes.",
-  "//crucible-client": "Exact Crucible 0.6.3 release tarball, vendored for reproducible app installs. Connection and job contracts are tested against this coordinated core release.",
+  "//crucible-bootstrap": "Exact Crucible 0.6.6 release tarball, vendored for reproducible app installs. The service installer and SDK must name the same release; never replace with a directory dependency or repack these bytes.",
+  "//crucible-client": "Exact Crucible 0.6.6 release tarball, vendored for reproducible app installs. Connection and job contracts are tested against this coordinated core release.",
   "scripts": {
     "ng": "ng",
     "package:ios": "bash mobile/package-ios.sh",

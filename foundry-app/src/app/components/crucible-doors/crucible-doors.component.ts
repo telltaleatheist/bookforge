@@ -52,16 +52,16 @@
  *    door alive until the Windows host ships — it is how Owen's PC registers its
  *    WSL server — and says it is DELETED then, not before.
  *
- * 3. **Install Crucible here.** Last, because it is the longest, and today it is
- *    a DOCUMENT: the exact sequence, in order, with the commands that need
- *    elevation listed apart because this app cannot obtain elevation on somebody's
- *    behalf. The button that will run it is present and disabled, wearing main's
- *    own sentence — see `CrucibleInstallPlan.drivenWhy` and
- *    electron/crucible-install.ts, which says what turning it on costs. PHASE15
- *    §4.3 names what that will be: `@crucible/bootstrap`'s `install()` becomes a
- *    CLIENT of the Windows host, whose own installer owns the sequence. The
- *    sentence at the top of this door now says that, in link text and no
- *    commands — the commands below it are the plan main composed, unchanged.
+ * 3. **Install Crucible here.** Last, because it is the longest, and it RUNS —
+ *    this door was a printed document with a disabled button until
+ *    `@crucible/bootstrap` landed, and the comment saying so outlived the change
+ *    by long enough to be worth naming. `driven` is true on win32, darwin and
+ *    linux when this window is not hosted; main streams the installer's own
+ *    output line by line, then VERIFIES the service and REGISTERS the engine
+ *    before it reports success, so somebody who presses it ends the step
+ *    connected rather than being sent to another screen to finish. `drivenWhy`
+ *    carries main's sentence for the two cases where it is not driven — hosted,
+ *    and a platform Crucible does not support.
  *
  * 4. **Remove the engine from this computer.** The way OUT, and it is drawn on
  *    the Servers card only: `canUninstall` is an input, the first-run wizard
@@ -958,14 +958,13 @@ export class CrucibleDoorsComponent {
   }
 
   /**
-   * The driven install — and the button above is disabled, so pressing this is
-   * not something that happens today.
+   * The driven install. It runs, and the day it did not is over.
    *
-   * It is written anyway, and it catches, because the day
-   * `@crucible/bootstrap` lands this is the call site: main's refusal (or its
-   * `BootstrapStepFailed`, which names the step that did not finish) is printed
-   * where the person pressed, exactly as every other Crucible sentence in this
-   * app is.
+   * Main's refusal — or `BootstrapStepFailed`, which names the step that did not
+   * finish — is printed where the person pressed, exactly as every other
+   * Crucible sentence in this app is. The line subscription is what makes the
+   * wait legible: an installer that fetches a release, unpacks an env pack and
+   * starts a service is minutes of silence otherwise.
    */
   protected async drive(): Promise<void> {
     if (!api) return;

@@ -609,9 +609,14 @@ async function prepare(
     };
     report({ server, phase: 'preparing', missing, unmet, progress: progress0, followed });
 
-    const last = await followModuleTask(server, taskId, (progress) => {
+    const last = await followTask(server, taskId, (progress) => {
       report({ server, phase: 'preparing', missing, unmet, progress, followed });
     });
+    // A shared engine may have been preparing the OTHER app's module. Its
+    // success only releases the task slot; it says nothing about our demand,
+    // so re-read the catalog before deciding whether a task of our own is
+    // still needed. Never blindly repeat an accepted task.
+    if (followed && last.state === 'done') return runCoordination(server);
     return report({ server, phase: 'preparing', missing, unmet, progress: last, followed });
   }
 }
@@ -749,7 +754,23 @@ async function postFoundryModule(server: string): Promise<string> {
  * a successful install as broken because a laptop lid closed a second later.
  * `unmet` stays null in that case, which is exactly what it means — nobody said.
  */
-async function followModuleTask(
+/**
+ * FOLLOW A TASK TO ITS END, reporting as it goes — and it is EVERY task's loop,
+ * not the module's.
+ *
+ * Exported and renamed on 2026-09-16, when the model panel needed to watch a
+ * `pull`. The loop never knew which task it was following: it switches on the
+ * SDK's event kinds (`started`, `step`, `progress`, `skipped`, `done`,
+ * `failed`, `cancelled`), which are the same frames for a pull, an install and
+ * a module. Writing a second copy for pulls would have been two readers of one
+ * event vocabulary, drifting the first time the server adds a frame.
+ *
+ * TWO FIELDS ARE MODULE-SHAPED AND STAY NULL FOR A PULL, which costs nothing
+ * and is already handled: `jobTypes` arrives only on a module's `reload` step,
+ * and `unmet` is read from the finished task, where a pull's is empty by the
+ * contract's own rule (*"EMPTY and never absent, on every task type"*).
+ */
+export async function followTask(
   server: string,
   taskId: string,
   onProgress: (progress: CrucibleModuleProgress) => void,

@@ -122,6 +122,28 @@ check('the package is PINNED, and to a vendored tarball rather than a directory'
     fs.existsSync(path.join(REPO, pin.slice('file:'.length))),
     'the pinned tarball is not in vendor/ — this build cannot be installed from',
   );
+  // AND THE SENTENCE BESIDE THE PIN SAYS THE SAME RELEASE.
+  //
+  // package.json carries `//crucible-bootstrap` and `//crucible-client`, two
+  // comment keys that name the vendored release IN WORDS and state the rule
+  // about never repacking those bytes. On 2026-09-16 both still said 0.6.3
+  // while the dependencies under them had moved to 0.6.6: the pin travelled
+  // with the re-vendor and the sentence explaining it did not.
+  //
+  // Nothing above asks this question. Every other check here compares the pin
+  // with the BYTES — the tarball on disk, the version inside it — and all of
+  // them agreed, because prose is not one of the things they compare. This is
+  // the same shape as the crucible repo's tests/test_doc_claims.py: a comment
+  // that NAMES something has a referent in the tree, and a test can hold it to
+  // it.
+  for (const key of ['//crucible-bootstrap', '//crucible-client']) {
+    const said = pkg[key];
+    assert.ok(said, `${key} is gone from package.json — it is the sentence that explains the pin`);
+    assert.ok(
+      said.includes(install.CRUCIBLE_RELEASE),
+      `${key} names a release the vendored package does not (${install.CRUCIBLE_RELEASE}): ${said}`,
+    );
+  }
 });
 
 check('the driven install is available on the three platforms with a backend, and nowhere else', () => {

@@ -64,6 +64,7 @@ import {
 import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
 import { crucibleRunState, startCrucible } from './crucible-start';
+import { engineCatalog, pullSubject, removeModel } from './crucible-models';
 import type {
   SettingsDocument,
   SettingsPatch,
@@ -4084,6 +4085,73 @@ export function registerIpc(): void {
     if (result.started) await connectLocalEngine();
     return result;
   });
+  /**
+   * WHAT THIS ENGINE HOLDS AND COULD HOLD — `GET /v1/catalog`, mapped.
+   *
+   * A READ AND NOTHING ELSE: it downloads nothing, loads nothing onto a card,
+   * and is safe against a machine somebody is using. The card calls it on open
+   * and after a pull lands, which is when the answer changes.
+   */
+  ipcMain.handle('crucible:catalog', (_event, server: string) => engineCatalog(server));
+  /**
+   * FETCH ONE SUBJECT. Answered with the TASK ID, not with the finished pull.
+   *
+   * A model is gigabytes over somebody's line, so the progress arrives on
+   * `crucible:pull-progress` afterwards rather than this handler holding a
+   * promise for an hour — a renderer cannot even be told about one that long.
+   * Every frame carries the server, the kind and the id, so a card with two
+   * pulls running places them without keeping a map of its own.
+   */
+  ipcMain.handle('crucible:pull', (_event, server: string, kind: string, id: string) =>
+    pullSubject(server, kind, id, (progress) => {
+      broadcast('crucible:pull-progress', progress);
+    }));
+  /**
+   * ARE YOU SURE — composed in MAIN, because main is what knows the size.
+   *
+   * The SDK's condition on the remove door survives Owen's reversal of who may
+   * call it: *"An app does not call this on a user's behalf without saying so on
+   * screen."* So the press goes through the same card every destructive question
+   * in this app uses, and the card is given the FIGURE — a person deciding
+   * whether to free 17.3 GB is deciding something different from a person told
+   * only that a file will go.
+   *
+   * `keep` is the dismissal, and it is the safe half: a question nobody answered
+   * has not been agreed to.
+   */
+  ipcMain.handle(
+    'crucible:confirm-remove-model',
+    (_event, ask: { server: string; id: string; name: string | null; bytes: number | null }):
+    Asked<'remove' | 'keep'> => ({
+      kind: 'ask',
+      question: {
+        title: 'Remove these weights?',
+        message: `"${ask.name ?? ask.id}" will be deleted from ${ask.server}`
+          + `${ask.bytes === null ? '' : `, freeing ${(ask.bytes / 1024 ** 3).toFixed(1)} GB`}.`,
+        detail: [
+          'The files are removed from that machine. Nothing on this computer changes, and no '
+          + 'book that was already made with this model is affected — a finished step keeps its '
+          + 'text and its record of what produced it.',
+          'Fetching it again later is one press and the same download. What you are spending to '
+          + 'get it back is time and bandwidth, not work.',
+        ],
+        choices: [
+          { key: 'keep', label: 'Keep it' },
+          { key: 'remove', label: 'Remove' },
+        ],
+        preferred: 'keep',
+        dismissed: 'keep',
+        checkbox: null,
+      },
+    }),
+  );
+  /**
+   * AND THE REMOVAL ITSELF. The server's four refusals arrive as they are —
+   * `subject_in_use` naming what holds it is a different thing to do about it
+   * than `subject_remove_failed` naming a file that would not go.
+   */
+  ipcMain.handle('crucible:remove-model', (_event, server: string, kind: string, id: string) =>
+    removeModel(server, kind, id));
   ipcMain.handle('crucible:set-queue-gpu-dial', (_event, dial: string) => {
     const stored = writeAppSettings({ queueGpuDial: dial }).queueGpuDial;
     queue.venueRulesChanged();
