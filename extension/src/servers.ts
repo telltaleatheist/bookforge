@@ -152,6 +152,32 @@ export async function addFromPairing(line: string): Promise<ServerEntry> {
   return entry;
 }
 
+/**
+ * Add a server whose token came from the device-code handshake (`pair.ts`).
+ *
+ * THE SAME PERSISTENCE AS A PASTED CODE, deliberately. Two ways in, one way
+ * stored: a second copy of "replace by name, select the first one" is the shape
+ * that drifts, and the half that drifted would be whichever one nobody used
+ * that week. `addFromPairing` parses a connect code and calls nothing else that
+ * this does not; from here down the two are indistinguishable, which is what
+ * makes Remove, Test and select work the same for both.
+ */
+export async function addPairedServer(
+  name: string, url: string, token: string,
+): Promise<ServerEntry> {
+  for (const [label, value] of [['name', name], ['url', url], ['token', token]] as const) {
+    if (value === '') {
+      throw new Error(`A paired Crucible arrived with no ${label}, which cannot be stored.`);
+    }
+  }
+  const entry: ServerEntry = { name, url, token, added: new Date().toISOString() };
+  const registry = await loadRegistry();
+  const servers = registry.servers.filter((s) => s.name !== entry.name);
+  servers.push(entry);
+  await saveRegistry({ servers, selected: registry.selected ?? entry.name });
+  return entry;
+}
+
 /** Forget a server. Selecting nothing is a real state, so removing the selected
  *  one leaves NOTHING selected rather than picking a neighbour. */
 export async function removeServer(name: string): Promise<void> {

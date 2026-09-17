@@ -33,6 +33,7 @@
 import { DEFAULT_SETTINGS, Settings, loadSettings } from './messages';
 import {
   addFromPairing,
+  addPairedServer,
   clientFor,
   hasOriginPermission,
   loadRegistry,
@@ -43,6 +44,7 @@ import {
   type ServerEntry,
 } from './servers';
 import { describeRefusal, probe } from './crucible';
+import { pollForToken, startPairing } from './pair';
 import { addClip, listClips, removeClip, type ClipSummary } from './clips';
 import { VoiceReferenceRefused } from '../../shared/crucible/voice-reference';
 
@@ -52,6 +54,13 @@ const serversEl = $('servers') as HTMLDivElement;
 const pairingEl = $('pairing') as HTMLTextAreaElement;
 const addBtn = $('add') as HTMLButtonElement;
 const addResult = $('addResult') as HTMLSpanElement;
+const addressEl = $('address') as HTMLInputElement;
+const connectBtn = $('connect') as HTMLButtonElement;
+const connectResult = $('connectResult') as HTMLSpanElement;
+const approvePanel = $('approvePanel') as HTMLDivElement;
+const approveWhere = $('approveWhere') as HTMLElement;
+const userCodeEl = $('userCode') as HTMLParagraphElement;
+const countdownEl = $('countdown') as HTMLParagraphElement;
 const voiceEl = $('voice') as HTMLSelectElement;
 const voiceHint = $('voiceHint') as HTMLParagraphElement;
 const clipsEl = $('clips') as HTMLDivElement;
@@ -115,8 +124,13 @@ async function drawServers(): Promise<void> {
   if (registry.servers.length === 0) {
     const p = document.createElement('div');
     p.className = 'empty';
-    p.textContent = 'No servers yet. Paste a connect code below.';
+    p.textContent = 'No servers yet. Type a Crucible address below and press Connect.';
     serversEl.appendChild(p);
+    // THE COMMON CASE, TYPED FOR THEM. An engine on this machine answers here, and a
+    // person adding their first server is nearly always adding that one. It is a
+    // PREFILL and not a probe: nothing is dialled until Connect is pressed, so this
+    // needs no host permission and makes no claim about what is listening.
+    if (addressEl.value.trim() === '') addressEl.value = '127.0.0.1:7100';
     voiceEl.textContent = '';
     voiceHint.textContent = 'Add a Crucible above, then its voices appear here.';
     return;
@@ -239,6 +253,67 @@ addBtn.addEventListener('click', async () => {
     addBtn.disabled = false;
   }
 });
+
+/**
+ * Add a server by typing its address: the device-code handshake (`pair.ts`).
+ *
+ * NOTHING IS STORED UNTIL THE ENGINE SAYS APPROVED. A denial and a lapse are
+ * both reported as themselves rather than as "could not connect", because the
+ * person did something in each case and telling them otherwise would send them
+ * back to check an address that was right.
+ *
+ * The origin permission is asked AFTER approval and not before: Chrome's prompt
+ * is about reaching that address at all, and asking for it on behalf of a
+ * server that then refuses to pair would be two dialogs for nothing. It costs
+ * the gesture — the click is long gone by the time approval lands — so a
+ * refusal here is said and not fatal, exactly as the paste path already has it.
+ */
+connectBtn.addEventListener('click', async () => {
+  const typed = addressEl.value;
+  connectBtn.disabled = true;
+  approvePanel.hidden = true;
+  countdownEl.textContent = '';
+  setConnectResult('Asking…', 'pending');
+  try {
+    const start = await startPairing(typed);
+    approveWhere.textContent = start.name;
+    userCodeEl.textContent = start.userCode;
+    approvePanel.hidden = false;
+    setConnectResult(`Waiting for ${start.name} to approve…`, 'pending');
+    const outcome = await pollForToken(start, (left) => {
+      countdownEl.textContent = `This code expires in ${left}s.`;
+    });
+    if (outcome.status === 'denied') {
+      setConnectResult(`${start.name} refused this connection.`, 'bad');
+      return;
+    }
+    if (outcome.status === 'expired') {
+      setConnectResult('That code expired before it was approved. Press Connect to get a new one.', 'bad');
+      return;
+    }
+    const entry = await addPairedServer(outcome.name, start.url, outcome.token);
+    const granted = await hasOriginPermission(entry.url) || await requestOriginPermission(entry.url);
+    addressEl.value = '';
+    setConnectResult(
+      granted
+        ? `Added ${entry.name}.`
+        : `Added ${entry.name}, but Chrome has not been given permission to reach it. Press Test.`,
+      granted ? 'good' : 'bad',
+    );
+    await drawServers();
+  } catch (err) {
+    setConnectResult(err instanceof Error ? err.message : String(err), 'bad');
+  } finally {
+    approvePanel.hidden = true;
+    countdownEl.textContent = '';
+    connectBtn.disabled = false;
+  }
+});
+
+function setConnectResult(text: string, cls: 'good' | 'bad' | 'pending'): void {
+  connectResult.textContent = text;
+  connectResult.className = `result ${cls}`;
+}
 
 function setAddResult(text: string, cls: 'good' | 'bad' | 'pending'): void {
   addResult.textContent = text;

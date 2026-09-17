@@ -59,6 +59,8 @@
       .server .say.good { color: #1a9d4b; }
       .server .say.bad { color: #d23b3b; }
       .server button { padding: 5px 10px; font-size: 12px; }
+      .usercode { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 30px;
+                  letter-spacing: 4px; margin: 6px 0; user-select: all; }
       .empty { padding: 14px 12px; opacity: 0.7; font-size: 13px; }
     </style>
   </head>
@@ -67,23 +69,41 @@
     <p class="sub">Reads web pages aloud through a Crucible inference server.</p>
 
     <h2>Crucible servers</h2>
-    <p class="hint">Speech comes straight from a Crucible — BookForge does not have to be running.
-      Get a connect code from BookForge's <strong>Settings &rarr; Crucible servers</strong> &mdash;
-      each server there has a <strong>Copy connect code</strong> button. Or, on the server's own
-      machine, run <code>crucible token --url</code>, or open its console and use the
-      <strong>Connect an app</strong> panel (which needs the token you already have).
-      Paste the line here. One server is
-      selected at a time; everything this extension reads aloud goes to that one.</p>
+        <p class="hint">Speech comes straight from a Crucible &mdash; BookForge does not have to be running.
+      Type the server's address below and approve the code it shows you, on that server's own
+      Crucible page. No token is typed here and none is shown to you. One server is selected at a
+      time; everything this extension reads aloud goes to that one.</p>
 
     <div id="servers" class="servers"></div>
 
-    <div class="field">
-      <label for="pairing">Add a server</label>
-      <textarea id="pairing" rows="2" placeholder="crucible://…"></textarea>
+        <div class="field">
+      <label for="address">Add a server</label>
+      <input id="address" type="text" placeholder="192.168.68.79   or   127.0.0.1:7100" />
       <div class="row" style="margin-top:8px">
-        <button id="add">Add server</button>
-        <span id="addResult" class="result"></span>
+        <button id="connect">Connect</button>
+        <span id="connectResult" class="result"></span>
       </div>
+
+      <div id="approvePanel" hidden>
+        <p class="hint" style="margin-bottom:4px">Approve this code on
+          <strong id="approveWhere"></strong> &mdash; open its Crucible page,
+          <strong>Connect an app</strong>, and allow <code>bookforge-reader</code>:</p>
+        <p class="usercode" id="userCode"></p>
+        <p class="hint" id="countdown"></p>
+      </div>
+
+      <details style="margin-top:10px">
+        <summary class="hint">Or paste a connect code</summary>
+        <p class="hint">For a server whose console you cannot open &mdash; BookForge's
+          <strong>Settings &rarr; Crucible servers</strong> has a <strong>Copy connect code</strong>
+          button, and <code>crucible token --url</code> prints one. The line carries a token, so
+          treat it as a password.</p>
+        <textarea id="pairing" rows="2" placeholder="crucible://&hellip;"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="add">Add from code</button>
+          <span id="addResult" class="result"></span>
+        </div>
+      </details>
       <p class="hint">The code carries the server's name, its address and its token. Chrome asks for
         permission to reach that address the first time — that prompt is the extension asking to talk
         to your own machine, and reading will not work without it.</p>
