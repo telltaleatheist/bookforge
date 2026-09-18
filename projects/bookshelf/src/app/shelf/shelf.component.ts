@@ -278,8 +278,8 @@ interface BookMenu {
             <div class="book-cover"
               appVisible (visible)="loadAudioCover(book)">
               @if (covers().get(akey(book)); as src) {
-                <img class="cover-bg" [src]="src" aria-hidden="true" (error)="onCoverError(akey(book))" />
-                <img class="cover-fg" [src]="src" alt="" (error)="onCoverError(akey(book))" />
+                <img class="cover-bg" [src]="src" decoding="async" aria-hidden="true" (error)="onCoverError(akey(book))" />
+                <img class="cover-fg" [src]="src" decoding="async" alt="" (error)="onCoverError(akey(book))" />
               } @else {
                 <span class="placeholder">🎧</span>
               }
@@ -402,8 +402,8 @@ interface BookMenu {
               <div class="book-cover"
                 appVisible (visible)="loadEbookCover(book)">
                 @if (covers().get(ekey(book)); as src) {
-                  <img class="cover-bg" [src]="src" aria-hidden="true" (error)="onCoverError(ekey(book))" />
-                  <img class="cover-fg" [src]="src" alt="" (error)="onCoverError(ekey(book))" />
+                  <img class="cover-bg" [src]="src" decoding="async" aria-hidden="true" (error)="onCoverError(ekey(book))" />
+                  <img class="cover-fg" [src]="src" decoding="async" alt="" (error)="onCoverError(ekey(book))" />
                 } @else {
                   <span class="placeholder">📖</span>
                 }
@@ -905,7 +905,17 @@ interface BookMenu {
       /* Allow vertical scroll while a long-press (context menu) is being detected;
          suppress the iOS long-press callout + text selection so the app's own
          menu appears instead of the card getting highlighted/selected. */
-      touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+      touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+      /* The whole library is in the DOM at once (no windowing), so a big shelf is
+         thousands of nodes. content-visibility lets the browser skip layout and
+         paint for the cards that are nowhere near the viewport, which is the win
+         windowing would have bought without the scroll-position bookkeeping.
+         The "auto" in contain-intrinsic-size means the real size is remembered after a
+         card has been rendered once, so the scrollbar stops jumping; 190px is only
+         the first guess for a card never yet seen. The appVisible cover loader
+         still fires: the browser makes a card relevant (and lays it out) before it
+         reaches the viewport, and the IntersectionObserver fires on that. */
+      content-visibility: auto; contain-intrinsic-size: auto 190px; }
     .book-card:active { transform: scale(0.97); }
     /* On-device ring — any book that lives on the system (locally imported OR
        downloaded for offline) gets the same colored border + soft glow. Books
@@ -957,16 +967,20 @@ interface BookMenu {
     .book-cover .cover-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(14px); transform: scale(1.15); }
     .book-cover .cover-fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
     .book-cover .placeholder { font-size: 36px; color: var(--text-tertiary); }
+    /* NO backdrop-filter on these corner buttons. Every one of them is its own
+       compositing layer whose backdrop the compositor must re-snapshot and blur
+       as the grid scrolls, and a full shelf renders ~190 of them at once — it was
+       the single biggest cost in the scroll. Behind a 62%-opaque black chip a 4px
+       blur is invisible anyway; 72% black reads identically and costs nothing. */
     .corner-btn { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
-      background: rgba(0,0,0,0.62); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+      background: rgba(0,0,0,0.72); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .corner-btn:active { transform: scale(0.92); }
     .corner-btn:disabled { opacity: 0.5; }
     /* ⋯ actions button, top-right of every cover — opens the same menu a
        long-press / right-click does. */
     .cover-menu-btn { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
-      background: rgba(0,0,0,0.62); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 2; }
+      background: rgba(0,0,0,0.72); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
+      z-index: 2; }
     .cover-menu-btn:active { transform: scale(0.92); }
     /* Second corner action (reclassify), bottom-left so it clears the download btn. */
     .move-btn { top: auto; bottom: 6px; font-size: 15px; }
