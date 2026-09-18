@@ -75,6 +75,18 @@ function startFake(behaviour, onSubmit = () => {}) {
         } } });
         return true;
       }
+      if (behaviour === 'leased') {
+        // `crucible/crucible/leases.py`, `Lease.to_dict()` — the six fields.
+        // An `align` submit is refused one for the same reason a `tts` is: both
+        // are in `EVICTS_THE_RESIDENT_MODEL`, so admitting the job would take
+        // the thing this lease is holding off the card.
+        send(res, 409, { error: { code: 'leased', message:
+          "'qwen3.8-27b-4bit' is leased by 'foundry' for 'translate'", details: {
+          lease_id: 'lease-held', kind: 'llm', client: 'foundry', act: 'translate',
+          since: '2026-09-18T01:00:00+00:00', expires_at: '2026-09-18T01:02:00+00:00',
+        } } });
+        return true;
+      }
       if (behaviour === 'disabled') {
         send(res, 409, { error: { code: 'job_type_disabled', message: 'asr is off: [jobs] enable_asr = false' } });
         return true;
@@ -252,10 +264,22 @@ async function memoryArtifacts() {
 }
 
 async function refusals() {
+  /*
+   * `expectBusy` IS "does this refusal park the row", not "is it a
+   * CrucibleBusy". Two codes answer yes and they are two different waits:
+   * `server_busy` is the LANE (minutes), `leased` is a client saying it is
+   * mid-run on what is on the card (up to an hour). `CrucibleLeased` is a
+   * subclass of `CrucibleRefused` and not of `CrucibleBusy`, so it used to
+   * fall through to the generic arm below with no `busyLine` — a red row and a
+   * manual Retry, where Foundry on the identical refusal parks and comes back.
+   * `busyLine` is the whole of the park: `settleStep` reads it and puts the
+   * row back to `queued` carrying the holder's line.
+   */
   for (const [behaviour, expectCode, expectBusy] of [
-    ['busy', 'server_busy', true],
-    ['disabled', 'job_type_disabled', false],
-    ['auth', 'bad_token', false],
+    ['busy', 'server_busy', 'busy: foundry, tts deathstalker, 62% done — 640 of 1030 chunk(s) rendered'],
+    ['leased', 'leased', 'leased: foundry, translate, until 2026-09-18T01:02:00+00:00'],
+    ['disabled', 'job_type_disabled', null],
+    ['auth', 'bad_token', null],
   ]) {
     const fake = await startFake(behaviour);
     const server = registerFake(fake.url);
@@ -272,13 +296,14 @@ async function refusals() {
       assert.strictEqual(caught.code, expectCode);
       assert.strictEqual(caught.server, server);
       assert.strictEqual(fake.state.submitted.length, 1, 'exactly one submit attempted');
-      if (expectBusy) {
-        // The SDK's own line, verbatim — the holder, the job, the progress and its latest message.
-        assert.strictEqual(caught.busyLine,
-          'busy: foundry, tts deathstalker, 62% done — 640 of 1030 chunk(s) rendered');
+      if (expectBusy !== null) {
+        // The SDK's own line, verbatim — who is in the way, doing what, and how
+        // far along (a job) or until when (a lease).
+        assert.strictEqual(caught.busyLine, expectBusy);
         assert.ok(/foundry/.test(caught.message), 'the holder is named in the sentence');
       } else {
-        assert.strictEqual(caught.busyLine, undefined, 'busyLine is present ONLY on server_busy');
+        assert.strictEqual(caught.busyLine, undefined,
+          'busyLine is present ONLY on the refusals a row can WAIT out');
       }
     });
   }

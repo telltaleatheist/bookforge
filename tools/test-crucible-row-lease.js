@@ -492,6 +492,163 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
         'a lease left open by a failed row holds a card for its whole ttl');
     });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // THE DISPOSAL DOORS — the lease closes when the act it was kept for is gone
+  // ───────────────────────────────────────────────────────────────────────────
+  //
+  // `settleStep` keeps a lease open across the seam for exactly ONE reason: a
+  // child of the step that just landed leases the same model. Four doors then
+  // take that child away — Stop, Remove, Remove-one-step — or defer it without
+  // end — Pause — and none of them used to close the row. `withRowLease` named
+  // the ttl as the backstop, which is not one: the heartbeat is a THIRD of the
+  // ttl, so a lease this app keeps beating never expires while the app lives.
+  //
+  // What that costs, measured in the shape Owen hits: stop a `clean → simplify`
+  // row after `clean` lands and a 9-27 GB model stays leased until BookForge
+  // quits, with Crucible answering this app's own next job `409 leased`, naming
+  // `bookforge`. One case per door, because each one disposes differently.
+
+  /**
+   * A two-step row whose first act has LANDED and whose second has not started,
+   * with the row's lease still open between them.
+   *
+   * The gap is made the way the app makes it: the card is busy with something
+   * outside BookForge, so the next act is admitted nowhere and sits `queued`
+   * carrying that reason. It is exactly the state `leaseWantedAfter` keeps a
+   * lease for — a pending child on the same model — and it is the state every
+   * door below then disposes of.
+   */
+  async function rowWithLeaseHeldAtTheSeam(name) {
+    const t = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: true });
+    const b = fakeModule('book-analysis', {
+      consumes: 'epub', produces: 'report', leases: true, resource: 'gpu' });
+    const spy = spyHost();
+    await freshEngine(name, [t, b], spy);
+    engine.setGpuHolderProbe(() => 'a training run');
+    const job = engine.enqueue({
+      title: 'Mistborn',
+      steps: [
+        { type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+          sourceRef: { kind: 'epub', path: '/a.epub' } },
+        { type: 'book-analysis', label: 'Analyse', config: { aiProvider: 'crucible' },
+          parentIndex: 0 },
+      ],
+    });
+    engine.start();
+    await settle(30);
+    t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+    await settle(30);
+    assert.strictEqual(b.runs.length, 0,
+      'the next act must NOT have started, or the door below is testing settleStep again');
+    assert.deepStrictEqual(spy.closed, [],
+      'the row must be holding its lease here, or the door below proves nothing');
+    assert.strictEqual(spy.host.leaseSubject(job.id), 'qwen3.5-9b');
+    return { job, spy, t, b };
+  }
+
+  await check('STOP after the first act lands gives the card back', async () => {
+    const { job, spy } = await rowWithLeaseHeldAtTheSeam('stop-closes');
+    await engine.cancel({ jobId: job.id });
+    await settle(20);
+    assert.deepStrictEqual(spy.closed, [job.id],
+      'the act the lease was kept for was cancelled, so nothing is holding that model for '
+      + 'anything — and the ttl will never take it back, because the heartbeat keeps it');
+    assert.strictEqual(spy.host.leaseSubject(job.id), null);
+  });
+
+  await check('REMOVING the run gives the card back', async () => {
+    const { job, spy } = await rowWithLeaseHeldAtTheSeam('remove-closes');
+    await engine.remove(job.id);
+    await settle(20);
+    assert.deepStrictEqual(spy.closed, [job.id],
+      'a run that is no longer in the queue has no next act at all');
+  });
+
+  await check('REMOVING the one step the lease was kept for gives the card back', async () => {
+    const { job, spy } = await rowWithLeaseHeldAtTheSeam('remove-step-closes');
+    const second = job.steps[1];
+    await engine.removeStep(second.id);
+    await settle(20);
+    assert.deepStrictEqual(spy.closed, [job.id],
+      'the subtree went with the step, so the act the lease was kept for is gone');
+  });
+
+  await check('PAUSE gives the card back — a deferred act is not a next act', async () => {
+    const { job, spy } = await rowWithLeaseHeldAtTheSeam('pause-closes');
+    engine.pause();
+    await settle(20);
+    assert.deepStrictEqual(spy.closed, [job.id],
+      'the queue has stopped claiming work, so the act this lease is held for starts when a '
+      + 'person presses Start and not before — an unbounded hold on somebody else\'s card');
+  });
+
+  await check('PAUSE does NOT take the lease out from under a step that is still running',
+    async () => {
+      // `pause()` deliberately does not stop what is already running — each of
+      // those is minutes of GPU. Closing its lease would leave a live run
+      // unprotected mid-book, which is the eviction the lease exists to prevent.
+      const t = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: true });
+      const spy = spyHost();
+      await freshEngine('pause-keeps-running', [t], spy);
+      const job = engine.enqueue({
+        title: 'Mistborn',
+        steps: [{
+          type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+          sourceRef: { kind: 'epub', path: '/a.epub' },
+        }],
+      });
+      engine.start();
+      await settle(30);
+      engine.pause();
+      await settle(20);
+      assert.deepStrictEqual(spy.closed, [],
+        'the act holding this lease is mid-run; a pause does not stop it, so it must not lose '
+        + 'the protection it is running under');
+      t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+      await settle(30);
+      assert.deepStrictEqual(spy.closed, [job.id], 'and it is given back when that act lands');
+    });
+
+  await check('a disposal that leaves a next act of the SAME model alone keeps the lease',
+    async () => {
+      /*
+       * THE OTHER DIRECTION, which is what makes the four checks above a rule
+       * rather than "close it whenever anything happens". A row whose landed
+       * act has TWO children of the same model loses one of them and the other
+       * is still next: closing here would unload a 19 GB model the very next
+       * act needs, which is the defect one lease per row exists to prevent.
+       */
+      const t = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: true });
+      const b = fakeModule('book-analysis', {
+        consumes: 'epub', produces: 'report', leases: true, resource: 'gpu' });
+      const s = fakeModule('simplify', {
+        consumes: 'epub', produces: 'epub', leases: true, resource: 'gpu' });
+      const spy = spyHost();
+      await freshEngine('sibling-keeps', [t, b, s], spy);
+      engine.setGpuHolderProbe(() => 'a training run');
+      const job = engine.enqueue({
+        title: 'Mistborn',
+        steps: [
+          { type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+            sourceRef: { kind: 'epub', path: '/a.epub' } },
+          { type: 'book-analysis', label: 'Analyse', config: { aiProvider: 'crucible' },
+            parentIndex: 0 },
+          { type: 'simplify', label: 'Simplify', config: { aiProvider: 'crucible' },
+            parentIndex: 0 },
+        ],
+      });
+      engine.start();
+      await settle(30);
+      t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+      await settle(30);
+      assert.deepStrictEqual(spy.closed, []);
+      await engine.removeStep(job.steps[1].id);
+      await settle(20);
+      assert.deepStrictEqual(spy.closed, [],
+        'the simplify is still next on the same model — the lease is exactly what stops it '
+        + 'paying a full reload');
+    });
+
   await check('a build that wired no lease seam runs exactly as it did before', async () => {
     const t = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: true });
     await freshEngine('no-seam', [t], null);

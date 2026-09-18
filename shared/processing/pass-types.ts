@@ -213,6 +213,26 @@ export interface PassJobResult {
   narrationInputPath?: string;
   error?: string;
   /**
+   * THE PASS DID NOT RUN AND NOTHING IS WRONG — the line that turns this
+   * failure into a WAIT.
+   *
+   * Present exactly when a Crucible refused the pass because something else
+   * holds that card: a `409 leased`, another client saying it is mid-run on
+   * the model (crucible `docs/ARCHITECTURE.md` §3 — a 409 is a wait, not a
+   * failure). It names the holder, the act and the expiry in the server's own
+   * words.
+   *
+   * Carried up from `cleanupEpub` for ONE consumer: the queue step
+   * (`electron/queue-steps/pass.ts`) hands it to `noteStepBusy`, which puts the
+   * row back to `queued` with that line on it and lets the admission tick try
+   * again — the same road `server_busy` already travels for a render and an
+   * align. A caller with no queue behind it ignores it and reads `error`.
+   *
+   * Absent on every other failure, which is a real state: a book the model
+   * mangled is not waiting for anything.
+   */
+  busyLine?: string;
+  /**
    * What the pass did, in one sentence, when there is something to say beyond
    * "it worked" — how many markers it removed, out of how many files.
    *

@@ -33,10 +33,23 @@
  *     a restart forgets them, so this means the card is unprotected NOW, mid-book.
  *     Foundry's dispatch re-leases; two clients guessing differently at one
  *     restart is how one of them loses a book.
- *  6. `409 model_leased` IS A WAIT WITH A NAME. The holder, the act and the since
- *     reach the reader — through the same `busyLine` road `server_busy` already
- *     travels, so a queue row holds instead of failing. And it is never retried
- *     here: a sleep loop in a client library is a queue with a policy nobody chose.
+ *  5b. AND A RE-LEASE THAT IS REFUSED ENDS THE BEAT. It is asked once. A model
+ *     that has left the card refuses it `not_resident` and a lease never loads
+ *     one, so the refusal cannot become a success — and the timer that went on
+ *     asking was measured on Foundry's identical branch at 264 × (404 → 409)
+ *     over ten hours with nothing in any log. One line, then the run goes on
+ *     unprotected AND SAID SO.
+ *  6. `409 leased` IS A WAIT WITH A NAME. The holder, the act, the kind and the
+ *     expiry reach the reader — through the same `busyLine` road `server_busy`
+ *     already travels, so a queue row holds instead of failing. It is the SDK's
+ *     own `CrucibleLeased`, not a second class of the same name beside it: two
+ *     were catchable in different doors and the same 409 was a wait in one and
+ *     an unnamed failure in the next. And it is never retried here: a sleep loop
+ *     in a client library is a queue with a policy nobody chose.
+ *  6b. AND THE CLEANUP DOOR'S WAIT REACHES THE QUEUE. `ai-bridge`'s leased arm
+ *     said "a WAIT, not a crash" and returned a plain failure; the line now
+ *     travels `cleanupEpub` → `runSimplifyPass` → `noteStepBusy`, three links
+ *     each of which silently drops it if forgotten.
  *  7. ONE LEASE FOR A WHOLE MULTI-REQUEST ACT. One per request would be the
  *     reload this exists to prevent, wearing a different hat — and on the unload
  *     build the model is gone between the release and the next take.
@@ -71,6 +84,9 @@ const lease = require(LEASE);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
 const textVenue = require(path.join(REPO, 'dist', 'electron', 'crucible', 'text-venue.js'));
 const job = require(path.join(REPO, 'dist', 'electron', 'crucible', 'job.js'));
+// The SDK ITSELF, for the one table it owns: `isServerSpecificRefusal` lists
+// `leased` since v1.0.0, so this suite asks the owner rather than a local copy.
+const sdk = require('@crucible/client');
 
 // The shared fake names both the resolved SDK client and its lease token source.
 const nameFake = fakeNamer(servers);
@@ -330,6 +346,65 @@ const { check, summary } = makeChecker();
     }
   });
 
+  await check('a re-lease that is REFUSED stops the heartbeat: one line, and no loop',
+    async () => {
+      /*
+       * THE OTHER HALF OF THE RESTART BRANCH, and the one that had no ending.
+       *
+       * `unknown_lease` says the server forgot the lease, so the client takes a
+       * new one. But a re-lease is refused `not_resident` whenever the model is
+       * no longer on the card — and a lease never loads one, so that refusal can
+       * NEVER become a success. The branch logged it and let the timer run:
+       * measured 2026-09-15 against Foundry's identical branch, 264 × (404 →
+       * 409 `not_resident`) forty seconds apart for ten hours, with no backoff,
+       * no give-up and nothing in the app log a person would find.
+       *
+       * So a refused re-lease ENDS the beat. The run continues — it is talking
+       * to the same server over its own sockets and is the thing that would
+       * notice a real problem — and it continues UNPROTECTED AND SAID SO, once.
+       */
+      const routes = leaseRoutes({
+        refuseHeartbeat: (leaseId) => unknownLeaseRefusal(
+          leaseId, 'this server restarted and has forgotten it'),
+        refuseLease: (attempt, n) => (n === 1 ? null : {
+          status: 409,
+          code: 'not_resident',
+          message: `nothing is serving '${attempt.model}' on this server; load it first`,
+          details: { subject: attempt.model },
+        }),
+      });
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      const lines = [];
+      try {
+        const answer = await lease.withCrucibleLease(
+          {
+            server, kind: 'model', id: 'qwen3.5-9b', act: 'clean',
+            heartbeatMs: 20, onLog: (line) => lines.push(line),
+          },
+          async () => { await after(300); return 'the book was cleaned'; },
+        );
+        assert.strictEqual(answer, 'the book was cleaned',
+          'a heartbeat that gave up is not a failed run — the run is what would notice');
+        assert.strictEqual(routes.lease.heartbeats.length, 1,
+          'the timer STOPPED: a beat every 20ms for 300ms would have been fifteen');
+        assert.strictEqual(routes.lease.refusals.length, 2,
+          'exactly two refusals — the 404 that started it and the ONE re-lease it answered '
+          + 'with; anything more is the loop');
+        assert.strictEqual(routes.lease.taken.length, 1, 'and no new lease was ever granted');
+        const gaveUp = lines.filter((l) => /gave up/i.test(l));
+        assert.strictEqual(gaveUp.length, 1,
+          `ONE line, not 264 — got ${lines.length} line(s): ${JSON.stringify(lines)}`);
+        assert.ok(/not_resident|nothing is serving/.test(gaveUp[0]),
+          `the server's OWN message is what says why; got: ${gaveUp[0]}`);
+        assert.ok(/unprotected/i.test(gaveUp[0]),
+          'and it says the run is going on without a lease, which is the fact a later '
+          + `eviction needs a cause for; got: ${gaveUp[0]}`);
+      } finally {
+        await fake.close();
+      }
+    });
+
   await check('release waits for an in-flight replacement lease and deletes the new id', async () => {
     const routes = leaseRoutes({
       refuseHeartbeat: (id, n) => n === 1 ? unknownLeaseRefusal(id, 'engine restarted') : null,
@@ -390,10 +465,24 @@ const { check, summary } = makeChecker();
       assert.strictEqual(caught.since, HELD.since);
       assert.strictEqual(caught.expiresAt, HELD.expiresAt);
       assert.strictEqual(caught.leaseId, 'lease-held');
-      assert.strictEqual(caught.leasedLine, `leased: foundry, translate since ${HELD.since}`,
+      assert.strictEqual(caught.kind, 'llm',
+        'WHICH resident kind is held — a `leased` on a load-voice means one thing when a 27B '
+        + 'holds the card and another when narrator does');
+      /*
+       * THE SDK'S LINE, because the SDK's is the ONLY `CrucibleLeased` now.
+       * This module used to declare a second class of the same name for a
+       * v0.5.0 pin, and the two were catchable in different doors — the SDK's
+       * routes threw one, `leaseRequest` threw the other, and neither `catch`
+       * saw both. The wording moved with the owner: "until <expiry>" rather
+       * than "since <start>", which is the half a reader deciding whether to
+       * wait actually needs.
+       */
+      assert.strictEqual(caught.leasedLine, `leased: foundry, translate, until ${HELD.expiresAt}`,
         'the one line a bench or a held queue row puts in front of a person');
-      assert.ok(lease.isCrucibleLeasedElsewhere(caught),
-        'and it is server-specific: another machine\'s card is not held by this run');
+      assert.ok(sdk.isServerSpecificRefusal(caught.code),
+        'and it is server-specific: another machine\'s card is not held by this run. The SDK '
+        + 'owns that table now — `isCrucibleLeasedElsewhere` was this file standing in for a '
+        + 'pin that did not list `leased`, and the pin does');
       assert.strictEqual(routes.lease.taken.length, 0, 'nothing was granted');
       assert.strictEqual(routes.lease.released.length, 0,
         'and nothing is released — a lease that was never taken has no id to give back');
@@ -418,7 +507,7 @@ const { check, summary } = makeChecker();
           async () => 'never'),
         (err) => {
           assert.strictEqual(err.holder, null, 'null means IT DID NOT SAY');
-          assert.match(err.leasedLine, /^leased: an unnamed client, translate since /);
+          assert.match(err.leasedLine, /^leased: an unnamed client, translate, until /);
           return true;
         },
       );
@@ -446,7 +535,7 @@ const { check, summary } = makeChecker();
       // `foundry-job.ts` holds a row on ANY error carrying a string `busyLine`,
       // which is the road `server_busy` already travels. A lease wait that did not
       // carry one would FAIL the book instead of holding it.
-      assert.strictEqual(caught.busyLine, `leased: foundry, translate since ${HELD.since}`);
+      assert.strictEqual(caught.busyLine, `leased: foundry, translate, until ${HELD.expiresAt}`);
       assert.match(caught.message, /^crucible_model_leased: /,
         'the code is in the sentence, because a CLI and a queue row show only the message');
       assert.match(caught.message, /foundry/, 'and the holder is named in it');
@@ -454,6 +543,47 @@ const { check, summary } = makeChecker();
       await fake.close();
     }
   });
+
+  await check('a CLEANUP RUN\'s leased refusal reaches the queue as a park, link by link',
+    async () => {
+      /*
+       * THE OTHER LEASING DOOR, AND ITS WHOLE CHAIN.
+       *
+       * `ai-bridge.cleanupEpub` takes the run's lease itself, and its `leased`
+       * arm opened with "A 409 `leased` is a WAIT, not a crash" and then
+       * returned a plain `success: false` — nothing waited, the row went red,
+       * and a person had to press Retry while Foundry parked on the identical
+       * refusal and came back.
+       *
+       * SOURCE-READ, and it says so rather than pretending otherwise: driving
+       * it for real needs an EPUB, a provider record and a cleanup pass, and
+       * the thing at risk is not the arithmetic but the WIRING — three links
+       * that each silently drop the line if one is forgotten. Each is pinned
+       * where it lives, and each assertion names what breaks without it.
+       */
+      const read = (...bits) => fs.readFileSync(path.join(REPO, ...bits), 'utf-8');
+
+      const bridge = read('electron', 'ai-bridge.ts');
+      assert.match(bridge, /busyLine\?: string;/,
+        'EpubCleanupResult carries no busyLine, so a cleanup can no longer say "this is a wait"');
+      const arm = bridge.indexOf('if (err instanceof CrucibleLeased) {');
+      assert.ok(arm > 0, 'the leased arm is gone — read why before deleting this check');
+      const armEnd = bridge.indexOf('    }', arm);
+      assert.match(bridge.slice(arm, armEnd), /busyLine: err\.leasedLine/,
+        'the leased arm reports a failure with no wait line, which is a red row');
+
+      const passes = read('electron', 'processing-passes.ts');
+      assert.match(passes, /busyLine: result\.busyLine/,
+        'runSimplifyPass drops the wait line on the floor, so the step never sees it');
+
+      const step = read('electron', 'queue-steps', 'pass.ts');
+      const busy = step.indexOf('noteStepBusy(ctx.stepId, result.busyLine)');
+      const thrown = step.indexOf('throw new Error(result.error');
+      assert.ok(busy > 0, 'the pass step no longer holds the row on a leased card');
+      assert.ok(busy < thrown,
+        'the hold must be recorded BEFORE the throw: settleStep reads the line off the running '
+        + 'step, and the throw is what settles it');
+    });
 
   // ───────────────────────────────────────────────────────────────────────────
   // 7. One lease for a whole multi-request act

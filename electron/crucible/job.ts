@@ -23,10 +23,13 @@
  *
  * ── What it refuses, and what it never does ────────────────────────────────
  *
- * **Every refusal is by name, and none is retried.** A `409 server_busy`
- * arrives as {@link CrucibleJobRefused} carrying the SDK's own `busyLine`
- * ("GPU busy: foundry, tts 62% done") for the caller that can WAIT — the queue
- * holds the row (`queue-engine.noteStepBusy`); nothing here loops. Every other
+ * **Every refusal is by name, and none is retried.** A `409 server_busy` and a
+ * `409 leased` both arrive as {@link CrucibleJobRefused} carrying the SDK's
+ * own `busyLine` ("GPU busy: foundry, tts 62% done", "leased: foundry,
+ * translate, until …") for the caller that can WAIT — the queue holds the row
+ * (`queue-engine.noteStepBusy`); nothing here loops. The two are one question
+ * with two clocks: the LANE frees in minutes, a client's RUN may hold the card
+ * for an hour. Every other
  * SDK type — `engine_in_use`, `model_not_resident`, `job_type_disabled`,
  * `unknown_model`, `invalid_params`, `invalid_inputs`, the token, the API
  * version, a 5xx, an unreachable server, a non-crucible answering, a protocol
@@ -87,6 +90,7 @@ import {
   CrucibleAuthError,
   CrucibleBusy,
   CrucibleConfigError,
+  CrucibleLeased,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
@@ -117,11 +121,13 @@ import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
  * where it did not (`crucible_unreachable`, `crucible_protocol`, …), so a caller
  * matches on one spelling either way.
  *
- * `busyLine` is present exactly on `server_busy` — the SDK's own "GPU busy:
- * foundry, tts 62% done", built from the holder the server named — and absent
- * on every other refusal. Carried beside the prose because the queue holds a
- * row on it (crucible `docs/ARCHITECTURE.md` §3: a 409 is a wait, not a
- * failure) and would otherwise dig it back out of a sentence.
+ * `busyLine` is present exactly on the refusals a row can WAIT out — the SDK's
+ * own "GPU busy: foundry, tts 62% done" for `server_busy`, and since
+ * 2026-09-18 "leased: foundry, translate, until …" for `leased`, both built
+ * from the holder the server named — and absent on every other refusal.
+ * Carried beside the prose because the queue holds a row on it (crucible
+ * `docs/ARCHITECTURE.md` §3: a 409 is a wait, not a failure) and would
+ * otherwise dig it back out of a sentence.
  */
 export class CrucibleJobRefused extends Error {
   readonly code: string;
@@ -196,6 +202,32 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
       + `${err.jobMessage === null ? '' : `; latest: ${err.jobMessage}`}). Nothing here waits for it `
       + 'or runs the work somewhere else.',
       err.busyLine,
+    );
+  }
+  /*
+   * A LEASED CARD IS A WAIT, AND IT IS ASKED ABOUT BEFORE `CrucibleRefused`.
+   *
+   * `CrucibleLeased` is a subclass of {@link CrucibleRefused} and NOT of
+   * {@link CrucibleBusy} (crucible `sdk/ts/src/errors.ts`), so until
+   * 2026-09-18 it fell into the generic arm below with no `busyLine` — and
+   * `settleStep` parks a row only when one is present, so the row FAILED and
+   * waited for a person to press Retry. Foundry, on the identical refusal,
+   * parks with the holder's name and comes back on backoff; two clients
+   * against one server must not answer one refusal in opposite directions.
+   *
+   * Same question as `server_busy` with a longer clock — a lane frees in
+   * minutes, a lease may hold for an hour — so it takes the same road. Nothing
+   * here retries: the queue holds the row and the admission tick asks again.
+   */
+  if (err instanceof CrucibleLeased) {
+    return new CrucibleJobRefused(
+      err.code,
+      server,
+      `${at} has its resident ${err.kind} held by another client's run, so ${verb} was not `
+      + `admitted — it would take that ${err.kind} off the card. ${err.leasedLine} `
+      + `(lease ${err.leaseId}, since ${err.since}). Nothing here waits for it or runs the work `
+      + 'somewhere else.',
+      err.leasedLine,
     );
   }
   if (err instanceof CrucibleRefused) {

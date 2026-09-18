@@ -3630,6 +3630,27 @@ export interface EpubCleanupResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * THE RUN DID NOT HAPPEN AND NOTHING IS WRONG — the one line that turns this
+   * failure into a WAIT.
+   *
+   * Present exactly when a Crucible refused the run because something else is
+   * holding that card: today the only one is `409 leased`, another client
+   * saying it is mid-run on the model (crucible `docs/ARCHITECTURE.md` §3 — a
+   * 409 is a wait, not a failure). It carries the holder, the act and the
+   * expiry, in the SDK's own words.
+   *
+   * It exists so the QUEUE can park the row: `queue-steps/pass.ts` hands it to
+   * `noteStepBusy` and `settleStep` puts the step back to `queued` with that
+   * line on it, which is the same road `server_busy` already travels. Without
+   * it this comes back as an ordinary failure and the row goes red — which is
+   * exactly what happened until 2026-09-18, while Foundry, on the identical
+   * refusal, parked and came back on backoff.
+   *
+   * Absent on every other failure, and absent is a real state: a book the
+   * model mangled is not waiting for anything.
+   */
+  busyLine?: string;
   chaptersProcessed?: number;
   copyrightIssuesDetected?: boolean;  // True if any chunks triggered copyright refusal
   copyrightChunksAffected?: number;   // Number of chunks that fell back to original due to copyright
@@ -3807,17 +3828,33 @@ export async function cleanupEpub(
       run,
     );
   } catch (err) {
-    // A 409 `leased` is a WAIT, not a crash: another client has said it is
-    // mid-run on that model. Reported with the holder's own line, the way every
-    // other refusal on this path is — the message carries a machine-readable code
-    // at its head.
+    /*
+     * A 409 `leased` IS A WAIT, AND NOW IT WAITS.
+     *
+     * Another client has said it is mid-run on that model, so nothing about
+     * this book is wrong and none of its work is lost — it never started. Until
+     * 2026-09-18 this arm opened with that sentence and then returned a plain
+     * `success: false`: nothing here waited, the row went red, and somebody had
+     * to press Retry. Foundry, on the identical refusal, parks with the
+     * holder's name and comes back on backoff — so the two clients answered one
+     * refusal in opposite directions, and BookForge was the one that lost
+     * books.
+     *
+     * `busyLine` is the whole of the wait. `queue-steps/pass.ts` hands it to
+     * `noteStepBusy`, `settleStep` puts the step back to `queued` carrying that
+     * line, and the ordinary admission tick asks again — the same road
+     * `server_busy` already travels, with a longer clock. A caller with no
+     * queue behind it (the CLI, Settings → AI) reads `error` exactly as before,
+     * which is why this is still a RESULT and not a throw.
+     */
     if (err instanceof CrucibleLeased) {
       return {
         success: false,
         error: `crucible_model_leased: crucible "${named.server}" holds "${named.model}" for another `
-          + `run — ${err.leasedLine}, until at least ${err.expiresAt}. Nothing here waits it out or `
-          + 'cleans the book somewhere else; run it again when that run is done, or point this job '
-          + 'at another server.',
+          + `run — ${err.leasedLine}. Nothing here cleans the book somewhere else; a queued row `
+          + 'waits for that server and tries again, and a one-off run can be started again when '
+          + 'that run is done or pointed at another server.',
+        busyLine: err.leasedLine,
       };
     }
     /*
