@@ -97,17 +97,24 @@ export class AiService {
   readonly checkedOnce = this._checkedOnce.asReadonly();
 
   /**
-   * A Crucible server AND a model have been chosen (Settings → AI).
+   * A Crucible server has been chosen (Settings → AI).
+   *
+   * A SERVER, AND NOT ALSO A MODEL, SINCE 2026-09-17. It used to require both,
+   * because the app stored a model id alongside the server — and that id was a
+   * second owner of a decision the engine makes per capability class, which
+   * won over the choice made on the AI page. The app stores no model now
+   * (`CrucibleConfig.model` is a run-time stamp), so requiring one here would
+   * report every correctly configured machine as unconfigured.
    *
    * Configured is not the same as reachable, and this says the weaker thing on
-   * purpose: whether that model is still resident is the server's answer at run
-   * time, asked then and refused by name then — a banner that polled a machine
-   * across the room to decide whether to say "ready" would be stale by the time
-   * anyone read it.
+   * purpose: whether the model that class resolves to is resident is the
+   * server's answer at run time, asked then and refused by name then — a banner
+   * that polled a machine across the room to decide whether to say "ready"
+   * would be stale by the time anyone read it.
    */
   readonly crucibleConfigured = computed(() => {
     const cfg = this.settings.getAIConfig();
-    return !!cfg.crucible?.server?.trim() && !!cfg.crucible?.model?.trim();
+    return !!cfg.crucible?.server?.trim();
   });
 
   /**

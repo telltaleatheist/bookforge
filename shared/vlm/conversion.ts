@@ -637,16 +637,26 @@ export function resolveVlmRoute(facts: {
 export function resolveVlmRouteWithVenue(facts: {
   platform: string;
   arch: string;
-  endpoint: VlmEndpointConfig | null;
   wslReaderRefusal: string | null;
   /** What main decided, or null when the decision refused. */
   venue: VlmVenue | null;
   /** The refusal's own sentence, when `venue` is null. */
   venueRefusal: string | null;
 }): VlmRoute {
-  if (facts.endpoint !== null) {
-    return { kind: 'endpoint', endpoint: facts.endpoint };
-  }
+  /*
+   * THE ENDPOINT BRANCH IS GONE (2026-09-17), and it used to be FIRST.
+   *
+   * A URL typed into Settings, AI, Reading pages returned here before the
+   * venue was even looked at -- so an app-side box silently won over the
+   * engine the queue had chosen, which is the same defect as the pinned model
+   * id removed the same day. Owen ruled it out when he asked what that card
+   * was even for: page reading goes through the selected Crucible like every
+   * other job, chosen in the AI page's `pages` row.
+   *
+   * `--vlm-endpoint` on the CLI is NOT this and survives: it is named per run
+   * by whoever types it, in front of them, rather than remembered in a settings
+   * file and applied to work they did not connect it to.
+   */
   if (facts.venue !== null && facts.venue.where === 'crucible') {
     return { kind: 'crucible', server: facts.venue.server };
   }
@@ -655,8 +665,8 @@ export function resolveVlmRouteWithVenue(facts: {
       kind: 'refused',
       reason:
         `BookForge could not decide which machine reads these pages: ${facts.venueRefusal} `
-        + 'Enable a Crucible server in Settings → Crucible Servers, or type an endpoint under '
-        + 'Settings → AI → Reading pages. There is no local page reader to fall back to.',
+        + 'Enable a Crucible server in Settings → Crucible Servers and pick one in '
+        + 'Settings → AI. There is no local page reader to fall back to.',
     };
   }
   return resolveVlmRoute({

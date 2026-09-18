@@ -14,7 +14,7 @@
  * §4a deleted the button: presence of the app is the request. What posts this
  * module is `coordinate.ts`, and only when a READ of `GET /v1/catalog` says
  * something is missing. This file is left with the two mechanical halves —
- * {@link postBookForgeModule} and {@link followModuleTask} — because
+ * {@link postBookForgeModule} and {@link followCrucibleTask} — because
  * coordination needs them separately: a task already running on a server is
  * FOLLOWED rather than re-posted, and following it is the same frame
  * translation as watching our own.
@@ -156,7 +156,14 @@ export async function postBookForgeModule(server: string): Promise<string> {
 }
 
 /**
- * Follow a module task to its end, one frame per event.
+ * Follow a task to its end, one frame per event.
+ *
+ * NAMED FOR THE TASK, NOT THE MODULE (2026-09-17). Its second caller is a
+ * user-pressed PULL from the AI settings page (`crucible/catalog.ts`), and
+ * `POST /v1/tasks` has ONE event contract for every task type it accepts —
+ * `module`, `pull`, `install`, `engine`. A second reader of one stream would
+ * drift from this one on the first event kind that got added, so there is one
+ * follower and the fields a given task type never uses simply stay null.
  *
  * Resolves when the task reaches a terminal state, with the state it reached —
  * it does NOT throw on `failed`. A failed module is a thing a screen draws (the
@@ -184,7 +191,7 @@ export async function postBookForgeModule(server: string): Promise<string> {
  * later. `unmet` stays `null` in that case, which is exactly what it means —
  * nobody said.
  */
-export async function followModuleTask(
+export async function followCrucibleTask(
   server: string,
   taskId: string,
   onProgress: (progress: CrucibleModuleProgress) => void,

@@ -127,13 +127,30 @@ import { coordinationWords } from './crucible-words';
             <span class="cru-name">{{ row.name }}</span>
             <span class="cru-spacer"></span>
             <!--
-              OPEN — PHASE13-OPERATOR.md §5.3. Every server row gets it,
-              because the server's own page is where everything about a server
-              now happens: install a job type, pull weights, watch the task,
-              read the token. The token is read in MAIN from the registry and
-              never crosses this seam.
+              THE "MAINTENANCE CONSOLE" BUTTON IS GONE (2026-09-17). Owen:
+              *"no more opening a crucible page in bookforge settings. we're
+              putting the settings right there in the settings tab of bookforge
+              and configuring crucible there in settings."*
+
+              It was here on PHASE13-OPERATOR.md section 5.3's reasoning — that
+              the server's own page is where everything about a server happens:
+              install a job type, pull weights, watch the task, read the token.
+              Three of those four are in this app now and the fourth never
+              needed the console:
+
+                * pull weights, and remove them - Settings, AI, per class, with
+                  the engine's own candidate list and the size in the confirm.
+                * which model serves each class - Settings, AI, written through
+                  to that engine's own settings document.
+                * install a job type - BookForge posts its module to every
+                  engine it connects to (PHASE14-ENVPACKS.md section 4a); the
+                  row below says where that got to.
+                * read the token - "Copy connect code" is two controls along.
+
+              The page still EXISTS and is still served by the engine at its own
+              address; what is gone is BookForge opening it. A person who wants
+              it has a browser.
             -->
-            <desktop-button variant="ghost" size="sm" (click)="openUi(row.name)">Maintenance console</desktop-button>
             <!--
               THERE IS NO "SET UP FOR BOOKFORGE" BUTTON — crucible
               docs/PHASE14-ENVPACKS.md §4a. Presence of the app is the request:
@@ -950,14 +967,6 @@ export class CrucibleServersPanelComponent {
    * crosses this seam, and no external browser gets the `#token=` fragment into
    * its history.
    */
-  async openUi(name: string): Promise<void> {
-    const res = await this.electron.crucible.openUi(name);
-    if (!res.success) {
-      this.setRowError(
-        name, res.error ?? `The Crucible page for "${name}" could not be opened, and nothing said why.`);
-    }
-  }
-
   /** The row's one sentence about coordination. Every word of it is in one file. */
   words(state: CrucibleCoordinationState): string {
     return coordinationWords(state);

@@ -64,6 +64,10 @@ import type {
   CrucibleUpstreamName,
   CrucibleUpstreamProbe,
 } from '../shared/crucible/settings-wire';
+// Which SUBJECT a download names. Same rule as the line above: a `shared/`
+// shape, a relative path, types only — the renderer names the kind and main
+// forwards it to the catalog door unchanged.
+import type { CrucibleSubjectKind } from '../shared/crucible/catalog-wire';
 // One event of a running install, pushed on `crucible:install-progress`. Same
 // rule as the line above: a `shared/` shape, a relative path, types only.
 import type { CrucibleInstallProgress } from '../shared/crucible/install-wire';
@@ -7236,7 +7240,7 @@ function setupIpcHandlers(): void {
   // that one could travel in.
   ipcMain.handle('ai:check-provider-connection', async (
     _event,
-    provider: 'local' | 'crucible',
+    provider: 'crucible',
     crucibleServer?: string
   ) => {
     try {
@@ -7742,6 +7746,8 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
   const upgradingEngines = new Set<string>();
+  /** `<server>:<kind>:<id>` of every pull this window has in flight. */
+  const pullingSubjects = new Set<string>();
   ipcMain.handle('bookforge:crucible-pair-requests', async (_event, server: string) => {
     try {
       const { crucibleClientFor } = await import('./crucible/servers.js');
@@ -8048,6 +8054,110 @@ function setupIpcHandlers(): void {
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── THE CATALOG: WHAT A SERVER COULD HOLD (crucible PHASE13 §2, §3.3, 3.5a) ─
+  //
+  // Settings -> AI draws a model picker per capability class, and a picker can
+  // only ever offer what it can see. `localModels.choices` on the settings
+  // document sees what is INSTALLED; these three doors are what let the same
+  // page offer the rest — Owen, 2026-09-17: *"maybe with a more button that
+  // lets the user download other models to the crucible server if they want to
+  // use that one instead"*, and the same for voices.
+  //
+  // THE CHANNEL NAMES ARE `bookforge:crucible-*` for the reason the engine
+  // settings pair are: two `ipcMain.handle` calls of one name in one main
+  // process throw at registration, and the vendored Foundry owns much of the
+  // bare `crucible:` family. `tools/test-ipc-collision.js` is the guard.
+  ipcMain.handle('bookforge:crucible-catalog', async (_event, name: string) => {
+    try {
+      const { readCrucibleCatalog } = await import('./crucible/catalog.js');
+      return { success: true, data: await readCrucibleCatalog(name) };
+    } catch (err) {
+      const { crucibleCatalogRefusalCode } = await import('./crucible/catalog.js');
+      return { success: false, error: (err as Error).message, code: crucibleCatalogRefusalCode(err) };
+    }
+  });
+
+  /**
+   * ONE PULL AT A TIME PER SERVER, AND THIS APP SAYS SO BEFORE THE SERVER HAS
+   * TO.
+   *
+   * A Crucible runs one task at a time and refuses a second `task_busy`, which
+   * is the authority. This set is not a second one — it does not make the
+   * refusal impossible, and a pull started from the operator's page or from
+   * Foundry will still collide — it exists so that a person double-clicking
+   * Download gets nothing rather than a refusal about a task they just started
+   * themselves.
+   */
+  ipcMain.handle('bookforge:crucible-pull', async (
+    event,
+    name: string,
+    kind: CrucibleSubjectKind,
+    id: string,
+  ) => {
+    const key = `${name}:${kind}:${id}`;
+    if (pullingSubjects.has(key)) {
+      return { success: false, error: `${id} is already downloading to ${name}.` };
+    }
+    pullingSubjects.add(key);
+    try {
+      const { pullCrucibleSubject } = await import('./crucible/catalog.js');
+      const last = await pullCrucibleSubject(name, kind, id, (task) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('bookforge:crucible-pull-progress', { kind, id, task });
+        }
+      });
+      /*
+       * COORDINATION IS TOLD, because what this machine has just changed is
+       * exactly what coordination reads: the catalog. Without this, a server
+       * that was short of a subject keeps saying so on the bench until the next
+       * connect. Not awaited — the download is finished either way, and the
+       * page must not wait on a second round trip to say so.
+       */
+      void coordinateWithServer(name, 'a download finished');
+      return { success: true, data: last };
+    } catch (err) {
+      const { crucibleCatalogRefusalCode } = await import('./crucible/catalog.js');
+      return { success: false, error: (err as Error).message, code: crucibleCatalogRefusalCode(err) };
+    } finally {
+      pullingSubjects.delete(key);
+    }
+  });
+
+  /**
+   * What a removal would take with it, and then the removal.
+   *
+   * TWO DOORS, DELIBERATELY. crucible `docs/MODEL-CHOICE.md` §7: an app deletes
+   * *"behind a confirm that names the SIZE — deciding about 17.3 GB is a
+   * different decision from deciding about 'a file'"*. So the page asks what it
+   * is about to destroy, shows that in its own modal, and only then calls the
+   * second door. One door that confirmed for itself would put the sentence a
+   * person reads in the main process, where no modal lives.
+   */
+  ipcMain.handle('bookforge:crucible-removal-prompt', async (
+    _event, name: string, kind: CrucibleSubjectKind, id: string,
+  ) => {
+    try {
+      const { crucibleRemovalPrompt } = await import('./crucible/catalog.js');
+      return { success: true, data: await crucibleRemovalPrompt(name, kind, id) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('bookforge:crucible-remove-subject', async (
+    _event, name: string, kind: CrucibleSubjectKind, id: string,
+  ) => {
+    try {
+      const { removeCrucibleSubject } = await import('./crucible/catalog.js');
+      await removeCrucibleSubject(name, kind, id);
+      void coordinateWithServer(name, 'a subject was removed');
+      return { success: true };
+    } catch (err) {
+      const { crucibleCatalogRefusalCode } = await import('./crucible/catalog.js');
+      return { success: false, error: (err as Error).message, code: crucibleCatalogRefusalCode(err) };
     }
   });
 
@@ -8470,15 +8580,6 @@ function setupIpcHandlers(): void {
    * and lives in `electron/crucible/operator-window.ts` with the argument for
    * each line of it.
    */
-  ipcMain.handle('crucible:open-ui', async (_event, name: string) => {
-    try {
-      const { openCrucibleOperatorWindow } = await import('./crucible/operator-window.js');
-      return { success: true, data: openCrucibleOperatorWindow(name) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   /*
    * ── COORDINATION: THE BUTTON THAT IS NOT THERE ───────────────────────────
    *
@@ -9077,6 +9178,89 @@ function setupIpcHandlers(): void {
       const { setStreamConfig } = await import('./streaming-engine.js');
       const data = await setStreamConfig(updates);
       return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── The Doctor: one reading over the two mechanisms, and one repair ──
+  //
+  // `electron/doctor.ts` composes the report and is PURE — every observation is
+  // passed in — so the interesting machine (the one with nothing installed) is
+  // testable without being that machine. This handler is the part that does the
+  // observing.
+
+  ipcMain.handle('doctor:check', async () => {
+    try {
+      const { composeReport } = await import('./doctor.js');
+      const { getToolStatus } = await import('./tool-paths.js');
+      const { hasManagedEnv } = await import('./tools-env-bootstrap.js');
+      const components = await componentManager.listStatus();
+      return {
+        success: true,
+        data: composeReport({
+          tools: getToolStatus() as Record<string, { configured: boolean; detected: boolean; path: string }>,
+          components,
+          hasManagedEnv: hasManagedEnv(),
+          // TWO DIFFERENT LISTS, and they were briefly the same expression here
+          // by mistake. A component BookForge can fetch and install itself is
+          // one whose own `acquisition` says `managed` — read off the live
+          // catalog, because it is platform-dependent (Calibre is managed
+          // everywhere except macOS, where it is a drag-install .dmg).
+          // `listInstallableIds()` is the other thing entirely: ids with a
+          // VENDOR installer to launch on this platform.
+          installableIds: components
+            .filter((row) => row.component?.acquisition?.includes('managed'))
+            .map((row) => row.component.id),
+          externalInstallerIds: listInstallableIds(),
+        }),
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ONE id, and it decides nothing: the renderer names what the person pressed.
+  // A handler that swept every broken thing would be a handler that downloads
+  // 1.8 GB because somebody opened a settings page.
+  ipcMain.handle('doctor:fix', async (event, id: string) => {
+    const send = (message: string) => {
+      if (!event.sender.isDestroyed()) event.sender.send('doctor:progress', { id, message });
+    };
+    try {
+      if (id === 'tools-env' || id === 'ffmpeg') {
+        // ffmpeg's repair IS the env's repair when the env is what supplies it;
+        // `doctor.ts` only offers this pairing when it measured that to be true.
+        const { ensureToolsEnv } = await import('./tools-env-bootstrap.js');
+        const where = await ensureToolsEnv(send);
+        if (where === null) {
+          return { success: false, error: 'The environment could not be installed. The log has the reason.' };
+        }
+        return { success: true };
+      }
+      if (id === 'calibre' || id === 'foundry-cli') {
+        const result = await componentManager.install(id, (p) => {
+          send(p.message ?? `${p.phase}${typeof p.pct === 'number' ? ` ${p.pct}%` : ''}`);
+        });
+        return result?.ok === false
+          ? { success: false, error: result.error ?? 'The install did not finish.' }
+          : { success: true };
+      }
+      return { success: false, error: `There is no repair here for "${id}".` };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The other half of `crucible:engine-presence`: the renderer showed the offer
+  // in this app's own modal, and this is what the button presses.
+  ipcMain.handle('crucible:start-local-engine', async () => {
+    try {
+      const { startEngine } = await import('./crucible/engine-presence.js');
+      const outcome = await startEngine();
+      return outcome.started
+        ? { success: true }
+        : { success: false, error: outcome.detail };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -13168,8 +13352,14 @@ app.whenReady().then(async () => {
    */
   void (async () => {
     try {
-      const { offerLocalCrucibleStart } = await import('./crucible/engine-presence.js');
-      await offerLocalCrucibleStart();
+      const { reportLocalCruciblePresence } = await import('./crucible/engine-presence.js');
+      // The RENDERER draws it — with this app's modal and toast, never an OS
+      // message box (Owen, 2026-09-17: "no js alerts. ever").
+      await reportLocalCruciblePresence((channel, payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(channel, payload);
+        }
+      });
     } catch (err) {
       logger.warn('Local Crucible startup check failed; continuing with configured remote servers', {
         error: (err as Error).message,
@@ -13710,16 +13900,12 @@ app.on('before-quit', async (event) => {
 
   console.log('[MAIN] Running cleanup before quit...');
 
-  // Any Crucible operator windows go with the app. They hold no work — each is
-  // a page on somebody's server, in its own session, with no bridge — so this
-  // is first and synchronous: a window left open would keep the process alive
-  // after every other teardown had finished.
-  try {
-    const { closeCrucibleOperatorWindows } = await import('./crucible/operator-window.js');
-    closeCrucibleOperatorWindows();
-  } catch (err) {
-    console.warn('[MAIN] could not close the Crucible operator windows:', (err as Error).message);
-  }
+  // THE CRUCIBLE OPERATOR WINDOW IS GONE (2026-09-17) and so is this teardown.
+  // Owen: *"no more opening a crucible page in bookforge settings."* Nothing
+  // could open one once the two buttons went, so nothing can be left open, and
+  // a shutdown step guarding against a window this build cannot create is a
+  // step that only ever costs a dynamic import. The engine still serves its own
+  // page at its own address; a browser is what opens it.
 
   // FIRST, and it is one synchronous flag plus a file write: stop the queue
   // claiming new work, and write the board. Everything below this line kills

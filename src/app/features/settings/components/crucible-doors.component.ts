@@ -224,10 +224,16 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
                     like any other engine — rank it, switch it off, remove it — and BookForge has
                     already made sure it has what it needs.
                   </p>
+                  <!--
+                    "OPEN ENGINE CONSOLE" IS GONE (2026-09-17), with its twin in
+                    the servers panel. Owen: *"no more opening a crucible page in
+                    bookforge settings."* What it was for is in Settings, AI now
+                    - models per class, downloads, voices - and the engine still
+                    serves its own page at its own address for anyone who wants
+                    it. Test it stays: proving the thing answers is this door's
+                    own job and belongs to the door.
+                  -->
                   <div class="actions">
-                    <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="openUi(name)">
-                      Open engine console
-                    </desktop-button>
                     <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="testHere(name)">
                       {{ busy() === 'here' ? 'Testing…' : 'Test it' }}
                     </desktop-button>
@@ -1232,14 +1238,6 @@ export class CrucibleDoorsComponent {
    * Open that server's own page (§5.3). The token is read in MAIN from the one
    * owner of it and never reaches this component.
    */
-  async openUi(name: string): Promise<void> {
-    this.error.set(null);
-    const res = await this.electron.crucible.openUi(name);
-    if (!res.success) {
-      this.error.set(res.error ?? 'The Crucible page could not be opened, and nothing said why.');
-    }
-  }
-
   /** The one sentence about coordination. Every word of it is in one file. */
   /**
    * WHICH OF THE TWO DOORS THE CRUCIBLE ON THIS COMPUTER CAME THROUGH.

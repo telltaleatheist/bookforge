@@ -85,7 +85,7 @@ import {
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME, getServer } from './servers';
 import { resolveEngine } from './engine-resolve';
 import { crucibleCapabilityWithRoutes, crucibleEngineSettings } from './engine-settings';
-import { followModuleTask, moduleForBackend, postBookForgeModule } from './module-setup';
+import { followCrucibleTask, moduleForBackend, postBookForgeModule } from './module-setup';
 import { noteCrucibleRole } from './routes';
 import { rankedServers } from './routing';
 import type {
@@ -594,7 +594,7 @@ async function prepare(
     };
     report({ server, phase: 'preparing', missing, unmet, progress: progress0, followed });
 
-    const last = await followModuleTask(server, taskId, (progress) => {
+    const last = await followCrucibleTask(server, taskId, (progress) => {
       report({ server, phase: 'preparing', missing, unmet, progress, followed });
     });
     // A shared engine may have been preparing the other app's module. Its

@@ -7,10 +7,9 @@ import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService, OrpheusBatchConfig } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
-import { AddOnsPanelComponent } from './components/add-ons-panel.component';
-import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
+import { DoctorPanelComponent } from './components/doctor-panel.component';
+import { AiPanelComponent } from './components/ai-panel.component';
 import { ComponentService } from '../../core/services/component.service';
-import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
 import { CrucibleServersPanelComponent } from './components/crucible-servers-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
@@ -38,7 +37,9 @@ function toolPathText(raw: string | boolean | undefined): string {
    * of them — this page and the first-run wizard were their only two hosts,
    * and both lost the sections/steps that did (audit sections 6 and 7).
    */
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, AiSetupWizardComponent, PipelineDefaultsPanelComponent, CrucibleServersPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AiPanelComponent, CrucibleServersPanelComponent, RemoveAllDataComponent,
+    DoctorPanelComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -68,6 +69,21 @@ function toolPathText(raw: string | boolean | undefined): string {
               </button>
             }
           </div>
+
+          <!--
+            GUIDED SETUP IS AN ACTION, NOT A SETTING (2026-09-17). Owen: "guided
+            setup can be its own button in the settings menu."
+
+            It was a row inside General — a page of things you CHANGE — where it
+            was the only thing you PRESS. Sitting under the section list it is
+            what it actually is: the way back into the walkthrough after a
+            library or machine change, reachable from every section rather than
+            from one nobody has a reason to open.
+          -->
+          <button class="section-item guided-setup" (click)="openGuidedSetup()">
+            <span class="section-icon">🧭</span>
+            <span class="section-name">Run guided setup…</span>
+          </button>
         </div>
 
         <!-- Content -->
@@ -164,8 +180,57 @@ function toolPathText(raw: string | boolean | undefined): string {
                   disk actually goes. Two buttons that erase the same thing is
                   two chances to press one by accident.
                 -->
+
+                <!--
+                  THE AUDIOBOOK SECTION'S TWO FIELDS LANDED HERE (2026-09-17).
+                  Owen: "what's the audiobook page in settings for? we should
+                  probably remove it - doesnt seem important". The PAGE was not
+                  important; its two settings are live. The default export
+                  folder is read by Export M4B and the narrator scratch folder
+                  by the main process, so deleting the page without moving them
+                  would have left two working settings with no door. Both are
+                  paths under or beside the library, which is this page.
+                -->
+                @for (field of section.fields; track field.key) {
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">{{ field.label }}</label>
+                      @if (field.description) {
+                        <p class="field-description">{{ field.description }}</p>
+                      }
+                    </div>
+                    <div class="field-control">
+                      <div class="path-input-group">
+                        <input
+                          type="text"
+                          class="text-input path-input"
+                          [value]="getFieldValue(field)"
+                          [placeholder]="field.placeholder || ''"
+                          (change)="setFieldValue(field, $any($event.target).value)"
+                        />
+                        <desktop-button variant="ghost" size="sm" (click)="browseForFolder(field)">
+                          Browse...
+                        </desktop-button>
+                      </div>
+                    </div>
+                  </div>
+                }
               </div>
-            } @else if (section.id === 'storage') {
+
+                <!--
+                  STORAGE, BOOKSHELF SERVER AND TAB RECORDER LIVE HERE NOW
+                  (2026-09-17). Owen: "options in tab recorder, storage, and
+                  bookshelf server can go in the same tab. maybe they can go to
+                  the library tab and it can be renamed to something more
+                  general. like General. they dont each need their own tab."
+
+                  Each was a whole page for a handful of controls, and the
+                  sidebar had grown longer than any of their contents. They are
+                  all about THIS MACHINE - where its files are, what it caches,
+                  and what it serves on the network - which is what this page is
+                  now called General for.
+                -->
+
               <!-- Storage section has custom UI -->
               <div class="storage-section">
                 <div class="storage-item">
@@ -206,43 +271,23 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </div>
                 }
 
-                <!-- Protect professionally-read uploads: relocate any that still sit
-                     in the disposable output/ folder into the protected archive/
-                     folder so "Delete output" can never destroy them. -->
-                <div class="storage-item">
-                  <div class="storage-info">
-                    <h3>Protect professionally-read audiobooks</h3>
-                    <p>Move directly-uploaded (professionally-read) audiobooks out of the disposable output/ folder and into the protected archive/ folder, so deleting pipeline output can never remove them. Safe to run repeatedly; TTS-generated books are left untouched.</p>
-                    @if (archiveMigrationResult(); as r) {
-                      <div class="status-message" [class.success]="r.success" [class.error]="!r.success">
-                        Migrated {{ r.migrated }}, skipped {{ r.skipped }}, failed {{ r.failed }}.
-                      </div>
-                      @for (b of r.books; track b.projectId) {
-                        @if (b.status !== 'skipped') {
-                          <div class="archive-book-row" [class.error]="b.status === 'failed'">
-                            <span class="abr-status">{{ b.status === 'migrated' ? '✓' : '✕' }}</span>
-                            <span class="abr-title">{{ b.title }}</span>
-                            @if (b.reason) { <span class="abr-reason">{{ b.reason }}</span> }
-                            @if (b.orphans && b.orphans.length) { <span class="abr-reason">left {{ b.orphans.length }} locked file(s) in output/</span> }
-                          </div>
-                        }
-                      }
-                    }
-                  </div>
-                  <div class="storage-actions">
-                    <desktop-button variant="primary" size="sm" (click)="migrateAudiobooksToArchive()" [disabled]="archiveMigrating()">
-                      {{ archiveMigrating() ? 'Moving…' : 'Move to archive' }}
-                    </desktop-button>
-                  </div>
-                </div>
+                <!--
+                  "PROTECT PROFESSIONALLY-READ AUDIOBOOKS" IS GONE (2026-09-17).
+                  Owen: "protect professionally read audiobooks option is a
+                  standard we adopted and will never be changed by the user.
+                  remove it as a setting."
+
+                  It was a one-shot migration button for a rule the app now
+                  always follows: a directly-uploaded audiobook goes to the
+                  protected archive/ folder, never the disposable output/ one.
+                  A control for a decision nobody gets to make is a control that
+                  implies they do.
+                -->
 
                 <!-- Full uninstall of OUR data (keeps the user's library/books). -->
                 <app-remove-all-data />
               </div>
-            } @else if (section.id === 'ai') {
-              <!-- AI Configuration — the AI Setup wizard, embedded (supersedes the old provider-card UI) -->
-              <app-ai-setup-wizard [embedded]="true" />
-            } @else if (section.id === 'bookshelf') {
+
               <!-- Bookshelf Server Section -->
               <div class="bookshelf-section">
                 <!-- Server Status -->
@@ -336,7 +381,7 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </p>
                 </div>
               </div>
-            } @else if (section.id === 'tab-recorder') {
+
               <!-- Tab Recorder Section.
                    WAS "TTS Server", and the TTS half is deleted (Phase 16 step 8).
                    What this endpoint does now is one thing: the browser extension
@@ -484,211 +529,50 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </p>
                 </div>
               </div>
-            } @else if (section.id === 'tools') {
-              <!-- Advanced Section (tool-path overrides, scratch dir, WSL) -->
-              <div class="tools-section">
-                @if (toolPathsLoading()) {
-                  <p class="loading-hint">Loading tool paths...</p>
-                }
-
-                <!--
-                  Conda Path — hidden on packaged builds (they run on the
-                  bundled relocatable env and never need conda). Shown in dev /
-                  bring-your-own setups.
-
-                  IT SURVIVED THE DELETION, and for a reason worth writing
-                  down because the audit predicted the opposite. Audit section
-                  3.15 said both readers of "tool-paths.json" -> "condaPath"
-                  were the LEGACY LOCAL NARRATOR SPAWN, so the row would die
-                  with that layer. The layer IS dead (2026-09-15,
-                  docs/LEGACY-REMOVAL.md) — and the row is still live, because
-                  one reader was never the spawn: "getPythonInvocation()" with
-                  no engine resolves the TOOLS env, and its bring-your-own arm
-                  runs that env through conda. Prep, assembly and epub-align all
-                  go through it.
-
-                  So the reader CHANGED rather than went. A machine using the
-                  bundled relocatable env never reaches this; a machine that
-                  pointed BookForge at its own conda still needs it, and taking
-                  the door away would strand exactly that machine.
-                -->
-                @if (!usingBundledEnv()) {
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>Conda</h4>
-                    <p class="tool-description">Python environment manager (optional — only for advanced / bring-your-own TTS setups)</p>
-                    @if (getToolStatus('conda'); as status) {
-                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
-                        @if (status.configured) {
-                          <span class="status-badge configured">Configured</span>
-                        } @else if (status.detected) {
-                          <span class="status-badge detected">Auto-detected</span>
-                        } @else {
-                          <span class="status-badge not-found">Not found</span>
-                        }
-                        <span class="tool-path">{{ status.path }}</span>
-                      </div>
-                    }
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('condaPath')"
-                        placeholder="Auto-detect"
-                        (change)="updateToolPath('condaPath', $any($event.target).value)"
-                      />
-                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('condaPath')">
-                        Browse...
-                      </desktop-button>
-                    </div>
-                  </div>
-                </div>
-                }
-
-                <!-- FFmpeg Path -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>FFmpeg</h4>
-                    <p class="tool-description">Audio/video converter (required for audiobook output)</p>
-                    @if (getToolStatus('ffmpeg'); as status) {
-                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
-                        @if (status.configured) {
-                          <span class="status-badge configured">Configured</span>
-                        } @else if (status.detected) {
-                          <span class="status-badge detected">Auto-detected</span>
-                        } @else {
-                          <span class="status-badge not-found">Not found</span>
-                        }
-                        <span class="tool-path">{{ status.path }}</span>
-                      </div>
-                    }
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('ffmpegPath')"
-                        placeholder="Auto-detect"
-                        (change)="updateToolPath('ffmpegPath', $any($event.target).value)"
-                      />
-                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('ffmpegPath')">
-                        Browse...
-                      </desktop-button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Tools Python environment -->
-                <div class="tool-row">
-                  <div class="tool-info">
-                    <h4>Tools Python environment</h4>
-                    <p class="tool-description">Runs audiobook assembly, session resume, whisper and the metadata tools. BookForge installs its own; point at another only to avoid a second copy.</p>
-                    @if (getToolStatus('toolsEnv'); as status) {
-                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
-                        @if (status.configured) {
-                          <span class="status-badge configured">Configured</span>
-                        } @else if (status.detected) {
-                          <span class="status-badge detected">Installed</span>
-                        } @else {
-                          <span class="status-badge not-found">Not found</span>
-                        }
-                        <span class="tool-path">{{ status.path }}</span>
-                      </div>
-                    }
-                  </div>
-                  <div class="tool-control">
-                    <div class="path-input-group">
-                      <input
-                        type="text"
-                        class="text-input path-input"
-                        [value]="getToolPathValue('toolsEnvPath')"
-                        placeholder="BookForge's own runtime/tools-env"
-                        (change)="updateToolPath('toolsEnvPath', $any($event.target).value)"
-                      />
-                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('toolsEnvPath')">
-                        Browse...
-                      </desktop-button>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="save-section">
-                  <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
-                    {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
-                  </desktop-button>
-                  @if (toolPathsDirty()) {
-                    <desktop-button variant="ghost" size="md" (click)="discardTools()" [disabled]="toolPathsSaving()">
-                      Discard
-                    </desktop-button>
-                    <span class="unsaved-hint">You have unsaved changes</span>
-                  }
-                </div>
-
-                @if (toolPathsSaveStatus(); as status) {
-                  <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
-                    {{ status.message }}
-                  </div>
-                }
-
-                <div class="section-actions">
-                  <desktop-button variant="ghost" size="sm" (click)="refreshToolPaths()" [disabled]="toolPathsLoading()">
-                    Refresh Detection
-                  </desktop-button>
-                </div>
-
-                <div class="help-text">
-                  <p>
-                    <strong>Tip:</strong> Leave paths empty to use auto-detection.
-                    The app will search common installation locations for each tool.
-                  </p>
-                </div>
-              </div>
-            } @else if (section.id === 'add-ons') {
+            } @else if (section.id === 'ai') {
               <!--
-                FOUR SECTIONS WERE DELETED ABOVE THIS ONE (2026-09-14, audit
-                docs/SETUP-AND-SETTINGS-AROUND-CRUCIBLE.md section 7): Orpheus,
-                Higgs, RVC Enhancement and Speech to Text.
+                ONE COMPONENT (2026-09-17). Owen: *"the AI tab doesnt have
+                anything we discussed"*, and then, looking at the first pass:
+                *"what is reading pages and engine settings for? theres a lot of
+                info here that i dont know how important it is or why its
+                there"*.
 
-                They existed for a good reason at the time: an engine needs an
-                env, a models directory, a doctor and a voice catalog, and
-                putting all four on one screen is what made "pick your engine,
-                set it up here" readable. Crucible owns all four now, once per
-                machine (rollout section 2 ruling 1) — the envs are job types it
-                installs, the weights are subjects in its catalog, and
-                "crucible doctor" is the doctor — so each page had no content
-                left. Orpheus is additionally RETIRED (Owen, 2026-09-14) from
-                both the narration and the Listen picker, and Higgs is the one
-                engine; the Orpheus spawn layer itself is held until Crucible's
-                environment has been audited against it (docs/LEGACY-REMOVAL.md).
+                What he asked for is a page about ONE Crucible server - a strip
+                of servers at the top, a model picker per job fed by that
+                server's own catalog, a more button that downloads other models
+                TO the server, the same shape for voices, where each job runs,
+                and the accounts the engine can forward to. app-ai-panel is all
+                of it.
 
-                Where each thing went: the environments and the weights are
-                installed from the SERVER's own page (Crucible Servers -> Open,
-                and BookForge installs what it needs the moment it connects to one).
-                The WSL keys the
-                Orpheus page owned are read only by that held spawn and die
-                with it. wslDistro did not move, because it never belonged to
-                Orpheus: its non-legacy reader is crucible/discovery.ts, which finds
-                it in tool-paths.json exactly as before.
-
-                WHAT IS LEFT HERE is the three tools BookForge still installs.
+                The wizard was mounted under it for one pass while routes and
+                accounts still lived there. They live here now, so mounting it
+                would draw every one of those controls twice - and Reading pages
+                is deleted outright, because its URL silently beat the engine.
+                The wizard is still the whole of first run and /ai-setup.
               -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">General tools</h3>
-                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), and the Foundry engine binary — the only downloads BookForge still owns. Everything else an engine needs is installed on the Crucible that runs it.</p>
-                  <app-add-ons-panel [only]="generalAddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
+              <app-ai-panel />
+            } @else if (section.id === 'doctor') {
+              <!--
+                THE DOCTOR REPLACES "General Add-ons" AND "Advanced" (2026-09-17).
+
+                Add-ons carried Calibre, Tesseract and the Foundry engine.
+                Tesseract is GONE — it was declared in the component catalog and
+                invoked by nothing, and the pipeline had already retired the pass
+                that used it. Calibre stays a real dependency (it converts Kindle
+                and legacy formats; PDF is not in its list, the vision model reads
+                those) but it is not an "add-on" and neither is the Foundry engine,
+                which Owen is explicit the system does not function without.
+
+                Advanced carried ffmpeg, conda and the tools Python env as text
+                boxes with Browse — a control for somebody who already knows the
+                path, and no help at all to somebody whose copy is missing. The
+                Doctor offers the one action neither page had: get it again.
+              -->
+              <app-doctor-panel></app-doctor-panel>
             } @else if (section.id === 'crucible') {
               <!-- The Crucible servers the queue may use: this machine's, the
                    servers, their rank and their enable switches. -->
               <app-crucible-servers-panel></app-crucible-servers-panel>
-            } @else if (section.id === 'pipeline-defaults') {
-              <!-- Default AI / TTS / output selections the pipeline seeds from. -->
-              <app-pipeline-defaults-panel></app-pipeline-defaults-panel>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {
@@ -766,22 +650,6 @@ function toolPathText(raw: string | boolean | undefined): string {
                   </div>
                 }
 
-                @if (section.id === 'general') {
-                  <!-- Settings is the only post-setup hub (the Configuration rail
-                       item was removed); the guided walkthrough stays reachable
-                       from here for hand-holding after a library/machine change. -->
-                  <div class="field-row">
-                    <div class="field-info">
-                      <label class="field-label">Guided setup</label>
-                      <p class="field-description">Walk through the first-run setup again — library location, AI, voices, language packs, and optional tools — step by step.</p>
-                    </div>
-                    <div class="field-control">
-                      <desktop-button variant="ghost" size="sm" (click)="openGuidedSetup()">
-                        Run guided setup…
-                      </desktop-button>
-                    </div>
-                  </div>
-                }
               </div>
 
               <!-- Save Button -->
@@ -909,6 +777,14 @@ function toolPathText(raw: string | boolean | undefined): string {
         background: var(--bg-hover);
         color: var(--text-primary);
       }
+    /* Set apart from the section list: it acts rather than navigates. */
+    .section-item.guided-setup {
+      margin-top: 10px;
+      border-top: 1px solid var(--border, #e0e0e0);
+      padding-top: 12px;
+      opacity: .85;
+    }
+    .section-item.guided-setup:hover { opacity: 1; }
 
       &.active {
         background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -1990,7 +1866,6 @@ export class SettingsComponent implements OnInit {
    *   nothing is not a generalisation, it is a claim that something is
    *   installable when it is not — so the list is a literal again, honestly.
    */
-  readonly generalAddOnIds = ['foundry-cli', 'calibre', 'tesseract'];
 
   getFieldValue(field: SettingField): unknown {
     // For plugin settings, prefix with plugin ID

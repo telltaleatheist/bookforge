@@ -4,7 +4,8 @@ import {
   AIConfig,
   AIProvider,
   DEFAULT_AI_CONFIG,
-  resolveSavedAIProvider
+  resolveSavedAIProvider,
+  resolveSavedCrucibleServer
 } from '../models/ai-config.types';
 import {
   DEFAULT_VLM_ENDPOINT_CONFIG,
@@ -95,9 +96,12 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   // talks to — and the default moved to the only provider that works with
   // nothing configured. A Crucible needs a server NAME, and no shipped default
   // can know what this machine called that machine.
-  cleanupProvider: 'local', cleanupModel: '',
-  simplifyProvider: 'local', simplifyModel: '',
-  translateProvider: 'local', translateModel: '',
+  // ONE PROVIDER (2026-09-17). The MODEL is still empty and still not guessable:
+  // it is a Crucible model id on a server this machine has not been told about
+  // yet, so the run doors refuse by name until somebody chooses in Settings → AI.
+  cleanupProvider: 'crucible', cleanupModel: '',
+  simplifyProvider: 'crucible', simplifyModel: '',
+  translateProvider: 'crucible', translateModel: '',
   // Was 'xtts' with voice 'ScarlettJohansson', then 'orpheus' with voice 'leah'.
   // A DEFAULT that names a retired engine is the one place the refusal would fire
   // on a user who never chose anything — `getPipelineDefaults` only repairs a
@@ -406,39 +410,30 @@ export class SettingsService {
        * after the cutover it is the screen that decides whether anything
        * renders at all.
        */
+      /*
+       * "GENERAL" IS WHAT LIBRARY BECAME (2026-09-17) once Storage, Bookshelf
+       * Server and Tab Recorder moved into it. Owen: "they dont each need their
+       * own tab."
+       *
+       * The four are one subject — THIS MACHINE: where its files live, what it
+       * caches, and what it serves on the network. Four sidebar entries for
+       * that was a tree shaped by which component was written first rather than
+       * by what a person came looking for.
+       */
       {
         id: 'library',
-        name: 'Library',
-        description: 'Configure your BookForge library location',
+        name: 'General',
+        description: 'This machine: where its files live, what it caches, and what it serves',
         icon: '📚',
-        fields: [], // Library section has custom UI
-      },
-      {
-        id: 'crucible',
-        name: 'Crucible Servers',
-        description: 'Inference servers the queue may use: this machine’s, and any you add',
-        icon: '🛰️',
-        fields: [], // Custom UI (app-crucible-servers-panel)
-      },
-      {
-        id: 'ai',
-        name: 'AI',
-        description: 'Which Crucible model does the reading and writing',
-        icon: '🤖',
-        fields: [], // AI section has custom UI (app-ai-setup-wizard)
-      },
-      {
-        id: 'pipeline-defaults',
-        name: 'Pipeline Defaults',
-        description: 'What a new book starts from: model, engine, voice, speed, output format',
-        icon: '🎚️',
-        fields: [],
-      },
-      {
-        id: 'audiobook',
-        name: 'Audiobook',
-        description: 'Configure audiobook output settings',
-        icon: '🎧',
+        /*
+         * THE AUDIOBOOK SECTION'S TWO FIELDS, MOVED HERE (2026-09-17) rather
+         * than deleted with it. Owen asked for the page to go; the page was
+         * the problem, not these. `externalAudiobooksDir` is read by Export
+         * M4B (`studio.component.ts`) and `narratorScratchPath` by the main
+         * process, so dropping them would have been a silent removal of two
+         * working settings, which is not what "doesnt seem important" asked
+         * for. Both are paths under or beside the library.
+         */
         fields: [
           {
             key: 'externalAudiobooksDir',
@@ -469,11 +464,18 @@ export class SettingsService {
         ],
       },
       {
-        id: 'bookshelf',
-        name: 'Bookshelf Server',
-        description: 'Share your audiobook bookshelf on the network',
-        icon: '🌐',
-        fields: [], // Bookshelf Server section has custom UI
+        id: 'crucible',
+        name: 'Crucible Servers',
+        description: 'Inference servers the queue may use: this machine’s, and any you add',
+        icon: '🛰️',
+        fields: [], // Custom UI (app-crucible-servers-panel)
+      },
+      {
+        id: 'ai',
+        name: 'AI',
+        description: 'Which Crucible model does the reading and writing',
+        icon: '🤖',
+        fields: [], // AI section has custom UI (app-ai-setup-wizard)
       },
       /*
        * WAS "TTS Server" (id `tts-api`), AND THE TTS IS GONE FROM IT (Phase 16
@@ -494,57 +496,36 @@ export class SettingsService {
        * token to reach this one. Deleting the section outright would have left a
        * security-relevant toggle reachable only by hand-editing JSON.
        */
+      /*
+       * THE DOCTOR (2026-09-17) IS WHAT "General Add-ons" AND "Advanced" BECAME.
+       *
+       * Both described mechanisms rather than needs. "Add-ons" listed things the
+       * system does not run without; "Advanced" offered a path box to somebody
+       * whose problem is that they do not have the thing. Neither could fetch a
+       * missing copy, which is the only action that repairs the machine.
+       *
+       * One page now answers one question — is anything missing, and fix it —
+       * and it is the page a person is sent to when something is wrong.
+       */
       {
-        id: 'tab-recorder',
-        name: 'Tab Recorder',
-        description: 'Where the browser extension sends captured tab audio to be written',
-        icon: '⏺️',
-        fields: [], // Tab Recorder section has custom UI
+        id: 'doctor',
+        name: 'Doctor',
+        description: 'What BookForge needs on this computer, and a button that installs it',
+        icon: '🩺',
+        fields: [], // Custom UI (app-doctor-panel)
       },
-      {
-        id: 'add-ons',
-        name: 'General Add-ons',
-        description: 'The three tools BookForge still installs: Calibre, Tesseract, the Foundry engine',
-        icon: '🧩',
-        fields: [], // Custom UI (app-add-ons-panel)
-      },
-      {
-        id: 'storage',
-        name: 'Storage',
-        description: 'Manage cached data and storage',
-        icon: '💾',
-        fields: [], // Storage section has custom UI, not standard fields
-      },
-      {
-        id: 'tools',
-        name: 'Advanced',
-        description: 'Advanced overrides: ffmpeg and the CPU tools Python environment',
-        icon: '🔧',
-        fields: [], // Tools section has custom UI
-      },
-      {
-        id: 'general',
-        name: 'General',
-        description: 'General application settings',
-        icon: '⚙️',
-        fields: [
-          /*
-           * `maxRecentFiles` IS GONE (2026-09-14, audit section 3.2).
-           *
-           * NO READER, repo-wide: the declaration was the only occurrence of
-           * the string anywhere outside this file. A number control that
-           * reports success and caps nothing is worse than no control, because
-           * somebody who sets it to 50 believes they have changed something.
-           */
-          {
-            key: 'diffIgnoreWhitespace',
-            type: 'boolean',
-            label: 'Ignore whitespace in diffs',
-            description: 'When reviewing AI cleanup changes, ignore differences in whitespace, paragraph breaks, and newlines',
-            default: true,
-          },
-        ],
-      },
+      /*
+       * THE GENERAL SECTION IS GONE (2026-09-17), because nothing was left in it.
+       *
+       * It held three things over its life and each left for its own reason:
+       * `maxRecentFiles` had no reader anywhere (2026-09-14);
+       * `diffIgnoreWhitespace` is toggled in the diff view, beside the thing it
+       * changes; and Guided setup was an ACTION sitting on a page of settings,
+       * so it became a button under the section list.
+       *
+       * A section named "General" with nothing in it is the shape a settings
+       * tree grows when nobody removes the page after removing its contents.
+       */
     ];
 
     this.sections.set(builtinSections);
@@ -838,7 +819,27 @@ export class SettingsService {
       config.provider = resolved.provider;
     }
     if (stored.local !== undefined) config.local = stored.local;
-    if (stored.crucible !== undefined) config.crucible = stored.crucible;
+    if (stored.crucible !== undefined) {
+      /*
+       * THE SERVER NAME IS REPAIRED TOO, and for the same reason the provider
+       * above is: a value that was legal when it was written and is not any
+       * more. `local` was the reserved name for this machine's engine; the
+       * registry retired it, and a config still naming it made every settings
+       * read refuse with "no crucible server named local is registered", which
+       * names a server the person has never heard of.
+       *
+       * Reported, not rewritten — this runs inside computed signals and a write
+       * from a computed is an Angular error. Said once per value.
+       */
+      const resolved = resolveSavedCrucibleServer(stored.crucible.server);
+      if (resolved.note !== undefined && !this.reportedProviderRepairs.has('server:local')) {
+        this.reportedProviderRepairs.add('server:local');
+        console.error(`[SETTINGS] ${resolved.note}`);
+      }
+      config.crucible = resolved.server === undefined
+        ? undefined
+        : { ...stored.crucible, server: resolved.server };
+    }
     return config;
   }
 

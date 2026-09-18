@@ -103,93 +103,21 @@ import {
         }
       </div>
 
-      <!-- ── Bundled local AI ── -->
-      @if (!wizard()) {
-      <section class="card">
-        <div class="card-head">
-          <h2>&#128187; Bundled local AI</h2>
-          <span class="tag">Runs offline · free · private</span>
-        </div>
+      <!--
+        THE BUNDLED LOCAL AI SECTION IS GONE (2026-09-17, Owen: "'AI' page - it
+        has bundled local ai. that's nullified right? remove it.").
 
-        @if (localStatus()?.binaryPresent === false) {
-          <p class="muted">
-            The local AI engine isn't included in this build. Use a GPU engine (Crucible)
-            below, or install a build that bundles the engine.
-          </p>
-        } @else {
-          @if (sysInfo(); as info) {
-            <p class="muted hw">
-              This machine: {{ info.totalRamGB }} GB RAM<!--
-              -->@if (info.cuda) {, {{ info.cudaName || 'GPU' }} ({{ info.vramGB }} GB VRAM)}.
-              Recommended: <strong>{{ modelName(info.recommendedModelId) }}</strong>.
-            </p>
-          }
+        It offered model downloads, an active-model picker and a "Use local AI
+        for cleanup" button for a provider that no longer exists: AIProvider is
+        'crucible' alone, and 'local' joined RETIRED_AI_PROVIDERS beside
+        ollama/claude/openai. The llama.cpp spawn layer itself is NOT deleted
+        here -- it dies with the rest of the legacy path -- which is exactly how
+        Orpheus was retired: removed from the CHOICE, not from the build.
 
-          <div class="models">
-            @for (m of models(); track m.id) {
-              <div class="model" [class.active]="m.isActive" [class.too-big]="!m.fits">
-                <div class="model-info">
-                  <div class="model-name">
-                    {{ m.name }}
-                    @if (m.recommended) { <span class="badge rec">Recommended</span> }
-                    @if (m.isActive) { <span class="badge active">In use</span> }
-                    @if (!m.fits) { <span class="badge warn">Large for your hardware</span> }
-                  </div>
-                  <div class="model-meta">{{ m.sizeGB }} GB · needs ~{{ m.minRAM }} GB RAM · {{ m.description }}</div>
-                  @if (!m.fits) {
-                    <div class="model-warn">⚠ Bigger than this machine can fully fit — it’ll run partly on the CPU and be slow. You can still use it.</div>
-                  }
-
-                  @if (progressFor(m.id); as p) {
-                    <div class="progress">
-                      <div class="bar"><div class="fill" [style.width.%]="p.pct"></div></div>
-                      <div class="progress-meta">
-                        {{ p.pct }}%@if (p.speed) { · {{ p.speed }}}@if (p.eta) { · {{ p.eta }} left}
-                      </div>
-                    </div>
-                  }
-                </div>
-
-                <div class="model-actions">
-                  @if (progressFor(m.id)) {
-                    <desktop-button variant="ghost" size="sm" (click)="cancel(m.id)">Cancel</desktop-button>
-                  } @else if (m.downloaded) {
-                    @if (!m.isActive) {
-                      <desktop-button variant="primary" size="sm" (click)="useModel(m.id)">Use</desktop-button>
-                    }
-                    <desktop-button variant="ghost" size="sm" (click)="remove(m.id)">Delete</desktop-button>
-                  } @else {
-                    <desktop-button variant="primary" size="sm" [disabled]="anyDownloading()" (click)="download(m.id)">
-                      Download
-                    </desktop-button>
-                  }
-                </div>
-              </div>
-            }
-          </div>
-
-          @if (localStatus()?.anyModelDownloaded && !usingLocal()) {
-            <div class="use-row">
-              <desktop-button variant="primary" (click)="setProvider('local')">Use local AI for cleanup</desktop-button>
-            </div>
-          }
-
-          @if (downloadedModels().length > 0) {
-            <div class="danger-row">
-              @if (confirmDeleteModels()) {
-                <span class="danger-confirm">
-                  Delete {{ downloadedModels().length }} downloaded model{{ downloadedModels().length === 1 ? '' : 's' }}?
-                  <desktop-button variant="ghost" size="sm" (click)="deleteAllModels()">Delete</desktop-button>
-                  <desktop-button variant="ghost" size="sm" (click)="confirmDeleteModels.set(false)">Cancel</desktop-button>
-                </span>
-              } @else {
-                <button class="link-danger" (click)="confirmDeleteModels.set(true)">Delete all downloaded models</button>
-              }
-            </div>
-          }
-        }
-      </section>
-      }
+        NOTE FOR THE NEXT EDITOR: no backticks in this comment. It lives inside
+        a template literal, and a backtick here ends the template - which is
+        precisely how this comment was first written, and it broke the file.
+      -->
 
       <!-- ── Crucible ── -->
       <section class="card">
@@ -222,26 +150,18 @@ import {
             </desktop-button>
           </div>
 
-          @if (crucibleServer() && !wizard()) {
-            <div class="setting-row">
-              <label class="setting-label">Model</label>
-              <select class="key-input" [value]="crucibleModel()" (change)="setCrucibleModel($any($event.target).value)">
-                <option value="">Choose a model…</option>
-                @for (m of crucibleModels(); track m.id) {
-                  <option [value]="m.id">{{ m.id }} — {{ modelState(m) }}</option>
-                }
-              </select>
-            </div>
-            @if (chosenModel(); as m) {
-              @if (!m.resident) {
-                <p class="vlm-status bad">
-                  {{ m.id }} is not resident on {{ crucibleServer() }}, so a cleanup run will refuse
-                  by name. @if (!m.loadable) { The server says: {{ m.reason }} } @else { Load it in
-                  Settings &rarr; Crucible Servers. }
-                </p>
-              }
-            }
-          }
+          <!--
+            THE MODEL PICKER IS GONE (2026-09-17). It chose one id, stored it in
+            app settings, and sent it with every cleanup run - which made this
+            app a SECOND owner of a decision the engine makes per capability
+            class, and the app's copy WON. Somebody could pick a model in
+            Settings, watch it save, and have a different one do the work.
+
+            Which model serves each class is chosen per class on the engine, in
+            Settings, AI - one picker per job, written through to the engine's
+            own settings document. What is left here is the SERVER, which is
+            the one AI fact this app stores.
+          -->
 
           <!--
             THE FOUR ACT ROWS MOVED to the Engine settings card below, and they
@@ -257,7 +177,7 @@ import {
             <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
           }
 
-          @if (crucibleServer() && (wizard() ? managedCleanupModel() : crucibleModel()) && !usingCrucible()) {
+          @if (crucibleServer() && !usingCrucible()) {
             <div class="use-row">
               <desktop-button variant="primary" (click)="useCrucible()">Use this Crucible for cleanup</desktop-button>
             </div>
@@ -265,78 +185,27 @@ import {
         }
       </section>
 
-      <!-- ── Reading pages (Convert to EPUB) ── -->
-      <section class="card">
-        <div class="card-head">
-          <h2>&#128441; Reading pages</h2>
-          <span class="tag">Convert to EPUB · document vision model</span>
-        </div>
+      <!--
+        THE "READING PAGES" CARD IS GONE (2026-09-17).
 
-        @if (localReadingRefusal(); as refusal) {
-          <p class="muted warn-note">{{ refusal }}</p>
-        } @else {
-          <p class="muted">
-            Convert to EPUB reads every page picture with a document vision model. This machine can
-            do that itself (Apple Silicon, MLX) — leave the server URL empty and it will. Point it
-            at an OpenAI-compatible server (vLLM) instead when that machine has the faster GPU;
-            nothing switches by itself, and the conversion says which one it used.
-          </p>
-          <!--
-            THE MACHINE, NAMED. Read from the same decision the run makes, so
-            this line cannot say "this machine's GPU (WSL)" for a conversion
-            about to go to a Crucible somewhere else.
-          -->
-          @if (pagesRouteLabel(); as where) {
-            <p class="muted">
-              Pages would be read on <strong>{{ where }}</strong> — that is the card this app will
-              take for the length of a conversion. Change it in Settings &#8594; Crucible Servers.
-            </p>
-          }
-        }
+        Owen, looking at the new AI page: *"what is reading pages and engine
+        settings for? theres a lot of info here that i dont know how important
+        it is or why its there"* -- and then ruled it out.
 
-        <div class="setting-row">
-          <label class="setting-label">Server URL</label>
-          <input
-            class="key-input"
-            type="text"
-            [value]="vlmUrl()"
-            (change)="setVlmUrl($any($event.target).value)"
-            placeholder="http://127.0.0.1:8000/v1"
-          />
-          <desktop-button variant="ghost" size="sm" [disabled]="vlmTesting()" (click)="testVlmEndpoint()">
-            {{ vlmTesting() ? 'Testing…' : 'Test' }}
-          </desktop-button>
-        </div>
+        It set a URL for an OpenAI-compatible document-vision server, and that
+        URL was consulted FIRST in resolveVlmRouteWithVenue: an app-side box
+        that silently won over the Crucible the queue had chosen. The same
+        defect as the pinned model id removed the same day, and now the same
+        answer -- page reading is a capability class (pages) on the selected
+        engine, chosen in Settings, AI like every other job.
 
-        @if (vlmUrl().trim()) {
-          <div class="setting-row">
-            <label class="setting-label">Model name</label>
-            <input
-              class="key-input"
-              type="text"
-              [value]="vlmModel()"
-              (change)="setVlmModel($any($event.target).value)"
-              placeholder="the name the server was started with"
-            />
-          </div>
-          <div class="setting-row">
-            <label class="setting-label">Pages at once</label>
-            <input
-              class="key-input narrow"
-              type="number"
-              min="0"
-              [value]="vlmConcurrency()"
-              (change)="setVlmConcurrency($any($event.target).value)"
-              [placeholder]="defaultConcurrency"
-            />
-            <span class="muted inline-note">0 = foundry’s default of {{ defaultConcurrency }}</span>
-          </div>
-        }
+        NO BACKTICKS IN THIS COMMENT: it sits inside a template literal, and a
+        backtick here terminates the string and breaks the whole component.
 
-        @if (vlmStatus(); as status) {
-          <p class="vlm-status" [class.bad]="!status.ok">{{ status.message }}</p>
-        }
-      </section>
+        The CLI's --vlm-endpoint flag survives and is not this: it is named per
+        run by whoever types it, not remembered and applied to work they did
+        not connect it to.
+      -->
 
       <!--
         ── THE ENGINE'S OWN SETTINGS, DRAWN AS A WINDOW ────────────────────
@@ -426,6 +295,13 @@ import {
             }
 
             <!-- ── Which model does each job ── -->
+            <!--
+              DRAWN HERE ONLY WHERE THIS COMPONENT IS THE WHOLE PAGE. In
+              Settings the panel above owns these rows, as cards with the
+              engine's own sizes on them and a download button beside the ones
+              it has not got. Two sets of controls writing local_models would be
+              one fact with two doors.
+            -->
             <h3 class="cru-acts-head">Which model does each job</h3>
             @if (localClasses().length === 0) {
               <p class="muted">{{ capabilityUndecidedWords }}</p>
@@ -707,7 +583,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
 
   readonly models = signal<LocalModel[]>([]);
-  readonly sysInfo = signal<LocalSystemInfo | null>(null);
   readonly localStatus = this.ai.localStatus;
   private readonly _progress = signal<Record<string, LocalModelProgress>>({});
 
@@ -732,6 +607,16 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly wizard = input(false);
 
   /*
+   * `serverAndModels` IS GONE (2026-09-17), one pass after it arrived.
+   *
+   * It existed so Settings could mount this component with its server card and
+   * per-class model rows switched off while `app-ai-panel` drew them instead.
+   * Settings does not mount this component at all any more - the panel grew the
+   * routes and the accounts too - so the input had exactly one caller and that
+   * caller is gone. An input nothing passes is a branch nothing exercises.
+   */
+
+  /*
    * `apiProviders`, `keyDrafts`, `hasKey`, `saveKey`, `deleteKey`,
    * `clearAllKeys`, `anyKeySaved` and `confirmClearKeys` ARE ALL DELETED
    * (2026-09-14). They were BookForge's own Claude/OpenAI key store, in the
@@ -749,7 +634,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
   private unsub?: () => void;
 
-  readonly usingLocal = computed(() => this.settings.getAIConfig().provider === 'local');
   readonly anyDownloading = computed(() =>
     Object.values(this._progress()).some((p) => p.phase === 'download')
   );
@@ -761,41 +645,28 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     // No cloud line and no Ollama line: this page holds no key and talks to no
     // daemon. Whether an upstream is configured is the engine's own answer,
     // shown where the engine's settings are.
-    if (this.ai.crucibleConfigured()) parts.push(`Crucible ${cfg.crucible?.server}/${cfg.crucible?.model}`);
+    if (this.ai.crucibleConfigured()) parts.push(`Crucible ${cfg.crucible?.server}`);
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
 
-  // ── "Delete all" actions (per the bare-bones reset model) ──
-  /** Downloaded local models a "delete all" would remove. */
-  readonly downloadedModels = computed(() => this.models().filter((m) => m.downloaded));
-  readonly confirmDeleteModels = signal(false);
-
-  /** Remove every downloaded local LLM. Touches nothing on an engine. */
-  async deleteAllModels(): Promise<void> {
-    for (const m of this.downloadedModels()) {
-      await this.ai.deleteModel(m.id);
-    }
-    this.confirmDeleteModels.set(false);
-    await this.reload();
-  }
+  /*
+   * THE LOCAL-MODEL MEMBERS ARE GONE WITH THE CARD THEY SERVED (2026-09-17):
+   * `downloadedModels`, `confirmDeleteModels`, `deleteAllModels`, `download`,
+   * `cancel`, `remove` and `sysInfo`.
+   *
+   * Every one was reachable only from the "Bundled local AI" section of this
+   * component's own template, and that section is deleted. `AiService` still
+   * has `downloadModel`/`deleteModel` — the SERVICE layer dies with the rest of
+   * the legacy path, not here — so nothing below this line is a capability
+   * being removed, only a door to it that no longer has a room behind it.
+   */
 
   async ngOnInit(): Promise<void> {
-    // Which routes are open, asked once. A failure to ask is reported as a
-    // refusal naming the failure rather than left as "available": this value
-    // decides whether the card tells the user a conversion can happen, and
-    // guessing yes is the guess that wastes their time.
-    void this.electron.vlmReaderStatus().then((s) => {
-      this.wslReaderRefusal.set(
-        s.success
-          ? s.wslRefusal
-          : `BookForge could not check the WSL page reader: ${s.error}`
-      );
-      // And WHICH MACHINE a conversion would go to. Without it this card drew a
-      // route from three local facts and would say "this machine's GPU (WSL)"
-      // for a run about to happen on a Crucible somewhere else.
-      this.pagesVenue.set(s.success ? s.venue : null);
-      this.pagesVenueRefusal.set(s.success ? s.venueRefusal : null);
-    });
+    // `vlmReaderStatus()` IS NOT ASKED HERE ANY MORE (2026-09-17). It fed the
+    // Reading pages card, and the card is gone; main still answers it and
+    // `book-conversion.service.ts` still asks, which is the caller that acts on
+    // it. Asking here as well would be a second reader of one fact whose only
+    // consumer was a screen that no longer exists.
 
     this.unsub = this.ai.onModelProgress((p) => {
       this._progress.update((map) => {
@@ -816,7 +687,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     await this.loadCapability();
     // The engine's settings document, read on arrival and cached nowhere.
     await this.loadEngineSettings();
-    this.sysInfo.set(await this.ai.systemInfo());
   }
 
   ngOnDestroy(): void {
@@ -851,33 +721,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     return confirmed;
   }
 
-  async download(id: string): Promise<void> {
-    if (this.wizard()) throw new Error('First-run model downloads are managed by Crucible.');
-    if (!(await this.confirmIfTooBig(id, 'Download'))) return;
-    // Seed an immediate 0% bar so the UI reacts before the first progress tick.
-    this._progress.update((m) => ({ ...m, [id]: { modelId: id, pct: 0, receivedBytes: 0, totalBytes: 0, phase: 'download' } }));
-    await this.ai.downloadModel(id);
-  }
-
-  async cancel(id: string): Promise<void> {
-    await this.ai.cancelDownload(id);
-  }
-
-  async useModel(id: string): Promise<void> {
-    if (!(await this.confirmIfTooBig(id, 'Use'))) return;
-    await this.ai.setActiveModel(id);
-    this.setProvider('local');
-    await this.reload();
-  }
-
-  async remove(id: string): Promise<void> {
-    await this.ai.deleteModel(id);
-    await this.reload();
-  }
-
-  setProvider(provider: 'local'): void {
-    this.settings.updateAIConfig({ provider });
-  }
 
   // ── Crucible: a server from the registry, and a model that is RESIDENT ────
   //
@@ -903,20 +746,21 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly crucibleTesting = signal(false);
 
   readonly usingCrucible = computed(() => this.settings.getAIConfig().provider === 'crucible');
-  readonly managedCleanupModel = computed(() => {
+
+  /**
+   * Whether this engine has ANYTHING that can clean text.
+   *
+   * It used to be the model id, and it was stored — see {@link useCrucible}.
+   * What first run actually needs to know is narrower and is a yes or a no:
+   * can this engine do the cleanup class at all. The id that answers it today
+   * is the engine's to change tomorrow.
+   */
+  readonly canClean = computed(() => {
     const clean = this.capability()?.classes.find((row) => row.capability === 'clean');
-    return clean?.enabled ? clean.selected : '';
+    return clean?.enabled === true;
   });
 
   crucibleServer(): string { return this.settings.getAIConfig().crucible?.server ?? ''; }
-  crucibleModel(): string { return this.settings.getAIConfig().crucible?.model ?? ''; }
-
-  /** The chosen model's row, so the card can say what is wrong with it. */
-  readonly chosenModel = computed<CrucibleModelRow | null>(() => {
-    const id = this.settings.getAIConfig().crucible?.model;
-    if (!id) return null;
-    return this.crucibleModels().find((m) => m.id === id) ?? null;
-  });
 
   /** The four facts, as one phrase. Never collapsed into "available". */
   modelState(m: CrucibleModelRow): string {
@@ -971,7 +815,8 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const current = this.settings.getAIConfig().crucible;
     // The model belongs to the server it was listed from, so changing the server
     // clears it rather than carrying an id the new machine may not have.
-    this.settings.updateAIConfig({ crucible: { server, model: server === current?.server ? (current?.model ?? '') : '' } });
+    void current;
+    this.settings.updateAIConfig({ crucible: { server } });
     this.crucibleStatus.set(null);
     this.crucibleModels.set([]);
     // The capability record belongs to the server too — a 24 GB box and a
@@ -989,12 +834,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       void this.loadCapability();
       void this.loadEngineSettings();
     }
-  }
-
-  setCrucibleModel(model: string): void {
-    const server = this.settings.getAIConfig().crucible?.server ?? '';
-    this.settings.updateAIConfig({ crucible: { server, model } });
-    this.crucibleStatus.set(null);
   }
 
   // ── A model per TEXT ACT (docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.6) ─────────
@@ -1041,7 +880,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.capability.set(res.data);
-    if (this.wizard() && this.managedCleanupModel()
+    if (this.wizard() && this.canClean()
       && (this.usingCrucible() || !this.ai.localUsable())) {
       this.useCrucible();
     }
@@ -1704,12 +1543,19 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Make this the app's AI. The model must be resident when a run starts. */
+  /**
+   * Make this the app's AI. THE SERVER, AND NOTHING ELSE.
+   *
+   * It used to store a model id beside the server - in wizard mode the
+   * capability record's answer for `clean` at that instant, otherwise whatever
+   * the picker held. Both were snapshots of a decision that belongs to the
+   * engine and changes there, and the stored copy overrode the live answer for
+   * the rest of that install's life.
+   */
   useCrucible(): void {
     const server = this.crucibleServer();
-    const model = this.wizard() ? this.managedCleanupModel() : this.crucibleModel();
-    if (!server || !model) return;
-    this.settings.updateAIConfig({ provider: 'crucible', crucible: { server, model } });
+    if (!server) return;
+    this.settings.updateAIConfig({ provider: 'crucible', crucible: { server } });
     void this.ai.refresh();
   }
 
@@ -1721,143 +1567,18 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
    * answer.
    */
 
-  // ── Reading pages: MLX here, or a server somewhere else ───────────────────
+  // -- READING PAGES LEFT THIS COMPONENT (2026-09-17) ----------------------
   //
-  // The setting the Convert to EPUB action carries to main on every run
-  // (shared/vlm/conversion.ts). Written straight through to settings on change,
-  // there is no Save button on this card and a
-  // draft that looked saved but was not would be discovered ninety minutes into
-  // a conversion.
-
-  /** foundry's own default pages-in-flight, shown as the placeholder. */
-  readonly defaultConcurrency = String(DEFAULT_VLM_CONCURRENCY);
-
-  /** The last Test result, as a sentence. */
-  readonly vlmStatus = signal<{ ok: boolean; message: string } | null>(null);
-  readonly vlmTesting = signal(false);
-
-  /**
-   * Why the WSL page reader is unavailable, as main last reported it.
-   *
-   * `undefined` while the answer has not arrived yet, which is NOT the same as
-   * "available": a card that rendered "ready" for the first frame and then
-   * corrected itself would be worse than one that says nothing for a moment.
-   */
-  readonly wslReaderRefusal = signal<string | null | undefined>(undefined);
-
-  /**
-   * Why no machine can read the pages, or null when one can.
-   *
-   * The SAME function main refuses a conversion with, given the same facts — so
-   * the card cannot promise a route the run will then deny. Note it resolves to
-   * null as soon as ANY route is open, including the WSL one, which is why this
-   * no longer says "needs an Apple Silicon Mac" on a correctly configured PC.
-   */
-  /** Which machine main has routed page reading to, and its refusal if it could not decide. */
-  readonly pagesVenue = signal<VlmVenue | null>(null);
-  readonly pagesVenueRefusal = signal<string | null>(null);
-
-  /** The route this card describes — the same three questions the run asks. */
-  readonly pagesRoute = computed<VlmRoute | null>(() => {
-    const wsl = this.wslReaderRefusal();
-    if (wsl === undefined) return null;
-    return resolveVlmRouteWithVenue({
-      platform: this.electron.platform,
-      arch: this.electron.arch,
-      endpoint: this.settings.getVlmEndpointConfig().url.trim().length > 0
-        ? this.settings.getVlmEndpointConfig()
-        : null,
-      wslReaderRefusal: wsl,
-      venue: this.pagesVenue(),
-      venueRefusal: this.pagesVenueRefusal(),
-    });
-  });
-
-  readonly localReadingRefusal = computed(() => {
-    const route = this.pagesRoute();
-    return route !== null && route.kind === 'refused' ? route.reason : null;
-  });
-
-  /**
-   * WHICH GPU READS THE PAGES, in the card's own words — the line that tells
-   * somebody which machine is unavailable for the next ninety minutes.
-   *
-   * Null while the answer has not arrived; a card that guessed would be naming
-   * a machine on no evidence.
-   */
-  readonly pagesRouteLabel = computed<string | null>(() => {
-    const route = this.pagesRoute();
-    if (route === null || route.kind === 'refused') return null;
-    return vlmRouteLabel(route);
-  });
-
-  vlmUrl(): string { return this.settings.getVlmEndpointConfig().url; }
-  vlmModel(): string { return this.settings.getVlmEndpointConfig().model; }
-  vlmConcurrency(): number { return this.settings.getVlmEndpointConfig().concurrency; }
-
-  setVlmUrl(url: string): void {
-    this.settings.updateVlmEndpointConfig({ url: url.trim() });
-    this.vlmStatus.set(null);
-  }
-
-  setVlmModel(model: string): void {
-    this.settings.updateVlmEndpointConfig({ model: model.trim() });
-    this.vlmStatus.set(null);
-  }
-
-  /**
-   * Pages in flight. A blank box means "foundry's default", which is 0 here —
-   * never the remembered number, so clearing the field cannot leave a value
-   * behind that the placeholder denies.
-   */
-  setVlmConcurrency(value: string): void {
-    const trimmed = (value ?? '').trim();
-    if (trimmed.length === 0) {
-      this.settings.updateVlmEndpointConfig({ concurrency: 0 });
-      this.vlmStatus.set(null);
-      return;
-    }
-    const n = Number(trimmed);
-    if (!Number.isInteger(n) || n < 0) {
-      this.vlmStatus.set({
-        ok: false,
-        message: `"${trimmed}" is not a whole number of pages. Leave it empty for foundry's `
-          + `default of ${DEFAULT_VLM_CONCURRENCY}.`,
-      });
-      return;
-    }
-    this.settings.updateVlmEndpointConfig({ concurrency: n });
-    this.vlmStatus.set(null);
-  }
-
-  /** GET the server's model list and say exactly what came back. */
-  async testVlmEndpoint(): Promise<void> {
-    const config = this.settings.getVlmEndpointConfig();
-    if (!config.url.trim()) {
-      this.vlmStatus.set({
-        ok: !this.localReadingRefusal(),
-        message: this.localReadingRefusal()
-          ?? 'No server set — the pages are read on this machine with MLX.',
-      });
-      return;
-    }
-    this.vlmTesting.set(true);
-    try {
-      const answer = await this.electron.checkVlmEndpoint(config);
-      if (!answer.success || !answer.check) {
-        this.vlmStatus.set({ ok: false, message: answer.error || 'The check failed and said nothing about why.' });
-        return;
-      }
-      const { check } = answer;
-      this.vlmStatus.set({
-        ok: check.reachable && check.modelMissing === undefined,
-        message: describeVlmEndpointCheck(config.url.trim(), check),
-      });
-    } finally {
-      this.vlmTesting.set(false);
-    }
-  }
-
+  // Its card, and with it `pagesRoute`, `localReadingRefusal`,
+  // `pagesRouteLabel`, `vlmUrl`, `vlmModel`, `vlmConcurrency`, `setVlm*`,
+  // `testVlmEndpoint`, `vlmStatus`, `vlmTesting`, `wslReaderRefusal`,
+  // `pagesVenue` and `pagesVenueRefusal`.
+  //
+  // The card offered a URL for an OpenAI-compatible page reader, and that URL
+  // was read FIRST by the route resolver -- so it silently beat the Crucible
+  // the queue had picked. Page reading is a capability class on the selected
+  // engine now (Settings, AI), chosen the same way as every other job, and
+  // there is nothing left here to decide.
 
   // `openExternal` went with the Ollama card's "Get Ollama" button — the only
   // thing on this page that ever sent somebody to a download.

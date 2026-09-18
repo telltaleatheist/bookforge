@@ -225,12 +225,9 @@ export class BookConversionService {
    * restart the window before Convert believes them.
    */
   private async route(): Promise<VlmRoute | { error: string }> {
-    let endpoint: VlmEndpointConfig | null;
-    try {
-      endpoint = resolveVlmEndpoint(this.settings.getVlmEndpointConfig());
-    } catch (err) {
-      return { error: (err as Error).message };
-    }
+    // NO ENDPOINT IS READ ANY MORE (2026-09-17). Settings, AI, Reading pages is
+    // deleted: a stored URL used to win over the venue the queue had chosen,
+    // silently, and page reading is now the engine's like every other job.
     const status = await this.electron.vlmReaderStatus();
     if (!status.success) {
       return { error: `BookForge could not check the WSL page reader: ${status.error}` };
@@ -245,7 +242,6 @@ export class BookConversionService {
     return resolveVlmRouteWithVenue({
       platform: this.electron.platform,
       arch: this.electron.arch,
-      endpoint,
       wslReaderRefusal: status.wslRefusal,
       venue: status.venue,
       venueRefusal: status.venueRefusal,

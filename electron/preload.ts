@@ -6,6 +6,7 @@ import type {
   InstallProgress,
   EnvDiagnosticResult,
 } from './components/component-types';
+import type { DoctorReport } from './doctor';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StartupUpgradeReport } from './components/startup-upgrade-check';
 import type { StarterStatus } from './update/starter-library';
@@ -72,11 +73,18 @@ import type {
   CrucibleUpstreamName,
   CrucibleUpstreamProbe,
   CrucibleUpstreamTestResult,
+  CrucibleModuleProgress,
   PairingResult,
   CrucibleServerRow,
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
 } from '../shared/crucible/settings-wire';
+import type {
+  CrucibleCatalogView,
+  CruciblePullProgress,
+  CrucibleRemovalPrompt,
+  CrucibleSubjectKind,
+} from '../shared/crucible/catalog-wire';
 import type {
   CrucibleHostFacts,
   CrucibleHostRefusal,
@@ -1298,6 +1306,64 @@ export interface ElectronAPI {
      * `tools/test-ipc-collision.js` is what guards it.
      */
 
+    /**
+     * ── THE CATALOG: EVERYTHING THIS SERVER COULD HOLD ────────────────────
+     *
+     * `engineSettings().localModels.choices` offers what is INSTALLED. These
+     * four offer the rest — the models and voices a server could have and does
+     * not — which is what a "more" button needs to exist at all.
+     *
+     * Every row's `source` is `hf:<repo>`. That is the whole of what "connected
+     * to HuggingFace" means here and it is not a search of the Hub: Crucible
+     * serves the subjects its manifests declare and has no endpoint that
+     * queries HuggingFace, so a search box would be a box that cannot.
+     */
+    catalog: (name: string) => Promise<{
+      success: boolean;
+      data?: CrucibleCatalogView;
+      error?: string;
+      /** The server's own refusal code, where it gave one. Never renamed. */
+      code?: string | null;
+    }>;
+    /**
+     * Download one subject onto a server, resolving with the TERMINAL frame.
+     *
+     * Progress arrives on {@link onPullProgress}, not here. `already_installed`
+     * and `task_busy` come back as ordinary refusals with their code intact —
+     * a Crucible runs one task at a time and naming the one in the way is this
+     * door's entire contribution to backing off.
+     */
+    pull: (name: string, kind: CrucibleSubjectKind, id: string) => Promise<{
+      success: boolean;
+      data?: CrucibleModuleProgress;
+      error?: string;
+      code?: string | null;
+    }>;
+    /** Every frame of every pull this window started. Filter by `kind`+`id`. */
+    onPullProgress: (callback: (progress: CruciblePullProgress) => void) => () => void;
+    /**
+     * What removing this subject would destroy, BEFORE anything is destroyed.
+     *
+     * Its one job is to give a confirm modal the SIZE: crucible
+     * `docs/MODEL-CHOICE.md` §7 — deciding about 17.3 GB is a different
+     * decision from deciding about "a file".
+     */
+    removalPrompt: (name: string, kind: CrucibleSubjectKind, id: string) => Promise<{
+      success: boolean;
+      data?: CrucibleRemovalPrompt;
+      error?: string;
+    }>;
+    /**
+     * Delete an installed subject's files. **Confirm first** — this door does
+     * not, and the SDK's condition is that an app never calls it on a person's
+     * behalf without saying so on screen.
+     */
+    removeSubject: (name: string, kind: CrucibleSubjectKind, id: string) => Promise<{
+      success: boolean;
+      error?: string;
+      code?: string | null;
+    }>;
+
     /** `GET /v1/settings` on a named server — routes, upstreams, allowance, backend. */
     engineSettings: (name: string) => Promise<{
       success: boolean;
@@ -1405,13 +1471,6 @@ export interface ElectronAPI {
      * is filled.
      */
     parsePairing: (line: string) => Promise<{ success: boolean; data?: PairingResult; error?: string }>;
-    /**
-     * Open a NAMED server's own page in a window with no preload, no node
-     * integration, its own session partition and navigation pinned to that
-     * server's origin. The token is read in main from the registry and is never
-     * typed, sent here, or put in a browser's history.
-     */
-    openUi: (name: string) => Promise<{ success: boolean; data?: { name: string; url: string }; error?: string }>;
     /** What `shared/crucible/bookforge.module.json` asks a server for. */
     module: () => Promise<{ success: boolean; data?: { version: string; jobTypes: string[]; subjects: string[] }; error?: string }>;
     /**
@@ -1926,6 +1985,28 @@ export interface ElectronAPI {
   ttsStream: {
     getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'orpheus'; engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
     setWorkerConfig: (updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'orpheus'; engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
+  };
+  /**
+   * The Doctor (Settings → Doctor). One reading over the two mechanisms that
+   * own this machine's necessary parts, and one repair per row.
+   */
+  /**
+   * The local Crucible's presence at startup, and the door the offer presses.
+   *
+   * The main process REPORTS; this app draws it with its own modal and toast.
+   * There is no native message box behind any of this (Owen, 2026-09-17).
+   */
+  enginePresence: {
+    onNotice: (callback: (n: {
+      state: string; detail: string; message: string; offerStart: boolean;
+    }) => void) => () => void;
+    start: () => Promise<{ success: boolean; error?: string }>;
+  };
+  doctor: {
+    check: () => Promise<{ success: boolean; data?: DoctorReport; error?: string }>;
+    fix: (id: string) => Promise<{ success: boolean; error?: string }>;
+    /** Progress lines while a fix runs. Returns its own unsubscribe. */
+    onProgress: (callback: (p: { id: string; message: string }) => void) => () => void;
   };
   components: {
     list: () => Promise<ComponentStatus[]>;
@@ -2917,18 +2998,34 @@ const electronAPI: ElectronAPI = {
     // NOT `crucible:settings`, which the vendored Foundry (e6d5424) registers
     // for its Servers card — a duplicate `ipcMain.handle` name throws at
     // registration and the app would not boot with that window mounted.
+    catalog: (name: string) => ipcRenderer.invoke('bookforge:crucible-catalog', name),
+    pull: (name: string, kind: CrucibleSubjectKind, id: string) =>
+      ipcRenderer.invoke('bookforge:crucible-pull', name, kind, id),
+    onPullProgress: (callback: (progress: CruciblePullProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: CruciblePullProgress) =>
+        callback(progress);
+      ipcRenderer.on('bookforge:crucible-pull-progress', listener);
+      return () => { ipcRenderer.removeListener('bookforge:crucible-pull-progress', listener); };
+    },
+    removalPrompt: (name: string, kind: CrucibleSubjectKind, id: string) =>
+      ipcRenderer.invoke('bookforge:crucible-removal-prompt', name, kind, id),
+    removeSubject: (name: string, kind: CrucibleSubjectKind, id: string) =>
+      ipcRenderer.invoke('bookforge:crucible-remove-subject', name, kind, id),
     engineSettings: (name: string) => ipcRenderer.invoke('bookforge:crucible-engine-settings', name),
     writeEngineSettings: (name: string, patch: CrucibleEngineSettingsPatch) =>
       ipcRenderer.invoke('bookforge:crucible-engine-settings-write', name, patch),
     testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe) =>
       ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
-    // The operator door. `open-ui`, `coordination`, `coordinate`,
-    // `cancel-setup`, `module` and `parse-pairing` are names the hosted
-    // Foundry's `crucible:` family
-    // does not have (foundry-app/IPC-CHANNELS.md), which
+    // The operator door. `coordination`, `coordinate`, `cancel-setup`,
+    // `module` and `parse-pairing` are names the hosted Foundry's `crucible:`
+    // family does not have (foundry-app/IPC-CHANNELS.md), which
     // tools/test-ipc-collision.js keeps true.
+    //
+    // `open-ui` LEFT WITH ITS BUTTONS (2026-09-17). Owen: *"no more opening a
+    // crucible page in bookforge settings."* Nothing in the renderer called it
+    // once the two buttons went, and a door with no caller is a door that
+    // rots. The engine still serves its own page at its own address.
     parsePairing: (line: string) => ipcRenderer.invoke('crucible:parse-pairing', line),
-    openUi: (name: string) => ipcRenderer.invoke('crucible:open-ui', name),
     module: () => ipcRenderer.invoke('crucible:module'),
     coordination: () => ipcRenderer.invoke('bookforge:crucible-coordination'),
     coordinate: (name: string) => ipcRenderer.invoke('bookforge:crucible-coordinate', name),
@@ -3282,6 +3379,23 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('tts-stream:get-worker-config'),
     setWorkerConfig: (updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }) =>
       ipcRenderer.invoke('tts-stream:set-worker-config', updates),
+  },
+  enginePresence: {
+    onNotice: (callback: (n: any) => void) => {
+      const handler = (_e: unknown, n: any) => callback(n);
+      ipcRenderer.on('crucible:engine-presence', handler);
+      return () => ipcRenderer.removeListener('crucible:engine-presence', handler);
+    },
+    start: () => ipcRenderer.invoke('crucible:start-local-engine'),
+  },
+  doctor: {
+    check: () => ipcRenderer.invoke('doctor:check'),
+    fix: (id: string) => ipcRenderer.invoke('doctor:fix', id),
+    onProgress: (callback: (p: { id: string; message: string }) => void) => {
+      const handler = (_e: unknown, p: { id: string; message: string }) => callback(p);
+      ipcRenderer.on('doctor:progress', handler);
+      return () => ipcRenderer.removeListener('doctor:progress', handler);
+    },
   },
   components: {
     list: () =>

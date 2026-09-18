@@ -39,6 +39,7 @@ import type {
   CrucibleEngineSettingsPatch,
   CrucibleEngineSettingsRefusal,
   CrucibleModelRow,
+  CrucibleModuleProgress,
   CrucibleProbeResult,
   CrucibleServersView,
   CrucibleUpstreamName,
@@ -49,6 +50,12 @@ import type {
   RoutingView as CrucibleRoutingView,
   WaitForDefault as CrucibleWaitForDefault,
 } from '@shared/crucible/settings-wire';
+import type {
+  CrucibleCatalogView,
+  CruciblePullProgress,
+  CrucibleRemovalPrompt,
+  CrucibleSubjectKind,
+} from '@shared/crucible/catalog-wire';
 import type { VlmReadingsBank } from '@shared/vlm/readings-bank';
 import type { NarrationDeletions, NarrationState } from '@shared/vlm/narration-deletions';
 import type {
@@ -311,6 +318,34 @@ export interface EnvDiagnosticResult {
   engine?: string;
   checks: EnvDiagnosticCheck[];
   error?: string;
+}
+
+/**
+ * The Doctor's wire types (Settings → Doctor).
+ *
+ * RE-DECLARED here rather than imported from `electron/doctor.ts`, which is the
+ * convention every other main-process type in this file follows. The renderer
+ * does not reach across that boundary: these travel as JSON over IPC, and a
+ * renderer importing from `electron/` compiles but ties the two bundles
+ * together at build time for no gain.
+ */
+export type DoctorState = 'ok' | 'missing' | 'broken';
+export type DoctorFix = 'reinstall-env' | 'install-component' | 'run-installer' | 'none';
+
+export interface DoctorCheck {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly state: DoctorState;
+  readonly detail: string;
+  readonly path: string | null;
+  readonly fix: DoctorFix;
+  readonly required: boolean;
+}
+
+export interface DoctorReport {
+  readonly checks: readonly DoctorCheck[];
+  readonly healthy: boolean;
 }
 
 export interface ComponentStatus {
@@ -4067,6 +4102,57 @@ export class ElectronService {
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /*
+     * ── THE CATALOG: WHAT THIS SERVER COULD HOLD (PHASE13 §2, §3.3, 3.5a) ──
+     *
+     * `engineSettings().localModels.choices` offers what is INSTALLED, which
+     * is the whole of what a model picker could show before these existed.
+     * Owen, 2026-09-17: *"it can pick from a list of available models, maybe
+     * with a more button that lets the user download other models to the
+     * crucible server if they want to use that one instead"* — and the same
+     * for voices. These four are that button's supply.
+     *
+     * Every row's `source` is `hf:<repo>`, which is the whole of what
+     * "connected to HuggingFace" means here: Crucible has no endpoint that
+     * searches the Hub, so nothing here pretends to.
+     *
+     * READ ON EVERY DRAW, CACHED NOWHERE — same rule as the settings document.
+     * What a server has installed changes without asking this app.
+     */
+    catalog: (name: string): Promise<{ success: boolean; data?: CrucibleCatalogView; error?: string; code?: string | null }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.catalog(name)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * Download one subject onto a server. Resolves with the TERMINAL frame;
+     * every frame before it arrives on {@link onPullProgress}.
+     */
+    pull: (name: string, kind: CrucibleSubjectKind, id: string): Promise<{ success: boolean; data?: CrucibleModuleProgress; error?: string; code?: string | null }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.pull(name, kind, id)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Every frame of every pull this window started. Filter by `kind` + `id`. */
+    onPullProgress: (callback: (progress: CruciblePullProgress) => void): (() => void) =>
+      this.isElectron ? (window as any).electron.crucible.onPullProgress(callback) : () => {},
+
+    /**
+     * What removing this subject would destroy, before anything is destroyed —
+     * so the confirm names the SIZE rather than "a file" (crucible
+     * `docs/MODEL-CHOICE.md` §7).
+     */
+    removalPrompt: (name: string, kind: CrucibleSubjectKind, id: string): Promise<{ success: boolean; data?: CrucibleRemovalPrompt; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.removalPrompt(name, kind, id)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Delete an installed subject's files. **Confirm first** — this does not. */
+    removeSubject: (name: string, kind: CrucibleSubjectKind, id: string): Promise<{ success: boolean; error?: string; code?: string | null }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.removeSubject(name, kind, id)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /*
      * ── THE ENGINE'S OWN SETTINGS (crucible PHASE15 §3.1, §3.2, §5.2) ──────
      *
      * *"Each app's AI/engine settings section and its wizard's AI step draw
@@ -4210,18 +4296,6 @@ export class ElectronService {
     parsePairing: (line: string): Promise<{ success: boolean; data?: PairingResult; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.parsePairing(line)
-        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
-
-    /**
-     * Open a named server's own operator page.
-     *
-     * A window with no preload and no bridge, in its own session, pinned to
-     * that server's origin — the page is code this app does not own. The token
-     * never crosses this seam: main reads it from the registry.
-     */
-    openUi: (name: string): Promise<{ success: boolean; data?: { name: string; url: string }; error?: string }> =>
-      this.isElectron
-        ? (window as any).electron.crucible.openUi(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /** What `shared/crucible/bookforge.module.json` asks a server for. */
