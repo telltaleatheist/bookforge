@@ -354,7 +354,56 @@ function labelFor(id: string): string {
  *     row has not been routed yet, and admission will say so in its own words
  *     rather than this guessing at a machine.
  */
-export function slotSetForStep(job: QueueJob, step: QueueStep): string | null {
+export function thisMachineSetId(
+  snapshot: { readonly slotSets: readonly SlotSet[] },
+): string | null {
+  /*
+   * A GPU SET, because the caller is placing GPU work: `local-work` is this
+   * machine too and has no card, and answering with it would file a render into
+   * the CPU pool.
+   *
+   * AND NEVER {@link LONGFORM_ALIGN_SET}, which also declares itself this
+   * machine. That row is the FALLBACK for exactly the steps this function is
+   * asked about, so returning it here would be a circular answer; the `??` at
+   * the call site is where it belongs, and the builder below only emits the row
+   * when this function has nothing to say.
+   */
+  return snapshot.slotSets.find(
+    (set) => set.onThisMachine === true && set.gpu > 0 && set.id !== LONGFORM_ALIGN_SET,
+  )?.id ?? null;
+}
+
+
+export function slotSetForStep(
+  job: QueueJob,
+  step: QueueStep,
+  /**
+   * THE SET THAT IS THIS MACHINE, when the caller knows it — `thisMachineSetId`.
+   *
+   * Owen, 2026-09-18: *"instead of sitting next to the two gpu slots, it should
+   * be IN the gpu slot itll be taking up … the queued item should remain in the
+   * queue, not in a third slot."*
+   *
+   * A GPU step whose module has not been taught to travel runs HERE. Until this
+   * date it was filed under {@link LONGFORM_ALIGN_SET} unconditionally, which
+   * drew a THIRD lane beside this machine's two GPU slots — and because the row
+   * exists while any non-terminal step charges it, a merely QUEUED align
+   * conjured that lane too. Both are the same mistake: a lane is a place work
+   * runs, and this work runs on the card the two slots are already drawing.
+   *
+   * So when the registry says which set is this machine, a non-travelling GPU
+   * step is filed THERE: it occupies one of those two slots while it runs, and
+   * charges nothing while it waits.
+   *
+   * NULL — no registered server answers here — keeps the old answer, and that is
+   * not a leftover. The work still runs on this machine and still needs a lane
+   * to be admitted into; without one the step would map to a set the bench does
+   * not draw and the scheduler cannot fill, and it would wait for ever. On such
+   * a machine a queued align does still raise the row, which is the price of it
+   * being able to start at all.
+   */
+  onThisMachine: string | null = null,
+): string | null {
   if (step.resource === 'wait') return null;
   /*
    * THE RECORD OUTRANKS THE KIND OF WORK, and that reordering is what lets a
@@ -378,10 +427,25 @@ export function slotSetForStep(job: QueueJob, step: QueueStep): string | null {
      * name, so an old step is read into it rather than being stranded on an id
      * the bench no longer draws.
      */
-    return step.venue === RETIRED_LOCAL_NARRATOR_VENUE ? LONGFORM_ALIGN_SET : step.venue;
+    const recorded = step.venue === RETIRED_LOCAL_NARRATOR_VENUE
+      ? LONGFORM_ALIGN_SET : step.venue;
+    /*
+     * AND THE FALLBACK ROW IS READ AS THIS MACHINE (2026-09-18), for the same
+     * reason the spelling above is migrated rather than honoured: the set is the
+     * same CARD under a different name.
+     *
+     * A step is stamped with its venue at admission, and the record is asked
+     * before everything else — so without this a step admitted as
+     * {@link LONGFORM_ALIGN_SET} would keep pointing at a row the bench no
+     * longer draws, and its occupant would vanish from the bench while it ran.
+     * That is true of a queue restored from before this change AND of one
+     * admitted seconds ago, because the stamp is written from whatever the pump
+     * resolved at the time.
+     */
+    return recorded === LONGFORM_ALIGN_SET ? (onThisMachine ?? LONGFORM_ALIGN_SET) : recorded;
   }
   if (step.resource === 'cpu') return LOCAL_WORK_SET;
-  if (step.travels !== true) return LONGFORM_ALIGN_SET;
+  if (step.travels !== true) return onThisMachine ?? LONGFORM_ALIGN_SET;
   return job.waitForResolved ?? null;
 }
 
@@ -400,13 +464,23 @@ export interface SetOccupancy {
  * inside its pump without deep-copying itself first.
  */
 export function slotSetOccupancy(
-  snapshot: { readonly jobs: readonly QueueJob[] },
+  /*
+   * THE SETS ARE PART OF THE QUESTION since 2026-09-18, and they are not
+   * optional: `slotSetForStep` files a non-travelling GPU step on this machine's
+   * set when there is one, so an occupancy count that did not know which set
+   * that is would charge the fallback row while the bench drew the server's —
+   * and the scheduler would read this machine's GPU slots as free while one of
+   * them was running an alignment. One fact, one derivation
+   * (`thisMachineSetId`), asked here so no caller can forget it.
+   */
+  snapshot: { readonly jobs: readonly QueueJob[]; readonly slotSets: readonly SlotSet[] },
 ): Map<string, SetOccupancy> {
   const counts = new Map<string, SetOccupancy>();
+  const onThisMachine = thisMachineSetId(snapshot);
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running') continue;
-      const id = slotSetForStep(job, step);
+      const id = slotSetForStep(job, step, onThisMachine);
       if (id === null) continue;
       const entry = counts.get(id) ?? { gpu: 0, cpu: 0 };
       if (step.resource === 'gpu') entry.gpu += 1;
@@ -444,6 +518,14 @@ export function longformAlignCharged(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+      /*
+       * ASKED WITHOUT THIS MACHINE'S SET, AND THAT IS THE POINT. This answer
+       * FEEDS the set list, so the sets do not exist yet to be consulted. The
+       * question here is only *"is there GPU work that can run nowhere but
+       * here"*, which is exactly what the unqualified answer means; whether that
+       * work gets a row of its own or joins this machine's is decided in
+       * `slotSets`, which by then knows.
+       */
       if (slotSetForStep(job, step) === LONGFORM_ALIGN_SET) return true;
     }
   }
@@ -873,7 +955,36 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * the old global number. What removes the row for good is §B7 — a Crucible
    * `align-longform` job type, Owen's ruling.
    */
-  if (facts.alignerCharged && !seen.has(LONGFORM_ALIGN_SET)) {
+  /*
+   * ONLY WHEN THIS MACHINE HAS NO GPU ROW OF ITS OWN (Owen, 2026-09-18).
+   *
+   * Where a registered server answers here — the WSL engine on this PC is on
+   * loopback and is every bit as local as the aligner — its two slots ARE the
+   * card, and `slotSetForStep` now files the aligner into them. Drawing this row
+   * as well would put a third slot beside two that describe the same GPU, and
+   * would raise it for a merely QUEUED align: *"the queued item should remain in
+   * the queue, not in a third slot."*
+   *
+   * With no such server the row is still drawn, still on `alignerCharged` — the
+   * work runs here regardless, and it needs a lane to be admitted into or it
+   * waits for ever.
+   */
+  const machineHasItsOwnRow = sets.some(
+    (set) => set.onThisMachine === true && set.gpu > 0 && set.id !== LONGFORM_ALIGN_SET);
+  if (machineHasItsOwnRow) {
+    /*
+     * MARKED SEEN SO THE SURVIVOR LOOP BELOW LEAVES IT ALONE.
+     *
+     * `facts.occupied` is composed before the sets exist, so it cannot know this
+     * machine has a row of its own and still names the fallback for a running
+     * aligner. Without this the loop would take that id for a retiring SERVER
+     * and push the third slot straight back, greyed — which is the same wrong
+     * lane wearing a different label. The loop's own comment says only a
+     * server's set or a cloud lane can reach it; this is what keeps that true.
+     */
+    seen.add(LONGFORM_ALIGN_SET);
+  }
+  if (facts.alignerCharged && !machineHasItsOwnRow && !seen.has(LONGFORM_ALIGN_SET)) {
     seen.add(LONGFORM_ALIGN_SET);
     sets.push({
       id: LONGFORM_ALIGN_SET,

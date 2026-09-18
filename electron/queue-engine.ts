@@ -106,6 +106,7 @@ import {
   cloudLaneOf,
   isCloudLane,
   longformAlignCharged,
+  thisMachineSetId,
   LONGFORM_ALIGN_SET,
   slotSetForStep,
   serverOfCloudLane,
@@ -541,6 +542,11 @@ function currentSlotSets(): SlotSet[] {
   for (const job of jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running') continue;
+      // Unqualified for `longformAlignCharged`'s reason: this list is an INPUT
+      // to `slotSets`, so the sets it would be asked about do not exist yet. A
+      // running aligner therefore names the fallback here even on a machine that
+      // has its own row, and `slotSets` marks that id seen rather than reviving
+      // it as a retiring server.
       const id = slotSetForStep(job, step);
       if (id !== null && !occupied.includes(id)) occupied.push(id);
     }
@@ -2280,9 +2286,10 @@ function engineLaneId(server: string): string {
   if (crucibleHost === null) return server;
   const cloudServer = serverOfCloudLane(server);
   const named = cloudServer === null ? server : cloudServer;
+  const onThisMachine = thisMachineSetId({ slotSets: currentSlotSets() });
   const occupied = jobs.flatMap((job) => job.steps
     .filter((step) => step.status === 'running')
-    .map((step) => slotSetForStep(job, step))
+    .map((step) => slotSetForStep(job, step, onThisMachine))
     .filter((id): id is string => id !== null)
     .map((id) => serverOfCloudLane(id) ?? id));
   const lanes = engineLanes(crucibleHost.routing().ranked, undefined, occupied);
@@ -2353,7 +2360,11 @@ function clearAdmissionHold(step: QueueStep): void {
  * polled, never a model of a server's capacity (see `slot-sets.ts`).
  */
 function currentOccupancy(): Map<string, SetOccupancy> {
-  return slotSetOccupancy({ jobs });
+  // THE SETS TRAVEL WITH THE JOBS (2026-09-18). A non-travelling GPU step is
+  // filed on this machine's own set when there is one, and `slotSetOccupancy`
+  // derives which that is — so counting without them would charge the fallback
+  // row and leave this machine's GPU slots reading free under a live alignment.
+  return slotSetOccupancy({ jobs, slotSets: currentSlotSets() });
 }
 
 /**
@@ -2445,10 +2456,11 @@ function assignRunVenue(job: QueueJob, step: QueueStep, server: string): void {
  * *"BookForge is already narrating Mistborn there."*
  */
 function occupantPhrase(setId: string, resource: StepResource): string | null {
+  const onThisMachine = thisMachineSetId({ slotSets: currentSlotSets() });
   for (const job of jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step) !== setId) continue;
+      if (slotSetForStep(job, step, onThisMachine) !== setId) continue;
       return `${JOB_GERUND[step.type].toLowerCase()} ${job.title}`;
     }
   }
@@ -2501,6 +2513,14 @@ export function pump(): void {
    * row in turn.
    */
   const sets = currentSlotSets();
+  /*
+   * WHICH SET IS THIS MACHINE, derived once for the whole pass (2026-09-18).
+   * `slotSetForStep` files a non-travelling GPU step — the long-form aligner —
+   * into this machine's own GPU row rather than a third one of its own, so the
+   * ALLOCATOR has to ask with the same fact the bench draws with, or it would
+   * charge a set nobody is looking at.
+   */
+  const onThisMachine = thisMachineSetId({ slotSets: sets });
 
   // A `waiting` step whose parent has landed becomes runnable. Done here rather
   // than at completion so there is ONE place that decides what is runnable.
@@ -2534,7 +2554,7 @@ export function pump(): void {
          * a `cpu` step is work BookForge does itself and a `wait` step is on no
          * bench at all (`shared/queue/slot-sets.ts`).
          */
-        const setId = slotSetForStep(job, step);
+        const setId = slotSetForStep(job, step, onThisMachine);
         const cap = setId === null ? WAIT_STEP_CAP : slotsOf(sets, setId, step.resource);
         if (slotsInUse(setId ?? LOCAL_WORK_SET, step.resource) >= cap) {
           // The pool being full IS this row's reason, and it outranks whatever

@@ -49,6 +49,7 @@ import {
 import { JOB_GERUND } from './job-words';
 import {
   LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf,
+  thisMachineSetId,
 } from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -150,7 +151,7 @@ function occupantWords(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step) !== setId) continue;
+      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== setId) continue;
       words.push(`${JOB_GERUND[step.type]} ${job.title}`);
     }
   }
@@ -251,7 +252,7 @@ export function stillReason(
    * the row, which the `admission` branch below reads, so skipping the test
    * here cannot leave a row with no reason.
    */
-  const setId = slotSetForStep(job, step);
+  const setId = slotSetForStep(job, step, thisMachineSetId(snapshot));
   if (setId !== null) {
     const occupancy = slotSetOccupancy(snapshot).get(setId) ?? { gpu: 0, cpu: 0 };
     const inUse = step.resource === 'gpu' ? occupancy.gpu : occupancy.cpu;
@@ -478,6 +479,10 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
    * leave the tray chip with nothing to say about a queue that is stuck).
    */
   let unrouted = unroutedHold(snapshot);
+  // Derived once for the whole sweep: `slotSetForStep` files a non-travelling
+  // GPU step on this machine's own set, so a lane's occupants are found with the
+  // same answer the scheduler allocated with.
+  const onThisMachine = thisMachineSetId(snapshot);
 
   for (const set of snapshot.slotSets) {
     for (const resource of ['gpu', 'cpu'] as const) {
@@ -488,7 +493,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
       for (const job of snapshot.jobs) {
         for (const step of job.steps) {
           if (step.status !== 'running' || step.resource !== resource) continue;
-          if (slotSetForStep(job, step) !== set.id) continue;
+          if (slotSetForStep(job, step, onThisMachine) !== set.id) continue;
           occupants.push(occupantOf(job, step));
         }
       }
@@ -744,7 +749,7 @@ function admissionHoldFor(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'queued' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step) !== setId) continue;
+      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== setId) continue;
       if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
     }
   }
@@ -756,7 +761,7 @@ function unroutedHold(snapshot: QueueSnapshot): string | null {
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'queued' || step.resource !== 'gpu') continue;
-      if (slotSetForStep(job, step) !== null) continue;
+      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== null) continue;
       if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
     }
   }

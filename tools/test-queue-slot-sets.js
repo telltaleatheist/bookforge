@@ -542,7 +542,7 @@ test('a step placed on a cloud lane charges THAT lane, not local-work', () => {
   const step = stepOf({ venue: 'mac:cloud', resource: 'cpu', travels: true });
   const job = jobOfSteps([step], { waitForResolved: 'mac' });
   assert.strictEqual(slots.slotSetForStep(job, step), 'mac:cloud');
-  const occupancy = slots.slotSetOccupancy({ jobs: [job] });
+  const occupancy = slots.slotSetOccupancy({ jobs: [job], slotSets: [] });
   assert.strictEqual(occupancy.get('mac:cloud').cpu, 1);
   assert.strictEqual(occupancy.get('mac:cloud').gpu, 0);
   assert.strictEqual(occupancy.get(slots.LOCAL_WORK_SET), undefined,
@@ -560,7 +560,7 @@ test('A VENUED STEP IS INDIVISIBLE: one slot, its venue\'s, whatever it does ins
   const render = stepOf({ venue: 'mac', travels: true, resource: 'gpu' });
   const job = jobOfSteps([render], { waitForResolved: 'mac' });
   assert.strictEqual(slots.slotSetForStep(job, render), 'mac');
-  const counts = slots.slotSetOccupancy({ jobs: [job] });
+  const counts = slots.slotSetOccupancy({ jobs: [job], slotSets: [] });
   assert.deepStrictEqual([...counts.keys()], ['mac'], 'ONE set is charged, and it is the venue');
   assert.deepStrictEqual(counts.get('mac'), { gpu: 1, cpu: 0 });
   assert.strictEqual(counts.get(slots.LOCAL_WORK_SET), undefined,
@@ -609,7 +609,7 @@ test('occupancy counts only what is RUNNING, per set', () => {
   const a = stepOf({ id: 'a', venue: 'mac', travels: true });
   const b = stepOf({ id: 'b', venue: 'mac', travels: true, status: 'queued' });
   const c = stepOf({ id: 'c', resource: 'cpu' });
-  const counts = slots.slotSetOccupancy({ jobs: [jobOfSteps([a, b, c])] });
+  const counts = slots.slotSetOccupancy({ jobs: [jobOfSteps([a, b, c])], slotSets: [] });
   assert.strictEqual(counts.get('mac').gpu, 1, 'a queued row occupies nothing');
   assert.strictEqual(counts.get(slots.LOCAL_WORK_SET).cpu, 1);
 });
@@ -1085,21 +1085,26 @@ test('the legacy spawn keeps ONE card, and a step that cannot travel waits for i
     'the legacy set has one GPU slot, exactly as the old global number did');
 });
 
-test('THE BENCH AND THE PUMP AGREE: the row appears with the step and goes with it', async () => {
+test('LOCAL GPU WORK GOES IN THIS MACHINE\'S OWN SLOT, not a third one beside it', async () => {
   /*
-   * The whole reason the row was unconditional was this hazard, stated in
-   * `slot-sets.ts` before it was made conditional: a GPU step whose module has
-   * not been taught to travel spawns HERE, and with no set to charge it
-   * `slotsOf` answers 0 and the scheduler never launches it. It cannot happen,
-   * because the same snapshot that holds the step is the one the row is derived
-   * from — which this drives through the real engine rather than asserting.
+   * Owen, 2026-09-18: *"instead of sitting next to the two gpu slots, it should
+   * be IN the gpu slot itll be taking up … the queued item should remain in the
+   * queue, not in a third slot."*
+   *
+   * `local` answers on this box (`serversOnThisMachine` defaults to it, which is
+   * this PC's real shape — the WSL engine is on loopback). Its slots ARE the
+   * card, so a GPU step that has not been taught to travel belongs in them, and
+   * a row of its own beside them would describe the same GPU twice.
+   *
+   * THE HAZARD THE OLD UNCONDITIONAL ROW GUARDED IS STILL GUARDED, and it is the
+   * last assertion here: a step with no set to charge gets `slotsOf` 0 and is
+   * never launched. It launches.
    */
   const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
-  await fresh('legacy-row-appears', [local], host);
+  await fresh('local-gpu-in-its-own-slot', [local], host);
 
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
-    'nothing is queued, so BookForge advertises no in-app card at all');
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY));
 
   enqueueSent({
     title: 'Enhance',
@@ -1111,21 +1116,99 @@ test('THE BENCH AND THE PUMP AGREE: the row appears with the step and goes with 
   engine.start();
   await settle(40);
 
-  const withRow = engine.snapshot().slotSets.find((s) => s.id === LEGACY);
-  assert.ok(withRow, 'the step arrived and the row arrived with it, in the same snapshot');
-  assert.strictEqual(withRow.gpu, 1);
-  assert.strictEqual(withRow.retiring, false, 'it is holding our work, and it takes more');
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
+    'no third row: this machine already has two GPU slots on the bench');
   assert.strictEqual(local.runs.length, 1, 'and it LAUNCHED — no set, no slots, no launch');
+
+  // IN the slot: the occupant is drawn on this machine's own GPU lane.
+  const lanes = bench.benchLanes(engine.snapshot()).filter((l) => l.resource === 'gpu');
+  const mine = lanes.filter((l) => l.setId === 'local');
+  assert.ok(mine.length > 0, "this machine's lanes are drawn");
+  assert.strictEqual(mine.filter((l) => l.occupant !== null).length, 1,
+    'the aligner occupies one of them');
 
   local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
   await settle(40);
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
-    'and the row is gone the moment nothing charges it — no in-app GPU slot');
+  assert.strictEqual(
+    bench.benchLanes(engine.snapshot())
+      .filter((l) => l.resource === 'gpu' && l.occupant !== null).length, 0,
+    'and the slot is free again the moment it finishes');
 });
 
-test('the local Crucible and the legacy spawn never run on the card together', async () => {
-  // The switch is OFF, so the render goes to `local`; the enhance step has not
-  // been taught to travel, so it spawns here. Two sets, one 3090 Ti.
+test('A QUEUED local GPU step raises no slot at all — it waits in the queue', async () => {
+  /*
+   * The second half of the same ruling. The row used to appear for any
+   * NON-TERMINAL step charging it, so merely queueing an align conjured a third
+   * slot that nothing was running in. Here the card is already full, so the new
+   * step stays queued — and the bench is exactly as wide as it was.
+   */
+  const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
+  await fresh('queued-local-gpu-raises-nothing', [local], host);
+
+  const before = bench.benchLanes(engine.snapshot()).length;
+
+  enqueueSent({
+    title: 'Enhance',
+    steps: [{
+      type: 'rvc-enhancement', label: 'Enhance', config: {},
+      sourceRef: { kind: 'audio-session', path: '/s' },
+    }],
+  });
+  await settle(40);   // enqueued, never started: Start was not pressed
+
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
+    'a queued step advertises no in-app card');
+  assert.strictEqual(bench.benchLanes(engine.snapshot()).length, before,
+    'the bench did not grow a lane because something was waiting in the queue');
+});
+
+test('WITH NO LOCAL CRUCIBLE the row is still drawn, or the work could never start', async () => {
+  /*
+   * The fallback, and it is not a leftover. On a machine where no registered
+   * server answers, this work still runs here and still needs a lane to be
+   * admitted into; suppressing the row there would leave the step mapped to a
+   * set the scheduler cannot fill, waiting for ever. So a queued align DOES
+   * raise the row on such a machine, which is the price of it being able to run.
+   */
+  const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
+  const host = fakeHost({
+    ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE, serversOnThisMachine: [],
+  });
+  await fresh('no-local-crucible-keeps-the-row', [local], host);
+
+  enqueueSent({
+    title: 'Enhance',
+    steps: [{
+      type: 'rvc-enhancement', label: 'Enhance', config: {},
+      sourceRef: { kind: 'audio-session', path: '/s' },
+    }],
+  });
+  engine.start();
+  await settle(40);
+
+  const row = engine.snapshot().slotSets.find((s) => s.id === LEGACY);
+  assert.ok(row, 'nothing here is this machine, so the work gets a lane of its own');
+  assert.strictEqual(row.gpu, 1);
+  assert.strictEqual(local.runs.length, 1, 'and it launched');
+});
+
+test('the local Crucible and the local spawn never run on the card together', async () => {
+  /*
+   * ONE SET NOW, NOT TWO (2026-09-18). The render goes to `local`; the enhance
+   * step has not been taught to travel and `local` answers on this box, so it
+   * goes into the SAME set. That is the point of the change — one card, one row
+   * — and it makes the contention ordinary: the pool is full, which is a reason
+   * the bench already knows how to say.
+   *
+   * It used to be two sets over one 3090 Ti, held apart by the cross-set
+   * one-card rule, and the waiting row carried an `admissionHold` naming *this
+   * machine's graphics card*. There is nothing to hold apart any more, so that
+   * hold is not written — and `pump` CLEARS a stale one by name when a pool is
+   * full, because the pool being full outranks whatever admission last said.
+   * What must still be true is what this test was always for: the two do not
+   * run on the card together.
+   */
   const gpu = fakeModule('tts-conversion', { travels: true });
   const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'local', reach: REACHABLE });
@@ -1143,9 +1226,14 @@ test('the local Crucible and the legacy spawn never run on the card together', a
   await settle(40);
 
   assert.strictEqual(local.runs.length, 1);
-  assert.strictEqual(gpu.runs.length, 0, 'the card is taken, by the other venue over it');
-  assert.match(jobById(b.id).steps[0].progress.admissionHold,
-    /this machine's graphics card/);
+  assert.strictEqual(gpu.runs.length, 0, 'the card is taken, by the step that got there first');
+  // No cross-set hold to write, and none written: they are in one pool.
+  assert.strictEqual(jobById(b.id).steps[0].progress.admissionHold, undefined);
+  // The row still says WHY it is waiting, in the bench's own words.
+  const waiting = jobById(b.id);
+  const why = bench.stillReason(engine.snapshot(), waiting, waiting.steps[0]);
+  assert.strictEqual(why.kind, 'no-slot');
+  assert.match(why.sentence, /local/, 'and it names the machine it is waiting for');
 
   local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
   await settle(40);
