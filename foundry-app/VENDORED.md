@@ -87,6 +87,21 @@ Narrate still refuses on b35-1/b39-9, that is why, and the remedy is to
 re-apply the two corrections in the aligned view — which now costs nothing and
 updates the stamp — rather than re-running the cleanup.
 
+**The three markers that prove THIS copy's fixes are running**, because a
+source-side check cannot: they are log string literals, so they survive
+minification and name-mangling where `restampCorrection` or `narrowedStamp`
+may not. Present in this `dist`, absent in the one it replaced:
+
+| marker | file | fix |
+| --- | --- | --- |
+| `could not be brought up to date with the correction to` | `projects.js` | the restamp |
+| `had their words composed by a change` | `workspace.js` | the narrowing |
+| `the narrowed narration stamp` | `job-queue.js` | the sweep |
+
+Fix 1 present with fix 2 absent is the nastiest outcome to debug: Narrate starts
+working on the clean step and goes on refusing at the tip on b11-6, which reads
+as "the fix didn't work" rather than "half the fix isn't in the build".
+
 ### The previous copy shipped a `dist` built from older sources
 
 Caught while swapping this one in, and it is the second time this exact trap has
