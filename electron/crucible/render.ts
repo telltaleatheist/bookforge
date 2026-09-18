@@ -571,7 +571,7 @@ export async function runCrucibleRender(
     log(`crucible "${server}" admitted the render as job ${jobId}`);
   }
 
-  // CANCELLATION IS A CANCEL, NOT A HANG-UP.
+  // CANCELLATION IS A CANCEL, NOT A HANG-UP — AND IT IS NOT OVER ON THE 200.
   //
   // Abandoning the event stream would leave the job RUNNING on the server —
   // holding the exclusive lane, holding the card, for the rest of the book. So
@@ -579,13 +579,47 @@ export async function runCrucibleRender(
   // the `cancelled` event it will now receive, which is what turns this into a
   // reported cancellation rather than a silence. The chunks already downloaded
   // stay on disk (ARCHITECTURE.md R6: partial work survives failure, always).
+  // That much is `crucible/job.ts`'s generic door, and this is the same
+  // handshake for `tts`.
+  //
+  // WHAT IT ALSO WAITS FOR, SINCE 2026-09-18. `client.cancel()` is one HTTP
+  // DELETE and the server answers it `cancelling` in milliseconds — the engine
+  // is still mid-chunk. A handle that resolved there was telling its caller the
+  // far end had stopped when it had not: `stopParallelConversion` awaits this
+  // precisely so the cache flush cannot race a render still being written, and
+  // it then deleted the session, freed the GPU slot and flushed a sentences
+  // directory the downloader was still landing `<index>.flac` into (measured:
+  // one more chunk typically). So the handle resolves only once the stream this
+  // call is ALREADY reading has reached the job's terminal frame — `cancelled`,
+  // or `done`/`failed` where the job beat the cancel — and the downloader has
+  // stopped with it. The SDK's writer ends its iterator only after that frame
+  // AND after every outstanding write has landed, so when this resolves the
+  // directory has stopped changing, which is the thing the caller was told.
+  //
+  // IT IS THEREFORE AS SLOW AS THE ENGINE IS, and it has no clock of its own: a
+  // chunk in flight is finished first, and a server that will not stop at all
+  // (measured 2026-09-15: a DELETE recorded as `cancelling` that nothing acts
+  // on) is a wait with no end. A caller that cannot afford one puts its own
+  // bound on this handle rather than having one invented here — the quit path
+  // does exactly that (`parallel-tts-bridge.cancelRemoteRenderOnQuit`), because
+  // quitting must not depend on another machine and stopping must not lie.
   let cancelled = false;
+  /**
+   * Resolved when the downloader below has ended, whether on the job's terminal
+   * frame or by throwing. Held here rather than awaited on the render's own
+   * promise because the two have different callers: the render's rejects with
+   * the cancellation, and this one only says that nothing more will be written.
+   */
+  let downloaderStopped!: () => void;
+  const downloaderHasStopped = new Promise<void>((resolve) => { downloaderStopped = resolve; });
   const cancel = async (): Promise<void> => {
     if (cancelled) return;
     cancelled = true;
     log(`cancelling crucible "${server}" job ${jobId}`);
     const outcome = await client.cancel(jobId);
-    log(`crucible "${server}" job ${jobId} is ${outcome.status}`);
+    log(`crucible "${server}" job ${jobId} is ${outcome.status}; waiting for it to stop writing`);
+    await downloaderHasStopped;
+    log(`crucible "${server}" job ${jobId} has stopped: ${path.basename(sentencesDir)} is settled`);
   };
   options.onStarted?.({ jobId, cancel });
 
@@ -628,6 +662,12 @@ export async function runCrucibleRender(
         downloaded,
       });
     },
+  }).finally(() => {
+    // THE DIRECTORY HAS STOPPED CHANGING, and `cancel()` above is what waits
+    // for it. In the `finally` and not in the success arm because a stream that
+    // threw has also stopped writing, and a cancel left waiting on a failed
+    // download would hang the Stop button on a server that had gone away.
+    downloaderStopped();
   }).catch((err) => {
     // A refusal that arrives mid-stream (the token rotated, the server
     // restarted) is named the same way one at submit is.

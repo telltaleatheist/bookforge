@@ -236,6 +236,17 @@ const SUITES = [
   'test-crucible-job',
   'test-crucible-asr',
   'test-crucible-align',
+  // THE DIFFERENCE BETWEEN A CANCEL THAT REACHED THE SERVER AND A CANCEL THAT
+  // IS FINISHED (2026-09-18). Every defect it pins is one being read as the
+  // other: a render handle that resolved on the DELETE's 200 — milliseconds,
+  // the engine still mid-chunk — so the stop path flushed a sentences directory
+  // the downloader was still landing FLACs into; a quit that killed processes
+  // and left the remote job rendering the rest of the book on somebody else's
+  // card, holding its lane, its claim and its voice; and the hours-long
+  // `align-longform`, whose ✕ reached nothing at all because the bridge passed
+  // no signal. Against the shared fake, which answers the DELETE `cancelling`
+  // and only stops a beat later, the way a real one does.
+  'test-crucible-cancel-doors',
   // The LEASE (Owen, 2026-09-14: "Models should always be unloaded when we're
   // done with them. Every time."). A Crucible now clears the card the moment no
   // job, no lease, no session and no chat hold it — and a chat holds NOTHING, so

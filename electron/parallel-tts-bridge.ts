@@ -3141,6 +3141,98 @@ function rendererSend(channel: string, payload: unknown): void {
 }
 
 /**
+ * How long the quit path waits, per session, for a cancelled Crucible render to
+ * report that it has stopped.
+ *
+ * A BOUND, AND THAT IS THE POINT: quitting cannot depend on another machine.
+ * The DELETE has already been sent and answered by the time this clock starts,
+ * so the server's lane is released whatever happens next; what is being waited
+ * for is the engine finishing the chunk it was on, so that the cache flush two
+ * steps later in the same quit step reads a sentences directory that has
+ * stopped changing. That is seconds, and ten of them covers it.
+ *
+ * It cannot be an unbounded wait, because "never" is a real answer here: a
+ * DELETE recorded as `cancelling` that nothing on the server acts on was
+ * MEASURED on 2026-09-15. The whole "kill and flush TTS workers" quit step has
+ * 60 s (main.ts) and shares it with the WSL teardown and the flush, so a render
+ * that will not stop must cost this step ten seconds and not all of them.
+ */
+const QUIT_REMOTE_CANCEL_GRACE_MS = 10_000;
+
+/**
+ * Cancel this session's render ON ITS SERVER, because the app is quitting.
+ *
+ * A REMOTE RENDER IS NOT A PROCESS, so nothing `killAllWorkers` does below
+ * reaches it: the job goes on rendering the rest of the book on somebody else's
+ * card, holding that server's exclusive lane, its claim and its resident voice,
+ * and the next thing any client submits there is refused `server_busy` by a job
+ * whose app is gone. Nothing persists `session.crucibleJobId` either, so a
+ * relaunch cannot DELETE it — the app's own handle, while the app still exists,
+ * is the only door there is.
+ *
+ * Returns what happened, for the caller's log: `no-remote-render` (a local or
+ * finished session), `cancelled` (the server said it stopped), `still-cancelling`
+ * (the grace above ran out — the DELETE landed, the job may still be writing) or
+ * `failed` (the cancel itself was refused, which is reported and never fatal:
+ * the quit must still finish, and a job left running on a server is something
+ * the operator has to be TOLD about rather than something to retry here).
+ *
+ * Exported so the quit path is one door with one bound, and so a keeper can
+ * drive it without a prepared session (`tools/test-crucible-cancel-doors.js`).
+ */
+export async function cancelRemoteRenderOnQuit(
+  session: {
+    jobId: string;
+    crucibleJobId?: string;
+    crucibleCancel?: () => Promise<void>;
+  },
+  graceMs = QUIT_REMOTE_CANCEL_GRACE_MS,
+): Promise<'no-remote-render' | 'cancelled' | 'still-cancelling' | 'failed'> {
+  const cancel = session.crucibleCancel;
+  if (!cancel) return 'no-remote-render';
+  // Taken off the session before it is called, exactly as the stop path does:
+  // two teardowns racing would send two DELETEs for one job.
+  session.crucibleCancel = undefined;
+  const named = session.crucibleJobId === undefined
+    ? 'the job it had just submitted'
+    : `job ${session.crucibleJobId}`;
+
+  console.log(`[PARALLEL-TTS] Cancelling the crucible render for ${session.jobId} (${named})`);
+  const cancelled: Promise<'cancelled' | 'failed'> = cancel().then(
+    () => 'cancelled' as const,
+    (err: unknown) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[PARALLEL-TTS] crucible ${named} could not be cancelled on quit: ${detail}`);
+      logger.log('ERROR', session.jobId,
+        `Crucible ${named} could not be cancelled while quitting: ${detail}. It may still be `
+        + 'running on that server — stop it there.').catch(() => {});
+      return 'failed' as const;
+    },
+  );
+
+  let clock!: NodeJS.Timeout;
+  const graceRanOut = new Promise<'still-cancelling'>((resolve) => {
+    clock = setTimeout(() => resolve('still-cancelling'), graceMs);
+  });
+  let outcome: 'cancelled' | 'still-cancelling' | 'failed';
+  try {
+    outcome = await Promise.race([cancelled, graceRanOut]);
+  } finally {
+    clearTimeout(clock);
+  }
+  if (outcome === 'still-cancelling') {
+    // Loud, because the flush that follows is now reading a directory that may
+    // still be growing, and because the operator is the one who can go and look.
+    console.error(`[PARALLEL-TTS] crucible ${named} had not stopped ${graceMs} ms after the `
+      + 'DELETE; quitting anyway — it may still be rendering on that server.');
+    logger.log('WARN', session.jobId,
+      `Crucible ${named} was told to stop but had not finished ${graceMs} ms later. BookForge is `
+      + 'quitting; check that server if the job is still holding it.').catch(() => {});
+  }
+  return outcome;
+}
+
+/**
  * Kill all active worker processes (called on app quit)
  */
 export async function killAllWorkers(clearSessions = true): Promise<void> {
@@ -3150,6 +3242,12 @@ export async function killAllWorkers(clearSessions = true): Promise<void> {
   for (const [jobId, session] of activeSessions) {
     console.log(`[PARALLEL-TTS] Killing workers for job ${jobId}`);
     const ttsEngine = session.config?.settings?.ttsEngine;
+
+    // FIRST, because it is the only teardown here that is not a process and the
+    // only one that outlives this machine: a render on a Crucible keeps going
+    // after BookForge exits unless it is DELETEd. Awaited under its own bound —
+    // see cancelRemoteRenderOnQuit.
+    await cancelRemoteRenderOnQuit(session);
 
     // Clear watchdog timer
     if (session.watchdogTimer) {
@@ -7706,6 +7804,17 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   // user thinks they stopped. Awaited, like the WSL teardown and for the same
   // reason: `stopAndCacheParallelConversion` must not flush the cache while the
   // other end is still writing.
+  //
+  // AND THAT REASON IS NOW WHAT THE AWAIT ACTUALLY BUYS. Until 2026-09-18 the
+  // handle resolved on the DELETE's 200 — the server ACCEPTING the cancel,
+  // milliseconds — and the flush went ahead while the downloader was still
+  // landing `<index>.flac`. `runCrucibleRender`'s handle now resolves only once
+  // the job's terminal frame has arrived and the downloader has stopped with
+  // it, so this await is the whole far end coming to rest. It is therefore as
+  // slow as the engine is — a chunk in flight is finished first — and the user
+  // pressed Stop, so waiting is the answer. The QUIT path is the one that
+  // cannot wait, and it puts its own bound on the same handle
+  // (`cancelRemoteRenderOnQuit`).
   if (session.crucibleCancel) {
     const cancel = session.crucibleCancel;
     session.crucibleCancel = undefined;
