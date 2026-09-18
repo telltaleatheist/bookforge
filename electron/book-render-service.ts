@@ -25,6 +25,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { spawn } from 'child_process';
 import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from './streaming-engine';
+import type { StreamingEngine } from './streaming-engine';
 import { atomicWriteFile, getProjectPath, registerAudiobookOutput } from './manifest-service';
 import { embedAndVerifyVtt } from './metadata-tools';
 import { splitForTts } from '../shared/listen-text/segment';
@@ -866,7 +867,7 @@ class BookRenderService {
       return;
     }
 
-    const expected = this.expectedSeconds(job, i);
+    const expected = await this.expectedSeconds(job, i);
     if (typeof expected !== 'number') {
       // IT DOES NOT CHOOSE WITHOUT THE MEASUREMENT. Picking the longest, the
       // first, or the one nearest the others would each be a different book, and
@@ -904,48 +905,85 @@ class BookRenderService {
    * IT IS THE MACHINE THAT WILL SPEAK: a Crucible states `pace_chars_per_sec`
    * with the two band edges on its `GET /v1/voices` row, which is the ruling
    * `electron/crucible/voice-band.ts` is ("the numbers it packs to belong to the
-   * server that will speak them"), and for a voice that states no pace narrator
-   * centres the band on the geometric mean of its own default edges
-   * (`truncation.expected_chars_per_sec`, over `HiggsV3Defaults.MAX_CHARS_PER_SEC`
-   * 20.0 and `MIN_CHARS_PER_SEC` 14.5 in
-   * `python/narrator/engine/higgs/v3_engine.py`).
+   * server that will speak them"). It reaches here through the one member of
+   * `StreamingEngine` that states a voice's numbers — `statedChunkCaps`, which
+   * carries the three rates beside the three lengths since 2026-09-18, because
+   * `electron/crucible/stream.ts` had them in the `bandFromVoiceRow` result all
+   * along and dropped them on the way out.
    *
-   * NEITHER NUMBER REACHES THIS FILE TODAY, and this says so instead of copying
-   * one. The render service drives `getActiveEngine()`, and the one member of
-   * `StreamingEngine` that states a voice's numbers — `statedChunkCaps` — carries
-   * `maxChars`, `safeMinChars` and `safeMaxChars` and stops there;
-   * `electron/crucible/stream.ts` holds all three RATES in the
-   * `bandFromVoiceRow` result it builds them from and drops them on the way out.
-   * narrator's default band is a Python constant with no path to Electron at
-   * all. So the pace is not a thing this service HAS, and a copied 17.03 would
-   * be a second owner of a number measured somewhere else — the exact shape
-   * `voice-band.ts` was written to end.
-   *
-   * The consequence is stated rather than hidden: while that is true, a sentence
-   * that exhausts its attempts WITH takes to choose between is refused by name
-   * and the job fails, instead of a take being picked for an unmeasured reason.
-   * The day `statedChunkCaps` carries the three rates it already computes, this
-   * is `expectedSentenceSeconds(chars, row.paceCharsPerSec)` and nothing else.
+   * THE VOICE THAT STATES NO PACE IS STILL REFUSED, and that is a fact about the
+   * wire rather than a policy. narrator centres such a band on the geometric
+   * mean of its OWN default edges (`truncation.expected_chars_per_sec` over
+   * `HiggsV3Defaults.MAX_CHARS_PER_SEC` / `MIN_CHARS_PER_SEC`,
+   * `python/narrator/engine/higgs/v3_engine.py`) — and a Crucible publishes
+   * those two numbers on no route at all: `GET /v1/voices` carries each voice's
+   * own measured rates (required of every manifest, `crucible/voices.py`
+   * `_check_pace`) and `GET /v1/info` carries no band. So there is nothing to
+   * READ, and writing the mean here would make this file a second owner of a
+   * number measured in narrator — the exact shape `voice-band.ts` was written to
+   * end. The consequence is stated rather than hidden: such a sentence is
+   * refused by name with its takes listed, and the job fails.
    */
-  private expectedSeconds(job: Job, i: number): number | { refused: string } {
-    const pace = this.statedPace(job);
+  private async expectedSeconds(job: Job, i: number): Promise<number | { refused: string }> {
+    const pace = await this.statedPace(job);
     if (typeof pace !== 'number') return pace;
     return expectedSentenceSeconds(job.plan.sentences[i].length, pace);
   }
 
-  /** The voice's pace in characters per second, or the reason this side of the
-   *  engine has none. THE ONE PLACE that fact is asked for — see
-   *  `expectedSeconds` above for whose it is and why it stops short of here. */
-  private statedPace(job: Job): number | { refused: string } {
+  /**
+   * The voice's pace in characters per second, or the reason there is none.
+   * THE ONE PLACE that fact is asked for — see `expectedSeconds` above for whose
+   * it is and why a voice that states none is refused rather than averaged.
+   *
+   * ASKED AT THE SETTLEMENT, of the voice this job is rendering in, because a
+   * mid-render voice switch applies to later sentences (`worker` re-reads it per
+   * iteration) and the pace has to be the speaking voice's.
+   *
+   * A REFUSAL FROM THE ENGINE BECOMES THIS REFUSAL, quoted, rather than a throw.
+   * The caller is `settleExhaustedSentence`, which runs inside `noteFailedAttempt`
+   * — itself called from `worker`'s own catch — so a throw here would re-enter
+   * that catch, and an escape past it rejects the `Promise.all` in `runLoops`,
+   * killing every worker and losing the settlement this call exists to make. The
+   * engine's own words are carried into the record instead, which is where a
+   * reviewer reads them.
+   */
+  private async statedPace(job: Job): Promise<number | { refused: string }> {
     const voice = job.state.voice || getDefaultStreamVoice();
-    return {
-      refused: `nothing on this side of the engine states a pace for voice "${voice}". The pace is `
-        + 'the rendering machine\'s (electron/crucible/voice-band.ts), it travels on its '
-        + '`GET /v1/voices` row as `pace_chars_per_sec`, and `StreamingEngine.statedChunkCaps` — the '
-        + 'one member that states a voice\'s numbers — carries only maxChars/safeMinChars/safeMaxChars. '
-        + 'narrator\'s own no-pace centre is a Python constant (HiggsV3Defaults), so there is nothing '
-        + 'to read here either. The sentence is therefore not settled on a guess',
-    };
+    const engine = getActiveEngine();
+    const whose = 'The pace is the rendering machine\'s (electron/crucible/voice-band.ts) and travels '
+      + 'on its `GET /v1/voices` row as `pace_chars_per_sec`. narrator\'s own no-pace centre is the '
+      + 'geometric mean of HiggsV3Defaults\' default band edges, which a Crucible publishes on no '
+      + 'route, so there is nothing to read here instead and nothing is copied. The sentence is '
+      + 'therefore not settled on a guess';
+    if (typeof engine.statedChunkCaps !== 'function') {
+      return {
+        refused: `the streaming engine states no numbers at all for voice "${voice}" — it has no `
+          + `statedChunkCaps. ${whose}`,
+      };
+    }
+    let stated: Awaited<ReturnType<NonNullable<StreamingEngine['statedChunkCaps']>>>;
+    try {
+      stated = await engine.statedChunkCaps(voice);
+    } catch (err) {
+      return {
+        refused: `asking the streaming engine what it states for voice "${voice}" was refused: `
+          + `${err instanceof Error ? err.message : String(err)}. ${whose}`,
+      };
+    }
+    if (stated === null) {
+      return {
+        refused: `the streaming engine has no venue bound, so nothing states a pace for voice `
+          + `"${voice}" yet (statedChunkCaps resolved null). ${whose}`,
+      };
+    }
+    if (stated.paceCharsPerSec === null) {
+      return {
+        refused: `the engine states a band for voice "${voice}" but states no pace in it `
+          + '(all three rates are null, which is how an unmeasured voice states them — narrator '
+          + `reads all three or none too). ${whose}`,
+      };
+    }
+    return stated.paceCharsPerSec;
   }
 
   /** File a take as sentence `i`: its bytes, its duration, its rate, and the

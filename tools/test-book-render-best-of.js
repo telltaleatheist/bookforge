@@ -23,17 +23,28 @@
  *   §2  NO SILENCE IS EVER FILED AS A SENTENCE. A sentence with no audio is not
  *       covered, the book is not `done`, and the job fails BY NAME listing it.
  *   §3  THE SERVICE DOES NOT CHOOSE WITHOUT THE MEASUREMENT. The pace belongs to
- *       the machine that will speak (`electron/crucible/voice-band.ts`) and does
- *       not reach this service today — `StreamingEngine.statedChunkCaps` states
- *       maxChars/safeMinChars/safeMaxChars and no rates — so takes that survive
- *       three attempts are refused by name with their durations listed rather
- *       than picked for an unmeasured reason.
+ *       the machine that will speak (`electron/crucible/voice-band.ts`), and an
+ *       engine that states none — one with no `statedChunkCaps` at all — leaves
+ *       takes that survive three attempts refused by name with their durations
+ *       listed rather than picked for an unmeasured reason.
  *   §4  `failures.jsonl` beside `state.json`: one line per failed ATTEMPT and
  *       one per settlement, every line valid JSON however many workers wrote it.
  *   §5  The five-consecutive-exhausted-sentences engine abort is unchanged, and
  *       best-of does not mask it.
  *   §6  A `success` carrying no samples is an attempt that produced nothing, not
  *       a rendered sentence.
+ *   §7  THE PACE REACHES THE SERVICE. `statedChunkCaps` carries the three rates
+ *       the venue's `GET /v1/voices` row states, so a stated pace makes
+ *       `chars ÷ pace` and a thrice-failed sentence with takes CHOOSES: the
+ *       log-space-closest take is filed, the sentence is covered, and
+ *       `failures.jsonl` holds its three attempts and one `best-of` settlement.
+ *   §8  A VOICE THAT STATES NO PACE IS STILL REFUSED. Nothing on this side
+ *       invents narrator's default band centre: Crucible publishes it on no
+ *       route (`/v1/voices` carries each voice's own measured rates and nothing
+ *       else; `/v1/info` carries no band at all), so the one honest answer is a
+ *       refusal that says so.
+ *   §9  THE CRUCIBLE ENGINE CARRIES THE ROW'S RATES VERBATIM, all three or none,
+ *       and refuses a partial triple by name.
  *
  * Nothing here starts an engine, spawns ffmpeg or touches a GPU: the engine
  * module's entry points and `spawn` are replaced with recorders, and everything
@@ -168,7 +179,18 @@ function failureLines(id) {
     catch (err) { throw new Error(`failures.jsonl line ${n + 1} is not JSON (${err.message}): ${line}`); }
   });
 }
-function resetEngine() { engine.calls = []; engine.script = new Map(); engine.attempts = new Map(); }
+/**
+ * A fresh engine — and one that states NOTHING about a voice's numbers.
+ *
+ * `statedChunkCaps` is DELETED rather than set to a stub that answers null,
+ * because "the engine has no such member" and "the engine has one and it
+ * answered" are two different facts about the service and it must refuse for
+ * both. A test that wants a stated band assigns the member itself.
+ */
+function resetEngine() {
+  engine.calls = []; engine.script = new Map(); engine.attempts = new Map();
+  delete engine.statedChunkCaps;
+}
 
 async function main() {
   // ═══════════════════════════════════════════════════════════════════════════
@@ -385,6 +407,172 @@ async function main() {
     assert.ok(/appendFile\(failuresPath/.test(src),
       'failures.jsonl is not appended through one place');
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§7 a voice that STATES a pace makes the service choose');
+
+  /** The band a Crucible states, as `statedChunkCaps` hands it over. */
+  function statedBand(paceCharsPerSec) {
+    return {
+      maxChars: 600, safeMinChars: 200, safeMaxChars: 500,
+      paceCharsPerSec, maxCharsPerSec: 20.0, minCharsPerSec: 14.5,
+    };
+  }
+
+  await check('three failed attempts with two takes: the log-space-closest take is filed',
+    async () => {
+      resetEngine();
+      // 40 characters at 16 chars/s is 2.5 s expected. The takes are 1.0 s and
+      // 5.0 s: in LOG space the 5.0 s one is closer (0.693 against 0.916), and
+      // in plain seconds apart the 1.0 s one would be (1.5 against 2.5). So the
+      // take that is filed says which arithmetic ran — narrator's, or a guess.
+      const text = 'Forty characters exactly, this sentence.';
+      assert.strictEqual(text.length, 40, 'the fixture sentence is no longer 40 characters');
+      assert.strictEqual(expectedSentenceSeconds(text.length, 16), 2.5);
+
+      const asked = [];
+      engine.statedChunkCaps = async (voice) => { asked.push(voice); return statedBand(16); };
+      const { id } = newProject(['One.', text, 'Three.', 'Four.']);
+      const takes = [chunk(1.0), chunk(5.0), null];
+      engine.script.set(1, (n) => ({
+        success: false, error: `take ${n} was rejected`, audio: takes[n - 1] || undefined,
+      }));
+
+      await bookRenderService.start(id, 0);
+      await waitFor('the book to finish with its best take in it',
+        () => bookRenderService.status(id).done || bookRenderService.status(id).error !== undefined);
+
+      const status = bookRenderService.status(id);
+      assert.strictEqual(status.error, undefined,
+        `the sentence was refused although the voice states a pace: ${status.error}`);
+      assert.strictEqual(status.coverage[1], true,
+        'the best take was not filed — the sentence is still a hole');
+      // Read off state.json rather than the sentence file: the book assembled,
+      // and assembly reclaims the raw WAVs (`the m4b is the durable artifact
+      // now`). This is the service's own record of the length it filed.
+      const filed = JSON.parse(fs.readFileSync(path.join(renderDirOf(id), 'state.json'), 'utf-8'))
+        .durations[1];
+      assert.ok(Math.abs(filed - 5.0) < 0.01,
+        `attempt 2's 5.000 s take is the one nearest 2.5 s in log space; the sentence was filed at `
+        + `${filed} s — that is the seconds-apart order, not narrator's`);
+      assert.ok(registry.calls.some((p) => p.includes(id)),
+        'the book did not ship although every sentence has audio');
+      assert.deepStrictEqual([...new Set(asked)], ['test-voice'],
+        `the service asked the engine about ${JSON.stringify(asked)}, not the voice it is rendering in`);
+
+      const lines = failureLines(id);
+      const attempts = lines.filter((l) => l.sentence === 1 && l.attempt !== undefined);
+      assert.deepStrictEqual(attempts.map((l) => l.attempt), [1, 2, 3],
+        'the three attempts are not all recorded — best-of does not excuse the record');
+      const settled = lines.filter((l) => l.sentence === 1 && l.settled !== undefined);
+      assert.deepStrictEqual(settled.map((l) => l.settled), ['best-of'],
+        `the settlement was recorded as ${JSON.stringify(settled.map((l) => l.settled))}`);
+      assert.strictEqual(settled[0].chosenAttempt, 2,
+        'the record does not name the attempt that was chosen');
+      assert.strictEqual(settled[0].candidates, 2);
+      assert.ok(/2\.500 s/.test(settled[0].reason),
+        `the record does not say what length it measured against: ${settled[0].reason}`);
+    });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§8 a voice that states NO pace is refused, and nothing is invented');
+
+  await check('an engine whose band states no rates refuses by name and files nothing', async () => {
+    resetEngine();
+    // All three rates null — narrator's own "reads all three or none"
+    // (`truncation.py`, `_pace_tracker_for`). narrator answers that case from
+    // `HiggsV3Defaults`; nothing on the wire carries those numbers, so this side
+    // refuses instead of copying them.
+    engine.statedChunkCaps = async () => ({
+      maxChars: 600, safeMinChars: null, safeMaxChars: 600,
+      paceCharsPerSec: null, maxCharsPerSec: null, minCharsPerSec: null,
+    });
+    const { id } = newProject(['One.', 'Two.', 'Three.']);
+    engine.script.set(1, (n) => ({ success: false, error: `take ${n} was rejected`, audio: chunk(n) }));
+
+    await bookRenderService.start(id, 0);
+    await waitFor('the job to refuse to choose',
+      () => bookRenderService.status(id).error !== undefined);
+
+    const status = bookRenderService.status(id);
+    assert.strictEqual(status.coverage[1], false, 'a take was filed for a voice with no stated pace');
+    assert.ok(/states no pace/.test(status.error),
+      `the refusal does not say the voice states no pace: ${status.error}`);
+    assert.ok(/HiggsV3Defaults/.test(status.error),
+      `the refusal does not say whose the missing centre is: ${status.error}`);
+    const settled = failureLines(id).filter((l) => l.sentence === 1 && l.settled !== undefined);
+    assert.deepStrictEqual(settled.map((l) => l.settled), ['no-expected-length']);
+  });
+
+  await check('the service copies no pace constant of its own', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'book-render-service.ts'), 'utf-8');
+    // narrator's default edges are 20.0 and 14.5 and their geometric mean is
+    // 17.03. A literal here would be a second owner of a number measured in
+    // `python/narrator/engine/higgs/v3_engine.py` — the exact shape
+    // `electron/crucible/voice-band.ts` exists to end.
+    const code = src.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+    assert.ok(!/\b(17\.0\d|20\.0|14\.5)\b/.test(code),
+      'the render service has grown a pace constant of its own; the pace belongs to the machine '
+      + 'that will speak and arrives through statedChunkCaps');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§9 the Crucible engine carries the row\'s rates verbatim');
+
+  /** A `GET /v1/voices` row as the SDK parses one, captured from a real server. */
+  function voiceRow(pace) {
+    return {
+      id: 'deathstalker', display: 'Deathstalker', kind: 'checkpoint', language: 'en',
+      loadable: true, needsReference: false, backendSupported: true, maxChars: 600,
+      pace,
+    };
+  }
+  /** The engine with a venue already bound — `startSession`'s two fields, set
+   *  directly because opening a session needs a server and this needs a row. */
+  function boundEngine(rows) {
+    const streamMod = require(path.join(DIST, 'crucible', 'stream.js'));
+    const engineUnderTest = new streamMod.CrucibleStreamingEngine({
+      selectedEngine: () => 'higgs',
+      clientFor: () => { throw new Error('the keeper binds the client itself'); },
+    });
+    engineUnderTest.server = 'fake1';
+    engineUnderTest.client = { voices: async () => rows };
+    return engineUnderTest;
+  }
+
+  await check('the three rates arrive exactly as the row stated them', async () => {
+    const stated = await boundEngine([voiceRow({
+      paceCharsPerSec: 17.2, maxCharsPerSec: 20.0, minCharsPerSec: 14.5,
+      targetChars: null, safeMinChars: 200, safeMaxChars: 500,
+    })]).statedChunkCaps('deathstalker');
+    assert.strictEqual(stated.maxChars, 600);
+    assert.strictEqual(stated.safeMinChars, 200);
+    assert.strictEqual(stated.safeMaxChars, 500);
+    assert.strictEqual(stated.paceCharsPerSec, 17.2,
+      'the pace the server stated did not come out of statedChunkCaps — this is the gap that made '
+      + 'a thrice-failed sentence refuse instead of choose');
+    assert.strictEqual(stated.maxCharsPerSec, 20.0);
+    assert.strictEqual(stated.minCharsPerSec, 14.5);
+  });
+
+  await check('a PARTIAL triple is refused by name, never carried as two rates and a null',
+    async () => {
+      const engineUnderTest = boundEngine([voiceRow({
+        paceCharsPerSec: 17.2, maxCharsPerSec: 20.0, minCharsPerSec: undefined,
+        targetChars: null, safeMinChars: 200, safeMaxChars: 500,
+      })]);
+      await assert.rejects(
+        () => engineUnderTest.statedChunkCaps('deathstalker'),
+        (err) => {
+          assert.ok(/min_chars_per_sec|minCharsPerSec/.test(err.message),
+            `the refusal does not name the rate that is missing: ${err.message}`);
+          assert.ok(/deathstalker/.test(err.message),
+            `the refusal does not name the voice: ${err.message}`);
+          return true;
+        },
+        'a row stating two of the three rates was accepted; a band is all three or none '
+        + '(narrator reads them that way too — truncation.py, _pace_tracker_for)');
+    });
 
   fs.rmSync(ROOT, { recursive: true, force: true });
   if (failures) { console.log(`\n${failures} check(s) FAILED.`); process.exitCode = 1; }
