@@ -300,6 +300,22 @@ const ANALYSIS = ANALYSIS_LAYER;
  * is made from, and the product of the one job in this app that costs anything.
  */
 const READINGS = 'readings';
+/**
+ * WHERE A MATERIALISED BOOK LIVES — the book at a step with every op replayed
+ * into it, written for an engine to compile.
+ *
+ * It used to be `os.tmpdir()/foundry`, on the contract that it is scratch and
+ * the job that asked for it sweeps it at settle. That is true standalone and
+ * FALSE HOSTED: the row goes to the host's queue, this app's `jobs` array never
+ * holds it, so `sweepDerivedBook` cannot fire — and the file sat in a directory
+ * macOS empties on reboot. Owen met the result on the Mac as `no such book
+ * file`, pointing at a uuid under /var/folders.
+ *
+ * Under the project instead, beside `readings/`, because that is what it is: a
+ * derivative of this project's own records, meaningful only here, and worth
+ * being able to find when a compile disagrees with what somebody expected.
+ */
+const DERIVED = 'derived';
 
 /**
  * `<libraryDir>/projects` — under the user's library, not under userData.
@@ -3309,6 +3325,13 @@ export function translationBookFileFor(records: string): string {
  * about narration, which is honest, where a flag on a missing path fails the
  * export outright.
  */
+/**
+ * The derived-book directory for one project. Created on write, never assumed.
+ */
+export function derivedDirFor(projectDir: string): string {
+  return path.join(projectDir, DERIVED);
+}
+
 export function narrationStampFileFor(records: string): string {
   const suffix = '.records.jsonl';
   if (!records.toLowerCase().endsWith(suffix)) {

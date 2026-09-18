@@ -400,7 +400,7 @@ export async function planExport(
    * candidate and is worse: everything in there is drawn, swept and reasoned
    * about by the ledger, and a file nobody can name would be the one exception.
    */
-  const derived = await materializeBook(planned.dir, path.join(os.tmpdir(), 'foundry'), from);
+  const derived = await materializeBook(planned.dir, from);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE. `materializeBook` answers in
    * words for everything a person can be told about — a book file whose bank has
@@ -1300,7 +1300,7 @@ export async function planTranslation(
    * settles (`sweepDerivedBook`, electron/job-queue.ts). It is scratch: a pure
    * function of a file on disk and a chain in the ledger.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
+  const derived = await materializeBook(dir, at);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `planExport`'s rule again:
    * `materializeBook` answers in words for everything somebody can be told about,
@@ -1453,7 +1453,7 @@ export async function planSimplification(
     const standing = translationInEffect(ledger, deferral.landed)?.params?.language?.trim() ?? '';
     let language = standing;
     if (language.length === 0) {
-      const read = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), deferral.landed);
+      const read = await materializeBook(dir, deferral.landed);
       if (!read.ok) throw new ProjectError(read.reason);
       language = await declaredLanguageOf(read.path);
       await fsp.rm(read.path, { force: true }).catch(() => undefined);
@@ -1493,7 +1493,7 @@ export async function planSimplification(
    * a pointer moved while the job waits cannot change which book was meant, into
    * the OS temp directory and swept by the hand that settles the job.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
+  const derived = await materializeBook(dir, at);
   if (!derived.ok) throw new ProjectError(derived.reason);
 
   const standing = translationInEffect(ledger, at)?.params?.language?.trim() ?? '';
@@ -1639,7 +1639,7 @@ export async function planCleanup(
    * which book was meant, into the OS temp directory and swept by the hand that
    * settles the job. `planTranslation`'s rule, verbatim and for its reasons.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
+  const derived = await materializeBook(dir, at);
   if (!derived.ok) throw new ProjectError(derived.reason);
 
   const planned = await recordsForTextPass(
@@ -1715,7 +1715,7 @@ export async function planAnalysis(
    * different checklist mints a step and a file of its own (`analysisTarget`).
    */
   const planned = await reportForAnalysis(dir, categories);
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'));
+  const derived = await materializeBook(dir);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `planTranslation`'s rule: what
    * this will not do is queue an hour of GPU against a book it could not

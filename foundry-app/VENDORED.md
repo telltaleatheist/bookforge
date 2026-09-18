@@ -10,10 +10,53 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **e4a4641** — *Hosted, a long act goes to BookForge's queue and not to a modal* |
-| Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
+| Source sha | **16b352f** — *The derived book lives under the project, not under /tmp* |
+| Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-18 |
-| Copied by | Mechanical source sync, verified against Foundry `e4a4641:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `16b352f:app/`; details below |
+
+## The `e4a4641 → 16b352f` re-vendor — a scratch path outlived its run (2026-09-18)
+
+Two commits, **one of which is not this subtree's**. 183 files before and after,
+nothing added, nothing removed, `package.json`, `package-lock.json` and
+`vendor/` all untouched — so no `npm ci`, only a rebuild. Verified both
+directions against `git ls-tree -r --name-only 16b352f app`, and the three
+changed files checked individually by `git hash-object`.
+
+**What it fixes is a defect only the HOSTED shape could have.** Owen could not
+export an EPUB or narrate from the Mac: `no such book file:
+/var/folders/zx/.../foundry/<uuid>.book.jsonl`. Foundry materialises the book a
+rendering is about at PLAN time — deliberately, so a pointer moved while a job
+waits cannot change which book was meant — into `os.tmpdir()/foundry/`, and
+`materializeBook`'s own docblock promised *"IT IS SCRATCH, AND IT IS THE
+CALLER'S TO SWEEP … the job that asked for one removes it when it settles."*
+
+**Hosted, that promise cannot be kept, and the reason is our seam.** `enqueue`
+hands the request to the host and answers with **BookForge's** row; Foundry's
+own `jobs` array never holds it, so `sweepDerivedBook` can never fire. The file
+was nobody's to sweep and was sitting in a directory macOS empties on reboot —
+a path meant to live for one run, handed to a queue that outlives the process.
+It only had to sit long enough to be collected, and a re-vendor restarts
+BookForge.
+
+**Nothing was wrong on this side and nothing is owed here.** BookForge stored no
+path it should not have; it was handed one that was never safe to hold. The fix
+is Foundry's: the derived book now goes under the project beside `readings/`, in
+`derived/`, on Owen's call — *"we can make it permanent instead of letting it
+sit in temp."* The destination stopped being the caller's to name (all six
+callers passed the same `os.tmpdir()` join, so one of them differing is now
+impossible), the uuid stays because two plans for one step must not write one
+file, and a write first drops derived books older than a day so they cannot
+accumulate where nothing sweeps them.
+
+**The other commit is the ENGINE's and does not arrive with this copy.**
+`e41530a` — terser refusals, after Owen said the engine's messages were far too
+wordy — touches `src/clean/digest.ts` and `src/vlm/compile.ts`, which are
+compiled into the Foundry binary this checkout pins at **40aaa42 (v2.0.0)**. So
+those shorter sentences reach BookForge when the engine is rebuilt and released,
+not now. That is the normal split this table's second row describes.
+
+The collision keeper passes 7/7 and reports 0 Foundry commits behind.
 
 ## The `572656c → e4a4641` re-vendor — hosted acts go to the queue (2026-09-18)
 

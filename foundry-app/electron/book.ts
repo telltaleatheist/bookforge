@@ -82,6 +82,7 @@ import {
   recordCorrection,
   translationBookFileFor,
   type LedgerView,
+  derivedDirFor,
 } from './projects';
 import {
   BookFileError,
@@ -1425,9 +1426,37 @@ export async function correctBookBlock(
  * rename, so an interrupted write leaves nothing rather than half a book — and
  * half a book file is a compile that refuses on a row that was cut in two.
  */
+/**
+ * DROP DERIVED BOOKS NOTHING IS GOING TO COMPILE, before writing another.
+ *
+ * Standalone these are swept at settle and this finds nothing. HOSTED NOTHING
+ * SWEEPS THEM — the row belongs to the host's queue — so without this they
+ * accumulate one per export forever. A day is far longer than any job waits and
+ * far shorter than a person would notice the space.
+ *
+ * Best-effort by construction: a failure here must never stop an export, and a
+ * file that will not unlink is one file, not a run.
+ */
+async function sweepStaleDerived(into: string): Promise<void> {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  let names: string[];
+  try {
+    names = await fsp.readdir(into);
+  } catch {
+    return; // No directory yet: nothing to sweep, and the write will make it.
+  }
+  await Promise.all(names.map(async (name) => {
+    if (!name.endsWith('.book.jsonl')) return;
+    const here = path.join(into, name);
+    try {
+      const stat = await fsp.stat(here);
+      if (Date.now() - stat.mtimeMs > DAY_MS) await fsp.rm(here, { force: true });
+    } catch { /* raced with another sweep, or gone already. Either is fine. */ }
+  }));
+}
+
 export async function materializeBook(
   projectDir: string,
-  into: string,
   /**
    * THE STEP TO BUILD FOR, when it is not the position — `openBookAtPosition`'s
    * own parameter, exposed because a caller can want a book for a row the pointer
@@ -1481,6 +1510,20 @@ export async function materializeBook(
     );
   }
 
+  /*
+   * ── UNDER THE PROJECT, NOT UNDER /tmp ──────────────────────────────────
+   *
+   * The destination is derived from the project rather than named by the
+   * caller, because every caller named the same thing and one of them being
+   * different is the bug this shape prevents. See `derivedDirFor`.
+   *
+   * THE UUID STAYS. It is not decoration: `workspace.ts` materialises AT PLAN
+   * TIME so a pointer moved while the job waits cannot change which book was
+   * meant, and two plans for one step must not write the same file — the second
+   * would rewrite the book the first job is mid-compile against.
+   */
+  const into = derivedDirFor(projectDir);
+  await sweepStaleDerived(into);
   const file = path.join(into, `${randomUUID()}.book.jsonl`);
   try {
     await writeAtomically(file, Buffer.from(formatBookFile(made.book), 'utf8'));
