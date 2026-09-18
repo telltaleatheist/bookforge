@@ -92,8 +92,14 @@ TGZ=$STAGE/bookshelf-server-context.tgz
 say "packing context"
 (cd "$STAGE" && tar -czf "$TGZ" \
   package.json package-lock.json cli deploy/bookshelf-server dist/electron dist/shared)
-say "scp → $TITAN_HOST:$TITAN_DIR/  ($(du -h "$TGZ" | cut -f1))"
-scp -q "$TGZ" "$TITAN_HOST:$TITAN_DIR/bookshelf-server-context.tgz"
+say "upload → $TITAN_HOST:$TITAN_DIR/  ($(du -h "$TGZ" | cut -f1))"
+# Streamed over plain ssh, not scp: OpenSSH ≥ 9 scp speaks SFTP by default and
+# titan's sftp subsystem answers "dest open: No such file or directory" for a
+# directory that exists (2026-09-18). Piping into cat needs nothing of the
+# remote but a shell, from any OpenSSH on either machine. Written to a .tmp
+# and renamed, so a broken upload never replaces the last good tarball.
+REMOTE_TGZ=$TITAN_DIR/bookshelf-server-context.tgz
+ssh "$TITAN_HOST" "cat > $REMOTE_TGZ.tmp && mv -f $REMOTE_TGZ.tmp $REMOTE_TGZ" < "$TGZ"
 say "redeploy on titan (docker compose build + up)"
 ssh "$TITAN_HOST" "sh $TITAN_DIR/redeploy.sh"
 
