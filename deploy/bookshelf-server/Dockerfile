@@ -21,6 +21,11 @@ FROM node:22-bookworm-slim AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+# @crucible/client and @crucible/bootstrap are `file:vendor/*.tgz` deps (vendored
+# 2026-09-14). The lockfile names them, so npm ci opens the tarballs whether or
+# not anything here imports them — and nothing here does; they are desktop-app
+# code. Without this COPY the deps stage dies with ENOENT on the first tarball.
+COPY vendor ./vendor
 
 # --omit=dev: none of the build tooling runs here.
 # --ignore-scripts: `postinstall` is `electron-rebuild --only better-sqlite3`

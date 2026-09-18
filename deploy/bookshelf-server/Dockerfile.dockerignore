@@ -3,7 +3,9 @@
 # The context is the REPO ROOT, which holds node_modules, the foundry-app
 # subtree, packaging output and the whole source tree — gigabytes that would be
 # uploaded to the daemon on every build and then thrown away. So: exclude
-# everything, and name the five things the image actually copies.
+# everything, and name the six things the image actually copies (vendor/ holds
+# the @crucible file: tarballs package-lock resolves — npm ci needs them even
+# though the mirror never imports the SDK).
 #
 # BuildKit reads a <dockerfile>.dockerignore next to the Dockerfile in
 # preference to the context root's .dockerignore, so this stays scoped to this
@@ -12,6 +14,7 @@
 
 !package.json
 !package-lock.json
+!vendor
 !cli
 !dist/electron
 !dist/shared

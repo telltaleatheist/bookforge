@@ -91,7 +91,7 @@ done
 TGZ=$STAGE/bookshelf-server-context.tgz
 say "packing context"
 (cd "$STAGE" && tar -czf "$TGZ" \
-  package.json package-lock.json cli deploy/bookshelf-server dist/electron dist/shared)
+  package.json package-lock.json vendor cli deploy/bookshelf-server dist/electron dist/shared)
 say "upload → $TITAN_HOST:$TITAN_DIR/  ($(du -h "$TGZ" | cut -f1))"
 # Streamed over plain ssh, not scp: OpenSSH ≥ 9 scp speaks SFTP by default and
 # titan's sftp subsystem answers "dest open: No such file or directory" for a

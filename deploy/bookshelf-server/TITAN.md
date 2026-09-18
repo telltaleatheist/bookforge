@@ -82,7 +82,7 @@ cd "$STAGE" && BOOKFORGE_BUILD_SHA=$(git -C <repo> rev-parse --short <sha>)   BO
 # 2. Stage the context tarball (~4 MB) and ship it
 S=$TMP  # any scratch dir
 tar --force-local -czf "$S/bookshelf-server-context.tgz" \
-  package.json package-lock.json cli deploy/bookshelf-server dist/electron dist/shared
+  package.json package-lock.json vendor cli deploy/bookshelf-server dist/electron dist/shared
 scp "$S/bookshelf-server-context.tgz" titan:/volume1/System/bookshelf-server/
 
 # 3. Rebuild + restart on titan
