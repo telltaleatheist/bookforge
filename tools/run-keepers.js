@@ -855,6 +855,12 @@ const SUITES = [
   // Drives a REAL narrator refusal through a REAL python to prove the reason
   // reaches the user. SKIPS BY NAME where the tools env is not installed.
   'test-narrator-refusal-surfacing',
+  // The three JOINS inside the cleanup job: the chapter boundary (a checkpoint
+  // that named a chapter finished after its save threw), the split chunk (two
+  // cleaned halves glued with nothing where the book had a paragraph break) and
+  // the job's abort signal (a listener per chunk on a signal that lives for the
+  // whole book). No model and no server — the joins are exported and driven.
+  'test-ai-bridge-boundaries',
 ];
 
 /**

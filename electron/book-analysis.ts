@@ -195,7 +195,7 @@ async function loadAnalysisPrompt(): Promise<string> {
   return content.trim();
 }
 
-function buildPromptForChunk(
+export function buildPromptForChunk(
   template: string,
   categories: AnalysisCategory[],
   text: string
@@ -205,9 +205,20 @@ function buildPromptForChunk(
     .map(c => `- ${c.id}: "${c.name}" — ${c.description}`)
     .join('\n');
 
+  // REPLACER FUNCTIONS, because what goes into the slots is the book. In a
+  // replacement STRING `$&`, `` $` `` and `$'` are pattern references — the
+  // matched text, everything before it and everything after it — and the match
+  // here is the placeholder, in a template that is the whole prompt. Measured
+  // on a chapter reading `… or $& if you prefer, plus $` and $'.`: the model was
+  // sent `… or {text} if you prefer, plus` and then the ENTIRE prompt twice, the
+  // half before the slot and the half after it. (A string pattern has no capture
+  // group, so a plain `$1,000` survives; `$&` is the one that fires.) The model
+  // would be reading, and flagging with quotes, a chapter the book does not
+  // contain. A function's return value is inserted verbatim. The category block
+  // goes the same way: its names and descriptions are typed by a person.
   return template
-    .replace('{categories}', categoryBlock)
-    .replace('{text}', text);
+    .replace('{categories}', () => categoryBlock)
+    .replace('{text}', () => text);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

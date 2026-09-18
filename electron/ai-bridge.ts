@@ -1125,9 +1125,11 @@ async function applyOutputSafeguards(
     if (text.length >= MIN_SPLIT_SIZE) {
       console.warn(`[${label}] splitting and retrying smaller chunks`);
       const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-      const cleanedFirst = await retry(text.substring(0, midpoint), true);
-      const cleanedSecond = await retry(text.substring(midpoint), true);
-      return cleanedFirst + cleanedSecond;
+      const firstHalf = text.substring(0, midpoint);
+      const secondHalf = text.substring(midpoint);
+      const cleanedFirst = await retry(firstHalf, true);
+      const cleanedSecond = await retry(secondHalf, true);
+      return joinSplitHalves(firstHalf, secondHalf, cleanedFirst, cleanedSecond);
     }
     // Too small to split further — register it (visible) and keep the original.
     if (text.length > 1000 && chunkMeta) {
@@ -1219,7 +1221,7 @@ async function applyOutputSafeguards(
       const secondHalf = text.substring(midpoint);
       const cleanedFirst = await retry(firstHalf, true);
       const cleanedSecond = await retry(secondHalf, true);
-      return cleanedFirst + cleanedSecond;
+      return joinSplitHalves(firstHalf, secondHalf, cleanedFirst, cleanedSecond);
     }
 
     // Out of options — keep the original so content is never lost.
@@ -1240,6 +1242,35 @@ async function applyOutputSafeguards(
   }
 
   return cleaned;
+}
+
+/**
+ * Rejoin the two cleaned halves of a chunk that was split at `findBestBreakPoint`,
+ * on the whitespace the split itself consumed.
+ *
+ * The split is exact — `firstHalf + secondHalf` IS the original chunk — but each
+ * half comes back through `extractAnswer`, which ends `text.trim()`. And
+ * `findBestBreakPoint` prefers a paragraph break and returns the index just PAST
+ * it, so the blank line is the tail of the first half and the trim eats it:
+ * `cleanedFirst + cleanedSecond` glued "…paragraph twelve." straight onto "The
+ * first words of paragraph thirteen", losing the paragraph break from the rebuilt
+ * chapter and the space after the full stop that TTS reads the sentence boundary
+ * by. `splitProseIntoChunks` rejoins its chunks with an explicit `'\n\n'`; these
+ * three sites had nothing.
+ *
+ * The separator is not chosen: it is the ORIGINAL text's own whitespace either
+ * side of the cut, so a paragraph split rejoins on its blank line, a sentence
+ * split on its space, and a cut through a word on nothing at all.
+ */
+export function joinSplitHalves(
+  firstHalf: string,
+  secondHalf: string,
+  cleanedFirst: string,
+  cleanedSecond: string
+): string {
+  const trailing = firstHalf.slice(firstHalf.trimEnd().length);
+  const leading = secondHalf.slice(0, secondHalf.length - secondHalf.trimStart().length);
+  return cleanedFirst + trailing + leading + cleanedSecond;
 }
 
 /**
@@ -2536,9 +2567,21 @@ export async function crucibleChatOnce(options: {
   let timedOut = false;
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
 
-  // Chain abort signals - if parent aborts, abort this request too
-  if (options.signal) {
-    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  // Chain abort signals - if parent aborts, abort this request too.
+  //
+  // The listener is removed in the `finally`, because the parent OUTLIVES this
+  // call by a whole book: `options.signal` is the cleanup JOB's, created once per
+  // run, while this function is called once per chunk plus once per retry, split
+  // half and repetition re-roll. `{ once: true }` releases a listener only when
+  // it FIRES, which on a job that finishes normally never happens, so a
+  // 2,000-chunk book ended holding 2,000 listeners on one signal, each pinning a
+  // closure and an AbortController. (`cleanupEpubRun` used to raise the signal's
+  // max-listener count to 200 for this; that silenced the warning and not the
+  // accumulation, and it is gone.)
+  const parentSignal = options.signal;
+  const abortForParent = () => controller.abort();
+  if (parentSignal) {
+    parentSignal.addEventListener('abort', abortForParent, { once: true });
   }
 
   try {
@@ -2567,6 +2610,9 @@ export async function crucibleChatOnce(options: {
     }
   } finally {
     clearTimeout(timeoutId);
+    if (parentSignal) {
+      parentSignal.removeEventListener('abort', abortForParent);
+    }
   }
 }
 
@@ -2750,7 +2796,7 @@ export async function cleanChunkWithProvider(
         const secondHalf = text.substring(midpoint);
         const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
         const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
-        return cleanedFirst + cleanedSecond;
+        return joinSplitHalves(firstHalf, secondHalf, cleanedFirst, cleanedSecond);
       }
 
       // A hybrid-reasoning model whose <think> block never closed produced NO
@@ -3572,6 +3618,46 @@ export async function simplifyChapterBlocks(opts: {
 // EPUB OCR Cleanup (for queue processing)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Persist everything a finished chapter owes: the output EPUB, the freed memory,
+ * and the resume checkpoint that NAMES the chapter finished — in that order, and
+ * the last of the three only if the first one landed.
+ *
+ * The order is the whole point. `completedChapters` in the checkpoint is read on
+ * resume as "already written into the output EPUB": `cleanupEpubRun` `continue`s
+ * past every chapter named there and never cleans it again, then asks
+ * `saveModifiedEpubLocal` to read it back OUT of that EPUB. So the checkpoint may
+ * only name chapters a save actually completed. It used to be written
+ * unconditionally — the save's `catch` logged and execution fell through to it —
+ * and a save that threw (the output EPUB open in the Versions tab, a full disk, a
+ * rename Windows refused) followed by an interrupted run therefore produced a
+ * finished book with that chapter UNCLEANED and a job reporting success. Writing
+ * no checkpoint leaves the last successful boundary's standing, which is exactly
+ * the last durable state.
+ *
+ * The failure is logged rather than thrown because it is not the job's failure:
+ * the chapter is still in `modifiedChapters` (it is evicted only on the success
+ * path), so the job's final save retries it, and within one session that is why
+ * this was invisible. The parallel path next door has always had this shape.
+ */
+export async function persistChapterBoundary(opts: {
+  /** 1-based, for the log line. */
+  chapterNumber: number;
+  saveEpub: () => Promise<void>;
+  onSaved: () => void;
+  recordBoundary: () => Promise<void>;
+}): Promise<boolean> {
+  try {
+    await opts.saveEpub();
+    opts.onSaved();
+  } catch (saveError) {
+    console.error(`Failed to save after chapter ${opts.chapterNumber}:`, saveError);
+    return false;
+  }
+  await opts.recordBoundary();
+  return true;
+}
+
 export interface EpubCleanupProgress {
   jobId: string;
   phase: 'loading' | 'analyzing' | 'processing' | 'saving' | 'complete' | 'error';
@@ -3982,19 +4068,16 @@ async function cleanupEpubRun(
     return { success: false, error: `unknown_ai_provider: ${String(config.provider)}` };
   }
 
-  // Create AbortController for this job - allows immediate cancellation
+  // Create AbortController for this job - allows immediate cancellation.
+  //
+  // Nothing raises this signal's max-listener count any more. It used to be set
+  // to 200 because `crucibleChatOnce` added a listener per call and removed it
+  // only if the job was cancelled, so the count climbed with the chunk count —
+  // the raise silenced Node's warning about the leak rather than ending it, and
+  // 200 was under one book's chunks anyway. That door now removes its listener
+  // in its `finally`, so the live count is the number of calls IN FLIGHT, which
+  // is the worker count (2-4) and never approaches Node's default of 10.
   const abortController = new AbortController();
-  // Increase max listeners to avoid warnings with parallel processing
-  // Each fetch call adds an abort listener, so with 5 workers * many chunks we need more
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { setMaxListeners } = require('events') as { setMaxListeners?: (n: number, target: EventTarget) => void };
-    if (setMaxListeners) {
-      setMaxListeners(200, abortController.signal);
-    }
-  } catch {
-    // Older Node versions may not support this - warning is harmless
-  }
   activeCleanupJobs.set(jobId, {
     controller: abortController,
     provider: config.provider,
@@ -5216,35 +5299,36 @@ async function cleanupEpubRun(
        * the block path so a job resumed from either lands in the same state.
        */
       const saveChapterBoundary = async (chapterIndex: number, chapterId: string): Promise<void> => {
-        // Save at chapter boundary only
-        try {
-          await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath, completedChapterIds);
+        await persistChapterBoundary({
+          chapterNumber: chapterIndex + 1,
+          saveEpub: () => saveModifiedEpubLocal(processor!, modifiedChapters, outputPath, completedChapterIds),
+          onSaved: () => {
+            // Free memory — chapter data is now on disk
+            modifiedChapters.delete(chapterId);
+            chapterXhtmlMap.delete(chapterId);
 
-          // Free memory — chapter data is now on disk
-          modifiedChapters.delete(chapterId);
-          chapterXhtmlMap.delete(chapterId);
-
-          if (global.gc) global.gc();
-        } catch (saveError) {
-          console.error(`Failed to save after chapter ${chapterIndex + 1}:`, saveError);
-        }
-
-        // Save checkpoint (skip in test mode)
-        if (!testMode) {
-          await saveCheckpoint(epubDir, {
-            version: CLEANUP_CHECKPOINT_VERSION,
-            sourceEpubPath: epubPath,
-            outputFilename,
-            totalChapters: chapterMetas.length,
-            totalChunks: totalChunksInJob,
-            completedChapters: [...completedChapterIds],
-            completedChunkCount: chunksCompletedInJob,
-            provider: config.provider,
-            model: getProviderModel(config),
-            simplifyForChildren: !!options?.simplifyForChildren,
-            updatedAt: new Date().toISOString()
-          });
-        }
+            if (global.gc) global.gc();
+          },
+          recordBoundary: async () => {
+            // Test mode drives a deliberately truncated book (a chunk cap per
+            // chapter), so there is no finished state for a resume to return
+            // to and no checkpoint is written at all.
+            if (testMode) return;
+            await saveCheckpoint(epubDir, {
+              version: CLEANUP_CHECKPOINT_VERSION,
+              sourceEpubPath: epubPath,
+              outputFilename,
+              totalChapters: chapterMetas.length,
+              totalChunks: totalChunksInJob,
+              completedChapters: [...completedChapterIds],
+              completedChunkCount: chunksCompletedInJob,
+              provider: config.provider,
+              model: getProviderModel(config),
+              simplifyForChildren: !!options?.simplifyForChildren,
+              updatedAt: new Date().toISOString()
+            });
+          },
+        });
       };
 
       for (let i = 0; i < chapterMetas.length; i++) {

@@ -396,12 +396,16 @@ async function run() {
 
   // ── THE BOOK'S OWN `$1` IS NOT A GROUP REFERENCE ────────────────────────
   //
-  // Every writer below hands book text to `String.prototype.replace` and, until
-  // this section existed, handed it as the replacement STRING. In a replacement
-  // string `$1`, `$2`, `$&`, `` $` `` and `$'` are pattern references: a
-  // sentence reading `It cost $1,000.` comes out as `It cost <the first capture
-  // group>,000.` and `$&` splices the whole original match — a book silently
-  // rewritten, never an error. `escapeXml` does not touch `$`, so the escaping
+  // Every site below hands book text to `String.prototype.replace` and, until
+  // this section existed, handed it as the replacement STRING. Most of them are
+  // markup writers, which is why they are in this suite; the last is the analysis
+  // PROMPT builder, whose output is not markup at all — the hazard is the
+  // replacement layer and not the destination, so it is pinned in one place.
+  //
+  // In a replacement string `$1`, `$2`, `$&`, `` $` `` and `$'` are pattern
+  // references: a sentence reading `It cost $1,000.` comes out as `It cost <the
+  // first capture group>,000.` and `$&` splices the whole original match — a
+  // book silently rewritten, never an error. `escapeXml` does not touch `$`, so the escaping
   // that already runs is no defence. The fix at every site is a replacer
   // FUNCTION, whose return value is inserted verbatim.
   //
@@ -478,17 +482,74 @@ async function run() {
       `the sentence being replaced came back through a $& in its replacement:\n${after}`);
   });
 
-  // translation-bridge's own `replaceXhtmlBody` is a verbatim twin of
-  // epub-processor's and is reachable only through `translateEpub`, which needs
-  // an AI provider — so it is pinned at the SOURCE instead of driven. The
-  // question is the same one the four checks above ask behaviourally: does any
-  // body rewrite in that file still pass its html as a replacement STRING.
-  await check('the translation writer passes no book text as a replacement string', async () => {
+  // The translation writer rewrites a chapter body exactly as the cleanup
+  // writer does, and used to do it with its OWN copy of `replaceXhtmlBody` and
+  // `escapeXml`. That is why the `$1` hazard had to be fixed twice in one
+  // night, and why the next change to either rule would have landed in one copy
+  // only. There is now one owner — epub-processor exports both — so the four
+  // behavioural checks above answer for the translation path too, and what is
+  // left to pin is that the second copy does not come back.
+  await check('the translation writer declares no second body rewriter', async () => {
     const source = fs.readFileSync(path.join(REPO, 'electron', 'translation-bridge.ts'), 'utf8');
-    const stringReplacements = source.match(/\.replace\(\s*\/<body[^\n]*?,\s*`[^`]*\$\{[^`]*`/g) || [];
-    assert.deepStrictEqual(stringReplacements, [],
-      'translation-bridge.ts still interpolates book html into a replacement STRING, where the '
-      + `book's own $1/$& are pattern references. Use a replacer function:\n  ${stringReplacements.join('\n  ')}`);
+    const declared = source.match(/^\s*(?:export\s+)?function\s+(?:replaceXhtmlBody|escapeXml)\b/gm) || [];
+    assert.deepStrictEqual(declared, [],
+      'translation-bridge.ts declares its own copy of a rule epub-processor owns, so a fix to '
+      + `one is not a fix to the other:\n  ${declared.map((d) => d.trim()).join('\n  ')}`);
+    assert.ok(/from '\.\/epub-processor\.js'/.test(source)
+      && /\breplaceXhtmlBody\b/.test(source) && /\bescapeXml\b/.test(source),
+      'translation-bridge.ts does not take the body rewriter from its owner');
+  });
+
+  // The shared door itself, driven with the book's dollars in it. Until the
+  // dedup this function was not exported and was reachable only through
+  // `translateEpub` or `saveModifiedEpub`, one of which needs an AI provider.
+  await check('the shared body rewriter keeps a $1 and a $& in the model output verbatim', () => {
+    const { replaceXhtmlBody } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    assert.strictEqual(typeof replaceXhtmlBody, 'function',
+      'epub-processor does not export the body rewriter, so translation-bridge cannot take it');
+    const xhtml = '<html><body class="c1"><h2 id="t">The Old Title</h2>'
+      + '<p>The court rose at four.</p></body></html>';
+    const after = replaceXhtmlBody(xhtml, `A Heading\n\n${DOLLARS}`);
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `the shared rewriter read the dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `the shared rewriter spliced the original match back in for $&:\n${after}`);
+    assert.ok(!after.includes('The court rose at four'),
+      `the original body was re-inserted by a $& in the new text:\n${after}`);
+    assert.ok(after.includes('<body class="c1">'),
+      `the body's own attributes did not survive the rewrite:\n${after}`);
+    assert.ok(after.includes('<h2 id="t">A Heading.</h2>'),
+      `the heading tag and its attributes did not survive the rewrite:\n${after}`);
+  });
+
+  // ── AND THE PROMPT THE ANALYSIS MODEL READS ─────────────────────────────
+  //
+  // `buildPromptForChunk` fills the shipped template's `{categories}` and
+  // `{text}` slots, and `{text}` is a whole chapter of the book. A string
+  // pattern has no capture group, so `$1` survives it — but `$&` IS the matched
+  // text, i.e. the placeholder, so a `$&` in the prose splices the literal
+  // `{text}` into the sentence and the model reads, and flags, a chapter the
+  // book does not contain.
+  await check('the analysis prompt carries the chapter verbatim, dollars and all', () => {
+    const { buildPromptForChunk } = require(path.join(DIST, 'electron', 'book-analysis.js'));
+    // The SHIPPED template, not an invented one — the slots are its own.
+    const template = fs.readFileSync(
+      path.join(REPO, 'electron', 'prompts', 'book-analysis.txt'), 'utf8').trim();
+    assert.ok(template.includes('{text}') && template.includes('{categories}'),
+      'the shipped analysis template no longer has the slots this fills');
+    const prompt = buildPromptForChunk(
+      template,
+      [{ id: 'violence', name: 'Violence $& Gore', description: 'Costs over $1,000', enabled: true },
+        { id: 'off', name: 'Disabled', description: 'never asked for', enabled: false }],
+      DOLLARS);
+    assert.ok(prompt.includes(DOLLARS),
+      `the chapter did not reach the model as the book wrote it:\n${prompt}`);
+    assert.ok(!prompt.includes('{text}'),
+      `a $& in the prose spliced the '{text}' placeholder back into the chapter:\n${prompt}`);
+    assert.ok(prompt.includes('- violence: "Violence $& Gore" — Costs over $1,000'),
+      `the category block did not reach the model as it was typed:\n${prompt}`);
+    assert.ok(!prompt.includes('Disabled'),
+      'a disabled category was offered to the model');
   });
 
   for (const [status, name, detail] of results) {

@@ -1563,8 +1563,16 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
  * This function detects the original heading and preserves the tag:
  * - H1-H6: sent to AI as first text block → first block goes back in heading tag
  * Heading text always ends with a period for TTS pause.
+ *
+ * Exported because translation-bridge rewrites a chapter body the same way and
+ * had a second copy of this function and of `escapeXml`. One fact, one owner:
+ * a rule about how a body is rebuilt that is written down twice is a rule that
+ * only half the app obeys the next time it changes — the `$1` hazard below was
+ * fixed in both copies on 2026-09-18 only because somebody remembered the twin
+ * existed. `newText` is the cleaned chapter in one caller and the translation
+ * in the other; it is the model's output either way.
  */
-function replaceXhtmlBody(xhtml: string, newText: string): string {
+export function replaceXhtmlBody(xhtml: string, newText: string): string {
   const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
   if (!bodyMatch) return xhtml;
 
@@ -1578,7 +1586,7 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
   if (!headingMatch) {
     // No heading in original — all blocks become <p> tags
     const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
-    // A REPLACER FUNCTION, because the book's own text is in `htmlContent`. In a
+    // A REPLACER FUNCTION, because the model's own text is in `htmlContent`. In a
     // replacement STRING `$1`, `$&`, `` $` `` and `$'` are pattern references, so
     // "It cost $1,000." would come back as the body tag's attributes followed by
     // ",000." and a `$&` would splice the whole original body back inside itself.
@@ -1605,9 +1613,15 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
 }
 
 /**
- * Escape text for XML
+ * Escape text for XML.
+ *
+ * Exported for translation-bridge, which had its own copy — see
+ * `replaceXhtmlBody` above. The apostrophe goes out as the NUMERIC reference
+ * `&#39;` rather than `&apos;` (which is what the deleted copy wrote): both
+ * parse to the same character in XML, and the numeric one parses in HTML too,
+ * so it is the form that survives a reader that treats a chapter as HTML.
  */
-function escapeXml(text: string): string {
+export function escapeXml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
