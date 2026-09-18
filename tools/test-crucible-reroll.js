@@ -8,21 +8,34 @@
  * in Correct Sentences as a Crucible `tts` job, landing `take<k>/<index>.flac`
  * where the local narrator worker lands them. Against a FAKE Crucible this pins:
  *
- *  1. THE REFUSAL THAT MATTERS: the local path spreads its takes across sampling
+ *  1. THE REFUSAL THAT MATTERS: the local path spread its takes across sampling
  *     temperatures and a `tts` render has NO sampling channel, so a caller that
  *     hands them over is refused BY NAME. Sending the job without them and
  *     calling it the same pass is the silent substitution this exists to stop.
- *  2. One job per take, each carrying EVERY named index (a denominator, unlike
- *     streaming), at take 0 — the rung the engine climbs itself.
- *  3. `take<k>/<index>.flac` under the local naming, with its provenance beside
- *     it, and the chunk TEXT on the wire because a Crucible has no session to
- *     read `chapter_sentences` out of.
- *  4. The guard verdict of every chunk reaches the ledger, keyed per take —
- *     three takes of one sentence are three renders, not three chunks.
- *  5. Every refusal by name and none retried: an empty chunk list, a chunk with
+ *  2. **N CANDIDATES ARE N RUNGS, AND THE FIRST IS RUNG 1.** One job per
+ *     candidate, each carrying EVERY named index (a denominator, unlike
+ *     streaming), each at its OWN rung: 3 candidates submit takes 1, 2, 3 —
+ *     distinct, and never 0. Until 2026-09-18 every one of them went out at
+ *     take 0 on the premise that "narrator's sampling is unseeded"; the premise
+ *     was false (`HiggsConfig.seed` defaults to 1234, `_seed_for` is
+ *     `seed + index`, and only `in_take_lane` moves the draw), so a person who
+ *     asked for three alternative readings got three copies of the one they had
+ *     rejected. This case is what would have caught it.
+ *  3. A pass that asks for more candidates than the voice's ladder has rungs
+ *     above 0 is REFUSED BY NAME with BOTH numbers, before a single submit —
+ *     never clamped to the top rung, never quietly rendered fewer times, and
+ *     never cycled back down onto a rung another candidate already used (one
+ *     rung is one seed lane, so that pair would be byte-identical again).
+ *  4. `take<k>/<index>.flac` under the local naming — the directory keeps
+ *     counting CANDIDATES, not rungs — with its provenance beside it, and the
+ *     chunk TEXT on the wire because a Crucible has no session to read
+ *     `chapter_sentences` out of.
+ *  5. The guard verdict of every chunk reaches the ledger, keyed per candidate —
+ *     three candidates of one sentence are three renders, not three chunks.
+ *  6. Every refusal by name and none retried: an empty chunk list, a chunk with
  *     no text, a non-Higgs engine, a voice the server does not serve,
  *     `server_busy` with the holder's line — and NO local re-roll instead.
- *  6. The venue door: the legacy switch re-rolls on the local narrator and says
+ *  7. The venue door: the legacy switch re-rolls on the local narrator and says
  *     so; the run's venue beats the routing record; a caller naming a different
  *     server is refused.
  *
@@ -60,12 +73,21 @@ const FAKE_PACE = {
   safe_max_chars: 800,
 };
 
-function voiceRow(id) {
+/**
+ * `takes` is the LADDER'S LENGTH — rungs `0 .. takes - 1` — and the SDK reads it
+ * with `num(entry, 'takes')`, so a row without it fails the whole document.
+ *
+ * FOUR here, not the two every shipped voice manifest declares today, because
+ * the happy path asks for three candidates and three candidates need rungs 1, 2
+ * and 3 to exist. `shortLadder()` below is the real catalog's shape and is what
+ * pins the refusal.
+ */
+function voiceRow(id, takes = 4) {
   return {
     id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
     revision: 'rev1', fingerprint: `${id}@rev1`, memory_bytes_estimate: 1,
-    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1,
+    estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes,
     // A checkpoint's voice is in its weights: loading one WITH a clip is
     // `reference_not_allowed`. The field is required on every row since the
     // 0.6.0 SDK (PHASE3-TTS.md §5's amendment) and the SDK refuses the whole
@@ -88,18 +110,25 @@ function verdictObject(word) {
 
 /**
  * The fake tts server. `behaviour`:
- *   'run'         both voices served; every chunk renders with a guard verdict
- *   'no-voice'    `/v1/voices` serves a different voice only
- *   'busy'        the submit is 409 server_busy
+ *   'run'           both voices served, four-rung ladders; every chunk renders
+ *                   with a guard verdict
+ *   'short-ladder'  both voices served with the TWO rungs every shipped
+ *                   manifest declares (`[[voice.takes]]`: the boson default and
+ *                   the one measured alternative at 0.7)
+ *   'no-voice'      `/v1/voices` serves a different voice only
+ *   'busy'          the submit is 409 server_busy
  */
 function startFake(behaviour) {
+  const rungs = behaviour === 'short-ladder' ? 2 : 4;
   return startFakeCrucible(async (req, res, ctx) => {
     const { state, send, sseWriter, url } = ctx;
     const route = url.pathname;
 
     if (route === '/v1/voices' && req.method === 'GET') {
       state.voicesAsked = (state.voicesAsked || 0) + 1;
-      send(res, 200, behaviour === 'no-voice' ? [voiceRow('owen')] : [voiceRow('mistborn'), voiceRow('deathstalker')]);
+      send(res, 200, behaviour === 'no-voice'
+        ? [voiceRow('owen')]
+        : [voiceRow('mistborn', rungs), voiceRow('deathstalker', rungs)]);
       return true;
     }
 
@@ -113,8 +142,19 @@ function startFake(behaviour) {
         } } });
         return true;
       }
+      // A real server refuses a rung its manifest does not declare
+      // (`unknown_take`) and NEVER clamps, so the fake does the same — that is
+      // what makes "the client asked before it submitted" a testable claim
+      // rather than a comment.
+      if (!Number.isInteger(body.params.take) || body.params.take < 0 || body.params.take >= rungs) {
+        send(res, 400, { error: { code: 'unknown_take', message:
+          `voice '${body.model}' has no take ${body.params.take}; it declares ${rungs} take(s), `
+          + `0 to ${rungs - 1}`,
+        } });
+        return true;
+      }
       const id = ctx.newJobId();
-      state.jobs.set(id, { chunks: body.params.chunks, voice: body.model });
+      state.jobs.set(id, { chunks: body.params.chunks, voice: body.model, take: body.params.take });
       send(res, 200, { job_id: id });
       return true;
     }
@@ -129,7 +169,7 @@ function startFake(behaviour) {
       j.chunks.forEach((chunk, n) => {
         sse.frame('chunk', {
           index: chunk.index, seconds: 7.1, chars: chunk.text.length,
-          chars_per_sec: chunk.text.length / 7.1, tokens: null, capped: null, take: 0,
+          chars_per_sec: chunk.text.length / 7.1, tokens: null, capped: null, take: j.take,
           guard: verdictObject(n === 1 ? 'rerolled' : 'clean'),
         });
         const name = `${chunk.index}.flac`;
@@ -142,7 +182,7 @@ function startFake(behaviour) {
         });
       });
       sse.frame('done', {
-        artifacts: names, rendered: names.length, failed: [], take: 0, sample_rate: 24000,
+        artifacts: names, rendered: names.length, failed: [], take: j.take, sample_rate: 24000,
       });
       sse.end();
       return true;
@@ -193,11 +233,10 @@ async function theRefusalThatMatters() {
         takeTemperatures: [0.4, 0.8, 1.0],
       }),
       (err) => err.code === 'crucible_reroll_take_temperatures_unsupported'
-        && /RULING OWED/.test(err.message)
         && /0\.4, 0\.8, 1/.test(err.message),
     );
   });
-  await check('the refusal names the alternative, so the operator is not left guessing', async () => {
+  await check('the refusal names the alternative — the LADDER, which is what replaced the spread', async () => {
     let caught = null;
     try {
       await reroll.runCrucibleReroll({
@@ -205,8 +244,12 @@ async function theRefusalThatMatters() {
         language: 'en', chunks: CHUNKS, targetDir: freshScratch(), takeTemperatures: [0.6],
       });
     } catch (err) { caught = err; }
-    assert.ok(/local narrator/.test(caught.message), caught.message);
-    assert.ok(/unseeded/.test(caught.message), caught.message);
+    assert.ok(/take ladder/.test(caught.message), caught.message);
+    assert.ok(/rung k \+ 1/.test(caught.message), caught.message);
+    // The old message offered "N jobs at take 0, genuinely different because
+    // narrator's sampling is unseeded". It is seeded (`seed + index`), so that
+    // sentence promised a spread it could not deliver and must not come back.
+    assert.ok(!/unseeded/.test(caught.message), caught.message);
   });
 }
 
@@ -226,16 +269,26 @@ async function happyPath() {
   } finally {
     await fake.close();
   }
-  await check('one job per take, each carrying EVERY named index, at take 0', () => {
+  await check('one job per candidate, each carrying EVERY named index', () => {
     assert.strictEqual(fake.state.submitted.length, 3);
     for (const body of fake.state.submitted) {
       assert.strictEqual(body.type, 'tts');
       assert.strictEqual(body.model, 'mistborn', 'for tts the model IS the voice');
-      assert.strictEqual(body.params.take, 0);
       assert.strictEqual(body.params.language, 'en');
       assert.deepStrictEqual(body.params.chunks.map((c) => c.index), [41, 42]);
       assert.deepStrictEqual(body.inputs, {}, 'a render uploads nothing');
     }
+  });
+  await check('THE FIX: 3 candidates go out at takes 1, 2, 3 — distinct rungs, and none is 0', () => {
+    const asked = fake.state.submitted.map((b) => b.params.take);
+    assert.deepStrictEqual(asked, [1, 2, 3],
+      'candidate k renders at rung k + 1; three jobs at take 0 are three copies of the reading '
+      + 'the person just rejected (seed = 1234 + index, moved only by in_take_lane)');
+    assert.strictEqual(new Set(asked).size, 3, 'no two candidates share a rung, i.e. a seed lane');
+    assert.ok(!asked.includes(0), 'rung 0 is the draw the rejected take was already rendered at');
+  });
+  await check('the rung rides on the outcome, beside the candidate it produced', () => {
+    assert.deepStrictEqual(outcome.takes.map((t) => [t.take, t.rung]), [[0, 1], [1, 2], [2, 3]]);
   });
   await check('the chunk TEXT crosses — a Crucible has no session to read chapter_sentences out of', () => {
     assert.strictEqual(fake.state.submitted[0].params.chunks[0].text, '[heading]Chapter Eight.[/heading]');
@@ -243,6 +296,14 @@ async function happyPath() {
   });
   await check('the server was asked whether it serves the voice ONCE for the whole pass', () => {
     assert.strictEqual(fake.state.voicesAsked, 1);
+  });
+  await check('take<k>/ still counts CANDIDATES, not rungs — it is what the bridge collects', () => {
+    // Candidate 0 lives in take0/ and was rendered at rung 1. The directory
+    // name is the audition order a person sees; the rung is provenance.
+    assert.deepStrictEqual(
+      fs.readdirSync(targetDir).sort(), ['take0', 'take1', 'take2'],
+      'a rung-named directory here would silently re-order the audition list',
+    );
   });
   await check('take<k>/<index>.flac lands under the local naming, with its provenance beside it', () => {
     for (const k of [0, 1, 2]) {
@@ -275,6 +336,67 @@ async function happyPath() {
     assert.strictEqual(progress[progress.length - 1].fraction, 1);
     assert.strictEqual(progress[progress.length - 1].total, 6, 'indices × takes');
     assert.ok(log.some((l) => /2 sentence\(s\) × 3 take\(s\)/.test(l)), log.join('\n'));
+  });
+  await check('the log says which rungs were climbed, so a listener can read the audition', () => {
+    assert.ok(log.some((l) => /rungs 1-3 of mistborn's 4-rung ladder/.test(l)), log.join('\n'));
+    for (const rung of [1, 2, 3]) {
+      assert.ok(log.some((l) => new RegExp(`at take rung ${rung} of 4`).test(l)), log.join('\n'));
+    }
+  });
+}
+
+/**
+ * THE LADDER IS SHORT AND ITS END IS A REFUSAL.
+ *
+ * Every shipped `crucible/voices/*.toml` declares TWO rungs — take 0, the boson
+ * default, and take 1 at temperature 0.7 with the measurement that chose it — so
+ * a two-rung voice has exactly ONE rung a candidate may use. Correct Sentences
+ * asks for three by default, and that is refused here, by name, with both
+ * numbers, before a single job is submitted: not clamped to rung 1 three times
+ * (one rung is one seed lane, so those three would be byte-identical), not
+ * quietly rendered once, and not sent for the server to refuse `unknown_take` on
+ * the second job after the first has already run.
+ */
+async function ladderTooShort() {
+  const fake = await startFake('short-ladder');
+  const server = registerFake(fake.url);
+  const targetDir = freshScratch();
+  let caught = null;
+  try {
+    await reroll.runCrucibleReroll({
+      server, renderId: 'sess-short', ttsEngine: 'higgs', voiceId: 'mistborn',
+      language: 'en', chunks: CHUNKS, targetDir, takes: 3,
+    });
+  } catch (err) { caught = err; } finally { await fake.close(); }
+  await check('3 candidates against a two-rung ladder is refused BY NAME, naming both numbers', () => {
+    assert.ok(caught !== null, 'it must not have quietly succeeded');
+    assert.strictEqual(caught.code, 'crucible_reroll_ladder_too_short', caught.message);
+    assert.ok(/3 candidate\(s\)/.test(caught.message), caught.message);
+    assert.ok(/2 rung\(s\)/.test(caught.message), caught.message);
+    assert.ok(/only 1 above rung 0/.test(caught.message), caught.message);
+  });
+  await check('and it is refused BEFORE anything is submitted or any take dir filled', () => {
+    assert.strictEqual(fake.state.submitted.length, 0, 'nothing partial ran first');
+    assert.strictEqual(fake.state.voicesAsked, 1, 'the ladder came off the voice row already read');
+    assert.deepStrictEqual(fs.readdirSync(targetDir), []);
+  });
+
+  // The rung that DOES exist still works: one candidate on a two-rung ladder is
+  // rung 1, the measured alternative, which is the whole point of the ruling.
+  const ok = await startFake('short-ladder');
+  const okServer = registerFake(ok.url);
+  const okDir = freshScratch();
+  let outcome;
+  try {
+    outcome = await reroll.runCrucibleReroll({
+      server: okServer, renderId: 'sess-short-ok', ttsEngine: 'higgs', voiceId: 'mistborn',
+      language: 'en', chunks: CHUNKS, targetDir: okDir, takes: 1,
+    });
+  } finally { await ok.close(); }
+  await check('one candidate on a two-rung ladder is rung 1 — the measured alternative', () => {
+    assert.deepStrictEqual(ok.state.submitted.map((b) => b.params.take), [1]);
+    assert.strictEqual(outcome.takes[0].rung, 1);
+    assert.strictEqual(outcome.takes[0].dir, path.join(okDir, 'take0'));
   });
 }
 
@@ -337,12 +459,13 @@ async function venueDoor() {
   {
     /*
      * THE LOCAL NARRATOR ARM IS GONE — and it was the one that could spread the
-     * per-take temperatures, so its removal is the reason a Crucible re-roll
-     * varies only by the engine's own unseeded sampling (the owed sampling
-     * channel is ROLLOUT_PLAN B4, not a switch). This used to pin the legacy
-     * switch reaching `regenerateSentenceIndices`; that switch and the spawn
-     * behind it are deleted (docs/LEGACY-REMOVAL.md), so with nothing to place
-     * the pass on the door REFUSES BY NAME and re-rolls nothing here.
+     * per-take temperatures. What replaced that spread is not a sampling
+     * channel (the "owed" one at ROLLOUT_PLAN B4 was answered the other way):
+     * it is the voice's take ladder, climbed a rung per candidate. This case
+     * used to pin the legacy switch reaching `regenerateSentenceIndices`; that
+     * switch and the spawn behind it are deleted (docs/LEGACY-REMOVAL.md), so
+     * with nothing to place the pass on the door REFUSES BY NAME and re-rolls
+     * nothing here.
      */
     const targetDir = freshScratch();
     let caught = null;
@@ -429,6 +552,7 @@ async function venueDoor() {
 (async () => {
   await theRefusalThatMatters();
   await happyPath();
+  await ladderTooShort();
   await refusals();
   await venueDoor();
   summary('test-crucible-reroll');

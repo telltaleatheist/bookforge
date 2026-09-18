@@ -15,31 +15,67 @@
  * report a real percentage and the take dirs fill in the same order they do
  * locally. This module is that swap.
  *
- * ── ONE KNOB HAS NO CHANNEL, AND IT IS REFUSED, NOT DROPPED ────────────────
+ * ── THE SPREAD IS THE LADDER, AND THE FIRST CANDIDATE IS ON RUNG 1 ─────────
  *
- * The local path spreads the takes across sampling temperatures
+ * The local path spread the takes across sampling temperatures
  * (`computeTakeTemperatures`: 0.4 / 0.8 / 1.0 around Orpheus's 0.6) because
  * "temp 0.6 alone barely moves the reading" — that is `--take_temperatures` on
- * the worker's argv. **`RenderOptions` carries no sampling channel at all.**
- * PHASE6-REMOTE-RENDER.md §1 took `take` out of the client's business
- * altogether: the ladder's rungs are engine config, `take: 0` means "the
- * engine's own sampling", and there is no per-request temperature, top-p or
- * seed on the wire.
- *
- * So {@link runCrucibleReroll} REFUSES a caller that hands it temperatures
+ * the worker's argv. **`RenderOptions` carries no sampling channel at all**, and
+ * it is not getting one: PHASE6-REMOTE-RENDER.md §1 took sampling out of the
+ * client's business altogether, and the division-of-knowledge ruling says
+ * tuning is engine config, never a wire field. So {@link runCrucibleReroll}
+ * still REFUSES a caller that hands it temperatures
  * (`crucible_reroll_take_temperatures_unsupported`) instead of sending the job
- * without them and calling it the same thing. What it offers instead is N takes
- * as N jobs at take 0: genuinely different readings, because narrator's sampling
- * is unseeded — which is what makes a re-roll a re-roll — but NOT the widened
- * spread the local path gets. A caller that wants the spread has the legacy
- * switch and must take it knowingly.
+ * without them and calling it the same thing.
  *
- * **RULING OWED** (already recorded in docs/CRUCIBLE_ROLLOUT_PLAN.md's 01:20
- * entry as *"take>0 needs a per-request sampling channel"*): does `tts` grow a
- * per-request sampling block, so a re-roll can ask for its spread; or is the
- * spread engine config keyed off the take rung, so `take: 1..3` IS the spread?
- * Until one of those exists, a remote re-roll and a local one are not the same
- * pass, and this module says so rather than hiding it.
+ * What stands in their place is the RUNG. Owen ruled on this exact door,
+ * 2026-09-14: *"i just know if a sentence/chunk was problematic before, itll
+ * likely be problematic again with the same settings used to originally
+ * generate it"* — so **takes = the spread; a retake never reuses the failing
+ * settings; the first candidate is on rung 1**
+ * (docs/EXTENSION-TO-CRUCIBLE-PLAN.md §2). Candidate k (0-based) is submitted
+ * at `take: k + 1`. Rung 0 is the boson default — the draw the sentence the
+ * person is correcting was ALREADY rendered at — and no candidate is ever asked
+ * for there again.
+ *
+ * ── WHY THAT IS A FIX AND NOT A PREFERENCE ────────────────────────────────
+ *
+ * This module used to submit `take: 0` for every candidate and call that
+ * enough, "because narrator's sampling is unseeded — which is what makes a
+ * re-roll a re-roll". **That premise was false and the feature was broken by
+ * it.** `HiggsConfig.seed` defaults to 1234
+ * (`python/narrator/engine/higgs/config.py`) and `_seed_for` returns
+ * `seed + index`, so every chunk is seeded deterministically; the only thing
+ * that moves the draw is the rung, which shifts the seed by
+ * `TAKE_SEED_STRIDE * take` (`engine/higgs/truncation.py:in_take_lane`).
+ * narrator's own `CONTRACTS.md` says it outright — "two take-0 re-rolls always
+ * were" byte-identical. A person who asked for three alternative readings got
+ * three copies of the one they had just rejected.
+ *
+ * ── PAST THE LADDER IS A REFUSAL, NOT A CLAMP ─────────────────────────────
+ *
+ * A ladder is per voice and it is SHORT: `[[voice.takes]]` in
+ * `crucible/voices/*.toml` declares two rungs for every shipped fine-tune
+ * (rung 0, the boson default; rung 1 at temperature 0.7, with the measurement
+ * that chose it written beside it), and a voice that declares none has rung 0
+ * alone. Its length arrives on the voice row this door already fetches
+ * (`VoiceInfo.takes`, whose own words are "ask before you submit"), so a pass
+ * that wants more candidates than the ladder has rungs above 0 is refused BY
+ * NAME, with both numbers, before a single job is submitted. It is not clamped
+ * to the top rung and it does not quietly render fewer: Crucible refuses
+ * `unknown_take` rather than clamping ("a silent clamp is a retake ladder that
+ * stops climbing without telling anyone"), and cycling back down the rungs
+ * would put two candidates in one seed lane — which is the byte-identical pair
+ * this whole change exists to remove.
+ *
+ * ── THE DIRECTORY IS THE CANDIDATE'S, THE RUNG IS THE ENGINE'S ────────────
+ *
+ * `take<k>/` still means CANDIDATE k, unchanged: it is the name the bridge
+ * collects (`correct-sentences-bridge.ts` walks `take0 .. take<takes-1>`) and
+ * the order the audition list plays. The rung that produced it rides on the
+ * outcome ({@link CrucibleRerollTake.rung}) and is named in the log, so the two
+ * numbers are never mistaken for each other: candidate 0 lands in `take0/` and
+ * was rendered at rung 1.
  *
  * ── What travels, and what does not ────────────────────────────────────────
  *
@@ -75,7 +111,6 @@ import {
   assertCrucibleVoiceAvailable,
   crucibleVoiceFor,
   describeCrucibleRefusal,
-  CRUCIBLE_RENDER_TAKE,
 } from './render';
 import { downloadRenderArtifacts } from './render-artifacts';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
@@ -92,13 +127,19 @@ export class CrucibleRerollRefused extends Error {
   }
 }
 
-/** How the local worker names a take's directory under the scratch root. */
+/**
+ * How the local worker names a take's directory under the scratch root.
+ *
+ * The argument is the CANDIDATE's 0-based ordinal, not the ladder rung it was
+ * rendered at — see the header's last section. `take0/` is the first candidate
+ * and it holds rung 1's render.
+ */
 export function takeDirName(take: number): string {
   return `take${take}`;
 }
 
 export interface CrucibleRerollProgress {
-  /** 0-based take this frame belongs to. */
+  /** 0-based CANDIDATE this frame belongs to; `take<k>/` is its directory. */
   readonly take: number;
   /** The SERVER's own fraction for that take's job. Never re-derived here. */
   readonly fraction: number;
@@ -110,7 +151,16 @@ export interface CrucibleRerollProgress {
 }
 
 export interface CrucibleRerollTake {
+  /** The 0-based CANDIDATE — what `take<k>/` counts and what the audition plays. */
   readonly take: number;
+  /**
+   * The RUNG of the voice's take ladder this candidate was rendered at, always
+   * `take + 1`. Recorded rather than re-derived because it is the provenance a
+   * person needs to read the audition list: "this one came from rung 1, the
+   * measured alternative", and never from rung 0, which is what the sentence
+   * they rejected was already rendered at.
+   */
+  readonly rung: number;
   readonly jobId: string;
   /** `<targetDir>/take<k>`, where its `<index>.flac` landed. */
   readonly dir: string;
@@ -138,11 +188,17 @@ export interface RunCrucibleRerollOptions {
   readonly chunks: readonly RenderChunk[];
   /** The scratch root the bridge made. `take<k>/` subdirectories are created inside it. */
   readonly targetDir: string;
-  /** How many fresh takes per index. Default 1. */
+  /**
+   * How many fresh candidates per index. Default 1. Each one is rendered at its
+   * own rung of the voice's take ladder — candidate k at `take: k + 1` — so
+   * this number may not exceed the rungs the voice declares ABOVE rung 0, and
+   * a pass that asks for more is refused by name rather than clamped.
+   */
   readonly takes?: number;
   /**
    * The local path's per-take sampling temperatures. REFUSED BY NAME — the `tts`
-   * wire has no sampling channel. See the header.
+   * wire has no sampling channel, and the ladder is what replaced them. See the
+   * header.
    */
   readonly takeTemperatures?: readonly number[];
   readonly onProgress?: (progress: CrucibleRerollProgress) => void;
@@ -160,11 +216,13 @@ export interface CrucibleRerollOutcome {
  * Re-roll exactly these chunks on a Crucible, landing `take<k>/<index>.flac`
  * under `targetDir` the way the local worker does.
  *
- * One `tts` job per take. Each job carries the whole index list, so the server
- * has a denominator and the voice is loaded once per take rather than once per
- * sentence. A chunk the server could not render has no file and is named in
- * that take's `result.failed` — the bridge already treats a missing take as
- * "this take missing for this index" and shows the ones that did land.
+ * One `tts` job per candidate, **each at its own rung of the voice's take
+ * ladder** — candidate k at `take: k + 1`, the first one on rung 1. Each job
+ * carries the whole index list, so the server has a denominator and the voice
+ * is loaded once per candidate rather than once per sentence. A chunk the
+ * server could not render has no file and is named in that candidate's
+ * `result.failed` — the bridge already treats a missing take as "this take
+ * missing for this index" and shows the ones that did land.
  */
 export async function runCrucibleReroll(
   options: RunCrucibleRerollOptions,
@@ -191,12 +249,14 @@ export async function runCrucibleReroll(
       'crucible_reroll_take_temperatures_unsupported',
       `this re-roll asked for per-take sampling temperatures (${[...options.takeTemperatures].join(', ')}), `
       + 'which a Crucible tts render has no channel for: RenderOptions carries voice, language, take '
-      + 'and chunks, and PHASE6-REMOTE-RENDER.md §1 removed the rung from the client\'s business '
-      + 'entirely — there is no per-request temperature, top-p or seed on the wire. Sending the job '
-      + 'without them and calling it the same pass would be a silent substitution. Ask for N takes '
-      + 'instead (N jobs at take 0, genuinely different because narrator\'s sampling is unseeded, but '
-      + 'NOT the widened spread), or re-roll with the local narrator. RULING OWED: a per-request '
-      + 'sampling channel on tts, or the spread as engine config keyed off the take rung.',
+      + 'and chunks, and PHASE6-REMOTE-RENDER.md §1 removed sampling from the client\'s business '
+      + 'entirely — there is no per-request temperature, top-p or seed on the wire, because tuning '
+      + 'is engine config. Sending the job without them and calling it the same pass would be a '
+      + 'silent substitution. Ask for N candidates instead: they are spread across the voice\'s own '
+      + 'take ladder, candidate k at rung k + 1, never twice at the same rung and never at rung 0. '
+      + 'That ladder IS the spread — Owen\'s ruling of 2026-09-14, "a retake must not reuse the '
+      + 'settings that produced the problem" — and it is the answer to what this door used to call '
+      + 'a RULING OWED.',
     );
   }
   if (typeof targetDir !== 'string' || targetDir === '' || !fs.existsSync(targetDir)) {
@@ -250,9 +310,33 @@ export async function runCrucibleReroll(
   // checkpoint that lives only on this machine, and a zero-shot voice.
   const voice = crucibleVoiceFor(options.ttsEngine, options.voiceId);
   const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
-  // Before the first submit: does this server serve that voice, and can it load
-  // it. One GET for the whole pass rather than one per take.
-  await assertCrucibleVoiceAvailable(client, server, voice);
+  // Before the first submit: does this server serve that voice, can it load it,
+  // and HOW LONG IS ITS LADDER. One GET for the whole pass rather than one per
+  // candidate, and the row answers all three.
+  const voiceRow = await assertCrucibleVoiceAvailable(client, server, voice);
+
+  // THE LADDER, ASKED BEFORE ANYTHING IS SUBMITTED. `takes` on the row is the
+  // number of rungs the voice declares, `0 .. takes - 1`; rung 0 is the boson
+  // default the rejected reading was already rendered at, so the rungs actually
+  // available to a candidate are the ones above it. Asking for more than there
+  // are is refused here by name with both numbers rather than at the server as
+  // one `unknown_take` on the Nth job, after N-1 have already run.
+  const rungs = voiceRow.takes;
+  const spread = rungs - 1;
+  if (takes > spread) {
+    throw new CrucibleRerollRefused(
+      'crucible_reroll_ladder_too_short',
+      `this re-roll asked for ${takes} candidate(s), but crucible "${server}" declares a take ladder `
+      + `of ${rungs} rung(s) for voice "${voice}" — `
+      + `${spread === 0 ? 'none at all' : `only ${spread}`} above rung 0, and rung 0 is the draw the `
+      + 'sentence being corrected was already rendered at. Candidate k goes to rung k + 1, so this '
+      + `would have asked for rung ${takes}, which the server refuses unknown_take. Nothing is `
+      + 'clamped to the top rung and nothing is quietly rendered fewer times: two candidates on one '
+      + 'rung share a seed lane (narrator shifts the seed by TAKE_SEED_STRIDE × take) and would be '
+      + `byte-identical, which is the whole defect this door was fixed for. Ask for at most ${spread}`
+      + `, or measure another rung into ${voice}'s [[voice.takes]] on that server.`,
+    );
+  }
 
   const total = options.chunks.length * takes;
   let written = 0;
@@ -262,21 +346,25 @@ export async function runCrucibleReroll(
     if (options.signal?.aborted) {
       throw new CrucibleRerollRefused(
         'crucible_reroll_cancelled',
-        `the re-roll was cancelled after ${take} of ${takes} take(s); what landed is on disk.`,
+        `the re-roll was cancelled after ${take} of ${takes} candidate(s); what landed is on disk.`,
       );
     }
+    // The rung, and the one line that decides this whole module's behaviour:
+    // candidate k renders at rung k + 1, so the first candidate is already on a
+    // rung the rejected reading was not, and no two candidates share one.
+    const rung = take + 1;
     const dir = path.join(targetDir, takeDirName(take));
     fs.mkdirSync(dir, { recursive: true });
 
-    log(`crucible "${server}": submitting take ${take} of ${takes} — ${options.chunks.length} `
-      + `chunk(s) as voice "${voice}"`);
+    log(`crucible "${server}": submitting candidate ${take + 1} of ${takes} at take rung ${rung} `
+      + `of ${rungs} — ${options.chunks.length} chunk(s) as voice "${voice}"`);
     let jobId: string;
     try {
       // eslint-disable-next-line no-await-in-loop -- takes are serial: one exclusive lane at a time
       jobId = await client.render({
         voice,
         language: options.language.trim(),
-        take: CRUCIBLE_RENDER_TAKE,
+        take: rung,
         chunks: options.chunks,
       });
     } catch (err) {
@@ -299,8 +387,10 @@ export async function runCrucibleReroll(
       const outcome = await downloadRenderArtifacts({
         server,
         jobId,
-        // Its OWN ledger key per take: three takes of one sentence are three
-        // renders, not three chunks of one render.
+        // Its OWN ledger key per CANDIDATE — and keyed by the candidate rather
+        // than the rung, because the key must match the directory a person is
+        // auditioning: three candidates of one sentence are three renders, not
+        // three chunks of one render.
         renderId: `${renderId}#${takeDirName(take)}`,
         sentencesDir: dir,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -317,18 +407,19 @@ export async function runCrucibleReroll(
         throw describeCrucibleRefusal(err, server);
       });
       if (outcome.result.failed.length > 0) {
-        log(`crucible job ${jobId} (take ${take}): ${outcome.result.failed.length} chunk(s) produced `
-          + `no audio — ${outcome.result.failed.slice(0, 8).map((f) => `${f.index}: ${f.message}`).join('; ')}`);
+        log(`crucible job ${jobId} (candidate ${take}, rung ${rung}): ${outcome.result.failed.length} `
+          + `chunk(s) produced no audio — ${outcome.result.failed.slice(0, 8).map((f) => `${f.index}: ${f.message}`).join('; ')}`);
       }
       results.push({
-        take, jobId, dir, written: outcome.written, result: outcome.result, guard: outcome.guard,
+        take, rung, jobId, dir, written: outcome.written, result: outcome.result, guard: outcome.guard,
       });
     } finally {
       options.signal?.removeEventListener('abort', onAbort);
     }
   }
 
-  log(`crucible "${server}" re-rolled ${options.chunks.length} sentence(s) × ${takes} take(s): `
+  log(`crucible "${server}" re-rolled ${options.chunks.length} sentence(s) × ${takes} take(s) at `
+    + `${takes === 1 ? 'rung 1' : `rungs 1-${takes}`} of ${voice}'s ${rungs}-rung ladder: `
     + `${written} file(s) under ${path.basename(targetDir)}`);
   return { takes: results, written };
 }
