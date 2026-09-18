@@ -34,6 +34,8 @@ WHAT IS ASSERTED, against the pool's own reads:
 
 Run: python -m unittest discover -s python/narrator/tests -t python -p "test_engine_*.py"
 """
+import array
+import base64
 import json
 import os
 import subprocess
@@ -45,6 +47,30 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _PYTHON_ROOT = os.path.dirname(os.path.dirname(_HERE))   # .../python
 if _PYTHON_ROOT not in sys.path:
     sys.path.insert(0, _PYTHON_ROOT)
+
+
+def pcm16(data: str) -> array.array:
+    """The wire's `data` field as int16 samples.
+
+    `array` rather than numpy on purpose: this file asserts what the NODE POOL
+    reads, and the pool decodes base64 into an Int16Array with no numpy in
+    sight. A gap is a run of exact zeros in this sequence and nothing else.
+    """
+    samples = array.array('h')
+    samples.frombytes(base64.b64decode(data))
+    return samples
+
+
+def trailing_zeros(samples) -> int:
+    """How many samples of exact silence a row ends in. This is the measurement
+    the gap-owner keepers make: an appended gap is `int(rate * seconds)` zeros
+    and a second one would double it."""
+    n = 0
+    for value in reversed(samples):
+        if value != 0:
+            break
+        n += 1
+    return n
 
 
 class Worker:
@@ -184,6 +210,21 @@ class _WorkerCase(unittest.TestCase):
     def setUp(self):
         self.w = Worker(extra_env=self.WORKER_ENV)
         self.addCleanup(self._shutdown)
+
+    def _worker_with_env(self, extra):
+        """Restart this test's worker with `extra` on top of WORKER_ENV.
+
+        Several of the variables these tests steer with - the fake's rate table,
+        `ORPHEUS_STREAM_GAP` - are read ONCE at import or per render inside the
+        worker, so changing one means a new subprocess. One owner for that
+        restart, because every caller must also keep WORKER_ENV. `None` is
+        WORKER_ENV's declared value for "this class adds nothing", not a
+        missing one, which is why it is read by name rather than defaulted.
+        """
+        self.w.close()
+        env = {} if self.WORKER_ENV is None else dict(self.WORKER_ENV)
+        env.update(extra)
+        self.w = Worker(extra_env=env)
 
     def _shutdown(self):
         err = self.w.close()
@@ -425,6 +466,55 @@ class ServeProtocolTest(_WorkerCase):
         self.assertGreaterEqual(len(chunks), 2)
         self.assertAlmostEqual(chunks[-1]['duration'], 0.5, places=3)
 
+    def test_the_listen_doors_keep_exactly_one_gap(self):
+        """ON THE STREAM THERE IS NO ASSEMBLER, so `finalize_audio` IS the
+        assembler and the 0.3 s gap stays (Owen, 2026-09-18: the gap belongs to
+        whoever assembles, and here that is this worker). The extension's
+        offscreen player and BookForge's reader-audio-store concatenate rows and
+        add no per-sentence silence of their own.
+
+        EXACTLY ONE, which is the half a keeper has to say out loud. Both of
+        fast start's arms appear in this one batch and each must append the gap
+        once:
+
+          row 7   streams, so its audio left as raw chunks and the gap rides as
+                  one final all-silent chunk - if `finalize_audio` had also run
+                  over that audio the row would carry two;
+          row 8   does not stream, so it goes out whole through
+                  `finalize_audio` and ends in one gap's worth of zeros.
+
+        The counts are asserted against 0.5 s rather than the shipped 0.3 s so a
+        doubling is unmistakable, and because `ORPHEUS_STREAM_GAP` is the knob
+        that proves this door reads it at all - the render door must not.
+        """
+        gap_seconds = 0.5
+        gap_samples = int(24000 * gap_seconds)
+        self._worker_with_env({'ORPHEUS_STREAM_GAP': str(gap_seconds)})
+        self._ready()
+        self._load()
+        items = [{'i': 7, 'text': 'The row the listener is on.', 'stream': True},
+                 {'i': 8, 'text': 'Read-ahead behind it, buffered whole.'}]
+        self.w.send(action='generate_batch', items=items)
+        msgs = self.w.read_until('batch_done')
+        by_i = self._assert_batch_closed(msgs, [7, 8])
+
+        chunks = [m for m in msgs if m['type'] == 'batch_chunk']
+        silent = [c for c in chunks
+                  if trailing_zeros(pcm16(c['data'])) == len(pcm16(c['data']))]
+        self.assertEqual(len(silent), 1,
+                         'a streamed row carries exactly one gap chunk')
+        self.assertIs(silent[0], chunks[-1], 'and it is the last one')
+        self.assertEqual(len(pcm16(chunks[-1]['data'])), gap_samples)
+        self.assertAlmostEqual(by_i[7]['duration'],
+                               sum(c['duration'] for c in chunks), places=5)
+
+        buffered = pcm16(by_i[8]['data'])
+        zeros = trailing_zeros(buffered)
+        self.assertGreaterEqual(zeros, gap_samples,
+                                'the buffered Listen row lost its gap')
+        self.assertLess(zeros, 2 * gap_samples,
+                        'the buffered Listen row carries the gap twice')
+
     # ---- 9, 10 --------------------------------------------------------------
 
     def test_cancel_is_acknowledged(self):
@@ -546,10 +636,7 @@ class GuardedBatchTest(_WorkerCase):
 
     def _worker_with_rate(self, rate_json):
         """Restart this test's worker with a NARRATOR_FAKE_HIGGS_RATE table."""
-        self.w.close()
-        env = dict(self.WORKER_ENV)
-        env['NARRATOR_FAKE_HIGGS_RATE'] = rate_json
-        self.w = Worker(extra_env=env)
+        self._worker_with_env({'NARRATOR_FAKE_HIGGS_RATE': rate_json})
 
     def _higgs_batch(self, items):
         self._ready()
@@ -591,6 +678,38 @@ class GuardedBatchTest(_WorkerCase):
             self.assertIn('max_chars_per_sec', guard['band'])
             self.assertIn('min_chars_per_sec', guard['band'])
             self.assertIn('observed', guard['band'])
+
+    def test_the_render_door_emits_bare_speech(self):
+        """THE GAP BELONGS TO WHOEVER ASSEMBLES (Owen, 2026-09-18): "whoever
+        assembles them is who owns the gap. I think that's bookforge."
+
+        This is the door Crucible's `tts` render job drives, and behind it
+        BookForge's narrator assembler realizes `gaps.json` - 0.6 s, or the
+        voice's inject - for a `pads=False` engine. `finalize_audio` used to
+        append `STREAM_GAP_SEC` here as well, so every join of a remotely
+        rendered book came out model tail + 0.30 baked into the chunk + 0.60
+        from the assembler: the thirdreich "long on every join" defect, on
+        every voice.
+
+        MEASURED TWO WAYS, because one of them alone could pass by accident.
+        A row rendered with a 0.5 s stream gap configured must be BYTE-FOR-BYTE
+        the row rendered with none - this door does not read that number at all
+        - and its audio must not end in silence, since the fake's tone runs to
+        the last sample it decoded.
+        """
+        items = [{'i': 0, 'text': 'The chunk a remote render asks narrator for.'}]
+        self._worker_with_env({'ORPHEUS_STREAM_GAP': '0.5'})
+        padded = self._higgs_batch(items)[0]
+        self._worker_with_env({'ORPHEUS_STREAM_GAP': '0'})
+        bare = self._higgs_batch(items)[0]
+
+        self.assertEqual(trailing_zeros(pcm16(padded['data'])), 0,
+                         'the render door appended silence the assembler will '
+                         'append again')
+        self.assertEqual(padded['data'], bare['data'],
+                         'ORPHEUS_STREAM_GAP changed a RENDERED row; the stream '
+                         'gap is the Listen door\'s and this door must not read it')
+        self.assertAlmostEqual(padded['duration'], bare['duration'], places=9)
 
     def test_a_bent_chunk_reports_its_reroll(self):
         """One bad take, then a good one: the ladder re-rolls and the verdict says

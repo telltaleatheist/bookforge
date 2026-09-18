@@ -646,8 +646,36 @@ def set_active_engine_audio(samplerate: int, pads: bool) -> None:
     _ACTIVE_PADS = bool(pads)
 
 
-def finalize_audio(audio_np, pads=None):
-    """Prepare one rendered sentence for the wire.
+#: The two contracts `finalize_audio` serves, named because the caller is the
+#: only thing that knows which one it is. See that function's docstring.
+FOR_STREAM = 'stream'
+FOR_RENDER = 'render'
+
+
+def finalize_audio(audio_np, door, pads=None):
+    """Prepare one rendered sentence for the wire, for the door that asked.
+
+    WHOEVER ASSEMBLES THE SENTENCES OWNS THE GAP BETWEEN THEM (Owen,
+    2026-09-18: "whoever assembles them is who owns the gap. I think that's
+    bookforge."), so `door` is required and has no default: the caller states
+    which contract this row is for, and the two are not the same.
+
+      FOR_RENDER  an assembler follows. BookForge's narrator assembler realizes
+                  `gaps.json` - 0.6 s, or the voice's inject - for a
+                  `pads=False` engine (assemble/engine_profiles.py, higgs-v3).
+                  So this door emits BARE SPEECH and appends nothing.
+      FOR_STREAM  no assembler follows. The extension's offscreen player and
+                  BookForge's reader-audio-store concatenate rows with no
+                  per-sentence silence of their own, so here this function IS
+                  the assembler and the gap is appended.
+
+    WHY THE ARGUMENT EXISTS. This used to append the gap unconditionally, and
+    the docstring justified it with "the audiobook path never goes through
+    here". That stopped being true on 2026-09-13, when `_emit_guarded_batch`
+    landed and became the door Crucible's `tts` render job drives: every join
+    of a remotely rendered book came out model tail + 0.30 baked in here + 0.60
+    from the assembler. A caller that does not say which door it is is a caller
+    that has not decided, which is exactly how that happened.
 
     THREE STEPS, AND ONLY THE FIRST IS ENGINE-SPECIFIC.
 
@@ -661,17 +689,22 @@ def finalize_audio(audio_np, pads=None):
        skipped, and the audio goes out exactly as decoded, which is also what
        `Engine.edge_fade` assumes (the fades are the assembler's).
     2. Peak-normalize if it clipped. Engine-independent.
-    3. APPEND THE INTER-SENTENCE GAP, FOR EVERY ENGINE. This is a CLIENT
-       contract, not an engine property: the player concatenates streamed
-       chunks with no gap of its own, so without it every sentence runs into
-       the next. It is deliberately NOT conditioned on `pads` - `pads` says who
-       owns the silence INSIDE a chunk file for ASSEMBLY, and this is the
-       streaming wire, where the worker is the only thing that can put a gap
-       between two sentences. (The audiobook path never goes through here; it
-       writes chunk files and the assembler realizes the manifest's gaps.)
+    3. APPEND THE INTER-SENTENCE GAP - ON FOR_STREAM ONLY, AND THERE FOR EVERY
+       ENGINE. It is the DOOR's question, not `pads`': `pads` says who owns the
+       silence INSIDE a chunk, which is what decides the trim above, while this
+       is about the silence BETWEEN two chunks and that belongs to whoever
+       joins them. On the stream nothing else can, so a `pads=True` Orpheus and
+       a `pads=False` Higgs both get it.
 
     `pads` defaults to the loaded engine's (see set_active_engine_audio).
     """
+    if door not in (FOR_STREAM, FOR_RENDER):
+        raise ValueError(
+            f'finalize_audio was asked for door {door!r}, which is neither '
+            f'{FOR_STREAM!r} (a player concatenates these rows, so the '
+            f'inter-sentence gap is appended here) nor {FOR_RENDER!r} (an '
+            'assembler follows and owns the gap). There is no third contract '
+            'and no default: the caller is the only thing that knows.')
     if audio_np is None:
         return None
     a = np.asarray(audio_np, dtype=np.float32).flatten()
@@ -688,7 +721,7 @@ def finalize_audio(audio_np, pads=None):
     peak = float(np.max(np.abs(a))) if a.size else 0.0
     if peak > 1.0:
         a = a / peak * 0.95
-    if STREAM_GAP_SEC > 0:
+    if door == FOR_STREAM and STREAM_GAP_SEC > 0:
         a = np.concatenate([a, np.zeros(int(rate * STREAM_GAP_SEC), dtype=np.float32)])
     return a
 
@@ -1370,7 +1403,19 @@ class OrpheusStreamServer:
             audio = orph._tokens_to_audio(
                 orph._generate_tokens_transformers(f"{orph.voice}: {clean}")
             )
-        return finalize_audio(audio)
+        # FOR_STREAM, for all three callers, and the third one rests on a
+        # ROUTING fact rather than a wish. `generate` is one Listen sentence,
+        # `_warmup` discards what it renders, and the third is
+        # `_generate_audio_batch`'s sequential arm - which `generate_batch`
+        # reaches only for an engine it did not already hand to
+        # _emit_guarded_batch. Of the engines serve will run (higgs-v2-scaffold
+        # is refused outright, UNSERVABLE_ENGINES) that leaves Orpheus, whose
+        # audiobooks are rendered by the legacy e2a layer and never by this
+        # worker; higgs-v3 offers `render_many` and is routed away. An engine
+        # with `render_audio` and no `render_many` would put the render door on
+        # this line - there is none today, and the day there is, this is where
+        # it needs its own answer.
+        return finalize_audio(audio, FOR_STREAM)
 
     def _generate_audio_batch(self, texts, voices=None, samplings=None, takes=None):
         """Generate many sentences at once. On the vLLM backend this is a TRUE
@@ -1487,7 +1532,12 @@ class OrpheusStreamServer:
                             c, force_split=True, voice=rv),
                         row_voices[i]
                     )
-                    results[i] = finalize_audio(audio_np)
+                    # FOR_STREAM, like every arm of this method. This one is
+                    # gated on _uses_orpheus_token_pipeline, so the engine here
+                    # is ORPHEUS, and Orpheus's audiobooks are rendered by the
+                    # legacy e2a layer and not by this worker - nothing
+                    # assembles what leaves this line.
+                    results[i] = finalize_audio(audio_np, FOR_STREAM)
             for i, c in enumerate(cleaned):
                 if not c:
                     results[i] = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
@@ -1527,7 +1577,8 @@ class OrpheusStreamServer:
                         # Genuinely empty text -> tiny silence (the designed contract).
                         out.append(np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                 else:
-                    out.append(finalize_audio(a))
+                    # FOR_STREAM - see the vLLM arm above; same reasoning.
+                    out.append(finalize_audio(a, FOR_STREAM))
             return out
 
         # transformers, and any engine with no batched API - sequentially.
@@ -1724,9 +1775,14 @@ class OrpheusStreamServer:
             # `audio is None` is render_many's failure signal, and `verdict` is then
             # None too - _emit_batch_item turns that into the ordinary
             # 'No audio generated' item, never silence dressed as a success.
+            # FOR_RENDER: this is the door Crucible's `tts` render job drives,
+            # and behind it BookForge's narrator assembler realizes the
+            # manifest's gaps. A gap appended here would be a second one on
+            # every join of the book.
             self._emit_batch_item(
                 it,
-                None if audio is None or len(audio) == 0 else finalize_audio(audio),
+                None if audio is None or len(audio) == 0
+                else finalize_audio(audio, FOR_RENDER),
                 guard=verdict)
             if self._is_cancelled():
                 # CANCELLABLE, BETWEEN CHUNKS. `render_many` is a generator, so
@@ -1893,7 +1949,11 @@ class OrpheusStreamServer:
                                   file=sys.stderr)
                         audio = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32) if not cleaned[p] else None
                     else:
-                        audio = finalize_audio(a)
+                        # FOR_STREAM: `generate_batch` gates this method on
+                        # _uses_orpheus_token_pipeline, so this is ORPHEUS's
+                        # MLX grouping - and Orpheus's audiobooks are rendered
+                        # by the legacy e2a layer, not by this worker.
+                        audio = finalize_audio(a, FOR_STREAM)
                     self._emit_batch_item(items[p], audio)
                     emitted.add(p)
 
@@ -2114,10 +2174,16 @@ class OrpheusStreamServer:
                 pos = row_to_pos[row]
                 streamed = row in stream_rows
                 if not streamed:
+                    # FOR_STREAM: fast start is a Listen door end to end - this
+                    # is the read-ahead row behind the one being played, and the
+                    # player joins it to its neighbours. The STREAMED rows take
+                    # the gap below instead; the two are exclusive per row,
+                    # which is why neither can double the other.
                     if _claim(pos):
                         self._emit_batch_item(
                             items[pos],
-                            None if audio is None or len(audio) == 0 else finalize_audio(audio))
+                            None if audio is None or len(audio) == 0
+                            else finalize_audio(audio, FOR_STREAM))
                     return
                 total = 0.0 if audio is None else len(audio) / active_samplerate()
                 with state_lock:
@@ -2130,9 +2196,12 @@ class OrpheusStreamServer:
                         send_response('batch_item',
                                       {'i': items[pos].get('i'), 'message': 'No audio generated'})
                     return
-                # The inter-sentence gap finalize_audio would have appended, sent as
-                # the row's LAST chunk (see the docstring): the only part of
-                # finalization that can still be applied to audio already in flight.
+                # The inter-sentence gap `finalize_audio(..., FOR_STREAM)` would
+                # have appended, sent as the row's LAST chunk (see the
+                # docstring): the only part of finalization that can still be
+                # applied to audio already in flight. THE ROW'S ONLY GAP - a
+                # streamed row's chunks never went through finalize_audio, and
+                # the branch above returned before this line for one that did.
                 if STREAM_GAP_SEC > 0:
                     gap = np.zeros(int(active_samplerate() * STREAM_GAP_SEC), dtype=np.float32)
                     on_chunk(row, sent, gap)
