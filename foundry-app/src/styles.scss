@@ -192,8 +192,45 @@ input:focus, select:focus, textarea:focus {
 
 /* Chromium on Windows does not give <option> the page's colours, so the popup
    list has to be told twice. */
-select { cursor: pointer; color-scheme: dark; }
 select option { background: var(--bg-input); color: var(--text-primary); }
+
+/*
+ * THE ARROW IS OURS, BECAUSE THE PLATFORM'S IS THE UGLY PART.
+ *
+ * Owen, 2026-09-17: *"i guess it can be a dropdown but lets stylize the dropdown
+ * so it isnt ugly."* Everything around a select was already themed -- the field
+ * treatment above gives it the same ground, border and focus ring as an input --
+ * and what stayed stubbornly native was the arrow well: a raised grey button on
+ * Windows that matches nothing else on the screen.
+ *
+ * `appearance: none` removes it and the chevron is drawn as a background image.
+ * It is a data URI rather than a pseudo-element because a select cannot have
+ * one: the control is replaced content, and ::after on it renders in no browser.
+ *
+ * THE STROKE IS A LITERAL COLOUR AND CANNOT BE A VARIABLE. A data URI is parsed
+ * as its own document and knows nothing of this page's custom properties, and
+ * `currentColor` inside one is the SVG's own, not the select's. #8a8f98 is
+ * --text-tertiary spelled out; if that token moves, this moves by hand, which is
+ * the cost of the control being replaced content.
+ */
+select {
+  cursor: pointer;
+  color-scheme: dark;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Room for the chevron, so a long option does not run underneath it. */
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5' fill='none' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  /* The field treatment above sets `background` shorthand, which would otherwise
+     drop the image; naming the colour again keeps both. */
+  background-color: var(--bg-input);
+}
+select:hover, select:focus { background-color: var(--bg-input); }
+/* A select with nowhere to go is not a control. Kept legible rather than dimmed
+   into unreadability, and without the chevron, which would promise a list. */
+select:disabled { cursor: default; background-image: none; opacity: 0.7; }
 
 :focus-visible { outline: none; box-shadow: var(--focus-ring); }
 :focus:not(:focus-visible) { outline: none; box-shadow: none; }

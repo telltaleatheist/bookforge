@@ -23,6 +23,26 @@ COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 133 `ipcMain.handle` call sites,
 renamed, and no surviving shape narrowed. The figure was 145 before this change
 and 145 − 12 = 133, which is the whole of the arithmetic.
 
+> ### THE COUNT ABOVE IS 2026-09-15's AND THE FILE DRIFTED UNDER IT
+>
+> **Re-counted 2026-09-17: 147, then 139 after the page-reader sweep the same
+> evening. 139 `ipcMain.handle` call sites, 139 distinct names,
+> zero `ipcMain.on`, zero duplicates.** One of those 147 is `queue:release`,
+> added that evening (below). The other **thirteen** arrived between 09-15 and
+> 09-17 without this line moving.
+>
+> That matters more than the arithmetic. BookForge's `tools/test-ipc-collision.js`
+> reads THIS FILE as the authority on what Foundry claims, and two
+> `ipcMain.handle` calls of one name in one main process throw at registration —
+> the app does not start. A count that stopped tracking the source is a collision
+> check that quietly stopped checking, in the document whose whole job is to
+> prevent that.
+>
+> The distinct-vs-total equality is the part actually worth re-running, and it
+> holds: 147 = 147, so nothing in Foundry collides with itself today. Whoever
+> adds the next channel should re-run the count rather than trust the number
+> above it.
+
 **Owen, verbatim:** *"we dont have any local models. crucible handles all model
 orchestration. if theres no connected crucible server then tiles should be
 disabled. crucible is a service that foundry installs locally and connects to."*
@@ -962,7 +982,7 @@ reopening asks again.
 
 ## Doors the renderer knocks on
 
-All 133 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
+All 147 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
 purpose: a renderer that cannot tell whether main heard it is a renderer that
 cannot report a failure. They are registered in one function, `registerIpc`
 (`app/electron/ipc.ts`), which `mountFoundry` calls.
@@ -1160,3 +1180,29 @@ project's working copies and thumbnails out of `capture/derived/` — and
 ONLY that directory, so the originals bank is unaddressable through the
 scheme by construction. Same allow-list discipline as the book host,
 name rule kept character for character.
+
+## One held row released by name (2026-09-17)
+
+| Channel | Request/result |
+| --- | --- |
+| `queue:release` | Job id → whether that row was released. Moves ONE held row to queued and pumps; `queue:start` releases the whole held batch and is the shelf's button. False covers released-already, started-already and removed-while-you-were-looking, which are one state to a caller. Hosted it forwards like Start and answers false. |
+
+Added for the dialogs' own Start (Owen, 2026-09-17: *"the user can hit 'start', 'add to queue', or 'cancel'. if they hit start, progress shows in the modal live"*). A modal committing to its own run must not also let go of rows somebody parked deliberately, which is what routing it through `queue:start` would have done.
+
+## Eight doors removed with the local page reader (2026-09-17)
+
+`page-reader:state`, `page-reader:install`, `page-reader:install-cancel`,
+`page-reader:start`, `page-reader:stop`, `page-reader:set-keep-warm`,
+`models:inventory`, `models:remove-page-reader` — plus the `page-reader:progress`
+and `page-reader:status-changed` pushes.
+
+Owen, 2026-09-17: *"there sohuldnt be a local system. foundry does all ai work
+through crucible."* Reading a page wants a GPU, so it belongs to an engine. The
+six `page-reader:` doors drove a llama.cpp holding dots.ocr on this machine; the
+two `models:` doors served the "Models on this machine" card, deleted as
+unnecessary, and had no other caller. `electron/page-reader.ts` and
+`electron/machine-models.ts` are deleted, and the first-run step that offered the
+download went with them.
+
+**147 → 139, measured by script, 139 distinct, zero `ipcMain.on`.** Removals only;
+nothing was added or renamed in this pass.

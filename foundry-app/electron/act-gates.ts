@@ -87,17 +87,10 @@ import {
   refreshCrucibleFacts,
 } from './crucible-provider';
 import { hosted } from './host';
-import {
-  isLocalPageReader,
-  PAGE_READER_MODEL,
-  pageReaderInstalled,
-  pageReaderSuperseded,
-} from './page-reader';
-import { readSettings } from './settings';
 import type { ActGate, ActGates, ModelClass } from '../shared/types';
 
-const OTHER_ROUTES = 'Add a GPU engine in Settings › Servers, and its "Where the text work runs" '
-  + 'card will send this class to Anthropic, OpenAI or an Ollama server for you';
+const OTHER_ROUTES = 'Add a GPU engine in Settings › Crucible Servers, and Settings › AI '
+  + 'will send this class to that engine, or on to an Anthropic, OpenAI or Ollama account';
 
 /**
  * ── THE ENGINE'S ANSWER, AND IT IS THE FIRST ONE ASKED FOR EVERY CLASS ─────
@@ -215,77 +208,41 @@ function textGate(cls: ModelClass, cloud: string | null): ActGate {
 }
 
 /**
- * Reading the pages — the one act whose model this app serves itself.
+ * Reading the pages — and it is no longer the odd one out.
  *
- * ── THREE ENDPOINTS, AND ONLY ONE OF THEM IS OURS TO CHECK ──────────────────
+ * ── IT USED TO BE "THE ONE ACT WHOSE MODEL THIS APP SERVES ITSELF" ────────
  *
- * `auto` mode is the engine choosing its own tier for itself and never goes
- * through an endpoint at all (`endpointFor`, job-queue.ts) — there is nothing
- * here to be missing, so the tile is lit. A REMOTE endpoint is somebody else's
- * server: this app does not start it, cannot inventory it, and "configured" is
- * the most it can honestly know, so the tile is lit and a server that is asleep
- * refuses at the request with its own sentence. The LOCAL page reader is the
- * only one this app installs, and it is the only one that can be missing in a
- * way this function can see.
+ * That was the opening line of this comment, and it was the whole difference
+ * between this gate and {@link textGate}. Where a text act with no engine goes
+ * dark, a reading fell through to `backend.endpointUrl` and Foundry's own
+ * llama.cpp copy of dots.ocr, so the tile lit on a machine with no Crucible at
+ * all and said *"Reading runs through the engine's own tier for this machine."*
  *
- * ASKED CHEAPLY, on purpose — `pageReaderInstalled` rather than
- * `pageReaderState`, which prices the download over the network when something
- * is absent. That read belongs to a settings card somebody is looking at, not to
- * a tooltip.
+ * Owen deleted the premise on 2026-09-17: *"foundry shouldnt assume there even
+ * is a local system. there sohuldnt be a local system. foundry does all ai work
+ * through crucible."* So this is `textGate` without the cloud arm — `pages` may
+ * never route upstream (PHASE15 §1), so there is no provider to offer either.
+ *
+ * THE THREE CLAUSES THAT WENT WITH IT. `pageReaderSuperseded` said a Crucible
+ * on this machine owned the weights so Foundry's own copy was not needed —
+ * true, and now true of every machine, which makes it nothing to say.
+ * `isLocalPageReader` sorted a configured endpoint into "ours" and "somebody
+ * else's". `pageReaderInstalled` asked whether the local copy was on the disk.
+ * All three answered questions about a reader this app no longer has.
  */
 function readGate(): ActGate {
-  /*
-   * ── PAGES ARE A CLASS LIKE ANY OTHER NOW (Wave 62) ────────────────────────
-   *
-   * `CRUCIBLE_READS` is true (crucible-dispatch.ts), so a reading is DISPATCHED
-   * to any registered server whose `pages` row is enabled, exactly as a
-   * translation is — Owen, 2026-09-14: *"i think that should go through crucible
-   * as well … if it uses the GPU (as dots does), it should probably be
-   * crucible-side."* So the same clause serves it, and the local reader below is
-   * what answers when no server does.
-   *
-   * `pageReaderSuperseded` IS STILL ASKED FIRST, and it is not the same question.
-   * It is LOCAL-only and it is about this DISK: a Crucible on this machine owns
-   * the weights here, Foundry's copy has been (or is about to be) removed, and
-   * the sentence has to say so rather than naming a model this app no longer
-   * holds. A remote server serving pages falls to the clause under it.
-   */
-  const superseded = pageReaderSuperseded();
-  if (superseded !== null) {
-    return {
-      lit: true,
-      why: `"${superseded}", the Crucible on this machine, is reading pages — so Foundry's own `
-        + 'copy of the reader is not needed here.',
-    };
-  }
-
   const served = servedGate('pages');
   if (served !== null) return served;
-
-  const settings = readSettings();
-  const endpoint = settings.backend.mode === 'endpoint'
-    ? settings.backend.endpointUrl?.trim() ?? ''
-    : '';
-
-  if (endpoint.length === 0) {
-    return { lit: true, why: 'Reading runs through the engine\'s own tier for this machine.' };
-  }
-  if (!isLocalPageReader(endpoint)) {
-    return { lit: true, why: `Pages are read through ${endpoint}.` };
-  }
-  if (pageReaderInstalled()) {
-    return { lit: true, why: `The local page reader is installed and serves ${PAGE_READER_MODEL}.` };
-  }
   /*
-   * DARK, AND WITH THE ENGINE'S OWN SENTENCE ON THE END WHEN THERE IS ONE. A
-   * registered server that answered `pages: enabled false` said why — a card too
-   * small, or host mode's one line about the WSL2 engine — and that is the half
-   * of the answer this app could not have written.
+   * THE SERVER'S OWN SENTENCE IS STILL ON THE END, and it matters more here
+   * than anywhere else: a host-mode Crucible on a Windows machine with no WSL2
+   * cannot read pages at all and says so in its own words, and a Mac Crucible
+   * answers that dots-ocr declares no mlx-darwin build. Neither is a sentence
+   * this app could have composed, and both name the reason the tile is dark.
    */
   return withServerReason('pages', {
     lit: false,
-    why: 'The local page reader is not installed yet, so there is nothing here to read the pages '
-      + 'with — install it from Settings › Page reader, or point the reading endpoint elsewhere.',
+    why: `No connected GPU engine reads pages. ${OTHER_ROUTES}.`,
   });
 }
 

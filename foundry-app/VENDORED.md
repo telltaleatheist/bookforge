@@ -10,10 +10,88 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **4e8ad65** — *chore(crucible): everything current at 0.6.7* |
+| Source sha | **572656c** — *Correct sixteen dates I got wrong, and the header that outlived its rule* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
-| Copied on | 2026-09-16 |
-| Copied by | Mechanical source sync, verified against Foundry `4e8ad65:app/`; details below |
+| Copied on | 2026-09-18 |
+| Copied by | Mechanical source sync, verified against Foundry `572656c:app/`; details below |
+
+## The `7f7c06b → 572656c` re-vendor — the SDK reaches 1.0.0 here too (2026-09-18)
+
+Three commits, taken the same night as the one below because the note below said
+the subtree was the only thing in this checkout still on an older SDK. That is
+now resolved at the source rather than tolerated: **the two `vendor/` archives
+move 0.6.12 → 1.0.0**, which is the whole tracked-file change in the range
+(183 files before and after; two out, two in).
+
+`npm ci` rather than a rebuild, because the lockfile moves with them, and the
+installed package was asked its own version rather than the filename being
+trusted — `node_modules/@crucible/client/package.json` says **1.0.0**. Junction
+check printed False. `npm run build` exited 0.
+
+The other two commits are Foundry's own: the Apple-silicon analysis pack that
+lets the Mac analyse at all, and a correction to sixteen dates in their notes.
+Neither touches this subtree's tracked files.
+
+**`docs/IPC-CHANNELS.md` does not move in this range**, so the channel count
+stays 139 and the collision keeper's reading is unchanged from the refresh
+below. It is re-copied anyway, because the recipe copies it unconditionally and
+a conditional copy is a step somebody eventually skips.
+
+**The two-SDK-versions note below is now history.** It said a reader finding
+0.6.12 here beside BookForge's 1.0.0 would go looking for a bug; there is
+nothing left to find, and the note stays as the record of why it was written.
+
+## The `4e8ad65 → 7f7c06b` re-vendor — Foundry's settings become this app's shape (2026-09-18)
+
+Asked for by Owen through the Foundry session: *"when youre done, tell bookforge
+to revendor."* Twenty-two commits, and the range is mostly Foundry adopting the
+settings shape BookForge landed the same night — four sections (General,
+Crucible Servers, AI, Doctor), one row per job in the AI pane rather than two
+cards answering "where does this class run" and "which model runs it"
+separately, and act dialogs that name their engine.
+
+**183 files, checked both ways rather than one.** A tar extract ADDS and
+overwrites; it never deletes, so the half that goes wrong is the removed file
+that survives. The file set was compared against `git ls-tree -r --name-only
+7f7c06b app` in both directions — nothing missing, nothing extra — and a sample
+compared by `git hash-object` against `git rev-parse 7f7c06b:app/<path>`,
+because `core.autocrlf=true` makes a byte comparison of working trees
+meaningless.
+
+**Nine files left and eight arrived.** Five settings cards went
+(`cloud-card`, `engine-models-card`, `engine-settings-card`,
+`machine-models-card`, `page-reader-card`) and two panes replaced them
+(`ai-pane`, `doctor-pane`); `run-progress` and `run-target` are the dialogs'
+new shared children. **`electron/page-reader.ts` and
+`electron/machine-models.ts` are deleted outright** — Foundry has no local page
+reader any more, which is the same conclusion BookForge reached about its own
+VLM endpoint box on 2026-09-17 and for the same reason: an app-side reader that
+won over the engine the queue had chosen.
+
+**The two superseded `vendor/` archives were removed BY HAND**, as this
+document's recipe says they must be every time: the refresh deletes only
+`electron/`, `shared/` and `src/`, so `crucible-bootstrap-0.6.7.tgz` and
+`crucible-client-0.6.7.tgz` would otherwise have sat beside the 0.6.12 pair
+forever. The tracked-file-set diff is what finds them.
+
+**THE SDK IN THIS SUBTREE IS 0.6.12 AND BOOKFORGE IS PAST IT.** Crucible cut
+1.0.0 on 2026-09-17 and all three engines run it. That is not a fault and
+nothing is owed here: the subtree carries its own `node_modules` and its own
+SDK, the contract between them is `API_VERSION` (1, unchanged), and every
+engine answers both. Worth writing down because a reader who finds two SDK
+versions in one checkout will otherwise go looking for the bug.
+
+`npm ci` — the lockfile moved with the SDK bump. Junction check printed False;
+`npm run build` exited 0; `tools/test-ipc-collision.js` passes 7/7 against the
+refreshed `IPC-CHANNELS.md`.
+
+**Foundry's channel count is 139, down from 147** — eight `page-reader:` and
+`models:` doors removed with the reader, one added (`queue:release`, which
+releases ONE held row rather than the whole batch). `queue:` is a shared family
+and BookForge registers only `queue:run-pass` in it, so the new name is
+verb-disjoint and the keeper agrees. Their doc had ALSO drifted before this
+range — claiming 133 against a source of 146 — and is re-counted now, so the
+file this keeper reads is accurate for the first time in several refreshes.
 
 ## The `c3489bb → 4e8ad65` re-vendor — 0.6.7 everywhere (2026-09-16)
 

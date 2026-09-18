@@ -3,7 +3,8 @@
  *
  * ── Why it is a child and not markup in two places ─────────────────────────
  *
- * The Settings card (pages/settings/engine-settings-card.component.ts) and the
+ * The AI pane (pages/settings/ai-pane.component.ts, where it is the Accounts
+ * block at the foot) and the
  * setup wizard's routes step both offer *"run it through Anthropic / OpenAI / an
  * Ollama server instead"* (crucible docs/PHASE15-HOST.md §5.2), and both draw
  * the same three cards: a key or url box, Test, Save, and — when the engine says

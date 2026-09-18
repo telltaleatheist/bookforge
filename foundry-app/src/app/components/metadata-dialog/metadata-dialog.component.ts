@@ -76,10 +76,14 @@ import { api } from '../../core/foundry';
             title box was showing a filename that the title deliberately does not
             follow (see this file's header). The path is on the tooltip.
           -->
-          <label class="field">
-            <span class="label">Document</span>
-            <input type="text" [value]="named(tab)" readonly [title]="tab.path">
-          </label>
+          <!--
+            A FACT, NOT A FIELD. A read-only input is a control that looks
+            pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+            to click … dont present it as an option. it isnt an option. present
+            it as information or dont present it at all."* The dialog was opened
+            ON this document; there was never a second one to pick.
+          -->
+          <p class="fact" [title]="tab.path">{{ named(tab) }}</p>
 
           @if (loading()) {
             <p class="note">Reading what the document says about itself…</p>
@@ -232,6 +236,11 @@ import { api } from '../../core/foundry';
     </div>
   `,
   styles: [`
+    /* A fact, not a field. What a read-only input used to be. */
+    .fact {
+      margin: 0; font-size: 12px; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     /*
      * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT -- confirm-dialog's rule,
      * hardened here after a hunt for a swallowed click (2026-08-21): this host

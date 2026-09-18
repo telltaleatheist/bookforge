@@ -97,10 +97,14 @@ import { api } from '../../core/foundry';
 
       @if (source(); as input) {
         <div class="body">
-          <label class="field">
-            <span class="label">The book</span>
-            <input type="text" [value]="optionFor(input)" readonly [title]="input">
-          </label>
+          <!--
+            A FACT, NOT A FIELD. A read-only input is a control that looks
+            pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+            to click … dont present it as an option. it isnt an option. present
+            it as information or dont present it at all."* The dialog was opened
+            ON this document; there was never a second one to pick.
+          -->
+          <p class="fact" [title]="input">{{ optionFor(input) }}</p>
 
           @if (canMake()) {
             <!--
@@ -291,6 +295,11 @@ import { api } from '../../core/foundry';
     </div>
   `,
   styles: [`
+    /* A fact, not a field. What a read-only input used to be. */
+    .fact {
+      margin: 0; font-size: 12px; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     /* The OCR dialog's card, to the pixel. Two modals in one app that differ by
        a few pixels of padding read as two apps. */
     /*

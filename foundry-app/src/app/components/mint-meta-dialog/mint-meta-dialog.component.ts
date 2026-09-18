@@ -69,10 +69,14 @@ import { api } from '../../core/foundry';
 
         <div class="body">
           @if (ask.mode === 'edit') {
-            <label class="field">
-              <span class="label">Document</span>
-              <input type="text" [value]="ask.file" readonly [title]="ask.path">
-            </label>
+            <!--
+              A FACT, NOT A FIELD. A read-only input is a control that looks
+              pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+              to click … dont present it as an option. it isnt an option. present
+              it as information or dont present it at all."* The dialog was opened
+              ON this document; there was never a second one to pick.
+            -->
+            <p class="fact" [title]="ask.path">{{ ask.file }}</p>
           }
 
           <label class="field">
@@ -177,6 +181,11 @@ import { api } from '../../core/foundry';
     }
   `,
   styles: [`
+    /* A fact, not a field. What a read-only input used to be. */
+    .fact {
+      margin: 0; font-size: 12px; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     :host { position: fixed; inset: 0; z-index: 1200; display: block; pointer-events: none; }
 
     .scrim {
@@ -291,7 +300,6 @@ import { api } from '../../core/foundry';
       font-family: inherit;
     }
     input:focus, select:focus { outline: none; border-color: var(--accent); }
-    input[readonly] { color: var(--text-secondary); }
   `],
 })
 export class MintMetaDialogComponent {

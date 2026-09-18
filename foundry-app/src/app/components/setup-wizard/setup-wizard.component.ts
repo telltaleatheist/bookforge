@@ -3,12 +3,22 @@
  *
  * ── WHAT IT IS FOR, IN ONE SENTENCE ─────────────────────────────────────────
  *
- * Foundry needs four things that do not arrive with the application — a folder
- * to keep books in, a GPU engine, one or two prebuilt Pythons and the page
- * reader — and until this screen existed, a new installation discovered each of
- * them by failing at it. The wizard asks for them in the order they are needed,
- * says what each one costs before fetching a byte of it, and lets every single
- * one be skipped.
+ * Foundry needs TWO things that do not arrive with the application — a folder to
+ * keep books in, and a GPU engine — and until this screen existed, a new
+ * installation discovered both by failing at them.
+ *
+ * IT WAS FOUR, and the other two left the same way: the prebuilt Pythons became
+ * something startup provisions for itself, and the page reader was deleted
+ * outright on 2026-09-17 (*"there sohuldnt be a local system. foundry does all
+ * ai work through crucible"*). So this screen no longer downloads anything at
+ * all, which is a change in kind rather than in size — see the welcome step,
+ * which used to promise a price beside every button.
+ *
+ * OF THE TWO, ONE IS OPTIONAL AND ONE IS NOT. The library folder has a default
+ * and a person can walk past it. The engine cannot be walked past and the screen
+ * should stop implying otherwise: since Wave 66 every GPU slot in the queue is a
+ * registered engine, so somebody who skips it has no slot and cannot translate,
+ * simplify, clean, analyse or read a page.
  *
  * ── IT USED TO ASK FOR OLLAMA AND A MODEL, AND THAT STEP IS DELETED ─────────
  *
@@ -33,16 +43,17 @@
  *
  * `UiService.dialogs` is the one-modal list, and this is deliberately not on
  * it (see `setupOpen` there). A modal is a question with an answer; this is
- * several steps, one of which STARTS WORK THAT OUTLIVES THE STEP — a
- * page-reader download keeps what it has already fetched even when it is
- * cancelled. So:
+ * several steps, one of which STARTS WORK THAT OUTLIVES THE STEP — installing
+ * an engine, and on Windows upgrading it to WSL afterwards, both of which keep
+ * going if this card is dismissed. (It used to be the page-reader download that
+ * made this true. That is gone; the install is not.) So:
  *
  *   * it does not go through `only()`, which would let any dialog opened over
  *     it clear the boolean and take a half-finished setup off the screen;
  *   * it is MOUNTED UNCONDITIONALLY by the shell and holds its own `@if`,
  *     because an `@if` around this component is a DESTROY, and destroying it
- *     mid-download would drop the progress subscription that is the only
- *     thing telling somebody their download is alive;
+ *     mid-install would drop the progress subscription that is the only thing
+ *     telling somebody their engine is still being built;
  *   * closing it is never a failure. `setup:finish` is called on the way out
  *     however it is left, and what was skipped is written down.
  *
@@ -65,16 +76,12 @@ import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, injec
 
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
 import type { CrucibleProbe, CrucibleServerView } from '@shared/slots';
-import type { PageReaderProgress, PageReaderState } from '@shared/types';
 import {
   LLM_CLASSES,
   defaultEngineServer,
   splitUpstreamModel,
   type CapabilityRecord,
   type CapabilityRow,
-  type LlmClass,
-  type SettingsDocument,
-  type SettingsPatch,
 } from '@shared/engine-settings';
 import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
 import {
@@ -84,15 +91,11 @@ import {
   coordinationWords,
   shortfallWords,
 } from '../../core/crucible-words';
-import {
-  EngineUpstreamsComponent,
-  type UpstreamApply,
-} from '../engine-upstreams/engine-upstreams.component';
 import { UiService } from '../../core/ui.service';
 import { api } from '../../core/foundry';
 
 type StepId =
-  | 'welcome' | 'library' | 'crucible' | 'routes' | 'reading' | 'done';
+  | 'welcome' | 'library' | 'crucible' | 'done';
 
 interface StepDef {
   id: StepId;
@@ -138,7 +141,13 @@ const STEPS: readonly StepDef[] = [
   {
     id: 'welcome',
     title: 'Welcome',
-    blurb: 'A library folder and a GPU engine. Each one can be skipped, and each one can be done later from Settings.',
+    /*
+     * IT SAID *"Each one can be skipped"*, which is true of the mechanism and
+     * misleading about the result: skipping the engine leaves a queue with no
+     * GPU slot, and the engine step two screens later says so at length. A
+     * welcome page that contradicts a step is worse than one that says less.
+     */
+    blurb: 'A library folder, and a GPU engine that does the actual work. Both can be changed later in Settings.',
   },
   {
     id: 'library',
@@ -169,47 +178,22 @@ const STEPS: readonly StepDef[] = [
     title: 'A GPU engine',
     blurb: 'Where translation, simplification, cleanup, analysis and page reading run — on this machine or another one. Without one they cannot run.',
   },
-  {
-    /*
-     * ── SHOWN ONLY WHEN THERE IS AN ENGINE TO ASK ────────────────────────
-     *
-     * crucible docs/PHASE15-HOST.md §5.2: the wizard's AI step reads the chosen
-     * server's capability and, for each llm class that will not run on its card,
-     * offers to run that class through an upstream instead. With no server
-     * registered there is no capability to read and nothing to configure, so the
-     * step is not drawn, not counted in the rail, and NOT recorded as skipped —
-     * a settings screen saying somebody skipped a step that was never offered
-     * would be saying something false (`dismiss`'s rule about the skipped list).
-     *
-     * IMMEDIATELY AFTER THE CRUCIBLE STEP, because that step is where the server
-     * comes from: registering one there is what makes this one appear, and a
-     * question about where translation runs asked before there is anywhere for
-     * it to run is a question with no answers in it.
-     */
-    id: 'routes',
-    title: 'Where the text work runs',
-    blurb: 'Use this engine’s models, an existing Ollama model, or a connected account.',
-  },
-  {
-    /*
-     * ── DRAWN ONLY WHEN NO CONNECTED ENGINE READS PAGES ──────────────────
-     *
-     * This step is the FALLBACK path and says so in its own prose: three
-     * gigabytes of dots.ocr weights for *"a machine that has no engine of its
-     * own"*. An engine whose capability record has `pages` enabled already
-     * reads pages, so offering the download beside it is offering somebody a
-     * second copy of something they have — which is the shape of Owen's
-     * complaint about this wizard, one screen along.
-     *
-     * HIDDEN RATHER THAN DELETED: Wave 68 held the local page reader
-     * deliberately, on a gate that has not been met, because it is the only
-     * road to an EPUB on a machine that cannot install WSL. A machine like that
-     * has no engine serving `pages`, so it still sees this step.
-     */
-    id: 'reading',
-    title: 'The page reader',
-    blurb: 'What actually reads the pages. On most machines this is the one download that matters.',
-  },
+  /*
+   * ── THE PAGE READER STEP IS GONE (2026-09-17) ──────────────────────────
+   *
+   * It offered to download dots.ocr onto this machine, and it was already
+   * conditional: hidden when a connected engine served `pages`. Wave 68 kept
+   * it deliberately as "the only road to an EPUB on a machine that cannot
+   * install WSL".
+   *
+   * Owen closed that road on 2026-09-17: *"foundry shouldnt assume there even
+   * is a local system. there sohuldnt be a local system. foundry does all ai
+   * work through crucible."* A machine with no engine now reads no pages and
+   * is TOLD so -- electron/act-gates.ts darks the tile with the engine's own
+   * sentence -- rather than being sold a six-gigabyte fallback during setup.
+   *
+   * The step above it is where that machine's answer is: connect an engine.
+   */
   {
     id: 'done',
     title: 'Finish setup',
@@ -219,7 +203,7 @@ const STEPS: readonly StepDef[] = [
 
 @Component({
   selector: 'app-setup-wizard',
-  imports: [CrucibleDoorsComponent, EngineUpstreamsComponent],
+  imports: [CrucibleDoorsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (up()) {
@@ -253,9 +237,18 @@ const STEPS: readonly StepDef[] = [
               language model is sent to a GPU engine, which is the one thing here worth setting up
               carefully.
             </p>
+            <!--
+              THIS SAID *"Nothing on the next screens downloads until you press
+              the button that downloads it, and the size is always beside the
+              button"* — a promise about the Pythons step and the page-reader
+              step, neither of which exists. Nothing here downloads to THIS
+              machine any more. What can still take minutes is installing the
+              engine, so that is what the sentence is about now.
+            -->
             <p class="line">
-              Nothing on the next screens downloads until you press the button that downloads it,
-              and the size is always beside the button.
+              Nothing here downloads a model to this computer. If you ask Foundry to install the
+              GPU engine, that runs Crucible's own installer and takes a few minutes — and it is
+              the only thing on these screens that does.
             </p>
           }
 
@@ -325,6 +318,53 @@ const STEPS: readonly StepDef[] = [
                 </div>
               }
 
+              <!--
+                ── WSL ACCELERATION: AN UPGRADE, NEVER A GATE ─────────────────
+
+                Owen, 2026-09-17: *"if theres no local crucible server, help the
+                user set up the local windows one and then the wsl engine."* Two
+                stages, and this is the second — but the shape matters more than
+                the order, and BookForge's hostabilityOf is explicit about it:
+                "Crucible runs natively on Windows. WSL is not required to
+                install or connect."
+
+                So stage one IS the whole install, and this is offered
+                afterwards, on an engine that is already working. A wizard that
+                required WSL to finish would strand a machine with virtualisation
+                switched off in its BIOS — a machine that could have had a
+                working llama-windows engine a minute after pressing Install.
+
+                IT HANDS OFF RATHER THAN DRIVING. upgradeWindowsEngine submits
+                the work as a TASK to that engine's own controller and follows
+                it; the engine owns WSL, and this app owns none of it. That is
+                the same shape BookForge's upgradeWsl takes, and deliberately
+                NOT the shape of the install above it — at install time there is
+                no engine to ask, and once one exists everything goes through it.
+
+                A DROPPED STREAM IS NOT A FAILURE, which BookForge learned the
+                hard way: the upgrade replaces the process serving the progress
+                stream, so the last frame can simply never arrive. The sentence
+                below says the work continues, and the Servers card is where its
+                result shows up.
+              -->
+              @if (engine.backend === 'llama-windows') {
+                <div class="wsl">
+                  <p class="line">
+                    This engine runs natively on Windows and works now — everything below is
+                    already running on it. WSL acceleration is the speed upgrade: it lets the
+                    engine serve through vLLM, which is faster and can hold models the native
+                    build cannot. The engine sets it up itself; Foundry only asks.
+                  </p>
+                  <div class="actions">
+                    <button class="primary" type="button" [disabled]="wslBusy()"
+                            (click)="upgradeWsl(engine.serverName)">
+                      {{ wslBusy() ? 'Setting up…' : 'Set up WSL acceleration' }}
+                    </button>
+                  </div>
+                  @if (wslSaid(); as said) { <p class="small">{{ said }}</p> }
+                </div>
+              }
+
               @if (engineNeedsAccount()) {
                 <!--
                   OWEN'S OWN EXAMPLE, AND THE OFFER HE ASKED FOR: *"if the
@@ -334,9 +374,17 @@ const STEPS: readonly StepDef[] = [
                   next step instead of growing a key box, because that step is
                   PHASE15 §5.2's panel and the key belongs in the engine, once.
                 -->
+                <!--
+                  IT SAID "the next step is where that key goes" and there is no
+                  next step: the routes step was deleted on 2026-09-17 because
+                  Settings > AI asks the same question better. A wizard pointing
+                  at a screen that does not exist is worse than one that points
+                  at the screen that does.
+                -->
                 <p class="line">
-                  What this card cannot run, an Anthropic or OpenAI account can. The next step is
-                  where that key goes — it is stored in the engine, not in foundry.
+                  What this card cannot run, an Anthropic or OpenAI account can. Settings > AI is
+                  where that key goes — it is stored in the engine, not in Foundry, so BookForge
+                  uses the same one.
                 </p>
               }
 
@@ -390,81 +438,6 @@ const STEPS: readonly StepDef[] = [
             }
           }
 
-          <!-- ── Where the text work runs ────────────────────────────────── -->
-          @if (current() === 'routes') {
-            <p class="lead">
-              The GPU engine (Crucible) runs cleanup, translation, simplification and analysis.
-              Choose its own models or connect an existing model or account —
-              the key is stored in the engine, not in Foundry, and BookForge uses the same one.
-            </p>
-            @if (routeProblem(); as why) { <p class="line bad">{{ why }}</p> }
-
-            @if (routeDoc(); as settings) {
-              @for (cls of classes; track cls) {
-                <p class="small">{{ classLabel(cls) }} — {{ routeLine(cls) }}</p>
-              }
-              @for (row of unservedClasses(); track row.cls) {
-                <p class="small"><strong>{{ classLabel(row.cls) }}</strong> — {{ row.reason }}</p>
-              }
-              <p class="line">
-                Keep these choices and continue, or use an existing Ollama model, OpenAI or
-                Anthropic for text work. Ollama keeps its own model files; Crucible connects
-                through its API. Models are prepared when you finish setup.
-              </p>
-              <app-engine-upstreams
-                [serverName]="routeServer()"
-                [doc]="settings"
-                [busy]="routeBusy()"
-                [wantsModel]="true"
-                applyLabel="Use for text work"
-                (apply)="applyRoutes($event)" />
-            } @else if (routeProblem() === null) {
-              <p class="line">Asking the engine…</p>
-            }
-          }
-
-          <!-- ── The page reader ─────────────────────────────────────────── -->
-          @if (current() === 'reading') {
-            @if (reader(); as it) {
-              <p class="lead">
-                The model that reads pages is dots.ocr. Every other thing foundry asks a model to do
-                — translate, simplify, clean, analyse — runs on the GPU engine you connected, and so
-                does this when the engine serves it. This copy is the fallback for a machine that
-                has no engine of its own, and it is the only weights foundry ever fetches.
-              </p>
-              <p class="line">{{ it.platformNote }}</p>
-              <p class="line">{{ it.detail }}</p>
-              <p class="line">
-                It is fetched once and kept. Every read after it is offline, and the analysis model
-                is already handled — its weights are inside the analysis worker on the previous step.
-              </p>
-              @if (it.supported && !it.installed) {
-                <div class="actions">
-                  <button class="primary" type="button" [disabled]="warming()" (click)="getReader()">
-                    @if (it.downloadBytes !== null) {
-                      Download the page reader ({{ readerSize(it.downloadBytes) }})
-                    } @else {
-                      Download the page reader
-                    }
-                  </button>
-                  @if (warming()) {
-                    <button class="ghost" type="button" (click)="cancelReader()">Cancel</button>
-                  }
-                </div>
-              }
-              @if (readerSaid(); as progress) {
-                @if (progress.phase === 'download') {
-                  <div class="bar"><div class="fill" [style.width.%]="progress.percent"></div></div>
-                }
-                <p class="small" [class.bad]="progress.phase === 'error'">
-                  {{ progress.item }} — {{ progress.detail }}
-                </p>
-              }
-            } @else {
-              <p class="lead">Looking at what this machine has…</p>
-            }
-            @if (readingSaid()) { <p class="small">{{ readingSaid() }}</p> }
-          }
 
           <!-- ── Done ────────────────────────────────────────────────────── -->
           @if (current() === 'done') {
@@ -639,6 +612,7 @@ const STEPS: readonly StepDef[] = [
     .badge.held { color: var(--ok); background: var(--ok-soft); }
     .badge.warn-badge { color: var(--warn); background: var(--warn-soft); }
 
+    .wsl { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
     .engine {
       display: flex;
       flex-direction: column;
@@ -725,10 +699,6 @@ export class SetupWizardComponent {
   /** The four llm classes, in the order the routes step draws them. */
   protected readonly classes = LLM_CLASSES;
   protected readonly libraryDir = signal('');
-  protected readonly readingSaid = signal('');
-  protected readonly warming = signal(false);
-  protected readonly reader = signal<PageReaderState | null>(null);
-  protected readonly readerSaid = signal<PageReaderProgress | null>(null);
   /** The registry, so the Crucible step can say what is already there. */
   protected readonly crucibleServers = signal<CrucibleServerView[]>([]);
   /**
@@ -739,6 +709,10 @@ export class SetupWizardComponent {
    * the step draws the doors for both. They are never half-set.
    */
   protected readonly engineProbe = signal<Extract<CrucibleProbe, { outcome: 'ok' }> | null>(null);
+
+  /** A WSL upgrade in flight, and the last thing the engine's task said. */
+  protected readonly wslBusy = signal(false);
+  protected readonly wslSaid = signal<string | null>(null);
   protected readonly engineCap = signal<CapabilityRecord | null>(null);
   protected readonly engineAsking = signal(false);
   /**
@@ -806,12 +780,6 @@ export class SetupWizardComponent {
     () => this.engineActs().some((act) => !act.enabled && act.routable));
 
   /**
-   * Does a connected engine already read pages? Decides whether the page-reader
-   * step is drawn at all — see its entry in {@link STEPS}.
-   */
-  protected readonly engineReadsPages = computed(
-    () => this.engineCap()?.classes.some((row) => row.capability === 'pages' && row.enabled) === true);
-  /**
    * And what Foundry has already said to each of them, by stored name.
    *
    * The same map the Servers card draws, from the same push, so the wizard and
@@ -822,43 +790,6 @@ export class SetupWizardComponent {
    */
   protected readonly coordination = signal<CrucibleCoordinationMap>({});
 
-  /*
-   * ── The routes step's four facts (PHASE15-HOST.md §5.2) ──────────────────
-   *
-   * Which engine is being configured, its settings document, its capability
-   * record, and whatever the last press was answered with. NONE OF IT IS
-   * STORED: the document is the engine's and is re-read from every write's own
-   * answer, which is the whole of what §5.2 means by *"there is no Save button
-   * that writes an app file and syncs later"*.
-   */
-  protected readonly routeServer = signal('');
-  protected readonly routeDoc = signal<SettingsDocument | null>(null);
-  protected readonly routeCap = signal<CapabilityRecord | null>(null);
-  protected readonly routeBusy = signal(false);
-  protected readonly routeProblem = signal<string | null>(null);
-
-  /**
-   * THE CLASSES THIS ENGINE WILL NOT RUN ON ITS OWN CARD, with the server's own
-   * sentence about each.
-   *
-   * §5.2: *"for each llm class that is `enabled: false` locally it says the
-   * class's reason and offers 'run it through Anthropic / OpenAI / an Ollama
-   * server instead'."* THE REASON IS THE SERVER'S and is printed verbatim —
-   * replacing it with a word of ours is how a fixable problem ("2.1 GB short")
-   * becomes an unfixable one ("not supported").
-   *
-   * A class already routed upstream is NOT here: §3.3 says such a row answers
-   * `enabled: true`, so the engine itself has already stopped asking.
-   */
-  protected readonly unservedClasses = computed<{ cls: LlmClass; reason: string }[]>(() => {
-    const record = this.routeCap();
-    if (record === null) return [];
-    return LLM_CLASSES.flatMap((cls) => {
-      const row = record.classes.find((entry) => entry.capability === cls);
-      if (row === undefined || row.enabled) return [];
-      return [{ cls, reason: row.reason }];
-    });
-  });
 
   /** Step ids moved past without doing the thing. A Set would not survive JSON. */
   protected readonly skipped = signal<string[]>([]);
@@ -883,10 +814,7 @@ export class SetupWizardComponent {
    */
   protected readonly visible = computed<readonly StepDef[]>(() => {
     const hasEngine = this.crucibleServers().length > 0;
-    const readsPages = this.engineReadsPages();
     return STEPS.filter((step) => {
-      if (step.id === 'routes') return hasEngine;
-      if (step.id === 'reading') return !readsPages;
       return true;
     });
   });
@@ -911,13 +839,16 @@ export class SetupWizardComponent {
     // Re-read the same source when main announces the registration.
     destroyRef.onDestroy(api.acts.onChanged(() => { void this.loadCrucible(); }));
 
-    api.pageReader.onProgress((progress) => {
-      this.readerSaid.set(progress);
-      if (progress.phase === 'done' || progress.phase === 'error') {
-        this.warming.set(false);
-        void this.loadReader();
-      }
-    });
+    /*
+     * THE ENGINE'S OWN WORDS WHILE IT BUILDS A WSL BACKEND. Filtered to the
+     * server being upgraded, because main broadcasts to every window and names
+     * the server on each frame.
+     */
+    destroyRef.onDestroy(api.crucible.onEngineUpgrade((progress) => {
+      if (!this.wslBusy()) return;
+      this.wslSaid.set(progress.message);
+    }));
+
     /*
      * COORDINATION IS NOT SOMETHING THIS SCREEN STARTS, so it is only heard.
      * The sweep runs at app start on every enabled server (crucible
@@ -1015,8 +946,6 @@ export class SetupWizardComponent {
       const here = this.current();
       if (here === 'library') void this.loadLibrary();
       if (here === 'crucible') void this.loadCrucible();
-      if (here === 'routes') void this.loadRoutes();
-      if (here === 'reading') void this.loadReader();
     });
 
   }
@@ -1037,6 +966,40 @@ export class SetupWizardComponent {
    * says nothing more, on the standing rule that main's answer is the truth and
    * a component holding its own copy of a list is the copy that goes stale.
    */
+  /**
+   * ASK THE ENGINE TO GROW A WSL BACKEND, and follow what it says.
+   *
+   * Nothing here runs a command. `upgradeWindowsEngine` submits a task to that
+   * engine's controller and this listens — the engine owns WSL, including the
+   * distro, the guest install and any restart it needs, and an app that drove
+   * it would be a second owner of somebody else's machine.
+   *
+   * THE PROMISE RESOLVING IS NOT THE ANSWER, and neither is it failing. The
+   * upgrade replaces the process serving the progress stream, so the stream can
+   * die before its final frame — BookForge hit exactly this and now polls
+   * readiness afterwards rather than believing the drop. Foundry does the
+   * cheaper honest thing: it stops saying "setting up", re-reads the engine, and
+   * if the re-read has not caught up it says the work continues rather than
+   * claiming either outcome.
+   */
+  protected async upgradeWsl(server: string): Promise<void> {
+    if (!api || this.wslBusy()) return;
+    this.wslBusy.set(true);
+    this.wslSaid.set('Asking the engine to set up WSL. This can take several minutes.');
+    try {
+      await api.crucible.upgradeWindowsEngine(server);
+      await this.loadCrucible();
+      this.wslSaid.set(this.engineProbe()?.backend === 'cuda-linux'
+        ? 'WSL acceleration is set up. The engine is serving through it now.'
+        : 'The engine is still working on it. It continues whether this window is open or '
+          + 'not, and Settings › Crucible Servers shows where it got to.');
+    } catch (err) {
+      this.wslSaid.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.wslBusy.set(false);
+    }
+  }
+
   protected async loadCrucible(): Promise<void> {
     if (!api) return;
     const view = await api.crucible.settings();
@@ -1109,111 +1072,26 @@ export class SetupWizardComponent {
 
   // ── Where the text work runs (PHASE15-HOST.md §5.2) ───────────────────────
 
-  /**
-   * BOTH ANSWERS, TOGETHER, because the step is one picture made of two.
+  /*
+   * ── THE ROUTES STEP AND ITS FIVE MEMBERS ARE GONE (2026-09-17) ─────────
    *
-   * The CAPABILITY record says which classes this engine cannot serve locally
-   * and WHY, in its own sentence; the settings document says where each class is
-   * routed now and which upstreams are configured. Read one without the other
-   * and the step either offers to fix something already fixed or shows a route
-   * with no reason beside it.
+   * `loadRoutes`, `applyRoutes`, `routeLine`, `classLabel` and the four
+   * signals they drove. The step asked a first-run user to decide where each
+   * text class runs -- and opened by offering to "choose its own models",
+   * which it had no control for.
    *
-   * THE SERVER IS CHOSEN ONCE, by the same rule the settings card uses
-   * (`defaultEngineServer`, shared/engine-settings.ts): the loopback engine
-   * first, because it is the one whose routes decide what this computer does.
+   * Settings > AI answers the same question and answers it better: one row
+   * per job, the chosen model stated rather than offered, and accounts at the
+   * foot. Two screens teaching different vocabularies for one document is the
+   * thing that made this one worth deleting rather than fixing, and the one a
+   * person meets on their first five minutes is the wrong place to teach the
+   * worse vocabulary.
+   *
+   * WHAT IT WAS FOR IS STILL REACHABLE and now sits on the engine step: a
+   * card that cannot run a class says so there, in the engine's own words,
+   * and points at Settings.
    */
-  protected async loadRoutes(): Promise<void> {
-    if (!api) return;
-    const server = this.routeServer().length > 0
-      ? this.routeServer()
-      : defaultEngineServer(this.crucibleServers())?.name ?? '';
-    this.routeServer.set(server);
-    if (server.length === 0) return;
-    this.routeBusy.set(true);
-    try {
-      const [document, capability] = await Promise.all([
-        api.crucible.engineSettings(server),
-        api.crucible.engineCapability(server),
-      ]);
-      this.routeDoc.set(document);
-      this.routeCap.set(capability);
-      this.routeProblem.set(null);
-    } catch (err) {
-      /*
-       * BOTH GO, TOGETHER. The step's offer is composed from the two, and a
-       * document kept beside a capability record that failed to re-read would
-       * let the step say "this engine can run all four" on the strength of an
-       * EMPTY list of unserved classes — which is the same sentence as "nothing
-       * was measured", said as though it were good news.
-       */
-      this.routeDoc.set(null);
-      this.routeCap.set(null);
-      this.routeProblem.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.routeBusy.set(false);
-    }
-  }
 
-  /**
-   * ONE PRESS, ONE PUT: the key AND every route it is meant to serve.
-   *
-   * §5.2: *"entering a key calls `test`, then one `PUT` that configures the
-   * upstream AND sets the route, then capability is re-read and the step shows
-   * the new answer."* §3.2 is what makes one request the RIGHT number: upstreams
-   * are applied, then routes, then the whole is validated, and *"a refusal
-   * applies nothing"*. Two requests would leave a key stored against routes that
-   * were refused — a half-configured engine nobody asked for.
-   *
-   * This setup action applies the selected provider/model to all four text
-   * classes. It remains available when local models fit, so an existing Ollama
-   * model can be reused before any separate Crucible weights are downloaded.
-   * Per-class choices remain available in the engine settings card.
-   */
-  protected async applyRoutes(event: UpstreamApply): Promise<void> {
-    const server = this.routeServer();
-    if (!api || server.length === 0 || event.model === null) return;
-    const classes = LLM_CLASSES;
-    const model = `${event.upstream}/${event.model}`;
-    const patch: SettingsPatch = {
-      ...(event.upstreams === undefined ? {} : { upstreams: event.upstreams }),
-      routes: Object.fromEntries(classes.map((cls) => [cls, model])),
-    };
-    this.routeBusy.set(true);
-    try {
-      this.routeDoc.set(await api.crucible.engineSettingsPut(server, patch));
-      this.skipped.update(steps => steps.filter(step => step !== 'routes'));
-      this.routeProblem.set(null);
-      /*
-       * AND CAPABILITY AGAIN, because §2 recomputes it in-process on every write
-       * that touches a route and §3.3 puts the route in every row. The rows this
-       * step draws come from THAT record, so the step showing the new answer is
-       * this read and not a redraw of what was sent.
-       */
-      this.routeCap.set(await api.crucible.engineCapability(server));
-    } catch (err) {
-      this.routeProblem.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.routeBusy.set(false);
-    }
-  }
-
-  /** One class's row, in the words a person uses for it. */
-  protected classLabel(cls: LlmClass): string {
-    switch (cls) {
-      case 'clean': return 'Cleanup';
-      case 'translate': return 'Translation';
-      case 'simplify': return 'Simplification';
-      case 'analysis': return 'Analysis';
-    }
-  }
-
-  /** Where a class runs right now, as one line under its name. */
-  protected routeLine(cls: LlmClass): string {
-    const row = this.routeDoc()?.routes[cls];
-    if (row === undefined) return '';
-    if (row.route === 'upstream' && row.model !== null) return `runs on ${row.model}`;
-    return row.model === null ? 'runs here, if anything fits' : `runs here on ${row.model}`;
-  }
 
   /** The registered servers, named, for the one line the step prints about them. */
   protected crucibleNames(): string {
@@ -1292,9 +1170,14 @@ export class SetupWizardComponent {
   }
 
   private async close(skipped: string[], prepare = false): Promise<void> {
-    const choicesNotSeen = this.routeDoc() === null;
-    const finished = choicesNotSeen && !skipped.includes('routes') ? [...skipped, 'routes'] : skipped;
-    await api?.setup.finish(finished, prepare);
+    /*
+     * IT USED TO MARK `routes` SKIPPED when that step's document had never been
+     * read — a step somebody walked past without answering. There is no routes
+     * step (2026-09-17), so there is nothing to record about it, and adding a
+     * skipped-step id for a step that does not exist would put a line in
+     * Settings saying somebody skipped something they were never offered.
+     */
+    await api?.setup.finish(skipped, prepare);
     this.ui.closeSetup();
   }
 
@@ -1309,47 +1192,12 @@ export class SetupWizardComponent {
     this.libraryDir.set(await api.library.set(chosen));
   }
 
-  // ── The page reader ───────────────────────────────────────────────────────
-
   /*
-   * THIS STEP USED TO BE A DISCLOSURE, and now it is a download.
+   * ── THE PAGE READER METHODS WENT WITH THE STEP (2026-09-17) ────────────
    *
-   * It said "your first read pays about six gigabytes, through whatever reads
-   * the pages" — which was true, because the weights arrived inside vLLM's or
-   * mlx-vlm's own Hugging Face cache and this app had no door to them except a
-   * button that started a server. The local page reader has a door: the files
-   * are named, sized and fetched here, so the number is on screen before
-   * anybody agrees to it rather than inside somebody's first conversion.
-   *
-   * A MAC STILL HAS mlx-vlm IN PROCESS and does not strictly need this. It is
-   * offered anyway: a Mac whose MLX environment is not installed has no other
-   * way to read a page, and a step that hid the option on one platform would be
-   * a step that is wrong exactly when it matters.
+   * `loadReader`, `getReader`, `cancelReader` and `readerSize` drove a
+   * download of dots.ocr onto this machine. Owen: *"there sohuldnt be a local
+   * system. foundry does all ai work through crucible."* Reading a page wants
+   * a GPU, so it is the engine's, and there is nothing here to fetch.
    */
-  protected async loadReader(): Promise<void> {
-    if (!api) return;
-    this.reader.set(await api.pageReader.state());
-  }
-
-  protected readerSize(bytes: number): string {
-    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-    if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
-    return `${Math.round(bytes / 1024)} KB`;
-  }
-
-  protected async getReader(): Promise<void> {
-    if (!api) return;
-    this.warming.set(true);
-    this.readingSaid.set('');
-    this.readerSaid.set(null);
-    const result = await api.pageReader.install();
-    this.warming.set(false);
-    this.readingSaid.set(result.detail);
-    await this.loadReader();
-  }
-
-  protected cancelReader(): void {
-    void api?.pageReader.cancelInstall();
-    this.warming.set(false);
-  }
 }

@@ -63,7 +63,7 @@ import {
 } from './crucible-registry';
 import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
-import { crucibleRunState, startCrucible } from './crucible-start';
+import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
 import { engineCatalog, pullSubject, removeModel } from './crucible-models';
 import type {
   SettingsDocument,
@@ -138,7 +138,6 @@ import {
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
-import { applyPageReaderRemoval, machineModels, removeFoundryDownloads } from './machine-models';
 import { finishSetup, finishPreparedSetup, setupState } from './setup';
 import { probeSystem } from './system-probe';
 import {
@@ -176,7 +175,6 @@ import {
   listRecents,
 } from './recents';
 import { readSettings, writeSettings } from './settings';
-import * as pageReader from './page-reader';
 import { answerLetGo, broadcast, foundryWindow } from './window';
 import {
   planAnalysis, planCleanup, planExport, planReading, planSimplification, planTranslation,
@@ -431,6 +429,40 @@ function refuseRunningGhost(row: Job): void {
  *
  * NULL FOR A REAL STEP, and the ordinary delete goes on exactly as it did.
  */
+/**
+ * DROP ONE STEP — the door a HOST reaches, and the one the handler runs.
+ *
+ * BookForge lists a Foundry export as a version nested under its parent book,
+ * and Owen's ruling of 2026-09-17 makes those two rows one fact: deleting the
+ * version there must drop the step here. That host lives in another process's
+ * renderer and can never send this app's `ipcMain` message, so what it needs is
+ * a FUNCTION — re-exported through `mount.ts` beside `exportEpubFromStep`.
+ *
+ * IT IS A HOLDER RATHER THAN THE BODY ITSELF because the body belongs to
+ * `registerIpc`'s scope: the two proofs it must run (`refuseBusyStepDelete`,
+ * and `refuseBusyJob` under it) close over locals there. Lifting those to module
+ * scope to satisfy this caller would be rearranging the file around its newest
+ * reader. So the body is assigned once, where it is written, and this is the
+ * only way in from outside — which keeps ONE body rather than a copy shaped like
+ * it. A copy would have to carry the ghost branch, both busy proofs and the
+ * subtree cascade, and the first edit to either would leave a press in Foundry
+ * and a press in BookForge deleting different things.
+ *
+ * BEFORE `registerIpc` RUNS IT REFUSES BY NAME. Answering "deleted" from an app
+ * that has not mounted would be the silent success this codebase refuses
+ * everywhere else.
+ */
+let stepDeleteDoor: ((projectDir: string, stepId: string) => Promise<unknown>) | null = null;
+
+export function deleteLedgerStep(projectDir: string, stepId: string): Promise<unknown> {
+  if (stepDeleteDoor === null) {
+    return Promise.reject(new Error(
+      'Foundry has not been mounted, so there is no ledger to delete a step from. '
+      + '`mountFoundry` must run before a host can drop a step.'));
+  }
+  return stepDeleteDoor(projectDir, stepId);
+}
+
 function promisedDeletion(projectDir: string, stepId: string): StepDeletion | null {
   const rows = rowsIn(projectDir);
   const row = rowMinting(rows, stepId);
@@ -642,12 +674,14 @@ async function afterRegistryChanged(): Promise<void> {
   forgetEngineTargets();
   forgetCrucibleFacts();
   await refreshCrucibleFacts();
-  const removed = await applyPageReaderRemoval();
+  /*
+   * THE AUTOMATIC REMOVAL WENT WITH THE THING IT REMOVED. SLOTS.md 5b had a
+   * Crucible on this machine take over page reading, at which point Foundry
+   * deleted its own copy of the reader and printed a receipt. Foundry has no
+   * copy of anything to delete (2026-09-17), so the gates are still re-read --
+   * a registry change moves the OCR tile -- and nothing is swept.
+   */
   gatesChanged();
-  if (removed !== null) {
-    console.log(`[slots] ${removed}`);
-    broadcast('models:changed', null);
-  }
 }
 
 /**
@@ -3176,7 +3210,8 @@ export function registerIpc(): void {
     await refuseBusyStepDelete(projectDir, stepId);
     return describeStepDelete(projectDir, stepId);
   });
-  ipcMain.handle('ledger:delete', async (_event, projectDir: string, stepId: string) => {
+  stepDeleteDoor = async (projectDir: string, stepId: string) => {
+
     /*
      * A GHOST IS REMOVED FROM THE QUEUE, not deleted from a ledger it is not in.
      * A row still waiting leaves by `remove`; one already running leaves by
@@ -3209,7 +3244,9 @@ export function registerIpc(): void {
     // the question and the answer, and this is the call that unlinks something.
     await refuseBusyStepDelete(projectDir, stepId);
     return deleteStep(projectDir, stepId);
-  });
+  };
+  ipcMain.handle('ledger:delete', (_event, projectDir: string, stepId: string) =>
+    deleteLedgerStep(projectDir, stepId));
 
   // ── The library folder ───────────────────────────────────────────────────
   /*
@@ -3450,6 +3487,14 @@ export function registerIpc(): void {
     await madeFrom(request, request.kind === 'read' ? request.readingsPath : request.outputPath),
   ));
   ipcMain.handle('queue:start', () => queue.start());
+  /*
+   * ONE ROW, BY NAME — what a dialog's own Start presses. `queue:start` is the
+   * shelf's button and releases the whole held batch; this releases the row the
+   * caller just made and leaves every other parked row parked. Answers whether
+   * it let go, so a dialog that is about to watch the run can tell "running" from
+   * "somebody removed it while I was open".
+   */
+  ipcMain.handle('queue:release', (_event, id: string) => queue.release(id));
   ipcMain.handle('queue:remove', (_event, id: string) => { queue.remove(id); });
   ipcMain.handle('queue:cancel', (_event, id: string) => { queue.cancel(id); });
   ipcMain.handle('queue:clear-finished', () => { queue.clearFinished(); });
@@ -3540,58 +3585,23 @@ export function registerIpc(): void {
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
 
-  // ── The local page reader ────────────────────────────────────────────────
   /*
-   * ONE READ for the settings row and the setup step, and four acts beside it.
+   * ── THE LOCAL PAGE READER IS GONE, AND WITH IT EIGHT DOORS ─────────────
    *
-   * `page-reader:state` answers the whole question — supported here, installed,
-   * which llama.cpp build, which model files, what a download would cost, and
-   * what the server is doing — because every one of those facts is measured off
-   * the same directory at the same moment, and a screen that asked separately
-   * could draw "installed" beside "0 of 2 files". The keep-warm minutes ride on
-   * it for the same reason rather than having a read of their own.
+   * `page-reader:state`, `:install`, `:install-cancel`, `:start`, `:stop`,
+   * `:set-keep-warm`, and the `:progress` / `:status-changed` pushes.
+   *
+   * Owen, 2026-09-17: *"foundry shouldnt assume there even is a local system.
+   * there sohuldnt be a local system. foundry does all ai work through
+   * crucible."* Reading a page wants a GPU, so it belongs to an engine. The
+   * settings card went first, then the queue's fallback, then the gate that
+   * lit the OCR tile with no engine, then the first-run step that sold the
+   * download -- this is the machinery all four stood on.
+   *
+   * `models:inventory` and `models:remove-page-reader` went with them for a
+   * smaller reason: they served the "Models on this machine" card, which Owen
+   * deleted as unnecessary, and nothing else ever called either one.
    */
-  ipcMain.handle('page-reader:state', () =>
-    pageReader.pageReaderState(readAppSettings().keepServerWarmMinutes));
-  /*
-   * The install does NOT go through the job queue, and the reason outlived the
-   * door that used to state it (`ollama:pull`, deleted with Foundry's own model
-   * store): the queue exists to keep GPU work from running two at a time and to
-   * give a run a cancellable row, and a download is neither. It is cancellable
-   * through its own door, and what it has already fetched survives the cancel —
-   * see `fetchResumable`.
-   */
-  ipcMain.handle('page-reader:install', async () => {
-    const outcome = await pageReader.installPageReader(
-      (progress) => broadcast('page-reader:progress', progress),
-    );
-    /*
-     * AND THE §5b RECEIPT IS TORN UP. `AppSettings.pageReaderRemoved` is the
-     * sentence the Models card prints about an automatic removal — *"a Crucible
-     * took over page reading, so Foundry removed its own copy"* — and a reader
-     * that is back on this disk makes that sentence false. Cleared on the
-     * failure too: a half-finished install leaves files here either way, and a
-     * receipt claiming they are gone is the worse of the two wrong screens.
-     */
-    writeAppSettings({ pageReaderRemoved: null });
-    // The OCR tile is dark on a machine with no reader and lit on one with it,
-    // so the install is one of the three things that moves a gate. Announced on
-    // the failure too: a partial install that got the binary and not the weights
-    // leaves the gate exactly where it was, and re-reading says so.
-    gatesChanged();
-    return outcome;
-  });
-  ipcMain.handle('page-reader:install-cancel', () => { pageReader.cancelPageReaderInstall(); });
-  // Pre-warming, so the first book of an evening does not pay the load. The
-  // same door a reading job uses, pressed by hand.
-  ipcMain.handle('page-reader:start', async () => (await pageReader.ensurePageReader()).status);
-  ipcMain.handle('page-reader:stop', () => pageReader.stopPageReader('the Stop button'));
-  // The keep-warm knob is APP policy, not engine settings: the engine neither
-  // starts nor stops servers, so its settings.json never carries this. The
-  // queue reads it at every drain (job-queue.ts), so a change applies to the
-  // very next one — no restart, no re-plumb.
-  ipcMain.handle('page-reader:set-keep-warm', (_event, minutes: number) =>
-    writeAppSettings({ keepServerWarmMinutes: minutes }).keepServerWarmMinutes);
 
   // ── First run ────────────────────────────────────────────────────────────
   /*
@@ -4033,31 +4043,70 @@ export function registerIpc(): void {
    *
    * ANSWERED RATHER THAN ASKED IS THE ORDINARY CASE, and it is why this is a
    * question door rather than a state read the renderer branches on: running,
-   * absent and hosted all resolve without a card, so nothing flickers on the
-   * three startups out of four where there is nothing to say. Only
-   * `installed && not running` composes one.
+   * absent, unhealthy and hosted all resolve without a card, so nothing flickers
+   * on the startups where there is nothing to say.
    *
-   * THE CARD NAMES THE TRAY, NOT THE ENGINE, because that is what will be
-   * started (electron/crucible-start.ts argues why at length) and because the
-   * thing a person is agreeing to is a program that stays running and keeps the
-   * engine up — which is a different promise from "run this once".
+   * ── THE THREE ANSWERS, AND WHY SILENCE IS ONE OF THEM ───────────────────
+   *
+   * Owen met the old version of this door on 2026-09-17 with a perfectly healthy
+   * engine and was told to repair his installation, because every state that was
+   * not `running`, `stopped` or `absent` came through as one word and drew one
+   * card. electron/crucible-start.ts carries the full account of what had really
+   * happened — a three-second timeout on `/v1/info` — and why the fold is gone.
+   * What is left here is the consequence:
+   *
+   *   * `stopped` and `unreachable` compose the OFFER. Something is installed
+   *     and nothing is serving, and the press is the repair.
+   *   * `unhealthy` composes NOTHING. It answered its ping, so there is nothing
+   *     to start; and the Servers card watches that machine continuously, so a
+   *     card here would be a second, worse voice on a question already covered.
+   *     It is logged, because somebody reporting "it feels slow" deserves to
+   *     have this line in the file.
+   *   * `problem` composes the alarm — and now only ever over a fault in the
+   *     installation, in that fault's own words rather than in a sentence that
+   *     names two possibilities and then an action fitting one of them.
+   *
+   * THE CARD NAMES THE MANAGED SERVICE, NOT A ONE-OFF RUN, because the thing a
+   * person is agreeing to is something that stays up after Foundry closes, which
+   * is a different promise from "run this once" and one they should make
+   * knowingly.
    */
   ipcMain.handle('crucible:offer-start', async (): Promise<Asked<'start' | 'later'>> => {
     const state = await crucibleRunState();
-    if (state.kind === 'problem') return {
-      kind: 'ask', question: {
-        title: 'Crucible needs attention', message: state.why,
-        detail: ['Open Crucible to repair its local installation or connection.'],
-        choices: [{ key: 'later', label: 'Close' }], preferred: 'later',
-        dismissed: 'later', checkbox: null,
-      },
-    };
-    if (state.kind !== 'stopped') return { kind: 'answered', answer: 'later' };
+    if (state.kind === 'problem') {
+      const words = crucibleFaultWords(state.fault);
+      return {
+        kind: 'ask', question: {
+          title: words.title, message: state.why, detail: words.detail,
+          choices: [{ key: 'later', label: 'Close' }], preferred: 'later',
+          dismissed: 'later', checkbox: null,
+        },
+      };
+    }
+    if (state.kind === 'unhealthy') {
+      console.log(
+        `[crucible] the local engine answered its ping and did not finish the rest: ${state.why}. `
+        + 'Nothing is offered — there is nothing to start, and nothing here repairs a slow '
+        + 'answer. The Servers card has it from now on.',
+      );
+      return { kind: 'answered', answer: 'later' };
+    }
+    if (state.kind !== 'stopped' && state.kind !== 'unreachable') {
+      return { kind: 'answered', answer: 'later' };
+    }
     return {
       kind: 'ask',
       question: {
         title: 'Start Crucible?',
-        message: 'Crucible is installed on this computer and is stopped.',
+        /*
+         * TWO SENTENCES FOR TWO STATES, because they are different facts and a
+         * person who reads "is stopped" about a machine whose tray icon they can
+         * see has been told something they know to be false. `unreachable` is the
+         * one where Crucible believes it is up and nothing is answering.
+         */
+        message: state.kind === 'stopped'
+          ? 'Crucible is installed on this computer and is stopped.'
+          : 'Crucible is installed on this computer and is not answering.',
         detail: [
           'Crucible is the GPU engine. Translation, simplification, cleanup, analysis and page '
           + 'reading all run on it, and none of them can run while it is stopped. Opening a book, '
@@ -4285,15 +4334,6 @@ export function registerIpc(): void {
    * waits on package C. A refusal comes back as a RESULT with a sentence rather
    * than as a rejection, because the row prints what happened either way.
    */
-  ipcMain.handle('models:inventory', () => machineModels());
-  ipcMain.handle('models:remove-page-reader', async () => {
-    const outcome = await removeFoundryDownloads();
-    // Only when something actually went. A refusal changed nothing, and a push
-    // saying otherwise would send every open window to re-probe for no reason.
-    if (outcome.ok && outcome.freedBytes > 0) gatesChanged();
-    return outcome;
-  });
-
   /*
    * The whole list on every mutation — and hosted, the whole list is the HOST's
    * (`shelfJobs`, electron/job-queue.ts). The queue hands it over already
@@ -4316,7 +4356,6 @@ export function registerIpc(): void {
    * for the list itself, the same way the queue's mirror asks for jobs on boot.
    */
   onProjectsChanged(() => broadcast('projects:changed', null));
-  pageReader.onPageReaderStatus((status) => broadcast('page-reader:status-changed', status));
   // Published beside the job row, not instead of it: the shelf reads the queue,
   // the settings card reads this, and neither of them owns the run.
   onEnvInstallProgress((progress) => broadcast('env:install-progress', progress));
@@ -4434,13 +4473,11 @@ export function registerIpc(): void {
       );
     });
 
+  // Same at startup: the facts are refreshed, and there is no longer a local
+  // reader for a local engine to have superseded.
   void refreshCrucibleFacts()
-    .then(() => applyPageReaderRemoval())
-    .then((removed) => {
-      if (removed === null) return;
-      console.log(`[slots] ${removed}`);
+    .then(() => {
       gatesChanged();
-      broadcast('models:changed', null);
     })
     .catch((err: unknown) => {
       console.error(

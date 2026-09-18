@@ -83,7 +83,6 @@ import type {
   NewJobsWaitFor,
 } from '@shared/slots';
 import type { Job } from '@shared/types';
-import type { IncomingPairingRequest } from '@shared/remote-pairing';
 import { api } from '../../core/foundry';
 import { QueueService } from '../../core/queue.service';
 
@@ -159,12 +158,32 @@ interface EditableServer extends CrucibleServerView {
             <input class="url" type="text" placeholder="http://192.168.1.20:7100"
                    [ngModel]="row.url" [name]="'url' + row.key"
                    (ngModelChange)="edit(row.key, { url: $event })">
+            <!--
+              ── NO TOKEN BOX, AND NO APPROVAL LIST ────────────────────
+
+              Both went on 2026-09-17 with Owen's ruling: *"we're making it so
+              crucible doesnt require a connect code. it just connects, like
+              ollama"*, and *"we dont use tokens anymore so that can be pulled.
+              we use ip addresses to connect to crucible servers."*
+
+              A TOKEN STILL EXISTS — the engine issues one and Foundry stores it
+              — and that is exactly why the BOX is gone rather than the field.
+              Nobody types it and nobody reads it, so a password input for a
+              value a person never sees is a control that can only be got wrong.
+
+              THE APPROVAL LIST WENT BECAUSE THERE IS NOTHING LEFT TO APPROVE.
+              Crucible 1.0.0 creates a pairing request already approved
+              (DEFAULT_OPEN_PAIRING), so the connecting app's first poll returns
+              the token. A list that is now always empty, headed by a sentence
+              telling somebody to compare a code that is never shown, is worse
+              than no list at all.
+
+              An [auth] open_pairing = false restores the approval flow on an
+              engine, and if that comes back this is where it returns — keyed
+              off the server's own answer, never off a default assumed here.
+            -->
             <div class="server-top">
-              <input class="url" type="password"
-                     [placeholder]="row.tokenSet ? 'Token: set — type to replace' : 'Token: not set'"
-                     [ngModel]="row.token ?? ''" [name]="'tok' + row.key"
-                     (ngModelChange)="edit(row.key, { token: $event })">
-              <button class="ghost" [disabled]="testing() === row.name || !row.tokenSet"
+              <button class="ghost" [disabled]="testing() === row.name"
                       (click)="test(row.name)">
                 {{ testing() === row.name ? 'Testing…' : 'Test connection' }}
               </button>
@@ -172,28 +191,10 @@ interface EditableServer extends CrucibleServerView {
                 THE SERVER'S OWN CONSOLE. Administering an engine belongs to the
                 engine (Owen, 2026-09-14), so this is where a person goes to
                 install a job type, pull weights or read what is resident.
-                Disabled until a token is stored, because the page is opened
-                with one; a saved row is the only kind that has one.
               -->
-              <button class="ghost" [disabled]="!row.tokenSet || row.token !== null"
+              <button class="ghost" [disabled]="!row.tokenSet"
                       (click)="openUi(row.name)">Advanced engine console</button>
-              <button class="ghost" [disabled]="!row.tokenSet || row.token !== null || pairingBusy() === row.name"
-                      (click)="loadPairingRequests(row.name)">Connection requests</button>
             </div>
-            @if (pairingRequests()[row.name]; as requests) {
-              <div class="small">
-                <p>Approve only when this code matches the one shown by the connecting app.</p>
-                @for (request of requests; track request.id) {
-                  <p>{{ request.clientName }} from {{ request.address }} — <strong>{{ request.userCode }}</strong></p>
-                  <button class="primary" [disabled]="pairingBusy() === row.name"
-                          (click)="decidePairing(row.name, request, true)">Approve</button>
-                  <button class="ghost" [disabled]="pairingBusy() === row.name"
-                          (click)="decidePairing(row.name, request, false)">Deny</button>
-                } @empty {
-                  <p>No pending connection requests. Press Connection requests to refresh.</p>
-                }
-              </div>
-            }
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {
                 <p class="small ok">
@@ -272,7 +273,14 @@ interface EditableServer extends CrucibleServerView {
         }
 
         <div class="actions">
-          <button class="ghost" (click)="add()">Add a row by hand</button>
+        <!--
+          "ADD A ROW BY HAND" IS GONE (Owen, 2026-09-17: *"add row by hand seem
+          superfluous"*). It predates connecting by address: a blank row is not
+          a server, it is a form somebody then has to fill in correctly and a
+          save that fails until they do. The door below does the same job from
+          the one fact a person actually has — the address. What is left on
+          these rows edits engines that already exist.
+        -->
           <button class="primary" [disabled]="saving()" (click)="save()">
             {{ saving() ? 'Saving…' : 'Save' }}
           </button>
@@ -391,32 +399,14 @@ interface EditableServer extends CrucibleServerView {
   `],
 })
 export class ServersCardComponent {
-  protected readonly pairingRequests = signal<Record<string, IncomingPairingRequest[]>>({});
-  protected readonly pairingBusy = signal<string | null>(null);
-
-  protected async loadPairingRequests(server: string): Promise<void> {
-    if (!api) return;
-    this.pairingBusy.set(server);
-    this.problem.set(null);
-    try {
-      const requests = await api.crucible.incomingPairingRequests(server);
-      this.pairingRequests.update((all) => ({ ...all, [server]: requests }));
-    } catch (error) {
-      this.problem.set(error instanceof Error ? error.message : String(error));
-    } finally { this.pairingBusy.set(null); }
-  }
-
-  protected async decidePairing(server: string, request: IncomingPairingRequest, allow: boolean): Promise<void> {
-    if (!api) return;
-    this.pairingBusy.set(server);
-    this.problem.set(null);
-    try {
-      await api.crucible.decidePairing(server, request.id, request.userCode, allow);
-      this.pairingRequests.update((all) => ({ ...all, [server]: (all[server] ?? []).filter((p) => p.id !== request.id) }));
-    } catch (error) {
-      this.problem.set(error instanceof Error ? error.message : String(error));
-    } finally { this.pairingBusy.set(null); }
-  }
+  /*
+   * THE TWO APPROVAL HANDLERS WENT WITH THE LIST THEY FED (2026-09-17).
+   * `incomingPairingRequests` and `decidePairing` are still doors on the main
+   * process and still doors on the engine — an operator with
+   * `[auth] open_pairing = false` needs them — but nothing in Foundry calls
+   * them any more, and a handler kept "in case" is the shim this house does not
+   * keep. If the approval face returns it returns with its template.
+   */
   private readonly notices = inject(NoticeService);
 
   private readonly queue = inject(QueueService);
@@ -507,24 +497,13 @@ export class ServersCardComponent {
     this.rows.update((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
   }
 
-  protected add(): void {
-    this.saved.set(false);
-    this.rows.update((rows) => [
-      ...rows,
-      {
-        key: this.nextKey++,
-        name: '',
-        url: '',
-        enabled: true,
-        tokenSet: false,
-        loopback: false,
-        // A row nobody has saved has no engine to share; main answers this the
-        // moment the address is stored and the resolver has met it.
-        sharesEngineWith: null,
-        token: null,
-      },
-    ]);
-  }
+  /*
+   * `add()` COMPOSED THE BLANK ROW and went with its button (Owen: *"add row by
+   * hand seem superfluous"*). Every engine now arrives through the address
+   * door, which is the only path that also pairs; a row this method made had a
+   * name nobody had typed, no address and no token, so it could not be tested,
+   * could not be opened, and was not yet a server.
+   */
 
   protected drop(key: number): void {
     this.saved.set(false);

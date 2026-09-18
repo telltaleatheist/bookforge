@@ -15,7 +15,9 @@ import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
-import { api } from '../../core/foundry';
+import { RunProgressComponent } from '../run-progress/run-progress.component';
+import { RunTargetComponent } from '../run-target/run-target.component';
+import { api, hosted } from '../../core/foundry';
 
 /**
  * THE THREE REWRITES, IN THE WORDS THE PERSON PICKING ONE NEEDS.
@@ -81,7 +83,7 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
  */
 @Component({
   selector: 'app-simplify-dialog',
-  imports: [FormsModule],
+  imports: [FormsModule, RunProgressComponent, RunTargetComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="scrim" (click)="ui.closeSimplify()"></div>
@@ -94,15 +96,31 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
 
       @if (source(); as input) {
         <div class="body">
+        <!--
+          THE RUN REPLACES THE FORM. Leaving the fields up while the job moves
+          would offer edits that change nothing — the request was composed and
+          handed over at the press.
+        -->
+        @if (watched(); as job) {
+          <app-run-progress [job]="job" verb="Rewriting" />
+        } @else {
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
+               real choice and states the rest — run-target.component.ts carries
+               the ruling about why the model is not a button. -->
+          <app-run-target act="simplify" [(server)]="server" (ready)="canRun.set($event)" />
           <!--
             The book's own name, as the tab, the pane and the window are already
             calling it. The path is on the tooltip for the one person who wants
             it — see the Translate dialog, where this field is argued in full.
           -->
-          <label class="field">
-            <span class="label">Book</span>
-            <input type="text" [value]="name()" readonly [title]="input">
-          </label>
+          <!--
+            A FACT, NOT A FIELD. It was a read-only input, which is a control
+            that looks pressable and is not — Owen, 2026-09-17: *"if an option is
+            impossible to click … dont present it as an option. it isnt an
+            option. present it as information or dont present it at all."* The
+            book is not choosable here; the dialog was opened on it.
+          -->
+          <p class="fact" [title]="input">{{ name() }}</p>
 
           <!--
             REAL RADIOS RATHER THAN BUTTONS WEARING RADIO ROLES. This is a
@@ -153,14 +171,46 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
           @if (problem(); as reason) {
             <p class="problem">{{ reason }}</p>
           }
+        }
         </div>
 
-        <footer class="foot">
-          <button class="ghost" (click)="ui.closeSimplify()">Cancel</button>
-          <button class="primary" [disabled]="busy()" (click)="add()">
-            {{ busy() ? 'Working…' : 'Add to queue' }}
-          </button>
-        </footer>
+        <!--
+          THREE PRESSES, THEN TWO — the shape OCR took first, and the reason is
+          the same: Start enqueues exactly as Add does and then releases that ONE
+          row, so the modal and the queue are the same run seen from two places.
+          Send to background is this card letting go, not a handover.
+        -->
+        @if (watched(); as job) {
+          <footer class="foot">
+            <p class="beside">{{ job.state === 'done' ? 'Done.' : 'It keeps going if you close this.' }}</p>
+            <button class="ghost" (click)="cancelRun(job.id)">Stop</button>
+            <button class="primary" (click)="background()">Send to background</button>
+          </footer>
+        } @else {
+          <footer class="foot">
+            <button class="ghost" (click)="ui.closeSimplify()">Cancel</button>
+            <!--
+              ── NO "ADD TO QUEUE" HOSTED, BECAUSE THERE IS NO HOLD ────────────
+
+              Vendored into BookForge the row goes to the HOST's queue, and the
+              host's pump decides when it runs -- nobody presses Start for it
+              (electron/job-queue.ts, enqueue: "nothing is minted here, nothing
+              is held here"). So the two buttons would do the same thing and
+              only one of them would be telling the truth about it.
+
+              Owen, 2026-09-17: *"when it goes to the queue when vendored in
+              bookforge it should go to bookforge's queue, not ours."*
+            -->
+            @if (!hosted()) {
+              <button class="ghost" [disabled]="busy() || !canRun()" (click)="add(false)">
+                {{ busy() === 'queue' ? 'Working…' : 'Add to queue' }}
+              </button>
+            }
+            <button class="primary" [disabled]="busy() || !canRun()" (click)="add(true)">
+              {{ busy() === 'start' ? 'Starting…' : 'Start' }}
+            </button>
+          </footer>
+        }
       } @else {
         <!--
           The same two ways to get here as the Translate dialog's empty state, and
@@ -182,6 +232,11 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
     </div>
   `,
   styles: [`
+    /* A fact, not a field. What a read-only input used to be. */
+    .fact {
+      margin: 0; font-size: 12px; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     /*
      * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT -- confirm-dialog's rule,
      * hardened here after a hunt for a swallowed click (2026-08-21): this host
@@ -407,7 +462,48 @@ export class SimplifyDialogComponent {
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */
-  protected readonly busy = signal(false);
+  /** WHICH press is in flight, so only that button says so. */
+  protected readonly busy = signal<'queue' | 'start' | null>(null);
+  /** Read in the template: hosted, the host's queue holds nothing. */
+  protected readonly hosted = hosted;
+
+  /** The engine this run is pinned to. The child picks the default. */
+  protected readonly server = signal('');
+  /** May this act run on that engine at all — the child's verdict. */
+  protected readonly canRun = signal(false);
+  /**
+   * THE ROW THIS CARD IS WATCHING, or null when it is a form. An id rather than
+   * the job: the job is re-pushed whole on every change, and a held copy would
+   * be a snapshot going stale under a progress bar.
+   */
+  private readonly watching = signal<string | null>(null);
+  /**
+   * That row as it stands now. NULL the moment it leaves the list, which is what
+   * makes Send to background and a finished run one code path.
+   */
+  protected readonly watched = computed(() => {
+    const id = this.watching();
+    if (id === null) return null;
+    return this.queue.jobs().find((job) => job.id === id) ?? null;
+  });
+
+  /**
+   * LET GO OF THE RUN, KEEP THE RUN. Nothing moves and nothing is handed over —
+   * the row has been in the queue since the press, so this card simply stops
+   * watching and closes.
+   */
+  protected background(): void {
+    this.watching.set(null);
+    this.ui.summonQueue(true);
+    this.ui.closeSimplify();
+  }
+
+  /** Stop the run and go back to being a form, with the values still in it. */
+  protected async cancelRun(id: string): Promise<void> {
+    await this.queue.cancel(id);
+    this.watching.set(null);
+  }
+
 
   constructor() {
     // A complaint about the last book is cleared when the book changes, and
@@ -423,11 +519,16 @@ export class SimplifyDialogComponent {
     void this.documents.openViaDialog();
   }
 
-  protected async add(): Promise<void> {
+  /**
+   * ONE COMPOSE, TWO ENDINGS — `release` is the whole difference between the two
+   * buttons, and it is an argument rather than a second method because
+   * everything above the last few lines is identical.
+   */
+  protected async add(release: boolean): Promise<void> {
     const input = this.source();
     if (input === null || !api) return;
 
-    this.busy.set(true);
+    this.busy.set(release ? 'start' : 'queue');
     this.problem.set(null);
     try {
       const rewrite = this.mode();
@@ -525,10 +626,42 @@ export class SimplifyDialogComponent {
       // A refusal is not a success: the queue dedupes on the records path and
       // answers with the row that already exists, so a second press has queued
       // nothing and this card stays put and says so.
-      if (await this.queue.enqueueTextPass(request) === 'already') {
+      /*
+       * PINNED TO THE ENGINE THE CARD NAMED, and pinned AFTER the enqueue rather
+       * than carried on the request: `waitFor` is a property of the ROW — a
+       * person can re-route a parked row from the shelf — so the queue's own
+       * door owns it. A blank server means nothing was chosen and the row keeps
+       * the default it was admitted with.
+       */
+      const { outcome, id } = await this.queue.enqueueTextPassNamed(request);
+      if (id !== null && this.server().length > 0) {
+        await this.queue.setWaitFor(id, this.server());
+      }
+      if (outcome === 'already') {
+        /*
+         * A DUPLICATE IS STILL A RUN SOMEBODY CAN WATCH. Main answers with the
+         * EXISTING row, and if that is the work just asked for then Start's
+         * honest behaviour is to show it working. Add to queue keeps the
+         * sentence, because there the news IS that the shelf did not grow.
+         */
+        if (release && id !== null) {
+          await this.queue.release(id);
+          this.watching.set(id);
+          return;
+        }
         this.problem.set(
           'This rewrite is already queued for this book — nothing was added. It is in the queue.',
         );
+        return;
+      }
+
+      /*
+       * START COMMITS TO THIS ROW AND NOTHING ELSE — `queue:release`, not
+       * `queue:start`, which lets go of every row somebody parked deliberately.
+       */
+      if (release && id !== null) {
+        await this.queue.release(id);
+        this.watching.set(id);
         return;
       }
       // The queue panel, opened, because the job is HELD and the Start button is
@@ -540,7 +673,7 @@ export class SimplifyDialogComponent {
     } catch (err) {
       this.problem.set(err instanceof Error ? err.message : String(err));
     } finally {
-      this.busy.set(false);
+      this.busy.set(null);
     }
   }
 }

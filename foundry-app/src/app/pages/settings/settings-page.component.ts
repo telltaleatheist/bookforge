@@ -1,435 +1,298 @@
-import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 
-import type { BackendMode, DoctorReport, EngineInfo, TierReport } from '@shared/types';
-
-import { api, hosted } from '../../core/foundry';
-import { CloudCardComponent } from './cloud-card.component';
-import { EngineModelsCardComponent } from './engine-models-card.component';
-import { EngineSettingsCardComponent } from './engine-settings-card.component';
-import { EnvCardComponent } from './env-card.component';
+import { hosted } from '../../core/foundry';
+import { UiService } from '../../core/ui.service';
+import { AiPaneComponent } from './ai-pane.component';
+import { DoctorPaneComponent } from './doctor-pane.component';
 import { LibraryCardComponent } from './library-card.component';
-import { MachineModelsCardComponent } from './machine-models-card.component';
-import { SetupCardComponent } from './setup-card.component';
-import { PageReaderCardComponent } from './page-reader-card.component';
 import { ServersCardComponent } from './servers-card.component';
+import { SetupCardComponent } from './setup-card.component';
 
 /**
- * Settings — what this machine can do, and which of it to use.
+ * Settings — four errands, one per section.
  *
- * The left half is a MEASUREMENT and is read-only: `foundry doctor --json`,
- * shelled through main, rendered as one card per tier. The engine owns those
- * facts and this screen never second-guesses them — including the case where
- * the engine is too old to have the command, which is a card of its own rather
- * than an error.
+ * ── WHAT THIS WAS, AND WHY IT IS A TREE NOW ───────────────────────────────
  *
- * The right half is the settings FILE, whose schema the engine also owns
- * (foundry src/backend/settings.ts). This screen writes three keys and
- * preserves every other key in the file — see electron/settings.ts.
+ * One page called "Backend", two columns, eleven cards in a single scroll: the
+ * doctor's measurement down the left, and down the right the settings.json
+ * form, the library folder, first-run setup, the Crucible registry, the
+ * engine's routes, the engine's models, the cloud keys, the Python
+ * environments, the page reader and the models on the disk. Every card's own
+ * comment argued convincingly for its neighbour — and eleven such arguments
+ * compose a column, not a page. Nothing on it was wrong; there was just no
+ * answer to *where do I go for X* except "scroll".
+ *
+ * Owen, 2026-09-17, sending BookForge's settings screen over: *"lets organize
+ * the foundry settings like this as well. teh user adds crucible servers and
+ * they configure the crucible server for foundry's uses in foundry settings
+ * directly."*
+ *
+ * BookForge got there first and its own comments carry the rule that produced
+ * it, which is the rule followed here: **a section is shaped by what a person
+ * came looking for, not by which component was written first.** BookForge went
+ * from fifteen sections to four by that rule — its author's note on the merge
+ * is *"four sidebar entries for that was a tree shaped by which component was
+ * written first rather than by what a person came looking for"* — and Foundry
+ * arrives at the same four from the other direction, splitting one scroll
+ * rather than collapsing fifteen tabs.
+ *
+ * THE TWO APPS MATCHING IS ITSELF THE FEATURE, not a coincidence of taste. They
+ * are two windows onto one engine — the same registry, the same
+ * `/v1/settings` document, often the same machine — so somebody who learns
+ * where the model picker lives in one has learned where it lives in the other.
+ *
+ * ── THE FOUR, AND WHAT DECIDED EACH ───────────────────────────────────────
+ *
+ *   * **General** — this machine's own facts: where books go, what setup
+ *     skipped, and what weights are on the disk. Foundry's, not the engine's.
+ *   * **Crucible Servers** — which engines exist and in what order work tries
+ *     them. Owen: *"the user adds crucible servers"*, and this is where.
+ *   * **AI** — and *"they configure the crucible server for foundry's uses"*
+ *     here. One row per job, writing straight into that server's settings.
+ *   * **Doctor** — is anything missing on this computer, and the buttons that
+ *     fetch it. It absorbed the measurement column and the tier form that
+ *     chooses between the things that column measures, which had been four
+ *     cards and one column apart.
+ *
+ * ── AND GUIDED SETUP IS A BUTTON, BECAUSE IT IS AN ACTION ─────────────────
+ *
+ * It was a card on a page of settings, which is BookForge's exact diagnosis of
+ * its own: a thing you PRESS filed among things you SET. It sits under the
+ * section list because it reconfigures every section at once and belongs to
+ * none of them. `setup-card` keeps only the half that is a FACT — which steps
+ * were skipped — because two buttons for one action is the duplication this
+ * whole reorganisation exists to remove.
  */
+interface SettingsSection {
+  readonly id: 'general' | 'crucible' | 'ai' | 'doctor';
+  readonly name: string;
+  readonly icon: string;
+  /** The one line under the heading. What this section is FOR, not what it has. */
+  readonly description: string;
+}
+
+const SECTIONS: readonly SettingsSection[] = [
+  {
+    id: 'general',
+    name: 'General',
+    icon: '📚',
+    description: 'This machine: where its books go, and what it keeps on the disk',
+  },
+  {
+    id: 'crucible',
+    name: 'Crucible Servers',
+    icon: '🛰️',
+    description: 'Inference servers the queue may use: this machine’s, and any you add',
+  },
+  {
+    id: 'ai',
+    name: 'AI',
+    icon: '🤖',
+    description: 'Which Crucible model does the reading and writing',
+  },
+  {
+    id: 'doctor',
+    name: 'Doctor',
+    icon: '🩺',
+    description: 'What Foundry needs on this computer, and the buttons that get it',
+  },
+];
+
 @Component({
   selector: 'app-settings-page',
   imports: [
-    CloudCardComponent, EngineModelsCardComponent, EngineSettingsCardComponent, EnvCardComponent,
-    FormsModule,
-    LibraryCardComponent, SetupCardComponent,
-    MachineModelsCardComponent, PageReaderCardComponent, ServersCardComponent,
+    AiPaneComponent, DoctorPaneComponent, LibraryCardComponent,
+    ServersCardComponent, SetupCardComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="page">
-      <header class="page-head">
-        <h1>Backend</h1>
-        <button class="ghost" [disabled]="probing()" (click)="probe()">
-          {{ probing() ? 'Probing…' : 'Re-probe' }}
-        </button>
-      </header>
-
-      <section class="cols">
-        <!-- ── What the engine measured ─────────────────────────────────── -->
-        <div class="col">
-          @if (engine(); as info) {
-            <div class="engine-line">
-              <span class="mono">{{ info.command }} {{ info.args.join(' ') }}</span>
-              <span class="muted">{{ info.version ?? 'version unknown' }} · {{ info.source }}</span>
-            </div>
-          }
-
-          @if (report(); as r) {
-            <div class="card rasteriser" [attr.data-ok]="r.rasteriser.available">
-              <div class="card-head">
-                <span class="dot" [attr.data-ok]="r.rasteriser.available"></span>
-                <span class="card-title">Rasteriser (PyMuPDF)</span>
-              </div>
-              <p class="detail">{{ r.rasteriser.detail }}</p>
-              @if (r.rasteriser.python) {
-                <p class="mono small">{{ r.rasteriser.python }}</p>
-              }
-            </div>
-
-            @for (tier of r.tiers; track tier.id) {
-              <div class="card" [class.chosen]="tier.id === r.chosen">
-                <div class="card-head">
-                  <span class="dot" [attr.data-ok]="tier.available"></span>
-                  <span class="card-title">{{ title(tier) }}</span>
-                  @if (tier.id === r.chosen) { <span class="badge">chosen</span> }
-                </div>
-                <p class="detail">{{ tier.detail }}</p>
-              </div>
-            }
-
-            @if (r.chosen === null) {
-              <p class="warn">
-                No tier would be used: the mode names one that is not available, and the engine
-                names rather than degrades — the next tier down is 10–100× slower.
-              </p>
-            }
-          } @else if (doctorProblem(); as reason) {
-            <div class="card">
-              <div class="card-head">
-                <span class="dot" data-ok="false"></span>
-                <span class="card-title">No report</span>
-              </div>
-              <pre class="detail pre">{{ reason }}</pre>
-            </div>
-          } @else {
-            <p class="muted">Probing the backends…</p>
+      <nav class="rail">
+        <h1>Settings</h1>
+        <div class="section-list">
+          @for (section of sections; track section.id) {
+            <button class="section-item" type="button"
+                    [class.active]="selected() === section.id"
+                    (click)="selected.set(section.id)">
+              <span class="section-icon">{{ section.icon }}</span>
+              <span class="section-name">{{ section.name }}</span>
+            </button>
           }
         </div>
 
-        <!-- ── What the file says ───────────────────────────────────────── -->
-        <div class="col">
-          <!--
-            THE ENGINE'S OWN SETTINGS, AND NOT INSIDE A HOST. settings.json is
-            the engine's and machine-global, and a host runs that same engine
-            with that same file — so changing the mode, the endpoint or the
-            interpreter here inside BookForge would reconfigure the host's own
-            conversions from a window that does not own them. settings:write
-            refuses there too (electron/ipc.ts); this is the half a person sees,
-            and it is the library card's rule: a control that can only refuse is
-            not a control, so the card goes. Found by BookForge's audit,
-            2026-09-14, unguarded on both sides.
-          -->
-          @if (!hosted()) {
-            <div class="card form">
-              <div class="card-head"><span class="card-title">settings.json</span></div>
-              <p class="mono small">{{ settingsFile() }}</p>
+        <!--
+          SET APART FROM THE LIST BECAUSE IT ACTS RATHER THAN NAVIGATES, and
+          hidden inside a host for setup-card's own reason: the wizard's first
+          step is the library, which a hosted window does not own, and its later
+          steps reconfigure an engine the host runs. UiService.openSetup refuses
+          there as well, so this is a hidden door and not a decorated one.
+        -->
+        @if (!hosted()) {
+          <button class="section-item guided-setup" type="button" (click)="openSetup()">
+            <span class="section-icon">🧭</span>
+            <span class="section-name">Run guided setup…</span>
+          </button>
+        }
+      </nav>
 
-              @if (settingsProblem(); as problem) {
-                <p class="warn">{{ problem }}</p>
+      <section class="pane">
+        <!--
+          THE SCROLLER FILLS THE WINDOW AND THE CONTENT IS CENTRED INSIDE IT.
+          It used to be one element doing both jobs — max-width 860 AND
+          overflow-y — which put the scrollbar at the right edge of the CONTENT,
+          860px into a 2000px window, with dead space beyond it. A scrollbar
+          belongs at the edge of the thing it scrolls, and the thing it scrolls
+          is the window. Owen, seeing it: "the scrollbar is in the middle of the
+          window."
+        -->
+        <div class="pane-inner">
+        @if (current(); as section) {
+          <header class="pane-head">
+            <h2>{{ section.name }}</h2>
+            <p class="pane-detail">{{ section.description }}</p>
+          </header>
+
+          @switch (section.id) {
+            @case ('general') {
+              <!--
+                Where the books go, FIRST, because it is the one setting in this
+                app that is about the user's own files rather than about which
+                Python reads a page. Hosted, it is the HOST's fact about its own
+                data — main refuses library:set anyway — and a control that can
+                only refuse is not a control, so the card goes.
+              -->
+              @if (!hosted()) {
+                <app-library-card />
               }
 
-              <label class="field">
-                <span class="label">Mode</span>
-                <select [ngModel]="mode()" (ngModelChange)="mode.set($event)" name="mode">
-                  <option value="auto">auto — the first available tier</option>
-                  <option value="endpoint">endpoint — that tier or nothing</option>
-                  <option value="mlx">mlx — that tier or nothing</option>
-                </select>
-              </label>
+              <!-- What the first-run walk-through skipped, which is a fact a
+                   person can act on. The button that re-runs it is under the
+                   section list, where actions live. -->
+              <app-setup-card />
 
-              <label class="field">
-                <span class="label">Endpoint URL</span>
-                <input type="text" placeholder="http://localhost:8000/v1"
-                       [ngModel]="endpointUrl()" (ngModelChange)="endpointUrl.set($event)" name="url">
-              </label>
+            }
 
-              <label class="field">
-                <span class="label">Python <em>needs PyMuPDF; every run rasterises locally</em></span>
-                <input type="text" placeholder="C:\\path\\to\\python.exe"
-                       [ngModel]="python()" (ngModelChange)="python.set($event)" name="python">
-              </label>
+            @case ('crucible') {
+              <!--
+                WHERE WORK CAN GO — the Crucible servers this machine knows
+                about, in the order it will try them (docs/SLOTS.md). Drawn
+                hosted as well, read-only, because a hosted window still has
+                slots — the host's — and a card that vanished would leave the
+                queue's picker naming machines nothing explains.
+              -->
+              <app-servers-card />
+            }
 
-              <div class="actions">
-                <button class="primary" [disabled]="saving()" (click)="save()">
-                  {{ saving() ? 'Saving…' : 'Save' }}
-                </button>
-                @if (saved()) { <span class="ok-note">Saved</span> }
-              </div>
-              @if (saveProblem(); as problem) { <p class="warn">{{ problem }}</p> }
-            </div>
+            @case ('ai') {
+              <!--
+                AND WHAT EACH OF THOSE SERVERS HAS BEEN TOLD TO DO WITH THE WORK
+                (crucible docs/PHASE15-HOST.md §3.7, §5.2). Nothing on it is
+                stored here — Owen's ruling is that the engine is the single
+                source of truth for these settings, so every control is a
+                request to it and its answer is what redraws. Not hidden hosted,
+                because §5.3 says the hosted pane draws the HOST's registry and
+                shows the same engine.
+              -->
+              <app-ai-pane />
+            }
+
+            @case ('doctor') {
+              <app-doctor-pane />
+            }
           }
-
-          <!--
-            Where the books go. Above the environment cards because it is the one
-            setting on this screen that is about the user's own files rather than
-            about which Python reads a page. Hosted, it is the HOST's fact about
-            its own data — main refuses library:set anyway — and a control that
-            can only refuse is not a control, so the card goes.
-          -->
-          @if (!hosted()) {
-            <app-library-card />
-          }
-
-          <!--
-            THE WAY BACK INTO FIRST-RUN SETUP, and what was skipped. It was the
-            language-model card and held the model every dialog opened with;
-            Owen deleted the subject on 2026-09-15 (*"we dont have any local
-            models. crucible handles all model orchestration"*), so what is left
-            is the wizard door. Beside the library card because both are about
-            what the user has chosen rather than about what the engine measured.
-          -->
-          <app-setup-card />
-
-          <!--
-            WHERE ELSE WORK CAN GO — the Crucible servers this machine knows
-            about, in the order it will try them (docs/SLOTS.md). Directly under
-            the language card because the two answer halves of one question: that
-            one is the model on THIS computer, this one is every other computer
-            that could run it. Drawn hosted as well, read-only, because a hosted
-            window still has slots — the host's — and a card that vanished would
-            leave the queue's picker naming machines nothing explains.
-          -->
-          <app-servers-card />
-
-          <!--
-            AND WHAT THE ENGINE HAS BEEN TOLD TO DO WITH THE WORK — a window onto
-            ONE of those servers' own settings (crucible docs/PHASE15-HOST.md
-            §3.7, §5.2; Wave 62 package I). Directly under the Servers card
-            because the two are the same question one layer apart: that one is
-            WHICH engines this app knows, this one is where each class of text
-            work runs once it gets to one.
-            Nothing on it is stored here — Owen's ruling is that the engine is
-            the single source of truth for these settings, so every control is a
-            request to it and its answer is what redraws. It hides itself when
-            no server is registered, because a window needs something to look
-            onto; it is NOT hidden hosted, because §5.3 says the hosted card
-            draws the HOST's registry and shows the same engine.
-          -->
-          <app-engine-settings-card />
-
-          <!--
-            AND WHICH MODEL ON THAT ENGINE RUNS EACH ACT. The card directly above
-            says WHERE a class of work goes; this one says what runs it once it
-            arrives, and it is where weights are fetched and removed. Its own
-            file argues at length why the two are separate cards rather than one
-            table, and the reason they are ADJACENT is that same argument read
-            the other way: they are one question a layer apart, so somebody who
-            changes a route looks straight down to see what will answer it.
-
-            PLACED 2026-09-16, AND IT WAS MISSING UNTIL THEN. The component was
-            written, imported, and listed in this page's imports array by
-            59a3a8e, and never put in the template. The compiler SAID so on
-            every build -- NG8113, "EngineModelsCardComponent is not used within
-            the template of SettingsPageComponent" -- and said it at warning,
-            this check's default, which nothing reads: the build exits 0 and the
-            line scrolls past under a bundle-size warning that is always there.
-            So the whole model panel drew nothing: no model per act, no fetch,
-            no remove. Found by BookForge's re-vendor build. NG8113 is an error
-            in tsconfig.json now, and that note is kept there.
-
-            (No backticks in this comment, deliberately. It sits inside a
-            template literal, and a pair of them ends the string 200 lines early
-            -- which is how this comment was first written and how it failed.)
-          -->
-          <app-engine-models-card />
-
-          <!--
-            AND THE THIRD ANSWER TO THE SAME QUESTION — somebody else's computer,
-            rented by the token (docs/SLOTS.md §3, Package F). Directly under the
-            Servers card because the three cards read downwards as the three
-            places a text act can go: an engine on this machine, an engine somebody
-            else runs, a provider somebody pays. It is LAST of the three because it is
-            the one with a bill on it, and because Owen asked for it as the
-            answer for a machine that cannot do the other two — *"for weaker
-            systems"*. Drawn hosted as well, read-only, for the Servers card's
-            reason: a hosted window still has slots, and a card that vanished
-            would leave the queue's picker naming providers nothing explains.
-          -->
-          <app-cloud-card />
-
-          <!-- The prebuilt Pythons: the rasteriser every tier needs, and the
-               analysis worker. Neither of them reads a page. -->
-          <app-env-card (changed)="probe()" />
-
-          <!--
-            The one backend this app INSTALLS AND RUNS, rather than only
-            measures. Drawn on every platform, which the WSL card it replaced
-            could not be: llama.cpp has a build for Windows, for both Macs and
-            for Linux, and the card says which one this machine gets. A Mac has
-            MLX in process as well and does not need this — but it is offered
-            anyway, because a Mac with no MLX environment installed still has to
-            be able to read a page.
-          -->
-          <app-page-reader-card (changed)="probe()" />
-
-          <!--
-            WHAT IS ON THE DISK, across every store the app knows about — docs/
-            SLOTS.md §5b. Last in the column because it is the only card here
-            that acts on nothing: it describes the consequences of the four cards
-            above it, so it reads after them. Its one button removes what Foundry
-            itself downloaded, and nothing else on the machine.
-          -->
-          <app-machine-models-card />
+        }
         </div>
       </section>
     </div>
   `,
   styles: [`
-    :host { display: block; height: 100%; overflow-y: auto; }
-    .page { padding: 20px 24px 60px; max-width: 1100px; }
+    :host { display: block; height: 100%; overflow: hidden; }
+    .page { display: grid; grid-template-columns: 200px minmax(0, 1fr); height: 100%; }
 
-    .page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-    .page-head h1 { flex: 1; margin: 0; font-size: 20px; font-weight: 600; }
-
-    .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
-    @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
-    .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-
-    .engine-line { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; }
-
-    .card {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius);
-      padding: 12px 14px;
+    /* No divider rule: the rail is set apart by its own width and the pane's
+       indentation, and a line down the middle of a wide window reads as a seam.
+       Owen: "dont give it a border". */
+    .rail {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 16px 8px;
+      overflow-y: auto;
     }
-    .card.chosen { border-color: var(--accent); background: var(--accent-faint); }
-    .card.form { display: flex; flex-direction: column; gap: 12px; }
+    .rail h1 { margin: 0 0 10px 10px; font-size: 18px; font-weight: 600; }
+    .section-list { display: flex; flex-direction: column; gap: 2px; }
 
-    .card-head { display: flex; align-items: center; gap: 8px; }
-    .card-title { font-family: var(--font-display); font-weight: 600; font-size: 13px; }
-    .badge {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
-    }
-
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--error); flex-shrink: 0; }
-    .dot[data-ok="true"] { background: var(--ok); }
-
-    .detail { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); word-break: break-word; }
-    .pre { white-space: pre-wrap; font-family: var(--font-mono); font-size: 11px; }
-    .mono { font-family: var(--font-mono); word-break: break-all; }
-    .small { font-size: 11px; color: var(--text-tertiary); margin: 4px 0 0; }
-    .muted { color: var(--text-tertiary); font-size: 12px; }
-    .warn { color: var(--warn); font-size: 12px; margin: 0; }
-    .ok-note { color: var(--ok); font-size: 12px; }
-
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .label {
-      font-size: 10px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.08em; color: var(--text-tertiary);
-    }
-    .label em { text-transform: none; letter-spacing: 0; font-style: normal; font-weight: 400; opacity: 0.75; }
-
-    .actions { display: flex; align-items: center; gap: 10px; }
-    .primary, .ghost {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 32px; padding: 0 16px;
-      border-radius: var(--radius-md);
-      font-size: 13px; font-weight: 500; line-height: 1;
+    .section-item {
+      display: flex; align-items: center; gap: 8px;
+      width: 100%; padding: 7px 10px;
+      font: inherit; font-size: 13px; text-align: left;
+      background: transparent; color: var(--text-secondary);
+      border: none; border-radius: var(--radius-sm);
       cursor: pointer;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
     }
-    .primary {
-      border: none;
-      background: var(--accent); color: var(--text-inverse);
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    .section-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /*
+      ACTIVE IS A BACKGROUND AND A WEIGHT, AND THE TEXT COLOUR ONLY GOES UP.
+      bookforge-02 shipped the sibling of this control with the accent used as a
+      fill behind the ordinary foreground and Owen could not read it. Nothing
+      here puts text on the accent; the accent is a bar at the edge.
+    */
+    .section-item.active {
+      background: var(--bg-sunken); color: var(--text-primary); font-weight: 600;
+      box-shadow: inset 2px 0 0 var(--accent);
     }
-    .primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .primary:active:not(:disabled) { background: var(--accent-active); transform: scale(0.98); }
-    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .ghost {
-      height: 26px; padding: 0 12px; font-size: 12px;
-      background: var(--bg-input);
-      border: 1px solid var(--border-default);
-      color: var(--text-primary);
+    .section-icon { font-size: 14px; line-height: 1; }
+    .section-name { min-width: 0; }
+
+    /* Set apart from the section list: it acts rather than navigates. */
+    .section-item.guided-setup {
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+      border-radius: 0;
+      opacity: 0.8;
     }
-    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+    .section-item.guided-setup:hover { opacity: 1; }
+
+    /* The scroller. Full width, so its scrollbar is the window's right edge. */
+    .pane { overflow-y: auto; padding: 20px 24px 60px; }
+    /* The content. Centred, and it re-centres as the window resizes because the
+       margin is auto rather than a computed offset. */
+    .pane-inner {
+      display: flex; flex-direction: column; gap: 10px;
+      max-width: 860px; margin: 0 auto;
+    }
+    .pane-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+    .pane-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .pane-detail { margin: 0; font-size: 12px; color: var(--text-tertiary); }
+
+    @media (max-width: 720px) {
+      .page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+      .rail { flex-direction: row; align-items: center; overflow-x: auto; }
+      .rail h1 { display: none; }
+      .section-list { flex-direction: row; }
+      .section-item.guided-setup { margin-top: 0; padding-top: 7px; border-top: none; }
+    }
   `],
 })
 export class SettingsPageComponent {
   protected readonly hosted = hosted;
-  protected readonly isWindows = api?.platform === 'win32';
+  protected readonly sections = SECTIONS;
 
-  protected readonly report = signal<DoctorReport | null>(null);
-  protected readonly doctorProblem = signal<string | null>(null);
-  protected readonly probing = signal(false);
-  protected readonly engine = signal<EngineInfo | null>(null);
+  private readonly ui = inject(UiService);
 
-  protected readonly settingsFile = signal('');
-  protected readonly settingsProblem = signal<string | null>(null);
-  protected readonly mode = signal<BackendMode>('auto');
-  protected readonly endpointUrl = signal('');
-  protected readonly python = signal('');
-  protected readonly saving = signal(false);
-  protected readonly saved = signal(false);
-  protected readonly saveProblem = signal<string | null>(null);
+  /**
+   * WHICH SECTION IS OPEN — and it opens on General.
+   *
+   * Not on the section somebody was last in. A settings screen that restores a
+   * position is guessing that the errand is the same one as last time, and the
+   * common case here is the opposite: a person comes to Settings because
+   * something new needs attention. General is the cheapest place to be wrong
+   * about — it holds no engine controls and nothing on it is in flight.
+   */
+  protected readonly selected = signal<SettingsSection['id']>('general');
 
-  constructor() {
-    void this.load();
-  }
+  protected readonly current = computed(
+    () => this.sections.find((section) => section.id === this.selected()) ?? null);
 
-  private async load(): Promise<void> {
-    if (!api) {
-      this.doctorProblem.set('This page is running outside Electron, so there is no engine to ask.');
-      return;
-    }
-    this.engine.set(await api.engineInfo());
-    const view = await api.settings.read();
-    this.settingsFile.set(view.path);
-    this.settingsProblem.set(view.problem ?? null);
-    this.mode.set(view.backend.mode ?? 'auto');
-    this.endpointUrl.set(view.backend.endpointUrl ?? '');
-    this.python.set(view.backend.python ?? '');
-    await this.probe();
-  }
-
-  protected async probe(): Promise<void> {
-    if (!api) return;
-    this.probing.set(true);
-    try {
-      // Probed at the URL ON SCREEN, not the saved one: the field is what the
-      // user is asking about, and making them save first to test would make
-      // every experiment a write.
-      const result = await api.doctor(this.endpointUrl().trim() || undefined);
-      if (result.ok) {
-        this.report.set(result.report);
-        this.doctorProblem.set(null);
-      } else {
-        this.report.set(null);
-        this.doctorProblem.set(result.reason);
-      }
-    } finally {
-      this.probing.set(false);
-    }
-  }
-
-  protected async save(): Promise<void> {
-    if (!api) return;
-    this.saving.set(true);
-    this.saved.set(false);
-    this.saveProblem.set(null);
-    try {
-      const view = await api.settings.write({
-        mode: this.mode(),
-        endpointUrl: this.endpointUrl().trim(),
-        python: this.python().trim(),
-      });
-      this.settingsProblem.set(view.problem ?? null);
-      this.saved.set(true);
-      await this.probe();
-    } catch (err) {
-      this.saveProblem.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected title(tier: TierReport): string {
-    switch (tier.id) {
-      case 'endpoint': return 'Endpoint (OpenAI-compatible server)';
-      // Still reported by the ENGINE's doctor, which knows how to find a vLLM
-      // in WSL that somebody else built. This app stopped building or starting
-      // one (docs/SLOTS.md §6), so the arm stays as a label for a measurement
-      // and is no longer the name of anything this screen can act on.
-      case 'wsl-vllm': return 'vLLM in WSL';
-      case 'mlx': return 'MLX (Apple silicon)';
-      case 'native': return 'Native (local, non-MLX)';
-      default: return tier.id;
-    }
+  protected openSetup(): void {
+    this.ui.openSetup();
   }
 }

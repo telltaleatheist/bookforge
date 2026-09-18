@@ -109,17 +109,19 @@ export interface CloudProviderEntry {
 export const CLOUD_PROVIDER_MAX = 4;
 
 export interface AppSettings {
-  /**
-   * Minutes the app-started PAGE READER stays up after the queue drains.
+  /*
+   * `keepServerWarmMinutes` AND `pageReaderRemoved` WERE HERE.
    *
-   * 0 — the default — stops it as soon as the queue is empty. The ceiling
-   * exists because "never indefinite" needs a number to be true: whatever is
-   * written here, an idle server always has a scheduled end. It is the local
-   * llama-server this setting is about (electron/page-reader.ts), never an
-   * endpoint somebody else runs — this app has no way to stop one of those and
-   * no business trying.
+   * One held the local reading server alive for a few minutes after the queue
+   * drained, so the next book did not pay the model load; the other was the
+   * receipt for an automatic removal -- a Crucible on this machine took over
+   * page reading, so Foundry deleted its own copy and said so on a card.
+   *
+   * There is no local reading server and nothing of ours on the disk to
+   * remove (2026-09-17). A stored key nothing reads is not harmless: it is a
+   * setting somebody can find in the JSON, change, and watch do nothing.
    */
-  keepServerWarmMinutes: number;
+
   /**
    * The folder this app treats as the user's library.
    *
@@ -323,42 +325,9 @@ export interface AppSettings {
    * a wizard step into a migration.
    */
   setupSkipped: string[];
-  /**
-   * WHAT §5b's AUTOMATIC DELETION TOOK, AND WHEN — or null, on every machine
-   * where it has never fired.
-   *
-   * docs/SLOTS.md §5b: Foundry removes its own page-reader download when a LOCAL
-   * Crucible has taken over the `pages` class, *"and never silently: the settings
-   * row says what was removed and the gigabytes freed. Re-download restores it."*
-   * That sentence has to survive the app being closed — the removal happens the
-   * moment a server is registered, and the person may not look at Settings until
-   * the next day — so the fact is written here rather than held in a signal.
-   *
-   * IT IS A RECEIPT, NOT A FLAG. Nothing reads it to decide whether to remove
-   * again: `pageReaderRemovalOffer` measures the disk every time, and a directory
-   * that is already gone is already gone. Re-installing the reader clears it,
-   * because a receipt for a deletion that has been undone is a lie on a screen.
-   */
-  pageReaderRemoved: PageReaderRemoval | null;
+
 }
 
-/**
- * The receipt for one automatic removal — see {@link AppSettings.pageReaderRemoved}.
- *
- * `server` NAMES THE CRUCIBLE that took the class over, because "Foundry deleted
- * four gigabytes" is alarming and "the Crucible on this machine took over page
- * reading, so Foundry removed its own copy of the reader (4.4 GB)" is an
- * explanation. `bytes` is null when the directory could not be measured before
- * it went, which is rare and must not print as a confident zero.
- */
-export interface PageReaderRemoval {
-  server: string;
-  bytes: number | null;
-  /** ISO 8601, in this machine's clock. For the sentence, never for a comparison. */
-  at: string;
-}
-
-export const KEEP_WARM_MAX_MINUTES = 240;
 
 /** How many a person may keep. A ceiling so "a list" cannot become a corpus. */
 export const CUSTOM_CATEGORY_MAX = 40;
@@ -374,7 +343,6 @@ export function defaultLibraryDir(): string {
  * directory, and a module-level constant would freeze whatever HOME happened to
  * be when this file was first imported.
  */
-const DEFAULTS = { keepServerWarmMinutes: 0 };
 
 function settingsFile(): string {
   return path.join(app.getPath('userData'), 'app-settings.json');
@@ -393,12 +361,6 @@ function readRaw(): Record<string, unknown> | null {
     // so there is nothing to protect by refusing.
     return null;
   }
-}
-
-/** A finite number of minutes in [0, max]; anything else is the fallback. */
-export function clampKeepWarm(value: unknown, fallback = DEFAULTS.keepServerWarmMinutes): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.min(KEEP_WARM_MAX_MINUTES, Math.max(0, Math.round(value)));
 }
 
 /**
@@ -780,7 +742,6 @@ export function clampSkipped(value: unknown): string[] {
 export function readAppSettings(): AppSettings {
   const raw = readRaw();
   return {
-    keepServerWarmMinutes: clampKeepWarm(raw?.['keepServerWarmMinutes']),
     libraryDir: clampLibraryDir(hostedLibraryDir() ?? raw?.['libraryDir']),
     analysisCategories: clampAnalysisCategories(raw?.['analysisCategories']),
     crucibleServers: clampCrucibleServers(raw?.['crucibleServers']),
@@ -790,7 +751,6 @@ export function readAppSettings(): AppSettings {
     wslDistro: clampWslDistro(raw?.['wslDistro']),
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
-    pageReaderRemoved: clampPageReaderRemoval(raw?.['pageReaderRemoved']),
   };
 }
 
@@ -803,24 +763,8 @@ export function readAppSettings(): AppSettings {
  * undefined on undefined", and no record at all is a better sentence than that —
  * the disk is measured either way, so nothing is lost but the explanation.
  */
-function clampPageReaderRemoval(value: unknown): PageReaderRemoval | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const raw = value as Record<string, unknown>;
-  const server = typeof raw['server'] === 'string' ? raw['server'].trim() : '';
-  const at = typeof raw['at'] === 'string' ? raw['at'].trim() : '';
-  if (server.length === 0 || at.length === 0) return null;
-  return {
-    server,
-    bytes: typeof raw['bytes'] === 'number' && Number.isFinite(raw['bytes']) ? raw['bytes'] : null,
-    at,
-  };
-}
-
 export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   const root: Record<string, unknown> = readRaw() ?? {};
-  if (patch.keepServerWarmMinutes !== undefined) {
-    root['keepServerWarmMinutes'] = clampKeepWarm(patch.keepServerWarmMinutes);
-  }
   if (patch.libraryDir !== undefined) {
     root['libraryDir'] = clampLibraryDir(patch.libraryDir);
   }
@@ -851,11 +795,6 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
    * two are genuinely different and the check has to be on `undefined` rather
    * than on truthiness.
    */
-  if (patch.pageReaderRemoved !== undefined) {
-    root['pageReaderRemoved'] = patch.pageReaderRemoved === null
-      ? null
-      : clampPageReaderRemoval(patch.pageReaderRemoved);
-  }
   const file = settingsFile();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(root, null, 2)}\n`, 'utf8');

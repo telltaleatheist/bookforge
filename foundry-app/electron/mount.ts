@@ -104,7 +104,6 @@ import {
 import { connectLocalEngine, registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
-import * as pageReader from './page-reader';
 import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
@@ -173,6 +172,31 @@ export type { HostStatus } from '../shared/host-ops';
  * renderer already makes at startup answers exactly what it always answered.
  */
 export { setHostOperations } from './host-ops';
+/*
+ * DROPPING A STEP, FOR A HOST THAT LISTS ITS EXPORTS.
+ *
+ * BookForge shows a Foundry export as a version nested under its parent book,
+ * and Owen ruled on 2026-09-17 that the two are one item: delete the version
+ * there and the step goes here, delete the step here and the version goes there.
+ * The second half is already the host's own work — its tray reconcile withdraws
+ * a row whose file has left `final/` — and this is the first half.
+ *
+ * IT IS THE HANDLER'S OWN BODY, reached through `deleteLedgerStep`'s holder in
+ * electron/ipc.ts rather than copied: the ghost branch, both busy proofs and the
+ * subtree cascade are conditions a second implementation would drift from, and
+ * two apps deleting different things from one press is the disagreement about
+ * "what a book is" that this file's header exists to prevent.
+ *
+ * ITS REFUSALS ARE THROWN AND ARE MEANT TO BE SHOWN. A step with a run about to
+ * write into it, a queued job, a payload this window has open — each is a
+ * sentence written for a person, and the host is expected to put it in front of
+ * one rather than paraphrase it or swallow it into a silent no-op.
+ *
+ * A SUBTREE GOES WITH IT, which the caller must expect: a step chained behind
+ * the one named is destroyed too. Owen: *"epubs shouldnt have any sub-steps.
+ * theyre final pieces … but if there do happen to be sub-steps, remove them."*
+ */
+export { deleteLedgerStep } from './ipc';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 /*
  * ── AND THE QUEUE SOCKET: ONE MACHINE'S GPU HAS ONE OWNER ───────────────────
@@ -1066,11 +1090,10 @@ let stopping: Promise<void> | null = null;
 export function stopFoundry(): Promise<void> {
   if (stopping !== null) return stopping;
   queue.shutdown();
-  stopping = pageReader.ownsServer()
-    // A server this app merely FOUND running is not ours to stop, and the wait
-    // would be a wait for somebody else's process to die.
-    ? pageReader.stopPageReader('the app is quitting').then(() => undefined)
-    : Promise.resolve();
+  // The reading server this used to stop was the local page reader's, and there
+  // is no local page reader (2026-09-17). Shutting the queue down, above, is the
+  // whole of what quitting has left to do.
+  stopping = Promise.resolve();
   return stopping;
 }
 

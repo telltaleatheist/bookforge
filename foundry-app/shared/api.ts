@@ -1095,6 +1095,16 @@ export interface FoundryApi {
      */
     start(): Promise<number>;
     /**
+     * RELEASE ONE HELD ROW and let the queue drain — a dialog's own Start.
+     *
+     * `start()` above is the shelf's button and commits to the whole held batch;
+     * this commits to the row the caller just enqueued, so a modal that starts a
+     * run does not also let go of rows somebody parked on purpose. Answers
+     * whether it let go: false covers released-already, started-already and
+     * removed-while-you-were-looking, which are one state to a caller.
+     */
+    release(id: string): Promise<boolean>;
+    /**
      * Take a held or queued row out of the list entirely.
      *
      * Not `cancel`: a job that never started has nothing to stop and leaves no
@@ -1695,44 +1705,20 @@ export interface FoundryApi {
     test(provider: CloudProviderEdit): Promise<CloudProbe>;
   };
 
-  /**
-   * THE LOCAL PAGE READER — a llama-server holding dots.ocr, on this machine.
+  /*
+   * `pageReader` AND `models` WERE HERE, AND THE LOCAL READER IS GONE.
    *
-   * Reading a page is the one act with no Ollama path (Ollama does not serve
-   * dots.ocr), so this is what makes "convert a PDF" work on a machine nobody
-   * has prepared. `backendSetup` and `vllmServer` used to live here and built
-   * and launched a vLLM inside WSL; both went on 2026-09-13 (docs/SLOTS.md §6,
-   * package B), and a vLLM or a Crucible somebody else runs is reached the way
-   * every other server is — by putting its URL in `settings`.
+   * `pageReader` was a llama-server holding dots.ocr on this machine: state,
+   * install, cancel, start, stop, keep-warm, and a progress push. `models` was
+   * the inventory behind the "Models on this machine" card and the button that
+   * removed what Foundry had downloaded.
+   *
+   * Owen, 2026-09-17: *"there sohuldnt be a local system. foundry does all ai
+   * work through crucible."* Reading a page wants a GPU, so it is an engine's;
+   * and with nothing downloaded here there is no inventory to take and nothing
+   * to remove. Eight channels, two main-process modules and a first-run step
+   * went with them.
    */
-  pageReader: {
-    /**
-     * EVERYTHING THE ROW NEEDS, IN ONE CALL. Measured, never cached, and it
-     * asks the two release indexes for sizes only when something is missing.
-     */
-    state(): Promise<PageReaderState>;
-    /**
-     * Fetch what is missing and verify it. A failure is a RESULT, not a
-     * rejection — every one of them is a sentence to put on the row.
-     */
-    install(): Promise<{ ok: boolean; detail: string }>;
-    /** What has already been fetched survives; starting again continues it. */
-    cancelInstall(): Promise<void>;
-    /** Pre-warm. Rejects with the server's own log tail when it will not start. */
-    start(): Promise<ServerStatus>;
-    stop(): Promise<ServerStatus>;
-    /**
-     * Minutes an app-started server outlives a drained queue. 0 — the default
-     * — stops it the moment the queue empties; the ceiling is main's
-     * (app-settings.ts), so whatever is asked for, an idle server always has a
-     * scheduled end. Returns the value as clamped and stored. The current value
-     * rides on `state()` rather than having a read of its own.
-     */
-    setKeepWarm(minutes: number): Promise<number>;
-    /** The download, phase by phase. Returns its own unsubscribe. */
-    onProgress(listener: (progress: PageReaderProgress) => void): () => void;
-    onStatus(listener: (status: ServerStatus) => void): () => void;
-  };
 
   /**
    * ── MAY THIS ACT RUN ON THIS MACHINE, AND WHY NOT ────────────────────────
@@ -1763,40 +1749,6 @@ export interface FoundryApi {
     onChanged(listener: () => void): () => void;
   };
 
-  /**
-   * ── WEIGHTS ON THIS DISK, AND THE ONE STORE FOUNDRY MAY DELETE FROM ──────
-   *
-   * docs/SLOTS.md §5b. Every store the app knows about, with sizes, so that
-   * three copies of a 27B in three different runtimes are SEEN rather than
-   * discovered from a full disk. Foundry's own downloads can be removed here;
-   * Ollama's store is listed and never touched (Owen: *"ollama has its own
-   * thing going on and we should leave it be"*); a local Crucible is a line
-   * that says there is none until package C lands the registry.
-   */
-  models: {
-    inventory(): Promise<MachineModels>;
-    /**
-     * THE WEIGHTS ON THIS DISK MOVED — said out loud, with no payload.
-     *
-     * The one thing that changes them without somebody pressing a button on the
-     * card is SLOTS.md §5b's automatic removal: registering the Crucible on this
-     * machine takes page reading over, and Foundry's own copy of the reader goes.
-     * Without this push the card would go on listing four gigabytes of files
-     * that are not there until it was reopened.
-     *
-     * NO PAYLOAD, on `acts:gates-changed`'s reasoning: the inventory is main's
-     * to compose and composing it costs a directory walk, so this says only that
-     * something moved and the card asks again through `inventory()`.
-     */
-    onChanged(listener: () => void): () => void;
-    /**
-     * Delete the page reader Foundry downloaded, and answer with the gigabytes
-     * freed. A refusal is a RESULT with a sentence, never a rejection — this is
-     * the one door in this namespace that destroys something, and the row has
-     * to be able to print what happened either way.
-     */
-    removePageReader(): Promise<RemovalOutcome>;
-  };
 
   /**
    * ── THE CAPTURE STAGE, WHICH IS UPSTREAM OF EVERYTHING ELSE HERE ─────────

@@ -66,10 +66,28 @@ export class QueueService {
    * that did not grow.
    */
   async enqueue(request: JobRequest): Promise<'added' | 'already'> {
-    const before = new Set(this.all().map((job) => job.id));
-    const job = await api?.queue.enqueue(request);
-    if (!job) return 'added';
-    return before.has(job.id) ? 'already' : 'added';
+    return (await this.enqueueNamed(request)).outcome;
+  }
+
+  /**
+   * THE SAME ENQUEUE, AND IT SAYS WHICH ROW IT MADE.
+   *
+   * `enqueue` above throws the job away and keeps only the verdict, which is
+   * everything a dialog that closes needs. A dialog that STAYS OPEN to watch the
+   * run needs the id — Owen, 2026-09-17: *"if they hit start, progress shows in
+   * the modal live."* Watching means finding this row in the mirror on every
+   * push, and finding it by name is the only way that is not a guess.
+   *
+   * THE ID COMES BACK EVEN FOR `already`, deliberately. Main answers a duplicate
+   * with the EXISTING row, and that row is the one already doing the work the
+   * person just asked for — so a dialog can watch it rather than report that
+   * nothing happened. The verdict still says which case it was; the caller
+   * decides whether that distinction matters to it.
+   */
+  async enqueueNamed(
+    request: JobRequest,
+  ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
+    return this.identify(() => api?.queue.enqueue(request));
   }
 
   /**
@@ -88,10 +106,14 @@ export class QueueService {
    * all three (`enqueueTextPass`, electron/job-queue.ts).
    */
   async enqueueTextPass(request: TextPassRequest): Promise<'added' | 'already'> {
-    const before = new Set(this.all().map((job) => job.id));
-    const job = await api?.queue.enqueueTranslate(request);
-    if (!job) return 'added';
-    return before.has(job.id) ? 'already' : 'added';
+    return (await this.enqueueTextPassNamed(request)).outcome;
+  }
+
+  /** {@link enqueueTextPass}, saying which row — see {@link enqueueNamed}. */
+  async enqueueTextPassNamed(
+    request: TextPassRequest,
+  ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
+    return this.identify(() => api?.queue.enqueueTranslate(request));
   }
 
   /**
@@ -107,10 +129,38 @@ export class QueueService {
    * refusal swallowed by a mirror is a press that did nothing and said nothing.
    */
   async enqueueAnalysis(request: AnalyzeRequest): Promise<'added' | 'already'> {
+    return (await this.enqueueAnalysisNamed(request)).outcome;
+  }
+
+  /**
+   * {@link enqueueAnalysis}, saying which row.
+   *
+   * NOTHING IS CAUGHT HERE, as above: hosted, main refuses this door outright
+   * and that rejection is a sentence the dialog shows where the button is. A
+   * refusal swallowed by a mirror is a press that did nothing and said nothing.
+   */
+  async enqueueAnalysisNamed(
+    request: AnalyzeRequest,
+  ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
+    return this.identify(() => api?.queue.enqueueAnalysis(request));
+  }
+
+  /**
+   * THE DEDUPE ANSWER AND THE ROW, out of one call.
+   *
+   * Main answers with the EXISTING row when one is already waiting to produce
+   * the same thing, and the shape is identical either way — so the id is checked
+   * against the mirror as it stood BEFORE the call. That trick was written three
+   * times, once per enqueue door, which is three places for it to drift; it is
+   * written here now and the three doors are two lines each.
+   */
+  private async identify(
+    send: () => Promise<Job | undefined> | undefined,
+  ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
     const before = new Set(this.all().map((job) => job.id));
-    const job = await api?.queue.enqueueAnalysis(request);
-    if (!job) return 'added';
-    return before.has(job.id) ? 'already' : 'added';
+    const job = await send();
+    if (!job) return { outcome: 'added', id: null };
+    return { outcome: before.has(job.id) ? 'already' : 'added', id: job.id };
   }
 
   /**
@@ -129,6 +179,16 @@ export class QueueService {
   }
 
   /** Release the held batch. Main answers with how many; nothing here guesses. */
+  /**
+   * Release ONE row — the dialogs' Start, as against the shelf's.
+   *
+   * See `api.queue.release`: a modal committing to its own run must not let go
+   * of a batch somebody parked deliberately.
+   */
+  async release(id: string): Promise<boolean> {
+    return (await api?.queue.release(id)) ?? false;
+  }
+
   async start(): Promise<void> {
     await api?.queue.start();
   }

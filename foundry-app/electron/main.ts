@@ -40,7 +40,6 @@ import { documentFromArgv, openDocument, promptForDocument } from './documents';
 import { planProvisioning } from './env-provision';
 import * as queue from './job-queue';
 import { mountFoundry, openFoundryWindow, stopFoundry } from './mount';
-import * as pageReader from './page-reader';
 import { foundryWindow, letTheWindowGo, whenRendererReady, windowLetGo } from './window';
 import type { MenuAction } from '../shared/api';
 
@@ -391,7 +390,6 @@ app.on('window-all-closed', () => {
  * running is not ours and the quit is immediate — which is why the question is
  * asked BEFORE the teardown starts: afterwards there is no server left to own.
  */
-let quitting = false;
 app.on('before-quit', (event) => {
   /*
    * THE DOCUMENTS ARE ASKED BEFORE ANYTHING IS SHUT DOWN, and the order is the
@@ -407,10 +405,16 @@ app.on('before-quit', (event) => {
     letTheWindowGo(() => app.quit());
     return;
   }
-  const ours = !quitting && pageReader.ownsServer();
-  const stopped = stopFoundry();
-  if (!ours) return;
-  event.preventDefault();
-  quitting = true;
-  void stopped.finally(() => app.quit());
+  /*
+   * NOTHING HERE HOLDS THE QUIT ANY MORE.
+   *
+   * This used to ask whether the READING SERVER was ours -- a llama.cpp this app
+   * had started -- and if it was, cancel the quit, stop the server, and quit
+   * again once it was down. With the local page reader deleted (2026-09-17)
+   * there is no process of ours to outlive the window, so the guard would be a
+   * preventDefault nobody ever lifts.
+   *
+   * `stopFoundry` still runs, and still matters: it shuts the queue down.
+   */
+  stopFoundry();
 });

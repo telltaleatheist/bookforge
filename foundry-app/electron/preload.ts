@@ -229,6 +229,7 @@ const api: FoundryApi = {
     enqueueAnalysis: (request) => ipcRenderer.invoke('queue:enqueue-analysis', request),
     run: (request) => ipcRenderer.invoke('queue:run', request),
     start: () => ipcRenderer.invoke('queue:start'),
+    release: (id) => ipcRenderer.invoke('queue:release', id),
     remove: (id) => ipcRenderer.invoke('queue:remove', id),
     cancel: (id) => ipcRenderer.invoke('queue:cancel', id),
     clearFinished: () => ipcRenderer.invoke('queue:clear-finished'),
@@ -372,16 +373,6 @@ const api: FoundryApi = {
     probe: (force) => ipcRenderer.invoke('system:probe', force === true),
   },
 
-  pageReader: {
-    state: () => ipcRenderer.invoke('page-reader:state'),
-    install: () => ipcRenderer.invoke('page-reader:install'),
-    cancelInstall: () => ipcRenderer.invoke('page-reader:install-cancel'),
-    start: () => ipcRenderer.invoke('page-reader:start'),
-    stop: () => ipcRenderer.invoke('page-reader:stop'),
-    setKeepWarm: (minutes) => ipcRenderer.invoke('page-reader:set-keep-warm', minutes),
-    onProgress: (listener) => subscribe<PageReaderProgress>('page-reader:progress', listener),
-    onStatus: (listener) => subscribe<ServerStatus>('page-reader:status-changed', listener),
-  },
 
   acts: {
     gates: () => ipcRenderer.invoke('acts:gates'),
@@ -391,12 +382,6 @@ const api: FoundryApi = {
     onChanged: (listener) => subscribe<void>('acts:gates-changed', () => listener()),
   },
 
-  models: {
-    inventory: () => ipcRenderer.invoke('models:inventory'),
-    // NO PAYLOAD, on `acts:gates-changed`'s reasoning — the card asks again.
-    onChanged: (listener) => subscribe<void>('models:changed', () => listener()),
-    removePageReader: () => ipcRenderer.invoke('models:remove-page-reader'),
-  },
 
   capture: {
     create: (title) => ipcRenderer.invoke('capture:create', title),

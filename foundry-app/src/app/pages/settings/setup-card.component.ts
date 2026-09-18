@@ -17,18 +17,24 @@
  * class. That is a window onto somebody else's store, which is exactly what
  * Foundry is allowed to have; what it may not have is a store of its own.
  *
- * ── AND THE BUTTON THAT RE-OPENS SETUP, WHICH IS WHY THE CARD SURVIVED ──────
+ * ── AND THE BUTTON LEFT IT, 2026-09-17, WHEN SETTINGS BECAME A TREE ────────
  *
  * Every step of the first-run wizard is skippable, which is only a real offer if
- * there is a way back. This card holds it, and names what was skipped — "the
- * analysis worker was skipped" is something a person can act on, and "setup was
- * not completed" is not.
+ * there is a way back — and this card used to hold that way back AND the notice
+ * saying what was skipped. The way back is now "Run guided setup…" under the
+ * section list (settings-page.component.ts argues why an action does not belong
+ * among the things you set), so what remains here is the FACT: "the analysis
+ * worker was skipped" is something a person can act on, and "setup was not
+ * completed" is not.
+ *
+ * TWO BUTTONS FOR ONE ACTION IS WHAT WENT. It is the duplication the whole
+ * reorganisation exists to remove, and it is worse than harmless here: the two
+ * would have had to keep the same hosted guard in step forever.
  */
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 
 import type { SetupState } from '@shared/types';
-import { api, hosted } from '../../core/foundry';
-import { UiService } from '../../core/ui.service';
+import { api } from '../../core/foundry';
 
 @Component({
   selector: 'app-setup-card',
@@ -40,22 +46,9 @@ import { UiService } from '../../core/ui.service';
       </div>
       <p class="detail">
         The walk-through that asks for a library folder, a GPU engine, the Python environments
-        and the page reader. Every step can be skipped, and every step is also a card on this
-        screen.
+        and the page reader. Every step can be skipped, and every step is also a card in one of
+        these sections. Run guided setup, under the section list, opens it again.
       </p>
-
-      <div class="actions">
-        <!--
-          NOT HOSTED. The wizard's first step is the library, which a hosted
-          window does not own, and its later steps reconfigure an engine the
-          host runs. UiService.openSetup refuses there as well; this hides the
-          button so nobody is offered something that will not happen. (No
-          backticks in this comment: it lives inside a template literal.)
-        -->
-        @if (!hosted()) {
-          <button class="ghost" (click)="openSetup()">Run first-run setup again</button>
-        }
-      </div>
 
       @if (state(); as setup) {
         @if (!setup.completed) {
@@ -82,33 +75,13 @@ import { UiService } from '../../core/ui.service';
     .detail { margin: 0; font-size: 12px; color: var(--text-secondary); }
     .warn { color: var(--warn); font-size: 12px; margin: 0; }
 
-    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .ghost {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 26px; padding: 0 12px;
-      border-radius: var(--radius-sm);
-      font-size: 12px; font-weight: 500; line-height: 1;
-      cursor: pointer;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
-      background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary);
-    }
-    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
   `],
 })
 export class SetupCardComponent {
-  private readonly ui = inject(UiService);
-
-  /** Read in the template: the wizard is not offered inside a host. */
-  protected readonly hosted = hosted;
   protected readonly state = signal<SetupState | null>(null);
 
   constructor() {
     if (!api) return;
     void api.setup.state().then((state) => this.state.set(state));
-  }
-
-  protected openSetup(): void {
-    this.ui.openSetup();
   }
 }

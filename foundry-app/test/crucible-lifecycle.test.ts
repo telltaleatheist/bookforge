@@ -27,15 +27,36 @@ const status = (state: bootstrap.LocalStatus['state']): bootstrap.LocalStatus =>
   schema_version: 1, state, name: 'local', url: 'http://127.0.0.1:9191', detail: `status: ${state}`,
 });
 
+/*
+ * THE MAPPING IS THE FEATURE, so it is asserted state by state rather than as
+ * "everything odd is a problem". This test USED to read `['absent', 'stopped',
+ * 'running'].includes(state) ? state : 'problem'`, which is exactly the fold
+ * that put "Open Crucible to repair its local installation or connection" in
+ * front of Owen on 2026-09-17 over an engine that was answering. A ternary that
+ * says "or else" cannot fail when "or else" is wrong.
+ */
 test('local lifecycle preserves absent, stopped and damaged distinctions', async () => {
   spyOn(host, 'hosted').mockReturnValue(false);
-  for (const state of ['absent', 'stopped', 'running', 'broken', 'wrong_service', 'unauthorized'] as const) {
-    spyOn(bootstrap, 'localStatus').mockResolvedValue(status(state));
-    expect((await start.crucibleRunState()).kind)
-      .toBe(['absent', 'stopped', 'running'].includes(state) ? state : 'problem');
+  const expected: Record<bootstrap.LocalStatus['state'], string> = {
+    absent: 'absent', stopped: 'stopped', running: 'running',
+    // Installed and silent: there is something to start, so this is offered.
+    unreachable: 'unreachable',
+    // Answering, and slow. Nothing to start and nothing to repair.
+    unhealthy: 'unhealthy',
+    // The three that earn the word, and only these three.
+    broken: 'problem', wrong_service: 'problem', unauthorized: 'problem',
+  };
+  for (const [state, kind] of Object.entries(expected)) {
+    spyOn(bootstrap, 'localStatus').mockResolvedValue(status(state as bootstrap.LocalStatus['state']));
+    expect((await start.crucibleRunState()).kind).toBe(kind);
   }
   spyOn(bootstrap, 'localStatus').mockRejectedValue(new Error('invalid installation record'));
-  expect(await start.crucibleRunState()).toEqual({ kind: 'problem', why: 'invalid installation record' });
+  expect(await start.crucibleRunState())
+    .toEqual({ kind: 'problem', fault: 'broken', why: 'invalid installation record' });
+  // Each fault says its own thing. A shared sentence is what was wrong before.
+  const said = (['wrong_service', 'unauthorized', 'broken'] as const)
+    .map(fault => JSON.stringify(start.crucibleFaultWords(fault)));
+  expect(new Set(said).size).toBe(3);
 });
 
 test('hosted Foundry never controls the local service', async () => {

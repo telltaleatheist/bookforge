@@ -124,27 +124,20 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
   template: `
     <div class="doors">
       <!--
-        ── 0. THIS MACHINE, FOUND WITHOUT A DOOR ──────────────────────────
-        PHASE15 section 5.1 way 1: main already read the connect code Crucible
-        leaves on this machine, at start. The button is for the engine that was
-        installed after this window opened — section 3.6's own case. (NO
-        BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment: it is a
+        ── "LOOK AGAIN ON THIS MACHINE" IS GONE ────────────────────────────
+
+        Owen, 2026-09-17: *"look again on this machine ... seem superfluous."*
+        He is right, and the reason is in the sentence that sat above it:
+        Foundry already looks for an engine on this machine by itself, at start.
+        The button existed for one narrow case -- an engine installed AFTER this
+        window opened -- and asked a person to know that about their own app in
+        order to press it. Restarting Foundry does the same thing without the
+        explanation, and connecting by address below works whether or not
+        anything was found automatically.
+
+        (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment: it is a
         template literal and one would end it mid-sentence.)
       -->
-      <div class="blurb">
-        <p class="small">
-          Foundry looks for an engine on this machine on its own. If one was installed after
-          this app started, press Look again.
-        </p>
-        <div class="actions">
-          <button class="ghost" type="button" [disabled]="busy()" (click)="lookAgain()">
-            {{ busy() === 'pairing' ? 'Looking…' : 'Look again on this machine' }}
-          </button>
-        </div>
-        @if (pairingNote(); as note) {
-          <p class="small" [class.warn]="pairingFailed()">{{ note }}</p>
-        }
-      </div>
 
       <!-- ── 1. Connect ────────────────────────────────────────────────── -->
       <button class="door" type="button" (click)="toggle('connect')">
@@ -168,8 +161,33 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
           </div>
           @if (remotePairing(); as pairing) {
             @if (pairing.status === 'pending') {
-              <p class="small">In BookForge or Foundry on {{ pairing.name }}, open Settings → Servers → Connection requests and approve code
-                <strong>{{ pairing.userCode }}</strong>. Waiting for approval…</p>
+              <!--
+                TRUE WHETHER OR NOT THAT ENGINE ASKS ANYONE.
+
+                Crucible 1.0.0 opens the request ALREADY APPROVED, so this
+                normally flashes past in a single poll. An engine configured
+                with open_pairing = false still holds it, and there the code
+                matters. The copy that was here asserted the second case
+                unconditionally -- and sent people to "Settings, Servers,
+                Connection requests", a list deleted the same day.
+
+                FOUNDRY CANNOT READ WHICH CASE IT IS IN, and the reason moved
+                on 2026-09-17. It used to be that the vendored SDK was 0.6.12 and
+                predated the field. The SDK is 1.0.0 now and the field is STILL
+                not readable: startPairing reads /v1/pairing/start and builds its
+                result explicitly -- id, device_code, user_code, expires_in,
+                interval -- so approval_required arrives on the wire and is
+                dropped on the way out. Surfacing it belongs to the package, and
+                has been asked for.
+
+                Re-vendoring was worth doing anyway and this was not why. The
+                sentence stays true of both cases rather than guessing; when the
+                SDK carries the field it becomes two sentences chosen by it, and
+                only this block moves.
+              -->
+              <p class="small">Connecting to {{ pairing.name }}…
+                If that computer asks anyone to approve this, the code is
+                <strong>{{ pairing.userCode }}</strong>.</p>
             } @else if (pairing.status === 'approved') {
               <p class="small ok">Connected to {{ pairing.name }}.</p>
             } @else {
@@ -177,66 +195,26 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
             }
           }
           @if (remotePairingError(); as error) { <p class="small warn">{{ error }}</p> }
-          <p class="small">Or use an existing connect code:</p>
-          <label class="field">
-            <span class="label">Paste a connect code</span>
-            <input type="text" name="cCode" placeholder="crucible://…"
-                   [ngModel]="code()" (ngModelChange)="onCode($event)">
-          </label>
-          <p class="small">
-            A Crucible prints one on its own page — it carries the name, the address and the
-            token together, so there is nothing to transcribe.
-          </p>
-          @if (codeRefusal(); as said) { <p class="small warn">{{ said }}</p> }
-          <label class="field">
-            <span class="label">Name</span>
-            <input type="text" name="cName" placeholder="Mac Studio"
-                   [ngModel]="name()" (ngModelChange)="name.set($event)">
-          </label>
-          <label class="field">
-            <span class="label">Address</span>
-            <input type="text" name="cUrl" placeholder="http://192.168.1.20:7100"
-                   [ngModel]="url()" (ngModelChange)="url.set($event)"
-                   [readonly]="hasCode()">
-          </label>
-          <label class="field">
-            <span class="label">Token</span>
-            @if (hasCode()) {
-              <input type="text" name="cToken" value="from the connect code" readonly>
-            } @else {
-              <input type="password" name="cToken"
-                     placeholder="crucible token --show, on that machine"
-                     [ngModel]="token()" (ngModelChange)="token.set($event)">
-            }
-          </label>
-          <div class="actions">
-            <button class="ghost" type="button" [disabled]="busy()" (click)="test()">
-              {{ busy() === 'test' ? 'Testing…' : 'Test' }}
-            </button>
-            <button class="primary" type="button" [disabled]="busy()" (click)="add()">
-              {{ busy() === 'add' ? 'Adding…' : 'Add' }}
-            </button>
-          </div>
-          @if (probe(); as result) {
-            @if (result.outcome === 'ok') {
-              <p class="small ok">
-                {{ result.serverName }} {{ result.version }} — {{ result.backend }}, {{ cardWords(result) }}
-              </p>
-              <!--
-                The engine was reached through an orchestrator (crucible
-                PHASE17-ORCHESTRATOR.md §6). That is a SUCCESS and the ordinary
-                shape of a Windows machine with WSL — the line above is the
-                engine's, and this names the process in front of it so nobody
-                has to work out why the address they typed and the server that
-                answered are two different ports.
-              -->
-              @if (result.via; as via) {
-                <p class="small">{{ via }}</p>
-              }
-            } @else {
-              <p class="small warn">{{ result.message }}</p>
-            }
-          }
+          <!--
+            ── THE CONNECT CODE, THE TOKEN BOX, TEST AND ADD ARE GONE ──────
+
+            Owen, 2026-09-17: *"we dont use tokens anymore so that can be
+            pulled. we use ip addresses to connect to crucible servers."*
+
+            What stood here was the whole pre-open-pairing path: paste a
+            crucible:// code, or type a name, an address and a token read off
+            the other machine with "crucible token --show", then Test, then Add.
+            Every one of those is a thing to transcribe correctly, and Connect
+            by address above now does all of it from the one fact a person
+            actually has. The token still exists and still arrives -- it is
+            minted by the engine and stored by main -- it simply never passes
+            through a person any more.
+
+            WHAT THIS COSTS, SAID OUT LOUD: an engine configured with
+            open_pairing = false has no manual path in Foundry at all now. That
+            is a deliberate consequence of the ruling rather than an oversight;
+            if such an engine turns up, the door that returns is this one.
+          -->
         </div>
       }
 
@@ -575,16 +553,10 @@ export class CrucibleDoorsComponent {
 
   protected readonly isWindows = api?.platform === 'win32';
   protected readonly open = signal<DoorId | null>(null);
-  protected readonly name = signal('');
-  protected readonly url = signal('');
-  protected readonly token = signal('');
-  protected readonly probe = signal<CrucibleProbe | null>(null);
   protected readonly plan = signal<CrucibleInstallPlan | null>(null);
   protected readonly localNote = signal<string | null>(null);
   protected readonly localFailed = signal(false);
   protected readonly installSaid = signal<string | null>(null);
-  protected readonly pairingNote = signal<string | null>(null);
-  protected readonly pairingFailed = signal(false);
   protected readonly remoteAddress = signal('');
   protected readonly remotePairing = signal<RemotePairingProgress | null>(null);
   protected readonly remotePairingError = signal<string | null>(null);
@@ -689,28 +661,10 @@ export class CrucibleDoorsComponent {
   });
 
 
-  /**
-   * THE PASTED LINE, AND IT IS A CREDENTIAL FOR AS LONG AS THIS DOOR IS OPEN.
-   *
-   * It is held because the three acts — preview, Test, Add — each need the WHOLE
-   * line, and main answers none of them with a token (docs' `ConnectCodePreview`
-   * argues the shape). The person typed it into this box, which is the one case
-   * the renderer is allowed to hold one; it is cleared on a successful Add, with
-   * the token box, exactly as the hand-typed token already was.
-   */
-  protected readonly code = signal('');
-  /** The SDK's `invalid_pairing` sentence for what is in the box, or null. */
-  protected readonly codeRefusal = signal<string | null>(null);
-  /**
-   * Is a READABLE code driving the boxes? Not "is the box non-empty": a half-
-   * pasted line must leave Address and Token editable, or somebody correcting a
-   * typo by hand would find the fields locked by the very thing they are fixing.
-   */
-  protected readonly hasCode = signal(false);
 
   /** Which call is in flight, so the right button says so and the others are off. */
   protected readonly busy = signal<
-    'test' | 'add' | 'local' | 'install' | 'pairing' | 'uninstall-plan' | 'uninstall-run' | null
+    'local' | 'install' | 'pairing' | 'uninstall-plan' | 'uninstall-run' | null
   >(null);
 
   constructor() {
@@ -762,154 +716,26 @@ export class CrucibleDoorsComponent {
     this.plan.set(await api.crucible.installPlan());
   }
 
-  /**
-   * Test what is in the boxes, WITHOUT saving it.
+  /*
+   * ── FOUR HANDLERS WENT WITH THE MARKUP THAT CALLED THEM (2026-09-17) ─────
    *
-   * The failure is a RESULT carrying the SDK's own sentence (crucible-registry.ts
-   * says why that sentence is never reworded here), so there is nothing to catch:
-   * both outcomes are drawn, and neither is an exception.
+   * `test()`, `onCode()`, `lookAgain()` and `add()`, and with them the signals
+   * they owned: `name`, `url`, `token`, `probe`, `code`, `codeRefusal`,
+   * `hasCode`, `pairingNote`, `pairingFailed`.
+   *
+   * All four served the pre-open-pairing way in: paste a crucible:// code or
+   * type an address and a token, prove it with Test, then Add — plus the button
+   * that re-swept this machine for an engine installed mid-session. Owen retired
+   * the lot on 2026-09-17 (*"we dont use tokens anymore ... we use ip addresses
+   * to connect to crucible servers"*, *"look again on this machine ... seem
+   * superfluous"*). `beginRemotePairing` is the one way in now.
+   *
+   * DELETED RATHER THAN LEFT UNREACHABLE. Every one of them was verified to
+   * have no caller outside this block before it went; the main-process doors
+   * they drove (`crucible:add`, `crucible:test-at`, `crucible:add-connect-code`,
+   * `crucible:pair-local`) are untouched and still answer — this app simply has
+   * no screen that asks them any more.
    */
-  protected async test(): Promise<void> {
-    if (!api) return;
-    this.busy.set('test');
-    this.probe.set(null);
-    try {
-      /*
-       * THE CONNECT CODE HAS ITS OWN TEST, and it is not `testAt` with a token
-       * fished out of a preview: the token would have to come back across the
-       * preload to be sent forward again, which is the one thing the preview
-       * shape exists to refuse. Main re-reads the line it was given, which costs
-       * a parse and owes nobody a secret.
-       */
-      this.probe.set(this.hasCode()
-        ? await api.crucible.testConnectCode(this.code())
-        : await api.crucible.testAt(this.url(), this.token()));
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
-  /**
-   * EVERY CHANGE OF THE PASTE FIELD, previewed in main.
-   *
-   * On change and not on blur, because the gesture is a PASTE: there is no
-   * keystroke after it and a person who pasted a line expects to see the name of
-   * the machine they pasted, not after they click somewhere else. The call is
-   * pure on main's side — the SDK's `parsePairing` and no network — so running it
-   * per change costs an IPC round trip and nothing else.
-   *
-   * AN EMPTY BOX IS NOT A REFUSAL. Clearing the field hands the three boxes back
-   * to whoever wants to type in them and says nothing, because "paste a connect
-   * code" printed under an empty box is an instruction, not an error.
-   */
-  protected async onCode(line: string): Promise<void> {
-    this.code.set(line);
-    this.probe.set(null);
-    if (!api || line.trim().length === 0) {
-      this.hasCode.set(false);
-      this.codeRefusal.set(null);
-      return;
-    }
-    const preview = await api.crucible.parseConnectCode(line);
-    // The box may have moved on while that was in flight — a slow round trip
-    // landing after the next keystroke would overwrite what is being typed now.
-    if (this.code() !== line) return;
-    if (preview.outcome === 'refused') {
-      this.hasCode.set(false);
-      this.codeRefusal.set(preview.message);
-      return;
-    }
-    this.codeRefusal.set(null);
-    this.hasCode.set(true);
-    /*
-     * THE NAME IS FILLED SO IT CAN BE CHANGED. The code carries the server's own
-     * name (`crucible@mac-studio`), and a person with two of them wants to say
-     * which is which before it lands in a picker — so the box is filled, not
-     * locked, and Add sends whatever is in it.
-     *
-     * THE ADDRESS IS FILLED AND READ-ONLY, because it is not a preference: the
-     * token in the code is that address's token, and an address edited under it
-     * would be a credential pointed at a machine it was not issued for.
-     */
-    this.name.set(preview.name);
-    this.url.set(preview.url);
-  }
-
-  /**
-   * LOOK FOR AN ENGINE ON THIS MACHINE AGAIN — PHASE15 §3.6's second chance.
-   *
-   * Main already did this at start (electron/mount.ts). This is the press for
-   * the machine where Crucible was installed WHILE Foundry was open, where the
-   * answer at start was true and has stopped being. It is a button rather than a
-   * filesystem watch because "press it when you have installed one" is a
-   * sentence somebody can act on, and a watch on a directory an installer
-   * creates would have this app reacting mid-keystroke.
-   *
-   * ALL THREE OUTCOMES ARE SAID, including the absence: *"an absent file means
-   * 'no local server' — a fact the app shows, not a fallback it fills"* (§3.6).
-   * A button that did nothing visible on the ordinary answer would be a button
-   * somebody presses twice.
-   */
-  protected async lookAgain(): Promise<void> {
-    if (!api) return;
-    this.busy.set('pairing');
-    this.pairingNote.set(null);
-    try {
-      const answer = await api.crucible.addFromPairingFile();
-      if (answer.outcome === 'added') {
-        this.pairingFailed.set(false);
-        this.pairingNote.set(
-          `Found ${answer.serverName} at ${answer.url}, from ${answer.configPath}. `
-          + 'Its token stays that file\'s.',
-        );
-        this.changed.emit();
-      } else {
-        this.pairingFailed.set(true);
-        this.pairingNote.set(answer.message);
-      }
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
-  /**
-   * Add it. Main refuses a bad name, address or token BY NAME, and the refusal
-   * lands in the same place a failed test does — one sentence, one place to look,
-   * whichever of the two buttons produced it.
-   */
-  protected async add(): Promise<void> {
-    if (!api) return;
-    this.busy.set('add');
-    try {
-      /*
-       * ONE DOOR OR THE OTHER, never both, and the code wins when there is one:
-       * the address box is read-only under a readable code and the token box
-       * holds a placeholder rather than a secret, so `add(name, url, token)`
-       * here would register a server with an empty token.
-       */
-      if (this.hasCode()) {
-        await api.crucible.addConnectCode(this.code(), this.name());
-      } else {
-        await api.crucible.add(this.name(), this.url(), this.token());
-      }
-      this.probe.set(null);
-      this.token.set('');
-      // The line goes with the token, and for the token's reason: it carries one.
-      this.code.set('');
-      this.hasCode.set(false);
-      this.codeRefusal.set(null);
-      this.open.set(null);
-      this.changed.emit();
-    } catch (err) {
-      this.probe.set({
-        outcome: 'failed',
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
   /**
    * Read that server's own config and register it.
    *
