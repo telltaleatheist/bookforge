@@ -77,6 +77,7 @@ import {
   type QueueJob,
   type QueueSnapshot,
   type QueueStep,
+  type ServerReach,
   type StepMetrics,
   type StepProgress,
   type StepResource,
@@ -665,12 +666,62 @@ function currentGpuDial(): string {
   }
 }
 
+/**
+ * EVERY REGISTERED SERVER AND WHETHER IT IS ANSWERING, for the snapshot.
+ *
+ * The scheduler has always known this — `serverState` is what `decideWaitFor`
+ * reads to hold a row whose machine is down — and until now it was the only
+ * reader. So the queue page drew a lane per engine with no idea whether the
+ * engine was there, and an operator whose Mac was asleep saw a healthy-looking
+ * lane and books that never started.
+ *
+ * Read from {@link serverState} and NOT from a second cache. One observation,
+ * one owner: a page that polled on its own would show a different answer from
+ * the one admission is acting on, and the two would disagree exactly when it
+ * mattered.
+ *
+ * `[]` when no routing host is wired, or when the record will not parse —
+ * `currentGpuDial`'s reasoning applies unchanged: this is what a surface DRAWS,
+ * the decision it belongs to is made in `crucibleAdmission`, which refuses by
+ * name in both cases, and throwing here would take the whole snapshot down over
+ * a list of machines.
+ */
+function currentServerReach(): ServerReach[] {
+  const host = crucibleHost;
+  if (host === null) return [];
+  let ranked: readonly WaitForServer[];
+  try {
+    ranked = host.routing().ranked;
+  } catch {
+    return [];
+  }
+  return ranked.map((row) => {
+    const state = serverState(row.name);
+    /*
+     * `enabled` is the OPERATOR'S switch and `reach` is the MACHINE'S answer,
+     * side by side and never folded together. A disabled server is reported
+     * `unknown` because nothing asks it — which is the truth, not a gap — and a
+     * surface that turned "unreachable" into "off" would disable hardware
+     * nobody chose to disable.
+     */
+    switch (state.kind) {
+      case 'ready': return { name: row.name, enabled: row.enabled, reach: 'ready', detail: null };
+      case 'unreachable':
+        return { name: row.name, enabled: row.enabled, reach: 'unreachable', detail: state.detail };
+      case 'busy':
+        return { name: row.name, enabled: row.enabled, reach: 'busy', detail: state.line };
+      default: return { name: row.name, enabled: row.enabled, reach: 'unknown', detail: null };
+    }
+  });
+}
+
 export function snapshot(): QueueSnapshot {
   // A deep-enough copy: the mirror must not be able to reach back into the truth.
   return {
     running,
     slotSets: currentSlotSets(),
     gpuDial: currentGpuDial(),
+    servers: currentServerReach(),
     ...(gpuThermal === null ? {} : { gpuThermal: { ...gpuThermal } }),
     jobs: jobs.map((job) => ({
       ...job,
@@ -2059,6 +2110,14 @@ export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
   crucibleHost = host;
   reachCache.clear();
   busyHolds.clear();
+  /*
+   * The sweep has nothing to sweep without a record, so it STOPS here when the
+   * record goes away. It is ARMED in `configure` and nowhere else — that is the
+   * engine's start, it is where the cadence is settled, and main wires the host
+   * BEFORE it configures (`queue-ipc.ts`). The timer reads `crucibleHost` live,
+   * so a host swapped in under a running sweep is simply the one it asks next.
+   */
+  if (host === null) stopReachSweep();
 }
 
 interface ReachEntry {
@@ -2109,12 +2168,28 @@ function serverState(name: string): ServerState {
     : { kind: 'unreachable', detail: entry.answer.detail };
 }
 
+/** The same observation, or a different one? Compares the ANSWER, not its age. */
+function sameReachAnswer(a: ReachEntry['answer'], b: ReachEntry['answer']): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.reachable) return b.reachable;
+  return !b.reachable && a.detail === b.detail;
+}
+
 /** Ask one server whether it answers, once, and pump again when it says. */
 function askReach(name: string): void {
   const host = crucibleHost;
   if (host === null) return;
   const entry = reachCache.get(name);
   if (entry !== undefined && entry.answer === null) return; // already in flight
+  /*
+   * WHAT WE KNEW BEFORE, kept so the answer can be compared to it. `pump()`
+   * publishes only when it CHANGES SOMETHING IN THE QUEUE, and a machine going
+   * down changes nothing there when the queue is empty — which is precisely the
+   * case the page needs to hear about. So a changed observation publishes on its
+   * own account, and an unchanged one does not, because a snapshot a second is
+   * a redraw a second for a fact that did not move.
+   */
+  const prior = entry?.answer ?? null;
   reachCache.set(name, { at: Date.now(), answer: null });
   void host.reach(name)
     .then((answer) => { reachCache.set(name, { at: Date.now(), answer }); })
@@ -2126,7 +2201,99 @@ function askReach(name: string): void {
         answer: { reachable: false, detail: `${(err as Error)?.message || String(err)}.` },
       });
     })
-    .finally(() => { pump(); });
+    .finally(() => {
+      if (!sameReachAnswer(prior, reachCache.get(name)?.answer ?? null)) publish();
+      pump();
+    });
+}
+
+/**
+ * ASK EVERY ENABLED SERVER WHETHER IT IS THERE, ON A CADENCE, WITH NOBODY
+ * WAITING ON THE ANSWER.
+ *
+ * ── The defect this closes ─────────────────────────────────────────────────
+ *
+ * Until this, {@link askReach} was called from one place: admission, about the
+ * ONE server a queued row had been told to wait for. That is exactly right for
+ * routing and useless for a page. With an empty queue nothing ever asked, so
+ * the bench drew a lane per engine and could not say whether the machine behind
+ * it was awake — an operator whose Mac was asleep saw a lane indistinguishable
+ * from a working one and learnt the truth only after queueing a book and
+ * watching it not start.
+ *
+ * ── What it costs ──────────────────────────────────────────────────────────
+ *
+ * ONE UNAUTHENTICATED `GET /v1/ping` PER ENABLED SERVER PER TTL, with the SDK's
+ * own connect timeout and nothing else — the same call admission already makes,
+ * through the same seam, landing in the same cache. Two engines on a 15 s
+ * cadence is eight requests a minute to machines on the operator's own network.
+ *
+ * ── The rules ──────────────────────────────────────────────────────────────
+ *
+ *  - A DISABLED SERVER IS NEVER PINGED. The operator switched it off; a round
+ *    trip to prove what they already said is the reasoning `voice-inventory.ts`
+ *    states about the same question.
+ *  - ONLY `unknown` IS ASKED — never asked, in flight, or aged past
+ *    {@link reachTtlMs}. A fresh answer is not re-asked, so the cadence is a
+ *    ceiling on traffic and not a floor.
+ *  - `askReach` holds the in-flight guard and republishes on `.finally(pump)`,
+ *    so a slow machine cannot stack probes and an answer that CHANGES reaches
+ *    the page on the pump that follows it.
+ */
+let reachSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * How often the sweep runs. `null` means "follow {@link reachTtlMs}", which is
+ * the only cadence that makes sense by default: asking faster than the answer
+ * expires is traffic for nothing, and slower leaves the page reading a stale
+ * `unknown`.
+ *
+ * `0` turns the sweep OFF, and it is a real setting rather than a way of saying
+ * nothing: `tools/test-queue-wait-for.js` drives the router with a scripted
+ * prober and asserts WHICH servers a routing decision asked about, which a
+ * background sweep would drown.
+ */
+let reachSweepMs: number | null = null;
+
+function reachSweepCadenceMs(): number {
+  return reachSweepMs ?? reachTtlMs();
+}
+
+function armReachSweep(): void {
+  stopReachSweep();
+  if (crucibleHost === null) return;
+  const every = reachSweepCadenceMs();
+  if (every <= 0) return;
+  // Now, and then on the cadence: a window opened at boot should not spend the
+  // first TTL unable to say whether the machines are up.
+  sweepReach();
+  reachSweepTimer = setInterval(() => { sweepReach(); }, every);
+  // The queue must never be the reason a process stays alive.
+  if (typeof reachSweepTimer.unref === 'function') reachSweepTimer.unref();
+}
+
+function stopReachSweep(): void {
+  if (reachSweepTimer === null) return;
+  clearInterval(reachSweepTimer);
+  reachSweepTimer = null;
+}
+
+function sweepReach(): void {
+  const host = crucibleHost;
+  if (host === null) return;
+  let ranked: readonly WaitForServer[];
+  try {
+    ranked = host.routing().ranked;
+  } catch {
+    // A record that will not parse is refused by name at admission. There is
+    // nothing to ping and nothing to say about it here.
+    return;
+  }
+  for (const row of ranked) {
+    if (!row.enabled) continue;
+    if (serverState(row.name).kind !== 'unknown') continue;
+    askReach(row.name);
+  }
 }
 
 /**
@@ -3223,6 +3390,14 @@ export interface ConfigureOptions extends EngineConfig {
   gpuHolder?: () => string | null;
   /** How often a pump refused on admission re-checks. Tests shorten it. */
   admissionRecheckMs?: number;
+  /**
+   * How often every ENABLED Crucible server is asked whether it answers, with
+   * nobody waiting on the reply — see {@link reachSweepMs}. Omitted means the
+   * admission recheck cadence; `0` turns the sweep off, which is what the
+   * routing keeper does so its ask-count assertions measure routing-driven
+   * probes alone.
+   */
+  reachSweepMs?: number;
 }
 
 /**
@@ -3237,6 +3412,7 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   config = { stateDir: options.stateDir, legacyQueueFile: options.legacyQueueFile };
   if (options.gpuHolder) gpuHolderProbe = options.gpuHolder;
   if (options.admissionRecheckMs !== undefined) admissionRecheckMs = options.admissionRecheckMs;
+  reachSweepMs = options.reachSweepMs === undefined ? null : options.reachSweepMs;
   jobs = [];
   running = false;
   runningSteps.clear();
@@ -3245,6 +3421,12 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // unreachable now.
   reachCache.clear();
   busyHolds.clear();
+  // ...so the sweep starts again from nothing, on whatever cadence this
+  // configuration asked for. THE ONE PLACE IT IS ARMED, and it re-arms rather
+  // than adds, for the same reason the record watcher does: a second
+  // `configure` in one process (the keepers) must leave exactly one timer
+  // behind, not two.
+  armReachSweep();
   // The bench redraws when the Crucible record learns something. Armed here
   // rather than at import so a second `configure` in one process (the keepers)
   // leaves exactly one listener behind, not two.

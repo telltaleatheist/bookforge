@@ -162,9 +162,26 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
               Settings panel has always called. One fact, two doors — and the
               queue has honoured it all along ('decideWaitFor' holds a named
               server that is off, and 'any' never tries one).
+
+              AND 'down' IS A SECOND WORD FOR A SECOND FACT, never for this one.
+              The switch is what the operator decided this machine is for;
+              'lane.down' is what the machine said when the scheduler last asked
+              it (QueueSnapshot.servers, one reach cache, no second poll). A
+              sleeping Mac used to draw a lane indistinguishable from a working
+              one, with its books silently never starting. The checkbox stays
+              live and nothing here writes 'routing.disabled' from it: switching
+              a machine off because it is asleep would leave it off after it
+              woke, and the operator never chose that. The reason is on the
+              label's tooltip, one hover away, because the transport's sentence
+              is too long to draw and too useful to drop.
             -->
             @if (switchOf(lane); as server) {
-              <label class="lane-switch" [class.off]="lane.disabled">
+              <label
+                class="lane-switch"
+                [class.off]="lane.disabled"
+                [class.down]="!lane.disabled && lane.down"
+                [title]="lane.down || ''"
+              >
                 <input
                   type="checkbox"
                   [checked]="!lane.disabled"
@@ -172,7 +189,11 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                   (change)="toggleServer(server, $any($event.target).checked)"
                 />
                 <span class="lane-switch-name">{{ server }}</span>
-                @if (lane.disabled) { <span class="lane-switch-word">off</span> }
+                @if (lane.disabled) {
+                  <span class="lane-switch-word">off</span>
+                } @else if (lane.down) {
+                  <span class="lane-switch-word">down</span>
+                }
               </label>
             } @else {
               <div class="lane-switch none">
@@ -1034,6 +1055,11 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       color: var(--text-secondary);
     }
     .lane-switch.off { opacity: 0.75; }
+    /* NOT ANSWERING. Greyed like the off state because the lane is equally not
+       going to run anything — but the word is different, and so is the cure:
+       off is undone with the box beside it, down by waking the machine. */
+    .lane-switch.down { opacity: 0.75; }
+    .lane-switch.down .lane-switch-word { color: var(--warning-text); }
     /* The CPU pair and the local aligner: a name, no box, and NOT a disabled
        checkbox — an unclickable control invites the question of how to click
        it. Padded to the same height so the cards below stay on one line. */
@@ -1041,7 +1067,8 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
 
     /* SWITCHED OFF: greyed, still legible, still there. Owen: *"if a crucible
        slot is unchecked, it grays it out until it's re-checked/re-enabled."* */
-    .lane-cell:has(.lane-switch.off) .lcard {
+    .lane-cell:has(.lane-switch.off) .lcard,
+    .lane-cell:has(.lane-switch.down) .lcard {
       opacity: 0.45;
       filter: grayscale(1);
     }

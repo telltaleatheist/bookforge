@@ -331,7 +331,9 @@ test('no engine has an upstream: the bench is FOUR lanes and not one says "route
   const sets = slots.slotSets(factsOf({
     servers: ['local', 'mac'], upstreams: { local: 'none', mac: 'none' },
   }));
-  const lanes = bench.benchLanes({ jobs: [], running: false, slotSets: sets });
+  // `servers: []` — nobody has asked any machine whether it is answering, which
+  // is what a snapshot with no routing host carries. See `BenchLane.down`.
+  const lanes = bench.benchLanes({ jobs: [], running: false, slotSets: sets, servers: [] });
   assert.strictEqual(lanes.length, 4, 'the header reads "of 4", never "of 8"');
   assert.deepStrictEqual(
     lanes.map((l) => `${l.setLabel} · ${l.resource} · slot ${l.index} of ${l.of}`),
@@ -650,6 +652,9 @@ function snapOf(jobs, servers) {
   return {
     jobs, running: true,
     slotSets: slots.slotSets(factsOf({ servers, occupied, jobs })),
+    // Nobody has probed any of them: `BenchLane.down` is null on every lane
+    // here, which is the state these cases were written against.
+    servers: [],
   };
 }
 

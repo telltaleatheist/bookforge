@@ -103,6 +103,14 @@ function snap(jobs, running = true, servers = []) {
   return {
     jobs,
     running,
+    /*
+     * NOBODY HAS ASKED ANY MACHINE ANYTHING. The engine publishes one row per
+     * registered server saying whether it answers (`QueueSnapshot.servers`);
+     * empty is what a snapshot with no routing host carries, and it is the
+     * state every pre-2026-09-18 test here was written against — no lane is
+     * `down`, because nothing observed one to be.
+     */
+    servers: [],
     slotSets: slots.slotSets({
       rankedServers: servers.map((name) => ({ name, enabled: true })),
       // Not what these tests are about: `unknown` is what an engine nobody has
@@ -364,6 +372,108 @@ test("the reading lands on a LOCAL SERVER's row, not only on the aligner", () =>
   assert.strictEqual(there.thermal, null,
     "the Mac's row must never show this PC's fan speed — a reading labelled as "
     + "somebody else's hardware is a number a person will act on");
+});
+
+// ── A machine that is not answering ─────────────────────────────────────────
+
+/*
+ * THE DEFECT, 2026-09-18. The bench drew a GPU lane per registered engine with
+ * the operator's on/off switch above it and NO idea whether the machine behind
+ * it was awake. A Mac that had gone to sleep looked exactly like a working
+ * lane; its books sat in the queue and never started, and the reason — the
+ * scheduler's own reach probe — was published nowhere.
+ *
+ * The three rules below are what keeps `down` an OBSERVATION. The dangerous one
+ * is the second: folding "asleep" into "switched off" would disable hardware on
+ * the operator's behalf, and it would stay disabled after the machine woke.
+ */
+
+/** Two engine rows, one lane each, drawn straight so the set flags are explicit. */
+function twoEngines(over = {}) {
+  const s = snap([]);
+  s.slotSets = [
+    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: true },
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: false },
+  ];
+  Object.assign(s, over);
+  return s;
+}
+
+const gpuLane = (s, setId) => bench.benchLanes(s).find((l) => l.setId === setId && l.resource === 'gpu');
+
+test("an unreachable server's GPU lane carries the reason it is down", () => {
+  const s = twoEngines({
+    servers: [
+      { name: 'wsl', enabled: true, reach: 'ready', detail: null },
+      { name: 'mac', enabled: true, reach: 'unreachable', detail: 'nothing answered at http://mac:7100.' },
+    ],
+  });
+  assert.strictEqual(gpuLane(s, 'mac').down, 'nothing answered at http://mac:7100.',
+    "the transport's own sentence, so the lane can say WHY without a second question");
+  assert.strictEqual(gpuLane(s, 'wsl').down, null,
+    'and a machine that answered is not down — the fact is per server, not per bench');
+});
+
+test('a DISABLED server is never down — nobody asked it, and `off` is the fact', () => {
+  /*
+   * The operator switched it off, so the queue does not ping it; a "down" on
+   * that lane would be a claim nothing measured. It already says `off`, which
+   * is both true and the only one of the two the operator can act on.
+   */
+  const s = twoEngines({
+    servers: [
+      { name: 'wsl', enabled: true, reach: 'ready', detail: null },
+      { name: 'mac', enabled: false, reach: 'unreachable', detail: 'nothing answered at http://mac:7100.' },
+    ],
+  });
+  s.slotSets = s.slotSets.map((set) => (set.id === 'mac' ? { ...set, disabled: true } : set));
+  assert.strictEqual(gpuLane(s, 'mac').down, null,
+    'disabled wins: the lane is already greyed, and for a reason the operator chose');
+});
+
+test('a ready server, and one nobody has asked yet, are both null', () => {
+  const s = twoEngines({
+    servers: [
+      { name: 'wsl', enabled: true, reach: 'ready', detail: null },
+      { name: 'mac', enabled: true, reach: 'unknown', detail: null },
+    ],
+  });
+  assert.strictEqual(gpuLane(s, 'wsl').down, null);
+  assert.strictEqual(gpuLane(s, 'mac').down, null,
+    '`unknown` is "nobody has asked", which is not evidence the machine is down');
+});
+
+test("BookForge's own lanes have no machine to be down, and no `servers` row to match", () => {
+  /*
+   * `local-work` is this app's CPU pair and `local-longform-align` its own
+   * aligner — the same two `switchOf` refuses a switch to. A `servers` row could
+   * never carry those names, but the rule is asserted rather than assumed: a
+   * future set id that collided would grey out a lane with no machine behind it.
+   */
+  const s = snap([]);
+  s.slotSets = [
+    { id: slots.LOCAL_WORK_SET, label: 'CPU slots', gpu: 0, cpu: 2, retiring: false, disabled: false, onThisMachine: true },
+    { id: slots.LONGFORM_ALIGN_SET, label: 'aligner', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: true },
+  ];
+  s.servers = [
+    { name: slots.LOCAL_WORK_SET, enabled: true, reach: 'unreachable', detail: 'impossible, but assert it' },
+    { name: slots.LONGFORM_ALIGN_SET, enabled: true, reach: 'unreachable', detail: 'impossible, but assert it' },
+  ];
+  assert.ok(bench.benchLanes(s).every((l) => l.down === null),
+    'neither of BookForge\'s own lanes can be "down" — there is no machine to be');
+});
+
+test('a CPU lane of a down server is not greyed — the reach is about its card row', () => {
+  // The lane that cannot run is the GPU one. A server's CPU pool row exists for
+  // work that is not on the card, and `switchOf` draws no switch over it either.
+  const s = snap([]);
+  s.slotSets = [
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 2, retiring: false, disabled: false, onThisMachine: false },
+  ];
+  s.servers = [{ name: 'mac', enabled: true, reach: 'unreachable', detail: 'nothing answered.' }];
+  const lanes = bench.benchLanes(s).filter((l) => l.setId === 'mac');
+  assert.strictEqual(lanes.find((l) => l.resource === 'gpu').down, 'nothing answered.');
+  assert.ok(lanes.filter((l) => l.resource === 'cpu').every((l) => l.down === null));
 });
 
 test('no reading means no thermal on any lane — absent, not zero', () => {

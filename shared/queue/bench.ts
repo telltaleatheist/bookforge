@@ -48,8 +48,8 @@ import {
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
 import {
-  LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf,
-  thisMachineSetId,
+  LOCAL_WORK_SET, LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy,
+  slotsOf, thisMachineSetId,
 } from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -428,12 +428,67 @@ export interface BenchLane {
    */
   hold: string | null;
   /**
+   * THE MACHINE BEHIND THIS LANE IS NOT ANSWERING — its last refusal, in the
+   * transport's own words — or null.
+   *
+   * ── Why a lane says this at all ────────────────────────────────────────────
+   *
+   * The switch above a GPU lane is the operator's standing choice about that
+   * hardware; whether the hardware is AWAKE is a different fact entirely, and
+   * until 2026-09-18 the bench knew only the first. A Mac that had gone to sleep
+   * drew a lane identical to a working one, and the books bound for it simply
+   * never started — the reason sitting in the scheduler's own reach cache, one
+   * process away (`QueueSnapshot.servers`).
+   *
+   * ── The three rules ────────────────────────────────────────────────────────
+   *
+   *  - ONLY A SERVER'S GPU LANE. `local-work` is this app's CPU pair and
+   *    `local-longform-align` is its own aligner: neither has a machine to be
+   *    unreachable, which is the same test `switchOf` makes about the switch.
+   *  - DISABLED WINS. A server the operator switched off is not being asked, so
+   *    "down" would be a claim nobody measured. The lane already says `off`, and
+   *    that is the fact that matters about it.
+   *  - IT IS OBSERVED, NEVER WRITTEN. Nothing derives `disabled` from this, and
+   *    no surface may: a machine that is asleep has not been switched off, and
+   *    turning the one into the other would disable hardware on the operator's
+   *    behalf and leave it disabled after it woke.
+   */
+  down: string | null;
+  /**
    * The card's latest reading, on the GPU lane only, while something samples.
    * `throttleSustained` on it is the warning: the driver itself saying the card is
    * slowing down — which is what "the run is mysteriously slow" looked like
    * from the outside before this existed.
    */
   thermal: GpuThermalReading | null;
+}
+
+/**
+ * The reach detail for a lane's machine, or null — {@link BenchLane.down}.
+ *
+ * A lane whose set is not a registered server is answered null without looking:
+ * `servers` is keyed by server name, and a cloud lane's id (`<server>:cloud`)
+ * is deliberately not one, so nothing here can accidentally match it.
+ */
+function laneDown(
+  snapshot: QueueSnapshot,
+  setId: string,
+  resource: StepResource,
+  disabled: boolean,
+): string | null {
+  if (resource !== 'gpu') return null;
+  if (disabled) return null;
+  if (setId === LOCAL_WORK_SET || setId === LONGFORM_ALIGN_SET) return null;
+  const row = snapshot.servers.find((s) => s.name === setId);
+  if (row === undefined || row.reach !== 'unreachable') return null;
+  /*
+   * A reach of `unreachable` with no detail would be a lane greyed out with
+   * nothing to hover — the shape `voice-inventory.ts` refuses on the server's
+   * own unloadable rows. The engine always carries the transport's sentence, so
+   * an empty one can only be a defect on the way here; it is named rather than
+   * drawn as a blank tooltip.
+   */
+  return row.detail ?? `"${setId}" is not answering, and nothing said why.`;
 }
 
 /** Everything drawn on one lane's occupant, read off a running step. */
@@ -522,6 +577,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           of,
           occupant,
           hold,
+          down: laneDown(snapshot, set.id, resource, set.disabled),
           /*
            * THE THERMAL READING IS THIS MACHINE'S CARD, so it goes on no
            * remote set's lane. `gpuThermal` is sampled by nvidia-smi here; a

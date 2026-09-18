@@ -777,6 +777,46 @@ export interface GpuThermalSummary {
   throttledSeconds: number;
 }
 
+/**
+ * WHETHER ONE REGISTERED CRUCIBLE SERVER IS ANSWERING, as the scheduler last
+ * observed it — published so a surface can say so without asking again.
+ *
+ * ── Why it is on the snapshot ──────────────────────────────────────────────
+ *
+ * The scheduler has always known this: `askReach` pings a server when a queued
+ * row needs one, and the answer decides whether the row is held or sent. But it
+ * kept the answer to itself, so the queue page drew each engine's lane with its
+ * on/off switch and NO idea whether the machine behind it was up. An operator
+ * whose Mac was asleep saw a lane that looked exactly like a working one, with
+ * their books simply not starting — and the reason was in a cache one process
+ * away.
+ *
+ * It is an OBSERVATION and never an instruction. `enabled` is the operator's
+ * standing choice about that hardware and is theirs alone to change; `reach` is
+ * what the address did when it was last asked. A surface that wrote one from
+ * the other would switch a machine off because it was asleep, and the operator
+ * would come back to a card nobody had told them was disabled.
+ */
+export interface ServerReach {
+  /** The registered name — the key everything else about this machine uses. */
+  readonly name: string;
+  /** The operator's switch (`routing.disabled` inverted), not a state of health. */
+  readonly enabled: boolean;
+  /**
+   * What it last said. `unknown` is a real answer and not a missing one: nobody
+   * has asked yet, or the last answer has aged out of its TTL and the next
+   * sweep will ask again. A disabled server stays `unknown` forever, because
+   * the queue does not ping a machine the operator switched off.
+   */
+  readonly reach: 'unknown' | 'ready' | 'unreachable' | 'busy';
+  /**
+   * The sentence behind the answer — the transport's own words for
+   * `unreachable`, the server's `busyLine` for `busy` — and `null` when there
+   * is nothing to add (`ready`, `unknown`).
+   */
+  readonly detail: string | null;
+}
+
 /** The engine's whole published state. */
 export interface QueueSnapshot {
   jobs: QueueJob[];
@@ -816,6 +856,20 @@ export interface QueueSnapshot {
    * precedence table lives.
    */
   gpuDial: string;
+  /**
+   * EVERY REGISTERED CRUCIBLE SERVER AND WHETHER IT IS ANSWERING — see
+   * {@link ServerReach}.
+   *
+   * On the snapshot for `slotSets`' reason: it comes from a record and a cache
+   * only main has, and the page draws it. In rank order, disabled servers
+   * included, so the list lines up one-to-one with the lanes the bench builds.
+   *
+   * EMPTY when no routing host is wired (a headless run, a keeper with no
+   * scripted record) — which is the truthful answer there, because nothing can
+   * be asked. It is never a partial list: a server the record names but nobody
+   * has pinged is present as `unknown`.
+   */
+  servers: ServerReach[];
 }
 
 /**

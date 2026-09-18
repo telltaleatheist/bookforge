@@ -137,7 +137,18 @@ async function fresh(name, mods, host, configureExtra = {}) {
   engine.setCrucibleRoutingHost(host === null ? null : host.host);
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
-  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000, ...configureExtra });
+  /*
+   * NO BACKGROUND REACH SWEEP HERE. The engine also pings every ENABLED server
+   * on a cadence with nobody waiting on the answer, so the queue page can say a
+   * machine is down while the queue is empty (`QueueSnapshot.servers`). This
+   * file asserts WHICH servers a ROUTING decision asked about — "it asked the
+   * machine it was told to wait for, and asked nothing about any other" — and a
+   * sweep asking all of them would drown exactly that. `0` turns it off; it is
+   * a real setting rather than a test hook, and the engine names it as such.
+   */
+  await engine.configure({
+    stateDir: dir, admissionRecheckMs: 5_000, reachSweepMs: 0, ...configureExtra,
+  });
   return dir;
 }
 
@@ -583,7 +594,9 @@ test('a row still assigned to the deleted narrator HOLDS, and is never re-decide
       createdAt: new Date().toISOString(),
     }],
   }), 'utf-8');
-  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000 });
+  // `reachSweepMs: 0` for `fresh`'s reason — this case's last assertion is that
+  // NOTHING was asked, which is the whole point of a retired venue.
+  await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000, reachSweepMs: 0 });
 
   engine.start();
   await settle();
@@ -1051,6 +1064,114 @@ test('a build with no routing host refuses out loud rather than taking the local
   assert.strictEqual(gpu.runs.length, 0);
   assert.match(firstStep(job.id).progress.admissionHold,
     /did not wire the queue's Crucible routing/);
+});
+
+// ── The sweep, and what it publishes ────────────────────────────────────────
+
+/*
+ * WHAT THE PAGE NEEDS AND ROUTING NEVER ASKED FOR. Every probe above is made
+ * BECAUSE a queued row wants a machine. With an empty queue nobody asks, so
+ * until 2026-09-18 the queue page drew a lane per engine and could not say
+ * whether the machine behind it was awake — a sleeping Mac was drawn exactly
+ * like a working one and its books simply never started.
+ *
+ * The sweep is that second caller: every ENABLED server, on the admission
+ * cadence, with nobody waiting. It asks through the SAME `askReach` and lands
+ * in the SAME cache, so the page and admission can never read two different
+ * answers about one machine.
+ */
+
+test('the sweep asks every ENABLED server with an empty queue, and no disabled one', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: false }],
+    defaultWaitFor: 'any',
+    reach: { local: { reachable: true } },
+  });
+  // The sweep ON, and nothing queued at all.
+  await fresh('reach-sweep', [gpu], host, { reachSweepMs: 50 });
+  await settle();
+
+  assert.ok(host.asked.includes('local'),
+    'an enabled server is asked though no row wants it — this is the whole point');
+  assert.ok(!host.asked.includes('mac'),
+    'and a server the operator switched off is never pinged: they already said no');
+});
+
+test('the snapshot carries what each server said, beside the switch', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
+    defaultWaitFor: 'any',
+    reach: {
+      local: { reachable: true },
+      mac: { reachable: false, detail: 'Nothing answered at http://mac:7100.' },
+    },
+  });
+  await fresh('reach-snapshot', [gpu], host, { reachSweepMs: 50 });
+  await settle();
+
+  const rows = engine.snapshot().servers;
+  assert.deepStrictEqual(rows.map((r) => r.name), ['local', 'mac'],
+    'in rank order, so the rows line up with the lanes the bench builds');
+  assert.deepStrictEqual(rows.find((r) => r.name === 'local'),
+    { name: 'local', enabled: true, reach: 'ready', detail: null });
+  assert.deepStrictEqual(rows.find((r) => r.name === 'mac'),
+    { name: 'mac', enabled: true, reach: 'unreachable', detail: 'Nothing answered at http://mac:7100.' },
+    "the transport's own sentence travels with the answer — the lane has nothing to say without it");
+});
+
+test('a disabled server is REPORTED, as `unknown` — off is not a diagnosis', async () => {
+  /*
+   * The two facts stay apart. `enabled` is the operator's standing choice about
+   * that hardware; `reach` is what the machine said. Nothing asked a disabled
+   * one, so `unknown` is the honest answer — and a surface that read it as
+   * "down" would be inventing a measurement, exactly as one that switched a
+   * sleeping machine off would be inventing a decision.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: false }], defaultWaitFor: 'any', reach: {},
+  });
+  await fresh('reach-disabled', [gpu], host, { reachSweepMs: 50 });
+  await settle();
+
+  assert.deepStrictEqual(engine.snapshot().servers,
+    [{ name: 'mac', enabled: false, reach: 'unknown', detail: null }],
+    'a machine the operator owns never vanishes from the list they reason with');
+});
+
+test('a reach answer that CHANGES publishes a snapshot, with nothing queued', async () => {
+  /*
+   * `askReach` ends in `.finally(pump)`, and a pump publishes only when it
+   * changes something in the QUEUE. A machine going down changes nothing there
+   * when the queue is empty — which is precisely the case the page needs to
+   * hear about — so a changed observation publishes on its own account.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }], defaultWaitFor: 'any',
+    reach: { mac: { reachable: true } },
+  });
+  // A 100 ms TTL and a 30 ms sweep, which is the production relation (the sweep
+  // follows `reachTtlMs`) wound down to test speed: an answer ages out, the
+  // next sweep asks again, and THAT is when a machine's going away is noticed.
+  await fresh('reach-publish', [gpu], host, { admissionRecheckMs: 100, reachSweepMs: 30 });
+  await settle();
+  assert.strictEqual(engine.snapshot().servers[0].reach, 'ready', 'it was up to begin with');
+
+  // Only now does anyone listen, and only then does the machine go away. The
+  // queue is empty throughout, so a pump has nothing to publish about.
+  const seen = [];
+  const off = engine.onQueueChanged((snap) => { seen.push(snap.servers); });
+  host.reach = { mac: { reachable: false, detail: 'Nothing answered at http://mac:7100.' } };
+  await wait(120);
+  await settle();
+  off();
+
+  const down = seen.find((rows) => rows.some((r) => r.reach === 'unreachable'));
+  assert.ok(down, 'the page was told, with an empty queue and nothing else to report');
+  assert.strictEqual(down[0].detail, 'Nothing answered at http://mac:7100.');
 });
 
 (async () => {

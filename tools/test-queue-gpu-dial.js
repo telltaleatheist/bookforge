@@ -158,7 +158,9 @@ check('the record is its OWN file — turning the dial rewrites no preference', 
 // ── The bench, grouped ──────────────────────────────────────────────────────
 
 function snapOf(sets, jobs = []) {
-  return { jobs, running: true, slotSets: sets, gpuDial: 'any' };
+  // `servers: []` — no machine has been asked whether it answers, so no lane is
+  // `down`. Which lanes are DOWN is `test-queue-bench`'s subject, not this one's.
+  return { jobs, running: true, slotSets: sets, gpuDial: 'any', servers: [] };
 }
 
 const SERVER_SET = (id) => ({ id, label: id, gpu: 1, cpu: 0, retiring: false });

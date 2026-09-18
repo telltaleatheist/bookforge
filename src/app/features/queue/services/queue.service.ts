@@ -322,9 +322,13 @@ export class QueueService {
    * which the dial changes nothing about where a book goes. Inventing a SERVER
    * NAME here would draw a control claiming the queue was steering work at a
    * machine, for the tick before main says otherwise.
+   *
+   * `servers` is empty on the same grounds and for a sharper reason: it says
+   * which machines are ANSWERING, and this process has asked none of them. A
+   * row invented here would be a claim about hardware nobody probed.
    */
   private readonly _snapshot = signal<QueueSnapshot>({
-    jobs: [], running: false, slotSets: [], gpuDial: GPU_DIAL_ANY,
+    jobs: [], running: false, slotSets: [], gpuDial: GPU_DIAL_ANY, servers: [],
   });
 
   /**
