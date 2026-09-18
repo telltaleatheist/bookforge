@@ -394,6 +394,103 @@ async function run() {
       'a paragraph merged across a container boundary');
   });
 
+  // ── THE BOOK'S OWN `$1` IS NOT A GROUP REFERENCE ────────────────────────
+  //
+  // Every writer below hands book text to `String.prototype.replace` and, until
+  // this section existed, handed it as the replacement STRING. In a replacement
+  // string `$1`, `$2`, `$&`, `` $` `` and `$'` are pattern references: a
+  // sentence reading `It cost $1,000.` comes out as `It cost <the first capture
+  // group>,000.` and `$&` splices the whole original match — a book silently
+  // rewritten, never an error. `escapeXml` does not touch `$`, so the escaping
+  // that already runs is no defence. The fix at every site is a replacer
+  // FUNCTION, whose return value is inserted verbatim.
+  //
+  // `$&` is the sharper probe of the two: with the `<body…>[\s\S]*</body>` sites
+  // it splices the WHOLE ORIGINAL BODY back in, so a failure is unmistakable.
+
+  /** Prose a book can plausibly contain, carrying every dollar form at once. */
+  const DOLLARS = 'It cost $1,000 and $2 more, or $& if you prefer, plus $` and $\'.';
+
+  await check('the chapter writer keeps a $1 in the book out of the pattern', async () => {
+    const book = await attributedBook('dollars-chapter-in.epub');
+    const out = path.join(ROOT, 'dollars-chapter-out.epub');
+    const { parseEpub, updateChapterText, saveModifiedEpub, closeEpub } =
+      require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const structure = await parseEpub(book);
+    const chapter = structure.chapters.find((c) => c.href.endsWith('c0001.xhtml'));
+    assert.ok(chapter, 'the fixture chapter was not found');
+    await updateChapterText(chapter.id, `A Heading\n\n${DOLLARS}`);
+    await saveModifiedEpub(out);
+    closeEpub();
+    const after = await documentText(out, 'OEBPS/c0001.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `replaceXhtmlBody read the book's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `replaceXhtmlBody spliced the original match back in for $&:\n${after}`);
+    assert.ok(!after.includes('The court rose at four'),
+      `the original body was re-inserted by a $& in the new text:\n${after}`);
+  });
+
+  await check('the OPF writer keeps a $& in the title out of the pattern', async () => {
+    const book = await attributedBook('dollars-opf-in.epub');
+    const { updateEpubMetadataStandalone } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    // The title is a metadata field a person types, and `$&` in it splices the
+    // whole `<dc:title>…</dc:title>` element back inside itself.
+    await updateEpubMetadataStandalone(book, { title: 'Cost: $1,000 & $& Rising', author: 'A. $2 Author' });
+    const opf = await documentText(book, 'OEBPS/content.opf');
+    assert.ok(opf.includes('<dc:title>Cost: $1,000 &amp; $&amp; Rising</dc:title>'),
+      `updateOpfMetadata read the title's dollars as group references:\n${opf}`);
+    assert.ok(opf.includes('$2 Author'),
+      `updateOpfMetadata read the author's $2 as a group reference:\n${opf}`);
+  });
+
+  await check('editEpubText keeps a $1 in the replacement text out of the pattern', async () => {
+    const book = await attributedBook('dollars-edit-in.epub');
+    const { editEpubText } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const result = await editEpubText(
+      book, 'c0000',
+      'Hitler came to power in a country that had been governed by decree for three years.',
+      DOLLARS);
+    assert.ok(result.success, `the edit did not land: ${result.error}`);
+    const after = await documentText(book, 'OEBPS/c0000.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `editEpubText read the new text's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `editEpubText spliced the matched sentence back in for $&:\n${after}`);
+    assert.ok(!after.includes('Hitler came to power'),
+      `the sentence being replaced came back through a $& in its replacement:\n${after}`);
+  });
+
+  await check('replaceTextInEpub keeps a $1 in the replacement text out of the pattern', async () => {
+    const book = await attributedBook('dollars-replace-in.epub');
+    const { replaceTextInEpub } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const result = await replaceTextInEpub(
+      book,
+      'Twenty-one men sat in two rows, and none of them looked at each other.',
+      DOLLARS);
+    assert.ok(result.success, `the replacement did not land: ${result.error}`);
+    const after = await documentText(book, 'OEBPS/c0001.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `replaceTextInEpub read the new text's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `replaceTextInEpub spliced the matched sentence back in for $&:\n${after}`);
+    assert.ok(!after.includes('Twenty-one men sat in two rows'),
+      `the sentence being replaced came back through a $& in its replacement:\n${after}`);
+  });
+
+  // translation-bridge's own `replaceXhtmlBody` is a verbatim twin of
+  // epub-processor's and is reachable only through `translateEpub`, which needs
+  // an AI provider — so it is pinned at the SOURCE instead of driven. The
+  // question is the same one the four checks above ask behaviourally: does any
+  // body rewrite in that file still pass its html as a replacement STRING.
+  await check('the translation writer passes no book text as a replacement string', async () => {
+    const source = fs.readFileSync(path.join(REPO, 'electron', 'translation-bridge.ts'), 'utf8');
+    const stringReplacements = source.match(/\.replace\(\s*\/<body[^\n]*?,\s*`[^`]*\$\{[^`]*`/g) || [];
+    assert.deepStrictEqual(stringReplacements, [],
+      'translation-bridge.ts still interpolates book html into a replacement STRING, where the '
+      + `book's own $1/$& are pattern references. Use a replacer function:\n  ${stringReplacements.join('\n  ')}`);
+  });
+
   for (const [status, name, detail] of results) {
     console.log(`${status === 'ok' ? 'ok  ' : 'FAIL'}  ${name}${detail ? `\n      ${detail}` : ''}`);
   }

@@ -849,7 +849,13 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
 
   if (!headingMatch) {
     const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
-    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
+    // A REPLACER FUNCTION, because the translation is in `htmlContent`. In a
+    // replacement STRING `$1`, `$&`, `` $` `` and `$'` are pattern references,
+    // so "It cost $1,000." would come back as the body tag's attributes followed
+    // by ",000." and a `$&` would splice the whole original body back inside
+    // itself. `escapeXml` does not touch `$`. A function's return value is
+    // inserted verbatim, which is the only thing that makes this safe.
+    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>\n${htmlContent}\n</body>`);
   }
 
   const tag = headingMatch[1].toLowerCase();
@@ -864,7 +870,9 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
   const bodyHtml = bodyBlocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
   const htmlContent = bodyHtml ? `${headingHtml}\n${bodyHtml}` : headingHtml;
 
-  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
+  // A replacer function for the reason stated at the heading-less branch above:
+  // the translation's `$1`/`$&` are pattern references in a replacement string.
+  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>\n${htmlContent}\n</body>`);
 }
 
 /**

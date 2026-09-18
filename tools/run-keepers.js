@@ -285,6 +285,18 @@ const SUITES = [
   // guard verdicts in the ledger keyed PER TAKE — three takes of one sentence
   // are three renders, not three chunks.
   'test-crucible-reroll',
+  // AND HOW MANY CANDIDATES THAT RE-ROLL OFFERS. Correct Sentences pinned the
+  // literal `3`, chosen when every take was take 0 at a different sampling
+  // temperature. Neither half of that holds: a `tts` render has no sampling
+  // channel, and narrator gives each RUNG its own seed lane — two renders at
+  // one take are byte-identical by design (crucible docs/PHASE3-TTS.md §2,
+  // measured 2026-09-15) — so a candidate is a different reading only if it is
+  // a different rung, and a rung past the end of the ladder is refused
+  // `unknown_take` rather than clamped. Shipped manifests declare two rungs per
+  // fine-tune, so the literal asked for a rung that is not there. The count is
+  // the voice's `takes` minus one, read off the server, and this pins that read
+  // plus the two sentences a person sees that used to say "unseeded".
+  'test-correct-sentences-takes',
   // The Listen path on somebody else's card (rollout tier 3): the three
   // streaming surfaces drive ONE scheduler, and behind it a Crucible streaming
   // session now stands beside the local narrator, chosen by the SAME venue

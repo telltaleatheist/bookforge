@@ -5,17 +5,22 @@
  * fresh takes in context, approve one, and reassemble. It reuses the SAME lightweight
  * Crucible reroll job a normal book render's retakes use (crucible/reroll.ts),
  * so each regenerated FLAC is a true drop-in: identical engine/voice/model, and the
- * worker's own _save_audio applies the normal peak-normalize + inter-clip gaps. Because
- * sampling is unseeded, each take is a genuinely different reading of the same sentence —
- * which is the whole point.
+ * worker's own _save_audio applies the normal peak-normalize + inter-clip gaps.
  *
- * Since the Crucible rollout (tier 3) that worker is one of two venues: a book whose render
- * went to a Crucible re-rolls on the same machine, through a `tts` job for exactly the named
- * indices (`electron/crucible/reroll.ts`). One difference between the two is real and is
- * stated where it is decided, in `generateCandidates`: the remote takes vary by the engine's
- * own unseeded sampling and NOT by the local worker's temperature spread, because the render
- * wire has no sampling channel. Everything after the takes land — the sample_fmt match, the
- * audition, the commit, the text write-back — is venue-blind.
+ * WHAT MAKES ONE TAKE DIFFERENT FROM ANOTHER IS ITS RUNG, and nothing else.
+ * narrator seeds every chunk — chunk i is drawn in the take's own lane,
+ * `seed + index + TAKE_SEED_STRIDE * take` (crucible `docs/PHASE3-TTS.md` §2, "THE SEED
+ * HALF", written after two take-0 renders of one sentence came back byte-identical on
+ * 2026-09-15). Two candidates at the same take are therefore the same audio, and the
+ * count this pass can offer is the voice's ladder length minus one — take 0 being the
+ * reading already in the book. That number is the SERVER's (`VoiceInfo.takes`), read
+ * through `crucible/voice-ladder.ts`.
+ *
+ * Since the Crucible rollout (tier 3) the re-roll runs at the book's own venue: a book
+ * whose render went to a Crucible re-rolls on the same machine, through a `tts` job for
+ * exactly the named indices (`electron/crucible/reroll.ts`). Everything after the takes
+ * land — the sample_fmt match, the audition, the commit, the text write-back — is
+ * venue-blind.
  *
  * Gate: only books that went through e2a have a per-sentence FLAC cache AND an narrator VTT
  * (exact 1:1 cue↔sentence-index mapping). Both are required; no cache/VTT → no feature.
@@ -90,9 +95,9 @@ export interface GenerateCandidatesResult {
   error?: string;
   /**
    * Something true about HOW these takes were made that the audition list cannot
-   * show. Set exactly once today, by the Crucible arm, to say that its takes
-   * vary by unseeded sampling alone and not by the widened temperature spread
-   * the local narrator gets — see {@link generateCandidates}.
+   * show. Set exactly once today, to say which server rendered them and that
+   * each candidate is a different RUNG of the voice's ladder — which is what
+   * makes them different readings at all. See {@link generateCandidates}.
    */
   note?: string;
 }
@@ -470,44 +475,35 @@ function scratchRoot(sessionId: string): string {
   return path.join(app.getPath('userData'), 'correct-sentences', sessionId);
 }
 
-/**
- * Orpheus's own generation temperature, and the base every re-roll spreads around.
+/*
+ * THE PER-TAKE TEMPERATURE SPREAD IS GONE, AND ITS OWNER IS THE REASON.
  *
- * It used to be read off `settings.temperature` with `?? 0.6` behind it. That
- * field was XTTS's — the ONLY writer was the Pipeline Defaults temperature
- * slider, which no engine this build renders in ever honoured — so on every real
- * Orpheus book the base WAS 0.6, arrived at through the fallback rather than
- * stated. The setting left with XTTS on 2026-09-05; the number that always
- * applied is now written down.
+ * `ORPHEUS_BASE_TEMPERATURE = 0.6` and `computeTakeTemperatures` used to widen
+ * the sampling per take, because take 0 rendered twice gave the same reading
+ * and the spread was the only lever a client had. Both halves of that stopped
+ * being true: a Crucible `tts` render has no sampling channel and
+ * `runCrucibleReroll` REFUSES a caller that hands it temperatures
+ * (`crucible_reroll_take_temperatures_unsupported`), and narrator now gives
+ * each RUNG its own seed lane, so the rung is the lever. Nothing read the
+ * numbers any more — they were computed and their length used as a count — so
+ * they are deleted rather than left looking like a setting.
  */
-const ORPHEUS_BASE_TEMPERATURE = 0.6;
-
-/**
- * Spread of per-take sampling temperatures so re-rolls are genuinely varied rather than
- * near-identical (temp 0.6 alone barely moves the reading). Offsets give one cooler take
- * (can clean up a glitchy read) and hotter takes that rephrase more freely. Only Orpheus
- * honors these.
- */
-function computeTakeTemperatures(count: number): number[] {
-  const base = ORPHEUS_BASE_TEMPERATURE;
-  const OFFSETS = [-0.2, 0.2, 0.4];
-  const clamp = (t: number) => Math.max(0.1, Math.min(1.5, Math.round(t * 100) / 100));
-  const out: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const off = i < OFFSETS.length ? OFFSETS[i] : 0.2 + 0.2 * (i - 1);
-    out.push(clamp(base + off));
-  }
-  return out;
-}
 
 /** Edits longer than this (chars) span multiple chunks: generated as ONE take (the engine
- *  still splits + re-merges them into a single {i}.flac), instead of 3 varied takes. */
+ *  still splits + re-merges them into a single {i}.flac), instead of the full set. */
 const LONG_OVERRIDE_CHARS = 280;
 
 export interface GenerateCandidatesParams {
   projectDir: string;
   indices: number[];
-  /** Number of fresh takes per sentence (default 3). */
+  /**
+   * How many fresh takes per sentence, when the CALLER has a number in mind.
+   *
+   * Absent is the ordinary case and is not "3": the default is the voice's own
+   * take ladder minus one (`crucible/voice-ladder.ts`), because a candidate is
+   * only a different reading if it sits on a different rung and a rung past the
+   * end of the ladder is refused `unknown_take`.
+   */
   takes?: number;
   /** Optional per-index replacement text (edited sentences). Long edits get a single take. */
   overrides?: Record<number, string>;
@@ -516,18 +512,20 @@ export interface GenerateCandidatesParams {
 }
 
 /**
- * Generate `takes` fresh candidates for each requested index into scratch take{k}/ dirs,
+ * Generate fresh candidates for each requested index into scratch take{k}/ dirs,
  * each transcoded to the book's sample_fmt. The live cache is NOT touched. Returns, per
  * index, the original cache path plus the candidate take paths (audition order:
- * [original, take0, take1, take2]).
+ * [original, take0, take1, …]).
  *
- * Note: this runs the worker once per take (one model load each). A single generate of N
- * sentences ×3 takes is ~3 model loads; re-rolling one sentence is also ~3. Acceptable for
+ * HOW MANY is the voice's, not this function's: the ladder's length minus one, unless the
+ * caller named a number. See {@link GenerateCandidatesParams.takes}.
+ *
+ * Note: this runs one job per take (one model load each). A single generate of N
+ * sentences × K takes is ~K model loads; re-rolling one sentence is also ~K. Acceptable for
  * a deliberate QA pass; a future --num_takes worker option could fold it to one load.
  */
 export async function generateCandidates(params: GenerateCandidatesParams): Promise<GenerateCandidatesResult> {
   const { projectDir, indices, onProgress, signal } = params;
-  const takes = params.takes ?? 3;
 
   const session = await getCorrectSentencesSession(projectDir);
   if (!session.available || !session.sessionId) {
@@ -573,17 +571,11 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
     await fs.promises.writeFile(overridesPath, JSON.stringify(overrideMap), 'utf-8');
   }
 
-  // Partition: long (multi-chunk) edits get ONE take; everything else gets `takes`
-  // temperature-varied takes. Both write take{k}/{i}.flac under `base`.
+  // Partition: long (multi-chunk) edits get ONE take; everything else gets the
+  // full candidate set. Both write take{k}/{i}.flac under `base`.
   const isLong = (i: number) => ((overrideMap[i]?.trim().length ?? 0) > LONG_OVERRIDE_CHARS);
   const longIdx = indices.filter(isLong);
   const normalIdx = indices.filter((i) => !isLong(i));
-
-  const temps = computeTakeTemperatures(takes);
-  const baseTemp = ORPHEUS_BASE_TEMPERATURE;
-  const totalUnits = normalIdx.length * temps.length + longIdx.length;
-  let done = 0;
-  const onProg = () => { done += 1; onProgress?.(done, totalUnits); };
 
   /*
    * ── WHERE THE RE-ROLL RUNS ─────────────────────────────────────────────────
@@ -591,32 +583,27 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
    * The run's venue first — the session's own `settings.crucible.server`, which
    * the render bridge persisted — then the one decision every GPU door makes
    * (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3). A book rendered on the Mac re-rolls
-   * on the Mac: PHASE7-LANES.md §4.4, one book, one GPU. The legacy switch is
-   * what keeps the local narrator spawn below, and it says so by name.
+   * on the Mac: PHASE7-LANES.md §4.4, one book, one GPU.
    *
-   * ── ONE DIFFERENCE BETWEEN THE TWO VENUES, STATED OUT LOUD ────────────────
+   * ── AND HOW MANY CANDIDATES IT OFFERS ─────────────────────────────────────
    *
-   * The local worker spreads the takes across sampling temperatures
-   * (`computeTakeTemperatures`) because "temp 0.6 alone barely moves the
-   * reading". **A Crucible `tts` render has no sampling channel at all** —
-   * `RenderOptions` is voice, language, take and chunks, and PHASE6 §1 took the
-   * rung out of the client's business — so `runCrucibleReroll` REFUSES a caller
-   * that hands it temperatures rather than sending the job without them and
-   * calling it the same pass.
+   * The voice's take ladder decides, not this file. A Crucible `tts` render has
+   * no sampling channel — `RenderOptions` is voice, language, take and chunks,
+   * and PHASE6 §1 took the rung out of the client's business — so what makes two
+   * candidates two readings is that they sit on two RUNGS. narrator seeds chunk
+   * i in the take's own lane (`seed + index + TAKE_SEED_STRIDE * take`, crucible
+   * `docs/PHASE3-TTS.md` §2), which is why: two renders at one take are
+   * byte-identical by design. A take past the end of the ladder is refused
+   * `unknown_take` and never clamped, so the count IS the ladder's length minus
+   * one — take 0 being the reading already in the book.
    *
-   * This is the one place that knows the spread is an internal widening and not
-   * a setting anybody chose, so this is where the choice is made: on a Crucible
-   * the pass asks for N takes and NO spread — still genuinely different readings,
-   * because narrator's sampling is unseeded, just less varied — and says so in
-   * `note` and on the log. Deciding it here, once, in the open, is the whole
-   * difference between a documented partial and a silently different feature.
-   *
-   * RULING OWED (recorded in the rollout plan's 01:20 entry as "take>0 needs a
-   * per-request sampling channel"): does `tts` grow one, or does the spread
-   * become engine config keyed off the take rung so `take: 1..3` IS the spread?
+   * The ladder read decides the venue on the way past, and that decision is
+   * handed to `rerollAtVenue` as `crucible` so the two halves of one pass cannot
+   * land on two machines.
    */
   const { rerollAtVenue } = await import('./crucible/reroll.js');
   const { processVenueHost } = await import('./crucible/generation-venue.js');
+  const { crucibleVoiceLadder } = await import('./crucible/voice-ladder.js');
   const { readSessionRunVenue } = await import('./coverage-align-job.js');
   const { higgsModelForJob } = await import('./higgs-models.js');
 
@@ -631,11 +618,46 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   // name inside `crucibleVoiceFor`, and `fineTuned` is what it names.
   const voiceId = settings.ttsEngine === 'higgs' ? higgsModelForJob(settings).id : settings.fineTuned;
 
+  let ladder;
+  try {
+    ladder = await crucibleVoiceLadder({
+      ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      host: processVenueHost(),
+      ttsEngine: settings.ttsEngine,
+      voiceId,
+    });
+  } catch (err) {
+    return { success: false, candidates: [], error: (err as Error).message || String(err) };
+  }
+  const takes = params.takes ?? ladder.rungs - 1;
+  if (takes < 1) {
+    // A one-rung voice has nothing above take 0 to offer, and `higgs-default`
+    // and the zero-shot rows are exactly that today. Saying so is the whole of
+    // the right answer: submitting anyway asks for rung 1 and is refused
+    // `unknown_take` a round trip later, and clamping to take 0 would hand a
+    // person a byte-identical copy of the sentence they are trying to replace.
+    return {
+      success: false,
+      candidates: [],
+      error: `correct_sentences_voice_has_one_rung: crucible "${ladder.server}" says voice `
+        + `"${ladder.voice}" has a single take rung, which is the reading already in the book. `
+        + 'There is no second reading to audition. Edit the sentence instead, or re-render this '
+        + 'book with a voice whose manifest declares more rungs.',
+    };
+  }
+
+  const totalUnits = normalIdx.length * takes + longIdx.length;
+  let done = 0;
+  const onProg = () => { done += 1; onProgress?.(done, totalUnits); };
+
   let anyError: string | undefined;
   let note: string | undefined;
-  const rollAt = async (indices: number[], takeTemperatures: number[]): Promise<void> => {
+  const rollAt = async (indices: number[], howMany: number): Promise<void> => {
     const at = await rerollAtVenue({
       ...(runVenue === undefined ? {} : { runVenue, runVenueSource: 'session_state.json' }),
+      // The server the ladder was read from, so this pass cannot decide the
+      // venue a second time and land somewhere else.
+      crucible: { server: ladder.server },
       host: processVenueHost(),
       renderId: session.sessionId!,
       ttsEngine: settings.ttsEngine,
@@ -643,30 +665,31 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
       language: settings.language,
       chunks: indices.map((i) => ({ index: i, text: overrideMap[i] ?? storedChunks[i] })),
       targetDir: base,
-      takes: takeTemperatures.length,
+      takes: howMany,
       onLog: (line) => console.log(`[CORRECT-SENTENCES] ${line}`),
       ...(signal === undefined ? {} : { signal }),
     });
     // The takes arrive in one job each rather than one file at a time, so the
     // caller's per-unit tally is caught up here from what actually landed.
     for (let n = 0; n < (at.crucible?.written ?? 0); n += 1) onProg();
-    note = `These takes were rendered on crucible "${at.venue.server}" and vary by the engine's own `
-      + 'unseeded sampling only: a Crucible tts render has no per-request temperature, so the '
-      + 'per-take spread this app asks for was not applied. That channel is the retake ladder\'s '
-      + 'owed sampling field (ROLLOUT_PLAN B4), not a switch.';
+    note = `These takes were rendered on crucible "${at.venue.server}". Each one is a different `
+      + `RUNG of voice "${ladder.voice}"'s take ladder, which has ${ladder.rungs} — that is what `
+      + 'makes them different readings: narrator seeds every chunk in its take\'s own lane, so two '
+      + 'renders at one take are the same audio. The ladder is why this offers '
+      + `${ladder.rungs - 1} and not a number of this app's choosing.`;
   };
 
   try {
-    if (normalIdx.length) await rollAt(normalIdx, temps);
-    if (longIdx.length && !signal?.aborted) await rollAt(longIdx, [baseTemp]);
+    if (normalIdx.length) await rollAt(normalIdx, takes);
+    if (longIdx.length && !signal?.aborted) await rollAt(longIdx, 1);
   } catch (err) {
     // A venue that could not be decided, a voice with no Crucible manifest, a
     // server that refused — by name, never a quiet local re-roll instead.
     return { success: false, candidates: [], error: (err as Error).message || String(err) };
   }
 
-  // Collect + sample_fmt-match every produced candidate. take{k}/ subdirs always exist
-  // (temps are always set); long-override indices only produced take0.
+  // Collect + sample_fmt-match every produced candidate. `takes` is at least 1,
+  // so take0/ always exists; long-override indices only produced take0.
   const takePathsByIndex = new Map<number, string[]>();
   indices.forEach((i) => takePathsByIndex.set(i, []));
   for (let k = 0; k < takes; k++) {

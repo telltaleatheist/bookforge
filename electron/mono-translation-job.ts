@@ -25,6 +25,7 @@ import { loadPrompt, PROMPTS } from './prompts.js';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { aiCallModel, callAI, LANGUAGE_NAMES } from './text-ai.js';
 import { aiCallServer, type AIProviderConfig } from './ai-bridge.js';
+import { CrucibleTextActError } from './crucible/text-venue.js';
 import { createEpubSink, openEpubSource } from './epub-container.js';
 import {
   EpubProcessor,
@@ -195,6 +196,20 @@ export interface TranslationJobResult {
   outputPath?: string;
   translatedEpubPath?: string;  // For mono translation - path to translated EPUB
   error?: string;
+  /**
+   * WHAT IS IN THE WAY, WHEN THE ANSWER IS "WAIT" RATHER THAN "BROKEN".
+   *
+   * The SDK's holder line — "leased: foundry, translate since …" — as
+   * {@link CrucibleTextActError} carries it. A queue row parks against a server
+   * only when the failure it settles on has one (`queue-engine.ts`,
+   * `noteStepBusy`); with no line the row reddens as though the book were
+   * broken, and the operator is told to fix something that is merely busy.
+   *
+   * This result object is the translate path's only channel for it, because
+   * `runMonoTranslation` answers with a value rather than throwing. Present
+   * exactly when the refusal carried one.
+   */
+  busyLine?: string;
   // Job-analytics.json record (persisted by the renderer as a 'translation' entry).
   analytics?: TranslationJobAnalytics;
   // For chaining to next job
@@ -963,9 +978,23 @@ export async function runMonoTranslation(
       message: (err as Error).message
     });
 
+    /*
+     * THE HOLDER'S LINE IS CARRIED, NOT FLATTENED AWAY.
+     *
+     * A `CrucibleTextActError` for `crucible_model_leased` or
+     * `crucible_server_busy` is a WAIT, and `busyLine` is the whole of what
+     * makes it one to the queue. Rebuilding the answer as `{success, error}`
+     * dropped it here — the message survived, the parkability did not — so a
+     * translate against a busy server reddened its row while a simplify
+     * against the same server parked. Read off the typed error rather than
+     * duck-typed off `unknown`: this path has one class that carries it.
+     */
     return {
       success: false,
-      error: (err as Error).message
+      error: (err as Error).message,
+      ...(err instanceof CrucibleTextActError && err.busyLine !== undefined
+        ? { busyLine: err.busyLine }
+        : {}),
     };
   }
 }

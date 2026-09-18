@@ -10,9 +10,13 @@ import { CandidateSet, CorrectSentencesSession, ReviewRow } from '../../models/c
  * the sentence in an editable box (with only the Original playable) so the user can fix the
  * text first — add punctuation, split a crammed run-on, etc. Editing auto-checks re-roll.
  * A ✕ cancels a mis-flag (leaves the original untouched). Hitting Done (bottom-right)
- * generates 3 varied takes for the re-roll-checked rows (one take for long multi-chunk
+ * generates fresh takes for the re-roll-checked rows (one take for long multi-chunk
  * edits); after that the user auditions, Approves a take, or re-rolls again. Loop until the
  * list is empty → Assemble.
+ *
+ * HOW MANY takes is not this component's to say. Each candidate is a different rung of the
+ * voice's take ladder, so the count is the ladder's length minus one — read off the server
+ * by `electron/crucible/voice-ladder.ts` and never sent from here.
  */
 @Component({
   selector: 'app-sentence-review',
@@ -260,11 +264,16 @@ export class SentenceReviewComponent implements OnDestroy {
 
   private async generateFor(indices: number[], overrides: Record<number, string>): Promise<void> {
     this.generating.set(true);
-    this.progress.set({ done: 0, total: indices.length * 3 });
+    // 0 until the bridge's first progress tick says the real denominator. HOW
+    // MANY takes a sentence gets is the VOICE's — its take ladder minus one,
+    // read off the server (`crucible/voice-ladder.ts`) — so a `× 3` here would
+    // be this component inventing a number the render does not use, and
+    // `takes` is deliberately not sent at all.
+    this.progress.set({ done: 0, total: 0 });
     const jobId = `correct-${indices.join('_')}-${indices.length}`;
     this.currentJobId = jobId;
     const res = await this.electron.correctSentencesGenerateCandidates(jobId, {
-      projectDir: this.projectDir(), indices, takes: 3, overrides,
+      projectDir: this.projectDir(), indices, overrides,
     });
     this.generating.set(false);
     this.currentJobId = null;

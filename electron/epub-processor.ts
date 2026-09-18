@@ -1476,7 +1476,12 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
       // Replace existing element, preserving attributes
       const openTagMatch = match[0].match(new RegExp(`<dc:${tagName}([^>]*)>`, 'i'));
       const attributes = openTagMatch ? openTagMatch[1] : '';
-      result = result.replace(regex, `<dc:${tagName}${attributes}>${escapeXml(value)}</dc:${tagName}>`);
+      // A REPLACER FUNCTION, because `value` is a title, an author or a
+      // description somebody typed. In a replacement STRING `$&` splices the
+      // whole matched `<dc:title>…</dc:title>` back inside itself and `$1`
+      // becomes the element's captured text — a book title with a dollar sign
+      // in it corrupts the OPF, silently and with no error anywhere.
+      result = result.replace(regex, () => `<dc:${tagName}${attributes}>${escapeXml(value)}</dc:${tagName}>`);
     } else {
       // Add new element inside <metadata> tag
       const metadataMatch = result.match(/<metadata[^>]*>/i);
@@ -1520,7 +1525,10 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
         let attributes = creatorMatch[1];
         attributes = attributes.replace(/\s*opf:file-as="[^"]*"/g, '');
         attributes = ` opf:file-as="${escapeXml(metadata.authorFileAs)}"` + attributes;
-        result = result.replace(creatorRegex, `<dc:creator${attributes}>${creatorMatch[2]}</dc:creator>`);
+        // A replacer function for the same reason: both the file-as the person
+        // typed and the creator text read out of the book carry through here,
+        // and either one's `$&` would splice the matched element back in.
+        result = result.replace(creatorRegex, () => `<dc:creator${attributes}>${creatorMatch[2]}</dc:creator>`);
       }
     }
   }
@@ -1570,7 +1578,13 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
   if (!headingMatch) {
     // No heading in original — all blocks become <p> tags
     const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
-    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
+    // A REPLACER FUNCTION, because the book's own text is in `htmlContent`. In a
+    // replacement STRING `$1`, `$&`, `` $` `` and `$'` are pattern references, so
+    // "It cost $1,000." would come back as the body tag's attributes followed by
+    // ",000." and a `$&` would splice the whole original body back inside itself.
+    // `escapeXml` does not touch `$`. A function's return value is inserted
+    // verbatim, which is the only thing that makes this safe.
+    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>\n${htmlContent}\n</body>`);
   }
 
   const tag = headingMatch[1].toLowerCase();
@@ -1585,7 +1599,9 @@ function replaceXhtmlBody(xhtml: string, newText: string): string {
   const bodyHtml = bodyBlocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
   const htmlContent = bodyHtml ? `${headingHtml}\n${bodyHtml}` : headingHtml;
 
-  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
+  // A replacer function for the reason stated at the heading-less branch above:
+  // the book's `$1`/`$&` are pattern references in a replacement string.
+  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>\n${htmlContent}\n</body>`);
 }
 
 /**
@@ -2332,11 +2348,14 @@ export async function editEpubText(
         const newElement = `<${m.tag}${m.attrs}>${escapeXml(newBlocks[i])}</${m.tag}>`;
         newBodyContent = newBodyContent.substring(0, m.startIndex) + newElement + newBodyContent.substring(m.startIndex + m.full.length);
       }
-      return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>${newBodyContent}</body>`);
+      // Replacer functions on both arms: the rebuilt body carries the book's own
+      // text, and in a replacement STRING its `$1`/`$&` are pattern references —
+      // `$&` splices the whole original body back inside the new one.
+      return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>${newBodyContent}</body>`);
     }
 
     const paragraphs = newBlocks.map(p => `<p>${escapeXml(p)}</p>`).join('\n');
-    return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${paragraphs}\n</body>`);
+    return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, (_m, attrs: string) => `<body${attrs}>\n${paragraphs}\n</body>`);
   }
 
   try {
@@ -2363,14 +2382,19 @@ export async function editEpubText(
       return { success: false, error: 'Text not found in chapter (plain text match failed)' };
     }
 
-    // Replace in extracted text and rebuild XHTML
-    let modifiedText = extractedText.replace(oldText, newText);
+    // Replace in extracted text and rebuild XHTML.
+    //
+    // `() => newText` and not `newText`: the edited sentence is a person's own
+    // prose, and as a replacement STRING its `$&` would splice the sentence being
+    // replaced back in beside it while `$1,000` would lose the `$1`. A replacer
+    // function's return value is inserted verbatim.
+    let modifiedText = extractedText.replace(oldText, () => newText);
     if (modifiedText === extractedText) {
       // Try flexible whitespace matching
       const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const flexPattern = escapedOld.replace(/\s+/g, '\\s+');
       const regex = new RegExp(flexPattern, 's');
-      modifiedText = extractedText.replace(regex, newText);
+      modifiedText = extractedText.replace(regex, () => newText);
     }
 
     if (modifiedText === extractedText) {
@@ -2542,9 +2566,12 @@ export async function replaceTextInEpub(
           newElement +
           newBodyContent.substring(m.startIndex + m.full.length);
       }
+      // Replacer functions on both arms: the rebuilt body carries the book's own
+      // text, and in a replacement STRING its `$1`/`$&` are pattern references —
+      // `$&` splices the whole original body back inside the new one.
       return originalXhtml.replace(
         /<body([^>]*)>[\s\S]*<\/body>/i,
-        `<body$1>${newBodyContent}</body>`
+        (_m, attrs: string) => `<body${attrs}>${newBodyContent}</body>`
       );
     }
 
@@ -2552,7 +2579,7 @@ export async function replaceTextInEpub(
     const paragraphs = newBlocks.map(p => `<p>${escapeXml(p)}</p>`).join('\n');
     return originalXhtml.replace(
       /<body([^>]*)>[\s\S]*<\/body>/i,
-      `<body$1>\n${paragraphs}\n</body>`
+      (_m, attrs: string) => `<body${attrs}>\n${paragraphs}\n</body>`
     );
   }
 
@@ -2583,8 +2610,13 @@ export async function replaceTextInEpub(
         // Check if this chapter contains the text (whitespace-normalized comparison)
         if (normalizedExtracted.includes(normalizedOldText)) {
           // Found it! Replace in the extracted text and rebuild
-          // Use the cleaned text (without [[BLOCK]] markers) for replacement
-          const modifiedText = extractedText.replace(cleanedOldText, cleanedNewText);
+          // Use the cleaned text (without [[BLOCK]] markers) for replacement.
+          //
+          // `() => cleanedNewText` and not `cleanedNewText`: as a replacement
+          // STRING the new text's `$&` would splice the sentence being replaced
+          // back in beside it, and `$1,000` would lose the `$1`. A replacer
+          // function's return value is inserted verbatim.
+          const modifiedText = extractedText.replace(cleanedOldText, () => cleanedNewText);
 
           // If direct replacement didn't work, try normalized
           if (modifiedText === extractedText) {
@@ -2592,7 +2624,7 @@ export async function replaceTextInEpub(
             const escapedOld = cleanedOldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const flexPattern = escapedOld.replace(/\s+/g, '\\s+');
             const regex = new RegExp(flexPattern, 's');
-            const flexModified = extractedText.replace(regex, cleanedNewText);
+            const flexModified = extractedText.replace(regex, () => cleanedNewText);
             if (flexModified !== extractedText) {
               modifiedXhtml = rebuildXhtml(xhtml, flexModified);
             }

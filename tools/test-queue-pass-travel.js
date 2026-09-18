@@ -510,5 +510,78 @@ function passConfig(kind, ai) {
       'and a block that names none reports none rather than inventing a name for the ledger');
   });
 
+  // ── 8. A TRAVELLED TRANSLATE THAT IS REFUSED A WAIT STAYS A WAIT ─────────
+  //
+  // `settleStep` parks a queue row against a server only when the failure
+  // carries `busyLine` (`queue-engine.ts`, `noteStepBusy`); without one the row
+  // reddens as though the book were broken. The translate path threw a
+  // `CrucibleTextActError` that HAS the holder's line and then flattened it:
+  // `runMonoTranslation`'s own outer catch rebuilt the answer as
+  // `{success, error}` and the line was gone before any pass code could read
+  // it. Simplify parks because its refusal reaches the step as an exception;
+  // translate goes through this result object, so the result has to carry it.
+  //
+  // What this check owns is exactly that half — the throw reaching the
+  // TranslationJobResult. Carrying it onward (`runTranslatePass` →
+  // `PassJobResult` → `pass.ts` → `noteStepBusy`) is four lines in files
+  // `fix/lease-park` owns and is NOT pinned here.
+  await check('a leased server\'s holder line survives runMonoTranslation\'s catch', async () => {
+    const mono = require(path.join(DIST, 'mono-translation-job.js'));
+    const textVenue = require(path.join(DIST, 'crucible', 'text-venue.js'));
+    const epub = require(path.join(DIST, 'epub-processor.js'));
+
+    const BUSY = 'leased: foundry, translate since 2026-09-14T01:00:00+00:00';
+    const book = path.join(stub.work, 'leased-translate.epub');
+    const zip = new epub.ZipWriter();
+    zip.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
+    zip.addFile('META-INF/container.xml', Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?>\n'
+      + '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+      + '<rootfiles><rootfile full-path="OEBPS/content.opf" '
+      + 'media-type="application/oebps-package+xml"/></rootfiles></container>', 'utf8'), true);
+    zip.addFile('OEBPS/content.opf', Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?>\n'
+      + '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">'
+      + '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+      + '<dc:identifier id="pub-id">urn:uuid:leased-translate</dc:identifier>'
+      + '<dc:title>Ein Buch</dc:title><dc:language>de</dc:language></metadata>'
+      + '<manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+      + '<spine><itemref idref="c1"/></spine></package>', 'utf8'), true);
+    zip.addFile('OEBPS/c1.xhtml', Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?>\n'
+      + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Eins</title></head>'
+      + '<body><p>Der Hof erhob sich um vier Uhr.</p></body></html>', 'utf8'), true);
+    await zip.write(book);
+
+    // The model call is where the refusal arrives on a real run; throwing it
+    // here is the same exception from the same class, without a server.
+    const realCallAI = textAi.callAI;
+    textAi.callAI = async () => {
+      throw new textVenue.CrucibleTextActError(
+        'crucible_model_leased',
+        'crucible "mac"\'s resident model is leased by another run, so the translate act was '
+        + `not started: ${BUSY}.`,
+        BUSY);
+    };
+    let result;
+    try {
+      result = await mono.runMonoTranslation('job-leased', {
+        cleanedEpubPath: book,
+        sourceLang: 'de',
+        targetLang: 'en',
+        provider: { provider: 'crucible', crucible: { server: 'mac', act: 'translate', model: 'qwen3.5-27b' } },
+        outputEpubPath: path.join(stub.work, 'leased-translate-out.epub'),
+      }, null);
+    } finally {
+      textAi.callAI = realCallAI;
+    }
+    assert.strictEqual(result.success, false, 'a leased server did not stop the translation');
+    assert.ok(result.error.includes('crucible_model_leased'),
+      `the refusal lost its name: ${result.error}`);
+    assert.strictEqual(result.busyLine, BUSY,
+      'the holder\'s line did not survive the catch, so the queue row would redden rather than '
+      + 'park against that server');
+  });
+
   summary('queue pass travel');
 })();
