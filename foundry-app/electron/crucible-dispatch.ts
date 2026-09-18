@@ -769,6 +769,68 @@ function busyWithOurs(lane: string): string {
 }
 
 /**
+ * A WARMING LINE WITH THE ENGINE'S LOG TAIL TAKEN OFF, and the whole thing logged.
+ *
+ * ── What he was reading in a row four inches wide ───────────────────────────
+ *
+ * Owen, 2026-09-18: *"its putting logs in the gpu slot. they dont belong there,
+ * they belong in the console, which is where they are. we can put human readable
+ * logs where the logs are in the slot currently but they shouldnt be showing the
+ * user the underlying technical stuff."* What the slot held was
+ *
+ *     Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 16s elapsed,
+ *     886s before give-up — (APIServer pid=233320) INFO 09-18 01:29:35
+ *     [kernel.py:369] Final IR op priority after setting platform defaults:
+ *     IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+ *
+ * and early in a vLLM load the tail is not even a log line — it is the log
+ * file's own header, which is the entire spawn command including the model path
+ * and `--gpu-memory-utilization`.
+ *
+ * ── THE TAIL IS THE ENGINE'S AND IT IS NOT WRONG TO SEND ────────────────────
+ *
+ * Crucible's `warming_message` (crucible/engines/base.py) appends `log_tail(1)`
+ * after an em dash, and that is genuinely what an operator wants when a load is
+ * STUCK: the last thing the engine said before it stopped saying anything. So
+ * nothing here is a defect in the engine, and nothing asks it to send less. WHERE
+ * IT GOES is a display decision, and a display decision belongs on this side.
+ *
+ * The slot gets the sentence; the console gets the whole line, once per frame,
+ * where a developer can read it and a person watching their queue cannot.
+ *
+ * ── SPLIT ON THE ENGINE'S OWN SEPARATOR, AND ONLY EVER ON THAT ──────────────
+ *
+ * ` — ` is the delimiter `warming_message` composes with, so it is the one
+ * character sequence that reliably means "the sentence ended and the tail began".
+ * A message WITHOUT one is passed through whole rather than trimmed at some
+ * guessed length: no em dash means no tail, which means the sentence is all there
+ * is, and shortening it would be this file inventing a truncation the engine
+ * never asked for.
+ *
+ * ── IT IS BOOKFORGE'S FUNCTION, COPIED RATHER THAN APPROXIMATED ─────────────
+ *
+ * `warmingHeadline`, BookForgeApp electron/crucible/job.ts, committed there as
+ * bdacf45a the same day and after the same complaint about ITS slots. The two
+ * apps read the same frames off the same server, so the two answers have to be
+ * the same answer — and the way that goes wrong is one of them growing a second
+ * rule about where to cut. Copied whole, including the pass-through, on
+ * `shared/records.ts`' grow-together rule: if Crucible's separator ever moves,
+ * both move, in one commit.
+ *
+ * WARMING ONLY, which is BookForge's scope and not a narrowing of it. A
+ * `progress` frame carries the SERVER's own fraction and message and has no
+ * documented tail; splitting one on an em dash it was allowed to contain as
+ * ordinary punctuation would cut a human sentence in half to solve a problem it
+ * does not have.
+ */
+export function warmingHeadline(message: string): string {
+  const cut = message.indexOf(' — ');
+  if (cut < 0) return message;
+  console.log(`[slots] warming: ${message}`);
+  return message.slice(0, cut);
+}
+
+/**
  * A CLOUD PROVIDER — and it is the shortest placement in this module, because
  * almost everything the Crucible path does has no counterpart here.
  *
@@ -1013,7 +1075,7 @@ async function placeOnCrucible(
     if (signal?.aborted) cancelLoad();
     try {
       for await (const event of client.events(jobId)) {
-        if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
+        if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${warmingHeadline(event.data.message)}`);
         else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
         else if (event.event === 'failed') {
           const code = event.data.error.code;

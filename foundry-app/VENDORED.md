@@ -10,10 +10,68 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **4fb203d** — *A merge composes cleaned words, so its position is skipped and not refused* |
-| Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
+| Source sha | **1c1eaa3** — *The slot gets the sentence, the console gets the engine's log tail* |
+| Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-18 |
-| Copied by | Mechanical source sync, verified against Foundry `4fb203d:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `1c1eaa3:app/`; details below |
+
+## The `4fb203d → 1c1eaa3` re-vendor — the slot gets the sentence (2026-09-18)
+
+One commit, one file: `app/electron/crucible-dispatch.ts`. Nothing under `src/`.
+
+**A queue slot four inches wide was printing a vLLM spawn command line.** What
+Owen read while a model loaded:
+
+    Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 16s elapsed,
+    886s before give-up — (APIServer pid=233320) INFO 09-18 01:29:35
+    [kernel.py:369] Final IR op priority after setting platform defaults: …
+
+Crucible's `warming_message` appends `log_tail(1)` after an em dash, and
+`crucible-dispatch.ts:1016` passed the whole thing through to the slot label.
+The tail is not wrong to send — it is exactly what an operator wants when a load
+is STUCK — so this is a display decision, and the fix is the one BookForge had
+already made on its own path the same day (`warmingHeadline`,
+`electron/crucible/job.ts`, `bdacf45a`): split on the em dash the engine itself
+uses, slot gets the head, console gets the whole line, a message with no em dash
+passes through untouched. Foundry copied it whole rather than writing a second
+answer, and its docblock names BookForge's as the origin. Grep marker in the
+built dist: `[slots] warming: ` in `crucible-dispatch.js`.
+
+### The engine this file named was not the engine that ran
+
+**The bigger lesson of the night, and it cost two sessions a wrong diagnosis.**
+Owen's cleanup against the 3090 Ti refused with
+
+    http://owens-pc.owenmorgan.com:7100/openai/api/tags answered 404.
+    Something is listening there, but it is not an Ollama server.
+
+An Ollama client on a vLLM OpenAI base. This side ruled out a stale engine by
+proving all four inference-door commits (`646e8a1`, `527b0db`, `76444fb`,
+`2d5d411`) are ancestors of **40aaa42** — the sha this table used to assert —
+and concluded the door must be composed wrong on the app side. The ancestry was
+correct. The premise was not: **the hosted app never spawns 40aaa42.** Its
+startup log says
+
+    [INFO] Hosted Foundry engine {"bin":"…/foundry/dist/foundry-darwin-arm64"}
+
+— Foundry's own checkout, built 10 September, which answered `foundry 1.2.0
+(03ff788)`. `03ff788` PREDATES `646e8a1`, and in that build `src/clean/run.ts`
+reads `const kind = opts.server ?? 'ollama'`. The app omits `--server` for the
+openai door because openai is the engine's default — which only became true AT
+`646e8a1`. So a flagless spawn line meant OLLAMA to a September-10 binary, and
+the 404 followed. Nothing was wrong with door composition; `capabilityClassOf('clean')`
+places the row and `placeOnCrucible` hands it `door: 'openai'` correctly.
+
+**A vendored sha answers a different question from which binary runs.** One side
+verified the vendored engine sha, the other verified the vendored app sha, and
+the artifact that actually executed was a third thing neither had looked at —
+resolved at runtime from a path, on a machine, by a build nobody in the
+conversation had asked the version of. That is why this table's engine row no
+longer carries a sha. **Ask the binary.**
+
+(Owen had the binary rebuilt; it is now `foundry 2.0.2 (1c1eaa3)`, verified by
+behaviour rather than by assertion — the same invocation against a dead port now
+reports `/v1/models` where the old one said `/api/tags`.)
 
 ## The `16b352f → 4fb203d` re-vendor — a stamp outlived the words it was a claim about (2026-09-18)
 
