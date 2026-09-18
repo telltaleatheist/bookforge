@@ -1,4 +1,5 @@
 import { computed, Injectable, signal } from '@angular/core';
+import { uuid } from '../shared/uuid';
 
 const KEY_SERVERS = 'bookshelf-servers';
 const KEY_ACTIVE = 'bookshelf-active-server';
@@ -249,7 +250,7 @@ export class ServerConfigService {
       return existing.id;
     }
     const entry: ServerEntry = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       label: label?.trim() || this.hostLabel(url),
       url,
       enabled: true,
@@ -400,7 +401,7 @@ export class ServerConfigService {
     const legacy = this.isNative ? localStorage.getItem(KEY_LEGACY_URL) : null;
     if (legacy) {
       const url = this.normalize(legacy);
-      list.push({ id: crypto.randomUUID(), label: this.hostLabel(url), url, enabled: true });
+      list.push({ id: uuid(), label: this.hostLabel(url), url, enabled: true });
       localStorage.removeItem(KEY_LEGACY_URL);
     }
     const seeded = this.withOrigin(list);

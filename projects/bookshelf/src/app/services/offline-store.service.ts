@@ -4,6 +4,7 @@ import { NativeFileService, NativeAsset } from './native-file.service';
 import { extractAudioCover, blobRangeReader } from './audio-cover';
 import { Audiobook } from '../models/types';
 import { audioIdentity } from '../shared/audio-identity';
+import { uuid } from '../shared/uuid';
 
 /** Fixed native-file extension per sidecar. Fixed (not sniffed from bytes) so the
  *  filename is deterministic — a refresh overwrites the same `<id>-<asset>.<ext>`
@@ -407,7 +408,7 @@ export class OfflineStoreService {
     const serverId = book.originServerId ?? '';
     const path = book.downloadPath;
     if (this.isDownloaded(serverId, path)) { this.removeFromQueue(path); return; }
-    const id = crypto.randomUUID();
+    const id = uuid();
     const controller = new AbortController();
     this.controllers.set(path, controller);
     this.setProgress(path, 0, book.size || 0);

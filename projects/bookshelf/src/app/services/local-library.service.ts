@@ -2,6 +2,7 @@ import { computed, inject, Injectable, signal } from '@angular/core';
 import { Audiobook, Ebook } from '../models/types';
 import { NativeFileService } from './native-file.service';
 import { extractAudioCover, extractAudioCoverBlob } from './audio-cover';
+import { uuid } from '../shared/uuid';
 
 /**
  * The device's own on-device library — the "This device" synthetic server. Your
@@ -162,7 +163,7 @@ export class LocalLibraryService {
   async importFile(file: File): Promise<LocalBook> {
     const format = (file.name.split('.').pop() || '').toLowerCase();
     const kind: LocalBook['kind'] = format === 'epub' ? 'ebook' : 'audiobook';
-    const id = crypto.randomUUID();
+    const id = uuid();
 
     // Audiobooks on native go to the filesystem (AVPlayer needs a file:// URL
     // with a real extension — it can't identify extension-less containers);

@@ -9,6 +9,7 @@ import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, AudiobookAnalysisEnvelope, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
 import { audioIdentity } from '../shared/audio-identity';
+import { uuid } from '../shared/uuid';
 
 export type BookmarkKind = 'manual' | 'open' | 'resume' | 'hour' | 'chapter' | 'sleep' | 'jump' | 'arrive';
 
@@ -1552,7 +1553,7 @@ export class PlayerService {
       title: book.title,
       author: book.author || '',
       seconds,
-      id: crypto.randomUUID(),
+      id: uuid(),
     });
   }
 
