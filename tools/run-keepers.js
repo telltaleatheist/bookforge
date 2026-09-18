@@ -247,7 +247,7 @@ const SUITES = [
   // heartbeated at a third of its ttl, released on success, throw, cancel and
   // quit alike, a 404 on release read as the no-op it is, a 404 on a heartbeat
   // read as a server that RESTARTED and answered with a new lease rather than a
-  // log line, and `409 model_leased` reaching the reader with the holder's name
+  // log line, and `409 leased` reaching the reader with the holder's name
   // so a queue row holds instead of failing. It also pins the negative: the
   // one-job doors and the streaming door do NOT lease, because a job holds the
   // lane and a session holds the claim already — and for `tts`/`align` a lease

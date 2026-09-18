@@ -33,7 +33,7 @@
  *     a restart forgets them, so this means the card is unprotected NOW, mid-book.
  *     Foundry's dispatch re-leases; two clients guessing differently at one
  *     restart is how one of them loses a book.
- *  6. `409 model_leased` IS A WAIT WITH A NAME. The holder, the act and the since
+ *  6. `409 leased` IS A WAIT WITH A NAME. The holder, the act and the since
  *     reach the reader — through the same `busyLine` road `server_busy` already
  *     travels, so a queue row holds instead of failing. And it is never retried
  *     here: a sleep loop in a client library is a queue with a policy nobody chose.
@@ -110,7 +110,7 @@ const { check, summary } = makeChecker();
         'the module\'s declared liveness ttl crossed, not a number invented per call');
       // The server records the User-Agent as the lease's `client`, which is what
       // a bench shows when it says whose run is on the card. A lease taken
-      // anonymously is a `model_leased` nobody can act on.
+      // anonymously is a `leased` nobody can act on.
       assert.match(taken.userAgent, /^bookforge crucible-client\//,
         'the holder names itself the way every other BookForge call does');
 
@@ -361,7 +361,7 @@ const { check, summary } = makeChecker();
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 6. 409 model_leased is a wait with a name
+  // 6. 409 leased is a wait with a name
   // ───────────────────────────────────────────────────────────────────────────
   const HELD = {
     leaseId: 'lease-held', client: 'foundry', act: 'translate', model: 'qwen3.5-27b',

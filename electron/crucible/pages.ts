@@ -294,7 +294,7 @@ export type CruciblePagesErrorCode =
   /** Nothing is serving it. The operator's job, never a page read's. */
   | 'crucible_pages_model_not_resident'
   /**
-   * 409 `model_leased`: another client has said it is mid-run on that server's
+   * 409 `leased`: another client has said it is mid-run on that server's
    * resident model, so nothing may move it off the card — including this read's
    * own lease. A WAIT with the holder's name, act and since, never a retry loop.
    */
@@ -627,7 +627,7 @@ export async function resolveCruciblePageReader(
  * `X-Crucible-Act`: one name from one field, so a bench beside the card cannot
  * be told one thing while the requests say another.
  *
- * `409 model_leased` on the take is a WAIT rendered with the holder's line, and
+ * `409 leased` on the take is a WAIT rendered with the holder's line, and
  * nothing here waits it out — that decision belongs to whoever pressed the
  * button, never to a sleep loop in a library (ARCHITECTURE.md R5).
  */

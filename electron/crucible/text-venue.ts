@@ -116,7 +116,7 @@ export type CrucibleTextActErrorCode =
   /** 409 from the server: the lane, or narrator's wire, is held. */
   | 'crucible_server_busy'
   /**
-   * 409 `model_leased`: another client has said it is mid-run on that model, so
+   * 409 `leased`: another client has said it is mid-run on that model, so
    * nothing may move it off the card — including this act's own lease. A WAIT
    * with the holder's name, act and since, carried the same way `server_busy` is
    * (`busyLine` → the queue's `noteStepBusy`), because it is the same question
@@ -609,7 +609,7 @@ export async function resolveCrucibleTextEngine(
  * from the same field — a lease that recorded `translate` while the engine sent
  * `simplify` would put the lie Owen ruled out on a bench beside the card.
  *
- * `409 model_leased` on the take is a WAIT and never a retry loop: it arrives as
+ * `409 leased` on the take is a WAIT and never a retry loop: it arrives as
  * {@link CrucibleTextActError} `crucible_model_leased` carrying the holder's line,
  * which is the road the queue's busy hold already travels.
  */
@@ -655,7 +655,7 @@ export function describeTextActRefusal(
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleBusy, CrucibleRefused } = require('@crucible/client') as typeof import('@crucible/client');
   // Required the same way and for the same reason, and by NAME rather than by
-  // code: `model_leased` is a CrucibleRefused subclass, so it must be asked about
+  // code: `leased` is a CrucibleRefused subclass, so it must be asked about
   // before the generic branch below or it would lose the holder's line.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleLeased } = require('./lease.js') as typeof import('./lease');
