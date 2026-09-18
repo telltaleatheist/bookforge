@@ -35,6 +35,7 @@ import { setQueueMainWindow } from './queue-steps';
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
 import * as manifestService from './manifest-service';
+import { appendJobAnalytics } from './job-analytics';
 import {
   currentEpubEditorLayout,
   readEditorLayoutState,
@@ -3445,26 +3446,15 @@ function registerAudioProtocol(): void {
   });
 }
 
-// Atomic file write - writes to temp file then renames to prevent corruption
-// Uses temp file in same directory to avoid cross-device link issues
-async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  // Create temp file in the same directory as target to ensure same filesystem
-  const dir = path.dirname(filePath);
-  const tempPath = path.join(dir, `.bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
-
-  try {
-    await fs.writeFile(tempPath, content, 'utf-8');
-    await fs.rename(tempPath, filePath);
-  } catch (err: any) {
-    // Clean up temp file if it exists
-    try {
-      await fs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
-  }
-}
+/*
+ * main.ts's OWN `atomicWriteFile` stood here and is gone (2026-09-18). Its last
+ * caller was the job-analytics append, which moved whole into
+ * electron/job-analytics.ts; `manifest-service.atomicWriteFile` is the one
+ * owner of "stage beside the target, then rename", and it is the one the moved
+ * code uses. A second private copy with its own temp-name rule is exactly the
+ * kind of duplicate that drifts the day one of them is tuned — this one had
+ * already missed the 255-byte filename budget the other carries.
+ */
 
 const isDev = !app.isPackaged;
 
@@ -10659,41 +10649,15 @@ function setupIpcHandlers(): void {
     jobType: 'tts-conversion' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation',
     analytics: { jobId: string; [key: string]: unknown }
   ) => {
-    const MAX_ANALYTICS_HISTORY = 10;
-
-    // Map job type to analytics array key
-    const typeToKey: Record<string, string> = {
-      'tts-conversion': 'ttsJobs',
-      'reassembly': 'reassemblyJobs',
-      'video-assembly': 'videoAssemblyJobs',
-      'rvc': 'rvcJobs',
-      'translation': 'translationJobs'
-    };
-
-    const appendTo = (container: Record<string, any>) => {
-      const key = typeToKey[jobType];
-      if (key) {
-        const existing = container[key] || [];
-        const dedupedJobs = existing.filter(
-          (j: { jobId: string }) => j.jobId !== analytics.jobId
-        );
-        container[key] = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
-      }
-      return container;
-    };
-
     try {
       const isProjectDir = fsSync.existsSync(projectDir) &&
         fsSync.statSync(projectDir).isDirectory() &&
         fsSync.existsSync(path.join(projectDir, 'manifest.json'));
 
       if (isProjectDir) {
-        const analyticsPath = path.join(projectDir, 'job-analytics.json');
-        let existing: Record<string, any> = { ttsJobs: [], reassemblyJobs: [], videoAssemblyJobs: [], rvcJobs: [], translationJobs: [] };
-        try {
-          existing = JSON.parse(await fs.readFile(analyticsPath, 'utf-8'));
-        } catch { /* first write */ }
-        await atomicWriteFile(analyticsPath, JSON.stringify(appendTo(existing), null, 2));
+        // The read-modify-write itself lives in electron/job-analytics.ts —
+        // this handler is the IPC door and the project-directory check.
+        await appendJobAnalytics(projectDir, jobType, analytics);
         return { success: true };
       }
 

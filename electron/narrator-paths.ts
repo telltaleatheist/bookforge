@@ -498,32 +498,61 @@ export function windowsToWslPath(winPath: string): string {
 }
 
 /**
- * Convert a WSL path to Windows path format
- * /mnt/c/Users/foo/book.epub -> C:\Users\foo\book.epub
+ * THE WSL→WINDOWS CONVERTER — a path as the guest sees it, in the form Windows
+ * can open. There is one, and the `/mnt/` decision is INSIDE it.
  *
- * @param wslPath - WSL path (e.g., "/mnt/c/Users/foo/file.txt")
- * @returns Windows path (e.g., "C:\Users\foo\file.txt")
+ *   /mnt/c/Users/foo/book.epub     -> C:\Users\foo\book.epub
+ *   /home/telltale/staged-x.epub   -> \\wsl$\Ubuntu\home\telltale\staged-x.epub
+ *   C:\Users\foo\book.epub         -> unchanged (already Windows)
+ *   \\wsl$\Ubuntu\home\…           -> unchanged (already Windows)
+ *
+ * WHY THE DECISION MOVED IN HERE. It used to be re-composed by the caller —
+ * `if (p.startsWith('/mnt/')) p = wslToWindowsPath(p)` — and a caller that
+ * knew only that form silently did nothing with the other one. A WSL prep
+ * stages the ebook at a GUEST-NATIVE path (`<guest sessions root>/staged-<uuid>.epub`,
+ * which is what all three golden fixtures carry), so `reassembly-bridge`'s
+ * metadata lookup ran `path.dirname` on a Linux string, found no `project.json`
+ * at a path Windows cannot even hold, and took the no-metadata branch without
+ * a word: the reassembled m4b lost its title, author, year, series and cover.
+ *
+ * The `\\wsl$` prefix itself is `tool-paths.wslPathToWindows`'s to own — this
+ * function owns only the choice between the two roads.
+ *
+ * NOT ON WINDOWS THERE IS NO GUEST. On macOS and Linux an absolute POSIX path
+ * IS the host's own path; rewriting it into a `\\wsl$` share would invent a
+ * machine. Same rule `toReadablePath` states in parallel-tts-bridge.
+ *
+ * A path that is neither guest-absolute nor Windows — a relative path, an
+ * empty string — is REFUSED BY NAME. There is no third form to guess at, and
+ * returning it unchanged is how the silent branch above happened.
  */
-export function wslToWindowsPath(wslPath: string): string {
-  if (!wslPath) return wslPath;
-
-  // Match WSL mount pattern (/mnt/c/...)
-  const match = wslPath.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (match) {
-    const driveLetter = match[1].toUpperCase();
-    const restOfPath = (match[2] || '').replace(/\//g, '\\');
-    return `${driveLetter}:${restOfPath}`;
+export function wslToWindowsPath(guestPath: string): string {
+  if (typeof guestPath !== 'string' || guestPath.trim() === '') {
+    throw new Error('wslToWindowsPath: no path given');
   }
+  // Already Windows: a drive letter, or any UNC share (\\wsl$ among them).
+  if (/^[A-Za-z]:/.test(guestPath) || guestPath.startsWith('\\\\')) return guestPath;
+  if (!guestPath.startsWith('/')) {
+    throw new Error(`wslToWindowsPath: "${guestPath}" is neither a guest path nor a Windows path`);
+  }
+  if (process.platform !== 'win32') return guestPath;
 
-  // Not a WSL mounted path, return as-is
-  return wslPath;
+  const mounted = guestPath.match(/^\/mnt\/([a-z])(\/.*)?$/i);
+  if (mounted) {
+    return `${mounted[1].toUpperCase()}:${(mounted[2] || '/').replace(/\//g, '\\')}`;
+  }
+  return wslPathToWindows(guestPath);
 }
 
 /**
  * Check if the current configuration should use WSL for TTS
  * Re-exported for convenience
+ *
+ * `wslPathToWindows` is NOT re-exported: it is the `\\wsl$` prefix builder that
+ * `wslToWindowsPath` above is built on, not a second converter to choose
+ * between. Callers outside tool-paths ask `wslToWindowsPath`.
  */
-export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv, wslPathToWindows };
+export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Safe env builder for tools spawns
@@ -610,7 +639,6 @@ export const narratorPaths = {
   // WSL path conversion
   windowsToWslPath,
   wslToWindowsPath,
-  wslPathToWindows,
   // WSL config (re-exported from tool-paths)
   shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,

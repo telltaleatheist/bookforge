@@ -86,17 +86,37 @@ interface ProjectJsonMetadata {
 }
 
 /**
- * Get project.json metadata from source_epub_path
- * The session's source_epub_path points directly to the project output folder (e.g., .../projects/Book_Name/output/cleaned.epub)
- * Metadata comes from project.json - if it doesn't exist, there is no metadata
+ * The project metadata for a session, read from the `project.json` beside the
+ * EPUB the session was rendered from.
+ *
+ * `source_epub_path` is written by the render, in the form the machine that ran
+ * it saw — a native Windows path, a `/mnt/<letter>/…` guest path, or a
+ * GUEST-NATIVE staged copy. It usually names the project's own output folder
+ * (`…/projects/Book_Name/output/cleaned.epub`), which is where project.json
+ * sits; a WSL prep's staged copy does not, and that case now says so out loud
+ * instead of returning nothing.
+ *
+ * `project.json` is the single source of this metadata. No project.json, no
+ * metadata — the caller has its own, poorer, session-state branch for that.
  */
-async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | undefined): Promise<ProjectJsonMetadata | null> {
+export async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | undefined): Promise<ProjectJsonMetadata | null> {
   if (!sourceEpubPath) return null;
 
-  // Convert WSL path to Windows if needed
-  let windowsPath = sourceEpubPath;
-  if (sourceEpubPath.startsWith('/mnt/')) {
+  // THE CONVERTER DECIDES WHICH FORM THIS IS, not this call site. A render
+  // writes `source_epub_path` as the machine that ran it saw it: a Windows
+  // path natively, `/mnt/<letter>/…` from the guest off a mounted drive, and a
+  // GUEST-NATIVE `<guest sessions root>/staged-<uuid>.epub` from a WSL prep.
+  // This used to convert only the `/mnt/` form, so the guest-native one went
+  // into `path.dirname` as a Linux string and the session silently lost every
+  // field project.json carries.
+  let windowsPath: string;
+  try {
     windowsPath = wslToWindowsPath(sourceEpubPath);
+  } catch (err) {
+    console.error(
+      `[REASSEMBLY] cannot resolve the session's source EPUB path "${sourceEpubPath}" to a `
+      + `path this machine can read — the session gets no project metadata:`, (err as Error).message);
+    return null;
   }
 
   // Get the project folder (parent of the EPUB this session was rendered from)
@@ -144,7 +164,14 @@ async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | und
     }
 
     return projectJsonMetadata;
-  } catch {
+  } catch (err) {
+    // NOT SILENT. Falling through to the no-metadata branch is how a
+    // reassembled audiobook loses its title, author, series and cover, and the
+    // only visible symptom is the finished file. Say which path was read and
+    // from which session path it was derived, so the two can be compared.
+    console.warn(
+      `[REASSEMBLY] no project metadata at ${projectJsonPath} `
+      + `(derived from the session's source EPUB "${sourceEpubPath}"): ${(err as Error).message}`);
     return null;
   }
 }

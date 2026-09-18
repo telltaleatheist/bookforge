@@ -538,24 +538,44 @@ async function wslSeesDrive(driveLetter: string): Promise<boolean> {
   });
 }
 
+/** Which road a session takes out of the guest. */
+export type CopyOutRoute = 'in-guest' | 'through-wsl-share';
+
 /**
- * COPY A DIRECTORY OUT OF WSL onto a Windows path, choosing the road by what
- * WSL can actually reach.
+ * THE ROAD OUT OF THE GUEST, chosen from the DESTINATION before anything is
+ * copied.
  *
  * The ext4 → /mnt/<letter> copy inside the guest is much faster than reading
  * the session through the \\wsl$ 9p mount, so it is taken exactly when the
  * destination's drive IS mounted in WSL. A destination WSL cannot see — any
- * network drive — is copied by WINDOWS instead: read through \\wsl$, written
- * to the share natively. Nothing is lost on that road: both sides of a
- * network destination cross the wire regardless of who drives the copy.
+ * network drive, and any UNC path, which has no drive letter to mount at all —
+ * is copied by WINDOWS instead: read through \\wsl$, written to the share
+ * natively. Nothing is lost on that road: both sides of a network destination
+ * cross the wire regardless of who drives the copy.
  *
  * This is a ROUTING DECISION on a probed fact, not a fallback — the wrong road
  * fails loudly (the guest's mkdir cannot create /mnt/z), it never substitutes.
+ * Taking it blind cost 2,728 rendered sentences across four scratch rescues
+ * onto the titan library at Z:, which the guest has never had a /mnt entry for.
+ *
+ * The probe is a parameter so the rule can be driven without a guest
+ * (`tools/test-wsl-copy-out-route.js`); production passes `wslSeesDrive`.
+ */
+export async function copyOutRouteFor(
+  destDir: string,
+  guestHasDriveMounted: (driveLetter: string) => Promise<boolean>,
+): Promise<CopyOutRoute> {
+  const drive = /^([A-Za-z]):[\\/]/.exec(destDir);
+  if (drive === null) return 'through-wsl-share';
+  return (await guestHasDriveMounted(drive[1]!)) ? 'in-guest' : 'through-wsl-share';
+}
+
+/**
+ * COPY A DIRECTORY OUT OF WSL onto a Windows path, by the road
+ * `copyOutRouteFor` chose.
  */
 async function copyDirOutOfWsl(sourceUnc: string, destDir: string): Promise<void> {
-  const drive = /^([A-Za-z]):[\\/]/.exec(destDir);
-  const mounted = drive !== null && await wslSeesDrive(drive[1]!);
-  if (!mounted) {
+  if (await copyOutRouteFor(destDir, wslSeesDrive) === 'through-wsl-share') {
     console.log(
       `[PARALLEL-TTS] WSL cannot see the destination drive (no /mnt entry); Windows copies `
       + `through \\\\wsl$ instead: ${sourceUnc} -> ${destDir}`);
@@ -1283,9 +1303,35 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
 }
 
 /**
- * Post-process output after e2a writes directly to the project audiobook folder.
- * Renames VTT to standard name.
+ * THE AUDIOBOOK↔TRANSCRIPT RELATION, and it is the STEM.
+ *
+ * `extname`, never the literal `'.m4b'`: `path.basename(p, '.m4b')` is
+ * case-sensitive, so a `.M4B` — the same audiobook on any volume this app
+ * writes to — would keep its extension in the stem and be filed under a name
+ * no reader looks for.
+ *
+ * TWO NAMING RULES TOUCH A TRANSCRIPT AND THEY ARE NOT THE SAME. This one
+ * names the LOOSE `.vtt` the assembly writes beside the audiobook, which the
+ * embed consumes; `sidecarPathsFor()` (sidecar-binding.ts) names the BOUND
+ * sidecar `<Book>.m4b.vtt` that `regenerateBoundSidecars` writes AFTERWARDS
+ * from the embedded bytes. Every door in this file is looking at the moment
+ * before the embed, so the loose rule is the one that answers here — and it is
+ * asked, never guessed at from a directory listing.
  */
+function transcriptStemOf(m4bPath: string): string {
+  return path.basename(m4bPath, path.extname(m4bPath));
+}
+
+/** The loose transcript beside an audiobook: `<dir>/<stem>.vtt`. */
+export function looseTranscriptFor(m4bPath: string): string {
+  return path.join(path.dirname(m4bPath), `${transcriptStemOf(m4bPath)}.vtt`);
+}
+
+/** The transcript filed in `dir`'s `vtt/` subfolder under the audiobook's stem. */
+export function filedTranscriptFor(dir: string, m4bPath: string): string {
+  return path.join(dir, 'vtt', `${transcriptStemOf(m4bPath)}.vtt`);
+}
+
 /**
  * THIS run's audiobook and its transcript, by path — never "the first .m4b in
  * the folder", which was what this answered until 2026-09-03. With one
@@ -1298,14 +1344,13 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
  * stem-matching sidecar cleanup both find it. It is no longer renamed to a
  * shared `subtitles.vtt`, which two runs in one folder would have fought over.
  */
-async function postProcessOutput(
+export async function postProcessOutput(
   outputDir: string,
   m4bPath: string,
 ): Promise<{ audioPath: string; vttPath?: string }> {
-  const stem = path.basename(m4bPath, path.extname(m4bPath));
-  const beside = path.join(path.dirname(m4bPath), `${stem}.vtt`);
+  const beside = looseTranscriptFor(m4bPath);
   if (fsSync.existsSync(beside)) return { audioPath: m4bPath, vttPath: beside };
-  const inSubfolder = path.join(outputDir, 'vtt', `${stem}.vtt`);
+  const inSubfolder = filedTranscriptFor(outputDir, m4bPath);
   if (fsSync.existsSync(inSubfolder)) {
     await fs.rename(inSubfolder, beside);
     return { audioPath: m4bPath, vttPath: beside };
@@ -1548,7 +1593,7 @@ export function sessionHomeFor(
       guestRoot,
       sessionDir,
       // Convert to Windows UNC path for reading from Node.js
-      sessionDirForReading: wslPathToWindows(sessionDir),
+      sessionDirForReading: wslToWindowsPath(sessionDir),
     };
   }
   // Native session dir — the "Narrator scratch folder" setting, or <library>/tmp.
@@ -2282,7 +2327,7 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { narratorScratchRoot, shouldUseWsl2ForOrpheus, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslPathToWindows, wslToWindowsPath, impliedExportDirOf } from './narrator-paths';
+import { narratorScratchRoot, shouldUseWsl2ForOrpheus, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf } from './narrator-paths';
 
 export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
@@ -2445,7 +2490,7 @@ function toReadablePath(p: string): string {
   // Only convert on Windows when it looks like a WSL path
   if (process.platform === 'win32' && p && p.startsWith('/') && !p.startsWith('/mnt/')) {
     // This is a native WSL path, convert to Windows UNC
-    return wslPathToWindows(p);
+    return wslToWindowsPath(p);
   }
   return p;
 }
@@ -3385,7 +3430,7 @@ export async function prepareSession(
     // dir immediately (prepare_dirs), so the staged file is deleted again the
     // moment prep settles — see the finally below.
     const stagedWsl = `${home.guestRoot}/staged-${sessionId}${path.extname(epubPath)}`;
-    stagedEbookUnc = wslPathToWindows(stagedWsl);
+    stagedEbookUnc = wslToWindowsPath(stagedWsl);
     await fs.mkdir(path.dirname(stagedEbookUnc), { recursive: true });
     await fs.copyFile(epubPath, stagedEbookUnc);
     ebookArgPath = stagedWsl;
@@ -5498,51 +5543,43 @@ async function applyM4bMetadata(
 }
 
 /**
- * Move VTT file to a vtt subfolder, renaming to match the M4B filename
- * Searches for VTT files in the original M4B's directory
+ * File a renamed audiobook's transcript under its new name, in the `vtt/`
+ * subfolder beside it — where `postProcessOutput` reads it back.
+ *
+ * DERIVED, NEVER SEARCHED. Until 2026-09-18 this listed every `.vtt` in the
+ * audiobook's directory, split both filenames into words, took the first whose
+ * words overlapped the audiobook's by half or more, and `unlink`ed it. An
+ * output folder now keeps every render and any human recording filed there, so
+ * two books of one series share well over half their title words: the wrong
+ * transcript was moved and the right one destroyed. (Its comment cited
+ * ebook2audiobook's underscore habit, which has had no code behind it since
+ * Phase 6.) The relation is the STEM — `looseTranscriptFor` — and it is the
+ * same rule the reader uses, so the two cannot disagree.
+ *
+ * A transcript that is not where the stem says is REPORTED AND LEFT ALONE: an
+ * audiobook with no transcript is a legitimate state, and deleting a file we
+ * cannot name is exactly how the scan lost one.
  */
-async function moveVttFile(originalM4bPath: string, newM4bPath: string): Promise<void> {
+export async function moveVttFile(originalM4bPath: string, newM4bPath: string): Promise<void> {
+  const originalVttPath = looseTranscriptFor(originalM4bPath);
+  if (!fsSync.existsSync(originalVttPath)) {
+    console.warn(
+      `[PARALLEL-TTS] No transcript beside the audiobook at ${originalVttPath} — `
+      + `nothing filed under the new name ${path.basename(newM4bPath)}`);
+    return;
+  }
+
+  const newVttPath = filedTranscriptFor(path.dirname(newM4bPath), newM4bPath);
   try {
-    const originalDir = path.dirname(originalM4bPath);
-    const originalBasename = path.basename(originalM4bPath, '.m4b');
-    const newDir = path.dirname(newM4bPath);
-    const newBasename = path.basename(newM4bPath, '.m4b');
-
-    // VTT files go in a 'vtt' subfolder
-    const vttDir = path.join(newDir, 'vtt');
-
-    // Look for VTT file with similar name in the original directory
-    // ebook2audiobook often uses underscores instead of spaces
-    const entries = await fs.readdir(originalDir);
-    const vttFiles = entries.filter(f => f.toLowerCase().endsWith('.vtt'));
-
-    for (const vttFile of vttFiles) {
-      const vttBasename = path.basename(vttFile, '.vtt');
-      // Check if the VTT filename is related to the M4B (contains similar words)
-      const originalWords = originalBasename.toLowerCase().replace(/[_\-.]/g, ' ').split(' ').filter(w => w.length > 2);
-      const vttWords = vttBasename.toLowerCase().replace(/[_\-.]/g, ' ').split(' ').filter(w => w.length > 2);
-
-      // If most words match, it's likely the same book's VTT
-      const matchingWords = originalWords.filter(w => vttWords.includes(w));
-      const matchRatio = matchingWords.length / Math.max(originalWords.length, 1);
-
-      if (matchRatio >= 0.5 || vttBasename.includes(originalBasename.replace(/ /g, '_'))) {
-        const originalVttPath = path.join(originalDir, vttFile);
-
-        // Create vtt subfolder if it doesn't exist
-        await fs.mkdir(vttDir, { recursive: true });
-
-        const newVttPath = path.join(vttDir, `${newBasename}.vtt`);
-
-        console.log(`[PARALLEL-TTS] Moving VTT file to vtt folder: ${vttFile} -> vtt/${path.basename(newVttPath)}`);
-
-        await fs.copyFile(originalVttPath, newVttPath);
-        await fs.unlink(originalVttPath);
-        break; // Only move one VTT file
-      }
-    }
+    await fs.mkdir(path.dirname(newVttPath), { recursive: true });
+    await fs.copyFile(originalVttPath, newVttPath);
+    await fs.unlink(originalVttPath);
+    console.log(`[PARALLEL-TTS] Filed the transcript under the new name: ${originalVttPath} -> ${newVttPath}`);
   } catch (err) {
-    console.warn('[PARALLEL-TTS] Failed to move VTT file (non-fatal):', err);
+    // The audiobook has already moved; a transcript that could not follow it is
+    // a loss the user must see, but not a reason to fail the render.
+    console.error(
+      `[PARALLEL-TTS] Failed to file the transcript ${originalVttPath} as ${newVttPath}:`, err);
   }
 }
 
@@ -8225,7 +8262,7 @@ function getSessionTmpDirs(): string[] {
   if (os.platform() === 'win32' && shouldUseWsl2ForOrpheus()) {
     if (isWslAliveCached()) {
       // Convert WSL path to Windows UNC so Node.js can read it
-      const uncTmpDir = wslPathToWindows(getWslSessionsRoot());
+      const uncTmpDir = wslToWindowsPath(getWslSessionsRoot());
       // Only add if it's a different path than the native one
       if (uncTmpDir !== nativeTmp) {
         dirs.push(uncTmpDir);
