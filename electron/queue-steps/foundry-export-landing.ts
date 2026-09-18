@@ -30,7 +30,7 @@
 import * as path from 'node:path';
 import * as manifestService from '../manifest-service';
 import {
-  awaitFoundryLandingRecorded, awaitImpliedExport, findLandedExport,
+  awaitFoundryLandingRecorded, awaitImpliedExport, findLandedExport, reorderImpliedExport,
 } from '../foundry-landing-wait';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
@@ -53,6 +53,19 @@ export interface FoundryExportLandingConfig {
    * that row is done, so the whole wait is "is the file there".
    */
   unfiledPath?: string;
+  /**
+   * FOUNDRY's project directory — not `bookDir`, which is the library side of
+   * the mapping. Written at the press so a resumed row can order the implied
+   * export again (`reorderImpliedExport`), and absent on every row composed
+   * before that could happen.
+   */
+  foundryProjectDir?: string;
+  /**
+   * The ledger step the implied export was cast from — `nodeId` at the press,
+   * which is the step Narrate was pressed on. Distinct from `forStep`, which
+   * belongs to the text-pass row this landing hangs under.
+   */
+  orderedFromStep?: string;
 }
 
 function refuseMissing(config: FoundryExportLandingConfig): Error {
@@ -104,8 +117,46 @@ export const foundryExportLandingStep: StepModule = {
        * to tell somebody whose narration has no book to read.
        */
       ctx.report({ message: `Waiting for ${path.basename(config.unfiledPath)} to be written` });
-      const held = await awaitImpliedExport(config.unfiledPath, ctx.signal);
+      let held = await awaitImpliedExport(config.unfiledPath, ctx.signal);
       const fs = await import('node:fs');
+      /*
+       * NOBODY IS HOLDING IT, SO ORDER IT AGAIN — the restart case.
+       *
+       * `'unheld'` means no promise in THIS process, which is what an app
+       * restart between the press and the text pass landing leaves behind: the
+       * row is persisted and its promise was not. Until 2026-09-18 that was a
+       * refusal, and it arrived AFTER the cleanup the narration was chained
+       * behind had already run — the whole expensive half paid for, and a
+       * sentence asking the person to press the same button again.
+       *
+       * An implied export is arithmetic over a bank already on disk and a pure
+       * function of a ledger step that has not moved, so remaking it is seconds
+       * and cannot be stale. And nothing else can be making it: an export
+       * ordered by the previous process died with it, `exportEpubFromStep`
+       * ending in Foundry's own in-memory queue. This is the one condition
+       * under which a second order cannot duplicate a first.
+       *
+       * ONLY WITH BOTH FACTS THE ORDER NEEDS. A row composed before they were
+       * written down carries neither, and this refuses in the sentence it always
+       * did rather than guessing at a project directory.
+       */
+      if (held === 'unheld' && !fs.existsSync(config.unfiledPath)
+          && config.foundryProjectDir !== undefined && config.orderedFromStep !== undefined) {
+        console.log(
+          `[foundry-export-landing] ${path.basename(config.unfiledPath)} was ordered in a run that `
+          + 'has ended, so it is being ordered again from step '
+          + `${config.orderedFromStep}.`);
+        ctx.report({
+          message: `Making ${path.basename(config.unfiledPath)} again — the run that ordered it ended`,
+        });
+        // Its rejections are Foundry's own sentences and are not caught here:
+        // the mount's rule is that they are shown, never paraphrased.
+        reorderImpliedExport(
+          config.foundryProjectDir, config.orderedFromStep, config.unfiledPath);
+        // The re-order registered its promise under the same path, so this is the
+        // same wait, the same abort path and the same sentences as the first.
+        held = await awaitImpliedExport(config.unfiledPath, ctx.signal);
+      }
       if (!fs.existsSync(config.unfiledPath)) {
         throw new Error(held === 'unheld'
           ? `The export this narration reads (${config.unfiledPath}) is not on disk, and nothing in `

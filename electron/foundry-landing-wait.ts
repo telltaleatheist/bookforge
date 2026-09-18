@@ -145,6 +145,85 @@ export function noteImpliedExportOrdered(toPath: string, landing: Promise<unknow
 }
 
 /**
+ * ORDER THE IMPLIED EXPORT AGAIN — the answer to `'unheld'` that is not a
+ * refusal.
+ *
+ * ── The defect this closes ──────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-18: a cleanup finished and the narration chained behind it
+ * failed with *"the press that ordered it was in an earlier run, and an implied
+ * export does not survive one. Press Narrate on the step again."* He had pressed
+ * Narrate, and the app was restarted between that press and the cleanup
+ * finishing — for a vendored-Foundry swap, as it happens, which is a thing that
+ * will keep happening.
+ *
+ * THE ROW SURVIVED AND ITS PRECONDITION DID NOT. `foundry-export-landing` is a
+ * persisted queue row; the promise above is in-memory by design and dies with
+ * the process. So the chain resumed into a state it could not satisfy and could
+ * only apologise for — after the expensive half, the cleanup, had already been
+ * paid for.
+ *
+ * ── Why re-ordering is the honest answer and not a paper-over ───────────────
+ *
+ * An implied export is ARITHMETIC over a bank already on disk (the mount's own
+ * words for `exportEpubFromStep`: *"not held, not a model run … awaiting it is
+ * seconds"*). Nothing is lost by making it twice and nothing is stale about
+ * making it now: it is a pure function of a ledger step that has not moved.
+ *
+ * AND NOTHING ELSE CAN BE MAKING IT. `'unheld'` means no promise in THIS
+ * process, and an export ordered by a previous one died with that process —
+ * `exportEpubFromStep` ends in Foundry's own in-memory `enqueueHere`, so there
+ * is no second queue anywhere that could still be working on it. This is the
+ * one condition under which a second order cannot duplicate a first, which is
+ * exactly the failure the implied-export wave was built to avoid (Owen,
+ * 2026-09-08: three presses, six empty `implied-*` folders).
+ *
+ * ── The seam, and why it is a registered door ───────────────────────────────
+ *
+ * The step cannot reach the mount: `main.ts` imports the step registry, so a
+ * step importing main would close the circle. Main registers this once, beside
+ * the mount it closes over, and a step asks. Unset is a refusal in a sentence
+ * rather than a TypeError — the same posture the optional mount methods take.
+ */
+type ImpliedExportOrderer =
+  (projectDir: string, stepId: string, to: string) => Promise<unknown>;
+
+let orderImpliedExportVia: ImpliedExportOrderer | null = null;
+
+/** Main's door onto `exportEpubFromStep`, registered once beside the mount. */
+export function setImpliedExportOrderer(order: ImpliedExportOrderer): void {
+  orderImpliedExportVia = order;
+}
+
+/**
+ * Order it, and HOLD THE PROMISE under the same path the first order used, so
+ * the caller waits on it through `awaitImpliedExport` exactly as it would have
+ * waited on the original — one wait, one abort path, one set of sentences.
+ */
+export function reorderImpliedExport(
+  projectDir: string,
+  stepId: string,
+  to: string,
+): Promise<unknown> {
+  /*
+   * THROWN, NOT REJECTED. The caller hands the returned promise to
+   * `noteImpliedExportOrdered` and then waits through `awaitImpliedExport`, so a
+   * REJECTED promise here would be held by nobody: the wait would find nothing
+   * registered, answer `'unheld'` a second time, and the caller would report the
+   * generic "nothing is making it" sentence while this one floated off as an
+   * unhandled rejection. A throw reaches the caller's own `await` directly.
+   */
+  if (orderImpliedExportVia === null) {
+    throw new Error(
+      'The book this narration reads was ordered in an earlier run and nothing in this one can '
+      + 'order it again: Foundry is not mounted in this process. Press Narrate on the step again.');
+  }
+  const landing = orderImpliedExportVia(projectDir, stepId, to);
+  noteImpliedExportOrdered(to, landing);
+  return landing;
+}
+
+/**
  * Wait for the implied export at `toPath` to settle, or return `'unheld'` at
  * once when nobody in this process ordered it — which is what a restart leaves
  * behind, and is a fact the caller must be told rather than have smoothed over.

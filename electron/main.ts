@@ -87,7 +87,8 @@ import { addVariant, importAudiobookProject, deleteProjectOutput, saveVariantMet
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
 import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, foundryStepForExport, sweepFoundryExportTrays } from './foundry-export-sweep';
-import { noteFoundryLandingAnnounced, noteImpliedExportOrdered } from './foundry-landing-wait';
+import { noteFoundryLandingAnnounced, noteImpliedExportOrdered, setImpliedExportOrderer }
+  from './foundry-landing-wait';
 // How a Foundry project becomes a book of ours — BOTH doors. The live import
 // announcement below is a three-line wrapper around the same act the manual
 // "Adopt a Foundry project" door performs, so the two cannot produce different
@@ -834,6 +835,19 @@ function loadFoundryMount(): FoundryMountModule {
 }
 
 const foundryMount: FoundryMountModule = loadFoundryMount();
+
+/*
+ * THE DOOR A RESUMED LANDING STEP ORDERS ITS EXPORT THROUGH.
+ *
+ * Registered here, beside the mount it closes over, because the step cannot
+ * reach `foundryMount` itself: this file imports the step registry, so a step
+ * importing this one would close the circle. See `reorderImpliedExport`
+ * (electron/foundry-landing-wait.ts) for what it is for — an implied export is
+ * arithmetic over a bank on disk, and a persisted row whose in-memory promise
+ * died with a restart should remake it rather than apologise for it.
+ */
+setImpliedExportOrderer((projectDir, stepId, to) =>
+  foundryMount.exportEpubFromStep(projectDir, stepId, { to }));
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -2229,7 +2243,20 @@ async function invokeFoundryNarrate(
         config: {
           bookDir, projectKey: key, fileName,
           ...(row.forStep === undefined ? {} : { forStep: row.forStep }),
-          ...(implied ? { unfiledPath: impliedTo } : {}),
+          /*
+           * WHAT IT WOULD TAKE TO ORDER THIS EXPORT AGAIN, written down at the
+           * press because this is the only moment both facts are in hand. The
+           * ledger step is `nodeId` — the step the person pressed Narrate on,
+           * and the one `exportEpubFromStep` was just called with — and NOT
+           * `row.forStep`, which belongs to the text-pass row this landing hangs
+           * under and is a different step whenever the two differ.
+           *
+           * A row persisted before this field existed simply has neither, and
+           * the step then refuses in the sentence it always did rather than
+           * guessing at a project directory.
+           */
+          ...(implied ? { unfiledPath: impliedTo, foundryProjectDir: projectDir,
+                          orderedFromStep: nodeId } : {}),
         },
       }, { deferPump: true });
       // Filed under the parent chain: an implied export is no version, and a

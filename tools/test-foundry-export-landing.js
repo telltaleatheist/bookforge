@@ -188,6 +188,121 @@ const tick = () => new Promise((r) => setImmediate(r));
     }
   });
 
+  // ── A RESUMED ROW ORDERS ITS EXPORT AGAIN (Owen, 2026-09-18) ──────────────
+  //
+  // The row is persisted and the promise that backed it is not, so an app
+  // restart between the press and the text pass landing used to strand the
+  // chain AFTER the cleanup had already been paid for. These pin the four
+  // things that make re-ordering safe rather than merely convenient.
+
+  await test('NO ORDERER REGISTERED: a sentence, not a TypeError', async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-reorder-none-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    const ctx = (config) => ({
+      step: { config }, stepId: 'step_x', job: {}, signal: new AbortController().signal,
+      report: () => {}, input: null,
+    });
+    await assert.rejects(
+      landingStep.run(ctx({
+        bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub,
+        foundryProjectDir: '/f/projects/k', orderedFromStep: 'node_1',
+      })),
+      /Foundry is not mounted in this process/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('A RESUMED ROW RE-ORDERS the implied export and narrates from it', async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-reorder-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    const asked = [];
+    landing.setImpliedExportOrderer(async (projectDir, stepId, to) => {
+      asked.push({ projectDir, stepId, to });
+      fs.writeFileSync(to, 'EPUB');
+      return { path: to, unfiled: true };
+    });
+    const reports = [];
+    const out = await landingStep.run({
+      step: { config: {
+        bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub,
+        foundryProjectDir: '/f/projects/k', orderedFromStep: 'node_1', forStep: 's1',
+      } },
+      stepId: 'step_x', job: {}, signal: new AbortController().signal,
+      report: (r) => reports.push(r), input: null,
+    });
+    assert.strictEqual(out.kind, 'epub');
+    assert.strictEqual(out.path, epub);
+    // Ordered ONCE, from FOUNDRY's project dir and the step the press was on —
+    // never `forStep`, which belongs to the row this landing hangs under.
+    assert.strictEqual(asked.length, 1);
+    assert.deepStrictEqual(asked[0], { projectDir: '/f/projects/k', stepId: 'node_1', to: epub });
+    assert.ok(reports.some((r) => /ordered it ended/.test(r.message || '')),
+      'the person is told the book is being made again, not left watching a silent wait');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('A FILE ALREADY THERE IS NEVER RE-ORDERED', async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-reorder-have-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    fs.writeFileSync(epub, 'EPUB');
+    let ordered = 0;
+    landing.setImpliedExportOrderer(async () => { ordered += 1; return {}; });
+    const out = await landingStep.run({
+      step: { config: {
+        bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub,
+        foundryProjectDir: '/f/projects/k', orderedFromStep: 'node_1',
+      } },
+      stepId: 'step_x', job: {}, signal: new AbortController().signal,
+      report: () => {}, input: null,
+    });
+    assert.strictEqual(out.path, epub);
+    assert.strictEqual(ordered, 0, 'an export that is on disk is read, never made a second time');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('A ROW FROM BEFORE THE FIX still refuses in its own sentence', async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-reorder-old-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    let ordered = 0;
+    landing.setImpliedExportOrderer(async () => { ordered += 1; return {}; });
+    // No foundryProjectDir / orderedFromStep: nothing to order FROM, so it says
+    // so rather than guessing at a project directory.
+    await assert.rejects(
+      landingStep.run({
+        step: { config: {
+          bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub,
+        } },
+        stepId: 'step_x', job: {}, signal: new AbortController().signal,
+        report: () => {}, input: null,
+      }),
+      /the press that ordered it was in an earlier run/);
+    assert.strictEqual(ordered, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test("FOUNDRY'S REFUSAL IS SURFACED VERBATIM, never paraphrased", async () => {
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-reorder-refuse-'));
+    const epub = path.join(dir, 'Book. Author. (2001).epub');
+    landing.setImpliedExportOrderer(async () => {
+      throw new Error('The changes recorded for this book could not be replayed onto it: op 7.');
+    });
+    await assert.rejects(
+      landingStep.run({
+        step: { config: {
+          bookDir: dir, projectKey: 'k', fileName: path.basename(epub), unfiledPath: epub,
+          foundryProjectDir: '/f/projects/k', orderedFromStep: 'node_1',
+        } },
+        stepId: 'step_x', job: {}, signal: new AbortController().signal,
+        report: () => {}, input: null,
+      }),
+      /could not be replayed onto it: op 7\./);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   console.log(failures.length === 0
     ? `\nfoundry-export-landing: ${passed}/${passed} passed`
     : `\nFAILED  foundry-export-landing: ${passed} passed, ${failures.length} failed`);
