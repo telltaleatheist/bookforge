@@ -53,9 +53,9 @@ function voice(id, { display = id, loadable = true, reason = null, needsReferenc
 }
 
 /**
- * A transport failure the SDK's own type, so `describeCrucibleRefusal` turns it
- * into the sentence a render would have given. A plain Error is a DIFFERENT
- * case and has its own check above.
+ * A transport failure in the SDK's own type — the one refusal kind the
+ * inventory answers in its OWN words rather than the render's. A plain Error is
+ * a DIFFERENT case and has its own check below.
  */
 function unreachable(message) {
   return new sdk.CrucibleUnreachable('http://scripted:7100', message);
@@ -93,6 +93,48 @@ check('an unreachable server is NOT read as a server without the voice', async (
   assert.strictEqual(mac.state, 'unreachable');
   assert.match(mac.reason, /M1 Ultra/,
     'the sentence names the server, so the picker says what the render would have said');
+});
+
+check('a down server is described by the INVENTORY, never in the render\'s words', async () => {
+  /*
+   * The defect, 2026-09-18. This row is drawn by the narration modal's
+   * `voiceServersMissing` list — a picker, open before any book has been sent
+   * anywhere — and it carried `describeCrucibleRefusal`'s render sentence:
+   * "A render is not retried here - start the server and queue the book again,
+   * or pick another one." Nothing was rendering, nothing had been retried, and
+   * Owen read it as a render that had failed.
+   *
+   * What the sentence must say instead is the consequence AT THIS MOMENT: no
+   * voices from that machine, and no book goes there until it answers.
+   */
+  const inventory = await scripted({
+    '3090 Ti': [voice('deathstalker')],
+    'M1 Ultra': unreachable('connect ECONNREFUSED 192.168.68.79:7100'),
+  });
+  const mac = inventory.servers.find((s) => s.server === 'M1 Ultra');
+  assert.strictEqual(mac.state, 'unreachable');
+  assert.ok(!/A render is not retried/.test(mac.reason),
+    'the render\'s sentence must not be read out by a picker: ' + mac.reason);
+  assert.ok(!/queue the book again/.test(mac.reason),
+    'nor its instruction, which is about a book that has not been queued yet: ' + mac.reason);
+  assert.match(mac.reason, /M1 Ultra/, 'it still names the machine');
+  assert.match(mac.reason, /ECONNREFUSED 192\.168\.68\.79:7100/,
+    "and still carries the transport's own detail, which is the only actionable half");
+  assert.match(mac.reason, /not answering/, 'and says what is actually true of it');
+});
+
+check('an AUTH refusal keeps the shared sentence — a token is broken for every door', async () => {
+  // Only the unreachable kind gets the inventory's own words. A bad token, a
+  // version mismatch or an address that is not a crucible are misconfigurations
+  // the operator must fix before ANY door works, so there is nothing
+  // picker-specific to add and a second wording would be a second thing to keep
+  // in step with the SDK.
+  const bad = new sdk.CrucibleAuthError('http://scripted:7100', 401, 'bad token');
+  const inventory = await scripted({ '3090 Ti': [voice('deathstalker')], 'M1 Ultra': bad });
+  const mac = inventory.servers.find((s) => s.server === 'M1 Ultra');
+  assert.strictEqual(mac.state, 'unreachable');
+  assert.match(mac.reason, /refused the token/,
+    'the SDK vocabulary, unchanged, naming the repair: ' + mac.reason);
 });
 
 check('a NON-Crucible exception is rethrown, not filed as the server being down', async () => {

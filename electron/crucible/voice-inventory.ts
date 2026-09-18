@@ -53,6 +53,7 @@
  * not vanish from the list they use to reason about their own hardware.
  */
 
+import { CrucibleUnreachable } from '@crucible/client';
 import type { CrucibleClient, VoiceInfo } from '@crucible/client';
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
 import { readRouting } from './routing';
@@ -108,6 +109,11 @@ export interface VoiceInventory {
  * did not answer this question is reported as not having answered it, which is
  * the fact the caller needs, rather than being asked again until it agrees.
  *
+ * A SERVER THAT DID NOT ANSWER IS DESCRIBED IN THIS MODULE'S VOCABULARY and not
+ * in the render's — see the catch below. Nothing is rendering when this is
+ * asked, so a sentence about a render that will not be retried names a failure
+ * that has not happened.
+ *
  * BOTH INPUTS ARE PARAMETERS WITH THE REAL DOORS AS THEIR DEFAULTS, which is
  * the discipline `Routing` already states about itself: *"This class never asks
  * the registry itself, so a keeper drives it with a scripted server set and the
@@ -130,10 +136,9 @@ export async function readVoiceInventory(
        * A SERVER'S REFUSAL BECOMES A STATE; OUR OWN BUG DOES NOT.
        *
        * `describeCrucibleRefusal` turns each of the SDK's error types into a
-       * sentence naming the server — the same sentence the render would have
-       * given — and returns anything else UNCHANGED, on its own stated grounds:
-       * *"an unexpected exception is not a refusal and dressing it as one loses
-       * where it came from."*
+       * sentence naming the server and returns anything else UNCHANGED, on its
+       * own stated grounds: *"an unexpected exception is not a refusal and
+       * dressing it as one loses where it came from."*
        *
        * So the two are kept apart here. A `CrucibleRenderRefused` is a fact
        * about that machine and belongs in its row. Anything else is a defect in
@@ -141,7 +146,40 @@ export async function readVoiceInventory(
        * bug in front of the operator wearing the Mac's name, which is the
        * name-the-wrong-cause shape this module exists to avoid. It is rethrown:
        * the picker fails loudly rather than quietly listing fewer machines.
+       *
+       * ── ...BUT THE INVENTORY SPEAKS IN ITS OWN WORDS ─────────────────────
+       *
+       * `describeCrucibleRefusal` is the RENDER's vocabulary, and for an
+       * unreachable server it ends *"A render is not retried here — start the
+       * server and queue the book again, or pick another one."* That sentence
+       * is true of a render. Here it is read at a moment when nothing is
+       * rendering — the narration modal listing which machines answered before
+       * a book has been sent anywhere — and an operator who opened a picker was
+       * told a render had failed. Owen read it as fatal, 2026-09-18.
+       *
+       * So the ONE kind this module has its own thing to say about is answered
+       * from the SDK error's own fields instead: a machine that is not
+       * answering contributes no voices and receives no book, which is the
+       * whole consequence at this moment and is not a failure of anything. The
+       * other kinds — auth, version, not-a-crucible, protocol — keep the shared
+       * sentence: each of those is a real misconfiguration the operator has to
+       * fix before ANY door works, and there is nothing picker-specific to add.
        */
+      /*
+       * IT DOES NOT SAY THE NAME. Its one reader is the picker's `missing[].why`,
+       * and the modal draws that as `{{ m.server }} — {{ m.why }}` — so a reason
+       * opening with the server's own name prints it twice. The shared sentence
+       * does exactly that today (`"<name>" (<url>) could not be reached…`), which
+       * is half of why the line read as a wall of error rather than a status.
+       */
+      if (err instanceof CrucibleUnreachable) {
+        return {
+          server: row.name,
+          state: 'unreachable',
+          reason: 'not answering, so its voices are not listed and no book is sent there until '
+            + `it answers. ${err.message}`,
+        };
+      }
       const described = describeCrucibleRefusal(err, row.name);
       if (!(described instanceof CrucibleRenderRefused)) throw err;
       return { server: row.name, state: 'unreachable', reason: described.message };
