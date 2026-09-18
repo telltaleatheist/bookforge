@@ -12,7 +12,9 @@
  *   - Low memory: a small fixed concurrency, one WAV held at a time per worker,
  *     released after it's written to render/sentences/<i>.wav.
  *   - Resumable: render/state.json records coverage + durations; a restart skips
- *     already-covered sentences.
+ *     already-covered sentences. Beside it, render/failures.jsonl records every
+ *     failed attempt and every settlement, because a sentence the engine could
+ *     not render is the one thing a finished book cannot say for itself.
  *   - Completion: concat the sentence WAVs → AAC m4b with chapter marks + a synced
  *     VTT (from per-sentence durations) → registerAudiobookOutput() so it appears on
  *     the audiobook page.
@@ -63,9 +65,30 @@ interface RenderState {
   engine: string;
   /** The sample rate the engine reported for THIS book's sentences, recorded as
    *  each one is written. Absent until the first sentence renders, which is the
-   *  only honest answer before then — see the silence pad in `worker`. */
+   *  only honest answer before then. */
   sampleRate?: number;
+  /** Failed ATTEMPTS and settlements recorded in `failures.jsonl` so far. The
+   *  file is the record; this is its count, written by the same append, so the
+   *  reader's poll can say "3 failures, here is where they are" without reading
+   *  a growing file on every tick. */
+  failures: number;
   updatedAt: number;
+}
+
+/**
+ * One attempt's audio, kept until the sentence settles.
+ *
+ * An attempt that PRODUCED audio is a candidate even when the engine called it
+ * a failure; an attempt that produced nothing — an error, a throw, or a chunk
+ * with no samples in it — is not, because there is nothing to file. `wav` is
+ * the finished file, built once here so filing the winner is a write and
+ * nothing else, and `seconds` is what that file measures.
+ */
+interface SentenceTake {
+  attempt: number;
+  wav: Buffer;
+  seconds: number;
+  sampleRate: number;
 }
 
 interface Job {
@@ -93,13 +116,27 @@ interface Job {
    *  than racing it — see `maybePersist`. */
   persisting: Promise<void>;
   /** Per-sentence attempt counts — a sentence gets a few attempts before the
-   *  silence placeholder, so one flaky generation doesn't punch a hole in the
-   *  book. */
+   *  job settles it, so one flaky generation doesn't punch a hole in the book. */
   retries: Map<number, number>;
+  /** Sentence index → the takes its failed attempts produced, held until the
+   *  sentence settles (Owen, 2026-09-18: "let's just use the best version of it
+   *  if it fails 3 times"). Bounded by ATTEMPTS_PER_SENTENCE per sentence and
+   *  dropped the moment one is filed, so the "one WAV at a time per worker"
+   *  budget in this file's header still holds. */
+  candidates: Map<number, SentenceTake[]>;
+  /** Sentences that used up every attempt with nothing filed, and why. THE BOOK
+   *  IS NOT DONE WHILE THIS IS NON-EMPTY: a sentence with no audio is a hole,
+   *  and until 2026-09-18 it was filled with 0.3 s of silence and reported as
+   *  rendered. `nextIndex` skips these so the loop finishes the rest of the
+   *  book rather than retrying them forever. */
+  unrenderable: Map<number, string>;
+  /** The failures.jsonl append in flight, so the next one queues behind it —
+   *  `width` workers share one file. See `recordFailure`. */
+  recording: Promise<void>;
   /** Consecutive SENTENCES that used up every attempt, with no sentence
    *  rendering in between. A run of those means the ENGINE is broken (model not
-   *  loaded, worker died), not the text — abort instead of "rendering" the rest
-   *  of the book as silence.
+   *  loaded, worker died), not the text — abort instead of walking the whole
+   *  book to collect the same failure once per sentence.
    *
    *  It counts exhausted sentences and not failed attempts, which is the half
    *  that was missing: until 2026-09-18 every attempt bumped it and the branch
@@ -131,6 +168,11 @@ function renderDir(projectId: string): string { return path.join(getProjectPath(
 function sentencesDir(projectId: string): string { return path.join(renderDir(projectId), 'sentences'); }
 function planPath(projectId: string): string { return path.join(renderDir(projectId), 'plan.json'); }
 function statePath(projectId: string): string { return path.join(renderDir(projectId), 'state.json'); }
+/** Every failed attempt and every settlement, one JSON object per line, beside
+ *  state.json. Owen, 2026-09-18: "record what failed and when so we can review
+ *  later" — before this the only trace of a sentence the engine could not
+ *  render was a console line in a window nobody had open. */
+function failuresPath(projectId: string): string { return path.join(renderDir(projectId), 'failures.jsonl'); }
 function sentenceFile(projectId: string, i: number): string { return path.join(sentencesDir(projectId), `${i}.wav`); }
 
 /**
@@ -146,13 +188,110 @@ function sentenceFile(projectId: string, i: number): string { return path.join(s
  * because a guessed rate is inaudible as an error and audible as pitch.
  *
  * Exported so `tools/test-book-render-wav.js` can put a known payload through
- * the real path and read the header back off disk; the service's own two
- * callers are the render loops below.
+ * the real path and read the header back off disk; the service's own caller is
+ * `renderFirst` below. The wide loop writes a take it has already built and
+ * measured (`fileTake`), because a take that might be KEPT has to exist as
+ * bytes before anyone knows whether it will be filed.
  */
 export async function writeSentenceWav(file: string, audio: AudioChunk): Promise<Buffer> {
-  const wav = pcm16Wav(Buffer.from(audio.data, 'base64'), audio.sampleRate);
+  const wav = sentenceWav(audio);
   await fs.writeFile(file, wav);
   return wav;
+}
+
+/** The finished file an engine chunk makes, WITHOUT writing it — the half of
+ *  `writeSentenceWav` a held candidate needs, so a take that is kept and a take
+ *  that is filed are the same bytes built by the same builder. */
+function sentenceWav(audio: AudioChunk): Buffer {
+  return pcm16Wav(Buffer.from(audio.data, 'base64'), audio.sampleRate);
+}
+
+/**
+ * The TAKE an engine result carries, or null when it carried no sound.
+ *
+ * "No sound" is three shapes and they are all one answer here: no chunk at all,
+ * a chunk with no sample rate (`pcm16Wav` refuses one by name and there is no
+ * rate to guess — a wrong one is audible as pitch), and a chunk whose payload
+ * holds less than one 16-bit sample. The third is why this exists: until
+ * 2026-09-18 `result.success && result.audio` filed an empty payload as a
+ * rendered sentence, which is a 44-byte header, a covered coverage bit and a
+ * hole in the book that nothing measures.
+ */
+function takeFrom(audio: AudioChunk | undefined, attempt: number): SentenceTake | null {
+  if (audio === undefined || audio === null) return null;
+  if (typeof audio.sampleRate !== 'number' || !(audio.sampleRate > 0)) return null;
+  if (typeof audio.data !== 'string' || audio.data.length === 0) return null;
+  const pcm = Buffer.from(audio.data, 'base64');
+  if (pcm.length < 2) return null;
+  const wav = pcm16Wav(pcm, audio.sampleRate);
+  return { attempt, wav, seconds: audio.duration || pcm16WavSeconds(wav), sampleRate: audio.sampleRate };
+}
+
+/**
+ * HOW LONG THIS TEXT SHOULD TAKE TO READ, in seconds — `chars ÷ pace`, which is
+ * narrator's own arithmetic read backwards.
+ *
+ * narrator judges a take by its characters per second against the pace the
+ * guard is centred on (`python/narrator/engine/higgs/truncation.py`, `check()`
+ * and `PaceTracker`); `chars / pace` is the duration that lands exactly on that
+ * centre. There is no default pace here: an unmeasured voice is refused by the
+ * caller, by name, because a guessed reading rate picks a take for reasons
+ * nobody measured.
+ */
+export function expectedSentenceSeconds(chars: number, paceCharsPerSec: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) {
+    throw new Error(`expectedSentenceSeconds: ${chars} is not a number of characters`);
+  }
+  if (!Number.isFinite(paceCharsPerSec) || paceCharsPerSec <= 0) {
+    throw new Error(`expectedSentenceSeconds: ${paceCharsPerSec} is not a pace in characters per second`);
+  }
+  return chars / paceCharsPerSec;
+}
+
+/**
+ * THE BEST OF A SENTENCE'S TAKES, and there is one criterion.
+ *
+ * Owen, 2026-09-18: *"Let's just use the best version of it if it fails 3
+ * times."* Best is the take whose DURATION is closest to what the text should
+ * take to read — the same question narrator answers at the bottom of its length
+ * ladder (`truncation.py`, `_LadderTask._accept`: "the take closest to the
+ * expected length ships"), and the same arithmetic. narrator measures the
+ * distance in LOG space, on chars per second; with `chars` fixed for one
+ * sentence `|log(chars/seconds) − log(chars/expected)|` is
+ * `|log(expected) − log(seconds)|`, so comparing durations that way orders the
+ * takes exactly as narrator orders them. It is not the same order a plain
+ * difference in seconds gives: against a 4 s expectation a 2 s take and an 8 s
+ * take are both half-or-double wrong, and seconds alone would call the short
+ * one twice as good.
+ *
+ * A tie goes to the EARLIEST attempt: two takes the same distance from
+ * expectation are equally good by the only criterion there is, and the first is
+ * the one the engine produced under its own seed rule.
+ *
+ * Exported so `tools/test-book-render-best-of.js` can put takes of known
+ * duration against a known expectation through it; the service's only caller is
+ * `settleExhaustedSentence` below.
+ */
+export function bestOfTakes<T extends { attempt: number; seconds: number }>(
+  takes: readonly T[],
+  expectedSeconds: number,
+): T {
+  if (takes.length === 0) throw new Error('bestOfTakes: there are no takes to choose between');
+  if (!Number.isFinite(expectedSeconds) || expectedSeconds <= 0) {
+    throw new Error(`bestOfTakes: ${expectedSeconds} is not an expected duration in seconds`);
+  }
+  const distance = (take: T): number => {
+    if (!Number.isFinite(take.seconds) || take.seconds <= 0) return Number.POSITIVE_INFINITY;
+    return Math.abs(Math.log(take.seconds) - Math.log(expectedSeconds));
+  };
+  let best = takes[0] as T;
+  let bestDistance = distance(best);
+  for (const take of takes.slice(1)) {
+    const d = distance(take);
+    // Strictly less: a tie leaves the earlier attempt standing.
+    if (d < bestDistance) { best = take; bestDistance = d; }
+  }
+  return best;
 }
 
 /**
@@ -290,6 +429,7 @@ class BookRenderService {
   status(projectId: string): {
     exists: boolean; total: number; rendered: number; done: boolean;
     coverage?: boolean[]; playhead?: number; assembling?: boolean; m4b?: boolean; error?: string;
+    failures?: number; failuresPath?: string;
   } {
     const job = this.jobs.get(projectId);
     if (!job) {
@@ -298,7 +438,8 @@ class BookRenderService {
       if (persisted && persisted.plan) {
         const rendered = persisted.state.coverage.filter(Boolean).length;
         return { exists: true, total: persisted.plan.sentences.length, rendered, done: persisted.state.done,
-          coverage: persisted.state.coverage, playhead: persisted.state.playhead, m4b: !!persisted.state.m4bPath };
+          coverage: persisted.state.coverage, playhead: persisted.state.playhead, m4b: !!persisted.state.m4bPath,
+          failures: persisted.state.failures || 0, failuresPath: failuresPath(projectId) };
       }
       return { exists: false, total: 0, rendered: 0, done: false };
     }
@@ -307,6 +448,10 @@ class BookRenderService {
       exists: true, total: job.plan.sentences.length, rendered, done: job.state.done,
       coverage: job.state.coverage, playhead: job.state.playhead, assembling: job.assembling,
       m4b: !!job.state.m4bPath, error: job.error,
+      // WHAT FAILED IS ONE CLICK AWAY, which is the whole of Owen's "record what
+      // failed and when so we can review later": the count says whether there is
+      // anything to read and the path says where it is.
+      failures: job.state.failures || 0, failuresPath: failuresPath(projectId),
     };
   }
 
@@ -415,9 +560,12 @@ class BookRenderService {
         coverage: plan.sentences.map(() => false),
         durations: plan.sentences.map(() => 0),
         playhead: 0, done: false, voice: getDefaultStreamVoice(), engine: getSelectedEngineName(),
-        updatedAt: Date.now(),
+        failures: 0, updatedAt: Date.now(),
       };
     }
+    // A state.json written before failures.jsonl existed has no count; the file
+    // beside it is still the record, and this is the number that summarises it.
+    if (typeof state.failures !== 'number') state.failures = 0;
     // COVERAGE AND DURATION ARE ONE FACT, SO THEY ARE RECONCILED TOGETHER.
     //
     // maybePersist only writes every 1500 ms, so a crash leaves the last few
@@ -450,7 +598,8 @@ class BookRenderService {
 
     return {
       projectId, plan, state, running: false, runId: 0, inFlight: new Set(), assembling: false,
-      lastPersist: 0, persisting: Promise.resolve(), retries: new Map(), consecFail: 0,
+      lastPersist: 0, persisting: Promise.resolve(), retries: new Map(), candidates: new Map(),
+      unrenderable: new Map(), recording: Promise.resolve(), consecFail: 0,
     };
   }
 
@@ -491,7 +640,10 @@ class BookRenderService {
     const p = job.state.playhead;
     for (let k = 0; k < N; k++) {
       const i = (p + k) % N; // forward from playhead, then wrap to the front
-      if (!job.state.coverage[i] && !job.inFlight.has(i)) return i;
+      // A sentence that used up every attempt is not "still to do": it has been
+      // settled, badly, and the job will fail by name for it. Handing it back
+      // here would be an endless retry of a sentence whose retries are spent.
+      if (!job.state.coverage[i] && !job.inFlight.has(i) && !job.unrenderable.has(i)) return i;
     }
     return -1;
   }
@@ -532,7 +684,22 @@ class BookRenderService {
       // no error, nothing assembling, and nothing anywhere saying so.
       if (job.runId === runId) {
         job.running = false;
-        if (this.allCovered(job) && !job.state.done && !job.assembling) {
+        // A BOOK WITH A HOLE IN IT IS NOT A FINISHED BOOK. Until 2026-09-18 a
+        // sentence the engine could never render became 0.3 s of silence,
+        // `coverage[i]` was set, and the m4b assembled with a gap where a
+        // sentence should be and nothing anywhere recording which one. Owen's
+        // ruling of that day keeps the best TAKE when there is one; when there
+        // is no audio at all the job says so by name instead of shipping the
+        // hole. The abort is written here, after the workers have drained, so
+        // the rest of the book is still attempted and the five-in-a-row engine
+        // guard still gets its five.
+        // `job.error` already set is the engine-is-broken abort, which is a
+        // verdict about the WHOLE run and outranks a list of sentences.
+        if (job.unrenderable.size > 0 && job.error === undefined) {
+          job.error = this.describeUnrenderable(job);
+          console.error(`[book-render] ${job.projectId}: ${job.error}`);
+          await this.maybePersist(job, true);
+        } else if (this.allCovered(job) && !job.state.done && !job.assembling) {
           await this.assemble(job);
         }
       }
@@ -557,11 +724,16 @@ class BookRenderService {
         { voice: job.state.voice || getDefaultStreamVoice(), speed: 1.0 },
         true,
       );
-      if (result.success && result.audio) {
-        const wav = await writeSentenceWav(sentenceFile(job.projectId, i), result.audio);
-        job.state.sampleRate = result.audio.sampleRate;
+      // `takeFrom` and not `result.audio` alone: a chunk with an empty payload
+      // is a 44-byte header and no sound, and filing it covers the sentence with
+      // a hole. It is a failed attempt, and the wide loop counts and records it
+      // as one — this path counts nothing, by design (see the header above).
+      const audio = result.audio;
+      if (result.success && audio !== undefined && takeFrom(audio, 1) !== null) {
+        const wav = await writeSentenceWav(sentenceFile(job.projectId, i), audio);
+        job.state.sampleRate = audio.sampleRate;
         job.state.coverage[i] = true;
-        job.state.durations[i] = result.audio.duration || pcm16WavSeconds(wav);
+        job.state.durations[i] = audio.duration || pcm16WavSeconds(wav);
       }
     } catch { /* retried by the wide loop */ } finally {
       job.inFlight.delete(i);
@@ -580,17 +752,26 @@ class BookRenderService {
       let abort: string | null = null;
       try {
         const result = await engine.generateSentence(job.plan.sentences[i], i, { voice, speed: 1.0 }, false);
-        if (result.success && result.audio) {
-          const wav = await writeSentenceWav(sentenceFile(job.projectId, i), result.audio);
-          job.state.sampleRate = result.audio.sampleRate;
-          job.state.coverage[i] = true;
-          job.state.durations[i] = result.audio.duration || pcm16WavSeconds(wav);
+        const take = takeFrom(result.audio, (job.retries.get(i) || 0) + 1);
+        if (result.success && take !== null) {
+          await this.fileTake(job, i, take);
+          // A RENDERED SENTENCE IS THE ONLY THING THAT CLEARS THE GUARD, and a
+          // take filed by best-of is not one: the sentence still used up every
+          // attempt, so an engine failing every sentence still reaches five.
           job.consecFail = 0;
         } else {
           // THE ENGINE'S OWN REASON, CARRIED. `result.error` was read only as a
           // last-ditch substitute for the abort message; a failure that had one
           // and a failure that had none were otherwise the same event here.
-          abort = await this.noteFailedAttempt(job, i,
+          //
+          // AND THE AUDIO, IF THERE WAS ANY. An attempt the engine called a
+          // failure may still have handed over a chunk, and that chunk is a
+          // CANDIDATE for the sentence — the only thing Owen's best-of ruling
+          // can be made of. A success with nothing in it is not a rendered
+          // sentence either; it is an attempt that produced nothing, and it is
+          // counted and recorded as one rather than filed as a 44-byte file.
+          if (take !== null) this.keepTake(job, i, take);
+          abort = await this.noteFailedAttempt(job, i, result.success ? 'empty' : 'error',
             result.error === undefined ? 'the engine gave no reason' : result.error);
         }
       } catch (err) {
@@ -601,7 +782,7 @@ class BookRenderService {
         // dropped transport — was retried forever and reported nothing.
         const reason = err instanceof Error ? err.message : String(err);
         console.error(`[book-render] sentence ${i} threw: ${reason}`);
-        abort = await this.noteFailedAttempt(job, i, reason);
+        abort = await this.noteFailedAttempt(job, i, 'threw', reason);
       } finally {
         job.inFlight.delete(i);
         await this.maybePersist(job);
@@ -625,43 +806,201 @@ class BookRenderService {
    * every attempt with none rendering in between — and only the second is
    * evidence about the engine.
    */
-  private async noteFailedAttempt(job: Job, i: number, reason: string): Promise<string | null> {
+  private async noteFailedAttempt(
+    job: Job, i: number, kind: 'error' | 'threw' | 'empty', reason: string,
+  ): Promise<string | null> {
     const attempts = (job.retries.get(i) || 0) + 1;
     job.retries.set(i, attempts);
+    // EVERY failed attempt, not only the last one: Owen, 2026-09-18, "record
+    // what failed and when so we can review later". The console line the moment
+    // it happened stays — this is the copy that is still there tomorrow.
+    await this.recordFailure(job, {
+      sentence: i, attempt: attempts, at: new Date().toISOString(), kind, error: reason,
+    });
     if (attempts < ATTEMPTS_PER_SENTENCE) {
       await new Promise((r) => setTimeout(r, 300)); // leave uncovered — retried later
       return null;
     }
 
     job.consecFail++;
+    // THE SENTENCE IS SETTLED BEFORE THE ENGINE IS JUDGED. The two are separate
+    // questions and the settlement is the cheaper one: a take that was going to
+    // be filed is filed whichever way the guard then votes, so the abort can
+    // never quietly throw away audio the render already had.
+    await this.settleExhaustedSentence(job, i, attempts, reason);
     if (job.consecFail >= EXHAUSTED_SENTENCES_MEANING_A_BROKEN_ENGINE) {
       return `the TTS engine is failing repeatedly — ${job.consecFail} sentences in a row used up all `
         + `${ATTEMPTS_PER_SENTENCE} attempts with none rendering in between. The last said: ${reason}`;
     }
-
-    // AWAITING A RULING — the placeholder policy below is unchanged on purpose.
-    // What a thrice-failed sentence should BECOME is the operator's call and he
-    // has not made it: a 0.3 s pad marked `covered` keeps the timeline aligned
-    // and finishes the book, at the cost of a sentence the listener never hears
-    // and nothing in the finished m4b records. Only the counting around it was
-    // wrong, and only that was fixed (B4 / fix-15, 2026-09-18).
-    //
-    // The pad is concatenated with the rendered sentences, and ffmpeg's concat
-    // demuxer joins STREAMS: a pad at a different sample rate is a format
-    // change mid-list, so it is written at the rate the engine reported for
-    // this book. Before any sentence has rendered there is no such rate, and
-    // the job says so rather than inventing one.
-    const rate = job.state.sampleRate;
-    if (rate === undefined) {
-      return `sentence ${i} failed ${attempts} times before any sentence of this book rendered, so `
-        + `there is no engine sample rate for its silence pad to match. The last failure said: ${reason}`;
-    }
-    await fs.writeFile(sentenceFile(job.projectId, i), this.silentWav(0.3, rate));
-    job.state.coverage[i] = true;
-    job.state.durations[i] = 0.3;
-    console.warn(`[book-render] sentence ${i} gave up after ${attempts} attempts (${reason}) — `
-      + '0.3 s of silence stands in for it');
     return null;
+  }
+
+  /**
+   * A sentence that has used up every attempt: file its BEST take, or record
+   * that it has none.
+   *
+   * THE RULING (Owen, 2026-09-18): *"Let's just use the best version of it if it
+   * fails 3 times. But that's never happened as far as I can remember. Record
+   * what failed and when so we can review later."*
+   *
+   * Until that day this wrote 0.3 s of silence, set `coverage[i]`, and let the
+   * book assemble as finished — a sentence the listener never hears, in an m4b
+   * that records nothing about it, under a cue that displays its text. There is
+   * no silence pad here now and none anywhere else: a sentence is either audio
+   * the engine produced or a hole the job refuses to ship.
+   */
+  private async settleExhaustedSentence(
+    job: Job, i: number, attempts: number, reason: string,
+  ): Promise<void> {
+    const takes = job.candidates.get(i) || [];
+    job.candidates.delete(i);
+
+    if (takes.length === 0) {
+      const why = `${attempts} attempts produced no audio at all; the last said: ${reason}`;
+      job.unrenderable.set(i, why);
+      console.warn(`[book-render] sentence ${i} gave up after ${why}`);
+      await this.recordFailure(job, {
+        sentence: i, at: new Date().toISOString(), settled: 'no-audio',
+        candidates: 0, reason: why,
+      });
+      return;
+    }
+
+    const expected = this.expectedSeconds(job, i);
+    if (typeof expected !== 'number') {
+      // IT DOES NOT CHOOSE WITHOUT THE MEASUREMENT. Picking the longest, the
+      // first, or the one nearest the others would each be a different book, and
+      // none of them is the criterion the ruling names.
+      const why = `${takes.length} take(s) survived ${attempts} attempts and there is no expected `
+        + `length to choose between them: ${expected.refused}. The takes measured `
+        + `${takes.map((t) => `${t.seconds.toFixed(3)} s (attempt ${t.attempt})`).join(', ')}.`;
+      job.unrenderable.set(i, why);
+      console.error(`[book-render] sentence ${i}: ${why}`);
+      await this.recordFailure(job, {
+        sentence: i, at: new Date().toISOString(), settled: 'no-expected-length',
+        candidates: takes.length, reason: why,
+      });
+      return;
+    }
+
+    const best = bestOfTakes(takes, expected);
+    await this.fileTake(job, i, best);
+    const why = `closest of ${takes.length} take(s) to the ${expected.toFixed(3)} s this sentence's `
+      + `${job.plan.sentences[i].length} characters should take at the voice's pace`;
+    console.warn(`[book-render] sentence ${i} gave up after ${attempts} attempts (${reason}) — `
+      + `attempt ${best.attempt}'s ${best.seconds.toFixed(3)} s take is filed: ${why}`);
+    await this.recordFailure(job, {
+      sentence: i, at: new Date().toISOString(), settled: 'best-of',
+      candidates: takes.length, chosenAttempt: best.attempt, reason: why,
+    });
+  }
+
+  /**
+   * HOW LONG SENTENCE `i` SHOULD BE, in seconds — or the reason there is no
+   * such number, which is a refusal and never a default.
+   *
+   * The expectation is `chars ÷ the voice's pace`, narrator's own arithmetic
+   * (`python/narrator/engine/higgs/truncation.py`). THE PACE HAS ONE OWNER AND
+   * IT IS THE MACHINE THAT WILL SPEAK: a Crucible states `pace_chars_per_sec`
+   * with the two band edges on its `GET /v1/voices` row, which is the ruling
+   * `electron/crucible/voice-band.ts` is ("the numbers it packs to belong to the
+   * server that will speak them"), and for a voice that states no pace narrator
+   * centres the band on the geometric mean of its own default edges
+   * (`truncation.expected_chars_per_sec`, over `HiggsV3Defaults.MAX_CHARS_PER_SEC`
+   * 20.0 and `MIN_CHARS_PER_SEC` 14.5 in
+   * `python/narrator/engine/higgs/v3_engine.py`).
+   *
+   * NEITHER NUMBER REACHES THIS FILE TODAY, and this says so instead of copying
+   * one. The render service drives `getActiveEngine()`, and the one member of
+   * `StreamingEngine` that states a voice's numbers — `statedChunkCaps` — carries
+   * `maxChars`, `safeMinChars` and `safeMaxChars` and stops there;
+   * `electron/crucible/stream.ts` holds all three RATES in the
+   * `bandFromVoiceRow` result it builds them from and drops them on the way out.
+   * narrator's default band is a Python constant with no path to Electron at
+   * all. So the pace is not a thing this service HAS, and a copied 17.03 would
+   * be a second owner of a number measured somewhere else — the exact shape
+   * `voice-band.ts` was written to end.
+   *
+   * The consequence is stated rather than hidden: while that is true, a sentence
+   * that exhausts its attempts WITH takes to choose between is refused by name
+   * and the job fails, instead of a take being picked for an unmeasured reason.
+   * The day `statedChunkCaps` carries the three rates it already computes, this
+   * is `expectedSentenceSeconds(chars, row.paceCharsPerSec)` and nothing else.
+   */
+  private expectedSeconds(job: Job, i: number): number | { refused: string } {
+    const pace = this.statedPace(job);
+    if (typeof pace !== 'number') return pace;
+    return expectedSentenceSeconds(job.plan.sentences[i].length, pace);
+  }
+
+  /** The voice's pace in characters per second, or the reason this side of the
+   *  engine has none. THE ONE PLACE that fact is asked for — see
+   *  `expectedSeconds` above for whose it is and why it stops short of here. */
+  private statedPace(job: Job): number | { refused: string } {
+    const voice = job.state.voice || getDefaultStreamVoice();
+    return {
+      refused: `nothing on this side of the engine states a pace for voice "${voice}". The pace is `
+        + 'the rendering machine\'s (electron/crucible/voice-band.ts), it travels on its '
+        + '`GET /v1/voices` row as `pace_chars_per_sec`, and `StreamingEngine.statedChunkCaps` — the '
+        + 'one member that states a voice\'s numbers — carries only maxChars/safeMinChars/safeMaxChars. '
+        + 'narrator\'s own no-pace centre is a Python constant (HiggsV3Defaults), so there is nothing '
+        + 'to read here either. The sentence is therefore not settled on a guess',
+    };
+  }
+
+  /** File a take as sentence `i`: its bytes, its duration, its rate, and the
+   *  end of its sentence's candidacy. The one place a rendered sentence becomes
+   *  a covered one. */
+  private async fileTake(job: Job, i: number, take: SentenceTake): Promise<void> {
+    await fs.writeFile(sentenceFile(job.projectId, i), take.wav);
+    job.state.sampleRate = take.sampleRate;
+    job.state.coverage[i] = true;
+    job.state.durations[i] = take.seconds;
+    job.candidates.delete(i);
+  }
+
+  /** Keep one failed attempt's audio until its sentence settles. */
+  private keepTake(job: Job, i: number, take: SentenceTake): void {
+    const takes = job.candidates.get(i);
+    if (takes === undefined) job.candidates.set(i, [take]);
+    else takes.push(take);
+  }
+
+  /** The sentences that have no audio and why, as the job's error. */
+  private describeUnrenderable(job: Job): string {
+    const named = [...job.unrenderable.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([i, why]) => `sentence ${i} (${why})`);
+    return `the render did not finish: ${named.length} sentence(s) have no audio, so the book is not `
+      + `assembled — ${named.join('; ')}. Every attempt is recorded in ${failuresPath(job.projectId)}.`;
+  }
+
+  /**
+   * One line of `failures.jsonl`, appended.
+   *
+   * ONE APPEND AT A TIME, for `maybePersist`'s reason: `width` workers write
+   * this file and two interleaved writes to one path make a line that is not
+   * JSON. Chaining each append onto the last serialises them, and an append is
+   * the whole record in ONE `appendFile` call, so a crash can lose the tail of
+   * the file but never split a record down the middle — which is the property
+   * `atomicWriteFile` gives state.json, in the shape an append-only log can have
+   * it (rewriting the whole log to replace it atomically would grow with the
+   * book and is not what "atomic" buys here).
+   *
+   * A failed append is NOT a failed render — the sentences and the state are on
+   * disk either way — but it is never silent, because a review log nobody can
+   * read is the defect this file exists to end.
+   */
+  private async recordFailure(job: Job, record: Record<string, unknown>): Promise<void> {
+    job.state.failures = (job.state.failures || 0) + 1;
+    const line = JSON.stringify(record) + '\n';
+    const append = job.recording
+      .catch(() => { /* already reported by the call that made it */ })
+      .then(() => fs.appendFile(failuresPath(job.projectId), line, 'utf-8'));
+    job.recording = append;
+    await append.catch((err) => {
+      console.error(`[book-render] could not record a failure in ${failuresPath(job.projectId)}:`, err);
+    });
   }
 
   /**
@@ -694,17 +1033,13 @@ class BookRenderService {
     });
   }
 
-  // ─── WAV helpers ─────────────────────────────────────────────────────────────
-
-  /** A pad of silence at the book's own rate. The duration maths that used to
-   *  live beside this assumed 24 kHz and a header the sentence files did not
-   *  have; both facts are read off the file now (pcm16WavSeconds). */
-  private silentWav(seconds: number, sampleRate: number): Buffer {
-    const bytes = Math.floor(seconds * sampleRate * 2) & ~1;
-    return pcm16Wav(Buffer.alloc(bytes), sampleRate);
-  }
-
   // ─── Assembly (Phase G) ──────────────────────────────────────────────────────
+  //
+  // `silentWav` used to live here — a pad written in place of a sentence the
+  // engine could not render. Owen ruled on 2026-09-18 that a thrice-failed
+  // sentence keeps its best TAKE and, having none, fails the job by name, so
+  // nothing in this service needs a pad any more and the function is gone (it
+  // had no other caller: grep `silentWav`).
 
   private async assemble(job: Job): Promise<void> {
     job.assembling = true;

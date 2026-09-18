@@ -839,9 +839,15 @@ const SUITES = [
   // the new one, a failure guard blind to a throw that added two bad sentences
   // into "the engine is failing repeatedly", a re-finalize leaving old audio
   // under new text, and state.json written in place by any worker that felt
-  // like it. It also pins the silence placeholder UNCHANGED and labelled: what
-  // a thrice-failed sentence should become is the operator's ruling, not a fix.
+  // like it.
   'test-book-render-timeline',
+  // What a thrice-failed sentence BECOMES, which Owen ruled on 2026-09-18:
+  // its best take by one measured criterion (closest to chars ÷ the voice's
+  // pace, narrator's own log-space accept rule), or — with no audio at all, or
+  // no pace to judge the takes by — a job that fails by name and a book that
+  // does not ship. The 0.3 s silence pad that used to stand in for it is gone,
+  // and every failed attempt is now recorded in failures.jsonl beside state.json.
+  'test-book-render-best-of',
   // What the web fetcher decides about a page it has already loaded, which was
   // three heuristics standing in for measurements: the word "challenge" in an
   // article's prose popped a captcha window that killed the fetch, a block with

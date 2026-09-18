@@ -370,10 +370,14 @@ async function main() {
   await check('two bad sentences are two bad sentences, not a broken engine', async () => {
     resetEngine(); resetSeams();
     const { id } = newProject(['One.', 'Two.', 'Three.', 'Four.', 'Five.', 'Six.']);
-    // Sentence 1 fails all three of its attempts and is padded; sentence 2 then
-    // fails twice and succeeds. The counter used to carry the first sentence's
-    // three attempts into the second's two, reach five, and abort the book as a
-    // broken engine — two bad sentences and an engine that rendered four.
+    // Sentence 1 fails all three of its attempts and has no audio to keep;
+    // sentence 2 then fails twice and succeeds. The counter used to carry the
+    // first sentence's three attempts into the second's two, reach five, and
+    // abort the book as a broken engine — two bad sentences and an engine that
+    // rendered four. The job still fails, because a sentence with no audio is a
+    // hole (Owen's ruling of 2026-09-18, pinned in test-book-render-best-of.js),
+    // but it fails FOR THE SENTENCE and not for the engine, which is the fact
+    // this check has always been about.
     let oneFails = 3;
     let twoFails = 2;
     engine.generateSentence = async (_text, index) => {
@@ -384,9 +388,14 @@ async function main() {
     };
 
     await bookRenderService.start(id, 0);
-    await waitFor('the book to finish', () => bookRenderService.status(id).done === true, 15000);
-    assert.strictEqual(bookRenderService.status(id).error, undefined,
-      'two individually-bad sentences aborted the whole book as a broken engine');
+    await waitFor('the job to settle', () => bookRenderService.status(id).error !== undefined, 15000);
+    const status = bookRenderService.status(id);
+    assert.ok(!/failing repeatedly/.test(status.error),
+      `two individually-bad sentences aborted the whole book as a broken engine: ${status.error}`);
+    assert.ok(/sentence 1\b/.test(status.error),
+      `the job does not name the sentence it could not render: ${status.error}`);
+    assert.strictEqual(status.rendered, 5,
+      'the rest of the book was abandoned along with the one sentence that could not be rendered');
     engine.generateSentence = scriptedGenerateSentence;
   });
 
@@ -417,13 +426,12 @@ async function main() {
       `the abort does not say what failed: ${status.error}`);
   });
 
-  await check('the silence placeholder policy is unchanged and labelled as unruled', () => {
-    const src = fs.readFileSync(path.join(REPO, 'electron', 'book-render-service.ts'), 'utf-8');
-    assert.ok(/0\.3/.test(src) && /silentWav\(0\.3/.test(src),
-      'the thrice-failed sentence no longer becomes a 0.3 s pad — that is a RULING, not a fix');
-    assert.ok(/AWAITING A RULING/.test(src),
-      'the placeholder policy is not labelled as awaiting the operator\'s ruling');
-  });
+  // The check that stood here pinned the 0.3 s silence placeholder as UNCHANGED
+  // and labelled `AWAITING A RULING`, because what a thrice-failed sentence
+  // should become was the operator's call and he had not made it. He made it on
+  // 2026-09-18 — best take, or the book does not ship — so the placeholder is
+  // gone and what replaced it is pinned next door, in
+  // `tools/test-book-render-best-of.js`.
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('§6 a re-finalize takes the old audio with it');
