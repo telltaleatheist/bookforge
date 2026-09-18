@@ -284,6 +284,25 @@ async function run() {
       `the second paragraph does not carry its own identity:\n${rebuilt}`);
   });
 
+  await check('the cleaned body is inserted LITERALLY — a book\'s $1,000 is not a capture group', async () => {
+    // The rebuild's last act is a String.replace over the original chapter, and
+    // until 2026-09-18 the cleaned body went in as the REPLACEMENT STRING, where
+    // `$1`, `$&`, `` $` `` and `$'` are pattern references: `It cost $1,000.`
+    // arrived as `It cost ,000.` and `$&` spliced the whole uncleaned body back
+    // in. Book text is data, so the replacement is a function now.
+    const xhtml = PAGE('Working Towards the Führer', CHAPTER_ONE);
+    const rebuilt = rebuildChapterPreservingHeadings(xhtml, [
+      'It cost $1,000 and the ledger said $& and $` and $\' beside it.'
+      + '\n\nTwenty-one men sat in two rows, and none of them looked at each other.',
+    ]);
+    // `&` and `'` are XML-escaped on the way in (escapeXmlLocal); the dollar
+    // signs themselves, and everything they precede, are carried through.
+    assert.ok(rebuilt.includes('It cost $1,000 and the ledger said $&amp; and $` and $&apos; beside it.'),
+      `the book's own dollar signs were read as pattern references:\n${rebuilt}`);
+    assert.ok(!/<body[^>]*>[\s\S]*<body/.test(rebuilt),
+      `$& spliced the original body inside the rebuilt one:\n${rebuilt}`);
+  });
+
   await check('a MERGED paragraph keeps the FIRST source\'s stamps, and only those', async () => {
     const xhtml = PAGE('Working Towards the Führer', CHAPTER_ONE);
     // The model ran the two paragraphs together into one.

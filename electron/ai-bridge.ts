@@ -1040,9 +1040,15 @@ export function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedC
   if (!/<body([^>]*)>[\s\S]*<\/body>/i.test(originalXhtml)) {
     throw new Error('[AI-CLEANUP] Cannot rebuild chapter: no <body> element found in original XHTML.');
   }
+  // A REPLACER FUNCTION, because the book's own text goes in here. In a
+  // replacement STRING `$1`, `$&`, `` $` `` and `$'` are pattern references, so
+  // a chapter that says "It cost $1,000." was rebuilt as "It cost ,000." and one
+  // that says "$&" spliced the entire original uncleaned body inline. A
+  // function's return value is inserted literally, which is the only way to say
+  // "this is data, not a pattern".
   return originalXhtml.replace(
     /<body([^>]*)>[\s\S]*<\/body>/i,
-    `<body$1>\n${bodyHtml}\n</body>`
+    (_match, attrs: string) => `<body${attrs}>\n${bodyHtml}\n</body>`
   );
 }
 

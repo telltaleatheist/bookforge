@@ -34,6 +34,8 @@ import { splitForTts } from '../shared/listen-text/segment';
 // two stages are minutes of model time and are a PASS the user runs on the book.
 import { speakableListenText } from '../shared/listen-text/normalize';
 import { getFfmpegPath } from './tool-paths';
+import { pcm16Wav, pcm16WavSeconds } from './pcm16-wav';
+import type { AudioChunk } from './streaming-contract';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────
 
@@ -59,6 +61,10 @@ interface RenderState {
   m4bPath?: string;
   voice: string;
   engine: string;
+  /** The sample rate the engine reported for THIS book's sentences, recorded as
+   *  each one is written. Absent until the first sentence renders, which is the
+   *  only honest answer before then — see the silence pad in `worker`. */
+  sampleRate?: number;
   updatedAt: number;
 }
 
@@ -92,6 +98,28 @@ function sentencesDir(projectId: string): string { return path.join(renderDir(pr
 function planPath(projectId: string): string { return path.join(renderDir(projectId), 'plan.json'); }
 function statePath(projectId: string): string { return path.join(renderDir(projectId), 'state.json'); }
 function sentenceFile(projectId: string, i: number): string { return path.join(sentencesDir(projectId), `${i}.wav`); }
+
+/**
+ * Write one rendered sentence to disk AS A WAV, and return the bytes written.
+ *
+ * The engine returns base64 PCM16 and the rate it produced it at; it does not
+ * encode, deliberately (electron/crucible/stream.ts leaves that "to whoever is
+ * listening"). This is that listener, and until 2026-09-18 it listened badly:
+ * the raw samples went into a file named `.wav` with no RIFF header, so the
+ * reader's route served bytes no decoder could read and ffmpeg's concat
+ * demuxer had no container to probe. The header states the rate the ENGINE
+ * reported — an audio chunk without one is refused by name inside pcm16Wav,
+ * because a guessed rate is inaudible as an error and audible as pitch.
+ *
+ * Exported so `tools/test-book-render-wav.js` can put a known payload through
+ * the real path and read the header back off disk; the service's own two
+ * callers are the render loops below.
+ */
+export async function writeSentenceWav(file: string, audio: AudioChunk): Promise<Buffer> {
+  const wav = pcm16Wav(Buffer.from(audio.data, 'base64'), audio.sampleRate);
+  await fs.writeFile(file, wav);
+  return wav;
+}
 
 /**
  * Write render/plan.json from the editor's flat blocks. Chapter-start blocks head
@@ -352,10 +380,10 @@ class BookRenderService {
         true,
       );
       if (result.success && result.audio) {
-        const buf = Buffer.from(result.audio.data, 'base64');
-        await fs.writeFile(sentenceFile(job.projectId, i), buf);
+        const wav = await writeSentenceWav(sentenceFile(job.projectId, i), result.audio);
+        job.state.sampleRate = result.audio.sampleRate;
         job.state.coverage[i] = true;
-        job.state.durations[i] = result.audio.duration || this.wavSeconds(buf);
+        job.state.durations[i] = result.audio.duration || pcm16WavSeconds(wav);
       }
     } catch { /* retried by the wide loop */ } finally {
       job.inFlight.delete(i);
@@ -374,10 +402,10 @@ class BookRenderService {
       try {
         const result = await engine.generateSentence(job.plan.sentences[i], i, { voice, speed: 1.0 }, false);
         if (result.success && result.audio) {
-          const buf = Buffer.from(result.audio.data, 'base64');
-          await fs.writeFile(sentenceFile(job.projectId, i), buf);
+          const wav = await writeSentenceWav(sentenceFile(job.projectId, i), result.audio);
+          job.state.sampleRate = result.audio.sampleRate;
           job.state.coverage[i] = true;
-          job.state.durations[i] = result.audio.duration || this.wavSeconds(buf);
+          job.state.durations[i] = result.audio.duration || pcm16WavSeconds(wav);
           job.consecFail = 0;
         } else {
           console.warn(`[book-render] sentence ${i} failed: ${result.error || 'unknown'}`);
@@ -393,8 +421,20 @@ class BookRenderService {
           job.retries.set(i, attempts);
           if (attempts >= 3) {
             // This one sentence is genuinely bad — a short silence keeps the
-            // assembly timeline aligned without wedging the whole book.
-            await fs.writeFile(sentenceFile(job.projectId, i), this.silentWav(0.3));
+            // assembly timeline aligned without wedging the whole book. The pad
+            // is concatenated with the rendered sentences, and ffmpeg's concat
+            // demuxer joins STREAMS: a pad at a different sample rate is a
+            // format change mid-list, so it is written at the rate the engine
+            // reported for this book. Before any sentence has rendered there is
+            // no such rate, and the job says so rather than inventing one.
+            const rate = job.state.sampleRate;
+            if (rate === undefined) {
+              job.error = `sentence ${i} failed ${attempts} times before any sentence of this book `
+                + 'rendered, so there is no engine sample rate for its silence pad to match';
+              job.running = false;
+              break;
+            }
+            await fs.writeFile(sentenceFile(job.projectId, i), this.silentWav(0.3, rate));
             job.state.coverage[i] = true;
             job.state.durations[i] = 0.3;
           } else {
@@ -421,21 +461,12 @@ class BookRenderService {
 
   // ─── WAV helpers ─────────────────────────────────────────────────────────────
 
-  private wavSeconds(buf: Buffer): number {
-    // 24kHz mono 16-bit → 48000 bytes/sec after the 44-byte header.
-    return Math.max(0, (buf.length - 44) / 48000);
-  }
-
-  private silentWav(seconds: number): Buffer {
-    const bytes = Math.floor(seconds * 48000) & ~1;
-    const header = Buffer.alloc(44);
-    header.write('RIFF', 0); header.writeUInt32LE(36 + bytes, 4);
-    header.write('WAVE', 8); header.write('fmt ', 12);
-    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(24000, 24); header.writeUInt32LE(48000, 28);
-    header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
-    header.write('data', 36); header.writeUInt32LE(bytes, 40);
-    return Buffer.concat([header, Buffer.alloc(bytes)]);
+  /** A pad of silence at the book's own rate. The duration maths that used to
+   *  live beside this assumed 24 kHz and a header the sentence files did not
+   *  have; both facts are read off the file now (pcm16WavSeconds). */
+  private silentWav(seconds: number, sampleRate: number): Buffer {
+    const bytes = Math.floor(seconds * sampleRate * 2) & ~1;
+    return pcm16Wav(Buffer.alloc(bytes), sampleRate);
   }
 
   // ─── Assembly (Phase G) ──────────────────────────────────────────────────────

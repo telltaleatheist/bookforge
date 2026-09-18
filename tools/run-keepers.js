@@ -827,6 +827,10 @@ const SUITES = [
   'test-chapter-openings',
   'test-simplify-blocks',
   'test-listen-text',
+  // The whole-book render's per-sentence files: the engine returns PCM16 and
+  // the extension `.wav` was the only thing saying so, which is not a thing a
+  // type can catch — the bytes were written and the book reported rendered.
+  'test-book-render-wav',
   // The VLM half — all three are the part of the feature that is worth proving
   // with no GPU and no server: what is banked, what is planned, what is promised.
   'test-vlm-readings-bank',
