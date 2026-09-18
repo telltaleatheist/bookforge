@@ -133,6 +133,22 @@ check('an abbreviation that can END a sentence is left to the segmenter', () => 
   assert.deepStrictEqual(splitIntoSentences('He said no. Then he left.'),
     ['He said no.', 'Then he left.']);
 });
+check('a short segment is still a segment — nothing displayed is dropped from the plan', () => {
+  // The other half of "spoken = displayed = aligned", from the far end: a
+  // `.filter(s => s.length > 3 || /^[A-Z]/.test(s))` deleted any segment of
+  // three characters or fewer not starting with an ASCII capital, so a block
+  // reading `42.` or `iv.` was shown by the reader and contributed nothing to
+  // plan.sentences — never highlighted, never spoken, never in the VTT.
+  assert.deepStrictEqual(splitIntoSentences('42.'), ['42.']);
+  assert.deepStrictEqual(splitIntoSentences('iv.'), ['iv.']);
+  assert.deepStrictEqual(splitIntoSentences('ok.'), ['ok.']);
+  assert.deepStrictEqual(splitIntoSentences('No!'), ['No!']);
+  // Non-ASCII capitals were hit hardest of all: the test was /^[A-Z]/.
+  assert.deepStrictEqual(splitIntoSentences('Да.'), ['Да.']);
+  // And a fragment inside a paragraph survives beside its neighbours.
+  assert.deepStrictEqual(splitIntoSentences('The road went on. 42. It ended.'),
+    ['The road went on.', '42.', 'It ended.']);
+});
 
 console.log('the shared footnote-marker predicate the extension strips with');
 check('digits and separators are a marker; "th" is not', () => {

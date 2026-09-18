@@ -831,6 +831,25 @@ const SUITES = [
   // the extension `.wav` was the only thing saying so, which is not a thing a
   // type can catch — the bytes were written and the book reported rendered.
   'test-book-render-wav',
+  // And the facts the same service keeps ABOUT those files (B4, 2026-09-18) —
+  // every one of them wrong in a way nothing threw on: a 4-digit millisecond
+  // field in the VTT, a crash-resumed sentence timed at 0.3 s so the whole
+  // transcript slid, `done` written before the book was registered, an ffmpeg
+  // failure that set no error at all, a Stop-then-Start whose old loop killed
+  // the new one, a failure guard blind to a throw that added two bad sentences
+  // into "the engine is failing repeatedly", a re-finalize leaving old audio
+  // under new text, and state.json written in place by any worker that felt
+  // like it. It also pins the silence placeholder UNCHANGED and labelled: what
+  // a thrice-failed sentence should become is the operator's ruling, not a fix.
+  'test-book-render-timeline',
+  // What the web fetcher decides about a page it has already loaded, which was
+  // three heuristics standing in for measurements: the word "challenge" in an
+  // article's prose popped a captcha window that killed the fetch, a block with
+  // block children never emitted its own text (so a nested list lost the parent
+  // item), and an unanchored `copyright` pattern deleted every short paragraph
+  // of an article about copyright. No network — the page probe and the
+  // paragraph walk are exported as source and run against built documents.
+  'test-web-fetch-article',
   // The VLM half — all three are the part of the feature that is worth proving
   // with no GPU and no server: what is banked, what is planned, what is promised.
   'test-vlm-readings-bank',

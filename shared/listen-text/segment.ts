@@ -160,12 +160,28 @@ export function splitIntoSentences(
       const segmenter = new Intl.Segmenter(locale, { granularity: 'sentence' });
       const segments = mergeFalseAbbreviationBreaks([...segmenter.segment(trimmed)].map(s => s.segment));
 
-      // Extract and clean sentences
+      // EVERY SEGMENT OF THE PARAGRAPH COMES BACK, AND ONLY EMPTY ONES DO NOT.
+      //
+      // Until 2026-09-18 a second filter followed — `s.length > 3 ||
+      // /^[A-Z]/.test(s)` — which deleted any segment of three characters or
+      // fewer that did not begin with an ASCII capital. Of `42.`, `iv.`, `ok.`
+      // and `No!` only the last survived. This list is not a display
+      // convenience: `book-render-service.saveRenderPlan` pushes a BLOCK to
+      // `plan.blocks` and then asks this function for that block's sentences,
+      // so a block reading `42.` or `iv.` was displayed by the reader, counted,
+      // and could even open a chapter — while contributing nothing to
+      // `plan.sentences`. Nothing pointed at it, so it was never highlighted,
+      // never spoken and never in the VTT, and the difference was recorded
+      // nowhere. (The capital test was ASCII-only as well, so the rule bit
+      // hardest in the locales least able to spare a sentence.)
+      //
+      // Spoken, displayed and aligned are one list of strings — see the module
+      // comment. A fragment that is not worth its own inference is a PACKING
+      // question, which `capSegment`'s MIN_SEGMENT_CHARS floor answers by
+      // absorbing it into its neighbour, not by dropping the text.
       const sentences = segments
         .map(s => s.trim())
-        .filter(s => s.length > 0)
-        // Filter out very short fragments that aren't real sentences
-        .filter(s => s.length > 3 || /^[A-Z]/.test(s));
+        .filter(s => s.length > 0);
 
       allSegments.push(...sentences);
     }
