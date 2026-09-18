@@ -307,13 +307,22 @@ async function venueDoor() {
     } finally {
       await fake.close();
     }
-    await check('a routed server runs the Crucible job, lands alignment.json, and fails NAMING the owed narrator door', () => {
+    await check('a routed server runs the Crucible job, lands alignment.json, and HANDS IT TO NARRATOR', () => {
       assert.strictEqual(fake.state.submitted.length, 1, 'the job ran');
       assert.ok(fs.existsSync(path.join(dir, 'alignment.json')), 'the GPU half is on disk (R6)');
-      assert.strictEqual(result.success, false, 'no coverage.json was written, and success means exactly that');
-      assert.ok(result.error.includes(align.CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED) || /narrator has no door/.test(result.error),
-        result.error);
-      assert.ok(/narrator align --alignment/.test(result.error), 'the owed build is named');
+      // THE OWED DOOR WAS BUILT (2026-09-18). Until then this returned
+      // `narratorDoorOwedMessage` and the book was sealed with an estimated
+      // transcript; now the run continues into `narrator align --alignment`,
+      // which is `align.ts`'s shape (a). This box has no tools env, so what
+      // comes back is NARRATOR'S OWN refusal about the interpreter — and that
+      // is the assertion, because it proves the handoff happened rather than
+      // the old gap being reworded.
+      assert.strictEqual(result.success, false, 'no coverage.json here: this box has no tools env');
+      assert.ok(!/narrator has no door/.test(result.error),
+        `the owed-door gap is closed, not reworded: ${result.error}`);
+      assert.ok(/tools Python environment is not installed/.test(result.error),
+        `expected narrator's own refusal, got: ${result.error}`);
+      // The card's work is a FILE, so a retry reads it rather than re-aligning.
       assert.strictEqual(result.alignmentPath, path.join(dir, 'alignment.json'));
       assert.deepStrictEqual(result.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
       assert.strictEqual(result.busyLine, undefined);

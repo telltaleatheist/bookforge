@@ -1851,10 +1851,21 @@ class CliTest(unittest.TestCase):
     def test_the_backend_is_chosen_by_name_and_defaults_to_whisperx(self):
         """Two aligners ship, so there IS a flag - and it takes only the two
         that ship. torchaudio was measured and rejected in 2026-09-05 and is
-        still not a choice."""
+        still not a choice.
+
+        THE PARSER'S DEFAULT IS None AND THE HANDLER'S IS whisperx (2026-09-18).
+        What a person sees is unchanged — `narrator align` with no --backend
+        still aligns with whisperx — but "not given" had to become a state the
+        handler can read, because with `--alignment` the backend is the
+        DOCUMENT's and an explicit `--backend whisperx` against qwen3 items must
+        be refused rather than silently overruled. A default of 'whisperx' here
+        makes those two command lines identical.
+        """
         from narrator.cli import build_parser
         default = build_parser().parse_args(['align', '--session-dir', 'D'])
-        self.assertEqual(default.backend, 'whisperx')
+        self.assertIsNone(default.backend, 'the parser records silence')
+        self.assertEqual(A.DEFAULT_BACKEND, 'whisperx',
+                         'and the handler resolves silence to this')
         chosen = build_parser().parse_args(
             ['align', '--session-dir', 'D', '--backend', 'qwen3'])
         self.assertEqual(chosen.backend, 'qwen3')
@@ -2159,7 +2170,8 @@ class AlignSessionTest(unittest.TestCase):
             indices=None, out=os.path.join(self.tmp, 'out.sentences.vtt'),
             report=os.path.join(self.tmp, 'coverage.json'), language='en',
             backend='whisperx', device='cpu', python=None, ffmpeg=None,
-            continue_on_error=False, workers=1, chapter_gap=0.0)
+            continue_on_error=False, workers=1, chapter_gap=0.0,
+            alignment=None)
         self.assertEqual(_run_align(args, self._manifest(texts)), 0)
         self.assertTrue(os.path.isfile(args.out))
         self.assertTrue(os.path.isfile(args.report))
@@ -2191,7 +2203,8 @@ class AlignSessionTest(unittest.TestCase):
         args = argparse.Namespace(
             indices=None, out=None, report=os.path.join(self.tmp, 'c.json'),
             language='en', backend='qwen3', device='cuda', python=None,
-            ffmpeg=None, continue_on_error=False, workers=1, chapter_gap=0.0)
+            ffmpeg=None, continue_on_error=False, workers=1, chapter_gap=0.0,
+            alignment=None)
         with mock.patch('narrator.align.run.align_session', capture):
             self.assertEqual(_run_align(args, self._manifest(['One two.'])), 0)
         self.assertEqual(seen['backend'], 'qwen3')
@@ -2276,6 +2289,208 @@ class AlignSessionTest(unittest.TestCase):
         # Same measurement, same failure count - the difference is whether a run
         # of that engine carries an Align row at all.
         self.assertEqual(orpheus['document']['summary']['chunksFailed'], 1)
+
+
+class PrecomputedAlignmentTest(unittest.TestCase):
+    """`--alignment` — the model's half done on somebody else's card.
+
+    `electron/crucible/align.ts` shape (a): a Crucible `align` job runs the
+    forced aligner on a server and lands its items per chunk; narrator reads
+    them instead of loading a model, and EVERYTHING ELSE IT OWNS still happens
+    here. So these prove two things at once — that the measured outputs come out
+    the far side, and that no aligner was loaded to produce them.
+
+    NO MODEL AND NO AUDIO, on `AlignSessionTest`'s terms and with its fixtures:
+    the session layout is real, `decode_audio` is faked one layer up because a
+    chunk's audio only needs the right LENGTH, and the backend function is
+    replaced with one that EXPLODES — a fake that would pass if the code
+    quietly fell back to running the model is a fake that proves nothing.
+    """
+
+    SAMPLES = 24000
+
+    def setUp(self):
+        import numpy as np
+
+        self.tmp = tempfile.mkdtemp(prefix='narrator-align-precomputed-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._audio = np.zeros(A.SAMPLE_RATE, dtype='float32')
+        self._patch(A, 'decode_audio', lambda path, ffmpeg=None: self._audio)
+        self._patch(A, 'detect_silences',
+                    lambda audio, noise_db=None, min_s=None: ())
+        # THE MODEL MUST NOT RUN. Both qwen3 seams are mined: if anything
+        # reaches for the aligner the test fails with this sentence rather than
+        # passing on a silent local fallback.
+        def _never(*args, **kwargs):
+            raise AssertionError('the aligner was loaded for a precomputed run')
+        A._BACKEND_FUNCTIONS['qwen3'] = _never
+        self.addCleanup(A._BACKEND_FUNCTIONS.__setitem__, 'qwen3',
+                        A._qwen3_words)
+        A._BACKEND_LOADERS['qwen3'] = _never
+        self.addCleanup(A._BACKEND_LOADERS.__setitem__, 'qwen3', A._load_qwen3)
+
+    def _patch(self, module, name, value):
+        old = getattr(module, name)
+        setattr(module, name, value)
+        self.addCleanup(setattr, module, name, old)
+
+    def _manifest(self, texts, engine='higgs-v3'):
+        from narrator.manifest import (Book, Chapter, Chunk, EdgeFadeMs, Engine,
+                                       Manifest, Source, Voice)
+        chunks = [
+            Chunk(index=i, text=text, kind='prose',
+                  file=f'chapters/sentences/{i}.flac', samples=self.SAMPLES)
+            for i, text in enumerate(texts)
+        ]
+        return Manifest(
+            source=Source(kind='e2a-session-v1', processDir=self.tmp,
+                          sessionId='sid', epubContentHash='h'),
+            book=Book(title='T', author='A', language='en', language3='eng'),
+            voice=Voice(engine=engine, fineTuned='v'),
+            sampleRate=24000, sentencesDir=os.path.join(self.tmp, 'chapters'),
+            engine=Engine(id=engine, pads=False,
+                          edgeFadeMs=EdgeFadeMs(10.0, 25.0)),
+            chapters=[Chapter(index=1, title='C', doc=None, chunks=chunks)])
+
+    def _document(self, per_chunk, *, engine='qwen3-forced-aligner',
+                  device='cuda'):
+        """`{index: [words]}` -> the artifact Crucible lands, evenly timed."""
+        chunks = []
+        for index, words in sorted(per_chunk.items()):
+            step = 1.0 / max(1, len(words))
+            chunks.append({'index': index, 'items': [
+                {'text': word, 'start': round(i * step, 4),
+                 'end': round((i + 1) * step, 4)}
+                for i, word in enumerate(words)]})
+        return {'engine': engine, 'device': device, 'language': 'en',
+                'items_are': "the model's own tokenization, not the caller's words",
+                'chunks': chunks}
+
+    def test_items_are_read_and_no_model_is_loaded(self):
+        texts = ['One two three.', 'Four five six.']
+        manifest = self._manifest(texts)
+        document = self._document(
+            {0: ['One', 'two', 'three.'], 1: ['Four', 'five', 'six.']})
+
+        lines = []
+        result = R.align_session(manifest, alignment=document,
+                                 progress=lines.append)
+
+        summary = result['document']['summary']
+        self.assertEqual(summary['chunksAligned'], 2)
+        self.assertEqual(summary['errors'], 0)
+        # The backend came from the DOCUMENT, not from the default: these items
+        # are qwen3's and are therefore scored as derived, never as a model's.
+        self.assertEqual(result['document']['chunks'][0]['scoreSource'],
+                         'derived')
+        # And it said where the items were made, which is not where this ran.
+        self.assertTrue(any('made on cuda' in line for line in lines),
+                        f'expected the provenance line, got {lines}')
+
+    def test_a_chunk_the_document_lacks_is_ONE_chunk_s_failure(self):
+        """Absence is the ordinary consequence of a partial run."""
+        manifest = self._manifest(['One two three.', 'Four five six.'])
+        document = self._document({0: ['One', 'two', 'three.']})
+
+        result = R.align_session(manifest, alignment=document,
+                                 progress=lambda line: None)
+
+        summary = result['document']['summary']
+        # The chunk that WAS covered is measured; the one that was not is an
+        # error with its own sentence, and the run wrote both outputs either way.
+        self.assertEqual(summary['chunksAligned'], 1)
+        self.assertEqual(summary['errors'], 1)
+        self.assertEqual(summary['errorIndices'], [1])
+        said = ' '.join(str(e) for e in result['document']['errors'])
+        self.assertIn('carries no chunk 1', said)
+        # And its cues are ESTIMATES over the real audio, not silence.
+        self.assertTrue(result['cues'], 'the transcript still covers the book')
+
+    def test_a_document_about_another_session_is_refused_WHOLE(self):
+        """TOTAL absence cannot be a partial run — it is the wrong document."""
+        manifest = self._manifest(['One two three.'])
+        document = self._document({7: ['Something', 'else.'],
+                                   8: ['More', 'of', 'it.']})
+
+        with self.assertRaises(A.AlignerError) as refused:
+            R.align_session(manifest, alignment=document,
+                            progress=lambda line: None)
+        self.assertIn('made for a different render', str(refused.exception))
+
+    def test_the_letter_check_still_bites(self):
+        """A remote model can rewrite the text exactly as a local one can."""
+        manifest = self._manifest(['One two three.'])
+        document = self._document({0: ['One', 'two', 'FOUR.']})
+
+        result = R.align_session(manifest, alignment=document,
+                                 progress=lambda line: None)
+        summary = result['document']['summary']
+        self.assertEqual(summary['errorIndices'], [0])
+        said = ' '.join(str(e) for e in result['document']['errors'])
+        self.assertIn('not the text it was given', said)
+
+    def test_running_a_model_and_reading_one_are_refused_together(self):
+        manifest = self._manifest(['One two three.'])
+        document = self._document({0: ['One', 'two', 'three.']})
+
+        with self.assertRaises(A.AlignerError) as py:
+            R.align_session(manifest, alignment=document, python_exe='/x/python',
+                            progress=lambda line: None)
+        self.assertIn('no model to run', str(py.exception))
+
+        with self.assertRaises(A.AlignerError) as pool:
+            R.align_session(manifest, alignment=document, workers=4,
+                            progress=lambda line: None)
+        self.assertIn('runs no aligner at all', str(pool.exception))
+
+    def test_an_engine_with_no_scoring_rule_is_refused(self):
+        with self.assertRaises(A.AlignerError) as unknown:
+            R.backend_for_alignment({'engine': 'some-other-aligner'})
+        self.assertIn('no scoring rule', str(unknown.exception))
+
+        with self.assertRaises(A.AlignerError) as unnamed:
+            R.backend_for_alignment({'device': 'cuda'})
+        self.assertIn('names no `engine`', str(unnamed.exception))
+
+        self.assertEqual(
+            R.backend_for_alignment({'engine': 'qwen3-forced-aligner'}), 'qwen3')
+
+    def test_an_item_missing_a_field_names_its_chunk(self):
+        """Not defaulted, for `align.worker`'s reason: a defaulted `start`
+        places a word at 0.0 and slides a cue with nothing to show for it."""
+        with self.assertRaises(A.AlignerError) as missing:
+            A.precomputed_items([{'text': 'one', 'start': 0.0}], chunk_index=12)
+        self.assertIn('chunk 12', str(missing.exception))
+        self.assertIn('missing end', str(missing.exception))
+
+        with self.assertRaises(A.AlignerError) as bad:
+            A.precomputed_items([{'text': 'one', 'start': 'x', 'end': 1.0}],
+                                chunk_index=12)
+        self.assertIn('not numbers', str(bad.exception))
+
+        with self.assertRaises(A.AlignerError) as shape:
+            A.precomputed_items(['one'], chunk_index=12)
+        self.assertIn('not an object', str(shape.exception))
+
+    def test_a_document_holding_one_chunk_twice_is_refused(self):
+        with self.assertRaises(A.AlignerError) as twice:
+            R._items_by_index({'chunks': [{'index': 3, 'items': []},
+                                          {'index': 3, 'items': []}]})
+        self.assertIn('twice', str(twice.exception))
+
+    def test_the_cli_refuses_a_backend_that_disagrees_with_the_document(self):
+        """Somebody who types --backend whisperx against qwen3 items believes
+        they are getting model confidences. They would be getting derived."""
+        from narrator.cli import build_parser
+
+        args = build_parser().parse_args(
+            ['align', '--session-dir', self.tmp, '--alignment', '/a.json'])
+        self.assertIsNone(args.backend, 'not given is a state the handler reads')
+
+        args = build_parser().parse_args(
+            ['align', '--session-dir', self.tmp, '--alignment', '/a.json',
+             '--backend', 'whisperx'])
+        self.assertEqual(args.backend, 'whisperx')
 
 
 class PerChunkGateTest(unittest.TestCase):

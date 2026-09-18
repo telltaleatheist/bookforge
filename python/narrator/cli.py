@@ -18,6 +18,7 @@ cannot diverge. `compat/FLAGS.md` maps one to the other.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -176,8 +177,13 @@ def build_parser() -> argparse.ArgumentParser:
     # bake-off that bought qwen3 (395x realtime, 890/1083 Shift chunk starts
     # inside 0.1 s, against whisperx's 18x and 39/61) is in align/README.md,
     # along with the older table that rejected torchaudio's forced_align.
+    # DEFAULT None, RESOLVED IN THE HANDLER, so "not given" is a state. With
+    # --alignment the backend is the DOCUMENT's (its items are scored under that
+    # model's rules), and a default of "whisperx" here would make an explicit
+    # --backend whisperx indistinguishable from silence — so the disagreement
+    # could not be refused and the flag would be quietly overruled.
     p_align.add_argument(
-        "--backend", default="whisperx", choices=["whisperx", "qwen3"],
+        "--backend", default=None, choices=["whisperx", "qwen3"],
         help="which forced aligner (default: whisperx, CPU, model-scored). "
              "qwen3 is Qwen3-ForcedAligner-0.6B: ~22x faster on a GPU and "
              "tighter on chunk starts, but its word scores are DERIVED, not "
@@ -205,6 +211,21 @@ def build_parser() -> argparse.ArgumentParser:
              "workers unless the environment already names them",
     )
     p_align.add_argument("--ffmpeg", metavar="PATH")
+    # THE MODEL'S HALF, ALREADY DONE SOMEWHERE ELSE. `electron/crucible/align.ts`
+    # shape (a): a Crucible `align` job runs the forced aligner on a server's
+    # card and lands its items per chunk; this reads them instead of loading a
+    # model. Everything narrator owns — the item-to-word mapping, the derived
+    # scores, the gate, the cues, coverage.json — still happens here, which is
+    # the point of the split (PHASE4-AUDIO.md §2: "most of the value of the
+    # feature and none of the value of a server").
+    p_align.add_argument(
+        "--alignment", metavar="FILE",
+        help="a Crucible `align` artifact (alignment.json): the model's items "
+             "per chunk, already computed. No aligner is loaded and no card is "
+             "taken; the audio is still decoded here for silences and scores. "
+             "Refused together with --python or --workers, which are about "
+             "running a model",
+    )
     # THE SAME VALUE THE ASSEMBLY WILL USE. These cues are sealed into the m4b as
     # its subtitle track, so they are timed against the FINISHED book: a gap in
     # the audio that is not in this sum slides every cue after chapter one early
@@ -523,9 +544,10 @@ def _run_align(args, manifest) -> int:
     Non-zero is reserved for a run that could not happen at all - no session, no
     interpreter that can import the backend, a worker that died.
     """
-    from .align.aligner import AlignerError
+    from .align.aligner import DEFAULT_BACKEND, AlignerError
     from .align.run import (DEFAULT_REPORT_NAME, SENTENCE_VTT_SUFFIX,
-                            align_session, write_outputs)
+                            align_session, backend_for_alignment,
+                            write_outputs)
     from .assemble.run import final_name
 
     indices = None
@@ -547,12 +569,48 @@ def _run_align(args, manifest) -> int:
         print("[align] --continue-on-error is accepted and ignored: the pass "
               "always audits the whole book now.", flush=True)
 
+    document = None
+    if args.alignment:
+        try:
+            with open(args.alignment, "r", encoding="utf-8") as handle:
+                document = json.load(handle)
+        except OSError as unreadable:
+            print(f"Error: --alignment {args.alignment} cannot be read "
+                  f"({unreadable}).", flush=True)
+            return 1
+        except ValueError as malformed:
+            print(f"Error: --alignment {args.alignment} is not JSON "
+                  f"({malformed}). It is the artifact a Crucible `align` job "
+                  f"lands.", flush=True)
+            return 1
+        if not isinstance(document, dict):
+            print(f"Error: --alignment {args.alignment} holds a "
+                  f"{type(document).__name__}, not an alignment document.",
+                  flush=True)
+            return 1
+
     try:
+        # WHOSE RULES THE ITEMS ARE SCORED UNDER. With a document that is the
+        # document's, and an explicit --backend that disagrees is a refusal
+        # rather than a silent overrule: somebody who typed `--backend whisperx`
+        # against qwen3 items believes they are getting model confidences, and
+        # they would be getting derived ones.
+        backend = args.backend
+        if document is not None:
+            declared = backend_for_alignment(document)
+            if backend is not None and backend != declared:
+                print(f"Error: --backend {backend} disagrees with "
+                      f"--alignment, whose items were made by "
+                      f"{document.get('engine')!r} and are read as {declared!r}. "
+                      f"Drop --backend, or align this session yourself.",
+                      flush=True)
+                return 1
+            backend = declared
         result = align_session(
-            manifest, backend=args.backend, language=args.language,
+            manifest, backend=backend or DEFAULT_BACKEND, language=args.language,
             device=args.device, python_exe=args.python, ffmpeg=args.ffmpeg,
             indices=indices, workers=args.workers,
-            chapter_gap=args.chapter_gap)
+            chapter_gap=args.chapter_gap, alignment=document)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)

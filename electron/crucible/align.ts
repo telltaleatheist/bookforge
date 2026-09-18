@@ -26,7 +26,7 @@
  * and none is planned: {@link crucibleAlignerFor} refuses `whisperx` by name,
  * and that bridge keeps its local CPU spawn until it is deleted, not moved.
  *
- * ── WHAT THIS DOOR CANNOT FINISH TONIGHT, SAID PLAINLY ────────────────────
+ * ── WHERE THE OTHER HALF HAPPENS ──────────────────────────────────────────
  *
  * Crucible returns items in ITS OWN tokenization and asserts nothing about
  * words. Everything after that — the item-to-word mapping, the normalized
@@ -34,33 +34,36 @@
  * derived word scores, the per-chunk gate, the sentence cues,
  * `<stem>.sentences.vtt` and `coverage.json` — is narrator's
  * (`python/narrator/align/{aligner,run,sentences,coverage}.py`), and PHASE4 §2
- * rules that it stays there: "most of the value of the feature and none of the
- * value of a server". narrator has NO door that takes precomputed items: its
- * only transport is `python -m narrator.align.worker` running the model itself.
+ * rules that it stays there: *"most of the value of the feature and none of the
+ * value of a server"*.
  *
- * `python/**` is outside this session's remit (2026-09-14), so the door is
- * built to the seam and REFUSES BY NAME past it: `alignment.json` lands, and
- * `coverage-align-job.ts` then fails the run with
- * `crucible_align_narrator_door_owed` naming the build that finishes it. That
- * is a loud, dated partial, not a fallback — the legacy switch still spawns the
- * local narrator exactly as today, and nothing quietly does half the work.
+ * THAT DOOR IS BUILT (2026-09-18), and it is shape (a):
+ * `narrator align --alignment <alignment.json>`. narrator builds its job list
+ * exactly as it always did (manifest, `chunk_spans`, `spoken(chunk.text)`) and,
+ * instead of loading a model, reads each chunk's items out of the document by
+ * index, maps them onto `chunk_words(spoken)` with the existing
+ * `_map_items_onto_words`, decodes the chunk locally for `detect_silences`,
+ * derives scores and spans, and continues into cues/gate/coverage UNCHANGED.
+ * BookForge's half is ONE spawn after this job (`runCoverageAlignOnCrucible`
+ * hands it to `runCoverageAlignLocally`), and its parent interpreter is the
+ * TOOLS env — no torch, no card, native on every platform — which is what lets
+ * a Mac use a remote aligner at all.
  *
- * RULING OWED (the shape of narrator's door; the lead's or Owen's to pick):
- *   (a) `narrator align --alignment <alignment.json>` — narrator builds its job
- *       list exactly as today (manifest, `chunk_spans`, `spoken(chunk.text)`),
- *       and instead of `_run` reads each chunk's items out of the document by
- *       index, maps them onto `chunk_words(spoken)` with the existing
- *       `_map_items_onto_words`, decodes the chunk locally for `detect_silences`,
- *       derives scores and spans, and continues into cues/gate/coverage
- *       unchanged. BookForge's half is then ONE spawn after this job, and
- *       {@link spokenTextForStoredChunk} below must agree with narrator's
- *       `spoken()` letter for letter — which narrator's own equality check
- *       enforces loudly on the first chunk if it ever does not.
- *   (b) the transport inside narrator (`align_session(crucible=...)`), with
- *       BookForge handing it url/token/model. Keeps `spoken()` with one owner
- *       but puts an HTTP client for Crucible's wire into narrator's stdlib
- *       parent, which today knows no server.
- * Until one lands, (a) is what this module is shaped for.
+ * WHAT WAS HERE BEFORE: `narratorDoorOwedMessage` and a pre-submit refusal in
+ * `queue-steps/align.ts`, both removed with the gap they named. They were
+ * honest while they stood — a remote run would have spent GPU minutes on an
+ * artifact nothing could read — but every alignment failed at its last step and
+ * every book was sealed with an ESTIMATED transcript, and with the legacy local
+ * narrator retired there was nothing else to run.
+ *
+ * Shape (b) — the transport inside narrator, BookForge handing it
+ * url/token/model — was not taken. It keeps `spoken()` with one owner, but puts
+ * an HTTP client for Crucible's wire into narrator's stdlib parent, which knows
+ * no server and now has no reason to.
+ *
+ * {@link spokenTextForStoredChunk} must agree with narrator's `spoken()` letter
+ * for letter; narrator's own equality check enforces that loudly on the first
+ * chunk if it ever does not.
  *
  * ── The text sent is narrator's spoken reading ─────────────────────────────
  *
@@ -460,51 +463,4 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
     failed,
     cues,
   };
-}
-
-/**
- * THE NAMED GAP. What `coverage-align-job.ts` says once `alignment.json` has
- * landed and the narrator half cannot be spawned. One sentence, one place, so
- * the queue card, the CLI and the job log all say the same thing.
- */
-export const CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED = 'crucible_align_narrator_door_owed';
-
-/**
- * THE SAME GAP, SAID BEFORE ANY CARD IS TOUCHED.
- *
- * `narratorDoorOwedMessage` is what the run says once the model's items have
- * landed; this is what the QUEUE STEP says the moment it sees its run was
- * assigned to a Crucible server. Submitting first would load a 3 GB aligner on
- * somebody's card, run it, and then refuse — GPU minutes spent on an artifact
- * nothing can read, which is a worse answer than the honest one (crucible
- * `docs/ARCHITECTURE.md` R3: nothing is ever told "maybe"). It is not a
- * fallback either: the row FAILS by name, and the legacy switch is named as
- * what runs it today.
- *
- * One code, two moments, one owner — so the queue card, the CLI and the job log
- * cannot describe the same gap in two vocabularies.
- */
-export function narratorDoorOwedBeforeSubmit(server: string): string {
-  return (
-    `This alignment was assigned to crucible "${server}", and a remote alignment cannot finish: `
-    + 'narrator has no items-in door, so the server would produce the model\'s items and nothing '
-    + 'could turn them into coverage.json and the sentence VTT. BUILD OWED: '
-    + '`narrator align --alignment <alignment.json>` (electron/crucible/align.ts header, shape (a); '
-    + 'docs/CRUCIBLE_ROLLOUT_PLAN.md §0b B5). Nothing was submitted and no card was taken. The '
-    + 'rendered audio is intact; there is no local narrator to align with instead '
-    + '(docs/LEGACY-REMOVAL.md), so this waits on that door.'
-  );
-}
-
-export function narratorDoorOwedMessage(alignmentPath: string): string {
-  return (
-    `The Crucible alignment landed at ${alignmentPath} (the model's items per chunk, with its `
-    + 'provenance beside it), but narrator has no door that turns those items into coverage.json '
-    + 'and the sentence VTT — the item-to-word mapping, the derived scores, the gate and the cues are '
-    + 'narrator\'s (python/narrator/align/, PHASE4-AUDIO.md §2) and it only aligns through its own '
-    + 'worker today. BUILD OWED: `narrator align --alignment <alignment.json>` (electron/crucible/align.ts '
-    + 'header, shape (a)). Until it exists, the rendered audio is intact and this run wrote no '
-    + 'coverage report. There is no local narrator to align with instead '
-    + '(docs/LEGACY-REMOVAL.md).'
-  );
 }

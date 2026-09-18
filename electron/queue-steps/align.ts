@@ -80,8 +80,6 @@ import {
   RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
 } from '../../shared/queue/wait-for';
 import {
-  CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED,
-  narratorDoorOwedBeforeSubmit,
 } from '../crucible/align';
 import { runVenueOfRow } from '../crucible/step-venue';
 
@@ -192,11 +190,20 @@ export const alignStep: StepModule = {
     if (assigned === RETIRED_LOCAL_NARRATOR_VENUE) {
       throw new Error(`legacy_venue_retired: ${retiredVenueReason()}`);
     }
-    if (assigned !== undefined && assigned !== WAIT_FOR_ANY) {
-      throw new Error(
-        `${CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED}: ${narratorDoorOwedBeforeSubmit(assigned)}`,
-      );
-    }
+    /*
+     * A SERVER ASSIGNMENT USED TO BE REFUSED HERE, and is not any more
+     * (2026-09-18). The refusal was honest while it stood: narrator had no door
+     * that took precomputed items, so a remote run would have spent GPU minutes
+     * producing an artifact nothing could read, and R3 forbids telling anybody
+     * "maybe". The door exists now — `narrator align --alignment` — so a routed
+     * row runs the model on the server and MEASURES THE BOOK HERE from what it
+     * placed (`runCoverageAlignOnCrucible`, electron/coverage-align-job.ts).
+     *
+     * Nothing replaces the check, because there is nothing left to check: the
+     * venue decision belongs to `runCoverageAlign`, which reads it from the
+     * run's own record and refuses a disagreement by name. A second gate here
+     * would be this step forming an opinion about a decision it does not own.
+     */
 
     let sessionId = config.sessionId || ctx.input.sessionId;
     let sessionDir = config.sessionDir || ctx.input.sessionDir;

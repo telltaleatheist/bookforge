@@ -199,9 +199,27 @@ const STEPS = {
     }
   });
 
-  // ── 3. Align refuses by name, before any card is touched ─────────────────
+  // ── 3. Align no longer refuses a server venue ────────────────────────────
 
-  await check('align refuses a server venue BY NAME and says what is owed', async () => {
+  await check('align ACCEPTS a server venue: the owed narrator door was built', async () => {
+    /*
+     * UNTIL 2026-09-18 this step refused any run assigned to a Crucible server,
+     * before anything was submitted, with `crucible_align_narrator_door_owed`.
+     * The refusal was honest while it stood — narrator had no door that took
+     * precomputed items, so a remote run would have spent GPU minutes on an
+     * artifact nothing could read. `narrator align --alignment` closed that, so
+     * a routed row now runs the model on the server and MEASURES the book here
+     * from what it placed.
+     *
+     * The gate is gone rather than reworded, and NOTHING replaces it: the venue
+     * decision belongs to `runCoverageAlign`, which reads it off the run's own
+     * record and refuses a disagreement by name. A second gate here would be
+     * this step forming an opinion about a decision it does not own.
+     *
+     * So an assigned row gets PAST the venue and fails on something else — the
+     * session, the language, the missing directory — exactly as an unassigned
+     * one does, which is what the next check asserts for the other two shapes.
+     */
     const mod = STEPS.align();
     const ctx = {
       stepId: 's1',
@@ -211,23 +229,20 @@ const STEPS = {
       report: () => {},
     };
     await assert.rejects(() => mod.run(ctx), (err) => {
-      assert.match(err.message, /^crucible_align_narrator_door_owed: /,
-        'the code leads the message, so every surface reads the same name');
-      assert.match(err.message, /mac/, 'and it says which machine it was sent to');
-      assert.match(err.message, /Nothing was submitted and no card was taken/,
-        'the whole point is that it refuses BEFORE loading a 3 GB aligner');
-      /*
-       * IT USED TO OFFER THE LEGACY SWITCH as the way forward. That switch is
-       * deleted (docs/LEGACY-REMOVAL.md), so the honest refusal names the BUILD
-       * that is owed and says the audio is intact — a refusal must not point at
-       * a control that no longer exists, which is worse than a dead row.
-       */
-      assert.match(err.message, /rendered audio is intact/, 'the user is told what survived');
-      assert.match(err.message, /B5/, 'and which build unblocks it');
-      assert.ok(!/turn on|legacy switch/i.test(err.message),
-        `it still offers a switch that no longer exists: ${err.message}`);
+      assert.ok(!/crucible_align_narrator_door_owed/.test(err.message),
+        `the owed-door gate is gone, not reworded: ${err.message}`);
+      assert.ok(!/Nothing was submitted and no card was taken/.test(err.message),
+        `a server venue is no longer a pre-submit refusal: ${err.message}`);
       return true;
     });
+  });
+
+  await check('the owed-door refusals are DELETED, not left dangling', () => {
+    // Dead code with a live name is how a closed gap gets re-reported. The code,
+    // both messages and the step's import all went with the gap.
+    assert.strictEqual(crucibleAlign.CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED, undefined);
+    assert.strictEqual(crucibleAlign.narratorDoorOwedBeforeSubmit, undefined);
+    assert.strictEqual(crucibleAlign.narratorDoorOwedMessage, undefined);
   });
 
   await check('align does NOT refuse an unassigned run, and DOES refuse the retired venue',
@@ -261,17 +276,6 @@ const STEPS = {
       }),
       /^Error: legacy_venue_retired: /,
     );
-  });
-
-  await check('the two align refusals share one code and say different things', () => {
-    assert.strictEqual(crucibleAlign.CRUCIBLE_ALIGN_NARRATOR_DOOR_OWED,
-      'crucible_align_narrator_door_owed');
-    const before = crucibleAlign.narratorDoorOwedBeforeSubmit('mac');
-    const after = crucibleAlign.narratorDoorOwedMessage('/s/alignment.json');
-    assert.match(before, /Nothing was submitted/);
-    assert.match(after, /alignment landed/,
-      'the after-the-fact one reports banked work (R6); the before one reports none');
-    assert.notStrictEqual(before, after);
   });
 
   // ── 4. One reading of the row's answer ───────────────────────────────────

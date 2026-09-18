@@ -453,9 +453,40 @@ export function coverageAlignArgs(
     device: string;
     /** The aligner env, for its interpreter. See `resolveQwenAlignEnv`. */
     alignEnv: { python: string };
+  } | {
+    reportPath: string;
+    /**
+     * A CRUCIBLE `align` ARTIFACT — the model's items per chunk, already
+     * computed on a server's card. Its presence is what makes this the OTHER
+     * argv, and the difference is subtraction: `--device`, `--python`,
+     * `--workers` and `--backend` are all about loading and running a model,
+     * and this run loads none. narrator refuses the first two by name beside
+     * `--alignment` rather than ignoring them, so passing them would not be
+     * harmless; and the BACKEND is the document's own, because its items are
+     * scored under the rules of the model that made them (`backend_for_alignment`,
+     * python/narrator/align/run.py). Stating `--backend` here would pin this
+     * door to qwen3 the day Crucible's aligner changes, and narrator would
+     * refuse the disagreement — correctly, and for a reason nobody on this side
+     * intended.
+     */
+    alignmentPath: string;
   },
 ): string[] {
-  const { reportPath, device, alignEnv } = spawnInputs;
+  const { reportPath } = spawnInputs;
+  if ('alignmentPath' in spawnInputs) {
+    return [
+      'align',
+      '--session-dir', config.processDir,
+      '--report', reportPath,
+      '--language', config.language,
+      '--alignment', spawnInputs.alignmentPath,
+      // THE SAME RULER, for the same reason as below: these cues are sealed into
+      // the m4b, and a transcript measured at a gap the assembly does not leave
+      // drifts by one gap per chapter boundary with nothing to say so.
+      '--chapter-gap', String(resolveChapterGap(config.chapterGap)),
+    ];
+  }
+  const { device, alignEnv } = spawnInputs;
   // ONE RESOLVER, THE ASSEMBLY'S. Absent is the house default, not zero; a
   // nonsense gap is refused by name here rather than measured.
   const chapterGap = resolveChapterGap(config.chapterGap);
@@ -682,7 +713,7 @@ async function runCoverageAlignOnCrucible(
   }
 
   const {
-    BOOKFORGE_ALIGN_BACKEND, CrucibleAlignRefused, narratorDoorOwedMessage,
+    BOOKFORGE_ALIGN_BACKEND, CrucibleAlignRefused,
     runCrucibleAlign, sessionAlignChunks,
   } = await import('./crucible/align.js');
   const { CrucibleJobRefused, CrucibleJobCancelled } = await import('./crucible/job.js');
@@ -743,9 +774,48 @@ async function runCoverageAlignOnCrucible(
     const minutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
     console.log(`[COVERAGE-ALIGN] crucible "${server}" aligned ${outcome.chunks} chunk(s) in ${minutes} min, `
       + `${outcome.failed.length} failed; items at ${outcome.alignmentPath}`);
-    // THE NAMED GAP — see align.ts's header. The GPU half is on disk; the
-    // coverage report is not, and nothing here pretends otherwise.
-    return fail(narratorDoorOwedMessage(outcome.alignmentPath), { alignmentPath: outcome.alignmentPath });
+    /*
+     * AND NOW NARRATOR'S HALF, HERE — `align.ts`'s shape (a), built 2026-09-18.
+     *
+     * Until that date this returned `narratorDoorOwedMessage`: the items were on
+     * disk and nothing could turn them into `coverage.json` and the sentence
+     * VTT, so every remote alignment failed at its last step and the book was
+     * sealed with an ESTIMATED transcript. That was a dated partial and it is
+     * closed; the gap it named was never in Crucible's half, which returns
+     * exactly what it always did.
+     *
+     * The GPU lane is finished and released BEFORE this runs (the `finally`
+     * below drops the controller as this call is made, and this pass takes no
+     * card at all), so a second book's alignment can have the server while this
+     * one measures. What follows is CPU: decode each chunk, map the items onto
+     * narrator's own words, derive the scores, cut the cues, write the report.
+     */
+    activeCrucibleAligns.delete(stepId);
+    console.log('[COVERAGE-ALIGN] the server is done; measuring the book here from its items.');
+    /*
+     * ITS OWN TRY, because its failures are NOT the Crucible job's. Inside the
+     * outer catch, a missing tools env came back as "The Crucible alignment did
+     * not finish: The tools Python environment is not installed" — which sends
+     * the reader to the server that did its half perfectly.
+     */
+    let measured: CoverageAlignResult;
+    try {
+      measured = await runCoverageAlignLocally(
+        stepId, config, mainWindow, { alignmentPath: outcome.alignmentPath });
+    } catch (err) {
+      const error = 'The server placed every word, but this machine could not measure the book '
+        + `from them: ${err instanceof Error ? err.message : String(err)} The items are kept at `
+        + `${outcome.alignmentPath}, so a retry costs no GPU time. The rendered audio is intact.`;
+      sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+      measured = { success: false, error };
+    }
+    /*
+     * THE ITEMS ARE ON DISK EITHER WAY, and the result says so either way. A
+     * measurement that fails here has not wasted the card: the GPU half is a
+     * file, and a retry reads it rather than aligning the book again. Dropping
+     * this on the failure path would make a re-run look like the only option.
+     */
+    return { ...measured, alignmentPath: outcome.alignmentPath };
   } catch (err) {
     if (err instanceof CrucibleJobCancelled) {
       const error = 'Alignment cancelled';
@@ -783,28 +853,57 @@ export async function runCoverageAlignLocally(
   stepId: string,
   config: CoverageAlignConfig,
   mainWindow: BrowserWindow | null,
+  /**
+   * NARRATOR'S HALF OVER ITEMS A SERVER ALREADY PRODUCED — `electron/crucible/
+   * align.ts` shape (a), built 2026-09-18.
+   *
+   * With it, this is the same door doing the same work with the model's half
+   * subtracted: no qwen env to resolve (there is no model to import), no torch
+   * device to pick (nothing runs on one), and the parent interpreter is the one
+   * it always was — the tools env, which is native on every platform. That is
+   * what makes the remote aligner usable from a Mac at all: `align` is off on
+   * this machine because qwen3-aligner has no mlx-darwin block, and it never
+   * needed to be on to read a document.
+   *
+   * The spawn, the progress lines, the cancel and the close handling below are
+   * shared rather than copied, because two implementations of "run narrator
+   * align and report what it said" is how the two arms start disagreeing about
+   * what a failure means.
+   */
+  fromAlignment?: { alignmentPath: string },
 ): Promise<CoverageAlignResult> {
-  // The same refusal the CLI raises at plan time, said again here because a row
-  // can outlive the machine state that composed it: a queue restored after the
-  // add-on was uninstalled must say WHICH add-on rather than "python not found".
-  const resolvedEnv = resolveQwenAlignEnv();
-  if (!resolvedEnv.ok) {
-    const error = `${resolvedEnv.error} The rendered audio is intact.`;
+  const reportPath = coverageReportPath(config.processDir);
+  let alignEnv: { python: string; viaWsl?: boolean; wslEnvName?: string } | null = null;
+  let device = 'the server that aligned it';
+
+  if (fromAlignment === undefined) {
+    // The same refusal the CLI raises at plan time, said again here because a row
+    // can outlive the machine state that composed it: a queue restored after the
+    // add-on was uninstalled must say WHICH add-on rather than "python not found".
+    const resolvedEnv = resolveQwenAlignEnv();
+    if (!resolvedEnv.ok) {
+      const error = `${resolvedEnv.error} The rendered audio is intact.`;
+      sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+      return { success: false, error };
+    }
+    alignEnv = resolvedEnv.env;
+
+    const resolved = await resolveAlignDevice(config.device);
+    if (!resolved.ok) {
+      sendProgress(mainWindow, stepId, {
+        phase: 'error', percentage: 0, error: resolved.error, message: resolved.error,
+      });
+      return { success: false, error: resolved.error };
+    }
+    device = resolved.name;
+  } else if (!fs.existsSync(fromAlignment.alignmentPath)) {
+    // Said before anything spawns: narrator would refuse it too, but this side
+    // knows the path is one IT chose and can say so as a fact about the run.
+    const error = `The alignment this measurement reads (${fromAlignment.alignmentPath}) is not on `
+      + 'disk, so there are no items to place the words with. The rendered audio is intact.';
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
-  const alignEnv = resolvedEnv.env;
-
-  const resolved = await resolveAlignDevice(config.device);
-  if (!resolved.ok) {
-    sendProgress(mainWindow, stepId, {
-      phase: 'error', percentage: 0, error: resolved.error, message: resolved.error,
-    });
-    return { success: false, error: resolved.error };
-  }
-  const device = resolved.name;
-
-  const reportPath = coverageReportPath(config.processDir);
 
   /*
    * BookForge's managed Hugging Face cache, so the ~1.2 GB
@@ -842,7 +941,9 @@ export async function runCoverageAlignLocally(
       config.chapterGap === undefined ? 'the house default — this caller stated none' : 'stated'
     }) — the transcript is measured for an assembly at that gap.`,
   );
-  const args = coverageAlignArgs(config, { reportPath, device, alignEnv });
+  const args = fromAlignment !== undefined
+    ? coverageAlignArgs(config, { reportPath, alignmentPath: fromAlignment.alignmentPath })
+    : coverageAlignArgs(config, { reportPath, device, alignEnv: alignEnv! });
 
   const plan = buildNarratorSpawn({
     // No engine: this is a tools-env door. `PHASE_ENGINE.align` is 'refused',
@@ -853,8 +954,14 @@ export async function runCoverageAlignLocally(
     // qwen env lives in WSL: there the interpreter above is a guest path, so the
     // whole spawn crosses and `buildNarratorSpawn` translates every path in the
     // argv. See the header, and `narrator-spawn.ts`'s `wslCondaEnv`.
-    ...(alignEnv.viaWsl ? { wslCondaEnv: alignEnv.wslEnvName } : {} as const),
-    envExtras: { HF_HOME: hfHome },
+    //
+    // NEITHER APPLIES OVER A PRECOMPUTED ALIGNMENT: there is no qwen interpreter
+    // in the argv to cross for, and HF_HOME points at a checkpoint cache nothing
+    // is going to read. Passing them anyway would work and would be a lie about
+    // what this run does.
+    ...(fromAlignment === undefined && alignEnv?.viaWsl
+      ? { wslCondaEnv: alignEnv.wslEnvName } : {} as const),
+    envExtras: fromAlignment === undefined ? { HF_HOME: hfHome } : {},
     // No cwdHint: narrator reads cwd for nothing, every path in this argv is
     // absolute, and the default (userData) always exists and is always writable.
   });
@@ -862,7 +969,10 @@ export async function runCoverageAlignLocally(
 
   const startedAt = Date.now();
   sendProgress(mainWindow, stepId, {
-    phase: 'preparing', percentage: 0, message: `Loading the aligner (${device})…`,
+    phase: 'preparing', percentage: 0,
+    message: fromAlignment === undefined
+      ? `Loading the aligner (${device})…`
+      : 'Measuring the book against the items the server placed…',
   });
 
   return new Promise<CoverageAlignResult>((resolve) => {
@@ -900,7 +1010,9 @@ export async function runCoverageAlignLocally(
         total = Number(totalHit[1]);
         sendProgress(mainWindow, stepId, {
           phase: 'aligning', percentage: 0, processed: 0, total,
-          message: `Aligning ${total} chunk(s) against the book on ${device}…`,
+          message: fromAlignment === undefined
+            ? `Aligning ${total} chunk(s) against the book on ${device}…`
+            : `Measuring ${total} chunk(s) against the items the server placed…`,
         });
         return;
       }

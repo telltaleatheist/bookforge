@@ -653,6 +653,57 @@ def _offsets(pieces) -> list:
     return out
 
 
+@dataclass(frozen=True)
+class PrecomputedItem:
+    """One of a remote aligner's items, in the shape the mapper reads.
+
+    `_map_items_onto_words` walks `.text`, `.start_time` and `.end_time`, which
+    is what the qwen-asr result objects expose. A Crucible `align` artifact
+    spells the same three fields `text`/`start`/`end` over the wire
+    (`items_are: "the model's own tokenization, not the caller's words"`), so
+    this is the whole of the translation between them — and it is a translation
+    and not a parse, because the mapper's own normalized-letter check is what
+    proves the items belong to this text.
+    """
+
+    text: str
+    start_time: Optional[float]
+    end_time: Optional[float]
+
+
+def precomputed_items(rows, *, chunk_index: int) -> tuple:
+    """`[{"text","start","end"}, ...]` -> `PrecomputedItem`s, or refuse by name.
+
+    Every field is required and none is defaulted, for `align.worker`'s reason:
+    a producer that stopped sending `start` would otherwise place a word at 0.0
+    and slide a sentence cue, and the operator would have no way to see it. A
+    row that is not an object, or whose times are not numbers, names the chunk
+    it came from — the caller is reading somebody else's artifact and the chunk
+    index is the only handle it has on which one.
+    """
+    out = []
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise AlignerError(
+                f'chunk {chunk_index}: item {position} is {type(row).__name__}, '
+                f'not an object with text/start/end')
+        missing = [f for f in ('text', 'start', 'end') if f not in row]
+        if missing:
+            raise AlignerError(
+                f'chunk {chunk_index}: item {position} is missing '
+                f'{", ".join(missing)}; a precomputed item carries all three')
+        try:
+            start = float(row['start'])
+            end = float(row['end'])
+        except (TypeError, ValueError) as bad:
+            raise AlignerError(
+                f'chunk {chunk_index}: item {position} ({row["text"]!r}) has '
+                f'times that are not numbers: {bad}') from bad
+        out.append(PrecomputedItem(text=str(row['text']), start_time=start,
+                                   end_time=end))
+    return tuple(out)
+
+
 def _map_items_onto_words(items, expected):
     """Qwen's own items -> ONE `(word, start, end, score=None)` per OUR word.
 
@@ -976,7 +1027,8 @@ def _audio_span(start: float, end: float,
 def align_chunk(audio_path: str, text: str, *, language: str = 'en',
                 backend: str = DEFAULT_BACKEND, device: str = 'cpu',
                 ffmpeg: Optional[str] = None, audio=None,
-                pace_chars_per_sec: Optional[float] = None) -> Alignment:
+                pace_chars_per_sec: Optional[float] = None,
+                items=None) -> Alignment:
     """Align one chunk's audio against the text it was asked to say.
 
     `text` must be the SPOKEN text - markers stripped, whitespace collapsed.
@@ -994,13 +1046,32 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
     Alignment records which of the two it was in `pace_source` - the number is
     never silently one or the other.
 
+    `items` are a forced aligner's items for this chunk, ALREADY COMPUTED
+    somewhere else — a Crucible `align` job's artifact, whose model ran on a
+    server's card (`electron/crucible/align.ts`, shape (a)). Given them, no
+    model is loaded and no accelerator is touched here: they take the place of
+    the backend call and NOTHING ELSE CHANGES. The audio is still decoded,
+    because the silences, the duration, the derived scores and the spans are all
+    measured from it and none of them is in the items; the normalized-letter
+    check in `_map_items_onto_words` still proves the items are about this text;
+    and the word-count and ordering refusals below still apply, because a remote
+    model is exactly as capable of rewriting the text as a local one.
+
+    `device` is then WHERE THE ITEMS WERE MADE rather than where this runs, and
+    is recorded verbatim without `check_device`: that guard exists to stop a
+    local run taking a card BookForge has locked, and this run takes none.
+
     Raises `AlignerError` for anything it cannot do, naming the chunk. There is
     no second attempt and no other backend: see the module docstring.
     """
     if backend not in BACKENDS:
         raise AlignerError(
             f'unknown alignment backend {backend!r}; known: {", ".join(BACKENDS)}')
-    device = check_device(device)
+    # See the docstring: precomputed items take no local device, so the guard
+    # that protects a locked card has nothing to protect and `device` is the
+    # record of where the items were made.
+    if items is None:
+        device = check_device(device)
     spoken = ' '.join(text.split())
     if not spoken:
         raise AlignerError(f'{audio_path}: the chunk text is empty, so there is '
@@ -1013,7 +1084,8 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
 
     started = time.time()
     try:
-        raw = _BACKEND_FUNCTIONS[backend](audio, spoken, language, device)
+        raw = (_map_items_onto_words(items, expected) if items is not None
+               else _BACKEND_FUNCTIONS[backend](audio, spoken, language, device))
     except AlignerError as refused:
         # A BACKEND'S REFUSAL KNOWS ITS OWN REASON AND NOT WHICH CHUNK. This
         # function's contract is that every refusal names the chunk, so the path

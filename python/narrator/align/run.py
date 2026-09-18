@@ -78,7 +78,8 @@ from ..manifest import Manifest
 from ..text.paragraph_packer import spoken
 from . import env as align_env
 from .aligner import (DEFAULT_BACKEND, SCORE_SOURCE_BY_BACKEND, AlignerError,
-                      align_chunk, alignment_from_dict, load_backend)
+                      align_chunk, alignment_from_dict, load_backend,
+                      precomputed_items)
 from .coverage import coverage_document, evaluate_chunk
 from .sentences import sentence_cues, write_sentence_vtt
 
@@ -112,6 +113,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   workers: int = 1,
                   pace_chars_per_sec: Optional[float] = None,
                   chapter_gap: float = 0.0,
+                  alignment: Optional[dict] = None,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -143,8 +145,30 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     default of 0.0 is what every session assembled without a chapter gap wants.
     The audio this pass MEASURES is the session's own chunks, which never contain
     the gap; only the cue times move.
+
+    `alignment` is a Crucible `align` artifact — a forced aligner's items per
+    chunk, produced on a server's card (`electron/crucible/align.ts`). Given
+    one, NO MODEL RUNS HERE: `_from_alignment` takes `_run`'s place and
+    everything after it is unchanged, which is what makes the remote half a
+    transport and not a second implementation. `backend`, `python_exe`,
+    `workers` and `device` are then about a model nobody is loading, and
+    `python_exe`/`workers` are refused by name rather than ignored — a caller
+    that asked for four aligner processes and got none should be told.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
+
+    if alignment is not None:
+        # Said before a single chunk is decoded: these three are instructions
+        # about loading and running a model, and this run loads none.
+        if python_exe:
+            raise AlignerError(
+                '--alignment reads items a server already produced, so there is '
+                'no model to run in --python\'s interpreter. Drop one of the two.')
+        if workers != 1:
+            raise AlignerError(
+                f'--workers {workers} asks for a pool of aligner processes, and '
+                f'--alignment runs no aligner at all. Drop one of the two.')
+        backend = backend_for_alignment(alignment)
 
     engine = engine_id_of(manifest)
     policy = profile_for(engine).coverage
@@ -187,7 +211,8 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         raise AlignerError('every selected chunk is marker-only; there is '
                            'nothing to align')
 
-    results = _run(jobs, python_exe, backend, log, workers)
+    results = (_from_alignment(jobs, alignment, log) if alignment is not None
+               else _run(jobs, python_exe, backend, log, workers))
 
     cues = []
     coverages = []
@@ -399,6 +424,131 @@ def _progress_reporter(log):
         if done % PROGRESS_EVERY == 0 or done == total:
             log(f'[align] aligned {done}/{total} chunk(s)')
     return report
+
+
+#: A remote aligner's declared engine -> the backend whose SCORING RULES its
+#: items are read under. Qwen publishes no confidence, so its items are scored
+#: by `_derive_scores` from the audio (`SCORE_SOURCE_BY_BACKEND['qwen3']`); a
+#: document naming an engine that is not in this table is refused rather than
+#: read under a guess, because the wrong entry here would silently mark derived
+#: scores as the model's.
+BACKEND_BY_REMOTE_ENGINE = {
+    'qwen3-forced-aligner': 'qwen3',
+}
+
+
+def backend_for_alignment(document: dict) -> str:
+    """Which backend a Crucible `align` artifact's items are to be read as."""
+    engine = document.get('engine')
+    if not isinstance(engine, str) or not engine:
+        raise AlignerError(
+            'this alignment document names no `engine`, so there is no way to '
+            'know how its items are scored. It is not an artifact this build '
+            'can read.')
+    backend = BACKEND_BY_REMOTE_ENGINE.get(engine)
+    if backend is None:
+        raise AlignerError(
+            f'this alignment document was made by {engine!r}, which this build '
+            f'has no scoring rule for (known: '
+            f'{", ".join(sorted(BACKEND_BY_REMOTE_ENGINE))}). Reading it under '
+            f'another backend\'s rules would label its scores wrongly.')
+    return backend
+
+
+def _items_by_index(document: dict) -> dict:
+    """`{chunk index: items}` out of the artifact, or refuse by name."""
+    chunks = document.get('chunks')
+    if not isinstance(chunks, list):
+        raise AlignerError(
+            'this alignment document has no `chunks` list, so it holds no '
+            'items to align with.')
+    out = {}
+    for position, chunk in enumerate(chunks):
+        if not isinstance(chunk, dict) or 'index' not in chunk:
+            raise AlignerError(
+                f'chunk {position} of this alignment document carries no '
+                f'`index`, so there is no saying which of the session\'s chunks '
+                f'it is about.')
+        try:
+            index = int(chunk['index'])
+        except (TypeError, ValueError) as bad:
+            raise AlignerError(
+                f'chunk {position} of this alignment document has index '
+                f'{chunk["index"]!r}, which is not a number.') from bad
+        if index in out:
+            raise AlignerError(
+                f'this alignment document holds chunk {index} twice; there is '
+                f'no saying which of the two the audio was placed against.')
+        out[index] = chunk.get('items')
+    return out
+
+
+def _from_alignment(jobs, document, log):
+    """`_run`'s answer, built from items somebody else's card already produced.
+
+    ── Why this is a sibling of `_run` and not a branch inside it ─────────────
+
+    It returns the SAME list `_run` does — one `{ok, index, alignment}` or
+    `{ok, index, error}` per job, in order — so everything downstream of it in
+    `align_session` is untouched: the estimate for a failed chunk, the cues, the
+    gate, the coverage report. That is the whole shape of `electron/crucible/
+    align.ts`'s shape (a): the model's half travels, and NOTHING ELSE MOVES.
+
+    ── A DOCUMENT ABOUT ANOTHER SESSION IS REFUSED, NOT ESTIMATED ────────────
+
+    A chunk the document does not carry is one chunk's failure and comes back as
+    one — the run continues and that chunk gets estimated cues, exactly as a
+    chunk the local model could not place does. But a document that carries NOT
+    ONE of this session's chunks was written about a different book, and
+    estimating the entire transcript from it would hand somebody a `coverage.json`
+    that looks like a measurement. Absence is the ordinary consequence of a
+    partial run; TOTAL absence cannot be.
+    """
+    items_by_index = _items_by_index(document)
+    device = document.get('device')
+    wanted = [job['index'] for job in jobs]
+    present = [index for index in wanted if index in items_by_index]
+    if wanted and not present:
+        raise AlignerError(
+            f'this alignment document holds {len(items_by_index)} chunk(s) and '
+            f'not one of them is a chunk of this session (it wants '
+            f'{wanted[0]}..{wanted[-1]}). It was made for a different render.')
+
+    log(f'[align] reading items from a {document.get("engine", "?")} alignment '
+        f'made on {device or "an unnamed device"} — '
+        f'{len(present)}/{len(wanted)} chunk(s) covered; the audio is decoded '
+        f'here for silences and scores')
+
+    progress = _progress_reporter(log)
+    out = []
+    for job in jobs:
+        index = job['index']
+        try:
+            if index not in items_by_index:
+                raise AlignerError(
+                    f'the alignment document carries no chunk {index}, so this '
+                    f'chunk was never placed against its audio.')
+            rows = items_by_index[index]
+            if not isinstance(rows, list):
+                raise AlignerError(
+                    f'chunk {index} of the alignment document carries no items '
+                    f'list, so there is nothing to place its words with.')
+            alignment = align_chunk(
+                job['audioPath'], job['text'], language=job['language'],
+                backend=job['backend'],
+                # WHERE THE ITEMS WERE MADE, recorded rather than where this
+                # runs — see `align_chunk`'s own note. A document that does not
+                # say falls back to the job's device, which is this machine's.
+                device=device if isinstance(device, str) and device else job['device'],
+                ffmpeg=job['ffmpeg'],
+                pace_chars_per_sec=job['paceCharsPerSecond'],
+                items=precomputed_items(rows, chunk_index=index))
+            out.append({'ok': True, 'index': index,
+                        'alignment': alignment.as_dict()})
+        except AlignerError as refused:
+            out.append({'ok': False, 'index': index, 'error': str(refused)})
+        progress(len(out), len(jobs))
+    return out
 
 
 def _run(jobs, python_exe, backend, log, workers=1):
