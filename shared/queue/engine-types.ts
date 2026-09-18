@@ -139,27 +139,58 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  *
  * ── Why not simply "every run that can travel" ──────────────────────────────
  *
- * That was the first cut and it was wrong, and the keeper suite said so: a
- * Foundry-ordered CLEAN TEXT act travels too (an AI class runs on a Crucible
- * like everything else), and staging it put a "Send to queue" gate in front of a
- * button pressed in ANOTHER APPLICATION'S window — where there is no Pending
- * band to press it in. The same goes for a simplify or a translate pass ordered
- * from the Process tab, and for the `foundry-export-landing` row a pending-export
- * narrate hangs from.
+ * That was the first cut and it was wrong, and the keeper suite said so: the
+ * `foundry-export-landing` row a pending-export narrate hangs from is not an
+ * act anybody chooses a machine for, and neither is a pass ordered from the
+ * Process tab as part of a chain. The test is not "does it travel" but WHETHER
+ * THERE IS A VENUE TO CHOOSE and whether the press was the moment to choose it.
  *
- * The distinction is not "does it travel" but WHAT THE PRESS MEANT. Ordering a
- * text act means *do this now*: it is minutes of work, it was asked for in a
- * window that is about something else, and the machine it lands on is not a
- * decision anybody was making. Adding a BOOK means *here is tonight's render* —
- * hours of one card, and which card is precisely the question Pending exists to
- * hold the book still for. `tts-conversion` is that act, and it is the only one
- * this app has.
+ * ── A HOSTED FOUNDRY ACT STAGES TOO (Owen, 2026-09-18) ──────────────────────
+ *
+ * *"when i add something to the queue in the vendored copy of foundry, it
+ * doesnt add it to the pending section, where i can pick the GPU. it just
+ * throws it right into the queue. it should add it to pending so i can
+ * configure the gpu it should go to."*
+ *
+ * This reverses the narrower reading that stood here until that date, and the
+ * reason it can is that ITS PREMISE STOPPED BEING TRUE. The argument was that
+ * staging a Foundry-ordered text act *"put a Send to queue gate in front of a
+ * button pressed in ANOTHER APPLICATION'S window — where there is no Pending
+ * band to press it in"*. Foundry is hosted INSIDE BookForge: the queue that
+ * holds the row and the Pending band that releases it are in the same
+ * application as the button, one tab away, and the row is drawn on Foundry's
+ * own shelf as `held` — which their shelf already words as *waiting for you*.
+ *
+ * And the other half of that argument — that a text act means *do this now* and
+ * *"the machine it lands on is not a decision anybody was making"* — was simply
+ * not so. A clean over a whole book is a model reading every block of it, which
+ * is the same question a render asks: WHICH CARD. Sending it wherever the dial
+ * happened to point, with no moment to say otherwise, is the defect.
+ *
+ * ── WHAT THIS DOES NOT STAGE, AND WHY THAT IS NOT AN OMISSION ───────────────
+ *
+ * `jobIsStageable` requires `travels === true` as well as membership here, and
+ * for a `foundry-job` that is decided by kind (`machines()`,
+ * electron/queue-steps/foundry-job.ts): the TEXT ACTS travel — clean, translate,
+ * simplify — and a READ and a RENDERING do not. So a read still goes straight
+ * into the queue, and it should: it is the VLM door and still spawns a local
+ * python env, so there is no venue to pick and a Send-to-queue press over an
+ * empty picker is a press for nothing. Making a read travel is a Foundry-side
+ * change (crucible `docs/PHASE7-LANES.md` §8.1); the moment it is one, it
+ * stages here with no further edit, because the two facts are already asked
+ * separately.
+ *
+ * A CHAINED REQUEST IS NOT STAGED EITHER, and that is `enqueue`'s doing rather
+ * than this list's: a request naming `after` is appended onto the run that owns
+ * the row it follows (electron/foundry-host-queue.ts), so it joins that run's
+ * decision instead of asking the same question twice about one book.
  *
  * A SET rather than a comparison, for `PASS_JOB_TYPES`' reason: when a second
  * long-form render act exists it joins the list here and nothing else moves.
  */
 export const STAGED_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
   'tts-conversion',
+  'foundry-job',
 ]);
 
 /**

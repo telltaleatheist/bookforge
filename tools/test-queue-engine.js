@@ -72,6 +72,10 @@ function fakeModule(type, opts = {}) {
     consumes: opts.consumes === undefined ? null : opts.consumes,
     produces: opts.produces || 'epub',
     resource: opts.resource || (() => 'gpu'),
+    // Absent unless a test says otherwise: `stepTravels` reads an undefined
+    // `machines` as "this module has not been taught to travel", which is what
+    // every module in this file was before Pending existed.
+    ...(opts.machines === undefined ? {} : { machines: opts.machines }),
     stopIsResumable: opts.stopIsResumable === true,
     cancelled: [],
     runs,
@@ -1372,6 +1376,122 @@ test('a source step with nothing to read is refused when it is composed', async 
     title: 'Book',
     steps: [{ type: 'tts-conversion', label: 'Narrate', config: {} }],
   }), /needs a source to read/);
+});
+
+// ── A HOSTED FOUNDRY TEXT ACT STAGES INTO PENDING (Owen, 2026-09-18) ────────
+//
+// "when i add something to the queue in the vendored copy of foundry, it doesnt
+// add it to the pending section, where i can pick the GPU. it just throws it
+// right into the queue. it should add it to pending so i can configure the gpu
+// it should go to."
+
+// The real module's own rule, copied rather than approximated: the text acts
+// travel and a read does not (electron/queue-steps/foundry-job.ts, `machines`).
+const foundryMachines = (config) => {
+  const kind = config && config.request ? config.request.kind : undefined;
+  return kind === 'clean' || kind === 'translate' || kind === 'simplify' ? 'any' : 'local';
+};
+
+const foundryJobSpec = (kind, title) => ({
+  title,
+  steps: [{
+    type: 'foundry-job',
+    label: title,
+    config: { request: { kind } },
+    sourceRef: { kind: 'none' },
+  }],
+});
+
+test('a hosted Foundry TEXT ACT stages into Pending, held, with a machine still to choose', async () => {
+  const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
+  await fresh('foundry-stages', [foundry]);
+
+  const job = engine.enqueue(foundryJobSpec('clean', 'Clean text — Pokemon'));
+  await settle();
+
+  assert.strictEqual(job.pending, true, 'a clean is a book being sent to a card: it stages');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'held');
+  // The whole point: Start does not reach it. A staged book is not in the queue,
+  // so the press that commits it is Send to queue and nothing else.
+  engine.start();
+  await settle();
+  assert.strictEqual(foundry.runs.length, 0, 'Start must not run a book still being configured');
+
+  engine.sendToQueue(job.id);
+  await settle();
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, undefined,
+    'the run stops being staged');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'queued', 'and its steps are released');
+  /*
+   * NOT `running`, and that is `sendToQueue`'s own rule rather than a shortfall:
+   * the press says WHERE THIS BOOK BELONGS, not start the card. This row also
+   * travels and no server is scripted here, so it waits in the live queue for
+   * one — which is the state a person sees when they have chosen a machine that
+   * is not up yet, and it must not be mistaken for a stall.
+   */
+  assert.strictEqual(foundry.runs.length, 0);
+  assert.strictEqual(stepsOf(job.id)[0].travels, true, 'there was a machine to choose');
+});
+
+test('a Foundry READ does not stage — there is no venue to pick, so there is nothing to ask', async () => {
+  const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
+  await fresh('foundry-read-unstaged', [foundry]);
+
+  const job = engine.enqueue(foundryJobSpec('read', 'Read (156 pages)'));
+  await settle();
+
+  // Not staged, and held only by the ordinary three-way rule — an idle queue
+  // waits for Start whatever composed the row.
+  assert.strictEqual(job.pending, undefined, 'a read is the local VLM door: no card to choose');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'held');
+  assert.throws(() => engine.sendToQueue(job.id), /is not in Pending/);
+
+  engine.start();
+  await settle();
+  assert.strictEqual(foundry.runs.length, 1, 'Start is the whole of what a read waits for');
+});
+
+test('the two facts are asked SEPARATELY: membership alone does not stage a step that cannot travel', async () => {
+  /*
+   * The regression this guards is a future edit collapsing `jobIsStageable`'s
+   * two halves into one. A `foundry-job` module that has not been taught to
+   * travel must behave exactly as it did before Pending existed, or the day a
+   * read learns to travel is the day every export starts asking for a machine.
+   */
+  const untravelled = fakeModule('foundry-job', { produces: 'none' });
+  await fresh('foundry-no-machines', [untravelled]);
+  const job = engine.enqueue(foundryJobSpec('clean', 'Clean text — no machines declared'));
+  await settle();
+  assert.strictEqual(job.pending, undefined);
+});
+
+test('a CHAINED Foundry request joins its parent run and is not staged a second time', async () => {
+  /*
+   * One book, one decision. A request naming `after` is appended onto the run
+   * that owns the row it follows (electron/foundry-host-queue.ts), so the venue
+   * chosen for the clean carries the export chained under it rather than
+   * stopping the chain to ask again.
+   */
+  const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
+  await fresh('foundry-chain', [foundry]);
+
+  const job = engine.enqueue(foundryJobSpec('clean', 'Clean text — Pokemon'));
+  await settle();
+  assert.strictEqual(job.pending, true);
+
+  const chained = engine.appendStep(job.id, {
+    type: 'foundry-job',
+    label: 'Export EPUB',
+    config: { request: { kind: 'export' } },
+    sourceRef: { kind: 'none' },
+    parentStepId: stepsOf(job.id)[0].id,
+  });
+  await settle();
+
+  const runs = engine.snapshot().jobs.filter((j) => j.pending === true);
+  assert.strictEqual(runs.length, 1, 'still one staged book, not two');
+  assert.strictEqual(stepsOf(job.id).length, 2);
+  assert.ok(chained.id, 'the chained row exists under the row it follows');
 });
 
 (async () => {

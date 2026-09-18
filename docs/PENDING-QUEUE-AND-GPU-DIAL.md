@@ -13,6 +13,42 @@ queue is running. Today the venue is guessed at enqueue time and there is no way
 3. **"Send to queue"** moves it into the live queue.
 4. **The queue itself carries a GPU dial**: *any*, or one named server.
 
+## What "adding a book" means — narration, and a hosted Foundry text act
+
+Ruled twice. On 2026-09-15 the band was for **narration** only: a text act ordered from
+Foundry's window was left alone, on the argument that staging it *"put a Send to queue gate
+in front of a button pressed in ANOTHER APPLICATION'S window — where there is no Pending
+band to press it in."*
+
+Owen, **2026-09-18**, reversing that: *"when i add something to the queue in the vendored
+copy of foundry, it doesnt add it to the pending section, where i can pick the GPU. it just
+throws it right into the queue. it should add it to pending so i can configure the gpu it
+should go to."*
+
+The premise had stopped being true. Foundry is **hosted inside BookForge**: the queue that
+holds the row and the Pending band that releases it are in the same application as the
+button, one tab away, and Foundry's own shelf draws the row as `held` — which it already
+words as *waiting for you*. And the other half of the old argument — that the machine a
+text act lands on *"is not a decision anybody was making"* — was simply wrong. A clean over
+a whole book is a model reading every block of it, which asks the same question a render
+asks: **which card**.
+
+**Two facts, asked separately** (`jobIsStageable`): the act must be in `STAGED_JOB_TYPES`
+*and* the step must travel. So among Foundry's jobs:
+
+| Foundry job | Travels | Stages |
+|---|---|---|
+| clean, translate, simplify | yes — a Crucible serves the model door | **yes** |
+| read | no — the VLM door still spawns a local python env | no |
+| export, compile, rasterise | no — arithmetic over a bank on disk | no |
+
+A read going straight into the queue is not an omission: there is no venue to pick, and a
+Send-to-queue press over an empty picker is a press for nothing. When a read learns to
+travel (crucible `docs/PHASE7-LANES.md` §8.1) it stages here with no further edit.
+
+A **chained** request is not staged a second time — it is appended onto the run that owns
+the row it follows, so one book is one decision.
+
 ## Precedence — the dial defers, it never overrides
 
 | Item | Dial | Result |
