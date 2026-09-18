@@ -844,6 +844,33 @@ export interface Replayed {
    * a `move` can change without any chapter op being involved at all.
    */
   chapters: BookChapter[];
+  /**
+   * Ids this replay COMPOSED THE WORDS OF, rather than carried — the rows a merge
+   * or a split made, filtered to the ones the book still holds.
+   *
+   * ── Why anything outside this file needs to be told ─────────────────────
+   *
+   * Because a cleanup's stamp is a per-position claim about text, and a merge is
+   * the one gesture that leaves a stamped position PRESENT and holding something
+   * neither digest covers: both halves of `b11-6 + b13-0` are cleanup output, not
+   * one character of it was un-cleaned, and the concatenation matches no digest
+   * in the stamp all the same. `src/clean/digest.ts` already rules that an absent
+   * position is *"SKIPPED AND COUNTED"* because an edit that REMOVES something
+   * cannot invalidate a cleanup still true about everything left; a restructured
+   * position is that same fact with the block still in the book, and it is
+   * skipped for that same reason (`narrowedStamp`, electron/workspace.ts).
+   *
+   * A SPLIT IS HERE FOR SYMMETRY AND NOT BECAUSE IT HAS EVER REFUSED ANYTHING:
+   * its halves are minted ids no stamp names and its parent is consumed, so a
+   * split already degrades to an absent position. Leaving it out would make this
+   * list mean "the ops that happen to break a stamp today", which is a fact about
+   * the digest rather than about the replay.
+   *
+   * IT IS NOT "WHICH ROWS CHANGED". A retyped row is not here — somebody typing
+   * new words into a cleaned block IS the thing the stamp exists to catch, and
+   * folding the two together would retire the check under the name of a fix.
+   */
+  restructured: string[];
 }
 
 /** Nothing unlinked — the answer for a book whose header said so and whose ops changed no text. */
@@ -990,9 +1017,17 @@ function fold(
   }
 
   const drawn = drawableChapters(chapters, out);
-  if (edited.size === 0) return { rows: out, missing, loose, chapters: drawn };
+  /*
+   * ALWAYS EMPTY ON THIS PATH, and stated rather than left to the reader: `fold`
+   * is only ever reached for a chain with no structural op in it (`replayOps`),
+   * so there is nothing a merge or a split composed and the honest answer is the
+   * empty list. The two paths agree field for field, which is the property that
+   * makes having two of them legitimate.
+   */
+  const restructured: string[] = [];
+  if (edited.size === 0) return { rows: out, missing, loose, chapters: drawn, restructured };
   const claims = claimsOn(edited, new Map(), out);
-  return { ...rebind(out, replayed, edited, claims, loose), missing, chapters: drawn };
+  return { ...rebind(out, replayed, edited, claims, loose), missing, chapters: drawn, restructured };
 }
 
 /**
@@ -1055,7 +1090,7 @@ function interpret(
   /** Ids a `text` op named, whether or not it changed the words. */
   const retyped = new Set<string>();
   /** Ids a merge or a split made or remade. Their markers are re-derived regardless. */
-  const restructured = new Set<string>();
+  const restructuredIds = new Set<string>();
   /**
    * WHOSE REFS COUNT AS A CLAIM ON WHICH ROW — deviations from identity only.
    *
@@ -1175,8 +1210,8 @@ function interpret(
         for (const src of sourcesOf(op.id)) inherited.add(src);
         sources.set(op.into, inherited);
         sources.delete(op.id);
-        restructured.add(op.into);
-        restructured.delete(op.id);
+        restructuredIds.add(op.into);
+        restructuredIds.delete(op.id);
         retyped.delete(op.id);
         break;
       }
@@ -1249,9 +1284,9 @@ function interpret(
         sources.set(first, new Set(inherited));
         sources.set(second, new Set(inherited));
         sources.delete(op.id);
-        restructured.add(first);
-        restructured.add(second);
-        restructured.delete(op.id);
+        restructuredIds.add(first);
+        restructuredIds.add(second);
+        restructuredIds.delete(op.id);
         retyped.delete(op.id);
         break;
       }
@@ -1339,7 +1374,7 @@ function interpret(
         mine.add(op.id);
         reindex();
         /*
-         * NOT IN `restructured` AND NOT IN `retyped`, deliberately: those sets
+         * NOT IN `restructuredIds` AND NOT IN `retyped`, deliberately: those sets
          * drive the marker re-derivation, and no note in this book names an
          * inserted block — its `sources` are itself, no ref ever pointed into
          * it, so a re-scan would bind nothing and the engine's offsets
@@ -1527,7 +1562,7 @@ function interpret(
    * for.
    */
   const edited = new Set<string>();
-  for (const id of restructured) if (held.has(id)) edited.add(id);
+  for (const id of restructuredIds) if (held.has(id)) edited.add(id);
   for (const id of retyped) {
     const row = held.get(id);
     if (row === undefined) continue;
@@ -1537,9 +1572,18 @@ function interpret(
 
   const drawn = drawableChapters(divisions, flow);
   const nowLoose: BookLoose = { markers, notes: [...orphans] };
-  if (edited.size === 0) return { rows: flow, missing, loose: nowLoose, chapters: drawn };
+  /*
+   * REPORTED IN FLOW ORDER AND FILTERED TO WHAT SURVIVED, on `edited`'s own rule
+   * one line up: an id a later merge consumed is not a row of this book, and a
+   * caller narrowing a claim over positions would be narrowing it over one that
+   * is already absent.
+   */
+  const restructured = flow.filter((row) => restructuredIds.has(row.id)).map((row) => row.id);
+  if (edited.size === 0) {
+    return { rows: flow, missing, loose: nowLoose, chapters: drawn, restructured };
+  }
   const claims = claimsOn(edited, sources, flow);
-  return { ...rebind(flow, held, edited, claims, nowLoose), missing, chapters: drawn };
+  return { ...rebind(flow, held, edited, claims, nowLoose), missing, chapters: drawn, restructured };
 }
 
 /** `into`'s pages then `id`'s, in order, each page once. */

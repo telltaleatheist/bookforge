@@ -10,10 +10,105 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **16b352f** — *The derived book lives under the project, not under /tmp* |
+| Source sha | **4fb203d** — *A merge composes cleaned words, so its position is skipped and not refused* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-18 |
-| Copied by | Mechanical source sync, verified against Foundry `16b352f:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `4fb203d:app/`; details below |
+
+## The `16b352f → 4fb203d` re-vendor — a stamp outlived the words it was a claim about (2026-09-18)
+
+Two commits, **both of them this subtree's**: `3db362a` *A correction by hand
+moves the words, so it moves the receipt* and `4fb203d` *A merge composes
+cleaned words, so its position is skipped and not refused*. 184 files, seven
+touched — `electron/narration-stamp.ts` (new), `electron/projects.ts`,
+`electron/workspace.ts`, `electron/book.ts`, `electron/job-queue.ts`,
+`shared/ops.ts`, `shared/materialize.ts` — nothing added but that one file,
+nothing removed, `package.json` and `package-lock.json` untouched, so no
+`npm ci`. **Nothing under `src/`**, which is the whole reason this copy carries
+the entire fix: the engine stays at **40aaa42 (v2.0.0)** and does not need a
+release for Narrate to work again.
+
+**The symptom.** Narrate refused, out of the hosted engine, on the Pokemon
+project:
+
+    --narration-stamp …clean.stamp.json claims a narration text cleanup over
+    989 block(s), and 3 of them do not hold the text that cleanup produced —
+    b11-6, b35-1, b39-9.
+
+**The ledger reading was the wrong half of the answer, and it is worth writing
+down which half.** That project stands on `edit 11422508` (128 ops) above
+`clean f2be5968`, and `edit` is not in `TEXT_PASS_ACTIONS`, so an edit above a
+cleanup never shadows the stamp: `planRendering` materialises at the tip and
+`narrationStampFor` walks up and attaches the cleanup's receipt. That is real,
+and it explains exactly ONE of the three blocks. The 128 ops are 78 `strike`,
+36 `chapter`, 13 `category` and 1 `merge`, with no text op among them — the
+strikes drift nothing (they land as 64 skipped positions, which is what
+`digest.ts` already says they should), all 13 chapter `set` ops drift nothing
+(`chapterPosition`'s prefix keeps title positions clear of block ids), and
+**`merge` is the only op kind that leaves a stamped position present and
+different.** So b11-6, and only b11-6, is a workbench story.
+
+**b35-1 and b39-9 were never about the ledger at all.** Each carries a HAND
+CORRECTION — the last two rows of the records file, `author: "user"`, appended
+11 September against a stamp written 8 September, one of them fixing a heading
+the cleanup had mangled (`NíBORÁN` → `Nidoran`). `recordCorrection` appended the
+rows and `materializeTextPass` rewrote the cleaned book from them, and nothing
+restamped. A render of the clean step with ZERO ops refused on exactly those
+two, so standing on the clean row and narrating would have failed identically.
+Two hypotheses raised from this side — a chapter op for b35-1, marker
+re-derivation for b39-9 — were both wrong, and the records file is where the
+answer was. **A ledger explains what a ledger records; it does not record a
+correction typed into the aligned view.**
+
+**The two fixes, and the shape Owen chose.** The correction door now restamps:
+append and restamp are one act inside `recordCorrection`'s existing per-file
+lock. That is not a new ruling — `clean-text` already hashes
+`records.rowFor(parts)?.text` and says a hand-corrected row is what the stamp
+must be a claim about; a correction made BEFORE the run was always stamped
+right, and only one made after went unanswered. And the merge position is
+**withdrawn, never asserted**: `replayOps` reports which ids a merge or split
+composed, and `planRendering` withdraws exactly those from the claim it hands
+the compile, so every digest that remains is the clean run's own byte for byte.
+The cleanup's stamp in `readings/` is never rewritten — a merge is a fact about
+one export — and the narrowed copy is scratch beside the derived book, swept by
+both hands that already sweep it.
+
+Verified on the failing project before it was pushed: the clean step passes
+989/989; the tip passes at 924 matched, 64 skipped, b11-6 withdrawn; the
+un-narrowed stamp still refuses on b11-6 alone, so the narrowing is
+demonstrably what changed it; a block someone RETYPES still refuses, which is
+what the check is for; and the 2026-09-05 defect — an uncleaned parent stamped
+with its child's receipt — still refuses, on 211 blocks.
+
+**STILL OWED, and no code change covers it:** those two hand corrections remain
+unstamped in that project's existing stamp file. The fix restamps corrections
+made from now on; it does not retroactively repair a stamp already written. If
+Narrate still refuses on b35-1/b39-9, that is why, and the remedy is to
+re-apply the two corrections in the aligned view — which now costs nothing and
+updates the stamp — rather than re-running the cleanup.
+
+### The previous copy shipped a `dist` built from older sources
+
+Caught while swapping this one in, and it is the second time this exact trap has
+been paid for (see the 2026-09-11 note in `foundry-revendor-procedure`). The
+`16b352f` entry below is accurate about its SOURCES; the `dist/` beside them was
+not rebuilt from them. Proof, from the directory this copy replaced:
+
+| | `dist.old-16b352f` | this copy |
+| --- | --- | --- |
+| `deleteLedgerStep` in `mount.js` | **0** occurrences | 3 |
+| derived book destination in `workspace.js` | `tmpdir(), 'foundry'` ×5 | none — under the project |
+
+Both of those are fixes whose SOURCE was already sitting in this subtree and
+whose BUILD was not, so both were inert in the running app and go live with this
+rebuild: Foundry's own `16b352f` headline (the derived book moved out of
+`/tmp`), and `d635ca4`'s `deleteLedgerStep`, which is what BookForge's
+`variant:delete` calls to withdraw a step from the Foundry ledger — the second
+direction of the two-way export delete, which has been declared but dead since
+it was written. **`git status` cannot see this**: `dist/` is ignored, so a
+stale build leaves a clean tree and a sha row that is telling the truth about
+the wrong thing. Verify a re-vendor by grepping the BUILT `dist` for something
+the new sources contain, not by trusting the copy.
 
 ## The `e4a4641 → 16b352f` re-vendor — a scratch path outlived its run (2026-09-18)
 

@@ -68,6 +68,24 @@ import { replayOps, type BookOp, type MissingOp, type ReplayedRow } from './ops'
 export interface Materialized {
   book: BookFile;
   /**
+   * Positions this book holds whose WORDS THIS REPLAY COMPOSED — `Replayed.
+   * restructured`, filtered again to the rows that reached the derived file.
+   *
+   * CARRIED OUT BECAUSE ONLY THE CALLER CAN USE IT. A cleanup's stamp is a
+   * per-position claim about text, and the one thing that makes a stamped
+   * position PRESENT and wrong without anybody retyping a word is a merge: the
+   * survivor now holds both halves' cleaned text joined, which matches neither
+   * digest. The caller drops those positions from the claim it hands the engine
+   * (`narrowedStamp`, electron/workspace.ts) on the rule src/clean/digest.ts
+   * already states for a position the book does not have at all.
+   *
+   * FILTERED A SECOND TIME HERE because this file removes rows the replay kept: a
+   * row struck in the same chain that merged into it is not in the derived book,
+   * and narrowing a claim over a position that is absent anyway would be a second
+   * name for the same skip.
+   */
+  restructured: string[];
+  /**
    * Ops the replay could not perform — carried out, never swallowed.
    *
    * REPORTED AND NOT FATAL, which is `Replayed.missing`'s own ruling: a chain can
@@ -371,6 +389,7 @@ export function materialize(book: BookFile, ops: readonly BookOp[]): Materialize
       rows: derived,
     },
     missing: replayed.missing,
+    restructured: replayed.restructured.filter((id) => held.has(id)),
   };
 }
 

@@ -192,6 +192,7 @@ import { CAPTURE_RECIPE_PAYLOAD, emptyRecipe, recipeBytes } from '../shared/capt
 // renderer compares with, which is the point of it living in `shared`.
 import { fold } from '../shared/original';
 import { writeAtomically } from './atomic';
+import { restampCorrection } from './narration-stamp';
 
 /**
  * Somebody has to be told when the library changes, and this is how.
@@ -4000,14 +4001,72 @@ export async function recordCorrection(
   const key = fold(file);
   const previous = recordEditWrites.get(key) ?? Promise.resolve();
   const write = previous.then(
-    () => appendHumanRow(file, parts, text),
-    () => appendHumanRow(file, parts, text),
+    () => appendCorrection(file, parts, text),
+    () => appendCorrection(file, parts, text),
   );
   const settled = write.then(() => { /* kept */ }, () => { /* kept */ }).then(() => {
     if (recordEditWrites.get(key) === settled) recordEditWrites.delete(key);
   });
   recordEditWrites.set(key, settled);
   return write.then(() => file);
+}
+
+/**
+ * THE APPEND AND THE RESTAMP, AS ONE ACT — because they are one act.
+ *
+ * ── What separating them cost, measured ─────────────────────────────────────
+ *
+ * A cleanup's stamp is a receipt for a RECORDS FILE (`narrationStampFileFor`), and
+ * this is the only door that changes a records file after the run that stamped it
+ * has finished. While the append stood alone, correcting a heading in the aligned
+ * view moved the book and left the receipt behind, and the export refused weeks
+ * later naming blocks nobody had edited — Owen's Pokemon book, where two hand
+ * corrections made on 11 September were held against a stamp written on the 8th.
+ * See electron/narration-stamp.ts for the measurement and for why re-deriving the
+ * digest is the existing ruling rather than a new one.
+ *
+ * INSIDE THE SAME LOCK AND AFTER THE APPEND. The lock, because the stamp is a
+ * read-modify-write of a second file that the same two rapid gestures both touch,
+ * and a receipt serialised separately from the answers it is about is a receipt
+ * that can be written from the older of two corrections. After, because the
+ * records file is the thing of record: an append that lands with no restamp behind
+ * it is a stamp one block out of date, which the compile catches by name, and a
+ * restamp that landed with no append behind it would be a stamp asserting words
+ * that are in no file at all.
+ *
+ * A RESTAMP THAT FAILS DOES NOT LOSE THE CORRECTION. The person's words are on
+ * disk by then and the pane is about to show them; what a throw here would undo is
+ * nothing, and what it would cost is the correction appearing to have failed. So
+ * it is reported to the terminal and the gesture stands — and the state it leaves
+ * behind is the state this whole function exists to fix, said out loud, with the
+ * export's own refusal waiting at the other end to say it again.
+ */
+async function appendCorrection(file: string, parts: string, text: string): Promise<void> {
+  await appendHumanRow(file, parts, text);
+  let stamp: string;
+  try {
+    stamp = narrationStampFileFor(file);
+  } catch {
+    // Not a records file by name. `appendHumanRow` has already accepted it, and
+    // deciding here that it was never a records file would be a second opinion.
+    return;
+  }
+  try {
+    const outcome = await restampCorrection(stamp, parts, text);
+    if (outcome === 'unreadable') {
+      console.error(
+        `[projects] ${stamp} could not be read as a narration stamp, so the correction to ${parts} `
+        + 'is in the words and not in the receipt. An export from this cleanup will refuse naming '
+        + 'that block until the cleanup is run again.',
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[projects] ${stamp} could not be brought up to date with the correction to ${parts} `
+      + `(${err instanceof Error ? err.message : String(err)}). The words are recorded; an export `
+      + 'from this cleanup will refuse naming that block until the cleanup is run again.',
+    );
+  }
 }
 
 async function appendHumanRow(file: string, parts: string, text: string): Promise<void> {

@@ -1446,7 +1446,11 @@ async function sweepStaleDerived(into: string): Promise<void> {
     return; // No directory yet: nothing to sweep, and the write will make it.
   }
   await Promise.all(names.map(async (name) => {
-    if (!name.endsWith('.book.jsonl')) return;
+    // AND THE NARROWED STAMPS BESIDE THEM (`narrowedStamp`, electron/workspace.ts),
+    // which are scratch for exactly one export on exactly this file's terms: named
+    // after the derived book, written when a merge sits above a cleanup, and
+    // unreferenced the moment that job settles.
+    if (!name.endsWith('.book.jsonl') && !name.endsWith('.stamp.json')) return;
     const here = path.join(into, name);
     try {
       const stat = await fsp.stat(here);
@@ -1469,7 +1473,25 @@ export async function materializeBook(
    * export somebody pressed the button for.
    */
   from: LedgerStep | null = null,
-): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+): Promise<
+  | {
+    ok: true;
+    path: string;
+    /**
+     * Positions of the derived book whose words the replay COMPOSED rather than
+     * carried — `Materialized.restructured`, handed on because the caller is the
+     * only one that can act on it.
+     *
+     * A merge joins two blocks' text into the survivor's position, so a per-block
+     * claim about the parent's words — a cleanup's stamp — is no longer true there
+     * although not one character was un-cleaned. `planRendering` narrows the stamp
+     * over exactly these positions (`narrowedStamp`, electron/workspace.ts); every
+     * other caller ignores the field, which costs them nothing.
+     */
+    restructured: string[];
+  }
+  | { ok: false; reason: string }
+> {
   const read = await openBookAtPosition(projectDir, from);
   if (!read.ok) return read;
   const { at, parsed, ops, tip } = read.opened;
@@ -1534,7 +1556,7 @@ export async function materializeBook(
       reason: 'The book with your changes in it could not be written out for the engine to compile.',
     };
   }
-  return { ok: true, path: file };
+  return { ok: true, path: file, restructured: made.restructured };
 }
 
 /**

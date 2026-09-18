@@ -2694,6 +2694,25 @@ async function sweepDerivedBook(request: EngineRequest | undefined): Promise<voi
       `[job] the derived book ${request.bookPath} could not be removed: ${(err as Error).message}`,
     );
   }
+  /*
+   * AND THE NARROWED STAMP THAT WAS WRITTEN BESIDE IT, when one was
+   * (`narrowedStamp`, electron/workspace.ts): it is named after the derived book
+   * and is scratch on exactly the same terms — one export's withdrawal of a claim
+   * over the blocks a merge composed, meaningless the moment that book is gone.
+   * The CLEANUP'S OWN stamp is never this path: it lives in `readings/` beside the
+   * answers it is a receipt for, and this only ever names a file under the derived
+   * directory, because that is the only place this app composes the name.
+   */
+  const narrowed = `${request.bookPath.slice(0, -'.book.jsonl'.length)}.stamp.json`;
+  if (!request.bookPath.endsWith('.book.jsonl')) return;
+  try {
+    await fsp.rm(narrowed, { force: true });
+  } catch (err) {
+    console.error(
+      `[job] the narrowed narration stamp ${narrowed} could not be removed: `
+      + `${(err as Error).message}`,
+    );
+  }
 }
 
 /**
