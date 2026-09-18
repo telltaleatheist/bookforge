@@ -39,6 +39,10 @@
  *  6. A render whose chunks are over the venue's cap is refused HERE, by name,
  *     with nothing submitted — the same fact the server would have told us, told
  *     before the whole book crosses the wire.
+ *  7. THE LISTEN DOOR HAS NO CATALOG ARM LEFT. It packed from the engine's
+ *     stated band `?? null`, and on that null fell to
+ *     `higgsVoiceCapsForModel` — this machine's numbers, for a voice another
+ *     machine is holding. A Crucible that states no band is a refusal.
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
@@ -447,6 +451,20 @@ async function main() {
     } finally {
       await fake.close();
     }
+  });
+
+  // ── 7. the Listen door has no catalog arm left ─────────────────────────────
+  await check('the Listen door packs from the engine\'s band and from nothing else', () => {
+    // Read as SOURCE because the alternative is standing up the reader's
+    // websocket bridge to prove a branch that must not exist; what is asserted
+    // is the branch's absence, and that is a property of the text.
+    const reader = fs.readFileSync(path.join(REPO, 'electron', 'reader-stream-bridge.ts'), 'utf-8');
+    assert.strictEqual(/higgsVoiceCapsForModel\(|higgs-models\.js/.test(reader), false,
+      'the Listen door still reads THIS machine\'s catalog for a chunk band — the one thing '
+      + 'electron/crucible/voice-band.ts forbids for a Crucible render');
+    // What it does INSTEAD when the engine states nothing is the facade's
+    // refusal, driven for real in tools/test-crucible-stream.js; the only thing
+    // the text can prove is that the arm that packed around it is gone.
   });
 
   console.log(`\n${passed} passed, ${failures.length} failed`);

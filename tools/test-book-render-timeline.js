@@ -34,6 +34,21 @@
  *       segmenter dropped any fragment of ≤3 characters not starting with an
  *       ASCII capital, while `saveRenderPlan` had already pushed the block — so
  *       `iv.` was shown, counted, and pointed at by nothing.
+ *   §9  A cue is as long as the SAMPLES. The duration was read off the engine's
+ *       stated `duration` first and the bytes only when that was 0 — two owners
+ *       of one fact, and the m4b is built from the bytes. And with the silence
+ *       pad gone, a covered sentence with no duration is a sentence nothing
+ *       measured: `|| 0.3` timed it at a number nobody had, and slid every cue
+ *       and chapter mark after it for the rest of the book.
+ *   §10 The two failures the render can only meet at the engine say what they
+ *       are. `renderFirst`'s catch was empty, so a torn-down session first
+ *       showed itself as a first sentence that took the long way round; and a
+ *       fast-start engine's `{success:true, streamed:true}` with no audio — a
+ *       sentence delivered in sub-sentence chunks this service cannot file —
+ *       was recorded as "the engine gave no reason".
+ *   §11 The status the reader polls has ONE declared shape
+ *       (`shared/audio/render-status.ts`). It was an inline return type in the
+ *       service, `res.json(...)` on the route and `any` in the browser.
  *
  * Nothing here starts an engine, spawns ffmpeg or touches a GPU: the engine
  * module's three entry points and `spawn` are replaced with recorders, and
@@ -547,6 +562,158 @@ async function main() {
       `the plan displays ${mute.length} block(s) that no sentence speaks — ${mute.join('; ')}`);
     assert.ok(plan.sentences.includes('iv.'),
       `the fragment block is absent from the sentence plan: ${JSON.stringify(plan.sentences)}`);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§9 a cue is timed by the AUDIO, and an untimed sentence stops the book');
+
+  await check('the timeline is the samples on disk, not the duration the engine claims', async () => {
+    resetEngine(); resetSeams();
+    // The engine states nine seconds and hands over one second of samples. The
+    // m4b is built by concatenating those samples, so nine is not a second
+    // opinion about the sentence — it is a claim about a file it does not own,
+    // and reading it first put the cue and the chapter mark somewhere the audio
+    // never goes. Sentence 0 goes through the priority path (`renderFirst`) and
+    // 1 and 2 through the wide loop, and those derived this duration their own
+    // way apiece; both are pinned here.
+    const { id } = newProject(['One.', 'Two.', 'Three.']);
+    engine.generateSentence = async (_text, index) => {
+      engine.calls.push(index);
+      return { success: true, audio: { data: enginePcm(1), duration: 9, sampleRate: SAMPLE_RATE } };
+    };
+    try {
+      await bookRenderService.start(id, 0);
+      await waitFor('the book to assemble', () => embeds.vtts.length === 1);
+    } finally { engine.generateSentence = scriptedGenerateSentence; }
+
+    assert.deepStrictEqual(timestampsIn(embeds.vtts[0]), [
+      '00:00:00.000', '00:00:01.000',
+      '00:00:01.000', '00:00:02.000',
+      '00:00:02.000', '00:00:03.000',
+    ], 'the transcript was timed by what the engine SAID rather than by the audio it sent');
+    assert.deepStrictEqual(stateOf(id).durations, [1, 1, 1],
+      `state.json recorded the engine's claim: ${JSON.stringify(stateOf(id).durations)}`);
+  });
+
+  await check('a covered sentence with no duration fails the assembly BY NAME', async () => {
+    resetEngine(); resetSeams();
+    // state.json says all three are covered; sentence 1's file is not on disk,
+    // so `loadOrBuild` cannot measure it back and its duration stays 0. A
+    // cumulative timeline built from that 0 used to emit a 0.3 s cue — a number
+    // nothing measured, standing in for a sentence nothing rendered — and
+    // shipped the book with every later cue and chapter mark slid by the
+    // difference. There is no duration to write, so there is no book to ship.
+    const { id } = newProject(['One.', 'Two.', 'Three.']);
+    for (const [i, seconds] of [[0, 1], [2, 3]]) {
+      fs.writeFileSync(path.join(renderDirOf(id), 'sentences', `${i}.wav`),
+        pcm16Wav(Buffer.alloc(seconds * SAMPLE_RATE * 2), SAMPLE_RATE));
+    }
+    fs.writeFileSync(path.join(renderDirOf(id), 'state.json'), JSON.stringify({
+      coverage: [true, true, true], durations: [1, 0, 3], playhead: 0,
+      done: false, voice: 'test-voice', engine: 'higgs', sampleRate: SAMPLE_RATE,
+      failures: 0, updatedAt: Date.now(),
+    }));
+
+    await bookRenderService.start(id, 0);
+    await waitFor('the job to settle', () => bookRenderService.status(id).error !== undefined, 15000);
+    const status = bookRenderService.status(id);
+    assert.ok(/sentence 1\b/.test(status.error),
+      `the failure does not name the sentence it could not time: ${status.error}`);
+    assert.strictEqual(status.done, false, 'a book with an untimed sentence was marked done');
+    assert.strictEqual(embeds.vtts.length, 0, 'a transcript was built out of a duration nobody measured');
+    assert.strictEqual(ffmpeg.runs.length, 0, 'the m4b was encoded from a timeline with a hole in it');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§10 the failures the render can only meet at the engine are named');
+
+  await check('a priority render that throws says so, and the wide loop still gets the sentence', async () => {
+    resetEngine(); resetSeams();
+    // `renderFirst` jumps the queue with the playhead sentence and left its
+    // catch empty — "retried by the wide loop", which is true and was the whole
+    // of what anyone was ever told. A crucible session that has gone away fails
+    // here first, and this was the one place it made no sound at all.
+    const { id } = newProject(['One.', 'Two.']);
+    let priorityThrows = 1;
+    engine.generateSentence = async (_text, index, _settings, priority) => {
+      engine.calls.push(index);
+      if (priority === true && priorityThrows-- > 0) throw new Error('the crucible session is gone');
+      return { success: true, audio: { data: enginePcm(1), duration: 0, sampleRate: SAMPLE_RATE } };
+    };
+    const said = [];
+    const realError = console.error;
+    console.error = (...args) => { said.push(args.map(String).join(' ')); };
+    try {
+      await bookRenderService.start(id, 0);
+      await waitFor('the book to finish', () => bookRenderService.status(id).done === true);
+    } finally {
+      console.error = realError;
+      engine.generateSentence = scriptedGenerateSentence;
+    }
+    const named = said.filter((line) => /sentence 0\b/.test(line) && line.includes('the crucible session is gone'));
+    assert.ok(named.length > 0,
+      `the priority render failed silently — nothing said which sentence or why: ${JSON.stringify(said)}`);
+  });
+
+  await check('an engine that fast-start streams is refused BY NAME, not "no reason"', async () => {
+    resetEngine(); resetSeams();
+    // `{success:true, streamed:true}` and no `audio` is the fast-start contract
+    // (electron/streaming-engine.ts): everything the engine had to say it
+    // already said through `onChunk`. The whole-book render files one WAV per
+    // sentence and passes no `onChunk`, so it has nowhere to put sub-sentence
+    // chunks — and it read this as a success carrying nothing, which it
+    // recorded as "the engine gave no reason". There is a reason and it is this.
+    const { id } = newProject(['One.', 'Two.']);
+    engine.generateSentence = async (_text, index) => {
+      engine.calls.push(index);
+      if (index === 1) return { success: true, streamed: true, duration: 1 };
+      return { success: true, audio: { data: enginePcm(1), duration: 0, sampleRate: SAMPLE_RATE } };
+    };
+    try {
+      await bookRenderService.start(id, 0);
+      await waitFor('the job to settle', () => bookRenderService.status(id).error !== undefined, 20000);
+    } finally { engine.generateSentence = scriptedGenerateSentence; }
+
+    const recorded = fs.readFileSync(path.join(renderDirOf(id), 'failures.jsonl'), 'utf-8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      .filter((row) => row.sentence === 1 && typeof row.error === 'string');
+    assert.ok(recorded.length > 0, 'the streamed attempt was not recorded at all');
+    assert.ok(recorded.every((row) => !/gave no reason/.test(row.error)),
+      `a stated fast-start stream was recorded as a reasonless failure: ${JSON.stringify(recorded.map((r) => r.error))}`);
+    assert.ok(recorded.some((row) => /fast start/i.test(row.error)),
+      `the refusal does not name fast start: ${JSON.stringify(recorded.map((r) => r.error))}`);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§11 the status the reader polls has one declared shape');
+
+  await check('every field status() answers with is declared in the shared shape', async () => {
+    resetEngine(); resetSeams();
+    // The shape was written out inline as the service's return type and nowhere
+    // else: `res.json()` took whatever it was handed and the reader parsed it as
+    // `any`, so the two ends of a poll that runs two to three times a second
+    // agreed by coincidence. It lives in shared/ now, which is what lets tsc
+    // check the route and the browser against it — and this is the half tsc
+    // cannot see: the object the service actually builds.
+    const shapeSrc = fs.readFileSync(path.join(REPO, 'shared', 'audio', 'render-status.ts'), 'utf-8');
+    const body = shapeSrc.slice(shapeSrc.indexOf('export interface RenderStatus'));
+    const declared = new Set((body.match(/^\s{2}(\w+)\??:/gm) || [])
+      .map((line) => line.trim().replace(/\??:$/, '')));
+    assert.ok(declared.has('rendered') && declared.has('coverage') && declared.has('error'),
+      `the shape file declares no usable fields: ${JSON.stringify([...declared])}`);
+
+    // All three branches status() has: nothing, on-disk state only, and a live job.
+    const { id } = newProject(['One.', 'Two.']);
+    const seen = new Set(Object.keys(bookRenderService.status('no-such-project')));
+    await bookRenderService.start(id, 0);
+    await waitFor('the book to finish', () => bookRenderService.status(id).done === true);
+    for (const key of Object.keys(bookRenderService.status(id))) seen.add(key);
+    bookRenderService.forgetJob(id);
+    for (const key of Object.keys(bookRenderService.status(id))) seen.add(key);
+
+    const undeclared = [...seen].filter((key) => !declared.has(key));
+    assert.deepStrictEqual(undeclared, [],
+      `status() answers with field(s) the reader's shape does not declare: ${undeclared.join(', ')}`);
   });
 
   fs.rmSync(ROOT, { recursive: true, force: true });

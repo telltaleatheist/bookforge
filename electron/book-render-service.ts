@@ -38,6 +38,8 @@ import { splitForTts } from '../shared/listen-text/segment';
 import { speakableListenText } from '../shared/listen-text/normalize';
 import { getFfmpegPath } from './tool-paths';
 import { pcm16Wav, pcm16WavSeconds } from './pcm16-wav';
+// Relative, never `@shared/*`: the alias does not exist at RUNTIME in the main process.
+import type { RenderStatus } from '../shared/audio/render-status';
 import type { AudioChunk } from './streaming-contract';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────
@@ -145,6 +147,13 @@ interface Job {
    *  attempts on one bad sentence plus two on the next added up to five and a
    *  book with two bad sentences was reported as a broken engine. */
   consecFail: number;
+  /** The pace this run was told for the voice it is rendering in, kept for the
+   *  run. See `statedPace`: it was asked of the engine once per SETTLEMENT, and
+   *  behind that member sit the venue decision and a `GET /v1/voices`. Keyed by
+   *  voice, because a mid-render switch applies to later sentences and the pace
+   *  has to be the speaking voice's. Only a NUMBER is kept — a refusal is a
+   *  failure to reach the venue, and the next settlement asks again. */
+  statedPace: { voice: string; paceCharsPerSec: number } | null;
   error?: string;
 }
 
@@ -189,10 +198,13 @@ function sentenceFile(projectId: string, i: number): string { return path.join(s
  * because a guessed rate is inaudible as an error and audible as pitch.
  *
  * Exported so `tools/test-book-render-wav.js` can put a known payload through
- * the real path and read the header back off disk; the service's own caller is
- * `renderFirst` below. The wide loop writes a take it has already built and
- * measured (`fileTake`), because a take that might be KEPT has to exist as
- * bytes before anyone knows whether it will be filed.
+ * this path and read the header back off disk. IT HAS NO OTHER CALLER SINCE
+ * 2026-09-18: `renderFirst` used to write its sentence here and derive the
+ * duration separately, which was a second copy of what `fileTake` does, and it
+ * files a `takeFrom` take through `fileTake` now like the wide loop. The bytes
+ * are the same either way — both build them with `sentenceWav` below, because a
+ * take that might be KEPT has to exist as bytes before anyone knows whether it
+ * will be filed.
  */
 export async function writeSentenceWav(file: string, audio: AudioChunk): Promise<Buffer> {
   const wav = sentenceWav(audio);
@@ -225,7 +237,37 @@ function takeFrom(audio: AudioChunk | undefined, attempt: number): SentenceTake 
   const pcm = Buffer.from(audio.data, 'base64');
   if (pcm.length < 2) return null;
   const wav = pcm16Wav(pcm, audio.sampleRate);
-  return { attempt, wav, seconds: audio.duration || pcm16WavSeconds(wav), sampleRate: audio.sampleRate };
+  // THE TAKE IS AS LONG AS ITS SAMPLES. `audio.duration` used to be read first
+  // and these bytes only when it was 0 — two owners of one fact, and the one
+  // that was asked first does not own it: the m4b is built by concatenating
+  // exactly this buffer, so its own header is what the book will play. An
+  // engine's stated seconds is a claim about a file it never sees (crucible
+  // sends `outcome.seconds ?? 0`, so "0" there means unstated, not silent), and
+  // where the two disagreed the cue and the chapter mark went somewhere the
+  // audio does not. A buffer with no measurable duration is refused by name
+  // inside `pcm16WavSeconds` rather than papered over with a stated number.
+  return { attempt, wav, seconds: pcm16WavSeconds(wav), sampleRate: audio.sampleRate };
+}
+
+/**
+ * WHY AN ENGINE RESULT CARRIES NO SENTENCE THIS SERVICE CAN FILE, in words.
+ *
+ * FAST START IS REFUSED AT THIS DOOR, BY NAME. `{ success: true, streamed: true }`
+ * with no `audio` is the fast-start contract (`StreamingEngine.generateSentence`
+ * in ./streaming-engine.ts): the engine has already handed the sentence over in
+ * sub-sentence chunks through the `onChunk` callback. This service passes no
+ * `onChunk` and has nowhere to put those chunks — it files ONE wav per sentence
+ * and times the whole book from it — so such a result is not a rendered
+ * sentence. It used to arrive here as a success carrying nothing and be recorded
+ * as "the engine gave no reason", which is the one thing it was not.
+ */
+function noSentenceReason(result: { success: boolean; streamed?: boolean; error?: string }): string {
+  if (result.streamed === true) {
+    return 'the engine answered with fast start (streamed, with no audio): it delivered this sentence in '
+      + 'sub-sentence chunks through an onChunk the whole-book render does not pass and cannot file, '
+      + 'because a book is assembled and timed from one wav per sentence';
+  }
+  return result.error === undefined ? 'the engine gave no reason' : result.error;
 }
 
 /**
@@ -426,12 +468,12 @@ class BookRenderService {
   private jobs = new Map<string, Job>();
   private active: string | null = null; // one project renders at a time (shared GPU)
 
-  /** Public status for the reader's poll. */
-  status(projectId: string): {
-    exists: boolean; total: number; rendered: number; done: boolean;
-    coverage?: boolean[]; playhead?: number; assembling?: boolean; m4b?: boolean; error?: string;
-    failures?: number; failuresPath?: string;
-  } {
+  /** Public status for the reader's poll, in the shape both ends of the poll
+   *  read (`shared/audio/render-status.ts`). It was written out inline here and
+   *  nowhere else: the route handed it to `res.json()` and the reader parsed it
+   *  as `any`, so a renamed field reached the listener as a progress bar that
+   *  stopped moving. */
+  status(projectId: string): RenderStatus {
     const job = this.jobs.get(projectId);
     if (!job) {
       // Could still have on-disk state from a previous run.
@@ -600,7 +642,7 @@ class BookRenderService {
     return {
       projectId, plan, state, running: false, runId: 0, inFlight: new Set(), assembling: false,
       lastPersist: 0, persisting: Promise.resolve(), retries: new Map(), candidates: new Map(),
-      unrenderable: new Map(), recording: Promise.resolve(), consecFail: 0,
+      unrenderable: new Map(), recording: Promise.resolve(), consecFail: 0, statedPace: null,
     };
   }
 
@@ -725,18 +767,29 @@ class BookRenderService {
         { voice: job.state.voice || getDefaultStreamVoice(), speed: 1.0 },
         true,
       );
+      // ONE TAKE, BUILT AND FILED BY THE TWO FUNCTIONS THE WIDE LOOP USES.
       // `takeFrom` and not `result.audio` alone: a chunk with an empty payload
       // is a 44-byte header and no sound, and filing it covers the sentence with
       // a hole. It is a failed attempt, and the wide loop counts and records it
       // as one — this path counts nothing, by design (see the header above).
-      const audio = result.audio;
-      if (result.success && audio !== undefined && takeFrom(audio, 1) !== null) {
-        const wav = await writeSentenceWav(sentenceFile(job.projectId, i), audio);
-        job.state.sampleRate = audio.sampleRate;
-        job.state.coverage[i] = true;
-        job.state.durations[i] = audio.duration || pcm16WavSeconds(wav);
+      // The take it builds is now also the take that is FILED: this path called
+      // `takeFrom` only to ask whether it was null, then wrote the wav again and
+      // derived the duration a second way, which is one decision written twice
+      // and the copy here read the engine's stated seconds first.
+      const take = takeFrom(result.audio, 1);
+      if (result.success && take !== null) await this.fileTake(job, i, take);
+      else {
+        console.warn(`[book-render] sentence ${i} at priority produced nothing: ${noSentenceReason(result)}`
+          + ' — left uncovered for the wide loop, which counts and records its attempts');
       }
-    } catch { /* retried by the wide loop */ } finally {
+    } catch (err) {
+      // SAID, AND STILL RETRIED BY THE WIDE LOOP. The retry is the design — this
+      // path counts nothing, see the header — but the silence was not: an empty
+      // catch here is where a torn-down session throws FIRST, and all anyone saw
+      // of it was a first sentence that took the long way round.
+      console.error(`[book-render] sentence ${i} at priority threw: `
+        + `${err instanceof Error ? err.message : String(err)} — retried by the wide loop`);
+    } finally {
       job.inFlight.delete(i);
       await this.maybePersist(job, true);
     }
@@ -773,7 +826,7 @@ class BookRenderService {
           // counted and recorded as one rather than filed as a 44-byte file.
           if (take !== null) this.keepTake(job, i, take);
           abort = await this.noteFailedAttempt(job, i, result.success ? 'empty' : 'error',
-            result.error === undefined ? 'the engine gave no reason' : result.error);
+            noSentenceReason(result));
         }
       } catch (err) {
         // A THROW IS A FAILED ATTEMPT LIKE ANY OTHER, and until 2026-09-18 it
@@ -939,6 +992,16 @@ class BookRenderService {
    * mid-render voice switch applies to later sentences (`worker` re-reads it per
    * iteration) and the pace has to be the speaking voice's.
    *
+   * ASKED ONCE PER (RUN, VOICE), NOT ONCE PER SETTLEMENT. A voice's pace is a
+   * measured fact about weights a server is holding and does not move while a
+   * book is being rendered in it — but the ask does not stop at the engine's
+   * cached `serverRows`: the venue-routed facade takes the cold-start venue
+   * decision (`decideWhereGenerationRuns`, which pings) on the way through, and
+   * a cleared `serverRows` re-fetches `GET /v1/voices`. A run that settles forty
+   * sentences did all of that forty times for one number. The refusals are NOT
+   * kept: they are failures to reach the venue, and the next settlement asks
+   * again.
+   *
    * A REFUSAL FROM THE ENGINE BECOMES THIS REFUSAL, quoted, rather than a throw.
    * The caller is `settleExhaustedSentence`, which runs inside `noteFailedAttempt`
    * — itself called from `worker`'s own catch — so a throw here would re-enter
@@ -949,6 +1012,8 @@ class BookRenderService {
    */
   private async statedPace(job: Job): Promise<number | { refused: string }> {
     const voice = job.state.voice || getDefaultStreamVoice();
+    const known = job.statedPace;
+    if (known !== null && known.voice === voice) return known.paceCharsPerSec;
     const engine = getActiveEngine();
     const whose = 'The pace is the rendering machine\'s (electron/crucible/voice-band.ts) and travels '
       + 'on its `GET /v1/voices` row as `pace_chars_per_sec`. narrator\'s own no-pace centre is the '
@@ -983,6 +1048,7 @@ class BookRenderService {
           + `reads all three or none too). ${whose}`,
       };
     }
+    job.statedPace = { voice, paceCharsPerSec: stated.paceCharsPerSec };
     return stated.paceCharsPerSec;
   }
 
@@ -1158,11 +1224,36 @@ class BookRenderService {
     return lines.join('\n') + '\n';
   }
 
+  /**
+   * How long sentence `i` plays, from what the render recorded when it filed the
+   * audio — or a refusal naming the sentence.
+   *
+   * THERE IS NO STAND-IN DURATION. Both timelines below are CUMULATIVE, so the
+   * 0.3 s that used to stand in for an unmeasured sentence did not mistime that
+   * one cue: it slid every cue and every chapter mark after it, by the
+   * difference, to the end of the book, and said so nowhere. With the silence
+   * pad gone (Owen's ruling of 2026-09-18 — a thrice-failed sentence keeps its
+   * best take or the book does not ship) a 0 here no longer means "a pad went in
+   * for this one": it means a sentence is marked covered whose audio nothing
+   * measured — its file was not on disk for `loadOrBuild` to read back — and a
+   * book in that state is not one to assemble.
+   */
+  private sentenceSeconds(job: Job, i: number): number {
+    const seconds = job.state.durations[i];
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      throw new Error(
+        `sentence ${i} of ${job.plan.sentences.length} is covered but has no duration `
+        + `(durations[${i}] is ${String(seconds)}), so the timeline cannot be built: nothing measured `
+        + `${sentenceFile(job.projectId, i)}.`);
+    }
+    return seconds;
+  }
+
   private buildVtt(job: Job): string {
     let t = 0;
     const cues: string[] = ['WEBVTT', ''];
     for (let i = 0; i < job.plan.sentences.length; i++) {
-      const dur = job.state.durations[i] || 0.3;
+      const dur = this.sentenceSeconds(job, i);
       cues.push(`${vttTimestamp(t)} --> ${vttTimestamp(t + dur)}`, job.plan.sentences[i], '');
       t += dur;
     }
@@ -1183,7 +1274,7 @@ class BookRenderService {
     for (let i = 0; i < job.plan.sentences.length; i++) {
       const chap = job.plan.chapterOf[i] ?? curChap;
       if (chap !== curChap) { endChapter(t, curChap); chapStart = t * 1000; curChap = chap; }
-      t += job.state.durations[i] || 0.3;
+      t += this.sentenceSeconds(job, i);
     }
     endChapter(t, curChap);
     return lines.join('\n') + '\n';

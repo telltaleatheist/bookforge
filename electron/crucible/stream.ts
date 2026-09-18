@@ -1106,13 +1106,33 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
      * taking it twice in two ways is how the pack and the render end up on two
      * different servers.
      *
+     * AND THERE IS NO `null` ON THIS ROUTE. A `null` is not "no answer" to the
+     * surfaces that ask: `reader-stream-bridge.ts` read one as leave-to-pack
+     * from `higgs-models.json` — THIS machine's numbers for a voice another
+     * machine is holding, which is the one thing `voice-band.ts` forbids for a
+     * Crucible render. So both ways a null used to arrive are refused by name
+     * here, exactly as `getMaxConcurrentSentences` above refuses a backend that
+     * states no batch width.
      */
     statedChunkCaps: async (voice) => {
       const engine = backend();
-      if (typeof engine.statedChunkCaps !== 'function') return null;
+      if (typeof engine.statedChunkCaps !== 'function') {
+        throw new Error('the bound streaming backend states no chunk band (statedChunkCaps) — a Listen '
+          + 'that packs to the local catalog instead would be this machine\'s numbers for a voice '
+          + 'another machine is holding');
+      }
       const started = await startSession();
       if (!started.success) throw new Error(started.error ?? 'Listen has nowhere to run');
-      return engine.statedChunkCaps(voice);
+      const stated = await engine.statedChunkCaps(voice);
+      if (stated === null) {
+        // The backend resolves null for one reason and says so in its own
+        // comment: no venue is bound. That cannot be true after the decision
+        // above succeeded, and if it is, it is a routing failure — not leave to
+        // read the catalog.
+        throw new Error(`the streaming backend has no venue bound after Listen was routed, so nothing `
+          + `states a band for voice "${voice}" — the local catalog is not consulted for a Crucible Listen`);
+      }
+      return stated;
     },
   };
 }

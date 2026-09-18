@@ -233,6 +233,90 @@ async function main() {
       `the failure does not name the file it could not read: ${String(result.error)}`);
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('§5 the parse window is released exactly once, on every path');
+
+  /*
+   * A BrowserWindow that counts its own life. `require('electron')` is the CLI
+   * shim's single object and `extractTextFromHtml` asks for it at CALL time, so
+   * putting a constructor on it here is enough to drive the real function.
+   */
+  const parseWindows = { made: 0, destroyed: 0, destroyedTwice: 0, alive: () => parseWindows.made - parseWindows.destroyed };
+  const page = { loadThrows: null, execThrows: null, extracted: 'A real paragraph of article text.' };
+  class RecordingWindow {
+    constructor() {
+      parseWindows.made += 1;
+      this.gone = false;
+      this.webContents = {
+        executeJavaScript: async () => {
+          if (page.execThrows) throw new Error(page.execThrows);
+          return page.extracted;
+        },
+      };
+    }
+    async loadURL() { if (page.loadThrows) throw new Error(page.loadThrows); }
+    destroy() {
+      if (this.gone) { parseWindows.destroyedTwice += 1; return; }
+      this.gone = true;
+      parseWindows.destroyed += 1;
+    }
+    isDestroyed() { return this.gone; }
+  }
+  require('electron').BrowserWindow = RecordingWindow;
+
+  const article = path.join(process.env.BOOKFORGE_USER_DATA, 'article.html');
+  fs.writeFileSync(article, '<html><body><p>A real paragraph of article text.</p></body></html>', 'utf-8');
+  function resetWindows(over) {
+    parseWindows.made = 0; parseWindows.destroyed = 0; parseWindows.destroyedTwice = 0;
+    page.loadThrows = null; page.execThrows = null; page.extracted = 'A real paragraph of article text.';
+    Object.assign(page, over || {});
+  }
+
+  await check('a window that loaded is released, and the text comes back', async () => {
+    resetWindows();
+    const result = await extractTextFromHtml(article, []);
+    assert.strictEqual(result.success, true, `the extraction failed: ${String(result.error)}`);
+    assert.strictEqual(parseWindows.made, 1);
+    assert.strictEqual(parseWindows.alive(), 0, 'the parse window outlived the extraction');
+  });
+
+  await check('a load that throws, and a script that throws, each release their window once', async () => {
+    for (const over of [{ loadThrows: 'ERR_FILE_NOT_FOUND' }, { execThrows: 'Script failed to execute' }]) {
+      resetWindows(over);
+      const result = await extractTextFromHtml(article, []);
+      assert.strictEqual(result.success, false, `${JSON.stringify(over)} was reported as a success`);
+      assert.strictEqual(parseWindows.alive(), 0,
+        `the parse window survived ${JSON.stringify(over)} — a hidden window nothing destroys keeps a `
+        + 'renderer process alive for the life of the app');
+      assert.strictEqual(parseWindows.destroyedTwice, 0,
+        `the window was destroyed twice on ${JSON.stringify(over)}`);
+    }
+  });
+
+  await check('a page that hands back something that is not text releases its window ONCE', async () => {
+    // `executeJavaScript` resolves whatever the page's last expression was, and
+    // the post-processing below the first `destroy()` calls `.split` on it. That
+    // throw lands in the catch, which destroys the SAME window a second time —
+    // the release is written once per exit path instead of once per window.
+    resetWindows({ extracted: undefined });
+    const result = await extractTextFromHtml(article, []);
+    assert.strictEqual(result.success, false, 'a non-string extraction was reported as a success');
+    assert.strictEqual(parseWindows.alive(), 0, 'the parse window survived');
+    assert.strictEqual(parseWindows.destroyedTwice, 0,
+      'the window was destroyed a second time after the extraction had already released it — the '
+      + 'release belongs to the window, not to each way out of the function');
+  });
+
+  await check('the release is bound to the window, not repeated per exit', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'web-fetch-bridge.ts'), 'utf-8');
+    const releases = src.match(/parseWindow\.destroy\(\)/g) || [];
+    assert.strictEqual(releases.length, 1,
+      `parseWindow.destroy() is written ${releases.length} times; a window acquired in one place is `
+      + 'released in one place, or the next early return leaks it');
+    assert.ok(/}\s*finally\s*{\s*\n\s*parseWindow\.destroy\(\);/.test(src),
+      'the parse window is not released in a finally');
+  });
+
   fs.rmSync(process.env.BOOKFORGE_USER_DATA, { recursive: true, force: true });
   if (failures) { console.log(`\n${failures} check(s) FAILED.`); process.exitCode = 1; }
   else console.log('\nThe fetcher decides about a page from the page, not from its prose.');

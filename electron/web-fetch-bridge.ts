@@ -1200,7 +1200,14 @@ export async function extractTextFromHtml(
     return { success: false, error: message };
   }
 
-  // Use Electron's BrowserWindow for proper DOM parsing
+  // Use Electron's BrowserWindow for proper DOM parsing. A HIDDEN WINDOW IS A
+  // RENDERER PROCESS, so the release below is bound to the acquisition with a
+  // `finally` rather than written once per way out: it used to be destroyed on
+  // the success path and again in the catch, which is two copies of one release
+  // — the post-processing under the first copy (`extractedText.split`, which
+  // throws for anything the page hands back that is not a string) then destroyed
+  // the SAME window a second time, and any early return added between them would
+  // have leaked it outright.
   const { BrowserWindow } = require('electron');
 
   const parseWindow = new BrowserWindow({
@@ -1260,8 +1267,6 @@ export async function extractTextFromHtml(
       })();
     `);
 
-    parseWindow.destroy();
-
     // Post-process: normalize whitespace and filter boilerplate
     const paragraphs = extractedText
       .split(/\n\n+/)
@@ -1286,9 +1291,10 @@ export async function extractTextFromHtml(
 
     return { success: true, text };
   } catch (error) {
-    parseWindow.destroy();
     console.error('[WEB-FETCH] Failed to extract text:', error);
     return { success: false, error: (error as Error).message };
+  } finally {
+    parseWindow.destroy();
   }
 }
 

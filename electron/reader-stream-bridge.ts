@@ -263,21 +263,39 @@ export class ReaderStreamBridge {
     // thing this build streams, so the branch is gone with it.
     let sentences: string[];
     {
-      const { resolveHiggsModel, higgsVoiceCapsForModel } = await import('./higgs-models.js');
       const { packListenChunks, listenBandFromCaps, describeListenChunks } =
         await import('../shared/listen-text/chunks.js');
       let band;
       try {
-        // THE ENGINE THAT WILL SPEAK IT STATES THE BAND, when it is somewhere
-        // else — the same read every Listen surface makes, for the same reason
-        // (electron/crucible/voice-band.ts). The local pool states nothing and
-        // the catalog stands for it, because that engine IS this machine's
-        // narrator. `higgsVoiceCapsForModel` defaults to THIS MACHINE'S arm,
-        // which is exactly why it must not answer for another machine's.
-        const stated = await getActiveEngine().statedChunkCaps?.(voice) ?? null;
-        band = stated === null
-          ? listenBandFromCaps(voice, higgsVoiceCapsForModel(resolveHiggsModel(voice)))
-          : listenBandFromCaps(voice, stated);
+        // THE ENGINE THAT WILL SPEAK IT STATES THE BAND — the same read every
+        // Listen surface makes, for the same reason (electron/crucible/voice-band.ts).
+        //
+        // AND NOTHING STANDS IN FOR IT. This used to be `statedChunkCaps?.(voice)
+        // ?? null` with a catalog arm on the null, written when a LOCAL narrator
+        // pool stated nothing and the catalog was how that pool had been
+        // configured. That pool is deleted (docs/LEGACY-REMOVAL.md): every Listen
+        // is a Crucible session now, `higgsVoiceCapsForModel` defaults to THIS
+        // machine's arm, and packing a book to it for a voice another machine is
+        // holding is the `chunk_too_long` refusal of 2026-09-15. A venue that
+        // states no band refuses by name in the facade, and that refusal reaches
+        // the client below rather than being packed around. The two shapes the
+        // interface still allows are refused here by name the same way the book
+        // render's `statedPace` refuses them (electron/book-render-service.ts) —
+        // the member is optional in `StreamingEngine` because a pool that does
+        // not state a band once existed.
+        const engine = getActiveEngine();
+        if (typeof engine.statedChunkCaps !== 'function') {
+          throw new Error(`the active streaming engine states no chunk band for voice "${voice}" — it has `
+            + 'no statedChunkCaps, and this machine\'s catalog does not answer for the machine that '
+            + 'will speak the rows');
+        }
+        const stated = await engine.statedChunkCaps(voice);
+        if (stated === null) {
+          throw new Error(`nothing states a band for voice "${voice}" yet: the streaming engine has no `
+            + 'venue bound (statedChunkCaps resolved null), and a Crucible Listen is not packed from '
+            + 'the local catalog');
+        }
+        band = listenBandFromCaps(voice, stated);
       } catch (err) {
         this.send(ws, {
           type: 'error',

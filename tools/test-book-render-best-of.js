@@ -38,6 +38,9 @@
  *       `chars ÷ pace` and a thrice-failed sentence with takes CHOOSES: the
  *       log-space-closest take is filed, the sentence is covered, and
  *       `failures.jsonl` holds its three attempts and one `best-of` settlement.
+ *       AND IT IS ASKED ONCE FOR THE RUN. Every settlement asked the engine
+ *       again, and behind that member is the venue decision and a
+ *       `GET /v1/voices`; the answer is kept per (run, voice) instead.
  *   §8  A VOICE THAT STATES NO PACE IS STILL REFUSED. Nothing on this side
  *       invents narrator's default band centre: Crucible publishes it on no
  *       route (`/v1/voices` carries each voice's own measured rates and nothing
@@ -473,6 +476,34 @@ async function main() {
       assert.ok(/2\.500 s/.test(settled[0].reason),
         `the record does not say what length it measured against: ${settled[0].reason}`);
     });
+
+  await check('the voice\'s pace is asked ONCE for a run, however many sentences settle', async () => {
+    resetEngine();
+    // A settlement is the only caller, and it asked the engine again for every
+    // one of them. Behind `statedChunkCaps` sits the venue decision — a cold
+    // backend re-takes it, pings and all — and behind that a `GET /v1/voices`;
+    // the pace of a voice does not change while it is being rendered in, so the
+    // run holds the one it was told. It is keyed BY VOICE, because a mid-render
+    // switch applies to later sentences and the pace has to be the speaking
+    // voice's (`worker` re-reads the voice per iteration).
+    const asked = [];
+    engine.statedChunkCaps = async (voice) => { asked.push(voice); return statedBand(16); };
+    const { id } = newProject(['One.', 'Two.', 'Three.', 'Four.']);
+    for (const i of [1, 2]) {
+      engine.script.set(i, (n) => ({ success: false, error: `take ${n} was rejected`, audio: chunk(n) }));
+    }
+
+    await bookRenderService.start(id, 0);
+    await waitFor('both sentences to settle',
+      () => bookRenderService.status(id).done || bookRenderService.status(id).error !== undefined);
+
+    const status = bookRenderService.status(id);
+    assert.strictEqual(status.error, undefined, `the run failed: ${status.error}`);
+    assert.strictEqual(status.coverage[1] && status.coverage[2], true,
+      'both settled sentences should have a take filed');
+    assert.deepStrictEqual(asked, ['test-voice'],
+      `the pace was asked ${asked.length} time(s) — once per settlement, not once per run`);
+  });
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log('§8 a voice that states NO pace is refused, and nothing is invented');
