@@ -689,6 +689,22 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
    *    address is the defect the whole seam exists to avoid, and the placement
    *    overrides both anyway.
    *
+   * ── AND SINCE 2026-09-18 IT GETS THERE THROUGH PENDING (21ed57b3) ───────
+   *
+   * Owen: *"when i add something to the queue in the vendored copy of foundry,
+   * it doesnt add it to the pending section, where i can pick the GPU."* So
+   * `foundry-job` joined `STAGED_JOB_TYPES`: a hosted CLEAN stages `held`, and
+   * a targeted Start on a staged run is refused BY NAME (`still_pending`) —
+   * which is what this case had been pressing, and why it read as "the act
+   * never reached the seam".
+   *
+   * THE ASSERTIONS ARE THE SAME; THE PRESS IS DIFFERENT. What crosses was
+   * never the thing that changed. And the staging adds one thing worth
+   * pinning HERE rather than in the queue's own suite, because the seam is
+   * this file's subject: while the row is staged the seam is not touched at
+   * all. A book waiting for somebody to choose its card must not already be
+   * running on one.
+   *
    * A `clean` row asks the installed binary its version before any of this, so
    * the case needs a real foundry; SKIPPED BY NAME without one rather than
    * passed quietly.
@@ -730,7 +746,22 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
   engine.start();
   const sent = textPass('clean', 'placed');
   const row = host.foundryHostQueue.enqueue(sent, null, PROJ);
-  engine.start({ stepId: row.id });
+
+  // STAGED, and untouched while it is. `engine.start()` above is the toolbar's
+  // Start and has already run: a staged book is not what "what is here" means,
+  // so it must not have swept this one in.
+  const staged = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  assert.ok(staged !== undefined, 'the row is not in the queue at all');
+  assert.strictEqual(staged.pending, true,
+    'a hosted clean must stage into Pending so its card can be chosen (21ed57b3)');
+  assert.strictEqual(staged.steps.find((s) => s.id === row.id).status, 'held');
+  await settle();
+  assert.strictEqual(seen, null, 'the seam was handed a book nobody has chosen a machine for yet');
+
+  // The press. Send to queue is what commits it, and it is the only thing that
+  // does — a targeted Start on a staged run refuses `still_pending`.
+  assert.throws(() => engine.start({ stepId: row.id }), /is in Pending/);
+  engine.sendToQueue(staged.id);
   // The version gate SPAWNS the binary, so this waits on a real child rather
   // than on microtasks.
   for (let i = 0; i < 200; i++) {
@@ -790,7 +821,16 @@ test('a hosted text act for a server this machine does not offer is REFUSED, nev
   });
   engine.start();
   const row = host.foundryHostQueue.enqueue(textPass('clean', 'unoffered'), null, PROJ);
-  engine.start({ stepId: row.id });
+  /*
+   * THE REFUSAL IS ON THE RUN, NOT ON THE PRESS. Since 21ed57b3 a hosted clean
+   * stages, so the machine is chosen in Pending and `sendToQueue` is what
+   * commits it — and the server can still be gone by the time the row's turn
+   * comes, which is exactly what this case is about. Send it, then read the
+   * row.
+   */
+  const staged = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  assert.strictEqual(staged.pending, true, 'a hosted clean stages before it runs');
+  engine.sendToQueue(staged.id);
   let after = null;
   for (let i = 0; i < 200; i++) {
     await wait(25);

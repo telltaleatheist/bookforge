@@ -39,26 +39,23 @@ function newestMtime(root, extension) {
   return newest;
 }
 
-const repo = path.join(__dirname, '..');
-const newestSource = Math.max(
-  newestMtime(path.join(repo, 'electron'), '.ts'),
-  newestMtime(path.join(repo, 'shared'), '.ts'),
-  newestMtime(path.join(repo, 'packages', 'quire', 'src'), '.ts'),
-);
-const newestCompiled = newestMtime(path.join(repo, 'dist', 'electron'), '.js');
-if (newestCompiled === 0) {
-  console.error(
-    'dist/electron holds no compiled output, and the keepers load compiled modules. '
-    + 'Run: npx tsc -p tsconfig.electron.json');
-  process.exitCode = 1;
-  return;
-}
-if (newestSource > newestCompiled) {
-  console.error(
-    'dist/electron is older than the TypeScript sources, so the keepers would test a build '
-    + 'that no longer matches the code. Run: npx tsc -p tsconfig.electron.json');
-  process.exitCode = 1;
-  return;
+function refuseStaleBuild() {
+  const repo = path.join(__dirname, '..');
+  const newestSource = Math.max(
+    newestMtime(path.join(repo, 'electron'), '.ts'),
+    newestMtime(path.join(repo, 'shared'), '.ts'),
+    newestMtime(path.join(repo, 'packages', 'quire', 'src'), '.ts'),
+  );
+  const newestCompiled = newestMtime(path.join(repo, 'dist', 'electron'), '.js');
+  if (newestCompiled === 0) {
+    return 'dist/electron holds no compiled output, and the keepers load compiled modules. '
+      + 'Run: npx tsc -p tsconfig.electron.json';
+  }
+  if (newestSource > newestCompiled) {
+    return 'dist/electron is older than the TypeScript sources, so the keepers would test a build '
+      + 'that no longer matches the code. Run: npx tsc -p tsconfig.electron.json';
+  }
+  return null;
 }
 
 const SUITES = [
@@ -803,9 +800,13 @@ const SUITES = [
   // widened to reach their own assertions again.
   'test-analyzer-exploded-book',
   'test-quire-cache-identity',
-  // Pagination in full. SKIPS BY NAME when BOOKFORGE_KA_EPUB does not point at
-  // the Killing America EPUB — the one fixture here that is not in the repo, and
-  // a regression test that names three specific plates, so no other book will do.
+  // Pagination in full, on the one fixture here that is not in the repo — a
+  // regression test naming three specific plates, so no other book will do. It
+  // DERIVES the book from this machine's recorded library root and the layout
+  // the app owns (tools/ka-fixture.js) and skips by name when it is not there;
+  // BOOKFORGE_KA_EPUB is the override for a machine that keeps it elsewhere.
+  // Until 2026-09-18 the variable was the only way to name it and nothing set
+  // it, so this skipped on every run of the machine that holds the book.
   'test-quire',
   // The EPUB container seam and what is read out of the markup.
   'test-epub-container',
@@ -843,6 +844,17 @@ const SUITES = [
   // Drives a REAL narrator refusal through a REAL python to prove the reason
   // reaches the user. SKIPS BY NAME where the tools env is not installed.
   'test-narrator-refusal-surfacing',
+  // AND A KEEPER FOR THE KEEPERS (2026-09-18). The list guard above stops a
+  // suite being left out; it cannot stop a listed suite from being DARK. Two
+  // were: the Foundry vendor keeper verified nothing because a `+dirty` suffix
+  // defeated its reading of `foundry --version`, and `test-quire` skipped on
+  // the one machine that owns its fixture. The row this runner printed for the
+  // first said `Node.js v20.19.5` and nothing else, which is how both survived
+  // a run that was being read. Every one of those is a READING, so the
+  // readings are driven here — the version line, the library derivation, and
+  // this file's own reading of a failed suite's output. No foundry, no
+  // library, no GPU.
+  'test-keeper-runner',
 ];
 
 /**
@@ -854,54 +866,175 @@ const SUITES = [
  * the run by name, and the only way past it is to add it — or to give it the
  * skip shape (`SKIP: <reason>`, exit 0) and add it anyway.
  */
-const onDisk = fs.readdirSync(__dirname)
-  .filter((f) => /^test-.*\.js$/.test(f))
-  .map((f) => f.replace(/\.js$/, ''));
-const unlisted = onDisk.filter((f) => !SUITES.includes(f));
-const listedButGone = SUITES.filter((s) => !onDisk.includes(s));
+function census() {
+  const onDisk = fs.readdirSync(__dirname)
+    .filter((f) => /^test-.*\.js$/.test(f))
+    .map((f) => f.replace(/\.js$/, ''));
+  return {
+    unlisted: onDisk.filter((f) => !SUITES.includes(f)),
+    listedButGone: SUITES.filter((s) => !onDisk.includes(s)),
+  };
+}
 
 /** A suite that could not run says so on a line of its own and exits 0. */
 const SKIP_RE = /^SKIP:\s*(.+)$/m;
 
-let failed = 0;
-const skipped = [];
-for (const suite of SUITES) {
-  const file = path.join(__dirname, `${suite}.js`);
-  let out = '';
-  let ok = true;
-  try {
-    out = execFileSync(process.execPath, [file], { encoding: 'utf-8', stdio: 'pipe' });
-  } catch (err) {
-    ok = false;
-    out = `${err.stdout || ''}${err.stderr || ''}`;
-  }
-  const skip = ok ? SKIP_RE.exec(out) : null;
-  if (skip) {
-    skipped.push({ suite, why: skip[1].trim() });
-    console.log(`SKIP  ${suite.padEnd(32)} ${skip[1].trim().slice(0, 120)}`);
-    continue;
-  }
-  const tally = out.trim().split('\n').filter((l) => /passed/.test(l)).pop() || out.trim().split('\n').pop();
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${suite.padEnd(32)} ${(tally || '').trim()}`);
-  if (!ok) console.log(out.split('\n').filter((l) => /^FAIL|^ {6}/.test(l)).join('\n'));
+/** The count a finished suite prints, or null when it did not get that far. */
+function tallyOf(out) {
+  const counted = out.trim().split(/\r?\n/).filter((l) => /passed/.test(l)).pop();
+  return counted === undefined ? null : counted.trim();
 }
 
-if (unlisted.length) {
-  failed++;
-  console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${unlisted.length} guard(s) exist in tools/ `
-    + 'and are run by nobody — add them to SUITES, or give them the SKIP shape and add them:');
-  for (const name of unlisted) console.log(`      ${name}`);
-}
-if (listedButGone.length) {
-  failed++;
-  console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${listedButGone.length} name(s) in SUITES `
-    + 'have no file — a suite was renamed or deleted and the list was not:');
-  for (const name of listedButGone) console.log(`      ${name}`);
+/**
+ * A SUITE THAT THREW IS NOT A SUITE THAT SAID NOTHING.
+ *
+ * `AssertionError [ERR_ASSERTION]: …`, `Error: …`, `TypeError: …` — node prints
+ * an uncaught throw at column 0 and indents its stack frames by FOUR spaces.
+ * The filter here read only the other shape, a suite REPORTING its own
+ * failures (`FAIL <check>` with six-space continuations), so a suite that threw
+ * matched nothing at all and its row was left with the last line of the dump:
+ * `FAIL  test-foundry-clean-text-vendor     Node.js v20.19.5`, measured
+ * 2026-09-18 with the whole of its refusal — the binary it asked, the line that
+ * binary printed — sitting unread in the output above it. The version banner is
+ * not a reason.
+ *
+ * Only the FIRST line of a throw is taken, deliberately: node's message can run
+ * to a paragraph and the stack names this runner's own frames, neither of which
+ * belongs in a one-line row. Read the suite directly for the rest.
+ */
+const THROWN_RE = /^(?:[A-Za-z_$][\w$]*Error\b|Error:)/;
+
+/** What went wrong, as lines to print under a FAIL row. */
+function failureDetail(out) {
+  const lines = out.split(/\r?\n/);
+  const reported = lines.filter((l) => /^FAIL|^ {6}/.test(l));
+  if (reported.length > 0) return reported;
+  const threw = lines.find((l) => THROWN_RE.test(l));
+  if (threw !== undefined) return [threw];
+  /*
+   * A THIRD SHAPE, and it is a real one: a suite that refuses IN PROSE and
+   * exits non-zero, the way `test-clean-step-door` says which two foundry
+   * builds it looked for. Its last line is the sentence, which is what this
+   * runner printed before the two readings above existed and is still the
+   * right answer here.
+   */
+  const spoken = lines.filter((l) => l.trim() !== '').pop();
+  if (spoken !== undefined) return [spoken];
+  return ['(the suite failed and printed nothing at all — run it directly)'];
 }
 
-const ran = SUITES.length - skipped.length;
-console.log(`\n${ran} suite(s) ran, ${skipped.length} skipped, ${failed} failing.`);
-for (const s of skipped) console.log(`  skipped: ${s.suite} — ${s.why}`);
-console.log(failed === 0 ? '\nALL KEEPERS GREEN' : `\n${failed} SUITE(S) FAILING`);
-process.exitCode = failed === 0 ? 0 : 1;
+/**
+ * WINDOWS REFUSED TO START THE CHILD, AND THAT IS NOT A RED TEST.
+ *
+ * Measured 2026-09-18: `node tools/test-cli-flags.js` prints all 25 of its ok
+ * lines under Git Bash and then exits 3 with one line on stderr —
+ * `AssignProcessToJobObject: (87) The parameter is incorrect.` — because the
+ * sandboxed shell already owns this process's job object and the suite spawns a
+ * grandchild. The same command passes 25/25 under PowerShell. Reporting that as
+ * FAIL sends the next reader looking for an assertion that does not exist.
+ *
+ * Matched on Windows' own wording and nothing else: a suite that fails for its
+ * own reasons must never be excused by this.
+ */
+const JOB_OBJECT_REFUSAL_RE = /^AssignProcessToJobObject: \(\d+\).*$/m;
+
+function shellRefusalOf(out) {
+  const said = JOB_OBJECT_REFUSAL_RE.exec(out);
+  if (said === null) return null;
+  return `not runnable under this shell — run under PowerShell. Windows said: ${said[0].trim()}`;
+}
+
+function main() {
+  const stale = refuseStaleBuild();
+  if (stale !== null) {
+    console.error(stale);
+    process.exitCode = 1;
+    return;
+  }
+
+  let failed = 0;
+  const skipped = [];
+  const unrunnable = [];
+  for (const suite of SUITES) {
+    const file = path.join(__dirname, `${suite}.js`);
+    let out = '';
+    let ok = true;
+    try {
+      out = execFileSync(process.execPath, [file], { encoding: 'utf-8', stdio: 'pipe' });
+    } catch (err) {
+      ok = false;
+      out = `${err.stdout || ''}${err.stderr || ''}`;
+    }
+    const skip = ok ? SKIP_RE.exec(out) : null;
+    if (skip) {
+      skipped.push({ suite, why: skip[1].trim() });
+      console.log(`SKIP  ${suite.padEnd(32)} ${skip[1].trim().slice(0, 120)}`);
+      continue;
+    }
+    const shellRefusal = ok ? null : shellRefusalOf(out);
+    if (shellRefusal !== null) {
+      unrunnable.push({ suite, why: shellRefusal });
+      console.log(`SHELL ${suite.padEnd(32)} ${shellRefusal}`);
+      continue;
+    }
+    if (!ok) failed++;
+    /*
+     * THE ROW'S OWN LINE IS THE COUNT WHEN THERE IS ONE, and the reason when
+     * there is not. A suite that threw before printing a tally has no count to
+     * report, so repeating the last line of its output there says nothing;
+     * hoisting the first detail line into the row is what makes a single-line
+     * scan of the output usable again.
+     */
+    const detail = ok ? [] : failureDetail(out);
+    const counted = tallyOf(out);
+    const head = counted !== null ? counted
+      : (ok ? out.trim().split(/\r?\n/).pop() : detail[0]);
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  ${suite.padEnd(32)} ${(head || '').trim()}`);
+    const rest = counted === null && !ok ? detail.slice(1) : detail;
+    if (rest.length > 0) console.log(rest.join('\n'));
+  }
+
+  const { unlisted, listedButGone } = census();
+  if (unlisted.length) {
+    failed++;
+    console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${unlisted.length} guard(s) exist in tools/ `
+      + 'and are run by nobody — add them to SUITES, or give them the SKIP shape and add them:');
+    for (const name of unlisted) console.log(`      ${name}`);
+  }
+  if (listedButGone.length) {
+    failed++;
+    console.log(`FAIL  ${'(the list itself)'.padEnd(32)} ${listedButGone.length} name(s) in SUITES `
+      + 'have no file — a suite was renamed or deleted and the list was not:');
+    for (const name of listedButGone) console.log(`      ${name}`);
+  }
+
+  const ran = SUITES.length - skipped.length - unrunnable.length;
+  console.log(`\n${ran} suite(s) ran, ${skipped.length} skipped, ${unrunnable.length} not runnable `
+    + `under this shell, ${failed} failing.`);
+  for (const s of skipped) console.log(`  skipped: ${s.suite} — ${s.why}`);
+  for (const s of unrunnable) console.log(`  not runnable: ${s.suite} — ${s.why}`);
+  /*
+   * A SUITE THAT DID NOT RUN IS NOT A GREEN SUITE, even when the reason is the
+   * shell rather than the code — that is the whole lesson of the 2026-09-13
+   * census. So an unrunnable suite is reported apart from a failure and still
+   * keeps the exit code non-zero, naming the shell that will run it.
+   */
+  if (failed > 0) console.log(`\n${failed} SUITE(S) FAILING`);
+  else if (unrunnable.length > 0) {
+    console.log(`\nEVERY SUITE THAT RAN IS GREEN, and ${unrunnable.length} could not run here — `
+      + 're-run under PowerShell');
+  } else console.log('\nALL KEEPERS GREEN');
+  process.exitCode = failed === 0 && unrunnable.length === 0 ? 0 : 1;
+}
+
+/**
+ * THE RUNNER IS ALSO A MODULE, so that the row it prints can itself be kept.
+ *
+ * `tools/test-keeper-runner.js` drives `tallyOf` and `failureDetail` over
+ * captured output rather than re-deriving what they should say — the runner's
+ * reading of a failure is the thing under test, and a second copy of that
+ * reading inside the keeper would agree with itself for ever.
+ */
+if (require.main === module) main();
+
+module.exports = { SUITES, census, tallyOf, failureDetail, shellRefusalOf };

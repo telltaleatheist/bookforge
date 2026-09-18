@@ -286,7 +286,9 @@ const BOOKFORGE_ANCHOR = '0f962d5f';
  */
 function foundryShipped(repo) {
   const override = process.env['FOUNDRY_HEAD_OVERRIDE']?.trim();
-  if (override) return { rev: override, source: 'FOUNDRY_HEAD_OVERRIDE' };
+  // A named commit is a commit, so nothing here is dirty: the operator has
+  // said which one to check against and this run is about exactly that.
+  if (override) return { rev: override, dirty: false, source: 'FOUNDRY_HEAD_OVERRIDE' };
 
   const binary = foundryBinary(repo);
   if (binary === null) {
@@ -306,9 +308,8 @@ function foundryShipped(repo) {
     throw new Error(`${binary} --version failed: ${err.message}`);
   }
 
-  // `foundry 1.2.0 (7fbe763)` -> `7fbe763`. Short form, same as the pins carry.
-  const match = /\(([0-9a-f]{7,40})\)/.exec(printed);
-  if (match === null) {
+  const named = parseFoundryVersion(printed);
+  if (named === null) {
     throw new Error(
       `${binary} reports "${printed}" and names no commit, so THIS KEEPER CANNOT `
       + 'VERIFY IT.\n'
@@ -321,7 +322,41 @@ function foundryShipped(repo) {
       + 'commit it is.',
     );
   }
-  return { rev: match[1], source: `${binary} --version` };
+  return { rev: named.sha, dirty: named.dirty, source: `${binary} --version` };
+}
+
+/**
+ * `foundry <ver> (<sha>)` -> the sha. `null` when the line names no commit.
+ *
+ * ── `+dirty` IS NOT "NAMES NO COMMIT" (fixed 2026-09-18) ────────────────────
+ *
+ * Foundry's release script appends `+dirty` to the injected sha when the tree
+ * it built from had uncommitted changes, so the binary on this machine prints
+ * `foundry 2.0.2 (e03943a+dirty)`. The pattern was `\(([0-9a-f]{7,40})\)` —
+ * the closing parenthesis had to follow the sha — so nine characters turned
+ * every check in this file off, and it said so in the words reserved for a dev
+ * build that carries no sha at all: "names no commit, so THIS KEEPER CANNOT
+ * VERIFY IT". It names `e03943a`, and with `FOUNDRY_HEAD_OVERRIDE=e03943a` the
+ * suite passed 13/13 unchanged.
+ *
+ * THE CAUTION IN THAT MESSAGE IS STILL LEGITIMATE and is kept — a dirty build
+ * was made from a tree that is not any commit, so the bytes running may be
+ * ahead of the sha they report. It becomes a WARNING printed on the pass line
+ * rather than a refusal to check anything, because refusing to check is
+ * strictly worse: it leaves the thirteen files unwatched AND says nothing
+ * about the dirt.
+ *
+ * A build that names no commit at all still returns `null`, and the refusal
+ * above still stands for it: `bun run src/cli.ts` prints no parenthesis, and
+ * falling back to the checkout's HEAD is the hazard this anchor exists to
+ * remove.
+ *
+ * Its own function so that the shapes it has to read can be driven without a
+ * foundry on the machine — see `tools/test-keeper-runner.js`.
+ */
+function parseFoundryVersion(printed) {
+  const match = /\(([0-9a-f]{7,40})(\+dirty)?\)/.exec(printed);
+  return match === null ? null : { sha: match[1], dirty: match[2] !== undefined };
 }
 
 /**
@@ -810,8 +845,19 @@ function main() {
     const from = entry.shipped?.revendoredFrom;
     if (from) requireCommit(bookforge, from, `BookForge (re-vendor source for ${entry.ours})`);
   }
-  const shipped = foundryShipped(foundry);
-  const FOUNDRY_SHIPPED = shipped.rev;
+  const anchor = foundryShipped(foundry);
+  const FOUNDRY_SHIPPED = anchor.rev;
+  /*
+   * A DIRTY BINARY IS CHECKED AND FLAGGED, NEVER REFUSED. It was built from a
+   * tree that is not any commit, so the thirteen files it actually carries may
+   * be ahead of the sha it reports and this run's verdict is about the sha.
+   * That is a caution a person must READ, which is why it is on the pass line;
+   * it is not a reason to check nothing, which is what it used to be.
+   */
+  const dirtyWarning = anchor.dirty
+    ? ` WARNING: that binary reports +dirty — it was built from an uncommitted tree, so what it `
+      + `carries may be ahead of ${FOUNDRY_SHIPPED} and this verdict is about the COMMIT.`
+    : '';
   for (const rev of [VENDOR_PASS, VENDOR_LEAVES, ONE_DOOR_BASELINE, FOUNDRY_SHIPPED]) {
     requireCommit(foundry, rev, 'Foundry');
   }
@@ -1008,8 +1054,17 @@ function main() {
     + `n6/s1 agree on both sides. `
     + (freeze.note ?? `${freeze.frozen}/${FROZEN_SINCE_BASELINE.length} frozen since `
       + `${ONE_DOOR_BASELINE}. `)
-    + `(${foundry})`,
+    + `(${foundry})`
+    + dirtyWarning,
   );
 }
 
-main();
+if (require.main === module) main();
+
+/**
+ * `parseFoundryVersion` is exported so the shapes a `--version` line can take
+ * are checked without a foundry binary — the reading is what went wrong here
+ * (a `+dirty` suffix read as "names no commit"), and a reading is exactly the
+ * kind of thing a keeper can own on any machine.
+ */
+module.exports = { parseFoundryVersion };
