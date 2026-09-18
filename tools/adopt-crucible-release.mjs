@@ -16,9 +16,12 @@
  *
  * THE VERSION IS NEVER TYPED TWICE HERE. Everything downstream of the tarballs
  * derives from the tarballs: `electron/crucible/install.ts` exports
- * `CRUCIBLE_RELEASE` as the vendored bootstrap's own `BOOTSTRAP_VERSION`, so
- * once the right bytes are in `vendor/` the app cannot disagree with them about
- * what it pinned. That is also how this script CHECKS itself at the end — it
+ * `BOOTSTRAP_LIBRARY_VERSION` as the vendored bootstrap's own
+ * `BOOTSTRAP_VERSION`, so once the right bytes are in `vendor/` the app cannot
+ * disagree with them about what it pinned. What that number is NOT, since
+ * 2026-09-18, is the release an install puts on a machine — that is the release
+ * channel's answer (crucible `docs/INSTALL-UNINSTALL.md` §6.5), so re-vendoring
+ * the library moves the library and nothing else. That is also how this script CHECKS itself at the end — it
  * asks the freshly installed package its version rather than trusting that the
  * download went to the right filename.
  *
