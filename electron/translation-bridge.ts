@@ -299,11 +299,6 @@ function translationModelName(config: AIProviderConfig): string {
       // the dispatch refuses an unstamped `crucible.model` by name at the very
       // first chunk. It is here because this is a label, not a guard.
       return config.crucible?.model ?? 'unknown';
-    case 'local':
-      // The bundled llama.cpp layer runs whatever its ACTIVE model is and
-      // takes no model argument, so there is usually nothing here to name —
-      // 'unknown' is this record's existing idiom for exactly that.
-      return config.local?.model ?? 'unknown';
   }
 }
 
@@ -326,8 +321,6 @@ async function translateChunkWithProvider(
 
     try {
       switch (config.provider) {
-        case 'local':
-          return await translateWithLocal(text, systemPrompt, abortSignal);
         case 'crucible': {
           /*
            * THE TRANSLATE ACT ON A CRUCIBLE SERVER (crucible

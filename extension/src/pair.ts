@@ -61,6 +61,20 @@ export interface PairingStart {
   readonly expiresIn: number;
   /** Seconds the engine requires BETWEEN polls. It answers 429 if crowded. */
   readonly interval: number;
+  /**
+   * Whether a person has to approve `userCode` before a token is sent.
+   *
+   * FALSE on an engine that pairs openly, which is Crucible's default since
+   * 2026-09-17 — reaching it is the whole of the authorisation, the way Ollama
+   * works. There is then no code for anybody to approve and showing one would
+   * be asking the user to go and do nothing.
+   *
+   * TRUE when the engine says so, AND when it says nothing: a server too old to
+   * carry this field is a server from before the ruling, and every one of those
+   * does require approval. That is reading an old server correctly, not
+   * defaulting around a missing value.
+   */
+  readonly approvalRequired: boolean;
 }
 
 /**
@@ -161,6 +175,7 @@ export async function startPairing(typed: string): Promise<PairingStart> {
     userCode: body['user_code'] as string,
     expiresIn: typeof body['expires_in'] === 'number' ? body['expires_in'] : 300,
     interval: typeof body['interval'] === 'number' ? body['interval'] : 2,
+    approvalRequired: body['approval_required'] !== false,
   };
 }
 

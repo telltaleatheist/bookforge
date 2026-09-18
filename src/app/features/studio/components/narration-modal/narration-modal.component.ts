@@ -1739,10 +1739,42 @@ export class NarrationModalComponent {
     return 'cancel';
   }
 
+  /**
+   * REMEMBER WHAT WAS JUST CHOSEN, so the next run opens on it.
+   *
+   * Owen, 2026-09-17: *"all of the rest of the options in pipeline defaults are
+   * decided at render time. but we can have it remember the decision the user
+   * made last and use that as the default. so if they rendered a book with
+   * deathstalker last, it can use that as the default until they change to
+   * another"*.
+   *
+   * These stopped being SETTINGS on that date — every one of them was a control
+   * on a page nobody visits, duplicating a control on the screen where the
+   * decision is actually made. They are still persisted, and read right back by
+   * the signals at the top of this class, so the record survives; what changed
+   * is who writes it. This does.
+   *
+   * WRITTEN ON SUBMIT, not on every keystroke: a value somebody scrolled past
+   * and changed their mind about is not a decision, and a default that follows
+   * a half-made choice is a default that surprises. Committing the run is what
+   * makes it one.
+   */
+  private rememberChoices(): void {
+    this.settings.updatePipelineDefaults({
+      ttsEngine: this.engine(),
+      ttsVoice: this.voice(),
+      ttsDevice: this.device(),
+      ttsSpeed: this.speed(),
+      rvcEnhancementEnabled: this.rvcEnabled(),
+      rvcEnhancementVoiceId: this.rvcVoiceId(),
+    });
+  }
+
   async onSubmit(): Promise<void> {
     if (this.submitDisabled()) return;
     this.error.set(null);
     this.submitting.set(true);
+    this.rememberChoices();
     try {
       const book: NarrationRunBook = {
         epubPath: this.epubPath(),

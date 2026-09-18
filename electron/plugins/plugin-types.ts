@@ -32,7 +32,7 @@ export interface PluginSettingField {
  * Plugin manifest - describes the plugin
  */
 export interface PluginManifest {
-  id: string; // 'apple-vision-ocr', 'ebook2audiobook'
+  id: string; // a plugin's own stable identifier
   name: string; // Display name
   version: string;
   description: string;

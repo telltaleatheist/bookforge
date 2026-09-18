@@ -130,37 +130,70 @@ async function main() {
     assert.equal(calls, 2);
     fs.rmdirSync(path.dirname(marker));
   });
-  await check('new setup refuses legacy downloads and selects the engine-owned cleanup route', async () => {
+  await check('setup has no legacy download path and selects the engine-owned cleanup route', async () => {
+    /*
+     * RENAMED AND REWRITTEN 2026-09-17. It used to prove that the bundled
+     * local-AI card was HIDDEN during first-run while its `download` method
+     * stayed available for maintenance afterwards. Owen retired that provider
+     * outright ("'AI' page - it has bundled local ai. that's nullified right?
+     * remove it."), so there is no card to hide and no method to guard.
+     *
+     * What is left worth pinning is the half that still matters: choosing the
+     * engine writes THE SERVER AND NOTHING ELSE, and nothing in this component
+     * can start a local download any more.
+     *
+     * AMENDED 2026-09-17 (later the same day). It asserted the model was saved
+     * too — `capability.selected` for `clean`, read at that instant. That made
+     * the app a SECOND owner of a decision the engine makes per capability
+     * class, and the app's copy WON: an id stored here overrode anything later
+     * chosen on the AI page, so somebody could pick a model, watch it save, and
+     * have a different one do the work. The model is a run-time STAMP now
+     * (`stampCrucibleModelForRun`), read from the server at the start of each
+     * run, and no settings page writes one. So the assertion is inverted: a
+     * saved model is the defect.
+     */
     const ts = require('typescript');
     const vm = require('node:vm');
     const file = fs.readFileSync(path.join(__dirname, '../src/app/features/ai-setup/ai-setup-wizard.component.ts'), 'utf8');
     const source = ts.createSourceFile('wizard.ts', file, ts.ScriptTarget.Latest, true);
     const klass = source.statements.find((node) => ts.isClassDeclaration(node) && node.name.text === 'AiSetupWizardComponent');
     const methods = klass.members.filter((node) => ts.isMethodDeclaration(node)
-      && ['download', 'useCrucible'].includes(node.name.getText(source)));
-    assert.equal(methods.length, 2);
+      && ['useCrucible'].includes(node.name.getText(source)));
+    assert.equal(methods.length, 1);
     const code = ts.transpileModule(`class WizardProbe { ${methods.map((node) => node.getText(source)).join('\n')} }; WizardProbe;`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
     }).outputText;
     const Probe = vm.runInNewContext(code);
-    const probe = new Probe(); let downloads = 0; let saved;
+    const probe = new Probe(); let saved;
     Object.assign(probe, {
-      wizard: () => true, confirmIfTooBig: async () => true, _progress: { update() {} },
-      ai: { downloadModel: async () => { downloads++; }, refresh: async () => {} },
-      crucibleServer: () => 'desk', managedCleanupModel: () => 'ollama/existing-27b',
-      crucibleModel: () => 'old-local-choice', settings: { updateAIConfig: (value) => { saved = value; } },
+      wizard: () => true, ai: { refresh: async () => {} },
+      crucibleServer: () => 'desk',
+      settings: { updateAIConfig: (value) => { saved = value; } },
     });
-    await assert.rejects(probe.download('cogito'), /managed by Crucible/);
-    assert.equal(downloads, 0);
     probe.useCrucible();
     assert.equal(saved.provider, 'crucible');
     assert.equal(saved.crucible.server, 'desk');
-    assert.equal(saved.crucible.model, 'ollama/existing-27b');
-    probe.wizard = () => false;
-    await probe.download('cogito');
-    assert.equal(downloads, 1, 'legacy maintenance remains available outside first-run');
-    assert.match(file, /@if \(!wizard\(\)\) \{\s*<section class="card">/,
-      'the legacy download card is excluded from setup');
+    assert.deepStrictEqual(Object.keys(saved.crucible), ['server'],
+      'choosing an engine saved something besides its name. The server is the ONE AI fact this '
+      + 'app stores; a model saved beside it overrides the per-class choice made on the AI page.');
+
+    // The retirement, asserted the strong way round: not "hidden from setup"
+    // but absent everywhere, machinery included.
+    // MATCHED ON MARKUP, NOT ON THE PHRASE. The component still explains the
+    // retirement in a comment, and a bare /Bundled local AI/ matched THAT — a
+    // test that passes only while nobody documents the thing it checks.
+    assert.ok(!/<h2>[^<]*Bundled local AI/.test(file), 'the bundled local AI card is gone');
+    // STRUCTURAL, NOT TEXTUAL. A /downloadedModels/ over the source matched the
+    // COMMENT that explains the removal, so the test failed on its own
+    // documentation. The AST is already parsed above; ask it what members the
+    // class actually has.
+    const memberNames = klass.members
+      .filter((node) => node.name && typeof node.name.getText === 'function')
+      .map((node) => node.name.getText(source));
+    for (const gone of ['downloadedModels', 'confirmDeleteModels', 'deleteAllModels',
+      'download', 'cancel', 'remove', 'sysInfo']) {
+      assert.ok(!memberNames.includes(gone), `${gone} is gone with the card it served`);
+    }
   });
   await check('first launch verifies and adds the existing engine as an ordinary row', async () => {
     const calls = [];

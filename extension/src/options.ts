@@ -295,19 +295,32 @@ connectBtn.addEventListener('click', async () => {
       return;
     }
     const start = await startPairing(typed);
-    approveWhere.textContent = start.name;
-    userCodeEl.textContent = start.userCode;
-    approvePanel.hidden = false;
-    setConnectResult(`Waiting for ${start.name} to approve…`, 'pending');
+    // An engine that pairs openly has no code for anyone to approve, so the
+    // panel that asks a person to go and approve one stays shut. Showing it
+    // would send them to another window to wait for something that already
+    // happened — which is the exact friction the open default removed.
+    if (start.approvalRequired) {
+      approveWhere.textContent = start.name;
+      userCodeEl.textContent = start.userCode;
+      approvePanel.hidden = false;
+      setConnectResult(`Waiting for ${start.name} to approve…`, 'pending');
+    } else {
+      setConnectResult(`Connecting to ${start.name}…`, 'pending');
+    }
     const outcome = await pollForToken(start, (left) => {
-      countdownEl.textContent = `This code expires in ${left}s.`;
+      if (start.approvalRequired) countdownEl.textContent = `This code expires in ${left}s.`;
     });
     if (outcome.status === 'denied') {
       setConnectResult(`${start.name} refused this connection.`, 'bad');
       return;
     }
     if (outcome.status === 'expired') {
-      setConnectResult('That code expired before it was approved. Press Connect to get a new one.', 'bad');
+      setConnectResult(
+        start.approvalRequired
+          ? 'That code expired before it was approved. Press Connect to get a new one.'
+          : `${start.name} stopped answering before it finished connecting. Press Connect to try again.`,
+        'bad',
+      );
       return;
     }
     const entry = await addPairedServer(outcome.name, start.url, outcome.token);

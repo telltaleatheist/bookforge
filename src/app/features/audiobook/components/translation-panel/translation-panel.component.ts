@@ -37,14 +37,9 @@ import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
 
       <!-- AI Provider Selection -->
       <div class="provider-section">
-        <label class="field-label">AI Provider</label>
+        <label class="field-label">Runs on</label>
         <div class="provider-buttons">
-          <button
-            class="provider-btn"
-            [class.selected]="selectedProvider() === 'crucible'"
-            [class.disabled]="!crucibleServer()"
-            (click)="selectProvider('crucible')"
-          >
+          <button class="provider-btn selected" [class.disabled]="!crucibleServer()" disabled>
             <span class="provider-icon">&#128225;</span>
             <span class="provider-name">GPU engine (Crucible)</span>
             @if (crucibleServer(); as server) {
@@ -53,17 +48,8 @@ import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
               <span class="provider-status">No engine chosen</span>
             }
           </button>
-          <button
-            class="provider-btn"
-            [class.selected]="selectedProvider() === 'local'"
-            (click)="selectProvider('local')"
-          >
-            <span class="provider-icon">&#128187;</span>
-            <span class="provider-name">Bundled local</span>
-            <span class="provider-status">Runs on this machine</span>
-          </button>
         </div>
-        @if (selectedProvider() === 'crucible' && !crucibleServer()) {
+        @if (!crucibleServer()) {
           <div class="api-key-warning">
             No engine is chosen yet. <a (click)="goToSettings()">Pick one in Settings</a>
           </div>
@@ -303,7 +289,13 @@ export class TranslationPanelComponent implements OnInit {
    */
 
   // AI Provider state
-  readonly selectedProvider = signal<AIProvider>('local');
+  /*
+   * STILL A SIGNAL, and still read from the stored config, because the stored
+   * value is what gets MIGRATED: a config saying `local` resolves to `crucible`
+   * loudly (`resolveSavedAIProvider`). It is no longer a CHOICE — there is one
+   * provider — so nothing writes to it from the template any more.
+   */
+  readonly selectedProvider = signal<AIProvider>('crucible');
 
   /** The engine's capability record, or null before it has been asked for. */
   readonly capability = signal<CrucibleCapabilityView | null>(null);
@@ -313,7 +305,6 @@ export class TranslationPanelComponent implements OnInit {
 
   /** THE MODEL, as its owner states it. Never a control. */
   readonly modelLine = computed(() => {
-    if (this.selectedProvider() === 'local') return 'The bundled local model.';
     if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
     return capabilityWords(this.capability(), 'translate');
   });
@@ -321,9 +312,9 @@ export class TranslationPanelComponent implements OnInit {
   // Computed: can add to queue
   readonly canAddToQueue = computed(() => {
     if (!this.epubPath()) return false;
-    // The bundled model is always there to be asked; an engine has to have
-    // been named, because a run cannot ask a machine nobody picked.
-    return this.selectedProvider() === 'local' || !!this.crucibleServer();
+    // An engine has to have been named: a run cannot ask a machine nobody
+    // picked, and there is no longer a bundled model to fall back to.
+    return !!this.crucibleServer();
   });
 
   ngOnInit(): void {
@@ -338,11 +329,6 @@ export class TranslationPanelComponent implements OnInit {
     // Never an empty record on failure — an empty class list reads as "this
     // engine serves nothing", which is a different and false claim.
     if (res.success && res.data) this.capability.set(res.data);
-  }
-
-  selectProvider(provider: AIProvider): void {
-    if (provider === 'crucible' && !this.crucibleServer()) return;
-    this.selectedProvider.set(provider);
   }
 
   goToSettings(): void {

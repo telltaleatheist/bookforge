@@ -552,21 +552,62 @@ const { check, summary } = makeChecker();
       + '21 GiB available and says it fits.');
   });
 
-  await check('SOURCE PIN: the wizard step adds the offer, and both hosts draw the same panel', () => {
+  await check('SOURCE PIN: the wizard step adds the offer, and Settings draws the panel', () => {
     const firstRun = read('src', 'app', 'features', 'first-run-setup', 'first-run-setup.component.ts');
     const settingsPage = read('src', 'app', 'features', 'settings', 'settings.component.ts');
     assert.ok(/<app-ai-setup-wizard \[embedded\]="true" \[wizard\]="true" \/>/.test(firstRun),
-      'the first-run AI step no longer asks for the wizard face. §5.2 gives the wizard one extra '
-      + 'thing — the reason a class is off and the offer to route it — and nothing else.');
-    assert.ok(/<app-ai-setup-wizard \[embedded\]="true" \/>/.test(settingsPage),
-      'Settings no longer mounts the same component. One component in both places is what §5.2 '
-      + 'asks for; two would be two screens teaching two things about one document.');
-    assert.ok(/readonly wizard = input\(false\)/.test(PANEL),
-      'the wizard input is gone, so the two hosts cannot differ at all (or differ by something '
-      + 'else — read it before deleting this check).');
-    assert.ok(/@if \(wizard\(\)\) \{/.test(PANEL), 'the offer block is not gated on the wizard face');
-    assert.ok(/unavailableGroups\(/.test(PANEL) || /unavailableOffers\(\)/.test(PANEL),
-      'the offer block no longer groups by reason — it would say the WSL sentence five times.');
+      'the first-run AI step no longer asks for the wizard face. Section 5.2 gives the wizard one '
+      + 'extra thing -- the reason a class is off and the offer to route it -- and nothing else.');
+    /*
+     * SETTINGS MOUNTS THE PANEL AND NOT THE WIZARD (2026-09-17).
+     *
+     * This asserted, in its first life, that Settings mounted the WIZARD alone,
+     * on the reasoning that one component in both places is what section 5.2
+     * asks for. Then for one pass it asserted both, with the wizard turned down
+     * to the parts the panel had not taken over yet.
+     *
+     * The durable half was never "one component" -- it is ONE CONTROL FOR ONE
+     * FACT. `app-ai-panel` now draws the servers, the model per capability
+     * class, the downloads, the voices, where each job runs and the three
+     * accounts; mounting the wizard beneath it would draw every one of those
+     * twice. So Settings mounts the panel, and the wizard is first run and
+     * /ai-setup only.
+     */
+    assert.ok(/<app-ai-panel \/>/.test(settingsPage),
+      'Settings no longer mounts app-ai-panel -- the AI page Owen asked for on 2026-09-17: '
+      + 'servers as a strip, a model per job from that server, downloads, voices, routes.');
+    assert.ok(!/<app-ai-setup-wizard/.test(settingsPage),
+      'Settings mounts the wizard again. Every control it draws is also on app-ai-panel now, so '
+      + 'two of each would appear on one page writing one engine document.');
+    // MATCHED ON THE DECLARATION AND THE BINDING, NOT ON THE WORD. The wizard
+    // still EXPLAINS the retirement in a comment, and a bare /serverAndModels/
+    // matched that -- a check that fails only while somebody documents the
+    // thing it checks. Same trap as the four source greps that matched their
+    // own comments earlier in this session.
+    assert.ok(!/readonly serverAndModels = input\(/.test(PANEL),
+      'the serverAndModels input is declared again. It existed for the one pass when Settings '
+      + 'mounted both; with one host left there is no branch for it to select.');
+    assert.ok(!/\[serverAndModels\]/.test(settingsPage) && !/\[serverAndModels\]/.test(firstRun),
+      'a host binds serverAndModels again.');
+    /*
+     * AND READING PAGES IS GONE FROM BOTH. Its URL was consulted FIRST by
+     * resolveVlmRouteWithVenue, so an app-side box silently beat the Crucible
+     * the queue had chosen. Owen ruled it out on 2026-09-17; the resolver no
+     * longer takes an endpoint at all, which is what makes this permanent
+     * rather than a card somebody can re-add.
+     */
+    const CONVERSION = read('shared', 'vlm', 'conversion.ts');
+    assert.ok(!/endpoint: VlmEndpointConfig \| null;/.test(
+      /resolveVlmRouteWithVenue\(facts: \{[\s\S]*?\}\): VlmRoute/.exec(CONVERSION)[0]),
+      'resolveVlmRouteWithVenue takes an endpoint again, which is the app-side override that beat '
+      + 'the engine. Page reading is the selected engine\'s, like every other job.');
+    // The HEADING, not the phrase: the wizard's own comment records why the card
+    // went, and the phrase alone matched that comment.
+    assert.ok(!/<h2>[^<]*Reading pages<\/h2>/.test(PANEL),
+      'the Reading pages card is back in the wizard.');
+    assert.ok(!/getVlmEndpointConfig\(\)/.test(PANEL),
+      'the wizard reads the page-reader endpoint again, which is the override that beat the '
+      + 'engine even when no card showed it.');
   });
 
   await check('SOURCE PIN: the one press tests first, then writes ONE patch with both halves', () => {

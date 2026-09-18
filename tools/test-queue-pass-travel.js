@@ -487,12 +487,26 @@ function passConfig(kind, ai) {
       null,
       'a freshly built crucible block has not asked the server yet, and a guess in the ledger '
       + 'is worse than a blank');
-    assert.strictEqual(
-      textAi.aiCallModel(
-        aiProvider.providerConfigOf({ aiProvider: 'local', aiModel: 'cogito' }, 'clean')),
-      'cogito',
-      'the legacy bundled arm keeps its chosen model, which providerConfigOf files under local');
-    assert.strictEqual(textAi.aiCallModel({ provider: 'local' }), null,
+    /*
+     * THE BUNDLED ARM REPORTS NOTHING, AND THAT IS CORRECT (2026-09-17).
+     *
+     * This used to assert that a `local` block still named its model. Owen
+     * retired `local` as a provider and `aiCallModel` narrowed to the one
+     * survivor with it — so the question is whether that narrowing lost
+     * anything, and MEASURED against its two callers it did not:
+     * `text-ai.ts`'s own log line and `mono-translation-job.ts` both read a
+     * config for a run IN PROGRESS. `providerConfigOf` refuses `local` before
+     * any such run exists (pinned in `test-queue-step-travel.js`), so a block
+     * naming it cannot reach here at all.
+     *
+     * It is NOT the renderer for a stored ledger row — nothing calls it that
+     * way — which is what would have made the narrowing a loss of history.
+     */
+    assert.strictEqual(textAi.aiCallModel({ provider: 'local', local: { model: 'cogito' } }), null,
+      'a retired provider reports no model. If this ever starts mattering, the reason will be '
+      + 'that something began calling aiCallModel on a STORED row — check the callers before '
+      + 'widening it back.');
+    assert.strictEqual(textAi.aiCallModel({ provider: 'crucible', crucible: { server: 's', act: 'clean' } }), null,
       'and a block that names none reports none rather than inventing a name for the ledger');
   });
 

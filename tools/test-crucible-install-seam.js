@@ -726,7 +726,6 @@ const LOCAL_PC = { platform: 'win32', arch: 'x64', wslReaderRefusal: null };
 check('a Crucible venue is drawn as the SERVER, not as "this machine\'s GPU (WSL)"', () => {
   const route = conversion.resolveVlmRouteWithVenue({
     ...LOCAL_PC,
-    endpoint: null,
     venue: { where: 'crucible', server: 'mac', because: 'top-ranked' },
     venueRefusal: null,
   });
@@ -739,7 +738,6 @@ check('a Crucible venue is drawn as the SERVER, not as "this machine\'s GPU (WSL
 check('the legacy switch keeps today\'s local label exactly', () => {
   const route = conversion.resolveVlmRouteWithVenue({
     ...LOCAL_PC,
-    endpoint: null,
     venue: { where: 'legacy-local-narrator', because: 'the legacy switch is on' },
     venueRefusal: null,
   });
@@ -747,22 +745,38 @@ check('the legacy switch keeps today\'s local label exactly', () => {
   assert.strictEqual(conversion.vlmRouteLabel(route), "this machine's GPU (WSL)");
 });
 
-check('a TYPED endpoint still wins, and the venue is not consulted', () => {
-  const endpoint = { url: 'http://10.0.0.9:8000/v1', model: 'dots-ocr', concurrency: 0 };
+/*
+ * INVERTED 2026-09-17, and the old name was the defect: "a TYPED endpoint still
+ * wins, and the venue is not consulted."
+ *
+ * It did win -- `endpoint` was the FIRST branch of `resolveVlmRouteWithVenue`,
+ * so a URL somebody typed into Settings, AI, Reading pages months ago beat the
+ * Crucible the queue had chosen for this run, silently and with nothing on
+ * screen saying so. Owen ruled it out when he asked what that card was even
+ * for: page reading is a capability class on the selected engine, picked the
+ * same way as every other job.
+ *
+ * The parameter is GONE rather than ignored, which is why this check now passes
+ * an object that has no place to put one: a field the resolver still accepted
+ * and quietly dropped would read as a setting that works.
+ */
+check('there is no endpoint override left: the venue decides page reading', () => {
   const route = conversion.resolveVlmRouteWithVenue({
     ...LOCAL_PC,
-    endpoint,
     venue: { where: 'crucible', server: 'mac', because: 'top-ranked' },
     venueRefusal: null,
   });
-  assert.strictEqual(route.kind, 'endpoint');
-  assert.strictEqual(conversion.vlmRouteLabel(route), endpoint.url);
+  assert.strictEqual(route.kind, 'crucible',
+    'the venue is not being consulted, which is what the endpoint branch used to prevent');
+  assert.strictEqual(route.server, 'mac');
+  assert.ok(!('endpoint' in conversion.resolveVlmRouteWithVenue({
+    ...LOCAL_PC, venue: null, venueRefusal: null,
+  })), 'a route still carries an endpoint');
 });
 
 check('a venue that REFUSED is carried through as a refusal, never as "local"', () => {
   const route = conversion.resolveVlmRouteWithVenue({
     ...LOCAL_PC,
-    endpoint: null,
     venue: null,
     venueRefusal: 'no_enabled_server: nothing is enabled in Settings → Crucible Servers.',
   });

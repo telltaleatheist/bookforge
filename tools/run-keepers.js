@@ -498,6 +498,18 @@ const SUITES = [
   // the right one has to stay absent, which is the half that rots, because a
   // dropped control comes back one helpful commit at a time.
   'test-extension-option-columns',
+  // The extension's own connect door: one pasted `crucible://` line, a device
+  // code, and telling "that is not a Crucible" from "that address is wrong".
+  // It existed and was run BY NOBODY until 2026-09-17, which is exactly what
+  // the list's own guard above is for — a keeper nothing runs is a keeper that
+  // has stopped keeping, and this one passed the whole time, which is the way
+  // that goes unnoticed.
+  'test-extension-pairing',
+  // A backtick inside a template's own comment ENDS the template literal, and
+  // the errors then point at unrelated lines. It happened three times on
+  // 2026-09-17 -- two HTML comments and one CSS comment in styles: [...] --
+  // because every other comment in this codebase quotes identifiers that way.
+  'test-no-backticks-in-templates',
   // …and step 8 itself: BookForge's TTS server, deleted (Owen, 2026-09-15: "there
   // shouldnt be tts server logic in bookforge anymore at all, including the
   // settings"). Same two-column shape, from the other side: half forbids the

@@ -69,9 +69,19 @@ export type PassJobType =
  * that server before any request is made, so a pass cannot name one and never
  * needs to.
  *
- * THIS LIST IS A SUBSET OF `AIProvider` AND NOT A SECOND ONE. Every value here
- * is spelled the same and means the same; `providerConfigOf` is the single
- * mapping from one of these to the block a bridge takes.
+ * `local` IS RETIRED AND IS STILL HERE (2026-09-17), and the two halves of
+ * that sentence are both deliberate. Owen retired the bundled provider —
+ * *"pipeline defaults has bundled (local) or crucible as options. remove that.
+ * it will always be crucible"* — so `AIProvider`, which is the CHOICE, has one
+ * member. This type is not a choice: it is what a PERSISTED pass says it ran
+ * on, and there are ledgers on disk naming `local`. Narrowing it would make
+ * every one of those rows a parse error, which is the on-disk-data rule this
+ * project keeps: a record of what happened is not edited because the thing it
+ * records stopped being offered.
+ *
+ * So it is a SUPERSET of `AIProvider` by exactly one retired member, where it
+ * used to be an equal list. Nothing selects `local`, nothing writes it, and a
+ * reader that meets it is reading history.
  */
 export type PassAiProvider = 'crucible' | 'local';
 

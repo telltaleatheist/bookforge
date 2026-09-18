@@ -828,7 +828,7 @@ export class FirstRunSetupComponent {
    * per machine (rollout §2 ruling 1). (`resemble-env` was on that list until
    * the Enhance tab was deleted; Resemble Enhance is gone from this app.)
    */
-  protected readonly localToolIds = ['calibre', 'tesseract', 'foundry-cli'];
+  protected readonly localToolIds = ['calibre', 'foundry-cli'];
 
   protected readonly currentStep = signal(0);
   protected readonly active = computed(() => this.steps[this.currentStep()]);

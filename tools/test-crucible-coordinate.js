@@ -1503,7 +1503,7 @@ async function main() {
     const source = ts.createSourceFile('main.ts', fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8'), ts.ScriptTarget.Latest, true);
     let startup;
     function visit(node) {
-      if (ts.isArrowFunction(node) && node.body.getText(source).includes('await offerLocalCrucibleStart()')
+      if (ts.isArrowFunction(node) && node.body.getText(source).includes('await reportLocalCruciblePresence(')
           && node.body.getText(source).includes('await coordinateServersOnStart()')) startup = node;
       ts.forEachChild(node, visit);
     }
@@ -1516,7 +1516,12 @@ async function main() {
     let asked = 0;
     await vm.runInNewContext(code, {
       require: (name) => {
-        if (name.endsWith('engine-presence.js')) return { offerLocalCrucibleStart: async () => { throw new Error('local_protocol_invalid'); } };
+        // RENAMED 2026-09-17 with the native dialogs it used to raise. The door
+        // is now a REPORT to the renderer (Owen: "no js alerts. ever. we use
+        // custom modals for that") and takes the send function as its argument;
+        // what this check is about is unchanged — a local engine that cannot be
+        // read must not stop the remote servers being coordinated with.
+        if (name.endsWith('engine-presence.js')) return { reportLocalCruciblePresence: async () => { throw new Error('local_protocol_invalid'); } };
         if (name.endsWith('auto-connect.js')) return { autoConnectLocal: async () => null };
         if (name.endsWith('coordinate.js')) return { coordinateServersOnStart: async () => { asked += 1; return ['remote']; } };
         throw new Error(`unexpected import ${name}`);

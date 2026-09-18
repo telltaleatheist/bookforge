@@ -25,6 +25,7 @@ import {
   NarrationModalComponent,
 } from './features/studio/components/narration-modal/narration-modal.component';
 import { DialogService } from './creamsicle-desktop/services/dialog.service';
+import { NoticeService } from './core/services/notice.service';
 
 @Component({
   selector: 'app-root',
@@ -369,6 +370,7 @@ export class App implements OnInit {
   /** Public: the template hosts the one narration dialog off this. */
   readonly narrationDialog = inject(NarrationDialogService);
   private readonly dialog = inject(DialogService);
+  private readonly notices = inject(NoticeService);
   // Started in ngOnInit, in EVERY window: which one actually speaks is decided
   // per event by the focus rule, not by the window's kind.
   private readonly queueToasts = inject(QueueToastsService);
@@ -471,6 +473,9 @@ export class App implements OnInit {
   ngOnInit() {
     this.themeService.initializeTheme();
 
+    // The local Crucible's presence at startup, drawn by THIS APP.
+    this.watchEnginePresence();
+
     // Completion toasts. Every window listens; the focus rule decides which one
     // says it, so a Listen window in front gets the news and the main window
     // behind it stays quiet.
@@ -566,6 +571,49 @@ export class App implements OnInit {
    * working-PDF path's option, and a PDF has no editable copy any more, so there
    * are no page deletions of its own to skip.
    */
+  /**
+   * What the main process found about the Crucible on this machine.
+   *
+   * NO NATIVE DIALOGS (Owen, 2026-09-17: *"no js alerts. ever. we use custom
+   * modals for that"*). Main used to call `dialog.showMessageBox` here, which
+   * is an OS box with OS buttons; it now reports the finding and this decides
+   * how it is said, using the two things the app already has.
+   *
+   * WHICH ONE, and why they are not the same: `NoticeService` is a line on the
+   * toast stack and its doctrine is explicit — a modal is for confirming a
+   * destructive act, refusing one the user just asked for, or reporting an
+   * error that stopped them. A startup observation is NONE of those, so a state
+   * nobody can act on is a LINE. A state where pressing Start is the actual
+   * repair is a QUESTION, and a question needs an answer, so that one is the
+   * modal.
+   */
+  private watchEnginePresence(): void {
+    const api = (window as any).electron?.enginePresence;
+    if (!api?.onNotice) return;
+    api.onNotice(async (n: {
+      state: string; detail: string; message: string; offerStart: boolean;
+    }) => {
+      if (!n.offerStart) {
+        this.notices.notify(n.message);
+        return;
+      }
+      const start = await this.dialog.confirm({
+        title: 'Start Crucible?',
+        message: n.message,
+        detail: 'Start it to use models on this computer. '
+          + 'Other configured servers keep working either way.',
+        confirmLabel: 'Start Crucible',
+        cancelLabel: 'Not now',
+        type: 'question',
+      });
+      if (!start) return;
+      const result = await api.start();
+      this.notices.notify(result?.success
+        ? 'Crucible is running on this computer.'
+        : `Crucible could not start: ${result?.error ?? 'no reason was given.'}`);
+    });
+  }
+
   private async queueBookConversion(projectDir: string): Promise<void> {
     const refusal = await this.bookConversion.prepare({
       projectDir,

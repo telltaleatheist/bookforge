@@ -189,54 +189,92 @@ function localEngine() {
       assert.notStrictEqual(started.userCode, started.deviceCode);
       assert.strictEqual(started.url, engine.url);
       assert.ok(started.name.startsWith('crucible@'), `named itself: ${started.name}`);
+      assert.strictEqual(typeof started.approvalRequired, 'boolean', 'it says which policy');
     });
 
-    await checkAsync('the operator approves that code, and only then is a token sent', async () => {
-      assert.ok(started, 'the handshake started');
-      const pending = await fetch(`${engine.url}/v1/pairing/requests`, {
-        headers: { Authorization: `Bearer ${engine.token}`, 'X-Crucible-Api': '1' },
-      }).then((r) => r.json());
-      const mine = pending.requests.find((r) => r.id === started.id);
-      assert.ok(mine, 'the engine lists it as pending for an operator to see');
-      assert.strictEqual(mine.client_name, 'bookforge-reader', 'it names the asker');
+    /*
+     * WHICH POLICY THIS ENGINE IS ON is READ, never assumed. Crucible pairs
+     * openly by default since 2026-09-17 (Owen: "ollama allows anybody to
+     * connect if they can reach it"), and an engine from before that ruling
+     * still wants an approval. This keeper has to be true of the engine it is
+     * actually pointed at, and on this machine that flips the day a release
+     * carrying the new default is deployed.
+     */
+    const openly = started !== null && started.approvalRequired === false;
+    console.log(`  --  this engine pairs ${openly ? 'OPENLY' : 'with an APPROVAL step'}.`);
 
-      const decided = await fetch(`${engine.url}/v1/pairing/decision`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${engine.token}`,
-          'X-Crucible-Api': '1',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ id: started.id, user_code: started.userCode, allow: true }),
-      }).then((r) => r.json());
-      assert.strictEqual(decided.status, 'approved');
+    if (openly) {
+      await checkAsync('reaching the engine is the whole of it: a token, no approval', async () => {
+        const outcome = await pair.pollForToken(started);
+        assert.strictEqual(outcome.status, 'approved');
+        assert.strictEqual(outcome.token, engine.token, 'the token is the engine\'s own');
+        assert.ok(outcome.name.startsWith('crucible@'));
+      });
 
-      const outcome = await pair.pollForToken(started);
-      assert.strictEqual(outcome.status, 'approved');
-      assert.strictEqual(outcome.token, engine.token, 'the token is the engine\'s own');
-      assert.ok(outcome.name.startsWith('crucible@'));
-    });
+      await checkAsync('nothing is left waiting for an operator to look at', async () => {
+        const pending = await fetch(`${engine.url}/v1/pairing/requests`, {
+          headers: { Authorization: `Bearer ${engine.token}`, 'X-Crucible-Api': '1' },
+        }).then((r) => r.json());
+        assert.ok(!pending.requests.some((r) => r.id === started.id),
+          'an auto-approved request is not a chore on somebody\'s screen');
+      });
 
-    await checkAsync('a denied request yields no token and says it was denied', async () => {
-      // `connect.py` allows one start per address every five seconds and answers
-      // `pairing_busy` otherwise. That is the engine's rule and this waits it out
-      // rather than treating our own haste as a defect - the first draft of this
-      // test failed exactly that way.
-      await new Promise((done) => { setTimeout(done, 6000); });
-      const asked = await pair.startPairing(engine.dial);
-      await fetch(`${engine.url}/v1/pairing/decision`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${engine.token}`,
-          'X-Crucible-Api': '1',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ id: asked.id, user_code: asked.userCode, allow: false }),
-      }).then((r) => r.json());
-      const outcome = await pair.pollForToken(asked);
-      assert.strictEqual(outcome.status, 'denied');
-      assert.strictEqual(outcome.token, undefined, 'a refusal carries nothing');
-    });
+      await checkAsync('open is not "any poll gets a token"', async () => {
+        // Anyone may ASK and be approved. Nobody may collect somebody else's
+        // approval: the device secret still ties a poll to the request that
+        // made it, and that is the part an open door does NOT give away.
+        await assert.rejects(
+          () => pair.pollForToken({ ...started, deviceCode: 'x'.repeat(43) }),
+          /refused this|HTTP 403/,
+        );
+      });
+    } else {
+      await checkAsync('the operator approves that code, and only then is a token sent', async () => {
+        const pending = await fetch(`${engine.url}/v1/pairing/requests`, {
+          headers: { Authorization: `Bearer ${engine.token}`, 'X-Crucible-Api': '1' },
+        }).then((r) => r.json());
+        const mine = pending.requests.find((r) => r.id === started.id);
+        assert.ok(mine, 'the engine lists it as pending for an operator to see');
+        assert.strictEqual(mine.client_name, 'bookforge-reader', 'it names the asker');
+
+        const decided = await fetch(`${engine.url}/v1/pairing/decision`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${engine.token}`,
+            'X-Crucible-Api': '1',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ id: started.id, user_code: started.userCode, allow: true }),
+        }).then((r) => r.json());
+        assert.strictEqual(decided.status, 'approved');
+
+        const outcome = await pair.pollForToken(started);
+        assert.strictEqual(outcome.status, 'approved');
+        assert.strictEqual(outcome.token, engine.token, 'the token is the engine\'s own');
+        assert.ok(outcome.name.startsWith('crucible@'));
+      });
+
+      await checkAsync('a denied request yields no token and says it was denied', async () => {
+        // `connect.py` allows one start per address every five seconds and answers
+        // `pairing_busy` otherwise. That is the engine's rule and this waits it out
+        // rather than treating our own haste as a defect - the first draft of this
+        // test failed exactly that way.
+        await new Promise((done) => { setTimeout(done, 6000); });
+        const asked = await pair.startPairing(engine.dial);
+        await fetch(`${engine.url}/v1/pairing/decision`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${engine.token}`,
+            'X-Crucible-Api': '1',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ id: asked.id, user_code: asked.userCode, allow: false }),
+        }).then((r) => r.json());
+        const outcome = await pair.pollForToken(asked);
+        assert.strictEqual(outcome.status, 'denied');
+        assert.strictEqual(outcome.token, undefined, 'a refusal carries nothing');
+      });
+    }
 
     await checkAsync('something that is not a Crucible is told apart from a bad address', async () => {
       await assert.rejects(

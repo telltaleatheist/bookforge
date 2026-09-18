@@ -299,17 +299,36 @@ check('no source dials an Ollama, except the legacy spawn layer\'s own two files
 // 4. The provider union, and the IPC seam
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('AIProvider is exactly crucible and local, in both places that spell it', () => {
-  const wanted = "'crucible' | 'local'";
+/*
+ * ONE PROVIDER SINCE 2026-09-17, and a persisted pass may still name two.
+ *
+ * Owen retired the bundled `local` provider outright ("it will always be
+ * crucible. the app doesnt function without a crucible server"), so the CHOICE
+ * has exactly one member in both places that spell it. `PassAiProvider` keeps
+ * `local` because it describes what a RECORDED pass ran on and there are
+ * ledgers on disk naming it -- narrowing that type would turn every one of
+ * those rows into a parse error.
+ */
+check('AIProvider is exactly crucible, in both places that spell it', () => {
   for (const file of ['electron/ai-bridge.ts', 'src/app/core/models/ai-config.types.ts']) {
     const src = FILES.find((f) => f.file === file);
     assert.ok(src !== undefined, `${file} is gone`);
-    assert.ok(new RegExp(`export type AIProvider\\s*=\\s*${wanted.replace(/[|]/g, '\\|')}`).test(src.code),
-      `${file} does not declare AIProvider as ${wanted}`);
+    assert.ok(/export type AIProvider\s*=\s*'crucible';/.test(src.code),
+      `${file} does not declare AIProvider as 'crucible'`);
   }
   const pass = FILES.find((f) => f.file === 'shared/processing/pass-types.ts');
   assert.ok(/export type PassAiProvider\s*=\s*'crucible' \| 'local'/.test(pass.code),
-    'PassAiProvider must stay a subset of AIProvider, and there are only two members left');
+    'PassAiProvider lost its retired `local` member. It is what a persisted pass SAYS it ran '
+    + 'on, not what anything may choose, and there are ledgers on disk naming it.');
+  /*
+   * AND NOT A CHECK ON THE PROSE BESIDE IT. `sources()` STRIPS COMMENTS — see
+   * its body — precisely so that a keeper cannot pass by matching the sentence
+   * that documents the thing it is supposed to be checking. A first draft of
+   * this check asserted that pass-types.ts still explains why it carries a
+   * member AIProvider does not, and it could never have passed. The reason
+   * lives in the failure message above instead, which is where the next reader
+   * meets it anyway.
+   */
 });
 
 check('the IPC seam carries no credential and no cloud model list', () => {

@@ -107,23 +107,51 @@ check('offers nothing the render door would refuse', () => {
   }
 });
 
-check('the modal and the defaults panel both render that list, not a hardcoded one', () => {
+check('the one page that renders that list asks for it, and never hardcodes it', () => {
   /*
    * SOURCE-LEVEL, because these are Angular components that cannot be require()d
    * under plain node. The property is the one `engine-caps.ts`'s own comment
-   * states: a hardcoded `@for` in each template "is exactly how a 'removed'
-   * engine survives in one forgotten page". Both pages must ask.
+   * states: a hardcoded `@for` in a template "is exactly how a 'removed'
+   * engine survives in one forgotten page".
+   *
+   * IT USED TO CHECK TWO PAGES. Settings -> Pipeline Defaults was deleted on
+   * 2026-09-17 (Owen: *"we dontttttttttttttttttt need that page at all"*) and
+   * the narrate modal is now the only place an engine is chosen — it remembers
+   * what was used last, which is what that page was really for. So the list of
+   * pages is derived from the FILES, not restated here: a new page that offers
+   * engines must ask `selectableEngines()` like this one, and a page that
+   * disappears must not leave a keeper reading a path that no longer exists.
    */
-  const MODAL = read('src', 'app', 'features', 'studio', 'components',
-    'narration-modal', 'narration-modal.component.ts');
-  const PANEL = read('src', 'app', 'features', 'settings', 'components',
-    'pipeline-defaults-panel.component.ts');
-  for (const [name, src] of [['narration modal', MODAL], ['pipeline defaults panel', PANEL]]) {
+  const PAGES = [
+    ['narration modal', ['src', 'app', 'features', 'studio', 'components',
+      'narration-modal', 'narration-modal.component.ts']],
+  ];
+  for (const [name, parts] of PAGES) {
+    const src = read(...parts);
     assert.ok(/selectableEngines\(/.test(src),
       `the ${name} does not build its engine list from selectableEngines()`);
     assert.ok(!/['"`]Orpheus['"`]/.test(code(src)),
       `the ${name} spells the label "Orpheus" itself — a second engine list`);
   }
+  /*
+   * AND NO OTHER PAGE QUIETLY GREW ONE. The check above is only as good as its
+   * list, so this is the half that notices a page it does not know about:
+   * anything under src/ that names a narration engine id in a template must be
+   * asking for the list rather than spelling it.
+   */
+  const strays = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.component.ts')) continue;
+      const src = fs.readFileSync(full, 'utf-8');
+      if (/['"`]Orpheus['"`]/.test(code(src))) strays.push(path.relative(REPO, full));
+    }
+  };
+  walk(path.join(REPO, 'src', 'app'));
+  assert.deepStrictEqual(strays, [],
+    'a component spells the retired label itself, which is a second engine list');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

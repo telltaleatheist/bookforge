@@ -114,14 +114,13 @@ export function providerConfigOf(
     throw new Error('This job does not say which AI provider to use.');
   }
   switch (config.aiProvider) {
-    case 'local':
-      /*
-       * The bundled llama.cpp, and the last of the legacy local spawn layer's
-       * text path. It is deleted with that layer after Owen's in-app pass
-       * (crucible PHASE15 §6); until then it is a switch, not a fallback —
-       * nothing selects it because something else failed.
-       */
-      return { provider: 'local', local: { model: config.aiModel } };
+    /*
+     * THE `local` ARM IS GONE (2026-09-17). A job persisted before then can
+     * still SAY `local`, and it now falls to the refusal below and is named —
+     * which is right: the bundled model it asked for does not exist any more,
+     * and silently running that job on somebody's Crucible would be this app
+     * choosing a machine on the operator's behalf.
+     */
     case 'crucible': {
       /*
        * THE ROW NAMES A MACHINE, AND THE SERVER NAMES THE MODEL.

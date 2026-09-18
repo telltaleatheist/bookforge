@@ -353,7 +353,7 @@ const STEPS = {
      * codebase forbids, and it would move somebody's book onto a different
      * engine and a different bill without asking.
      */
-    for (const gone of ['ollama', 'claude', 'openai']) {
+    for (const gone of ['ollama', 'claude', 'openai', 'local']) {
       assert.throws(
         () => aiProvider.providerConfigOf({ aiProvider: gone, aiModel: 'm' }, 'clean', 'mac'),
         (err) => {
@@ -366,11 +366,21 @@ const STEPS = {
         },
         gone);
     }
-    // And the two survivors are exactly two: a provider list that grew a
-    // fourth arm here would be a second opinion about what this build has.
+    /*
+     * AND THE SURVIVOR IS EXACTLY ONE (2026-09-17). `local` joined the removed
+     * list above, which is why it is no longer asserted here as a survivor:
+     * Owen retired the bundled model — *"it will always be crucible. the app
+     * doesnt function without a crucible server"* — and a row queued before
+     * that still names it on disk, so it is refused BY NAME like the other
+     * three rather than re-pointed at the engine. Re-pointing would move
+     * somebody's book onto a machine they did not choose.
+     *
+     * A provider list that grew a second arm here would be a second opinion
+     * about what this build has.
+     */
     assert.deepStrictEqual(
-      aiProvider.providerConfigOf({ aiProvider: 'local', aiModel: 'cogito' }, 'clean'),
-      { provider: 'local', local: { model: 'cogito' } });
+      aiProvider.providerConfigOf({ aiProvider: 'crucible', aiModel: '' }, 'clean', 'mac'),
+      { provider: 'crucible', crucible: { server: 'mac', act: 'clean' } });
   });
 
   summary('queue step travel');

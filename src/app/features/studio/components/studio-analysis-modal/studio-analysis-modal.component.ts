@@ -58,17 +58,11 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
           <div class="config-section">
             <label class="field-label">AI provider</label>
             <div class="provider-buttons">
-              <button class="provider-btn" [class.selected]="provider() === 'crucible'"
-                      [class.disabled]="!crucibleServer()" (click)="selectProvider('crucible')">
+              <button class="provider-btn selected"
+                      [class.disabled]="!crucibleServer()" disabled>
                 <span class="provider-icon">📡</span>
                 <span class="provider-name">GPU engine (Crucible)</span>
                 <span class="provider-status">{{ crucibleServer() || 'No engine chosen' }}</span>
-              </button>
-              <button class="provider-btn" [class.selected]="provider() === 'local'"
-                      (click)="selectProvider('local')">
-                <span class="provider-icon">💻</span>
-                <span class="provider-name">Bundled local</span>
-                <span class="provider-status">Runs on this machine</span>
               </button>
             </div>
           </div>
@@ -196,7 +190,7 @@ export class StudioAnalysisModalComponent {
   private readonly settings = inject(SettingsService);
   private readonly electron = inject(ElectronService);
   private readonly queue = inject(QueueService);
-  private analysisSelection: AnalysisAISelection = { provider: 'local' };
+  private analysisSelection: AnalysisAISelection = { provider: 'crucible' };
 
   readonly target = input.required<StudioAnalysisTarget>();
   readonly projectDir = input.required<string>();
@@ -204,7 +198,7 @@ export class StudioAnalysisModalComponent {
   readonly close = output<void>();
   readonly queued = output<void>();
 
-  readonly provider = signal<AIProvider>('local');
+  readonly provider = signal<AIProvider>('crucible');
   readonly categories = signal<AnalysisCategory[]>(DEFAULT_ANALYSIS_CATEGORIES.map(category => ({ ...category })));
   readonly testMode = signal(false);
   readonly testChunks = signal(5);
@@ -227,14 +221,15 @@ export class StudioAnalysisModalComponent {
 
   /** THE MODEL, as its owner states it. Never a control. */
   readonly modelLine = computed(() => {
-    if (this.provider() === 'local') return 'The bundled local model.';
     if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
     return capabilityWords(this.capability(), 'analysis');
   });
 
   readonly enabledCount = computed(() => this.categories().filter(category => category.enabled).length);
+  // An engine has to have been chosen: there is no bundled model to fall back
+  // to since `local` was retired (2026-09-17).
   readonly canRun = computed(() => !!this.target() && this.enabledCount() > 0
-    && (this.provider() === 'local' || !!this.crucibleServer()));
+    && !!this.crucibleServer());
 
   constructor() {
     void this.initProviders();
@@ -249,11 +244,9 @@ export class StudioAnalysisModalComponent {
       || this.selectionFromLatestAnalysisJob()
       || { provider: config.provider };
     this.saveAnalysisSelection();
-    // An engine remembered from last time that nobody has chosen since is not
-    // a runnable choice, so the modal opens on the one that always runs.
-    const preferred: AIProvider =
-      this.analysisSelection.provider === 'crucible' && this.crucibleServer() ? 'crucible' : 'local';
-    this.selectProvider(preferred, false);
+    // One provider. The modal still records the selection so a queued job
+    // carries what it ran on, but there is nothing left to prefer between.
+    this.selectProvider('crucible', false);
     await this.loadCapability();
   }
 

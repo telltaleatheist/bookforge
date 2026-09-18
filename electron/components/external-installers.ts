@@ -39,15 +39,6 @@ const INSTALLERS: Record<string, Partial<Record<NodeJS.Platform, ExternalInstall
       note: 'Drag Calibre into your Applications folder, then click Locate.',
     },
   },
-  tesseract: {
-    win32: {
-      url: 'https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe',
-      filename: 'tesseract-setup.exe',
-      action: 'run',
-    },
-    // macOS/Linux Tesseract ship via package managers (brew/apt) with no
-    // standalone installer, so they fall back to Locate / instructions.
-  },
 };
 
 export function getExternalInstaller(

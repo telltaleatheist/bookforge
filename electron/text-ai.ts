@@ -163,8 +163,6 @@ export async function callAI(
     return named;
   };
   switch (config.provider) {
-    case 'local':
-      return await callLocal(prompt, systemPrompt);
     case 'crucible':
       return await callCrucible(prompt, arm(config.crucible), systemPrompt);
     default:
@@ -200,11 +198,6 @@ export function aiCallModel(config: AIProviderConfig): string | null {
      * this function's header forbids.
      */
     case 'crucible': return config.crucible?.model ?? null;
-    /*
-     * Informational only: `callLocal` reads it for nothing, because
-     * llama-bridge resolves the active model itself.
-     */
-    case 'local': return config.local?.model ?? null;
     default: return null;
   }
 }

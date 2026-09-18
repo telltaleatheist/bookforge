@@ -117,7 +117,7 @@ export interface VerifySpec {
  * All fields are data only — no functions — so the catalog stays serializable.
  */
 export interface DetectSpec {
-  /** Executable names to look up on PATH (e.g. 'ebook-convert', 'tesseract'). */
+  /** Executable names to look up on PATH (e.g. 'ebook-convert'). */
   commandNames?: string[];
   /** Absolute candidate paths to probe, tagged by platform. The first that
    *  exists and verifies wins. */
@@ -127,7 +127,7 @@ export interface DetectSpec {
 }
 
 export interface OptionalComponent {
-  id: string;                  // 'calibre' | 'orpheus' | 'tesseract'
+  id: string;                  // 'calibre' | 'orpheus'
   name: string;                // display name
   description: string;         // one or two lines for the UI
   kind: ComponentKind;

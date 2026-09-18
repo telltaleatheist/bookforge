@@ -71,37 +71,6 @@ const calibre: OptionalComponent = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tesseract — binary, external-only
-// ─────────────────────────────────────────────────────────────────────────────
-
-const tesseract: OptionalComponent = {
-  id: 'tesseract',
-  name: 'Tesseract OCR',
-  description: 'Open-source OCR engine used to extract text from scanned/image PDFs.',
-  kind: 'binary',
-  acquisition: ['external'],
-  sizeBytes: 0,
-  requirements: {
-    gpu: 'none',
-  },
-  artifacts: [],
-  detect: {
-    commandNames: ['tesseract'],
-    candidates: [
-      { platform: 'darwin', path: '/opt/homebrew/bin/tesseract' },
-      { platform: 'darwin', path: '/usr/local/bin/tesseract' },
-      { platform: 'linux', path: '/usr/bin/tesseract' },
-      { platform: 'win32', path: 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe' },
-    ],
-    envVar: 'TESSERACT_PATH',
-  },
-  verify: { kind: 'exec', args: ['--version'] },
-  version: '',
-  entryPath: '',
-  externalHelpUrl: 'https://tesseract-ocr.github.io/tessdoc/Installation.html',
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Orpheus — conda-env, external + managed (stub URLs until hosting is chosen)
 //
 // GPU NOTE: Orpheus runs on EITHER an NVIDIA CUDA GPU (vLLM backend) OR Apple
@@ -235,7 +204,6 @@ const orpheus: OptionalComponent = {
 export function getCatalog(): OptionalComponent[] {
   return [
     calibre,
-    tesseract,
     orpheus,
     llamaCudaComponent(),
     cudaTtsComponent(),

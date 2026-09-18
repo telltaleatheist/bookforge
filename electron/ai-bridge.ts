@@ -216,7 +216,18 @@ export function numCtxMaxForModel(model: string): number {
  * because that layer still works and still has callers, NOT because anything
  * falls back to it: with `crucible` chosen and unreachable, a run fails by name.
  */
-export type AIProvider = 'crucible' | 'local';
+/**
+ * ONE PROVIDER (2026-09-17). The renderer's copy is `AIProvider` in
+ * `src/app/core/models/ai-config.types.ts` and the two must stay identical —
+ * this is the same fact spelled twice, only because that module reaches for
+ * `electron` at load and a renderer cannot import it.
+ *
+ * `local` was the bundled llama.cpp. It is retired the way Orpheus was: gone
+ * from the CHOICE, not yet from the BUILD. Nothing selects it, `AIConfig` can
+ * no longer express it, and a stored one is migrated on read
+ * (`resolveSavedAIProvider`). The spawn paths below die with the legacy layer.
+ */
+export type AIProvider = 'crucible';
 
 export interface AIProviderConfig {
   provider: AIProvider;
@@ -1993,8 +2004,6 @@ export async function checkProviderConnection(
   crucibleServer?: string,
 ): Promise<ProviderConnectionResult> {
   switch (provider) {
-    case 'local':
-      return checkLocalConnection();
     case 'crucible':
       return checkCrucibleConnection(crucibleServer);
     default:
@@ -2092,13 +2101,10 @@ export function cancelCleanupJob(jobId: string): boolean {
     console.log(`[AI-BRIDGE] Cancelling job ${jobId} - aborting all requests`);
     job.controller.abort();
     activeCleanupJobs.delete(jobId);
-    if (job.provider === 'local') {
-      // Fire-and-forget: free the model from VRAM immediately. stop() is a no-op
-      // if the server isn't running, and the next job lazily restarts it.
-      void import('./llama-bridge.js')
-        .then(({ llamaBridge }) => llamaBridge.stop())
-        .catch((err) => console.warn(`[AI-BRIDGE] Failed to stop local server on cancel: ${(err as Error).message}`));
-    }
+    // The bundled llama server used to be stopped here, to free a cancelled
+    // `local` job's model from VRAM. There are no `local` jobs — the provider
+    // is retired (2026-09-17) — so this app holds nothing resident to free.
+    // A Crucible owns its own residency and is not ours to unload on a cancel.
     return true;
   }
   return false;
@@ -2127,19 +2133,14 @@ export async function releaseActiveAiJobsForShutdown(): Promise<void> {
   const jobs = [...activeCleanupJobs.entries()];
   activeCleanupJobs.clear();
 
-  const releases: Promise<void>[] = [];
   for (const [jobId, job] of jobs) {
-    console.log(`[AI-BRIDGE] Shutdown: aborting job ${jobId} and releasing its model`);
+    console.log(`[AI-BRIDGE] Shutdown: aborting job ${jobId}`);
     job.controller.abort();
-    if (job.provider === 'local') {
-      releases.push(
-        import('./llama-bridge.js')
-          .then(({ llamaBridge }) => llamaBridge.stop())
-          .catch((err) => console.warn(`[AI-BRIDGE] Shutdown: failed to stop local server: ${(err as Error).message}`))
-      );
-    }
+    // The ABORT is the whole of it now. This used to also bring down the
+    // bundled llama server for a `local` job; that provider is retired
+    // (2026-09-17) and this app holds no model resident, so there is nothing
+    // left to release. A Crucible's residency is the engine's own.
   }
-  await Promise.all(releases);
 }
 
 /**
@@ -2679,8 +2680,6 @@ export async function cleanChunkWithProvider(
             const { server, model, act } = crucibleRunTargetOf(config);
             return cleanChunkWithCrucible(inputText, systemPrompt, server, model, act, abortSignal);
           }
-          case 'local':
-            return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
           default:
             throw new Error(`unknown_ai_provider: ${String(config.provider)}`);
         }
@@ -2973,8 +2972,6 @@ async function callProviderExtracted(
       const { server, model, act } = crucibleRunTargetOf(config);
       return cleanChunkWithCrucible(inputText, systemPrompt, server, model, act, abortSignal, numPredict);
     }
-    case 'local':
-      return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
     default:
       throw new Error(`unknown_ai_provider: ${String(config.provider)}`);
   }
@@ -4888,7 +4885,15 @@ async function cleanupEpubRun(
     // prose chunks and finishes chapters with rebuildChapterPreservingHeadings, so
     // letting a simplify job in there would quietly put it back on the chunk
     // pipeline. Parallel block mode is future work, not a silent fallback.
-    const useParallel = options?.useParallel && config.provider !== 'local' && config.provider !== 'crucible' && !simplifyBlockMode;
+    // NOTE, FOUND 2026-09-17 WHILE RETIRING `local`: this was already always
+    // false. The test excluded BOTH members of the provider union
+    // (`!== 'local' && !== 'crucible'`), so no provider has ever satisfied it
+    // and the parallel loop below has been unreachable for as long as the union
+    // has had two members. Narrowing the union did not break it; it made it
+    // visible. Left exactly as false rather than "fixed" into running, because
+    // turning on an untested parallel path is a change nobody asked for — but
+    // said out loud so the next reader does not think it works.
+    const useParallel = options?.useParallel && config.provider !== 'crucible' && !simplifyBlockMode;
     const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
 
     if (useParallel && workerCount > 1) {
@@ -5749,14 +5754,10 @@ async function cleanupEpubRun(
     // Persist the edit-list disposition log + pre-pass report on the failure path too.
     await persistCleanupReports();
 
-    // Free the local model from VRAM immediately. The error path (e.g. the
-    // fallback-threshold abort) used to leave llama-server resident until its
-    // 5-minute idle timer — on a desktop-shared GPU the user wants it back now.
-    if (config.provider === 'local') {
-      void import('./llama-bridge.js')
-        .then(({ llamaBridge }) => llamaBridge.stop())
-        .catch((stopErr) => console.warn(`[AI-CLEANUP] Failed to stop local server on error: ${(stopErr as Error).message}`));
-    }
+    // The bundled llama server used to be stopped here on the error path so a
+    // desktop-shared GPU got its VRAM back at once. That provider is retired
+    // (2026-09-17) and this app holds nothing resident; a Crucible's residency
+    // is the engine's own and is not freed by a client's failure.
     // The job-end model release, on the failure path as on the success one.
     // It does nothing now — see releaseCleanupModel for why the eviction it used
     // to do is not this file's any more — and it is still called from both, so
