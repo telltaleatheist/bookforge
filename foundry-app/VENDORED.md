@@ -10,10 +10,36 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **572656c** — *Correct sixteen dates I got wrong, and the header that outlived its rule* |
+| Source sha | **e4a4641** — *Hosted, a long act goes to BookForge's queue and not to a modal* |
 | Engine sha | **40aaa42** (v2.0.0) — the binary has NOT been rebuilt for this copy, so the two now DIFFER. See the paragraph below: that is the normal state, and the clean-text keeper anchors on the binary. |
 | Copied on | 2026-09-18 |
-| Copied by | Mechanical source sync, verified against Foundry `572656c:app/`; details below |
+| Copied by | Mechanical source sync, verified against Foundry `e4a4641:app/`; details below |
+
+## The `572656c → e4a4641` re-vendor — hosted acts go to the queue (2026-09-18)
+
+Two commits, no tracked-file change at all: 183 files before and after, nothing
+added, nothing removed, `package.json` and `package-lock.json` untouched — so no
+`npm ci`, only a rebuild. Verified both directions against
+`git ls-tree -r --name-only e4a4641 app` and sampled by `git hash-object`.
+
+What moved is behaviour this app is the other half of. **A long act started in
+Foundry's window now goes to BookForge's QUEUE rather than to a modal of its
+own**, which is the hosted shape those dialogs were missing — Foundry hosted has
+no hold of its own, and a modal there was a control that changed nothing. And
+their engine picker now chooses an engine that can actually do the work, rather
+than offering every server and refusing late.
+
+**Their second commit is the same complaint Owen made here the same night** —
+*"stop showing logs"*. Both apps were putting an engine's log tail in front of a
+person: Foundry in its act dialogs, BookForge in the queue's GPU slots. Neither
+is the engine's fault; `warming_message` in `crucible/engines/base.py` appends
+`log_tail(1)` because that is what an operator wants when a load is STUCK, and
+early in a load that last line is the log file's own header, which is the spawn
+command. Where it belongs is a display decision, and both apps have now made it
+the same way.
+
+`docs/IPC-CHANNELS.md` gains 13 lines and the count is unchanged; the collision
+keeper passes 7/7 against it.
 
 ## The `7f7c06b → 572656c` re-vendor — the SDK reaches 1.0.0 here too (2026-09-18)
 

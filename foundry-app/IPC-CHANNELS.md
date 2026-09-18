@@ -1206,3 +1206,16 @@ download went with them.
 
 **147 → 139, measured by script, 139 distinct, zero `ipcMain.on`.** Removals only;
 nothing was added or renamed in this pass.
+
+## Which engine can do this act (2026-09-17)
+
+| Channel | Request/result |
+| --- | --- |
+| `crucible:serves` | A model class → the first engine that serves it (`{server, route, selected, reason}`), or null. Reads the CACHED capability mirror the act gates decide on, loopback-ranked; it opens no socket, so a dialog may ask on every open. Distinct from `crucible:engine-capability`, which is a live read of ONE named server. |
+
+Added so a run dialog can DEFAULT to an engine that can do the work, and so a
+refusal can name the engine that can rather than telling somebody to go and
+find it. Owen opened an OCR on an engine that cannot read pages and was told
+*"crucible@owens-mac-studio cannot read pages — choose another engine."*
+
+**139 → 140, counted by script, 140 distinct, zero `ipcMain.on`.**

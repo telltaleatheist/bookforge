@@ -84,7 +84,7 @@ import type {
   CrucibleUninstallRun,
 } from '../shared/uninstall-wire';
 import { pairingFileRead, readConnectCode } from './crucible-pairing';
-import { forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
+import { anyServerServing, forgetCrucibleFacts, refreshCrucibleFacts } from './crucible-provider';
 import {
   tidySlotName,
   type CloudProviderEdit,
@@ -220,6 +220,7 @@ import type {
   StepDeletion,
   TextPassRequest,
   AnalyzeRequest,
+  ModelClass,
   UnappliedAnswer,
   UnappliedWarning,
 } from '../shared/types';
@@ -3922,6 +3923,24 @@ export function registerIpc(): void {
    */
   ipcMain.handle('crucible:engine-capability', (_event, serverName: string) =>
     readCapability(namedServerOr(serverName)));
+
+  /**
+   * WHICH ENGINE CAN DO THIS ACT — the first one that serves the class, or null.
+   *
+   * ── Why this is not `engine-capability` in a loop ─────────────────────────
+   *
+   * That door is a LIVE READ of one server (`readCapability` dials
+   * `/v1/capability`), so asking it about every registered engine to find a
+   * capable one would open a dialog by making N network calls, on a screen a
+   * person is about to press a button on. This is the cached mirror the ACT
+   * GATES already decide on — no traffic, already loopback-ranked, and the same
+   * answer the tile in the dock is drawn from.
+   *
+   * ONE SOURCE FOR "WHO CAN DO THIS". A dialog that worked it out separately
+   * would be a second opinion about the same question, and the two would
+   * disagree the first time a probe lagged.
+   */
+  ipcMain.handle('crucible:serves', (_event, cls: ModelClass) => anyServerServing(cls));
 
   /**
    * THE HAND SEQUENCE FOR "INSTALL CRUCIBLE HERE", composed for this machine.

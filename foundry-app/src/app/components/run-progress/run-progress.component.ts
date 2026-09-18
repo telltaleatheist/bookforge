@@ -11,12 +11,22 @@
  * translate job that renders before it translates reports `render` and must not
  * be described as translating while it does.
  *
- * ── EMPTY IS A STATE AND IS DRAWN AS ONE ─────────────────────────────────
+ * ── NOT-YET-KNOWN IS A STATE AND IS DRAWN AS ONE ─────────────────────────
  *
- * `JobProgress` is the engine's own fraction. A run that has not reported one
- * gets an empty track, never a guessed position — this app has no second opinion
- * about how far through a book something is, and a bar that drifted forward on
- * its own would be inventing the one number a person is watching.
+ * `JobProgress` is the engine's own fraction, and this never invents one: a bar
+ * that drifted forward on its own would be fabricating the single number the
+ * person is watching.
+ *
+ * It used to draw an EMPTY track while waiting for the first count, which is
+ * honest and looks broken — a reading spends its opening stretch starting an
+ * engine and drawing pages before any count exists. Owen, watching one: *"progres
+ * bar doesnt seem to be working?"* It was; it had nothing to say yet, and those
+ * are different things that should not look the same. So the track sweeps while
+ * it waits, which claims movement without claiming a position, and the moment a
+ * real fraction arrives the sweep stops and the fill takes over.
+ *
+ * AND THE ENGINE'S LOG LINE IS NOT SHOWN AT ALL — see {@link says}. That was the
+ * other half of what Owen was looking at: raw stderr, in a dialog, under a bar.
  */
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 
@@ -27,7 +37,15 @@ import type { Job } from '@shared/types';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="run">
-      <div class="bar" [attr.data-state]="job().state">
+      <!--
+        INDETERMINATE UNTIL THERE IS A FRACTION, rather than a bar sitting at
+        zero. A reading spends its first stretch starting an engine and drawing
+        pages before the engine emits its first count, and an empty track for
+        that long reads as broken -- Owen: "progres bar doesnt seem to be
+        working?". It was working; it had nothing to say yet, which is a
+        different thing and should look different.
+      -->
+      <div class="bar" [attr.data-state]="job().state" [class.waiting]="waiting()">
         <div class="fill" [style.width.%]="percent()"></div>
       </div>
       <p class="says">{{ says() }}</p>
@@ -43,6 +61,21 @@ import type { Job } from '@shared/types';
       transition: width 200ms cubic-bezier(0, 0, 0.2, 1);
     }
     .bar[data-state="failed"] .fill, .bar[data-state="cancelled"] .fill { background: var(--warn); }
+    /* A moving stripe, not a fake percentage: it says "alive" without claiming
+       to know how far along anything is. */
+    .bar.waiting {
+      background-image: linear-gradient(90deg,
+        var(--bg-sunken) 0%, var(--accent-soft) 50%, var(--bg-sunken) 100%);
+      background-size: 200% 100%;
+      animation: run-progress-sweep 1.4s linear infinite;
+    }
+    @keyframes run-progress-sweep {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bar.waiting { animation: none; background-image: none; }
+    }
     .says { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
     .problem { margin: 0; font-size: 12px; color: var(--warn); }
   `],
@@ -52,6 +85,14 @@ export class RunProgressComponent {
 
   /** What this run is called while it is happening, for the idle states. */
   readonly verb = input('Working');
+
+  /** No fraction yet, and still going: the bar animates rather than sitting. */
+  protected readonly waiting = computed(() => {
+    const job = this.job();
+    if (job.state !== 'running' && job.state !== 'queued') return false;
+    const progress = job.progress;
+    return progress === null || progress.total <= 0;
+  });
 
   protected readonly percent = computed(() => {
     const progress = this.job().progress;
@@ -86,7 +127,20 @@ export class RunProgressComponent {
       case 'running': break;
     }
     const progress = job.progress;
-    if (progress === null) return job.message ?? `${this.verb()}…`;
+    /*
+     * THE ENGINE'S LOG LINE IS NOT SHOWN, and this is where it used to be.
+     *
+     * `Job.message` is "the last thing the engine said that was NOT a count" --
+     * raw stderr, meant for the shelf's detail row and a bug report. It was the
+     * fallback here, so a modal with no fraction yet printed installer-style
+     * output at somebody who pressed Start on a book. Owen: "i dont think the
+     * user needs the logs."
+     *
+     * It is not replaced by a scrolling box either. The queue row still carries
+     * it for anybody who wants it; a dialog whose job is "is this moving" does
+     * not become better by adding a console to it.
+     */
+    if (progress === null) return `${this.verb()}…`;
     const { page, total, phase } = progress;
     switch (phase) {
       case 'render': return `Drawing page ${page} of ${total}.`;

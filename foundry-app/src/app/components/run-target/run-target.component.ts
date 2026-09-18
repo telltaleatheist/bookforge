@@ -221,6 +221,17 @@ export class RunTargetComponent {
   protected readonly servers = signal<CrucibleServerView[]>([]);
 
   /**
+   * WHICH ENGINE CAN ACTUALLY DO THIS ACT, or null when none can.
+   *
+   * Read once per open from the cached capability mirror the act gates decide
+   * on -- no network, already loopback-ranked. It does two jobs: it picks the
+   * DEFAULT, and when somebody presses an engine that cannot serve the class it
+   * is what lets the refusal name the one that can instead of saying "choose
+   * another engine" and leaving them to find it.
+   */
+  private readonly capable = signal<string | null>(null);
+
+  /**
    * THE ENGINES, SPLIT INTO BALANCED ROWS OF AT MOST THREE.
    *
    * Owen gave this by enumeration on 2026-09-17 — *"Two splits the row of
@@ -305,7 +316,18 @@ export class RunTargetComponent {
     const chosen = this.server();
     const named = chosen.length > 0 ? `"${chosen}"` : 'That engine';
     if (this.problem() !== null) return `${named} could not be asked what it can do.`;
-    return `${named} cannot ${ACT_WORDS[this.act()] ?? 'run this'} — choose another engine.`;
+    const act = ACT_WORDS[this.act()] ?? 'run this';
+    /*
+     * NAME THE ENGINE THAT CAN, rather than telling somebody to go and find it.
+     * "Choose another engine" is advice this component is in a position to take
+     * itself -- it knows which one, and when there is only one other it is
+     * asking a person to press the single remaining button.
+     */
+    const elsewhere = this.capable();
+    if (elsewhere !== null && elsewhere !== chosen) {
+      return `${named} cannot ${act}. "${elsewhere}" can.`;
+    }
+    return `${named} cannot ${act}, and no other connected engine can either.`;
   });
 
   /**
@@ -342,14 +364,27 @@ export class RunTargetComponent {
     if (!api) return;
     const view = await api.crucible.settings();
     this.servers.set(view.servers);
+    /*
+     * ── THE DEFAULT IS AN ENGINE THAT CAN DO THE WORK ────────────────────────
+     *
+     * It was `defaultEngineServer` alone: loopback-and-enabled, then the first
+     * enabled, then the first at all. That is the right rule for the SETTINGS
+     * window, where the question is "whose settings am I editing" and every
+     * registered engine is a legitimate answer.
+     *
+     * It is the wrong rule here, and Owen met the difference: he opened an OCR
+     * on an engine that cannot read pages and got *"crucible@owens-mac-studio
+     * cannot read pages — choose another engine."* Telling somebody to choose
+     * again is a screen admitting it chose badly and handing the problem back.
+     *
+     * So the capable engine wins, and `defaultEngineServer` stays as the
+     * fallback for when none is — because a card with nothing selected is worse
+     * than one selected on an engine that will explain itself.
+     */
+    const capable = await api.crucible.serves(this.act());
+    this.capable.set(capable?.server ?? null);
     if (this.server().length === 0) {
-      /*
-       * THE LOOPBACK ENGINE FIRST — Owen: "pre-selects the local model if it's
-       * available". `defaultEngineServer` is that rule, already written for the
-       * settings window: loopback-and-enabled, then the first enabled, then the
-       * first at all. One owner rather than a second copy that drifts.
-       */
-      this.server.set(defaultEngineServer(view.servers)?.name ?? '');
+      this.server.set(capable?.server ?? defaultEngineServer(view.servers)?.name ?? '');
     }
   }
 

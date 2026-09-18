@@ -325,6 +325,41 @@ export type CrucibleJobInputSource = string | Uint8Array;
  * (`ProgressData.extra`: `asr` sends `{stage, processed_s, total_s, cues}`,
  * `align` sends `{stage, processed, total}`).
  */
+/**
+ * A warming line with the ENGINE LOG TAIL taken off, and the whole thing logged.
+ *
+ * Owen, 2026-09-18: *"the queue is giving me a lot of logs in the gpu slots. we
+ * dont need logs to appear there. move it to the console logs."* What he was
+ * reading in a slot was
+ *
+ *     Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 6s elapsed,
+ *     896s before give-up — === /home/telltale/.crucible/envs/llm/bin/python -m
+ *     vllm.entrypoints.openai.api_server --model … --gpu-memory-utilization 0.84 …
+ *
+ * — a whole spawn command line, in a row that is four inches wide.
+ *
+ * THE TAIL IS THE ENGINE'S, AND IT IS NOT WRONG TO SEND IT. Crucible's
+ * `warming_message` (crucible/engines/base.py) appends `log_tail(1)` after an
+ * em dash, which is genuinely what an operator wants when a load is STUCK: the
+ * last thing the engine said. Early in a load that last line is the log file's
+ * own header, which is the command. So the tail is useful and the slot is the
+ * wrong place for it, which is a display decision and belongs here rather than
+ * in the engine — the same reasoning that moved the startup dialogs into the
+ * renderer.
+ *
+ * So the slot gets the sentence and the console gets everything. Split on the
+ * em dash the engine itself uses; a message without one is passed through
+ * whole, because then there is no tail and the sentence is all there is.
+ */
+export function warmingHeadline(message: string): string {
+  const cut = message.indexOf(' — ');
+  if (cut < 0) return message;
+  // The full line, once per frame, where a developer can read it and a person
+  // reading their queue cannot.
+  console.log(`[CRUCIBLE] warming: ${message}`);
+  return message.slice(0, cut);
+}
+
 export type CrucibleJobProgress =
   | {
       readonly kind: 'progress';
@@ -492,7 +527,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     if (event.id > lastEventId) lastEventId = event.id;
     options.onEvent?.(event);
     if (event.event === 'warming') {
-      options.onProgress?.({ kind: 'warming', message: event.data.message });
+      options.onProgress?.({ kind: 'warming', message: warmingHeadline(event.data.message) });
     } else if (event.event === 'progress') {
       options.onProgress?.({
         kind: 'progress',

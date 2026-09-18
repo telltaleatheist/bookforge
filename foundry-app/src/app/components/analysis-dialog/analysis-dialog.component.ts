@@ -289,26 +289,37 @@ import { api, hosted } from '../../core/foundry';
         } @else {
           <footer class="foot">
             <button class="ghost" (click)="ui.closeAnalysis()">Cancel</button>
-            <!--
-              ── NO "ADD TO QUEUE" HOSTED, BECAUSE THERE IS NO HOLD ────────────
-
-              Vendored into BookForge the row goes to the HOST's queue, and the
-              host's pump decides when it runs -- nobody presses Start for it
-              (electron/job-queue.ts, enqueue: "nothing is minted here, nothing
-              is held here"). So the two buttons would do the same thing and
-              only one of them would be telling the truth about it.
-
-              Owen, 2026-09-17: *"when it goes to the queue when vendored in
-              bookforge it should go to bookforge's queue, not ours."*
-            -->
+            <!--
+              -- HOSTED IT IS "ADD TO QUEUE", AND ONLY THAT --------------------
+
+              I built this backwards. The first version hid Add to queue hosted
+              and kept Start, reasoning that the host queue holds nothing so the
+              two buttons would mean the same thing. Owen, meeting it in
+              BookForge: *"for the vendored copy, it should have an add to queue
+              button and it should add it to the bookforge queue. we dont do long
+              actions from the modal in bookforge, like the cleanup stage,
+              translate, simplify, narrate, and ocr."*
+
+              So it is not a question of which label is accurate. It is a HOUSE
+              RULE about where long work belongs: in BookForge it belongs in
+              BookForge's queue, on BookForge's own shelf, beside everything else
+              that machine is doing. A modal running a twenty-minute cleanup
+              inside a window that is a guest of another app is the wrong shape
+              whatever the button says.
+
+              Start is therefore ABSENT hosted rather than relabelled, and the
+              watching branch goes with it: nothing here sets watching, so the
+              card never becomes a progress view it has no business being.
+            -->
+            <button [class.ghost]="!hosted()" [class.primary]="hosted()"
+                    [disabled]="busy() || !canRun()" (click)="add(false)">
+              {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
+            </button>
             @if (!hosted()) {
-              <button class="ghost" [disabled]="busy() || !canRun() || picked().size === 0" (click)="add(false)">
-                {{ busy() === 'queue' ? 'Working…' : 'Add to queue' }}
-              </button>
-            }
             <button class="primary" [disabled]="busy() || !canRun() || picked().size === 0" (click)="add(true)">
               {{ busy() === 'start' ? 'Starting…' : 'Start' }}
             </button>
+          }
           </footer>
         }
       } @else {

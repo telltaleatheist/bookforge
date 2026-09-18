@@ -97,6 +97,7 @@ import type {
   StepLedgerView,
   StepRow,
   TextPassRequest,
+  ModelClass,
   TranslationPlan,
   UnappliedAnswer,
   UnappliedWarning,
@@ -1661,6 +1662,19 @@ export interface FoundryApi {
      * server's own and nothing in the settings document carries it.
      */
     engineCapability(serverName: string): Promise<CapabilityRecord>;
+    /**
+     * WHICH ENGINE CAN DO THIS ACT, out of the cached capability mirror.
+     *
+     * Null when none can. Loopback-ranked, so on a machine running its own
+     * engine the answer is that engine unless it cannot serve the class — which
+     * is exactly the order a dialog wants for a default.
+     *
+     * COSTS NOTHING. `engineCapability` above dials the server; this reads what
+     * the act gates already hold, so a dialog may ask on every open.
+     */
+    serves(cls: ModelClass): Promise<{
+      server: string; route: 'local' | 'upstream'; selected: string; reason: string;
+    } | null>;
   };
 
   /**

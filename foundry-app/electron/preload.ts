@@ -311,6 +311,7 @@ const api: FoundryApi = {
       ipcRenderer.invoke('crucible:engine-upstream-test', serverName, upstream, probe),
     engineCapability: (serverName) =>
       ipcRenderer.invoke('crucible:engine-capability', serverName),
+    serves: (cls) => ipcRenderer.invoke('crucible:serves', cls),
   },
 
   cloud: {
