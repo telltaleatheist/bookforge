@@ -868,15 +868,21 @@ TRAINING_HELP.slice = [
   '  and committing is how a corpus ends up centred at p50 542, truncating where it is used.',
   '',
   '  TAILS  --tail-s 0.25 (the default) CUTS the post-chunk pause 0.25 s after the last word.',
-  '                       RETIRED: --tail-s 4.0. Measured 2026-09-10 (field notes 4n.53/54): the',
-  '                       retained tail breaks the stop signal - mistborn v6 ran away on 58% of',
-  '                       renders, deathstalker v6 29%; the same corpora re-sliced at 0.25 render',
-  '                       0-4%. Internal pauses stay verbatim; this is the END of the chunk only.',
-  '                       (Superseded text below is kept for the record.)',
-  '  OLD:   --tail-s 4.0  keeps the speaker own sentence-final pause, to 40 ms before the next',
-  '                       onset. A CAP, not a pad. The old 0.25 truncated every pause and is',
-  '                       retired: full tails raised rendered pause 0.22 -> 1.58 s at no cost',
-  '                       in early stops or coverage (4n.37.17).',
+  '                       Internal pauses stay verbatim; this is the END of the chunk only.',
+  '                       RETIRED: --tail-s 4.0 (4n.53/54). The retained tail breaks the stop',
+  '                       signal - mistborn v6 ran away on 58% of renders, deathstalker v6 29%;',
+  '                       the same corpora re-sliced at 0.25 render 0-4%. Do not restore it.',
+  '  END CUT              WHERE a clip ends is found in the AUDIO, not at the cue end. The last',
+  '                       quiet run of at least 0.20 s starting before the cue end is the',
+  '                       sentence-final pause, and the clip ends --tail-s into it, never later',
+  '                       than 40 ms before the next onset. Measured 2026-09-18: the old 0.08 s',
+  '                       minimum was short enough to match the stop closure INSIDE the last word',
+  '                       (em-PIRE, od-DLY), and the no-run fallback cut AT the cue end, which the',
+  '                       library aligner puts inside that word wherever the reader runs straight',
+  '                       on - 1.9% of long rows ended mid-word while their text promised the whole',
+  '                       sentence. Now: no pause before the cue end means take the FIRST one after',
+  '                       it, and a clip with no pause on either side is DROPPED rather than cut',
+  '                       through speech. Neither the gate nor the screen can see this class.',
   '  MICRO  --tiers lsm --micro-min-s 0.4 --micro-max-s 8.0 --micro-max-rows 20',
   '         --micro-weights 1,1,1.5,3,3.5',
   '                       one-word entries, titles, subheadings. The SHORT tier cannot supply',
@@ -895,6 +901,12 @@ TRAINING_HELP.gate = [
   '  THIS IS THE REAL ALIGNMENT TEST (4n.40.4b). A mis-aligned clip fails coverage by',
   '  construction, so read the DROP RATE against these measured baselines:',
   '      prose long ~0.9%     prose short ~0.6%     micro ~14%',
+  '',
+  '  WHAT IT CANNOT TEST: the gate never opens the audio - it is text against ASR, nothing',
+  '  else. A clip whose BOUNDARIES are wrong (ends mid-word, starts inside speech) loses a',
+  '  fraction of a percent of coverage and passes. 70 such rows sat in the deployed mistborn',
+  '  corpus at median coverage 0.980 against the 0.80 floor and the gate dropped ONE of them',
+  '  (measured 2026-09-18). Coverage is a CONTENT test; a boundary defect needs the waveform.',
   '  Micro is high by nature - one wrong ASR word on a one-word row is 100% of it. A PROSE tier',
   '  dropping much above ~2% is an ALIGNMENT problem, not a gate problem. Do not raise the',
   '  threshold to make it pass; re-align that book instead.',
@@ -1398,7 +1410,23 @@ async function runNormalizePauses(args) {
 }
 
 async function runSlice(args) {
-  if (args.help) { console.log(TRAINING_HELP.slice); return; }
+  if (args.help) {
+    console.log(TRAINING_HELP.slice);
+    // The FLAGS and their defaults are the WORKER'S to state, never a second copy here. This help and
+    // slice_vtt.py drifted once already: --tail-s 4.0 stayed recommended in this file after 4n.53 retired
+    // it, and the end-cut rule below changed on 2026-09-18 while this text still described the old one.
+    // ClipForge owns the WHY; the argparse owns the WHAT, and a help that cannot disagree with the code
+    // is the only kind worth reading.
+    console.log('\n  FLAGS AND DEFAULTS, from the worker that implements them (slice_vtt.py --help):\n');
+    try {
+      const root = resolveTrainingRoot(args);
+      const cwd = path.join(root, 'pipeline', 'untreated');
+      await spawnTraining(resolveTrainingPython(args, 'slice'), path.join(cwd, 'slice_vtt.py'), ['--help'], cwd, 'slice');
+    } catch (err) {
+      console.log('  (the worker could not be run for its flag list: ' + err.message + ')');
+    }
+    return;
+  }
   for (const k of ['raw', 'vtt', 'build', 'rows', 'prefix', 'speaker']) {
     if (!args[k]) throw new Error('slice: --' + k + ' is required (see: clipforge slice --help)');
   }
