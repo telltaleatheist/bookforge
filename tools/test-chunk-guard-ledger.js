@@ -38,13 +38,14 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const LEDGER = path.join(REPO, 'dist', 'electron', 'chunk-guard-ledger.js');
 
 if (!fs.existsSync(LEDGER)) {
-  console.log('SKIP: dist/electron/chunk-guard-ledger.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/chunk-guard-ledger.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

@@ -36,10 +36,11 @@ const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer,
   crucibleHost, noServerHost,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const REROLL = path.join(REPO, 'dist', 'electron', 'crucible', 'reroll.js');
 if (!fs.existsSync(REROLL)) {
-  console.log('SKIP: dist/electron/crucible/reroll.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/reroll.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 const { work } = installElectronStub('bf-crucible-reroll-');

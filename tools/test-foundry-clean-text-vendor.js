@@ -230,6 +230,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 /** BookForge's commit the pass was vendored FROM — Foundry's `f2e3c2d` names it. */
 const BOOKFORGE_ANCHOR = '0f962d5f';
@@ -830,10 +831,10 @@ function main() {
   const { repo: foundry, tried } = foundryRepo();
 
   if (foundry === null) {
-    console.log(
-      'SKIP test-foundry-clean-text-vendor — no Foundry checkout on this machine. '
+    console.log(skipLine(
+      'no Foundry checkout on this machine. '
       + `Tried: ${tried.join(', ')}. Set FOUNDRY_REPO to point at one.`,
-    );
+    ));
     return;
   }
 

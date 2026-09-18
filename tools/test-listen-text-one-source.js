@@ -81,6 +81,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const EXT = path.join(REPO, 'extension');
@@ -102,11 +103,11 @@ console.log('one listen-text path, bundled twice');
 // ── Preconditions, named rather than guessed at ─────────────────────────────
 
 if (!fs.existsSync(DIST_SHARED)) {
-  console.log('SKIP: dist/shared/listen-text is not built — run `npx tsc -p tsconfig.electron.json`');
+  console.log(skipLine('dist/shared/listen-text is not built — run `npx tsc -p tsconfig.electron.json`'));
   return;
 }
 if (!fs.existsSync(path.join(EXT, 'node_modules', 'esbuild'))) {
-  console.log('SKIP: extension/node_modules is missing — run `npm install --prefix extension`');
+  console.log(skipLine('extension/node_modules is missing — run `npm install --prefix extension`'));
   return;
 }
 

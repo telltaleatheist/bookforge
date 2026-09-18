@@ -83,7 +83,9 @@ print(json.dumps(sorted(stems)))
     // A machine with no narrator env cannot check the copy. Say so and pass —
     // this is a drift alarm, not a reason to fail a gate on a laptop that has
     // never run a render.
-    console.log('SKIP  the python table could not be read (no narrator-mlx env); '
+    // Indented for the reason tools/keeper-skip.js gives: column zero is the
+    // suite talking, an indent is a check talking, and this suite ran.
+    console.log('  SKIP  the python table could not be read (no narrator-mlx env); '
       + 'the drift check did not run');
     return;
   }

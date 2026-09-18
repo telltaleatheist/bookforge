@@ -46,13 +46,14 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const Module = require('module');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const RENDER = path.join(REPO, 'dist', 'electron', 'crucible', 'render.js');
 
 if (!fs.existsSync(RENDER)) {
-  console.log('SKIP: dist/electron/crucible/render.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/render.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

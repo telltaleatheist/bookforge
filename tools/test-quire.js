@@ -76,10 +76,11 @@ const { spawnSync } = require('child_process');
  * so the Electron half asks nothing and needs no library.
  */
 const { killingAmericaEpub } = require(path.join(__dirname, 'ka-fixture.js'));
+const { skipLine } = require('./keeper-skip.js');
 
 const found = killingAmericaEpub();
 if (found.book === undefined) {
-  console.log(`SKIP: ${found.reason}`);
+  console.log(skipLine(found.reason));
   process.exitCode = 0;
   return;
 }

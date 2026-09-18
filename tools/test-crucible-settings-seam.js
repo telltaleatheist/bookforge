@@ -51,11 +51,12 @@ const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, settingsRoutes,
   LLM_CLASSES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
 } = require('./fake-crucible.js');
+const { skipLine } = require('./keeper-skip.js');
 
 const DOOR = path.join(REPO, 'dist', 'electron', 'crucible', 'engine-settings.js');
 if (!fs.existsSync(DOOR)) {
-  console.log('SKIP: dist/electron/crucible/engine-settings.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/engine-settings.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

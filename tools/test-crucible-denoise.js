@@ -38,10 +38,11 @@ const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, noServerHost,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const DENOISE = path.join(REPO, 'dist', 'electron', 'crucible', 'denoise.js');
 if (!fs.existsSync(DENOISE)) {
-  console.log('SKIP: dist/electron/crucible/denoise.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/denoise.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 const { work } = installElectronStub('bf-crucible-denoise-');

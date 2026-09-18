@@ -207,7 +207,10 @@ test('the two implementations fold the same fixtures identically', () => {
     } catch { /* try the next interpreter */ }
   }
   if (out === null) {
-    console.log('SKIP  narrator could not be imported by any python on this machine; the '
+    // Indented, because this suite is still running: only the behavioural half
+    // stood down. A column-zero `SKIP:` is the runner's word for a whole suite
+    // that verified nothing (tools/keeper-skip.js).
+    console.log('  SKIP  narrator could not be imported by any python on this machine; the '
       + 'BEHAVIOURAL half did not run (the set comparison above did)');
     return;
   }

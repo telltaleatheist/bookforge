@@ -1249,7 +1249,11 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
   for (const f of failures) {
     console.error(`FAIL  ${f.name}\n      ${f.err && f.err.message}`);
   }
-  for (const s of skipped) console.log(`SKIP  ${s}`);
+  // An INDENTED line: this suite ran, and one of its tests did not. The
+  // runner reads a column-zero `SKIP:` as the whole suite standing down, so
+  // a per-test skip that starts at column zero would hide 34 tests behind
+  // one — see the contract in tools/keeper-skip.js.
+  for (const s of skipped) console.log(`  SKIP  ${s}`);
   console.log(`foundry-host-queue: ${passed}/${tests.length} passed`);
   process.exit(failures.length === 0 ? 1 - 1 : 1);
 })();

@@ -52,6 +52,7 @@ const DIST = path.join(REPO, 'dist', 'electron');
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 const paths = require(path.join(DIST, 'narrator-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
+const { skipLine } = require('./keeper-skip.js');
 
 /**
  * THE WORKER DOOR RUNS IN THE TOOLS ENV HERE, and only here.
@@ -84,8 +85,8 @@ let toolsPython;
 try {
   toolsPython = paths.getPythonInvocation();
 } catch (err) {
-  console.log(`SKIP: the tools python environment is not installed on this machine, and this `
-    + `suite drives a real narrator through it — ${err && err.message ? err.message.split('\n')[0] : err}`);
+  console.log(skipLine(`the tools python environment is not installed on this machine, and this `
+    + `suite drives a real narrator through it — ${err && err.message ? err.message.split('\n')[0] : err}`));
   process.exitCode = 0;
   return;
 }

@@ -197,6 +197,143 @@ check('an ordinary failure is NOT excused as a shell problem', () => {
   assert.strictEqual(runner.shellRefusalOf(reported.out), null);
 });
 
+// ── The skip contract: one spelling, and a second one is not a pass ─────────
+
+console.log('a suite that could not run says so in ONE spelling');
+
+/*
+ * THE SKIP-AS-PASS SHAPE (found 2026-09-18).
+ *
+ * The runner's contract is `SKIP: <reason>` at column 0 with exit 0, and it is
+ * the ONLY thing that makes a row read `SKIP` instead of `ok`. Two spellings
+ * were live: `test-foundry-clean-text-vendor` printed `SKIP <suite> — <reason>`
+ * and two of its neighbours copied it. Exit 0 with no match means the runner
+ * falls through to the `ok` row, so on any machine with no Foundry checkout
+ * three suites that verified NOTHING were reported green — which is the 2026-09-13
+ * census's finding (an unrun guard looks like coverage) arriving through the
+ * runner rather than through the list.
+ *
+ * So the spelling has one owner, `tools/keeper-skip.js`, and a line that starts
+ * with the word and is not the contract is a FAIL row: an almost-right skip is
+ * the one case where guessing the author's intent would hide exactly what the
+ * shape hid before.
+ */
+
+check('the contract shape is read as a skip, carrying its reason', () => {
+  const line = runner.skipLine('no Foundry checkout on this machine');
+  const read = runner.readSkip(`something else first\n${line}\n`);
+  assert.ok(read !== null, `the composer's own line is not readable as a skip: ${line}`);
+  assert.strictEqual(read.why, 'no Foundry checkout on this machine');
+  assert.strictEqual(runner.verdictOf(true, line).kind, 'skip');
+});
+
+check('a SECOND spelling of the same sentence is a FAIL row, never ok', () => {
+  // Verbatim what test-foundry-clean-text-vendor printed until this commit.
+  const old = 'SKIP test-foundry-clean-text-vendor — no Foundry checkout on this machine. '
+    + 'Tried: C:\\Users\\tellt\\Projects\\foundry. Set FOUNDRY_REPO to point at one.';
+  const read = runner.readSkip(old);
+  assert.ok(read !== null, 'the runner did not notice a line that plainly announces a skip');
+  assert.strictEqual(read.why, undefined, 'a spelling the contract does not define is not a reason');
+  assert.match(read.malformed, /^SKIP test-foundry-clean-text-vendor/,
+    'the row has to quote the line, or nobody can tell which suite to fix');
+  const verdict = runner.verdictOf(true, old);
+  assert.strictEqual(verdict.kind, 'fail',
+    'a suite that exited 0 having verified nothing was scored as a suite that passed');
+});
+
+check('a per-check skip inside a running suite is NOT the suite skipping', () => {
+  // `test-crucible-module-file` skips ONE of its checks and runs the rest, and
+  // says so on an indented line like every other per-check line. Widening the
+  // reading above must not turn those suites into skipped rows — that would
+  // hide a whole suite to report half of one.
+  const partial = 'crucible module file\n'
+    + '  ok    every job type has words a person can read\n'
+    + '  SKIP  byte-for-byte against the generator — no crucible checkout\n'
+    + '12/12 passed\n';
+  assert.strictEqual(runner.readSkip(partial), null);
+  assert.strictEqual(runner.verdictOf(true, partial).kind, 'ok');
+});
+
+check('ONE OWNER: no suite prints a skip line of its own spelling', () => {
+  /*
+   * The grep R15 asked for, as a check. Two spellings existed because the line
+   * was a literal in twenty-odd files; a third would arrive the same way, and
+   * the runner is the only reader that could ever notice.
+   *
+   * This file is the exemption, by name: it is the one place that must be able
+   * to write a WRONG shape, because the wrong shape is what it drives.
+   */
+  const suites = fs.readdirSync(__dirname).filter((f) => /^test-.*\.js$/.test(f));
+  const offenders = [];
+  for (const suite of suites) {
+    if (suite === 'test-keeper-runner.js') continue;
+    const source = fs.readFileSync(path.join(__dirname, suite), 'utf8');
+    // PRINTING a literal that opens with the word: the line lands at column
+    // zero, which is the suite talking. Two things deliberately do not match —
+    // an indented per-check line ('  SKIP  ...'), which is a different sentence
+    // said by a suite that is still running, and prose about the contract in a
+    // comment, which prints nothing.
+    if (/console\.(log|error)\(\s*(['"`])SKIP/.test(source)) offenders.push(suite);
+  }
+  assert.deepStrictEqual(offenders, [],
+    'these suites write a COLUMN-ZERO skip line as a literal instead of calling skipLine() '
+    + 'from tools/keeper-skip.js, so the runner\'s contract has as many owners as there are '
+    + 'copies of the word. A per-check skip inside a suite that RAN is an indented line and is '
+    + 'not this contract');
+});
+
+check('and every suite that skips reaches for that owner', () => {
+  const suites = fs.readdirSync(__dirname).filter((f) => /^test-.*\.js$/.test(f));
+  const unsourced = [];
+  for (const suite of suites) {
+    // Exempt for the same reason as the check above: this file names the
+    // function in its own prose and reaches it through the runner's re-export.
+    if (suite === 'test-keeper-runner.js') continue;
+    const source = fs.readFileSync(path.join(__dirname, suite), 'utf8');
+    // A BARE call, so this file's own `runner.skipLine(...)` — which reaches it
+    // through the runner's re-export — is not read as a missing require.
+    if (/(?<![.\w])skipLine\(/.test(source) && !/require\([^)]*keeper-skip/.test(source)) {
+      unsourced.push(suite);
+    }
+  }
+  assert.deepStrictEqual(unsourced, [],
+    'a suite calls skipLine() without requiring tools/keeper-skip.js — it would throw at the '
+    + 'moment it tried to skip, which is the moment nobody is watching');
+});
+
+check('and reaches for that owner BEFORE it skips, not somewhere below', () => {
+  /*
+   * THE REQUIRE'S POSITION IS THE WHOLE FIX, NOT DECORATION.
+   *
+   * Nearly every skip in this tree is a "dist is not built" guard at module top
+   * level, and a `const { skipLine } = require(...)` written BELOW it is in that
+   * const's temporal dead zone at the moment the guard fires: node answers
+   * `ReferenceError: Cannot access 'skipLine' before initialization` and the
+   * suite dies with a stack trace instead of standing down. On a machine where
+   * dist IS built the branch never runs, so the suite looks fine and the
+   * breakage is reserved for exactly the unbuilt checkout the skip exists to
+   * serve.
+   *
+   * Line order is therefore the check. It is crude and it is exactly the fact: a
+   * binding read above its own `const` is a ReferenceError, whatever the shape
+   * of the code in between.
+   */
+  const suites = fs.readdirSync(__dirname).filter((f) => /^test-.*\.js$/.test(f));
+  const late = [];
+  for (const suite of suites) {
+    if (suite === 'test-keeper-runner.js') continue;
+    const lines = fs.readFileSync(path.join(__dirname, suite), 'utf8').split(/\r?\n/);
+    const call = lines.findIndex((l) => /(?<![.\w])skipLine\(/.test(l));
+    if (call < 0) continue;
+    const bound = lines.findIndex((l) => /skipLine.*=\s*require\([^)]*keeper-skip/.test(l));
+    if (bound > call) late.push(`${suite} (binds at line ${bound + 1}, calls at line ${call + 1})`);
+  }
+  assert.deepStrictEqual(late, [],
+    'these suites require tools/keeper-skip.js BELOW their first skipLine() call, so the call '
+    + 'sits in the const\'s temporal dead zone and the checkout where the guard actually fires '
+    + 'gets a ReferenceError instead of a skip');
+});
+
 // ── Defect A: the version line, in the three shapes it comes in ─────────────
 
 console.log('a foundry --version line names its commit, dirty or not');

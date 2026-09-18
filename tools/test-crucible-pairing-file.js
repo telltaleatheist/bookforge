@@ -34,13 +34,14 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 
 const READER = path.join(REPO, 'dist', 'electron', 'crucible', 'pairing-file.js');
 if (!fs.existsSync(READER)) {
-  console.log('SKIP: dist/electron/crucible/pairing-file.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/pairing-file.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

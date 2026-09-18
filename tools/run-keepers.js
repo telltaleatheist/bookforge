@@ -10,6 +10,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { skipLine, readSkip } = require('./keeper-skip.js');
 
 /**
  * REFUSE A STALE BUILD BEFORE RUNNING A SINGLE SUITE.
@@ -876,8 +877,14 @@ function census() {
   };
 }
 
-/** A suite that could not run says so on a line of its own and exits 0. */
-const SKIP_RE = /^SKIP:\s*(.+)$/m;
+/*
+ * A suite that could not run says so on a line of its own and exits 0, in the
+ * ONE spelling `tools/keeper-skip.js` owns. The reading lives there with the
+ * composer because they are two halves of one contract, and because the second
+ * spelling that made this necessary — `SKIP <suite> — <reason>`, no colon —
+ * matched nothing here and was therefore scored `ok`: a suite that asserted
+ * nothing, reported green on every machine without a Foundry checkout.
+ */
 
 /** The count a finished suite prints, or null when it did not get that far. */
 function tallyOf(out) {
@@ -944,6 +951,28 @@ function shellRefusalOf(out) {
   return `not runnable under this shell — run under PowerShell. Windows said: ${said[0].trim()}`;
 }
 
+/**
+ * WHICH ROW A FINISHED SUITE GETS — `ok`, `SKIP`, `SHELL` or `FAIL`.
+ *
+ * Its own function so the decision can be driven by `tools/test-keeper-runner.js`
+ * without running the runner from inside a suite the runner runs. The loop below
+ * only formats what this decides.
+ *
+ * THE FOURTH ANSWER IS THE POINT: a suite that exits 0 while ANNOUNCING a skip in
+ * a spelling the contract does not define is a FAILURE, not a pass. It verified
+ * nothing — that is what the announcement says — and the alternative is to guess
+ * the author's intent from a near-miss, which is precisely what the near-miss
+ * hid for as long as it existed.
+ */
+function verdictOf(ok, out) {
+  const said = ok ? readSkip(out) : null;
+  if (said !== null && said.why !== undefined) return { kind: 'skip', why: said.why };
+  if (said !== null) return { kind: 'fail', malformed: said.malformed };
+  const refusal = ok ? null : shellRefusalOf(out);
+  if (refusal !== null) return { kind: 'shell', why: refusal };
+  return { kind: ok ? 'ok' : 'fail' };
+}
+
 function main() {
   const stale = refuseStaleBuild();
   if (stale !== null) {
@@ -965,16 +994,24 @@ function main() {
       ok = false;
       out = `${err.stdout || ''}${err.stderr || ''}`;
     }
-    const skip = ok ? SKIP_RE.exec(out) : null;
-    if (skip) {
-      skipped.push({ suite, why: skip[1].trim() });
-      console.log(`SKIP  ${suite.padEnd(32)} ${skip[1].trim().slice(0, 120)}`);
+    const verdict = verdictOf(ok, out);
+    if (verdict.kind === 'skip') {
+      skipped.push({ suite, why: verdict.why });
+      console.log(`SKIP  ${suite.padEnd(32)} ${verdict.why.slice(0, 120)}`);
       continue;
     }
-    const shellRefusal = ok ? null : shellRefusalOf(out);
-    if (shellRefusal !== null) {
-      unrunnable.push({ suite, why: shellRefusal });
-      console.log(`SHELL ${suite.padEnd(32)} ${shellRefusal}`);
+    if (verdict.kind === 'shell') {
+      unrunnable.push({ suite, why: verdict.why });
+      console.log(`SHELL ${suite.padEnd(32)} ${verdict.why}`);
+      continue;
+    }
+    if (verdict.malformed !== undefined) {
+      failed++;
+      console.log(`FAIL  ${suite.padEnd(32)} announced a skip in a spelling this runner does not `
+        + 'read, so it exited 0 having verified nothing:');
+      console.log(`      ${verdict.malformed.slice(0, 160)}`);
+      console.log(`      The contract is \`${skipLine('<reason>')}\` at column zero — call `
+        + 'skipLine() from tools/keeper-skip.js. A per-check skip is an INDENTED line.');
       continue;
     }
     if (!ok) failed++;
@@ -1037,4 +1074,6 @@ function main() {
  */
 if (require.main === module) main();
 
-module.exports = { SUITES, census, tallyOf, failureDetail, shellRefusalOf };
+module.exports = {
+  SUITES, census, tallyOf, failureDetail, shellRefusalOf, verdictOf, skipLine, readSkip,
+};

@@ -38,10 +38,11 @@ const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const JOB = path.join(REPO, 'dist', 'electron', 'crucible', 'job.js');
 if (!fs.existsSync(JOB)) {
-  console.log('SKIP: dist/electron/crucible/job.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/job.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 const { work } = installElectronStub('bf-crucible-job-');

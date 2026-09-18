@@ -94,8 +94,9 @@ name (`engine_in_use` per PHASE3 §7), and the popup says which client holds it,
 ## 2. Correct Sentences — where it stands, and the ruling it needs
 
 Already through Crucible: `electron/crucible/reroll.ts` sends the flagged indices as N `tts`
-render jobs at `take: 0`, one `<index>.flac` artifact each; takes differ because narrator's
-sampling is unseeded. **What does NOT travel: the temperature spread** (`computeTakeTemperatures`,
+render jobs at `take: 0`, one `<index>.flac` artifact each — which is N copies of one reading,
+because narrator seeds chunk i at `config.seed + i` (`_seed_for`, `HiggsConfig.seed` default 1234)
+and take 0 moves nothing. **What does NOT travel: the temperature spread** (`computeTakeTemperatures`,
 0.4/0.8/1.0 around Orpheus's 0.6 — an Orpheus-era practice). The module refuses temperatures
 by name rather than dropping them.
 
@@ -107,17 +108,18 @@ changing temperature then thats fine. i just know if a sentence/chunk was proble
 likely be problematic again with the same settings used to originally generate it."*
 
 So the requirement is not "a temperature" — it is **a retake must not reuse the exact settings that
-produced the problem**. Unseeded sampling alone gives a different output at the same settings, which
-is the weak form; a different rung of the ladder is the strong form, and a problematic chunk needs
-the strong form at least once. Therefore: the spread IS the take ladder, a temperature is never on
-the wire, and Correct Sentences spreads its N candidates ACROSS the rungs, the first candidate on
-rung 1 (the measured alternative) — never N re-rolls of take 0 — so every audition list contains at
-least one candidate rendered under different settings than the original. With a two-rung ladder and
-N = 3 that is takes 1, 0, 1; the audition list names the rung of each. The ladder itself stays the
+produced the problem**. There is no weaker form to lean on: a rung is TWO facts, sampling deltas and
+a seed offset (narrator's `CONTRACTS.md`), so the same rung asked twice returns the same bytes and a
+problematic chunk needs a rung it has not been through. Therefore: the spread IS the take ladder, a
+temperature is never on the wire, and Correct Sentences spreads its N candidates ACROSS the rungs —
+candidate k (0-based) is asked at `take: k + 1`, so the first candidate lands on rung 1 (the measured
+alternative) and none of them is a re-roll of take 0, the rung that produced the problem. A rung is
+never handed out twice, and the ladder is never cycled: N candidates need N rungs above 0, and a
+take past the ladder's length is refused by name rather than wrapped around. The ladder stays the
 engine's (per-voice config, PHASE3 §3), and a third rung, if one is ever measured, changes no client. PHASE3 §3 already defines it — `[[voice.takes]]` per voice, take 0 = the boson
 default, take 1 = the one measured alternative (0.7, with its written reason) — and the
 division-of-knowledge ruling says tuning is engine config, never a wire field. Correct
-Sentences then asks for `take: 0..k` across its N candidates (k ≤ the ladder's length,
+Sentences then asks for `take: 1..N` across its N candidates (N ≤ the ladder's length,
 `unknown_take` past it), and the audition list says which rung each take came from. **The one
 thing owed before that works (ASSIGNED 2026-09-14 evening, Opus agent): narrator's sampling channel on `generate`/`generate_batch`**
 (PHASE3 §4: "a take above 0 on a voice that declares a ladder is refused `sampling_not_wired`"

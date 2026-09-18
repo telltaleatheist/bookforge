@@ -44,13 +44,14 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const Module = require('module');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const STREAM = path.join(REPO, 'dist', 'electron', 'crucible', 'stream.js');
 
 if (!fs.existsSync(STREAM)) {
-  console.log('SKIP: dist/electron/crucible/stream.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/stream.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

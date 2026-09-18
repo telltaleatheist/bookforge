@@ -39,10 +39,11 @@ const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, noServerHost,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const ASR = path.join(REPO, 'dist', 'electron', 'crucible', 'asr.js');
 if (!fs.existsSync(ASR)) {
-  console.log('SKIP: dist/electron/crucible/asr.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/asr.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 const { work } = installElectronStub('bf-crucible-asr-');

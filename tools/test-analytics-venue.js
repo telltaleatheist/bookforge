@@ -51,13 +51,14 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
 if (!fs.existsSync(path.join(DIST, 'ai-bridge.js'))) {
-  console.log('SKIP: dist/electron/ai-bridge.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/ai-bridge.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

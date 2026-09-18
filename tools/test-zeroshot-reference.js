@@ -36,6 +36,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 const { REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer } =
   require('./fake-crucible.js');
@@ -43,8 +44,8 @@ const { REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer } =
 const SHARED = path.join(REPO, 'dist', 'shared', 'crucible', 'voice-reference.js');
 const DOOR = path.join(REPO, 'dist', 'electron', 'crucible', 'voice-load.js');
 if (!fs.existsSync(SHARED) || !fs.existsSync(DOOR)) {
-  console.log('SKIP: dist/shared/crucible/voice-reference.js or '
-    + 'dist/electron/crucible/voice-load.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/shared/crucible/voice-reference.js or '
+    + 'dist/electron/crucible/voice-load.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 
