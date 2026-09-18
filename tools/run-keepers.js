@@ -510,6 +510,13 @@ const SUITES = [
   // 2026-09-17 -- two HTML comments and one CSS comment in styles: [...] --
   // because every other comment in this codebase quotes identifiers that way.
   'test-no-backticks-in-templates',
+  // The main process may only import what the PACKAGED app ships. `tsc` and
+  // every keeper resolve against the checkout's node_modules, where a build
+  // tool's transitive dependency has been hoisted to the top — so an import
+  // nobody declared works everywhere except the one place that matters. It
+  // reached Owen as "Cannot find module '@xmldom/xmldom'" from the installed
+  // app, with the package present in node_modules and absent from package.json.
+  'test-no-undeclared-runtime-deps',
   // …and step 8 itself: BookForge's TTS server, deleted (Owen, 2026-09-15: "there
   // shouldnt be tts server logic in bookforge anymore at all, including the
   // settings"). Same two-column shape, from the other side: half forbids the
