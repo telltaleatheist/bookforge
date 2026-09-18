@@ -37,7 +37,23 @@ tmpfs — 196k smbd cores once filled it and took the NAS's daemons down).
 
 ## Deploying an update
 
-All from the PC. The image is never built from source on titan — the PC
+**The one command (since 2026-09-18):**
+
+```sh
+npm run deploy:titan -- <sha|ref>      # e.g. HEAD once pushed, or origin/main
+```
+
+`deploy/bookshelf-server/deploy-titan.sh` IS the recipe below, run in order
+with its traps closed: it refuses a ref that is not on `origin/main`, stages
+the commit with `git archive` outside the checkout (wiping ghosts, `npm ci`
+only when the lockfile changed), sets the two stamp-build env vars itself,
+ships the tarball, runs `redeploy.sh`, waits on `/api/health`, and writes
+`DEPLOYED_SHA` beside the tarball on titan so "what is running?" is
+`ssh titan cat /volume1/System/bookshelf-server/DEPLOYED_SHA`. Works from the
+Mac or the PC — both `ssh titan` keyless. The steps that follow are what it
+does, kept for when something needs doing by hand.
+
+From the PC or the Mac. The image is never built from source on titan — the PC
 builds, titan just packages and runs.
 
 **Build in a STAGING DIR cut from a sha, not in the working checkout.** Two
