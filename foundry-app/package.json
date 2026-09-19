@@ -73,7 +73,6 @@
       "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
     }
   },
-  "_cruciblePhase19Pack": "app/vendor/crucible-bootstrap-1.0.5-phase19.tgz is a LABELLED PRE-RELEASE pack, cut from crucible branch feat/phase19-automatic-wsl at c687f9514981c7d4ccf1f43300a720bc9885a9b7 and carrying PHASE19 2.6 (installStatus, watchInstall, GET /install and /install/events, the WslOutcome states). It calls itself @crucible/bootstrap 1.0.5 -- the SAME version string as the released crucible-bootstrap-1.0.5.tgz beside it, which is why the FILENAME is what distinguishes them and why the released tarball is kept rather than overwritten. It is replaced by the 1.0.6 release tarball the day Owen cuts it, and that replacement is a one-line edit here plus deleting this key and the pre-release file.",
   "_crucibleClientNote": "Crucible SDKs are vendored as immutable npm-pack tarballs: the LIBRARY this app is built against, never the release an install puts on a machine — that is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Compatibility with a server is the API version on X-Crucible-Api, not this number. Update both packages, integrity hashes, and generated module metadata together; directory dependencies are not supported.",
   "dependencies": {
     "@angular/common": "^21.0.0",
@@ -82,8 +81,8 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
-    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.5-phase19.tgz",
-    "@crucible/client": "file:vendor/crucible-client-1.0.5.tgz",
+    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.6.tgz",
+    "@crucible/client": "file:vendor/crucible-client-1.0.6.tgz",
     "libheif-js": "1.19.8",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "^6.2.108",

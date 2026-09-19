@@ -10,10 +10,59 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **3436fc5** — *the outcome stops being null — the SDK is behind the install door* |
+| Source sha | **806d44b** — *adopt 1.0.6 — the phase19 pre-release pack is retired* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (twice: 3738c01 in the morning, 3436fc5 in the evening) |
-| Copied by | Mechanical source sync, verified against Foundry `3436fc5:app/`; details below |
+| Copied on | 2026-09-19 (three times: 3738c01, 3436fc5, 806d44b) |
+| Copied by | Mechanical source sync, verified against Foundry `806d44b:app/`; details below |
+
+## The `3436fc5 → 806d44b` re-vendor — the pre-release pack is retired on both sides (2026-09-19, late)
+
+Two commits, and no source file changed: `522fac4` is Foundry merging its
+PHASE19 branch to its own `main` (the work this file's previous entry already
+describes, arriving on the mainline rather than a branch), and `806d44b` is the
+1.0.6 adoption. So the whole diff is four tarballs and two package files, which
+is what a re-vendor looks like when the only thing that moved is a pin.
+
+### Crucible 1.0.6 is cut, and the label goes with it
+
+`app/vendor/crucible-bootstrap-1.0.5-phase19.tgz` is DELETED, `_cruciblePhase19Pack`
+is deleted with it, and both packages are pinned to the released
+`crucible-bootstrap-1.0.6.tgz` and `crucible-client-1.0.6.tgz`. 1.0.6 carries
+what the pre-release was vendored for — §2.6's `installStatus()`,
+`watchInstall()`, `GET /install` and `/install/events`, the `WslOutcome` states
+and `TERMINAL_OUTCOME_STATES` — so there is nothing the label was buying any
+more. Foundry's `crucible-pin.test.ts` passes with NO labelled pack present,
+which is the shape it was given for exactly this: *a pre-release pin that
+nobody remembers to undo is the thing it refuses.*
+
+BookForge adopted the same release on this branch one commit earlier, and the
+BYTES are the same on both sides — bootstrap md5 `42b3afaef3d61fcb7dc1a1a3ee9de60d`,
+client `250247e3efc44547ef38190f4d448bd0`, this repo's `vendor/` and
+`foundry-app/vendor/` measured against each other rather than assumed equal
+because the version strings match. The two repos' vendor policies, which
+differed while the pre-release was live — Foundry holding nothing unpinned,
+BookForge keeping the released tarball beside the labelled one — have converged
+again now that there is one release and one pin.
+
+### Both adoption scripts learned the same two things
+
+Foundry's `tools/adopt-crucible-release.mjs` and BookForge's are separate
+copies of one idea, and retiring a labelled pack found the same two defects in
+each: the pin being REPLACED has to be matched with the label OPTIONAL (a pack
+cut from a crucible branch carries the version string of the release it will
+become, so the filename is the only thing telling them apart), and the prune
+has to remove every tarball of the release being left, labelled or not. The
+replacement written is never labelled: adopting a real release is exactly the
+moment a pre-release stops being what an app is built against. Both were fixed
+in their own repos, neither by editing the other's.
+
+### IPC
+
+`IPC-CHANNELS.md` is unchanged from the previous entry — still 130 = 130 and
+zero `ipcMain.on`. BookForge's three renamed channels (`crucible:host-install-status`,
+`-install-event`, `-restart-windows`, moved out of Foundry's way when
+3436fc5 landed) stay where they are; nothing in this range touches a channel
+name.
 
 ## The `3738c01 → 3436fc5` re-vendor — the WSL button goes, and a seam replaces it (2026-09-19, evening)
 
