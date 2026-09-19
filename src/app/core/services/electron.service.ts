@@ -101,6 +101,14 @@ export interface StreamSchedulerEvent {
   data?: string;
   duration?: number;
   sampleRate?: number;
+  /**
+   * On `done`: seconds of silence the PLAYER must insert after that row. The
+   * audio is bare speech, so this is the whole of the pause before the next row
+   * — narrator's own classification of the row's text (`classify_gap`, the call
+   * that writes a book's `gaps.json`), relayed by the scheduler. Every Listen
+   * surface inserts exactly it; none of them declares a pause of its own.
+   */
+  gapSec?: number;
   error?: string;
 }
 

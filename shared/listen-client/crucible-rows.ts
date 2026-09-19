@@ -52,6 +52,32 @@
 import type { StreamEvent, StreamRowDone, TtsStreamSession } from '@crucible/client';
 
 /**
+ * A `done` frame WITH the gap the player realizes.
+ *
+ * THE VENDORED SDK IS OLDER THAN THE FIELD, and this alias is the whole of the
+ * difference. `vendor/crucible-client-1.0.1.tgz` builds `StreamRowDone` out of
+ * six named fields and drops every other key on the frame, `gap_sec` included —
+ * the same situation `electron/crucible/probe.ts` describes for `/v1/activity`'s
+ * `reference`, and it gets the same treatment: state the documented wire here
+ * rather than let it diverge in silence.
+ *
+ * DELETE THIS ON THE RE-VENDOR, and a keeper says when. The compiler will not:
+ * once `StreamRowDone` declares `gapSec` itself this intersection restates a
+ * property it already has, which TypeScript accepts without a word (measured:
+ * `A & {gapSec: number|null}` where `A` already has it is clean under `strict`).
+ * So `tools/test-listen-gap-realized.js` reads the INSTALLED `@crucible/client`
+ * and goes red the day its `done` shaper mentions `gap_sec` — that red names
+ * this alias and `clientWithGapOnDone` in `tools/test-crucible-stream.js` as the
+ * two props to pull out.
+ *
+ * Until the re-vendor the shaper drops `gap_sec`, so `gapSec` reads `undefined`
+ * and every row is REFUSED BY NAME below. That is the intended behaviour of the
+ * pair being out of step: Listen stops and says why, instead of pacing a read by
+ * a number nobody chose. narrator, Crucible and this client ship together.
+ */
+type StreamRowDoneWithGap = StreamRowDone & { readonly gapSec: number | null };
+
+/**
  * The take every Listen row asks for. Zero, always — the engine's own sampling,
  * which is what asking for nothing gets, and the SDK's `say` has no default on
  * the wire (PHASE3-TTS.md §7, difference 5). A take above 0 on a voice that
@@ -106,6 +132,20 @@ export interface CrucibleRowResult {
   seconds?: number;
   /** The row's audio already reached the caller through `onChunk`. */
   streamed?: boolean;
+  /**
+   * SECONDS OF SILENCE THE CALLER MUST INSERT AFTER THIS ROW — present on every
+   * successful row and on no other.
+   *
+   * The audio is bare speech. This is narrator's own classification of the row's
+   * text (`text/gaps.classify_gap`, the same call that writes a book's
+   * `gaps.json`), relayed by Crucible untouched, so a paragraph heard here is
+   * paced exactly as it would be inside the audiobook — the voice's inject
+   * included. A player that inserts nothing runs its sentences together; one
+   * that inserts a constant of its own is the two-owner shape this replaced
+   * (narrator's flat 0.3 s against the book's 0.6 s, and a 0.5 s paragraph pause
+   * declared twice in two players).
+   */
+  gapSec?: number;
   error?: string;
 }
 
@@ -341,6 +381,7 @@ export class CrucibleRowSession {
         return;
       }
       case 'done': {
+        const done = event as StreamRowDoneWithGap;
         this.rows.delete(event.id);
         // RECORDED, NEVER ACTED ON — see the header.
         this.deps.onRowDone?.(event.id, row.ordinal, event);
@@ -348,8 +389,29 @@ export class CrucibleRowSession {
           this.settle(row, { success: false, error: `row ${event.id} was cancelled on the server` });
           return;
         }
+        // THE GAP IS REQUIRED ON A ROW THAT SPOKE, and its absence is a refusal
+        // rather than a zero. `null` is the server's word for "this row was
+        // cancelled", which the branch above has already taken, so a null here
+        // is a server that retired a row without saying how it paces — and
+        // `undefined` is a vendored SDK older than the field (see
+        // StreamRowDoneWithGap). The player cannot invent the number: the audio
+        // is bare, so a guess is heard at every sentence boundary of the read.
+        if (typeof done.gapSec !== 'number') {
+          this.settle(row, {
+            success: false,
+            error: `row ${event.id} reached this client without the gap the player realizes. `
+              + 'Either the server did not state it (a Crucible older than 2026-09-18) or '
+              + 'the vendored @crucible/client is older than the field and dropped it while '
+              + 'shaping the `done` frame — check the tarball in vendor/ first. Listen paces '
+              + 'from narrator\'s own classification of the row (gap_sec) and this client '
+              + 'will not substitute one',
+          });
+          return;
+        }
         if (row.onChunk !== undefined) {
-          this.settle(row, { success: true, streamed: true, seconds: event.seconds });
+          this.settle(row, {
+            success: true, streamed: true, seconds: event.seconds, gapSec: done.gapSec,
+          });
           return;
         }
         row.buffered.sort((a, b) => a.seq - b.seq);
@@ -360,7 +422,7 @@ export class CrucibleRowSession {
           pcm.set(chunk.pcm, at);
           at += chunk.pcm.length;
         }
-        this.settle(row, { success: true, pcm, seconds: event.seconds });
+        this.settle(row, { success: true, pcm, seconds: event.seconds, gapSec: done.gapSec });
         return;
       }
       case 'error': {

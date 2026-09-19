@@ -61,13 +61,31 @@ Protocol (one JSON object per line):
                  # later fact: `sampling_not_supported` / `take_not_supported`,
                  # per row.
           {type: 'status' | 'loaded' | 'error' | 'stopped', ...}
-          {type: 'audio', format:'pcm16', data, duration, sampleRate}        # batch
+          {type: 'audio', format:'pcm16', data, duration, sampleRate, gapSec}  # batch
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
-          {type: 'done', duration, chunks, cancelled}                        # stream end
+          {type: 'done', duration, chunks, cancelled, gapSec}                # stream end
           {type: 'batch_chunk', i, seq, format:'pcm16', data, duration, sampleRate}
           {type: 'batch_item', i, format:'pcm16', data, duration, sampleRate,
-                               guard?: {...}}                                # batch
-          {type: 'batch_item', i, streamed: true, duration, chunks}          # fast start
+                               gapSec?, guard?: {...}}                       # batch
+          {type: 'batch_item', i, streamed: true, duration, chunks, gapSec}  # fast start
+
+`gapSec` IS THE LISTEN DOOR'S GAP, and it rides the row's TERMINAL record only
+(Owen, 2026-09-18: "yes, it paces like the book... maybe the browser extension
+should handle the gaps for itself"). The audio on this wire is BARE SPEECH; the
+silence between two rows is `text/gaps.classify_gap`'s answer for the row - the
+same call `text/prep.py` makes to write a book's `gaps.json` - and the PLAYER
+inserts it, because on a stream there is no assembler but the player.
+
+NOT ON `chunk`/`batch_chunk`, and that is the design rather than an omission. The
+gap follows the row's LAST sample, so nothing can be realized from it until the
+row is over; a terminal record is emitted exactly once per row (this worker's own
+guarantee) while a row has N chunks, and N copies of one number is the
+two-owner shape this change removed. A fast-start player receives the terminal
+record immediately after the last chunk - while that chunk is still playing -
+so it knows the gap before it needs it.
+
+A RENDER row carries NO `gapSec`: an assembler follows that door and realizes
+`gaps.json`, and two statements of one silence is two owners of it.
 
 THE PER-ITEM SAMPLING CHANNEL (Owen, 2026-09-14, the retake spread ruling in
 docs/EXTENSION-TO-CRUCIBLE-PLAN.md section 2: *a retake must not reuse the
@@ -144,6 +162,11 @@ import numpy as np
 # here does not pull `narrator.engine` into this module's scope - which is
 # deliberately empty of it until after `ready` has been sent (see `main`).
 from ..env import env_number
+# THE GAP RULE, from the layer that owns it. `text/gaps` is pure stdlib (os, re)
+# and `narrator.text`'s package init imports nothing, so this costs the same as
+# the env reader above and pulls no engine into a module that must stay empty of
+# one until `ready` has been sent.
+from ..text.gaps import classify_gap_seconds
 
 DEFAULT_SAMPLERATE = 24000
 
@@ -155,16 +178,19 @@ DEFAULT_SAMPLERATE = 24000
 #: spawn it makes. The numbers below are what a worker started WITHOUT that
 #: spawn runs at (`python -m narrator.serve`, the CLI, the tests), and they are
 #: held equal to the owner's by `tests/test_serve_stream_env.py` so the two
-#: copies cannot drift. `ORPHEUS_STREAM_GAP` has no owner anywhere else; that
-#: default is narrator's own.
+#: copies cannot drift.
+#:
+#: THERE IS NO STREAM GAP KNOB ANY MORE. `ORPHEUS_STREAM_GAP` (0.3 s, appended
+#: to every streamed row here) is GONE: the inter-sentence gap is
+#: `text/gaps.classify_gap`'s answer for the row, sent on the wire as `gapSec`
+#: and realized by the player - see `row_gap_sec` below. An env nobody else set
+#: was a second owner of a number the book already had.
 STREAM_BATCH_ENV = 'ORPHEUS_STREAM_BATCH'
 STREAM_RAMP_ENV = 'ORPHEUS_STREAM_RAMP'
 STREAM_WARM_MAX_ENV = 'ORPHEUS_STREAM_WARM_MAX'
-STREAM_GAP_ENV = 'ORPHEUS_STREAM_GAP'
 
 STREAM_BATCH_DEFAULT = 16
 STREAM_RAMP_DEFAULT = 8
-STREAM_GAP_DEFAULT_SEC = 0.3
 
 
 def stream_batch_cap() -> int:
@@ -514,19 +540,41 @@ def audio_to_pcm16_base64(audio_array) -> str:
     return base64.b64encode((a * 32767).astype(np.int16).tobytes()).decode('utf-8')
 
 
-# Inter-sentence gap appended to every streamed sentence (seconds). Orpheus trims
-# its own trailing pause, so without this sentences run together - and the player
-# concatenates them with no gap. A ~0.3s pad gives natural breathing AND masks the
-# brief <audio> blob-reload at each sentence boundary (the reload lands in silence).
-# Tunable via ORPHEUS_STREAM_GAP (0 disables).
-#
-# READ THROUGH `env_number`, so `ORPHEUS_STREAM_GAP=0,3` raises at import naming
-# the variable instead of becoming 0.3 and padding every sentence of a session
-# the operator thought they had changed. A NEGATIVE gap is refused for the same
-# reason it used to be clamped to 0: it is not a shorter pause, it is a typo.
-STREAM_GAP_SEC = float(env_number(STREAM_GAP_ENV, STREAM_GAP_DEFAULT_SEC,
-                                  float, 0.0,
-                                  'the inter-sentence gap, in seconds'))
+def row_gap_sec(text) -> float:
+    """The silence that belongs AFTER this Listen row, in seconds.
+
+    IT PACES LIKE THE BOOK BECAUSE IT IS THE BOOK'S OWN FUNCTION (Owen,
+    2026-09-18: "yes, it paces like the book... maybe the browser extension
+    should handle the gaps for itself"). `text/gaps.classify_gap` is what
+    `text/prep.py` calls to write `gaps.json`, so a sentence heard on Listen
+    gets exactly the number it would get inside an audiobook - the 0.6 s floor,
+    the voice's inject when `NARRATOR_SENTENCE_GAP` carries one (the same
+    variable the prep door sets from the catalog's `chunkGap.injectS`), or an
+    explicit `[pause:X]`. This worker states it; the PLAYER realizes it, because
+    on the stream there is no assembler but the player.
+
+    THE TEXT IS THE ROW AS IT ARRIVED, before `normalize_for_tts`: that
+    normalizer rewrites every number it sees, so `[pause:2.5]` reaches it as
+    "[pause:two point five]" and classifies as an ordinary sentence.
+
+    A LEAD GAP IS REFUSED RATHER THAN DROPPED. `classify_gap` returns a non-zero
+    lead only for a chunk that STARTS with an explicit `[pause:X]` (a heading
+    returns `(0.0, floor)` like everything else - the per-kind tiers were removed
+    on 2026-07-17). A lead has to be realized before the row's FIRST sample, and
+    a fast-start row's first sample is played long before any terminal record
+    reaches the player, so this door has no honest channel for one. Half of
+    `classify_gap`'s answer, delivered in silence, is the shape this whole change
+    removes.
+    """
+    lead, trail = classify_gap_seconds(text or '')
+    if lead:
+        raise ValueError(
+            f'this row classifies to a {lead:.3f}s LEAD gap - it opens with an '
+            'explicit [pause:X] - and the Listen door carries no lead: the '
+            'player learns a row\'s gap when the row retires, which is after its '
+            'first sample has already been played. Render it through the book '
+            'path, where the assembler realizes gaps.json\'s `before`.')
+    return trail
 
 
 #: The sample rate the LOADED engine produces. DEFAULT_SAMPLERATE until one is
@@ -663,21 +711,29 @@ def finalize_audio(audio_np, door, pads=None):
       FOR_RENDER  an assembler follows. BookForge's narrator assembler realizes
                   `gaps.json` - 0.6 s, or the voice's inject - for a
                   `pads=False` engine (assemble/engine_profiles.py, higgs-v3).
-                  So this door emits BARE SPEECH and appends nothing.
-      FOR_STREAM  no assembler follows. The extension's offscreen player and
-                  BookForge's reader-audio-store concatenate rows with no
-                  per-sentence silence of their own, so here this function IS
-                  the assembler and the gap is appended.
+      FOR_STREAM  a PLAYER follows. The extension's offscreen player and
+                  BookForge's reader-audio-store insert the `gapSec` this
+                  worker states on the row's terminal record (`row_gap_sec`),
+                  which is `classify_gap`'s answer for that row - the same
+                  number the assembler would realize for it in a book.
 
-    WHY THE ARGUMENT EXISTS. This used to append the gap unconditionally, and
-    the docstring justified it with "the audiobook path never goes through
+    SO BOTH DOORS EMIT BARE SPEECH, and what `door` still decides is who is
+    told the gap: a FOR_STREAM emit carries `gapSec`, a FOR_RENDER emit must
+    not, because behind it `gaps.json` already says it and two statements of one
+    silence is two owners of it.
+
+    WHY THE ARGUMENT EXISTS. This used to append a flat 0.3 s unconditionally,
+    and the docstring justified it with "the audiobook path never goes through
     here". That stopped being true on 2026-09-13, when `_emit_guarded_batch`
     landed and became the door Crucible's `tts` render job drives: every join
     of a remotely rendered book came out model tail + 0.30 baked in here + 0.60
     from the assembler. A caller that does not say which door it is is a caller
-    that has not decided, which is exactly how that happened.
+    that has not decided, which is exactly how that happened. The 0.3 s itself
+    is gone (2026-09-18): Listen paced at half the book's default and ignored
+    the voice's inject entirely, because the player's silence was this
+    function's constant rather than the book's rule.
 
-    THREE STEPS, AND ONLY THE FIRST IS ENGINE-SPECIFIC.
+    TWO STEPS, AND ONLY THE FIRST IS ENGINE-SPECIFIC.
 
     1. TRIM, for a `pads=True` engine only. Orpheus bakes its own lead/trail
        silence into every clip (`_classify_gap` + `_save_audio`), and its
@@ -689,22 +745,20 @@ def finalize_audio(audio_np, door, pads=None):
        skipped, and the audio goes out exactly as decoded, which is also what
        `Engine.edge_fade` assumes (the fades are the assembler's).
     2. Peak-normalize if it clipped. Engine-independent.
-    3. APPEND THE INTER-SENTENCE GAP - ON FOR_STREAM ONLY, AND THERE FOR EVERY
-       ENGINE. It is the DOOR's question, not `pads`': `pads` says who owns the
-       silence INSIDE a chunk, which is what decides the trim above, while this
-       is about the silence BETWEEN two chunks and that belongs to whoever
-       joins them. On the stream nothing else can, so a `pads=True` Orpheus and
-       a `pads=False` Higgs both get it.
+
+    NOTHING IS APPENDED AT EITHER DOOR. The silence BETWEEN two chunks belongs
+    to whoever joins them - the assembler for a book, the player on a stream -
+    and neither of them is this function.
 
     `pads` defaults to the loaded engine's (see set_active_engine_audio).
     """
     if door not in (FOR_STREAM, FOR_RENDER):
         raise ValueError(
             f'finalize_audio was asked for door {door!r}, which is neither '
-            f'{FOR_STREAM!r} (a player concatenates these rows, so the '
-            f'inter-sentence gap is appended here) nor {FOR_RENDER!r} (an '
-            'assembler follows and owns the gap). There is no third contract '
-            'and no default: the caller is the only thing that knows.')
+            f'{FOR_STREAM!r} (a player follows and is TOLD the gap, as `gapSec` '
+            f'on the row\'s record) nor {FOR_RENDER!r} (an assembler follows '
+            'and reads gaps.json). There is no third contract and no default: '
+            'the caller is the only thing that knows.')
     if audio_np is None:
         return None
     a = np.asarray(audio_np, dtype=np.float32).flatten()
@@ -721,8 +775,6 @@ def finalize_audio(audio_np, door, pads=None):
     peak = float(np.max(np.abs(a))) if a.size else 0.0
     if peak > 1.0:
         a = a / peak * 0.95
-    if door == FOR_STREAM and STREAM_GAP_SEC > 0:
-        a = np.concatenate([a, np.zeros(int(rate * STREAM_GAP_SEC), dtype=np.float32)])
     return a
 
 
@@ -1172,9 +1224,15 @@ class OrpheusStreamServer:
         Registration REPLACES the voice's caps, so a cap the payload omits reverts
         to env/default rather than lingering from an earlier load. Non-tuning keys
         in the same payload (maxChars = prep packing, sentenceGap = assembly, and
-        neither is read on any streaming path - streaming pads with its own
-        STREAM_GAP) are accepted and ignored BY NAME by the engine; a key that is
-        neither raises.
+        neither is read on any streaming path) are accepted and ignored BY NAME by
+        the engine; a key that is neither raises.
+
+        `sentenceGap` STAYS IGNORED even though this worker now states a gap per
+        Listen row. That number is `text/gaps.classify_gap`'s, whose floor is the
+        `NARRATOR_SENTENCE_GAP` environment - one owner, and the same one the prep
+        door sets from the catalog's inject. Reading a per-load cap here as well
+        would be a second answer to "how long is this voice's join", which is the
+        exact shape that made a book and a Listen of the same voice disagree.
         """
         applied = self.orph.register_voice_caps(voice, caps or {})
         print(f'[narrator.serve] voice caps registered for {voice}: '
@@ -1600,11 +1658,19 @@ class OrpheusStreamServer:
                 for i, t in enumerate(texts)]
 
     @staticmethod
-    def _emit_batch_item(it, audio, guard=None):
+    def _emit_batch_item(it, audio, door, guard=None):
         """Emit one 'batch_item', keyed by the caller-supplied index `i`. Empty/None
         audio -> the 'No audio generated' message; otherwise the PCM16 payload. This
         is the exact per-item wire shape the non-MLX single-dispatch loop uses, so
         MLX group emission and non-MLX emission are byte-identical per item.
+
+        `door` is `finalize_audio`'s, restated here because it decides one field:
+        a FOR_STREAM row carries `gapSec` - the silence the PLAYER must insert
+        after it, `classify_gap`'s answer for the row's own text - and a
+        FOR_RENDER row carries none, because behind that door the assembler
+        realizes `gaps.json` and a second statement would be a second owner. The
+        row's raw `text` is classified, never the normalized copy (see
+        `row_gap_sec`), and a row whose gap LEADS is refused there by name.
 
         `guard` is `GuardPlan.verdict()`'s object, verbatim, for a row an engine
         rendered through its own retake ladder - PHASE6-REMOTE-RENDER.md section 3.
@@ -1629,6 +1695,8 @@ class OrpheusStreamServer:
                 'data': audio_to_pcm16_base64(audio),
                 'duration': len(audio) / active_samplerate(),
                 'sampleRate': active_samplerate(),
+                **({'gapSec': row_gap_sec(it.get('text'))}
+                   if door == FOR_STREAM else {}),
                 **({'guard': guard} if guard is not None else {}),
             })
 
@@ -1742,7 +1810,8 @@ class OrpheusStreamServer:
                 # keeps. It never goes on the ladder: there is no take to judge,
                 # and a Higgs render_audio refuses a blank chunk by name.
                 self._emit_batch_item(
-                    it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
+                    it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32),
+                    FOR_RENDER)
                 emitted.add(id(it))
                 continue
 
@@ -1777,12 +1846,13 @@ class OrpheusStreamServer:
             # 'No audio generated' item, never silence dressed as a success.
             # FOR_RENDER: this is the door Crucible's `tts` render job drives,
             # and behind it BookForge's narrator assembler realizes the
-            # manifest's gaps. A gap appended here would be a second one on
-            # every join of the book.
+            # manifest's gaps. A gap appended here - or STATED here, as `gapSec`
+            # - would be a second one on every join of the book.
             self._emit_batch_item(
                 it,
                 None if audio is None or len(audio) == 0
                 else finalize_audio(audio, FOR_RENDER),
+                FOR_RENDER,
                 guard=verdict)
             if self._is_cancelled():
                 # CANCELLABLE, BETWEEN CHUNKS. `render_many` is a generator, so
@@ -1867,6 +1937,11 @@ class OrpheusStreamServer:
                     # anything else, per row, which is the whole point of
                     # calling it here.
                     self._resolve_row(it)
+                    # And the gap this row will state. Checked HERE, before
+                    # anything renders, because `row_gap_sec` refuses a row whose
+                    # gap LEADS and this door has no channel for one - a refusal
+                    # discovered at emit time would abandon the rows behind it.
+                    row_gap_sec(it.get('text'))
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
                     emitted.add(pos)
@@ -1909,7 +1984,8 @@ class OrpheusStreamServer:
                 if len(group) == 1 and not cleaned[group[0]]:
                     pos = group[0]
                     self._emit_batch_item(
-                        items[pos], np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
+                        items[pos], np.zeros(int(active_samplerate() * 0.05), dtype=np.float32),
+                        FOR_STREAM)
                     emitted.add(pos)
                     continue
 
@@ -1954,7 +2030,7 @@ class OrpheusStreamServer:
                         # MLX grouping - and Orpheus's audiobooks are rendered
                         # by the legacy e2a layer, not by this worker.
                         audio = finalize_audio(a, FOR_STREAM)
-                    self._emit_batch_item(items[p], audio)
+                    self._emit_batch_item(items[p], audio, FOR_STREAM)
                     emitted.add(p)
 
                 try:
@@ -2025,20 +2101,24 @@ class OrpheusStreamServer:
         Wire shape, per streamed row i:
             {type:'batch_chunk', i, seq, format:'pcm16', data, duration, sampleRate}
             ... in seq order from 0 ...
-            {type:'batch_item',  i, streamed:true, duration, chunks}    # no data
+            {type:'batch_item',  i, streamed:true, duration, chunks, gapSec}  # no data
         A failed/cancelled row is the ordinary {type:'batch_item', i, message} and
         the client throws away whatever chunks it already had. Non-streamed rows in
         the same batch keep the exact per-item shape _emit_batch_item has always
         sent, so a mixed batch needs nothing new on the client.
 
         WHAT IS NOT DONE TO STREAMED AUDIO. finalize_audio trims the leading/trailing
-        silence, peak-normalizes and appends the inter-sentence gap - all decisions
-        about a whole waveform, and by the time the last chunk exists the first has
-        already been PLAYED. So streamed chunks go out raw and unretouched, and the
-        only piece of finalize_audio that can still be honoured is the gap: it is
-        emitted as one final silent chunk after the row's audio. For the same reason
-        a streamed row is never re-rendered: the engine logs the truncation guard's
-        verdict and the audio stands.
+        silence and peak-normalizes - both decisions about a whole waveform, and by
+        the time the last chunk exists the first has already been PLAYED. So streamed
+        chunks go out raw and unretouched. For the same reason a streamed row is
+        never re-rendered: the engine logs the truncation guard's verdict and the
+        audio stands.
+
+        THE GAP IS NOT AUDIO HERE, WHICH IS WHY THIS ARM NEEDS NO SPECIAL CASE FOR
+        IT ANY MORE. It used to be a flat 0.3 s appended by finalize_audio, and the
+        only way to honour that on audio already in flight was one final all-silent
+        chunk. The player inserts `classify_gap`'s answer for the row now, so the
+        number rides the terminal record above and no chunk is invented for it.
 
         ORPHEUS's retake ladder and truncation guard for NON-streamed rows live
         inside generate_batch_stream (that is what "exactly as today" means for
@@ -2103,6 +2183,10 @@ class OrpheusStreamServer:
             for pos, it in enumerate(items):
                 try:
                     voice, rung, take = self._resolve_row(it)
+                    # And the gap this row will state, refused HERE if it leads -
+                    # before the engine has rendered anything - so a row this
+                    # door cannot carry costs nothing and fails on its own.
+                    row_gap_sec(it.get('text'))
                 except Exception as e:
                     if _claim(pos):
                         send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
@@ -2115,7 +2199,8 @@ class OrpheusStreamServer:
                     # for, so it is answered immediately and dropped from the batch.
                     if _claim(pos):
                         self._emit_batch_item(
-                            it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
+                            it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32),
+                            FOR_STREAM)
                     continue
                 positions.append((pos, cleaned, voice, rung, take))
 
@@ -2176,14 +2261,15 @@ class OrpheusStreamServer:
                 if not streamed:
                     # FOR_STREAM: fast start is a Listen door end to end - this
                     # is the read-ahead row behind the one being played, and the
-                    # player joins it to its neighbours. The STREAMED rows take
-                    # the gap below instead; the two are exclusive per row,
-                    # which is why neither can double the other.
+                    # player joins it to its neighbours. Both arms state the gap
+                    # on their terminal record and neither appends silence, so
+                    # the two cannot double one another.
                     if _claim(pos):
                         self._emit_batch_item(
                             items[pos],
                             None if audio is None or len(audio) == 0
-                            else finalize_audio(audio, FOR_STREAM))
+                            else finalize_audio(audio, FOR_STREAM),
+                            FOR_STREAM)
                     return
                 total = 0.0 if audio is None else len(audio) / active_samplerate()
                 with state_lock:
@@ -2196,24 +2282,21 @@ class OrpheusStreamServer:
                         send_response('batch_item',
                                       {'i': items[pos].get('i'), 'message': 'No audio generated'})
                     return
-                # The inter-sentence gap `finalize_audio(..., FOR_STREAM)` would
-                # have appended, sent as the row's LAST chunk (see the
-                # docstring): the only part of finalization that can still be
-                # applied to audio already in flight. THE ROW'S ONLY GAP - a
-                # streamed row's chunks never went through finalize_audio, and
-                # the branch above returned before this line for one that did.
-                if STREAM_GAP_SEC > 0:
-                    gap = np.zeros(int(active_samplerate() * STREAM_GAP_SEC), dtype=np.float32)
-                    on_chunk(row, sent, gap)
-                    total += STREAM_GAP_SEC
-                    with state_lock:
-                        sent = chunk_counts.get(pos, 0)
+                # THE GAP IS A NUMBER ON THIS RECORD, not a chunk of silence.
+                # It used to ride as one final all-silent chunk, because a flat
+                # 0.3 s was the only part of `finalize_audio` that could still be
+                # applied to audio already in flight; now the player inserts
+                # `classify_gap`'s answer for the row itself, so there is nothing
+                # left to send as audio. `duration` therefore measures the SPEECH
+                # this row delivered - what the chunks add up to - and the gap
+                # that follows it is stated separately.
                 if _claim(pos):
                     send_response('batch_item', {
                         'i': items[pos].get('i'),
                         'streamed': True,
                         'duration': total,
                         'chunks': sent,
+                        'gapSec': row_gap_sec(items[pos].get('text')),
                     })
 
             try:
@@ -2323,10 +2406,21 @@ class OrpheusStreamServer:
             # this engine (or this backend) cannot serve. A single unservable voice
             # must not sink the batch: the rest are ordinary sentences in a voice that
             # is right there.
+            # WHICH DOOR THIS BATCH IS, decided once and from the same fact that
+            # picks the arm below: an engine that guards its own batch is the one
+            # Crucible's `tts` render job drives (an assembler follows it), and
+            # everything else on this path is Listen (a player follows it). The
+            # arms already said so in prose; the gap field needs it as a value.
+            door = FOR_RENDER if _guards_its_own_batch(self.orph) else FOR_STREAM
             rows = []   # (item, normalized text, voice token, sampling, take)
             for it in items:
                 try:
                     v, rung, take = self._resolve_row(it)
+                    if door == FOR_STREAM:
+                        # Refused before anything renders: `row_gap_sec` rejects a
+                        # row whose gap LEADS, which this door cannot carry, and a
+                        # refusal raised at emit time would abandon its neighbours.
+                        row_gap_sec(it.get('text'))
                 except Exception as e:
                     send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
                     emitted.add(id(it))
@@ -2334,7 +2428,7 @@ class OrpheusStreamServer:
                 rows.append((it, normalize_for_tts(it.get('text', ''), language),
                              v, rung, take))
 
-            if rows and _guards_its_own_batch(self.orph):
+            if rows and door == FOR_RENDER:
                 # THE GUARDED ARM (Owen's ruling, 2026-09-13). An engine that
                 # offers `render_many` runs its own PaceTracker, re-roll and split
                 # ladder over the whole batch and yields each chunk with the
@@ -2351,16 +2445,11 @@ class OrpheusStreamServer:
                     [k for _, _, _, _, k in rows])
                 for (it, _text, _v, _g, _k), audio in zip(rows, audios):
                     emitted.add(id(it))
-                    if audio is None or len(audio) == 0:
-                        send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
-                    else:
-                        send_response('batch_item', {
-                            'i': it.get('i'),
-                            'format': 'pcm16',
-                            'data': audio_to_pcm16_base64(audio),
-                            'duration': len(audio) / active_samplerate(),
-                            'sampleRate': active_samplerate(),
-                        })
+                    # Through the ONE emitter, which is also where `gapSec` is
+                    # attached. This arm used to write the same five fields out
+                    # by hand - a second copy of the per-item shape, which is how
+                    # a field lands on three arms and not on the fourth.
+                    self._emit_batch_item(it, audio, door)
         except Exception as e:
             import traceback
             traceback.print_exc(file=sys.stderr)
@@ -2420,6 +2509,7 @@ class OrpheusStreamServer:
             check_language(language)
             rung = self._item_rung(sampling, 'generate')
             rung_take = self._item_take(take, 'generate')
+            raw_text = text
             text = normalize_for_tts(text, language)
             audio = self._generate_audio(text, voice, sampling=rung,
                                          take=rung_take)
@@ -2428,6 +2518,12 @@ class OrpheusStreamServer:
                 return
             duration = len(audio) / active_samplerate()
             data = audio_to_pcm16_base64(audio)
+            # ONE LISTEN SENTENCE, so the Listen contract in full: bare speech,
+            # and the gap the player must insert after it stated on the row's
+            # TERMINAL record - `done` when this is a stream, `audio` when it is
+            # not. Computed from the text as it arrived, before `normalize_for_tts`
+            # rewrote its numbers (see `row_gap_sec`).
+            gap_sec = row_gap_sec(raw_text)
             if stream:
                 # Whole sentence as a single chunk, then the stream terminator -
                 # satisfies the scheduler's streaming-first-sentence contract.
@@ -2442,6 +2538,7 @@ class OrpheusStreamServer:
                     'duration': duration,
                     'chunks': 1,
                     'cancelled': False,
+                    'gapSec': gap_sec,
                 })
             else:
                 send_response('audio', {
@@ -2449,6 +2546,7 @@ class OrpheusStreamServer:
                     'data': data,
                     'duration': duration,
                     'sampleRate': active_samplerate(),
+                    'gapSec': gap_sec,
                 })
         except Exception as e:
             import traceback

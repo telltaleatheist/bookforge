@@ -1887,7 +1887,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
         this.audioPlayer.addChunk(event.sentenceIndex!, event.data!, event.sampleRate ?? 24000);
         break;
       case 'done':
-        this.audioPlayer.markSentenceDone(event.sentenceIndex!);
+        // The row's own pause travels with its retirement - see markSentenceDone.
+        this.audioPlayer.markSentenceDone(event.sentenceIndex!, event.gapSec!);
         break;
       case 'failed':
         console.warn('[PlayView] Sentence failed:', event.sentenceIndex, event.error);

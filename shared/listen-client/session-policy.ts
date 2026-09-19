@@ -45,12 +45,20 @@
  *     Background read-ahead never ramps — full batches are the entire point
  *     there.
  *
- * Event shapes (unchanged — three surfaces and a browser extension parse them):
+ * Event shapes (three surfaces and a browser extension parse them):
  *   {kind:'chunk',    requestId, sentenceIndex, seq, data, duration, sampleRate}
- *   {kind:'done',     requestId, sentenceIndex, duration}
+ *   {kind:'done',     requestId, sentenceIndex, duration, gapSec}
  *   {kind:'failed',   requestId, sentenceIndex, error}
  *   {kind:'complete', requestId}
  *   {kind:'cancelled',requestId}
+ *
+ * `gapSec` is the silence the CLIENT inserts after that row (Owen, 2026-09-18).
+ * The audio is bare speech and this is the whole of the pause before the next
+ * row — narrator's own `classify_gap` answer for the row's text, which is the
+ * number an audiobook of the same sentence is assembled with. It rides `done`
+ * and never `chunk`: the gap follows the row's last sample, a `done` happens
+ * exactly once per row, and a copy on every chunk would be one number with many
+ * owners again.
  *
  * A row normally emits ONE chunk (seq 0) and then its `done`. A fast-start
  * session emits several while it generates, then a `done` with NO further
@@ -75,6 +83,15 @@ export interface ListenRowResult<Data> {
   streamed?: boolean;
   /** Seconds delivered, for a streamed row. */
   duration?: number;
+  /**
+   * SECONDS OF SILENCE THE CLIENT MUST INSERT AFTER THIS ROW. Required on a
+   * successful row: the generator's audio is bare speech and this is the whole
+   * of the pause before the next one — narrator's classification of the row's
+   * own text, the same number an audiobook of it would be assembled with. A
+   * generator that returns a success without it is refused by name in
+   * `dispatch` rather than paced by a constant this layer invented.
+   */
+  gapSec?: number;
   error?: string;
 }
 
@@ -394,15 +411,41 @@ export class ListenSessions<Data, Settings> {
       .then((result) => {
         if (isStale()) return;
         s.inFlight.delete(sentenceIndex);
+        // THE GAP RIDES THE `done`, and a success without one never reaches the
+        // client. The generator's audio is bare speech, so this number is the
+        // entire pause between two rows; defaulting it here would put a pacing
+        // decision in the scheduler, which is the one place that knows nothing
+        // about the voice. Checked before either success arm because both carry
+        // it (a streamed row and a buffered row differ only in when the audio
+        // went out, never in how it paces).
+        const gapSec = result.gapSec;
+        if (result.success && typeof gapSec !== 'number') {
+          this.log(`Sentence ${sentenceIndex} came back with no gap to pace it by `
+            + `(gapSec ${String(gapSec)}); refusing rather than inventing one`);
+          s.sink({
+            kind: 'failed',
+            requestId,
+            sentenceIndex,
+            error: 'the generator did not say how long the pause after this row is',
+          });
+          this.pump(s);
+          return;
+        }
         if (result.success && result.streamed) {
           // Fast start: the audio already went out chunk by chunk above, so the
           // ONLY thing left to say is that the row is finished. Emitting a seq-0
           // chunk here would deliver it a second time.
           const duration = result.duration || 0;
-          s.durations.set(sentenceIndex, duration);
-          s.sink({ kind: 'done', requestId, sentenceIndex, duration });
+          // THE BUFFER IS WHAT WILL BE PLAYED, gap included: the client inserts
+          // that silence into this row's audio, so a read-ahead window measured
+          // without it under-counts every row and generates further ahead than
+          // it was told to. Until the gap left the audio it was inside
+          // `duration` (narrator baked it in), so this keeps the arithmetic the
+          // lookahead has always done.
+          s.durations.set(sentenceIndex, duration + (gapSec as number));
+          s.sink({ kind: 'done', requestId, sentenceIndex, duration, gapSec });
         } else if (result.success && result.audio) {
-          s.durations.set(sentenceIndex, result.audio.duration);
+          s.durations.set(sentenceIndex, result.audio.duration + (gapSec as number));
           s.sink({
             kind: 'chunk',
             requestId,
@@ -412,7 +455,13 @@ export class ListenSessions<Data, Settings> {
             duration: result.audio.duration,
             sampleRate: result.audio.sampleRate,
           });
-          s.sink({ kind: 'done', requestId, sentenceIndex, duration: result.audio.duration });
+          s.sink({
+            kind: 'done',
+            requestId,
+            sentenceIndex,
+            duration: result.audio.duration,
+            gapSec,
+          });
         } else {
           this.log(`Sentence ${sentenceIndex} failed: ${result.error ?? '(no reason given)'}`);
           s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });

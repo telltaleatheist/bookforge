@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PYTHON_ROOT = os.path.dirname(os.path.dirname(_HERE))   # .../python
@@ -451,45 +452,27 @@ class ServeProtocolTest(_WorkerCase):
         last_chunk = max(i for i, m in enumerate(msgs) if m['type'] == 'batch_chunk')
         self.assertLess(last_chunk, first_terminal)
 
-    def test_fast_start_gap_chunk_is_the_last_one(self):
-        """finalize_audio's inter-sentence gap cannot be applied to audio already
-        in flight, so it rides as one final silent chunk. Its duration is
-        ORPHEUS_STREAM_GAP and it is the highest seq of the row."""
-        self.w.close()
-        self.w = Worker(extra_env={'ORPHEUS_STREAM_GAP': '0.5'})
-        self._ready()
-        self._load()
-        self.w.send(action='generate_batch',
-                    items=[{'i': 7, 'text': 'A streamed row.', 'stream': True}])
-        msgs = self.w.read_until('batch_done')
-        chunks = [m for m in msgs if m['type'] == 'batch_chunk']
-        self.assertGreaterEqual(len(chunks), 2)
-        self.assertAlmostEqual(chunks[-1]['duration'], 0.5, places=3)
+    def test_both_listen_arms_state_the_gap_and_append_no_silence(self):
+        """THE PLAYER REALIZES THE GAP, so narrator sends the NUMBER and bare
+        speech (Owen, 2026-09-18: "yes, it paces like the book... maybe the
+        browser extension should handle the gaps for itself"). On the stream
+        there is no assembler but the player, and the RULE stays narrator's -
+        `text/gaps.classify_gap`, the same call prep makes for the book.
 
-    def test_the_listen_doors_keep_exactly_one_gap(self):
-        """ON THE STREAM THERE IS NO ASSEMBLER, so `finalize_audio` IS the
-        assembler and the 0.3 s gap stays (Owen, 2026-09-18: the gap belongs to
-        whoever assembles, and here that is this worker). The extension's
-        offscreen player and BookForge's reader-audio-store concatenate rows and
-        add no per-sentence silence of their own.
+        Both of fast start's arms are in this one batch and neither may pad:
 
-        EXACTLY ONE, which is the half a keeper has to say out loud. Both of
-        fast start's arms appear in this one batch and each must append the gap
-        once:
+          row 7   streams, so its audio left as raw chunks. There is no final
+                  all-silent chunk any more - the gap is on its terminal record.
+          row 8   does not stream, so it goes out whole through `finalize_audio`,
+                  which appends nothing at either door now.
 
-          row 7   streams, so its audio left as raw chunks and the gap rides as
-                  one final all-silent chunk - if `finalize_audio` had also run
-                  over that audio the row would carry two;
-          row 8   does not stream, so it goes out whole through
-                  `finalize_audio` and ends in one gap's worth of zeros.
-
-        The counts are asserted against 0.5 s rather than the shipped 0.3 s so a
-        doubling is unmistakable, and because `ORPHEUS_STREAM_GAP` is the knob
-        that proves this door reads it at all - the render door must not.
+        `NARRATOR_SENTENCE_GAP` is the floor `classify_gap` reads - the voice's
+        inject, set the same way the prep door sets it - so a value nothing else
+        in this worker knows about proves the number came from that function and
+        not from a constant.
         """
-        gap_seconds = 0.5
-        gap_samples = int(24000 * gap_seconds)
-        self._worker_with_env({'ORPHEUS_STREAM_GAP': str(gap_seconds)})
+        gap_seconds = 0.42
+        self._worker_with_env({'NARRATOR_SENTENCE_GAP': str(gap_seconds)})
         self._ready()
         self._load()
         items = [{'i': 7, 'text': 'The row the listener is on.', 'stream': True},
@@ -501,19 +484,72 @@ class ServeProtocolTest(_WorkerCase):
         chunks = [m for m in msgs if m['type'] == 'batch_chunk']
         silent = [c for c in chunks
                   if trailing_zeros(pcm16(c['data'])) == len(pcm16(c['data']))]
-        self.assertEqual(len(silent), 1,
-                         'a streamed row carries exactly one gap chunk')
-        self.assertIs(silent[0], chunks[-1], 'and it is the last one')
-        self.assertEqual(len(pcm16(chunks[-1]['data'])), gap_samples)
+        self.assertEqual(len(silent), 0,
+                         'a streamed row still carries a silent gap chunk; the '
+                         'player inserts the gap now')
+        self.assertAlmostEqual(by_i[7]['gapSec'], gap_seconds, places=6)
         self.assertAlmostEqual(by_i[7]['duration'],
                                sum(c['duration'] for c in chunks), places=5)
 
-        buffered = pcm16(by_i[8]['data'])
-        zeros = trailing_zeros(buffered)
-        self.assertGreaterEqual(zeros, gap_samples,
-                                'the buffered Listen row lost its gap')
-        self.assertLess(zeros, 2 * gap_samples,
-                        'the buffered Listen row carries the gap twice')
+        self.assertAlmostEqual(by_i[8]['gapSec'], gap_seconds, places=6)
+        self.assertEqual(trailing_zeros(pcm16(by_i[8]['data'])), 0,
+                         'the buffered Listen row still ends in appended silence')
+
+    def test_the_gap_is_classify_gaps_own_answer_for_that_row(self):
+        """EQUAL TO THE BOOK'S, row by row, because it is the same function.
+
+        `[pause:2.5]` is the one thing that still moves `classify_gap`'s answer
+        (the paragraph and section tiers were removed on 2026-07-17), so a batch
+        of a plain sentence and a deliberate beat is the smallest pair that can
+        tell "narrator classified this row" from "narrator sent its floor".
+        Expected values are computed by CALLING `classify_gap_seconds` under the
+        same env the worker runs with - a number typed in here would be a second
+        copy of the rule.
+
+        The classic arm on purpose: no item streams, so this is the batch path
+        the extension's "buffer before playing" default takes.
+        """
+        from narrator.text.gaps import classify_gap_seconds
+        gap_seconds = 0.42
+        texts = {1: 'A bare sentence of prose.',
+                 2: 'A deliberate beat follows this. [pause:2.5]'}
+        with mock.patch.dict(os.environ,
+                             {'NARRATOR_SENTENCE_GAP': str(gap_seconds)}):
+            expected = {i: classify_gap_seconds(t)[1] for i, t in texts.items()}
+        self.assertNotEqual(expected[1], expected[2], expected)
+
+        self._worker_with_env({'NARRATOR_SENTENCE_GAP': str(gap_seconds)})
+        self._ready()
+        self._load()
+        self.w.send(action='generate_batch',
+                    items=[{'i': i, 'text': t} for i, t in sorted(texts.items())])
+        by_i = self._assert_batch_closed(self.w.read_until('batch_done'), [1, 2])
+        for i in texts:
+            self.assertAlmostEqual(by_i[i]['gapSec'], expected[i], places=6,
+                                   msg=f'row {i} did not get classify_gap\'s answer')
+
+    def test_a_row_whose_gap_leads_is_refused_by_name(self):
+        """THERE IS NO CHANNEL FOR A LEAD GAP ON THIS DOOR, and half an answer
+        delivered silently is the shape this whole fix removes.
+
+        `classify_gap` returns a non-zero LEAD only for a chunk that starts with
+        an explicit `[pause:X]`; a heading returns `(0.0, floor)` like everything
+        else. A lead has to be realized BEFORE the row's first sample, and on a
+        fast-start row that sample has already been played by the time any
+        terminal record arrives - so the row is failed BY NAME, on its own,
+        rather than shipped with its opening beat dropped.
+        """
+        self._ready()
+        self._load()
+        items = [{'i': 0, 'text': '[pause:3.0] After a long beat.'},
+                 {'i': 1, 'text': 'Its neighbour is untouched.'}]
+        self.w.send(action='generate_batch', items=items)
+        by_i = self._assert_batch_closed(self.w.read_until('batch_done'), [0, 1])
+        self.assertTrue('data' not in by_i[0],
+                        'the leading-pause row rendered instead of being refused')
+        self.assertIn('lead', by_i[0].get('message', ''))
+        self.assertIn('[pause:', by_i[0].get('message', ''))
+        self.assertTrue('data' in by_i[1], 'the neighbour must render normally')
 
     # ---- 9, 10 --------------------------------------------------------------
 
@@ -692,24 +728,33 @@ class GuardedBatchTest(_WorkerCase):
         every voice.
 
         MEASURED TWO WAYS, because one of them alone could pass by accident.
-        A row rendered with a 0.5 s stream gap configured must be BYTE-FOR-BYTE
-        the row rendered with none - this door does not read that number at all
-        - and its audio must not end in silence, since the fake's tone runs to
+        A row rendered with a sentence gap configured must be BYTE-FOR-BYTE the
+        row rendered with none - the gap reaches a rendered chunk through
+        `gaps.json`, written at prep, and nothing at render time may anticipate
+        it - and its audio must not end in silence, since the fake's tone runs to
         the last sample it decoded.
+
+        AND IT CARRIES NO `gapSec`. That field is the LISTEN door's statement to
+        a player that has no assembler behind it; on this door the assembler
+        realizes `gaps.json`, and a second number on the wire would be a second
+        owner of the same silence.
         """
         items = [{'i': 0, 'text': 'The chunk a remote render asks narrator for.'}]
-        self._worker_with_env({'ORPHEUS_STREAM_GAP': '0.5'})
+        self._worker_with_env({'NARRATOR_SENTENCE_GAP': '0.5'})
         padded = self._higgs_batch(items)[0]
-        self._worker_with_env({'ORPHEUS_STREAM_GAP': '0'})
+        self._worker_with_env({'NARRATOR_SENTENCE_GAP': '0'})
         bare = self._higgs_batch(items)[0]
 
         self.assertEqual(trailing_zeros(pcm16(padded['data'])), 0,
                          'the render door appended silence the assembler will '
                          'append again')
         self.assertEqual(padded['data'], bare['data'],
-                         'ORPHEUS_STREAM_GAP changed a RENDERED row; the stream '
-                         'gap is the Listen door\'s and this door must not read it')
+                         'NARRATOR_SENTENCE_GAP changed a RENDERED row; the gap '
+                         'is realized by the assembler from gaps.json and this '
+                         'door must not anticipate it')
         self.assertAlmostEqual(padded['duration'], bare['duration'], places=9)
+        self.assertTrue('gapSec' not in padded,
+                        'the render door stated a gap the assembler also owns')
 
     def test_a_bent_chunk_reports_its_reroll(self):
         """One bad take, then a good one: the ladder re-rolls and the verdict says

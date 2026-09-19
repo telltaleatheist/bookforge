@@ -545,6 +545,15 @@ const SUITES = [
   // the imports. It also compares the one number the shared file could not
   // import: the Crucible read-ahead depth against the local pool's ramp width.
   'test-listen-text-one-source',
+  // AND THE PACING, which was the same shape one layer down: narrator appended a
+  // flat 0.3 s to every streamed row while each player added 0.5 s at the end of
+  // a block and a book assembled the same sentences at 0.6 s or the voice's
+  // measured inject. narrator states the gap it classified now and the player
+  // inserts exactly that (Owen, 2026-09-18). This pins the relay end to end —
+  // the SDK frame, the scheduler event, the served WAV — and the boundary math
+  // in BOTH players' own source, because a gap outside a row's boundary is a
+  // highlight that walks away from the voice with nothing thrown.
+  'test-listen-gap-realized',
   // And the two columns of the plan's table (§0), by name. The left one has to
   // be present in the extension before BookForge's TTS server button can go;
   // the right one has to stay absent, which is the half that rots, because a

@@ -166,17 +166,51 @@ export class AudioPlayerService {
     this.maybeStartOrResume();
   }
 
-  /** A sentence finished generating - release it (and any complete followers). */
-  markSentenceDone(sentenceIndex: number): void {
-    const pending = this.pendingSentences.get(sentenceIndex);
-    if (pending) {
-      pending.done = true;
-    } else {
-      // Done with no chunks (shouldn't happen) - record as empty so ordering advances
-      this.pendingSentences.set(sentenceIndex, { chunks: [], appendedCount: 0, done: true });
+  /**
+   * A sentence finished generating - release it (and any complete followers),
+   * with the silence that belongs after it.
+   *
+   * `gapSec` IS THE PAUSE, and this player has none of its own (Owen,
+   * 2026-09-18). The audio on the wire is bare speech: narrator classifies the
+   * gap for the row's own text - `text/gaps.classify_gap`, the same call that
+   * writes a book's `gaps.json` - and every Listen surface inserts exactly that,
+   * so the Play tab paces a paragraph the way the audiobook of it does. It is
+   * appended as a silent buffer UNDER THE SAME sentence index, which is what
+   * keeps "which sentence is playing" pointing at the row that just spoke while
+   * its pause runs.
+   *
+   * Refused by name rather than defaulted: a number invented here is heard at
+   * every sentence boundary of the read.
+   */
+  markSentenceDone(sentenceIndex: number, gapSec: number): void {
+    if (typeof gapSec !== 'number' || !Number.isFinite(gapSec) || gapSec < 0) {
+      throw new Error(
+        `sentence ${sentenceIndex} finished with gapSec ${String(gapSec)}. Listen paces from `
+        + "narrator's own classification of the row and this player has no default to use.",
+      );
     }
+    let pending = this.pendingSentences.get(sentenceIndex);
+    if (!pending) {
+      // Done with no chunks (shouldn't happen) - record as empty so ordering advances
+      pending = { chunks: [], appendedCount: 0, done: false };
+      this.pendingSentences.set(sentenceIndex, pending);
+    }
+    const silence = this.silenceOf(gapSec);
+    if (silence) {
+      pending.chunks.push(silence);
+      this.bufferedAudioSec += silence.duration;
+    }
+    pending.done = true;
     this.flushReadySentences();
     this.maybeStartOrResume();
+  }
+
+  /** `seconds` of silence at the context's rate, or null when there is no
+   *  context to make one in (nothing is playing, so nothing needs pacing). */
+  private silenceOf(seconds: number): AudioBuffer | null {
+    if (!this.audioContext || seconds <= 0) return null;
+    const rate = this.audioContext.sampleRate;
+    return this.audioContext.createBuffer(1, Math.max(1, Math.round(seconds * rate)), rate);
   }
 
   /** A sentence failed - skip it so playback ordering can continue. */

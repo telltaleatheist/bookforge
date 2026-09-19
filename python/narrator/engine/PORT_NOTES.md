@@ -571,7 +571,7 @@ changes name, meaning, default or precedence.** Grouped by who reads them:
 | `ORPHEUS_VLLM_DTYPE` | same | unchanged |
 | `ORPHEUS_BACKEND` | `engine._detect_backend` | unchanged (the new `EngineConfig.backend` is `None` from every spawn) |
 | `ORPHEUS_STREAM_BATCH`, `ORPHEUS_STREAM_RAMP`, `ORPHEUS_STREAM_WARM_MAX` | `serve/worker.py` (`_warmup`, `_generate_batch_mlx_ordered`) | unchanged |
-| `ORPHEUS_STREAM_GAP` | `serve/worker.py` (`finalize_audio`, the fast-start tail chunk) | unchanged |
+| `ORPHEUS_STREAM_GAP` | `serve/worker.py` (`finalize_audio`, the fast-start tail chunk) | **DELETED 2026-09-18.** The Listen stream carries bare speech and states the gap it classified (`gapSec`, from `text/gaps.classify_gap`); the PLAYER inserts it, so there is no flat pad and no variable for one |
 | `ORPHEUS_SKIP_WARMUP` | `serve/worker.py:_warmup` | unchanged |
 | `ORPHEUS_MLX_CACHE_LIMIT_GB`, `ORPHEUS_MLX_MEM_BUDGET_GB` | `mlx_backend` | unchanged |
 | `ORPHEUS_MLX_MAX_TOKENS`, `ORPHEUS_MLX_REP_WINDOW`, `ORPHEUS_MLX_DECODE_OVERLAP`, `ORPHEUS_MLX_CONTINUOUS`, `ORPHEUS_MLX_CONTINUOUS_POOL`, `ORPHEUS_MLX_CONTINUOUS_PREFILL`, `ORPHEUS_MLX_FASTPATH` | `config.py` / `mlx_backend` | unchanged |
@@ -1661,12 +1661,18 @@ retirement, then `on_row`.
 TWO LAYERS, AND AN EARLIER DRAFT OF THIS NOTE CONFLATED THEM (caught in review:
 13.6's smoke logged TWO `batch_chunk` messages for one streamed row while this
 section said one). Both are right about their own layer. The ENGINE emits ONE
-`on_chunk` per streamed row. The WORKER then appends the inter-sentence gap as
-that row's LAST chunk - `serve/worker.py`'s `on_row` does
-`on_chunk(row, sent, gap)` when `STREAM_GAP_SEC > 0`, because a 0.3 s gap is the
-only part of `finalize_audio` that can still be applied to audio already in
-flight (PORT_NOTES 12.10). So the WIRE carries `audio, gap, batch_item` for a
-streamed row, and the engine's contract is unchanged.
+`on_chunk` per streamed row. The WORKER then appended the inter-sentence gap as
+that row's LAST chunk - `serve/worker.py`'s `on_row` did
+`on_chunk(row, sent, gap)` when `STREAM_GAP_SEC > 0`, because a 0.3 s gap was the
+only part of `finalize_audio` that could still be applied to audio already in
+flight (PORT_NOTES 12.10). So the WIRE carried `audio, gap, batch_item` for a
+streamed row, and the engine's contract was unchanged.
+
+**THAT EXTRA CHUNK IS GONE (2026-09-18) AND THE TWO LAYERS NOW AGREE.** The gap
+is a NUMBER on the row's terminal record (`gapSec`, `text/gaps.classify_gap`'s
+answer for that row - the same call `text/prep.py` makes for a book), realized by
+the player, so the wire carries `audio, batch_item` and the worker emits exactly
+the chunks the engine did.
 
 `codec().streaming_decoder()` returns None. A
 delay-pattern codec's window is incomplete in its last 7 frames by construction,

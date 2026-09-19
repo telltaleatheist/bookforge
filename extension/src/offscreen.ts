@@ -231,11 +231,19 @@ const FAST_START_MIN_SECONDS = 1.0;
 // bounded read-ahead, so raising or lowering this is a decision about compute, not RAM.
 const PREFETCH_LOOKAHEAD_SECONDS = 600;
 const SEEK_STEP_GRACE = 0.05;
-// Blocks are paragraphs (p / li / heading / blockquote …). Append this much silence
-// to the end of each block's audio so paragraphs get a real pause between them
-// instead of running together — on top of the engine's own intra-sentence gap. Part
-// of the block's cached audio, so replays/seeks keep the pacing. 0 disables.
-const PARAGRAPH_GAP_SECONDS = 0.5;
+// THE PAUSE AFTER A ROW IS NOT A CONSTANT HERE ANY MORE (Owen, 2026-09-18: "yes,
+// it paces like the book... maybe the browser extension should handle the gaps for
+// itself"). It was PARAGRAPH_GAP_SECONDS = 0.5, appended once at the end of a block
+// and declared identically in BookForge's own player — while the sentences INSIDE a
+// block were separated by the flat 0.3 s narrator baked into its audio, and a book
+// of the same text was assembled at 0.6 s or at the voice's measured inject. Three
+// numbers for one silence, none of them the book's.
+//
+// narrator sends bare speech now and states the gap it classified for each row
+// (`gapSec` on that row's `done`, `text/gaps.classify_gap` — the same call that
+// writes a book's gaps.json). This document inserts exactly that, after each row's
+// audio and inside the block's own boundaries, so a paragraph read here paces the
+// way the audiobook does and a seek still lands where the highlight says.
 const STATUS_INTERVAL_MS = 300;
 // A blob reload at a sentence boundary briefly ends/pauses the <audio> element.
 // Reporting 'buffering' for those sub-second gaps makes the transport flicker at
@@ -245,7 +253,14 @@ const BUFFERING_GRACE_MS = 450;
 
 // ─── PCM assembly ─────────────────────────────────────────────────────────────
 
-interface Slot { chunks: Uint8Array[]; done: boolean; }
+interface Slot {
+  chunks: Uint8Array[];
+  done: boolean;
+  /** Seconds of silence this row states must follow it, from its `done`. Null
+   *  until the row retires — and never null after, because the scheduler refuses
+   *  a row that finished without one. */
+  gapSec: number | null;
+}
 
 class Session {
   requestId: string;
@@ -258,7 +273,6 @@ class Session {
   cursorSeq = 0;
   complete = false;
   generationDone = false;
-  gapAppended = false;
   note: string | null = null;
   /** Sentences [0, resumeFrom) came from a cached PARTIAL render — their audio is
    *  already in `segments`, and the server was asked to generate only from here
@@ -298,15 +312,36 @@ class Session {
 
   initSlots(sentences: string[]): void {
     this.sentences = sentences;
-    this.slots = sentences.map((_, i) => ({ chunks: [], done: i < this.resumeFrom }));
+    // A row from the cached prefix is already DONE and its gap is already inside
+    // the audio that came back with it, so it has nothing left to insert.
+    this.slots = sentences.map((_, i) => ({
+      chunks: [], done: i < this.resumeFrom, gapSec: i < this.resumeFrom ? 0 : null,
+    }));
   }
   addChunk(i: number, seq: number, bytes: Uint8Array): void {
     let slot = this.slots[i];
-    if (!slot) { slot = { chunks: [], done: false }; this.slots[i] = slot; }
+    if (!slot) { slot = { chunks: [], done: false, gapSec: null }; this.slots[i] = slot; }
     slot.chunks[seq] = bytes;
   }
-  markDone(i: number): void { const s = this.slots[i]; if (s) s.done = true; }
-  markFailed(i: number): void { const s = this.slots[i]; if (s) { s.chunks = []; s.done = true; } }
+  /** A row retired, with the silence narrator says follows it. Refused by name
+   *  rather than defaulted: the audio is bare, so a number invented here is heard
+   *  at every sentence boundary of the read. */
+  markDone(i: number, gapSec: number): void {
+    if (typeof gapSec !== 'number' || !Number.isFinite(gapSec) || gapSec < 0) {
+      throw new Error(
+        `row ${i} retired with gapSec ${String(gapSec)}. Listen paces from narrator's own `
+        + 'classification of the row and this player has no default to use instead.',
+      );
+    }
+    const s = this.slots[i];
+    if (s) { s.done = true; s.gapSec = gapSec; }
+  }
+  /** A row the server refused. It contributes no audio AND no pause: there is no
+   *  sentence there to pause after. */
+  markFailed(i: number): void {
+    const s = this.slots[i];
+    if (s) { s.chunks = []; s.done = true; s.gapSec = 0; }
+  }
 
   drain(): void {
     while (this.appendCursor < this.slots.length) {
@@ -319,6 +354,28 @@ class Session {
         this.cursorSeq++;
       }
       if (slot.done && this.cursorSeq >= slot.chunks.length) {
+        // THE ROW'S OWN PAUSE, INSIDE ITS BOUNDARY. `boundaries[i + 1]` is taken
+        // after the silence, so a playhead sitting in the gap still maps to the
+        // row that was speaking (`sentenceAt`), and a seek to row i + 1 starts on
+        // its first sample rather than in the pause before it. A gap counted
+        // outside the boundary would drift the highlight by its own length at
+        // every row.
+        if (slot.gapSec === null) {
+          // Unreachable by construction - `markDone` and `markFailed` are the
+          // only ways a slot becomes done and both state a gap - so it is named
+          // rather than defaulted: a 0 substituted here would run two sentences
+          // together and nothing would say which number was missing.
+          throw new Error(
+            `row ${this.appendCursor} is finished but stated no gap; the pause after a row `
+            + "is narrator's own classification of it and this player invents none.",
+          );
+        }
+        const gap = Math.floor(slot.gapSec * BYTES_PER_SECOND);
+        const even = gap - (gap % 2);   // PCM16 = 2 bytes/sample, keep aligned
+        if (even > 0) {
+          this.segments.push(new Uint8Array(even));
+          this.bytes += even;
+        }
         this.appendCursor++;
         this.cursorSeq = 0;
         this.boundaries[this.appendCursor] = this.bytes;
@@ -444,7 +501,6 @@ function sessionFromCache(requestId: string, cached: CacheEntry): Session {
   s.resumeFrom = cached.complete ? 0 : cached.renderedCount;
   s.complete = cached.complete;
   s.generationDone = cached.complete;
-  s.gapAppended = cached.complete; // the trailing paragraph pause is already in there
   s.initSlots(cached.sentences);
   return s;
 }
@@ -1091,12 +1147,19 @@ const crucibleGenerator: ListenGeneratorPort<Uint8Array, ReadSettings> = {
       return { success: false, error: describeRefusal(err, server?.name ?? '?') };
     }
     if (!outcome.success) return { success: false, error: outcome.error };
+    // THE ROW'S PAUSE COMES BACK WITH ITS AUDIO and is passed straight through:
+    // `crucible-rows.ts` has already refused a successful row that arrived
+    // without one, and the policy refuses a success this layer returns without
+    // one, so nothing here has a default to reach for.
     if (outcome.streamed === true) {
-      return { success: true, streamed: true, duration: outcome.seconds ?? 0 };
+      return {
+        success: true, streamed: true, duration: outcome.seconds ?? 0, gapSec: outcome.gapSec,
+      };
     }
     console.debug('[BFR] row', id, 'sentence', sentenceIndex, 'done');
     return {
       success: true,
+      gapSec: outcome.gapSec,
       audio: {
         data: pcm16ToBytes(outcome.pcm as Int16Array),
         duration: outcome.seconds ?? 0,
@@ -1131,6 +1194,8 @@ type ListenEvent = {
   seq?: number;
   data?: Uint8Array;
   duration?: number;
+  /** On `done`: the silence this row states must follow it. See Session.markDone. */
+  gapSec?: number;
   error?: string;
 };
 
@@ -1294,7 +1359,8 @@ function handleListenEvent(msg: ListenEvent): void {
       afterData();
       return;
     case 'done':
-      session.markDone(msg.sentenceIndex as number);
+      // The row's pause travels with its retirement — see Session.markDone.
+      session.markDone(msg.sentenceIndex as number, msg.gapSec as number);
       session.drain();
       afterData();
       return;
@@ -1345,24 +1411,8 @@ function sameSentences(a: string[], b: string[]): boolean {
 function finishGeneration(success: boolean, note?: string): void {
   if (!session) return;
   session.generationDone = true;
-  if (success) { session.complete = true; appendParagraphGap(session); }
+  if (success) { session.complete = true; }
   if (note) session.note = note;
-}
-
-/**
- * Append a paragraph-length silence to a completed block's audio (once). Blocks are
- * paragraphs, so this gives a real pause before the next block plays. Added to the
- * segments after the last sentence's audio — beyond the per-sentence boundaries, so
- * sentence mapping/playhead are unaffected — and it travels into the cache with the
- * block, so a later replay/seek keeps the same pacing.
- */
-function appendParagraphGap(s: Session): void {
-  if (s.gapAppended || s.bytes === 0 || PARAGRAPH_GAP_SECONDS <= 0) return;
-  const n = Math.floor(PARAGRAPH_GAP_SECONDS * BYTES_PER_SECOND);
-  const silence = new Uint8Array(n - (n % 2)); // PCM16 = 2 bytes/sample, keep aligned
-  s.segments.push(silence);
-  s.bytes += silence.length;
-  s.gapAppended = true;
 }
 
 /**
@@ -1631,13 +1681,12 @@ function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: 
   const { session: s, item } = entry;
   switch (msg.kind) {
     case 'chunk': s.addChunk(msg.sentenceIndex as number, msg.seq as number, msg.data as Uint8Array); s.drain(); return;
-    case 'done': s.markDone(msg.sentenceIndex as number); s.drain(); return;
+    case 'done': s.markDone(msg.sentenceIndex as number, msg.gapSec as number); s.drain(); return;
     case 'failed': s.markFailed(msg.sentenceIndex as number); s.drain(); return;
     case 'complete':
       s.generationDone = true;
       s.complete = true;
       s.drain();
-      appendParagraphGap(s); // paragraph pause baked into the cached block
       retainSession(s, item);
       // This block is done and lives in the cache now; free the slot and keep the
       // read-ahead pipeline going on the next not-yet-ready block.
