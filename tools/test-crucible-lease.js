@@ -127,7 +127,7 @@ const { check, summary } = makeChecker();
         'the module\'s declared liveness ttl crossed, not a number invented per call');
       // The server records the User-Agent as the lease's `client`, which is what
       // a bench shows when it says whose run is on the card. A lease taken
-      // anonymously is a `model_leased` nobody can act on.
+      // anonymously is a `leased` nobody can act on.
       assert.match(taken.userAgent, /^bookforge crucible-client\//,
         'the holder names itself the way every other BookForge call does');
 
@@ -437,7 +437,7 @@ const { check, summary } = makeChecker();
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 6. 409 model_leased is a wait with a name
+  // 6. 409 leased is a wait with a name
   // ───────────────────────────────────────────────────────────────────────────
   const HELD = {
     leaseId: 'lease-held', client: 'foundry', act: 'translate', model: 'qwen3.5-27b',
@@ -517,7 +517,7 @@ const { check, summary } = makeChecker();
     }
   });
 
-  await check('a text act renders model_leased as a WAIT the queue can hold on', async () => {
+  await check('a text act renders leased as a WAIT the queue can hold on', async () => {
     const routes = leaseRoutes({ refuseLease: () => modelLeasedRefusal(HELD) });
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);

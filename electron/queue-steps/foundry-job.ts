@@ -258,7 +258,7 @@ export const foundryJobStep: StepModule = {
      * composer of one address, which is the defect this whole seam is about.
      *
      * NO LEASE HERE EITHER, AND IT IS NOT AN OMISSION. Crucible allows ONE
-     * lease per server and refuses a second by name (`409 model_leased`,
+     * lease per server and refuses a second by name (`409 leased`,
      * crucible `c5eb431`); the vendored dispatcher takes its own between making
      * the model resident and spawning, and releases it in the queue's settle.
      * A lease taken here would be refused, or would refuse theirs — either way
