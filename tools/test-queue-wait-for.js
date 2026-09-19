@@ -404,9 +404,17 @@ test('a busy server holds the row with the holder\'s line, and does not fail it'
   await settle();
   assert.strictEqual(firstStep(job.id).status, 'running');
 
-  // The submit came back 409. The step then throws, as a refused render does.
-  engine.noteStepBusy(firstStep(job.id).id, 'GPU busy: foundry, tts 62% done.');
-  gpu.runs[0].reject(new Error('server_busy: crucible "mac" takes one job at a time.'));
+  /*
+   * The submit came back 409, so the step throws the refusal — CARRYING THE
+   * HOLDER'S LINE, which is the whole of how a module says "this is a wait"
+   * since 2026-09-19 (A5). It used to be a side call into the engine
+   * (`noteStepBusy`) that four modules made and five forgot; `busyLineOf`
+   * reads the line off whatever was thrown, so every Crucible refusal class
+   * parks a row without the module remembering anything.
+   */
+  gpu.runs[0].reject(Object.assign(
+    new Error('server_busy: crucible "mac" takes one job at a time.'),
+    { busyLine: 'GPU busy: foundry, tts 62% done.' }));
   await settle();
 
   const step = firstStep(job.id);
@@ -431,8 +439,8 @@ test('the busy hold expires and the queue tries again on its own tick', async ()
   const job = enqueueSent(narrate('Retry'));
   engine.start();
   await settle();
-  engine.noteStepBusy(firstStep(job.id).id, 'GPU busy: foundry.');
-  gpu.runs[0].reject(new Error('server_busy'));
+  gpu.runs[0].reject(Object.assign(
+    new Error('server_busy'), { busyLine: 'GPU busy: foundry.' }));
   await settle(4);
   assert.strictEqual(firstStep(job.id).status, 'queued', 'the cool-off stands');
   assert.strictEqual(gpu.runs.length, 1);

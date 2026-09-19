@@ -253,7 +253,8 @@ function leaseUserAgent(): string {
  * to clients. A sleep loop in this module would be a queue with a policy nobody
  * chose; what a door does with the wait is the door's, every time. Where the
  * caller is a queue step the wait is rendered through the queue's own busy hold
- * (`leasedLine` → `noteStepBusy`), which is the same road `server_busy` already
+ * (`leasedLine` → `busyLine` on the step's own refusal), which is the same
+ * road `server_busy` already
  * travels — and since 2026-09-18 both refusal readers take that road, so a
  * `leased` parks a row instead of failing it.
  */

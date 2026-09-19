@@ -31,7 +31,7 @@ import { runRvcEnhancement, stopRvcEnhancement } from '../rvc-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { projectDirForStep, queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 import { runVenueOfRow } from '../crucible/step-venue';
 
 interface RvcProgressEvent {
@@ -181,7 +181,12 @@ export const rvcEnhancementStep: StepModule = {
       }, queueMainWindow());
 
       if (!result.success || !result.scratchDir) {
-        throw new Error(result.error || 'Voice enhancement failed and gave no reason.');
+        // A Crucible that would not take this conversion — its lane held, or
+        // its resident voice model leased by another client — is a WAIT, not a
+        // failure: `stepFailure` parks the row with the holder's line and the
+        // admission tick tries again (A5, 2026-09-19).
+        throw stepFailure(
+          result.error || 'Voice enhancement failed and gave no reason.', result.busyLine);
       }
       return {
         kind: 'sentences',

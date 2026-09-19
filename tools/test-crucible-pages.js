@@ -648,7 +648,7 @@ async function main() {
   // `withCruciblePagesLease` already refuses `409 leased` by name. What it did
   // NOT do was carry `busyLine`, and that is the whole difference between a
   // parked row and a red one: `settleStep` reads `busyLine` off the error to
-  // hold the row against that server (`queue-engine.ts`, `noteStepBusy`), and a
+  // hold the row against that server (`queue-engine.ts`, `busyLineOf`), and a
   // refusal without one is indistinguishable from "the conversion failed". Every
   // other Crucible reader carries it — `CrucibleRenderRefused`,
   // `CrucibleJobRefused`, `CrucibleTextActError` — from the SDK's own

@@ -513,7 +513,7 @@ function passConfig(kind, ai) {
   // ── 8. A TRAVELLED TRANSLATE THAT IS REFUSED A WAIT STAYS A WAIT ─────────
   //
   // `settleStep` parks a queue row against a server only when the failure
-  // carries `busyLine` (`queue-engine.ts`, `noteStepBusy`); without one the row
+  // carries `busyLine` (`queue-engine.ts`, `busyLineOf`); without one the row
   // reddens as though the book were broken. The translate path threw a
   // `CrucibleTextActError` that HAS the holder's line and then flattened it:
   // `runMonoTranslation`'s own outer catch rebuilt the answer as
@@ -523,8 +523,8 @@ function passConfig(kind, ai) {
   //
   // What this check owns is exactly that half — the throw reaching the
   // TranslationJobResult. Carrying it onward (`runTranslatePass` →
-  // `PassJobResult` → `pass.ts` → `noteStepBusy`) is four lines in files
-  // `fix/lease-park` owns and is NOT pinned here.
+  // `PassJobResult` → `pass.ts` → `stepFailure`) is pinned by
+  // `tools/test-queue-step-parks.js`, which drives every module's park.
   await check('a leased server\'s holder line survives runMonoTranslation\'s catch', async () => {
     const mono = require(path.join(DIST, 'mono-translation-job.js'));
     const textVenue = require(path.join(DIST, 'crucible', 'text-venue.js'));

@@ -16,6 +16,8 @@ import * as crypto from 'crypto';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import { extractChaptersFromEpub, type ChapterData } from './epub-processor.js';
 import { aiCallServer, findBestBreakPoint } from './ai-bridge.js';
+// The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
+import { busyLineOf } from './queue-steps/runtime';
 import type { AIProviderConfig } from './ai-bridge.js';
 import {
   commitAudiobookAnalysisReport,
@@ -91,6 +93,21 @@ export interface AnalysisResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * THE RUN DID NOT HAPPEN AND NOTHING IS WRONG — the one line that turns this
+   * failure into a WAIT.
+   *
+   * Present exactly when a Crucible refused because something else holds that
+   * card: `409 leased` (another client is mid-run on the model) or
+   * `409 server_busy` (its lane is held). It carries the holder in the SDK's
+   * own words.
+   *
+   * It exists so the QUEUE can park the row: `queue-steps/book-analysis.ts`
+   * hands it to `stepFailure` and `settleStep` puts the step back to `queued`
+   * with that line on it, rather than reddening a row nobody did anything
+   * wrong on (bug hunt 2026-09-19, A5).
+   */
+  busyLine?: string;
   flagCount?: number;
   contentSkipsDetected?: boolean;
   contentSkipsAffected?: number;
@@ -714,6 +731,17 @@ export async function analyzeBook(
           if (abortController.signal.aborted) {
             throw new Error('Job cancelled');
           }
+          /*
+           * A HELD CARD IS NOT A CHUNK THE MODEL STUMBLED ON (A5, 2026-09-19).
+           *
+           * `409 leased` / `409 server_busy` says the server would not take
+           * this act at all, so every remaining chunk meets the same wall and
+           * carrying on would write a report built from NO answers — a wrong
+           * analysis rather than a partial one, and a row that never learns it
+           * could simply have waited. Re-thrown whole so the holder's line
+           * reaches the result and the queue parks the book.
+           */
+          if (busyLineOf(err) !== undefined) throw err;
           console.error(`[Analysis] Error analyzing ${chapter.title} chunk ${chunkIndex + 1}:`, err);
           // Continue to next chunk — don't fail the whole job for one chunk
         }
@@ -828,9 +856,13 @@ export async function analyzeBook(
       message: error,
     });
 
+    // The holder's line, carried rather than flattened into the sentence: it is
+    // what lets the queue park this book instead of reddening it.
+    const busyLine = busyLineOf(err);
     return {
       success: false,
       error,
+      ...(busyLine === undefined ? {} : { busyLine }),
     };
   }
 }
@@ -1158,6 +1190,21 @@ function buildAudiobookAnalysisPayload(
 }
 
 function classifyAudiobookAnalysisError(error: unknown): AudiobookAnalysisFailureClass {
+  /*
+   * A HELD CARD IS NOT A CHUNK TO RETRY OR SPLIT (A5, 2026-09-19).
+   *
+   * `409 leased` / `409 server_busy` says the server would not take this act at
+   * all: retrying it three times, splitting the cue range and skipping the
+   * pieces would spend the whole recovery ladder on a wall every chunk meets,
+   * and end in a skip threshold whose message has lost the holder's name.
+   * `recoverable: false` makes the recovery re-throw the refusal WHOLE, so its
+   * `busyLine` reaches the result and the queue parks the book instead of
+   * failing it. Asked FIRST, because the message tests below would read a
+   * 409's prose and call it a request error.
+   */
+  if (busyLineOf(error) !== undefined) {
+    return { reason: 'request-error', recoverable: false, splitAllowed: false, retrySameChunk: false };
+  }
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (message === 'job cancelled' || message.includes('aborterror') || message.includes('aborted')) {
     return { reason: 'request-error', recoverable: false, splitAllowed: false, retrySameChunk: false };
@@ -1500,7 +1547,9 @@ export async function analyzeAudiobook(
     const error = (err as Error).message;
     console.error(`[AudiobookAnalysis] Job ${jobId} failed:`, error);
     sendProgress({ phase: 'error', progress: 0, message: error });
-    return { success: false, error };
+    // See the document arm above: a refusal that names a holder is a WAIT.
+    const busyLine = busyLineOf(err);
+    return { success: false, error, ...(busyLine === undefined ? {} : { busyLine }) };
   } finally {
     activeAnalysisJobs.delete(jobId);
     powerSaveBlocker.stop(powerBlockerId);

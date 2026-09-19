@@ -134,3 +134,88 @@ export function projectDirForStep(
     ?? said(ctx.input?.detail?.['projectDir'])
     ?? said(ctx.job?.projectId);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// A REFUSAL A ROW CAN WAIT OUT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE STEP DID NOT FAIL — THE CARD IS HELD, AND THE ROW IS TO WAIT.
+ *
+ * Crucible answers `409 server_busy` when another job holds the lane and
+ * `409 leased` when another client holds the model. Both are WAITS, not
+ * failures (crucible `docs/ARCHITECTURE.md` §3): nothing about the book is
+ * wrong and none of its work is lost, because it never started. `busyLine` is
+ * the server's own sentence naming the holder — "GPU busy: foundry, tts 62%
+ * done", "leased: foundry, translate, until …" — and it is the whole of what
+ * turns the failure into a wait, because `settleStep` parks a step only when
+ * one is present.
+ *
+ * ── Why a class and not a side call (Owen, 2026-09-19: "most step modules
+ *    fail a row… let's fix that") ─────────────────────────────────────────────
+ *
+ * Until today the line reached the scheduler through `noteStepBusy(stepId,
+ * line)` — a call each module had to REMEMBER to make before it threw. Four
+ * modules did; five did not, so a translation, an analysis, an RVC pass, a
+ * denoise or a page read that met a held card ended as a FAILED row in *Needs
+ * you*, waiting on a Retry press for something nobody did wrong (bug hunt
+ * 2026-09-19, finding A5).
+ *
+ * So the line rides on the THROW, which is the one thing every module already
+ * does with a refusal. `launch` reads it with {@link busyLineOf} and hands it
+ * to `settleStep`; a module that has a typed refusal from a bridge simply lets
+ * it propagate, and one that has a `{ success: false, busyLine }` RESULT mints
+ * this through {@link stepFailure}.
+ */
+export class StepParked extends Error {
+  /** The server's own sentence naming the holder. Never empty — see the ctor. */
+  readonly busyLine: string;
+
+  constructor(message: string, busyLine: string) {
+    super(message);
+    this.name = 'StepParked';
+    if (busyLine === '') {
+      throw new Error(
+        'StepParked was minted with an empty busyLine. A park is a sentence naming who holds '
+        + 'the card; with nothing to say, the row must fail with its own reason instead.',
+      );
+    }
+    this.busyLine = busyLine;
+  }
+}
+
+/**
+ * THE HOLDER'S LINE A THROWN REFUSAL CARRIES, or undefined for an ordinary
+ * failure — the ONE rule that decides whether a step parks.
+ *
+ * Duck-typed on purpose, and this is the whole reason a module needs no side
+ * call: every refusal this app already mints for a held card carries the line
+ * under this exact name — `CrucibleJobRefused`, `CrucibleRenderRefused`,
+ * `CruciblePagesError`, `CrucibleTextActError`, `CrucibleBusy`/`CrucibleLeased`
+ * from the SDK, and {@link StepParked} — so the seam reads them all without a
+ * table of classes that would go stale the first time a new door is built.
+ *
+ * A non-string, or an empty string, is NOT a line: it would park a row on a
+ * blank sentence, which reads to an operator as a stall with no cause.
+ */
+export function busyLineOf(err: unknown): string | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+  const said = (err as { busyLine?: unknown }).busyLine;
+  return typeof said === 'string' && said !== '' ? said : undefined;
+}
+
+/**
+ * The refusal a bridge's RESULT describes: a park when it named a holder, an
+ * ordinary failure when it did not.
+ *
+ * Bridges report `{ success: false, error, busyLine? }` rather than throwing,
+ * because a caller with no queue behind it (the CLI, a Settings button) reads
+ * the result. This is the one line that turns such a result back into the
+ * throw the step seam reads, so no module has to remember which half of the
+ * pair means "wait".
+ */
+export function stepFailure(message: string, busyLine?: string): Error {
+  return busyLine === undefined || busyLine === ''
+    ? new Error(message)
+    : new StepParked(message, busyLine);
+}

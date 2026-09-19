@@ -34,7 +34,9 @@ import { promises as fsPromises } from 'fs';
 // llama-bridge, so a job that never names a Crucible never reads the registry.
 import {
   CrucibleAuthError,
+  CrucibleBusy,
   CrucibleConfigError,
+  CrucibleLeased,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
@@ -2412,6 +2414,39 @@ function translateCrucibleError(err: unknown, server: string): unknown {
     return new Error(`${at} speaks API version ${err.serverApiVersion}, this client speaks `
       + `${err.clientApiVersion} (${err.code}): ${err.serverMessage}. One of the two must be updated.`);
   }
+  /*
+   * A HELD CARD IS A WAIT, AND IT IS ASKED ABOUT BEFORE `CrucibleRefused`.
+   *
+   * `CrucibleLeased` is a SUBCLASS of `CrucibleRefused` (crucible
+   * `sdk/ts/src/errors.ts`), so without these two arms a `409 leased` fell into
+   * the generic one below and arrived at the caller as a plain sentence. The
+   * holder's line was in the SDK's hands and never left this function — and a
+   * refusal with no `busyLine` reads to the queue as "this step failed", so a
+   * translation or an analysis against a held card reddened in *Needs you*
+   * while a cleanup against the SAME card parked (bug hunt 2026-09-19, A5).
+   * `crucible/job.ts` closed the identical hole on its own door on 2026-09-18;
+   * this is the text door's copy of that argument.
+   *
+   * The error stays an `Error` with the code at the head of the sentence,
+   * because every caller of this function reads messages — but it CARRIES the
+   * line under the name the whole app reads it by
+   * (`queue-steps/runtime.ts busyLineOf`), which is what lets a queue row park
+   * on it instead of failing.
+   */
+  if (err instanceof CrucibleBusy) {
+    return Object.assign(
+      new Error(`crucible_server_busy: ${at} takes one job at a time and is already running one. `
+        + `${err.busyLine}`),
+      { busyLine: err.busyLine },
+    );
+  }
+  if (err instanceof CrucibleLeased) {
+    return Object.assign(
+      new Error(`crucible_model_leased: ${at} has its resident ${err.kind} held by another `
+        + `client's run, so this act was not admitted. ${err.leasedLine}`),
+      { busyLine: err.leasedLine },
+    );
+  }
   if (err instanceof CrucibleRefused) {
     return new Error(`${at} refused the request (${err.status} ${err.code}): ${err.serverMessage}`);
   }
@@ -3733,7 +3768,7 @@ export interface EpubCleanupResult {
    * expiry, in the SDK's own words.
    *
    * It exists so the QUEUE can park the row: `queue-steps/pass.ts` hands it to
-   * `noteStepBusy` and `settleStep` puts the step back to `queued` with that
+   * `stepFailure` and `settleStep` puts the step back to `queued` with that
    * line on it, which is the same road `server_busy` already travels. Without
    * it this comes back as an ordinary failure and the row goes red — which is
    * exactly what happened until 2026-09-18, while Foundry, on the identical
@@ -3933,7 +3968,7 @@ export async function cleanupEpub(
      * books.
      *
      * `busyLine` is the whole of the wait. `queue-steps/pass.ts` hands it to
-     * `noteStepBusy`, `settleStep` puts the step back to `queued` carrying that
+     * `stepFailure`, `settleStep` puts the step back to `queued` carrying that
      * line, and the ordinary admission tick asks again — the same road
      * `server_busy` already travels, with a longer clock. A caller with no
      * queue behind it (the CLI, Settings → AI) reads `error` exactly as before,

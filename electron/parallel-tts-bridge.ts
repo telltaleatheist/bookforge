@@ -2846,6 +2846,21 @@ interface ConversionSession {
    */
   crucibleJobId?: string;
   /**
+   * THE HOLDER'S LINE FROM A 409, WHEN THE SERVER WOULD NOT TAKE THIS RENDER.
+   *
+   * `server_busy` (its lane is held) and `leased` (another client holds the
+   * model) are WAITS, not failures — crucible `docs/ARCHITECTURE.md` §3 — and
+   * this sentence is the whole of what makes one to the queue: the narration
+   * step throws a refusal carrying it and `settleStep` parks the row instead
+   * of reddening it.
+   *
+   * Kept on the session because the refusal happens inside the render's own
+   * state machine, several turns before `emitComplete` assembles the failure
+   * the step is waiting for. Absent on every other failure, and absent is a
+   * real state: a render the engine mangled is not waiting for anything.
+   */
+  crucibleBusyLine?: string;
+  /**
    * WHERE THIS SESSION'S GENERATION STEP RUNS — decided once, before prep, and
    * carried here so every later question ("does this session live in the WSL
    * guest?", "is there a guest worker to tear down?", "must the session be
@@ -4556,11 +4571,15 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
        * A 409 IS A WAIT, NOT A FAILURE (crucible `docs/ARCHITECTURE.md` §3).
        *
        * The server is running somebody else's job, so nothing about this book
-       * is wrong and nothing of its work is lost — it never started. Told
-       * here, the queue settles the row back to `queued` carrying the holder's
-       * own line and tries the door again on its admission tick
-       * (`queue-engine.noteStepBusy`, which is a no-op for a render the queue
-       * did not start — the CLI and the headless path pass their own ids).
+       * is wrong and nothing of its work is lost — it never started. The
+       * holder's line is kept on the SESSION and rides out on the completion
+       * event, which is what lets the narration STEP throw a refusal carrying
+       * it (`queue-steps/tts-conversion.ts`) and the queue settle the row back
+       * to `queued` with that sentence on it. Until 2026-09-19 this reached
+       * the scheduler by a side call from in here (`noteStepBusy`); the line
+       * now travels the one road every other module's refusal travels, and a
+       * render nobody queued simply has no row to park (the CLI and the
+       * headless path read the event themselves).
        *
        * The render itself still ends: this door does not retry, and a retry
        * loop here would be an invisible second queue with a policy nobody
@@ -4568,8 +4587,7 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
        */
       const { CrucibleRenderRefused } = await import('./crucible/render.js');
       if (err instanceof CrucibleRenderRefused && err.busyLine !== undefined) {
-        const { noteStepBusy } = await import('./queue-engine.js');
-        noteStepBusy(jobId, err.busyLine);
+        session.crucibleBusyLine = err.busyLine;
       }
       const detail = err instanceof Error ? err.message : String(err);
       await logger.log('ERROR', jobId, `Crucible render failed: ${detail}`).catch(() => {});
@@ -6793,6 +6811,12 @@ function emitComplete(
     error,
     duration,
     analytics,
+    // WHY THE ROW MAY WAIT RATHER THAN REDDEN, when a Crucible would not take
+    // this render: the holder's own sentence, carried verbatim. Absent on
+    // every other ending — see `ConversionSession.crucibleBusyLine`.
+    ...(session.crucibleBusyLine === undefined
+      ? {}
+      : { busyLine: session.crucibleBusyLine }),
     // Present only when an RVC enhancement pass ran; persisted as a separate
     // 'rvc' analytics entry by the renderer.
     rvcAnalytics: session.rvcAnalytics,

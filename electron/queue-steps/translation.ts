@@ -10,7 +10,7 @@
 import { translationBridge } from '../translation-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow, resourceForProvider } from './runtime';
+import { queueMainWindow, resourceForProvider, stepFailure } from './runtime';
 import {
   machinesForAiStep, providerConfigOf, type AiJobConfig,
 } from './ai-provider';
@@ -123,7 +123,18 @@ export const translationStep: StepModule = {
     );
 
     if (!result.success || !result.outputPath) {
-      throw new Error(result.error || 'Translation failed and gave no reason.');
+      /*
+       * A 409 IS A WAIT, AND THE TRANSLATION NOW TAKES IT (A5, 2026-09-19).
+       *
+       * `mono-translation-job.ts` has carried the holder's line on its result
+       * since 2026-09-18 — `crucible_model_leased` and `crucible_server_busy`
+       * both arrive with one — and this module dropped it on the floor, so a
+       * translate against a held card reddened in *Needs you* while a simplify
+       * against the same card parked. `stepFailure` is the one road: a park
+       * when a holder was named, an ordinary failure when none was.
+       */
+      throw stepFailure(
+        result.error || 'Translation failed and gave no reason.', result.busyLine);
     }
     ctx.step.analytics = (result as { analytics?: unknown }).analytics;
     ctx.report({ metrics: {

@@ -29,7 +29,7 @@ import { runFinalDenoise, stopFinalDenoise } from '../denoise-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { projectDirForStep, queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 import { runVenueOfRow } from '../crucible/step-venue';
 
 interface DenoiseProgressEvent {
@@ -161,7 +161,12 @@ export const finalDenoiseStep: StepModule = {
       }, queueMainWindow());
 
       if (!result.success || !result.outputDir) {
-        throw new Error(result.error || 'The denoise pass failed and gave no reason.');
+        // A Crucible that would not take this pass — its lane held, or its
+        // resident model leased by another client — is a WAIT, not a failure:
+        // `stepFailure` parks the row with the holder's line and the admission
+        // tick tries again (A5, 2026-09-19).
+        throw stepFailure(
+          result.error || 'The denoise pass failed and gave no reason.', result.busyLine);
       }
       return {
         kind: 'sentences',

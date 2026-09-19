@@ -75,7 +75,7 @@ import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { projectDirForStep, queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 import {
   RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
 } from '../../shared/queue/wait-for';
@@ -316,14 +316,12 @@ export const alignStep: StepModule = {
        * is the thing Owen's 2026-09-05 ruling forbids.
        */
       if (!result.success) {
-        if (result.busyLine !== undefined) {
-          // A Crucible `server_busy`: the row goes back to `queued` carrying the
-          // holder's own line and is tried again on the admission tick — the
-          // same hold the render seam asks for. A wait, never a failure.
-          const { noteStepBusy } = await import('../queue-engine.js');
-          noteStepBusy(ctx.stepId, result.busyLine);
-        }
-        throw new Error(result.error || 'The alignment failed and gave no reason.');
+        // A Crucible `server_busy` or `leased`: the row goes back to `queued`
+        // carrying the holder's own line and is tried again on the admission
+        // tick. A wait, never a failure — and since 2026-09-19 (A5) it travels
+        // on the throw, so this module makes no side call into the engine.
+        throw stepFailure(
+          result.error || 'The alignment failed and gave no reason.', result.busyLine);
       }
       /*
        * WHAT IT FOUND, SAID ONCE ON THE ROW. The card's live message is the

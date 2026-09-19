@@ -10,7 +10,7 @@ import { analyzeAudiobook, analyzeBook, cancelAnalysisJob } from '../book-analys
 import { broadcastToAllWindows } from '../document-stage-run';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow, resourceForProvider } from './runtime';
+import { queueMainWindow, resourceForProvider, stepFailure } from './runtime';
 import {
   machinesForAiStep, providerConfigOf, type AiJobConfig,
 } from './ai-provider';
@@ -144,7 +144,17 @@ export const bookAnalysisStep: StepModule = {
         );
 
       if (!result.success || !result.outputPath) {
-        throw new Error(result.error || 'The analysis failed and gave no reason.');
+        /*
+         * A 409 IS A WAIT, AND THE ANALYSIS NOW TAKES IT (A5, 2026-09-19).
+         *
+         * An analysis is a run of chat completions against a resident model; a
+         * Crucible that answers `leased` or `server_busy` is saying "not now",
+         * and nothing about this book is wrong. `stepFailure` mints the park
+         * when the refusal named a holder and an ordinary failure when it did
+         * not — one road, no side call into the engine.
+         */
+        throw stepFailure(
+          result.error || 'The analysis failed and gave no reason.', result.busyLine);
       }
       ctx.step.analytics = (result as { analytics?: unknown }).analytics;
       ctx.report({ metrics: {

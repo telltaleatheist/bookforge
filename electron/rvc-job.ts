@@ -79,6 +79,8 @@ import { BrowserWindow } from 'electron';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
+// The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
+import { busyLineOf } from './queue-steps/runtime';
 import {
   abandonDerivedSentences,
   assertStagingSpace,
@@ -195,6 +197,20 @@ export interface RvcEnhancementResult {
   reused?: boolean;
   error?: string;
   wasStopped?: boolean;
+  /**
+   * THE PASS DID NOT HAPPEN AND NOTHING IS WRONG — the line that makes this
+   * failure a WAIT.
+   *
+   * Present exactly when a Crucible refused the job because something else
+   * holds that card (`409 server_busy`, `409 leased` — crucible
+   * `docs/ARCHITECTURE.md` §3). `CrucibleJobRefused` carries it across the
+   * wire; this is where it survives the catch below, which otherwise
+   * stringifies the refusal into `error` and loses the one fact the QUEUE acts
+   * on: `queue-steps/rvc-enhancement.ts` hands it to `stepFailure` and the row
+   * goes back to `queued` with the holder's line on it instead of red (bug
+   * hunt 2026-09-19, A5).
+   */
+  busyLine?: string;
 }
 
 // Active runs, so stopRvcEnhancement can abort the in-flight urvc process.
@@ -520,7 +536,10 @@ export async function runRvcEnhancement(
       ? 'RVC enhancement cancelled'
       : `RVC enhancement failed: ${(err as Error).message || err}`;
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
-    return { success: false, error, wasStopped };
+    // The holder's line, carried rather than flattened into `error` — see the
+    // field's own note. One rule reads it, for every door in the app.
+    const busyLine = busyLineOf(err);
+    return { success: false, error, wasStopped, ...(busyLine === undefined ? {} : { busyLine }) };
   } finally {
     try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }

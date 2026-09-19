@@ -131,7 +131,7 @@ import { JOB_GERUND } from '../shared/queue/job-words';
  * `queue-steps/runtime` without the cycle that module's other exports would
  * imply — everything it imports is `import type`.
  */
-import { projectDirForStep } from './queue-steps/runtime';
+import { busyLineOf, projectDirForStep } from './queue-steps/runtime';
 
 // ────────────────────────────────────────────────────────────────────────────
 // The step-module contract
@@ -484,12 +484,6 @@ interface RunningStep {
   resource: StepResource;
   /** Set when the user asked for this to stop, so the outcome is read as a stop. */
   stopRequested: boolean;
-  /**
-   * Set when the server refused this submit `409 server_busy`. The step's own
-   * failure is then read as a WAIT: it settles back to `queued` carrying this
-   * line, not `failed`. See {@link noteStepBusy}.
-   */
-  busyLine?: string;
 }
 const runningSteps = new Map<string, RunningStep>();
 
@@ -2535,7 +2529,8 @@ interface ReachEntry {
  * answers "did the address answer when we asked", which is the only thing a
  * poll can honestly answer (crucible `docs/PHASE7-LANES.md` §2.5). Whether
  * there is room is settled at the door by `POST /v1/jobs`, and a 409 arrives
- * through {@link noteStepBusy} rather than through anything here.
+ * on a step's own refusal ({@link holdServerBusy}) rather than through
+ * anything here.
  *
  * It expires on the admission recheck cadence, so a server that came back up is
  * re-asked on the next tick rather than staying unreachable until a restart.
@@ -2699,31 +2694,25 @@ function sweepReach(): void {
 }
 
 /**
- * A 409 `server_busy` came back from a submit. THIS IS A WAIT, NOT A FAILURE.
+ * ONE SERVER, HELD OFF FOR ONE ADMISSION TICK after it answered 409.
  *
- * crucible `docs/ARCHITECTURE.md` §3 and PHASE7-LANES §6: it is the one answer
- * that is never the step's fault, it names the holder, and the client's own
- * queue holds the row and retries. So the step settles back to `queued` with
- * the holder's line on it (see `settleStep`), and the server is held off for
- * one admission tick so the queue does not hammer a door it has just been told
- * is shut.
+ * crucible `docs/ARCHITECTURE.md` §3 and PHASE7-LANES §6: a 409 is the one
+ * answer that is never the step's fault, it names the holder, and the client's
+ * own queue holds the row and retries. The row itself is parked by
+ * `settleStep`; this is the other half — the door is remembered as shut so the
+ * next admission pass does not walk straight back into it.
  *
  * Keyed by SERVER, not by row: every book waiting on that machine is waiting on
  * the same job, and telling one of them while the others retry in a loop would
- * be the tight polling `busyLine` exists to avoid.
+ * be the tight polling this exists to avoid.
  *
- * A no-op for a step id the queue does not know — a CLI or headless render
- * passes its own id, and a message about a row that does not exist is a message
- * in flight, not a state to invent.
+ * A no-op for a row that names no machine (or `any`): there is no door to
+ * remember, and `any` would hold off every server at once.
  */
-export function noteStepBusy(stepId: string, busyLine: string): void {
-  const found = findStep(stepId);
-  if (!found) return;
-  const server = found.job.waitForResolved ?? found.job.waitFor;
+function holdServerBusy(job: QueueJob, busyLine: string): void {
+  const server = job.waitForResolved ?? job.waitFor;
   if (server === undefined || server === WAIT_FOR_ANY) return;
   busyHolds.set(server, { line: busyLine, until: Date.now() + admissionRecheckMs });
-  const live = runningSteps.get(stepId);
-  if (live) live.busyLine = busyLine;
 }
 
 /** Does this run carry a step that can be sent to a Crucible server? */
@@ -3547,13 +3536,44 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
       : await crucibleLeaseHost.withRowScope(job.id, () => mod.run(ctx));
     settleStep(job, step, { ok: true, output });
   } catch (err) {
-    settleStep(job, step, { ok: false, error: (err as Error)?.message || String(err) });
+    /*
+     * A REFUSAL THAT NAMES A HOLDER IS A WAIT, AND IT TRAVELS ON THE THROW.
+     *
+     * `busyLineOf` is the one rule (electron/queue-steps/runtime.ts): every
+     * refusal this app mints for a held card carries the server's own sentence
+     * under that name, so a module lets its typed refusal propagate — or mints
+     * a `StepParked` from a bridge's result — and nothing here has to know
+     * which class it was.
+     */
+    const busyLine = busyLineOf(err);
+    settleStep(job, step, {
+      ok: false,
+      error: (err as Error)?.message || String(err),
+      ...(busyLine === undefined ? {} : { busyLine }),
+    });
   }
 }
 
 type StepOutcome =
   | { ok: true; output: ArtifactRef }
-  | { ok: false; error: string };
+  | {
+    ok: false;
+    error: string;
+    /**
+     * THE HOLDER'S LINE, WHEN THE STEP DID NOT FAIL BUT WAS HELD OFF.
+     *
+     * Present exactly when the refusal that ended the step named who holds the
+     * lane or the model (`409 server_busy` / `409 leased`, crucible
+     * `docs/ARCHITECTURE.md` §3). `settleStep` reads it as the WAIT it is: the
+     * step goes back to `queued` with that sentence on it instead of red.
+     *
+     * It arrives on the THROW — `launch` reads it with `busyLineOf` — so a
+     * module hands the refusal it already has to the seam and remembers no side
+     * call (bug hunt 2026-09-19, A5; Owen: *"most step modules fail a row…
+     * let's fix that"*).
+     */
+    busyLine?: string;
+  };
 
 /**
  * IS THE RUN'S CRUCIBLE LEASE STILL WANTED once this step has ended?
@@ -3609,7 +3629,16 @@ function leaseWantedAfter(job: QueueJob, step: QueueStep, heldModel: string | nu
 function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void {
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
-  const busyLine = live?.busyLine;
+  /*
+   * WAS THIS A WAIT? ONE READER, ONE FIELD — the line the refusal carried.
+   *
+   * It used to be read off the LIVE ENTRY, which a module had to fill through
+   * `noteStepBusy` before it threw; four did and five did not (A5,
+   * 2026-09-19). It now rides on the throw itself and arrives here as part of
+   * the outcome, so there is nothing for a module to remember and nothing for
+   * a new one to forget.
+   */
+  const busyLine = outcome.ok ? undefined : outcome.busyLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
 
@@ -3665,6 +3694,16 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * because this is the one outcome that is not an ending.
    */
   if (!outcome.ok && busyLine !== undefined && !stopped) {
+    /*
+     * THE SERVER IS HELD OFF FOR ONE ADMISSION TICK, RECORDED HERE.
+     *
+     * Keyed by SERVER and not by row: every book waiting on that machine is
+     * waiting on the same job, and re-submitting into the same 409 on the next
+     * pass is the tight polling this cool-off exists to prevent. Written at the
+     * one moment the queue knows a door is shut — this one — rather than by
+     * each caller that learns it (A5, 2026-09-19).
+     */
+    holdServerBusy(job, busyLine);
     takeThermalSummary(step.id);
     step.status = 'queued';
     step.finishedAt = undefined;

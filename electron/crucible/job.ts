@@ -27,7 +27,8 @@
  * `409 leased` both arrive as {@link CrucibleJobRefused} carrying the SDK's
  * own `busyLine` ("GPU busy: foundry, tts 62% done", "leased: foundry,
  * translate, until …") for the caller that can WAIT — the queue holds the row
- * (`queue-engine.noteStepBusy`); nothing here loops. The two are one question
+ * (`queue-steps/runtime.ts busyLineOf`); nothing here loops. The two are one
+ * question
  * with two clocks: the LANE frees in minutes, a client's RUN may hold the card
  * for an hour. Every other
  * SDK type — `engine_in_use`, `model_not_resident`, `job_type_disabled`,
