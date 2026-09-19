@@ -92,6 +92,10 @@ import type {
   CrucibleInstallProgress,
 } from '../shared/crucible/install-wire';
 import type {
+  CrucibleInstallDoorEvent,
+  CrucibleInstallDoorStatus,
+} from '../shared/crucible/install-door-wire';
+import type {
   CrucibleUninstallPlan,
   CrucibleUninstallRefusalCode,
 } from '../shared/crucible/uninstall-wire';
@@ -1240,11 +1244,12 @@ export interface ElectronAPI {
     add: (server: { name: string; url: string; token: string }) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
     /**
      * The SAME add, for the Crucible `servers().discovered` found on this
-     * computer: only the NAME crosses, because the token may not (see the
-     * wire's header). Not a second kind of server — a registry row like any
-     * other, under whatever it is called here.
+     * computer. NOTHING crosses: the token may not (see the wire's header) and
+     * the NAME is the engine's own, read from `/v1/info` in main (PHASE19 §4)
+     * — one owner for what an engine is called. Not a second kind of server: a
+     * registry row like any other.
      */
-    addDiscovered: (name: string) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
+    addDiscovered: () => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
     /** Forget a server. An unknown name is refused by name. */
     remove: (name: string) => Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }>;
     /** Test an address+token that is not registered yet: ping, then info. */
@@ -1427,6 +1432,30 @@ export interface ElectronAPI {
     install: () => Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }>;
     /** Every step, line, byte count and WSL state of the install above, as it happens. */
     onInstallProgress: (callback: (progress: CrucibleInstallProgress) => void) => () => void;
+
+    /*
+     * ── THE INSTALL DOOR (PHASE19 §2.6) ────────────────────────────────────
+     *
+     * The move to the Linux engine is the ORCHESTRATOR's now, started by the
+     * tray at login on any Windows machine that can host WSL2 — so the app
+     * WATCHES rather than drives, and these three are the whole of what it
+     * does: read where the move stands, hear it happen, and offer the two
+     * controls a person can genuinely press.
+     */
+
+    /** `GET /install` — is a move running, and what did the last one come to? */
+    installStatus: () => Promise<{
+      success: boolean; data?: CrucibleInstallDoorStatus; error?: string;
+    }>;
+    /** `GET /install/events` — every event of a running move, whoever started it. */
+    onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => () => void;
+    /** `POST /install` — **Try again**, shown only on `cannot` or `failed`. */
+    installRetry: () => Promise<{ success: boolean; error?: string }>;
+    /**
+     * `shutdown.exe /r /t 5`, as the interactive user, ONLY when somebody
+     * presses **Restart now**. Windows only, and refused by name elsewhere.
+     */
+    restartWindows: () => Promise<{ success: boolean; error?: string }>;
     /**
      * WHAT UNINSTALLING WOULD DO — `crucible uninstall --dry-run --json`,
      * which touches nothing. The same plan object the real run performs, so
@@ -1488,7 +1517,7 @@ export interface ElectronAPI {
      * "connected", and a driven install that has just finished. Joins a run
      * already in flight rather than starting a second.
      */
-    coordinate: (name: string) => Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: boolean; error?: string }>;
+    coordinate: (name: string) => Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: 'first-run' | 'install'; error?: string }>;
     /** Stop the module task this server is running. Answers `cancelling`. */
     cancelSetUp: (name: string, taskId: string) => Promise<{ success: boolean; error?: string }>;
     /** Every coordination state change, for every server, as main learns it. */
@@ -2955,7 +2984,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('bookforge:crucible-upgrade-progress', listener);
       return () => ipcRenderer.removeListener('bookforge:crucible-upgrade-progress', listener);
     },
-    addDiscovered: (name: string) => ipcRenderer.invoke('crucible:add-discovered', name),
+    addDiscovered: () => ipcRenderer.invoke('crucible:add-discovered'),
     remove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
     testAddress: (url: string, token: string) =>
       ipcRenderer.invoke('crucible:test-address', url, token),
@@ -2992,6 +3021,17 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('crucible:install-progress', listener);
       return () => { ipcRenderer.removeListener('crucible:install-progress', listener); };
     },
+    // The install DOOR. Watched by every setup surface, because the move it
+    // reports is one the tray may have started before this app was opened.
+    installStatus: () => ipcRenderer.invoke('crucible:install-status'),
+    onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, doorEvent: CrucibleInstallDoorEvent) =>
+        callback(doorEvent);
+      ipcRenderer.on('crucible:install-event', listener);
+      return () => { ipcRenderer.removeListener('crucible:install-event', listener); };
+    },
+    installRetry: () => ipcRenderer.invoke('crucible:install-start'),
+    restartWindows: () => ipcRenderer.invoke('crucible:restart-windows'),
     // Taking it off again. The dry run touches nothing; the real one deletes a
     // service, a home directory and — only with `purgeWeights` — the weights.
     // Both refuse `uninstall_not_local` for anything but this machine's engine.

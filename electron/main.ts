@@ -71,7 +71,13 @@ import type {
 import type { CrucibleSubjectKind } from '../shared/crucible/catalog-wire';
 // One event of a running install, pushed on `crucible:install-progress`. Same
 // rule as the line above: a `shared/` shape, a relative path, types only.
-import type { CrucibleInstallProgress } from '../shared/crucible/install-wire';
+import type { CrucibleHostRefusal, CrucibleInstallProgress } from '../shared/crucible/install-wire';
+// The orchestrator's install door, behind its one interface (PHASE19 §2.6).
+// `PreSdkInstallDoor` is the LABELLED STOPGAP that stands in until the new
+// bootstrap pack's `installStatus()`/`watchInstall()` are pinned — see
+// `electron/crucible/install-door.ts`, which says exactly what it cannot know.
+import { PreSdkInstallDoor } from './crucible/install-door';
+import { installOutcomeIsTerminal } from '../shared/crucible/install-door-wire';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
@@ -7709,6 +7715,61 @@ function setupIpcHandlers(): void {
   };
 
   /**
+   * THE ORCHESTRATOR'S INSTALL DOOR, BEHIND ITS ONE INTERFACE (PHASE19 §2.6).
+   *
+   * `electron/crucible/install-door.ts` says what this is and, in as many
+   * words, that {@link PreSdkInstallDoor} is a LABELLED STOPGAP: the bootstrap
+   * SDK pinned today has no `installStatus()`/`watchInstall()`, so until that
+   * pack lands the door is implemented over the only install this app can see
+   * — the one it runs itself. Everything that asks about a move asks THIS,
+   * which is what makes the swap a one-file change.
+   *
+   * Its runner is the same `runCrucibleInstall` the Install button ends in, so
+   * **Try again** and **Install Crucible** are one act with one in-flight flag
+   * rather than two walks over the same distro.
+   */
+  const crucibleInstallDoor = new PreSdkInstallDoor({
+    run: async () => { await runCrucibleInstall(() => {}); },
+  });
+  /*
+   * ONE SUBSCRIPTION, BROADCAST. An install started from the wizard and a
+   * settings panel opened halfway through are the same install — there is one
+   * per machine — so every window hears every event rather than only the one
+   * that pressed.
+   */
+  crucibleInstallDoor.watch((installEvent) => {
+    broadcastToAllWindows('crucible:install-event', installEvent);
+  });
+
+  /**
+   * IS THE NAMED ROW THE ENGINE ON THIS COMPUTER?
+   *
+   * Asked ONLY when a move is in flight, because that is the only time the
+   * answer changes what happens, and because discovery spawns `wsl.exe` on
+   * Windows. The comparison is the ORIGIN of the two URLs — the same one
+   * `probe.ts`'s `discoveredRow` makes — rather than a name, because a name is
+   * the operator's and an address is the machine's.
+   */
+  const isTheEngineOnThisComputer = async (name: string): Promise<boolean> => {
+    const { listServers } = await import('./crucible/servers.js');
+    const row = listServers().find((entry) => entry.name === name);
+    if (row === undefined) return false;
+    const { CrucibleDiscoveryError, discoverCrucible, processDiscoveryHost } =
+      await import('./crucible/discovery.js');
+    const { getWslDistro } = await import('./tool-paths.js');
+    try {
+      const found = discoverCrucible(processDiscoveryHost(getWslDistro()));
+      return new URL(found.url).origin === new URL(row.url).origin;
+    } catch (err) {
+      // "There is no Crucible on this computer" is an answer: the named row is
+      // then certainly somewhere else. Anything ELSE is not this function's to
+      // swallow.
+      if (err instanceof CrucibleDiscoveryError) return false;
+      throw err;
+    }
+  };
+
+  /**
    * COORDINATE WITH A SERVER BECAUSE SOMETHING CONNECTED US TO IT.
    *
    * crucible `docs/PHASE14-ENVPACKS.md` §4a: every time BookForge finds a
@@ -7725,6 +7786,30 @@ function setupIpcHandlers(): void {
    */
   const coordinateWithServer = async (name: string, because: string): Promise<void> => {
     if (firstRunModels.pending) return;
+    /*
+     * NOT WHILE THIS MACHINE IS STILL MOVING TO THE LINUX ENGINE (PHASE19 §2.8).
+     *
+     * Coordination is what installs job environments and pulls weights, and
+     * under PHASE20 those are gigabytes from PyPI, the PyTorch index and
+     * Hugging Face. Run against the NATIVE Windows engine on a machine that is
+     * mid-move, they land on Windows and migrate-weights pays for them twice.
+     * So the app waits for the move's OUTCOME to exist and then coordinates
+     * once, with whichever engine is left standing — the guest on `done`, the
+     * native one on `cannot`.
+     *
+     * It defers the LOCAL engine only. A Mac Studio added from this machine
+     * while the move runs is not affected by the move and has no reason to
+     * wait for it.
+     */
+    const install = await crucibleInstallDoor.status();
+    if (install.running && !installOutcomeIsTerminal(install.outcome)
+      && await isTheEngineOnThisComputer(name)) {
+      getMainLogger().info(
+        `Crucible "${name}" is not coordinated ${because} yet: this machine is still setting up `
+        + 'its Linux engine, and what BookForge needs would be installed onto the engine that is '
+        + 'about to be replaced. It is coordinated when the setup reaches its outcome.');
+      return;
+    }
     try {
       const { coordinateServer } = await import('./crucible/coordinate.js');
       const state = await coordinateServer(name);
@@ -7839,31 +7924,46 @@ function setupIpcHandlers(): void {
   });
 
   /**
-   * ADD THE CRUCIBLE FOUND ON THIS COMPUTER, under a name the operator chose.
+   * ADD THE CRUCIBLE FOUND ON THIS COMPUTER, UNDER THE NAME IT CALLS ITSELF.
    *
    * THE SAME ADD, and that is the whole point of it. It ends in
    * `addServer({name, url, token})` — the same validation, the same named
    * refusals, the same row — and what it saves a person is typing an address
    * and a bearer token out of a file inside a WSL guest.
    *
+   * ── THE NAME FIELD IS GONE (PHASE19 §4, 2026-09-19) ──────────────────────
+   *
+   * It used to take a name the operator typed, prefilled from discovery. That
+   * made THREE things claim to name one engine: the pairing file, whatever was
+   * in the box, and `/v1/info`'s `server.name` — which is the only one the
+   * engine itself answers with, is what `auto-connect.ts` verifies against,
+   * and is what every other app on the network will call it. So the name is
+   * READ FROM THE ENGINE, over the connection this handler is about to save,
+   * and there is nothing to type. An engine that will not say its own name is
+   * an engine that is not answering, and that error is the one a person needs
+   * to see rather than a row added under a name nobody checked.
+   *
    * It exists as its own channel for ONE reason: the token. `crucible:servers`
    * carries `****<last 4>` and nothing on that wire can hold a plaintext
    * credential (`shared/crucible/settings-wire.ts`), so a renderer that
    * prefilled the connect form from the discovery would have to be handed the
-   * key to hand it back. The NAME is the only field that crosses; main reads
-   * the rest from the machine.
+   * key to hand it back. NOTHING crosses now; main reads all of it.
    *
    * It is NOT a second kind of server (Owen's ruling, 2026-09-15). What it adds
    * is a registry row like any other: rankable, disable-able, removable,
    * coordinated with by the same code, and drawn with the same heading.
    */
-  ipcMain.handle('crucible:add-discovered', async (_event, name: string) => {
+  ipcMain.handle('crucible:add-discovered', async () => {
     try {
       const { discoverCrucible, processDiscoveryHost } = await import('./crucible/discovery.js');
       const { getWslDistro } = await import('./tool-paths.js');
       const found = discoverCrucible(processDiscoveryHost(getWslDistro()));
+      const { CrucibleClient } = await import('@crucible/client');
+      const info = await new CrucibleClient({
+        url: found.url, token: found.token, clientName: 'BookForge',
+      }).info();
       const { addServer } = await import('./crucible/servers.js');
-      const row = addServer({ name, url: found.url, token: found.token });
+      const row = addServer({ name: info.server.name, url: found.url, token: found.token });
       await refreshHostedFoundryRegistry('a Crucible on this computer was added');
       void coordinateWithServer(row.name, 'it was added');
       return { success: true, data: row };
@@ -8357,7 +8457,21 @@ function setupIpcHandlers(): void {
    * line the package composed, and that is what the screen shows.
    */
   let crucibleInstallInFlight = false;
-  ipcMain.handle('crucible:host-install', async (event) => {
+  /**
+   * ONE INSTALL, RUN ONCE, WHOEVER ASKED FOR IT.
+   *
+   * Extracted from the IPC handler on 2026-09-19 (PHASE19 §2.5) because there
+   * are now TWO callers: **Install Crucible**, which is a window pressing a
+   * button, and **Try again**, which arrives through the install door. They
+   * are the same act — there is one install per machine — so they share this
+   * body, its in-flight flag and its named refusal for a second press.
+   *
+   * `report` is the window-scoped push the presser sees; every event ALSO goes
+   * to the door, which is what every other surface watches.
+   */
+  const runCrucibleInstall = async (
+    report: (progress: CrucibleInstallProgress) => void,
+  ): Promise<{ success: boolean; data?: unknown; error?: string; refusal?: CrucibleHostRefusal }> => {
     const { installRefusalOf } = await import('./crucible/install.js');
     if (crucibleInstallInFlight) {
       return {
@@ -8375,8 +8489,10 @@ function setupIpcHandlers(): void {
       };
     }
     crucibleInstallInFlight = true;
+    crucibleInstallDoor.began();
     const send = (progress: CrucibleInstallProgress): void => {
-      if (!event.sender.isDestroyed()) event.sender.send('crucible:install-progress', progress);
+      crucibleInstallDoor.record(progress);
+      report(progress);
     };
     try {
       const { bookforgeInstallOptions, driveCrucibleInstall } = await import('./crucible/install.js');
@@ -8433,16 +8549,23 @@ function setupIpcHandlers(): void {
       // Installation and uninstall share the runner that preserves Windows argv and cwd.
       const { crucibleProcessRunner } = await import('./crucible/host-runner.js');
       const result = await driveCrucibleInstall(options, crucibleProcessRunner());
-      const { autoConnectLocal } = await import('./crucible/auto-connect.js');
-      const connected = await autoConnectLocal(true);
-      await refreshHostedFoundryRegistry('after installing and connecting Crucible');
-      if (connected !== null) void coordinateWithServer(connected, 'it was installed');
+      /*
+       * THE ENDING IS RECORDED BEFORE ANYTHING IS DONE WITH IT. Coordination
+       * is gated on the install having an OUTCOME (PHASE19 §2.8), and the
+       * `coordinateWithServer` two lines below is the first thing that gate
+       * has to let through — so the door learns the install ended here, not
+       * after the work that depends on knowing it.
+       */
       send({
         kind: 'done',
         server: result.server,
         release: result.release,
         backend: result.backend,
       });
+      const { autoConnectLocal } = await import('./crucible/auto-connect.js');
+      const connected = await autoConnectLocal(true);
+      await refreshHostedFoundryRegistry('after installing and connecting Crucible');
+      if (connected !== null) void coordinateWithServer(connected, 'it was installed');
       return { success: true, data: result };
     } catch (err) {
       const refusal = installRefusalOf(err);
@@ -8450,6 +8573,73 @@ function setupIpcHandlers(): void {
       return { success: false, error: refusal.message, refusal };
     } finally {
       crucibleInstallInFlight = false;
+      crucibleInstallDoor.ended();
+    }
+  };
+
+  ipcMain.handle('crucible:host-install', async (event) => runCrucibleInstall((progress) => {
+    if (!event.sender.isDestroyed()) event.sender.send('crucible:install-progress', progress);
+  }));
+
+  /**
+   * `GET /install` (PHASE19 §2.6) — is a move running, and what did the last
+   * one come to? Every setup surface starts here, because an install this app
+   * did not press is the ordinary case now: the tray starts the move by itself
+   * on a machine that can host WSL2.
+   */
+  ipcMain.handle('crucible:install-status', async () => {
+    try {
+      return { success: true, data: await crucibleInstallDoor.status() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * `POST /install` — **Try again**, and nothing else (PHASE19 §2.5). The apps'
+   * one WSL control, and it is drawn only when the outcome is `cannot` or
+   * `failed`, because on a `done` machine there is nothing to press and on one
+   * that is mid-move a second press is the refusal above.
+   */
+  ipcMain.handle('crucible:install-start', async () => {
+    try {
+      await crucibleInstallDoor.start();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * RESTART WINDOWS, BECAUSE A PERSON PRESSED **Restart now** (PHASE19 §2.3).
+   *
+   * `shutdown.exe /r /t 5` as the interactive user — no elevation, because
+   * restarting your own machine has never needed any — and ONLY from this
+   * handler, which nothing calls on its own. Crucible never takes the reboot
+   * itself: a `reboot` state writes its outcome and stops, and the five
+   * seconds are there so a person who pressed it by accident can `shutdown /a`.
+   *
+   * Windows only. There is no other platform where an install asks for a
+   * restart, and an app that offered to reboot a Mac because a code path was
+   * shared would be doing something nobody asked for.
+   */
+  ipcMain.handle('crucible:restart-windows', async () => {
+    if (process.platform !== 'win32') {
+      return {
+        success: false,
+        error: 'restart_not_windows: only a Windows install asks for a restart, and this is '
+          + `${process.platform}.`,
+      };
+    }
+    try {
+      const { spawn } = await import('child_process');
+      const child = spawn('shutdown.exe', ['/r', '/t', '5'], {
+        detached: true, stdio: 'ignore', windowsHide: true,
+      });
+      child.unref();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -8626,7 +8816,20 @@ function setupIpcHandlers(): void {
    */
   ipcMain.handle('bookforge:crucible-coordinate', async (_event, name: string) => {
     try {
-      if (firstRunModels.pending) return { success: true, deferred: true };
+      if (firstRunModels.pending) return { success: true, deferred: 'first-run' as const };
+      /*
+       * THE SAME GATE `coordinateWithServer` CARRIES (PHASE19 §2.8), and for
+       * the same reason: a renderer that asked while this machine was still
+       * moving to the Linux engine would install gigabytes onto the engine
+       * that is about to be replaced. It answers `deferred`, with WHICH
+       * deferral it is — the two have different sentences on screen and a bare
+       * boolean made the first-run one the answer to both.
+       */
+      const install = await crucibleInstallDoor.status();
+      if (install.running && !installOutcomeIsTerminal(install.outcome)
+        && await isTheEngineOnThisComputer(name)) {
+        return { success: true, deferred: 'install' as const };
+      }
       const { coordinateServer } = await import('./crucible/coordinate.js');
       return { success: true, data: await coordinateServer(name) };
     } catch (err) {

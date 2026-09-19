@@ -94,18 +94,47 @@ async function main() {
     }
     visit(source);
     assert.equal(entrypoints.length, 2);
+    /*
+     * THE SECOND GATE IS PHASE19 §2.8's. Coordination installs job
+     * environments and pulls weights — gigabytes — and run against the NATIVE
+     * Windows engine on a machine that is still moving to the Linux one they
+     * land on Windows and migrate-weights pays for them twice. So a move with
+     * no outcome yet holds the LOCAL engine's coordination and nothing else:
+     * an engine on another machine is not affected by this machine's move.
+     */
+    const install = (running, outcome) => ({ status: async () => ({ running, outcome }) });
+    const cases = [
+      // [first-run pending, install door, is the named row this machine's engine, expected runs]
+      [true, install(false, null), false, 0],
+      [false, install(false, null), false, 1],
+      [false, install(true, null), true, 0],
+      [false, install(true, null), false, 1],
+      // A terminal outcome is what lets it through, even while the run is
+      // still winding up: the install's own "it was installed" is the first
+      // caller through this gate.
+      [false, install(true, { state: 'done' }), true, 1],
+      [false, install(true, { state: 'cannot' }), true, 1],
+      // A machine that never moved at all is not held for ever.
+      [false, install(false, { state: 'declined' }), true, 1],
+    ];
     for (const entrypoint of entrypoints) {
-      for (const pending of [true, false]) {
+      for (const [pending, door, local, expected] of cases) {
         let requests = 0;
         const code = ts.transpileModule(`(${entrypoint.getText(source)})('desk', 'connected')`, {
           compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
         }).outputText;
         await vm.runInNewContext(code, {
           firstRunModels: { pending },
+          crucibleInstallDoor: door,
+          installOutcomeIsTerminal: (outcome) => outcome !== null,
+          isTheEngineOnThisComputer: async () => local,
           require: () => ({ coordinateServer: async () => { requests++; return { phase: 'stocked' }; } }),
           getMainLogger: () => ({ info() {}, warn() {} }),
         });
-        assert.equal(requests, pending ? 0 : 1);
+        assert.equal(
+          requests, expected,
+          `pending=${pending} running=${door !== null} local=${local}: expected ${expected} run(s)`,
+        );
       }
     }
   });
@@ -209,7 +238,13 @@ async function main() {
     assert.equal(await autoConnectLocal(false, { registryExists: () => false, pairing: () => null }), null);
   });
   await check('explicit install must connect and cannot claim success without a pairing', async () => {
-    await assert.rejects(autoConnectLocal(true, { registryExists: () => true, pairing: () => null }), /did not write/);
+    // The sentence names what to press IN BOOKFORGE (PHASE19 §4). It used to
+    // say "Open Crucible and try connecting again", which was a door this app
+    // stopped having on 2026-09-17.
+    await assert.rejects(
+      autoConnectLocal(true, { registryExists: () => true, pairing: () => null }),
+      /did not publish how to reach it.*Settings → Crucible Servers/s,
+    );
   });
   await check('failed identity verification never writes registry', async () => {
     await assert.rejects(autoConnectLocal(false, { registryExists: () => false, pairing: () => pairing,

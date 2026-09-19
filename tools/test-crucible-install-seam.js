@@ -660,17 +660,73 @@ checkAsync('the plan names no wheel and no conda, on any platform', async () => 
       queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
     }));
     assert.strictEqual(plan.wheel, undefined, `${platform}: the plan still carries a wheel field`);
-    const words = JSON.stringify(plan.steps) + JSON.stringify(plan.elevated);
+    const words = JSON.stringify(plan.steps);
     assert.ok(!/\.whl/.test(words), `${platform}: the plan still names a wheel`);
     assert.ok(!/conda/.test(words), `${platform}: the plan still names conda`);
   }
 });
 
-checkAsync('Windows install needs no manually typed WSL or elevated command', async () => {
+/*
+ * ── `elevated` IS GONE FROM THE PLAN (PHASE19 §3, §4, 2026-09-19) ───────────
+ *
+ * Three checks here used to read it: two asserting it was empty on Windows and
+ * macOS, and one asserting Linux carried `sudo loginctl enable-linger "$USER"`
+ * — which was the app PRINTING A COMMAND for somebody to type. Owen ruled that
+ * shape away on 2026-09-18 (*"we should assume the user doesn't know how to do
+ * it and it should do it automatically"*), so the field is removed from
+ * `CrucibleInstallPlan` rather than left as an always-empty array, and what
+ * replaces the three checks is one: NO PLATFORM'S PLAN CARRIES A COMMAND AT
+ * ALL, field or step.
+ */
+checkAsync('no platform\'s plan carries a command, and there is no elevated list to put one in', async () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const plan = await install.crucibleInstallPlan(host({
+      platform,
+      arch: platform === 'darwin' ? 'arm64' : 'x64',
+      wslDistro: platform === 'win32' ? 'Ubuntu' : undefined,
+      listWsl: platform === 'win32'
+        ? () => ({ status: 0, stdout: WSL_TABLE, stderr: '' })
+        : () => { throw new Error('wsl.exe must not be asked off Windows'); },
+      queryGpu: () => ({ status: 0, stdout: SMI, stderr: '' }),
+    }));
+    assert.strictEqual(
+      plan.elevated, undefined,
+      `${platform}: the plan grew an \`elevated\` field back. PHASE19 §0: nobody is ever shown a `
+      + 'command, and an empty list is a place for one to reappear in without anybody deciding to.',
+    );
+    assert.deepStrictEqual(
+      plan.steps.flatMap((step) => step.commands), [],
+      `${platform}: a step carries a command for a person to type`,
+    );
+    assert.ok(
+      !/loginctl|sudo |wsl --install/.test(JSON.stringify(plan.steps)),
+      `${platform}: a step names a command in its prose`,
+    );
+  }
+});
+
+/*
+ * THE WINDOWS STEPS ARE PHASE19 §3.1's LIST, IN ITS ORDER, and they are the
+ * SAME sequence the progress list then draws happening — one owner for "what
+ * does this do". The old pair ended *"Optional WSL acceleration is available
+ * afterward in BookForge Settings"*, which described a button that is gone.
+ */
+checkAsync('the Windows steps are the automatic sequence, Linux engine included', async () => {
   const plan = await install.crucibleInstallPlan(host());
-  assert.deepStrictEqual(plan.elevated, []);
-  assert.ok(plan.steps.some(s => /native Windows engine/.test(s.detail)));
-  assert.ok(plan.steps.some(s => /Optional WSL acceleration/.test(s.detail)));
+  assert.deepStrictEqual(
+    plan.steps.map((step) => step.title),
+    [
+      'Installing Crucible',
+      'Starting the Windows engine',
+      'Setting up the Linux engine',
+      'Installing what BookForge needs',
+      'Downloading models',
+    ],
+  );
+  assert.ok(
+    !/optional|afterward/i.test(JSON.stringify(plan.steps)),
+    'a Windows step still offers the Linux engine as an option; PHASE19 §0 makes it the default',
+  );
 });
 
 checkAsync('macOS needs no typed line at all — its service is a launchd agent', async () => {
@@ -679,19 +735,7 @@ checkAsync('macOS needs no typed line at all — its service is a launchd agent'
     listWsl: () => { throw new Error('not asked'); },
     queryGpu: () => { throw new Error('not asked'); },
   }));
-  assert.deepStrictEqual(plan.elevated, []);
   assert.strictEqual(plan.host.wsl, null);
-});
-
-checkAsync('linger is a Linux fact, and Linux still gets it', async () => {
-  const plan = await install.crucibleInstallPlan(host({
-    platform: 'linux', arch: 'x64', wslDistro: undefined,
-    listWsl: () => { throw new Error('not asked'); },
-  }));
-  assert.deepStrictEqual(
-    plan.elevated.flatMap((s) => s.commands),
-    ['sudo loginctl enable-linger "$USER"'],
-  );
 });
 
 checkAsync('the non-Windows steps are the PACKAGE\'s step list, in its order', async () => {
