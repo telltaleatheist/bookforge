@@ -5,11 +5,33 @@
  * name — a chunk scored a duration ratio of 0.99 while dropping 22 % of its
  * text — so without this nobody knows which chunks came out wrong.
  *
- * IT REPORTS AND SUCCEEDS. Owen, 2026-09-05: an imperfect render is the nature
- * of TTS and must not stop an assembly. So a pass that found fourteen doubtful
- * chunks and five it could not place is a SUCCESSFUL row that says so — counts
- * and retake list on the card and in the artifact detail — and the assembly runs
- * behind it. Only a run that could not happen fails the row.
+ * IT REPORTS AND SUCCEEDS — about the BOOK. Owen, 2026-09-05: an imperfect
+ * render is the nature of TTS and must not stop an assembly. So a pass that
+ * found fourteen doubtful chunks and five it could not place is a SUCCESSFUL
+ * row that says so — counts and retake list on the card and in the artifact
+ * detail — and the assembly runs behind it.
+ *
+ * IT FAILS — and STOPS THE BOOK — about ITSELF. Owen, 2026-09-19: *"If
+ * alignment fails it should stop. But we need to fix it so it doesn't fail. It
+ * should only fail because of a misconfiguration, which can be repaired."* The
+ * two halves are not in tension: what the chunks said is a measurement, and a
+ * run that could not happen is a broken machine. Until this row existed the
+ * second one was swallowed — the alignment was a phase inside the render
+ * (`parallel-tts-bridge.runPostRenderAlignment`), it announced its own failure
+ * and the book was sealed with the proportional ESTIMATE, so an operator
+ * learned that the aligner had been misconfigured for a month by reading a log.
+ * Now the row lands in *Needs you* with the reason on it and the assembly waits
+ * behind it, which is the one arrangement in which the reason gets read.
+ *
+ * ── EVERY FAILURE NAMES SOMETHING A PERSON CAN REPAIR ──────────────────────
+ *
+ * The session is not on disk; the row says no language; the server would not
+ * take the job; the server has no aligner; the chunks are marker-only; the
+ * chapter gap is not a number the assembler can realize; this machine could not
+ * measure the book from the items the server placed. Each is a sentence naming
+ * the thing. There is NO "skipped" outcome left: the dead gate that refused the
+ * whole pass unless THIS machine had a local `qwen-align` conda env — while the
+ * model ran on a server — went with the phase (finding B2).
  *
  * ── It reads a SESSION and it writes a SESSION ──────────────────────────────
  *
@@ -46,29 +68,29 @@
  * `queue-steps/reassembly.ts` uses. A row restored from a queue file written
  * before tonight has no `device` and is CPU, which is what it was.
  *
- * ── NOTHING COMPOSES THIS ROW ANY MORE, AND IT IS STILL HERE ────────────────
+ * ── IT IS COMPOSED AGAIN, AND THE ROW IT IS IS NOT THE ROW THAT WENT ───────
  *
  * Owen, 2026-09-08: *"remove the align the narration checkbox. lets just have it
  * permanently do it that way. if the user wants an exact alignment they can hit
  * generate sentences on the bookforge library."* The narration run's Align row
  * and the Foundry doors' unconditional one both went with that ruling — a
  * two-hour CPU align was holding a finished 16-hour book's assembly at 99 %.
+ * The MODULE stayed, because rows do: a saved queue file could still hold one,
+ * and the CLI queues one on purpose (`cli/coverage-align.js`).
  *
- * The MODULE stays, because rows do. A queue file saved before the ruling can
- * still hold an align row (one was running on Owen's PC when it landed), and the
- * CLI still queues one against a session on purpose (`cli/coverage-align.js`,
- * `bookforge-tts.py --align`). A step type the engine could not run would fail
- * every one of those by name for a reason that has nothing to do with them.
+ * What came back later the same day was the ALIGNMENT, on a different backend:
+ * *"good. go ahead and wire it up to alignment so itll be used to align the
+ * chunks in app"* — qwen3, 151 s for a 16.5 h book against the two hours that
+ * killed the checkbox. It was built as the final PHASE of the `tts-conversion`
+ * step, and that is what was wrong with it.
  *
- * ── AND THE ALIGNMENT ITSELF CAME BACK, LATER THE SAME DAY ──────────────────
- *
- * Owen, once the qwen3 bake-off was in: *"good. go ahead and wire it up to
- * alignment so itll be used to align the chunks in app"*, *"for generate-sentences
- * logic and for normal post-render alignment"*. It is now the FINAL PHASE of the
- * `tts-conversion` step (`parallel-tts-bridge.runPostRenderAlignment`), not a
- * row — 151 s for a 16.5 h book against the two hours that killed the checkbox.
- * This row is unchanged and still what the CLI drives; `runCoverageAlign` is the
- * single spawn behind both, and it passes `--backend qwen3` from either.
+ * Owen, 2026-09-19: alignment *"is its own queue step"*, and *"as soon as the
+ * GPU finishes, it releases the lease"*. So `shared/queue/narration-run.ts`
+ * composes THIS ROW directly behind the render again — not the deleted
+ * checkbox, which was a user choice about a two-hour CPU pass, but the
+ * alignment that has been happening on every render since 2026-09-08 anyway,
+ * given the row, the bar, the Stop and the failure it always deserved.
+ * `runCoverageAlign` is the single door behind this and the CLI both.
  */
 import { onBridgeEvent } from '../bridge-events';
 import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
@@ -108,12 +130,13 @@ interface AlignStepConfig {
   /**
    * 'cpu' (the default) or 'gpu' — the user's choice at queue time.
    *
-   * OPTIONAL ON THE TYPE, and every source of a row now leaves it out or says
-   * 'cpu': the run description that used to write it went with the checkbox
-   * (Owen, 2026-09-08), and what is left composing align rows is the CLI. Absent
-   * also means a row queued before 2026-09-07, when every align was CPU by
-   * construction. Both are real answers rather than missing ones, so absent is
-   * read as 'cpu' — and the row says so on the card, once, rather than quietly.
+   * OPTIONAL ON THE TYPE. A row composed by a narration run says 'gpu' since
+   * 2026-09-19: the alignment is a Crucible `align` job and a Crucible has only
+   * the card, so `runCoverageAlignOnCrucible` refuses a CPU row by name. The
+   * CLI still queues 'cpu' against a local session, and absent means a row
+   * queued before 2026-09-07, when every align was CPU by construction. Both
+   * are real answers rather than missing ones, so absent is read as 'cpu' — and
+   * the row says so on the card, once, rather than quietly.
    */
   device?: 'cpu' | 'gpu';
   /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */
@@ -314,6 +337,14 @@ export const alignStep: StepModule = {
        * fourteen of them did its job; failing on that skipped the assembly and
        * left an operator with 36 minutes of good audio and no audiobook, which
        * is the thing Owen's 2026-09-05 ruling forbids.
+       *
+       * AND WHEN IT DOES FAIL, THE BOOK STOPS (Owen, 2026-09-19): the row lands
+       * in *Needs you* with the reason on it and the assembly waits behind it,
+       * because every one of those reasons names a misconfiguration somebody
+       * can repair and then press Retry on. The rendered audio is intact
+       * through all of them — every refusal below says so — so nothing is lost
+       * by stopping, and the alternative (the estimate, silently) is how a
+       * broken aligner went a month unnoticed.
        */
       if (!result.success) {
         // A Crucible `server_busy` or `leased`: the row goes back to `queued`

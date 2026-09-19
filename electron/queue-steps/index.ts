@@ -17,6 +17,7 @@ import { foundryJobStep } from './foundry-job';
 import {
   footnoteRefsStep, narrationTextStep, simplifyStep, translatePassStep,
 } from './pass';
+import { prepareStep } from './prepare';
 import { reassemblyStep } from './reassembly';
 import { rvcEnhancementStep } from './rvc-enhancement';
 import { translationStep } from './translation';
@@ -30,6 +31,7 @@ export function registerAllStepModules(): void {
   if (registered) return;
   registered = true;
   for (const mod of [
+    prepareStep,
     ttsConversionStep,
     alignStep,
     finalDenoiseStep,

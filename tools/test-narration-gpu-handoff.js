@@ -25,19 +25,29 @@
  * volume that has no clone support, and it was charged to a card that had been
  * idle since 16:57:49.
  *
+ * ── The alignment came OUT of this tail on the same day ────────────────────
+ *
+ * The 14 s above is a FAILED post-render alignment, and Owen's ruling that
+ * evening moved that act to a row of its own: *"as soon as the GPU finishes, it
+ * releases the lease"*, and *"if alignment fails it should stop."* So the
+ * ordering this file used to pin — announce AFTER the alignment — no longer has
+ * an alignment to be after, and what it pins now is the half of the measurement
+ * that did not move: the 458 s of file copy. The card is free when the last
+ * chunk lands, and `cacheSessionToProject` must not be charged to it.
+ *
  * ── What is defended here ───────────────────────────────────────────────────
  *
  *  1. THE SHIPPED COMPLETION TAIL, lifted out of the compiled bridge and driven
- *     with fakes, announces the GPU phase over AFTER the alignment and BEFORE
- *     the session copy — with the alignment FAILING, which is the path measured
- *     above. The render still completes, carrying the estimated transcript.
+ *     with fakes, announces the GPU phase over BEFORE the session copy — and
+ *     runs NO alignment of its own, because that is the `align` queue row now.
  *  2. It is announced ONCE: a session that has already said it is off the card
  *     does not say it again from the inline path.
  *  3. THE REAL `ttsConversionStep` turns that announcement into
  *     `StepRunContext.releaseGpu`, verbatim and for its own job only.
  *
  * The engine's half — that a handed-back slot is claimed by the next book while
- * the first row runs on — is in `tools/test-queue-engine.js`.
+ * the first row runs on — is in `tools/test-queue-engine.js`; the chain's shape
+ * and the align row's own failure are `tools/test-queue-narration-plan.js`.
  */
 'use strict';
 const assert = require('assert');
@@ -98,7 +108,7 @@ function liftedChannel() {
 }
 
 /** Run the shipped tail with fakes, recording the order it did things in. */
-async function runShippedTail({ skipAssembly, alignFails }) {
+async function runShippedTail({ skipAssembly }) {
   const order = [];
   const completions = [];
   const session = {
@@ -127,15 +137,12 @@ async function runShippedTail({ skipAssembly, alignFails }) {
    * objects so a change that DID reach them fails loudly instead of quietly.
    */
   const tail = new Function(
-    'runPostRenderAlignment', 'announceGpuPhaseOver', 'cacheSessionToProject',
+    'announceGpuPhaseOver', 'cacheSessionToProject',
     'emitComplete', 'activeSessions', 'logger',
     'rolling_logger_1', 'chapter_closer_1', 'denoise_bridge_1', 'rvc_models_1', 'rvc_bridge_1',
     'findMissingSentenceFiles', 'runAssembly', 'removeScratchSession', 'rendererSend',
     `${lift('completeAfterWorkers')}\nreturn completeAfterWorkers;`,
   )(
-    async () => {
-      order.push(alignFails ? 'align-failed' : 'align-ran');
-    },
     (s, reason) => {
       // The REAL guard, not the real function: the shipped one also drops this
       // machine's GPU mutex, which has no meaning in a test process.
@@ -244,43 +251,50 @@ function fakeCtx(stepId) {
 (async () => {
   console.log('1. the shipped completion tail');
 
-  await check('THE ALIGNMENT FAILED AND THE SLOT IS STILL HANDED BACK — before the session copy', async () => {
-    const { order, completions } = await runShippedTail({ skipAssembly: true, alignFails: true });
-    const align = order.indexOf('align-failed');
+  await check('THE SLOT GOES BACK BEFORE THE SESSION COPY — the 458 s Owen measured', async () => {
+    const { order, completions } = await runShippedTail({ skipAssembly: true });
     const handoff = order.findIndex((s) => s.startsWith('gpu-phase-over'));
     const copy = order.indexOf('cache-session');
-    assert.ok(align >= 0, `the alignment did not run: ${order.join(' → ')}`);
     assert.ok(handoff >= 0, `THE GPU PHASE WAS NEVER ANNOUNCED: ${order.join(' → ')}`);
-    assert.ok(handoff > align, `announced before the alignment: ${order.join(' → ')}`);
     assert.ok(copy > handoff,
       `the session copy ran while the row still held the card: ${order.join(' → ')}`);
     assert.deepStrictEqual(completions.map((c) => c.ok), [true],
-      'a failed alignment must not fail the render — the book ships with the estimated transcript');
+      'the render completes; publishing the session is its tail, not its work');
   });
 
-  await check('a clean alignment hands it back at the same place', async () => {
-    const { order } = await runShippedTail({ skipAssembly: true, alignFails: false });
-    const handoff = order.findIndex((s) => s.startsWith('gpu-phase-over'));
-    assert.ok(handoff > order.indexOf('align-ran') && handoff < order.indexOf('cache-session'),
-      order.join(' → '));
+  await check('THE TAIL ALIGNS NOTHING — that act is the `align` row now', async () => {
+    /*
+     * Owen, 2026-09-19. The phase that stood between the workers and the copy
+     * held the card for ten to twenty minutes on a long book, refused to run at
+     * all on a machine with no LOCAL qwen env (while the model ran on a
+     * server), and swallowed its own failures into an estimated transcript. It
+     * is a queue row, so the tail must not have grown one back.
+     */
+    const at = bridgeJs.indexOf('async function checkAllWorkersComplete');
+    const tailSource = bridgeJs.slice(at);
+    // Matched on the CALL, not the name: the comment that stands where the
+    // phase used to be records what it was and why it went, and a test that
+    // fails on its own history teaches people to delete history.
+    assert.ok(!/runPostRenderAlignment\s*\(/.test(tailSource),
+      'the completion tail calls a post-render alignment again — it belongs to '
+      + '`queue-steps/align.ts`, composed by `shared/queue/narration-run.ts`');
   });
 
   await check('the reason names what settled, so the queue log says why the card is free', async () => {
-    const { order } = await runShippedTail({ skipAssembly: true, alignFails: true });
+    const { order } = await runShippedTail({ skipAssembly: true });
     const line = order.find((s) => s.startsWith('gpu-phase-over'));
-    assert.ok(/render/.test(line) && /align/.test(line), `unhelpful reason: ${line}`);
+    assert.ok(/render/.test(line), `unhelpful reason: ${line}`);
   });
 
-  await check('the INLINE path announces once, after the alignment and before the assembly', async () => {
+  await check('the INLINE path announces once, before the assembly', async () => {
     // The CLI and the language-learning wizard, which assemble in the same step.
-    // The enhancement passes are GPU work and run between those two points, so
-    // the hand-off can only be at the end of them — never at the alignment.
-    const { order } = await runShippedTail({ skipAssembly: false, alignFails: false });
+    // The enhancement passes are GPU work and run between the render and the
+    // assembly, so the hand-off can only be at the end of them.
+    const { order } = await runShippedTail({ skipAssembly: false });
     const announcements = order.filter((s) => s.startsWith('gpu-phase-over'));
     assert.strictEqual(announcements.length, 1,
       `the inline path announced ${announcements.length} times: ${order.join(' → ')}`);
     const at = order.indexOf(announcements[0]);
-    assert.ok(at > order.indexOf('align-ran'), order.join(' → '));
     assert.ok(at < order.indexOf('assemble'),
       `the assembly ran while the row still held the card: ${order.join(' → ')}`);
   });

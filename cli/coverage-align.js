@@ -61,21 +61,24 @@ async function main() {
   const { processDir, projectDir } = await resolveSessionTarget(args);
 
   const job = require('../dist/electron/coverage-align-job.js');
-  for (const fn of ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython',
-                    'coverageAlignRefusal', 'coverageReportPath']) {
+  for (const fn of ['runCoverageAlign', 'stopCoverageAlign', 'coverageReportPath']) {
     if (typeof job[fn] !== 'function') {
       throw new Error(
         `compiled coverage-align-job missing ${fn} — rebuild (npx tsc -p tsconfig.electron.json)`);
     }
   }
-  // The plan-time check the app makes, made here for the same reason: an absent
-  // aligner is cheap to say now and expensive to discover after the render. The
-  // SENTENCE is the job's, not a second wording of the same fact — the backend is
-  // qwen3 on every door now (Owen, 2026-09-08) and what is missing differs per
-  // machine (a Mac add-on, a WSL env name).
-  if (job.coverageAlignPython() === null) {
-    throw new Error(job.coverageAlignRefusal());
-  }
+  /*
+   * NO PLAN-TIME GATE ANY MORE (2026-09-19, bug hunt finding B2).
+   *
+   * There was one here — `coverageAlignPython() === null` → refuse — on the
+   * argument that an absent aligner is cheap to say now and expensive to
+   * discover after a render. True, and it was asking about the wrong machine:
+   * the model runs on a Crucible server and narrator's half runs in the TOOLS
+   * env, so a local `qwen-align` conda env is not what decides whether this
+   * door can work. It refused, by name, on machines that would have aligned
+   * fine. The refusal that is left is `runCoverageAlign`'s own, made once,
+   * naming the server it could not reach or the thing that server would not do.
+   */
   const events = require('../dist/electron/bridge-events.js');
 
   const stepId = `cli-align-${crypto.randomUUID()}`;

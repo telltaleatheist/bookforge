@@ -142,7 +142,10 @@ const WIRES = [
   {
     adapter: 'cli/coverage-align.js',
     module: 'coverage-align-job.js',
-    calls: ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython'],
+    // NOT `coverageAlignPython`: the plan-time local-env gate went on
+    // 2026-09-19 (bug hunt B2) — it asked whether THIS machine had a qwen conda
+    // env for work the server does, and refused doors that would have worked.
+    calls: ['runCoverageAlign', 'stopCoverageAlign', 'coverageReportPath'],
     appDoor: 'electron/queue-steps/align.ts',
   },
 ];
@@ -330,11 +333,22 @@ test('--align drives the app\'s align job, and builds no spawn of its own', () =
     'and assembly passes --coverage_report from the same function');
 
   const compiled = require(path.join(DIST, 'coverage-align-job.js'));
-  for (const symbol of ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython',
-                        'coverageReportPath']) {
+  for (const symbol of ['runCoverageAlign', 'stopCoverageAlign', 'coverageReportPath']) {
     assert.strictEqual(typeof compiled[symbol], 'function',
       `dist/electron/coverage-align-job.js exports ${symbol}`);
   }
+  // AND THE LOCAL-ENV GATE IS GONE, from the module and from the adapter
+  // (2026-09-19, B2): it asked whether this machine had a qwen conda env for a
+  // model that runs on a Crucible server, so it refused doors that worked.
+  for (const symbol of ['coverageAlignPython', 'coverageAlignRefusal']) {
+    assert.strictEqual(compiled[symbol], undefined,
+      `dist/electron/coverage-align-job.js still exports ${symbol} — the plan-time local-env `
+      + 'gate was removed on 2026-09-19 because it asked about the wrong machine');
+  }
+  // The CALL, not the name — the adapter's comment still records what the gate
+  // was and why it went.
+  assert.ok(!/job\.coverageAlign(Python|Refusal)\s*\(/.test(source),
+    'cli/coverage-align.js still gates on the local aligner env');
 });
 
 test('--align refuses to guess the language, as the app\'s step does', () => {

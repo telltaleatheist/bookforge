@@ -130,6 +130,21 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'tts-conversion':
       return job.stages ?? deriveTtsStages(job);
 
+    /*
+     * ONE ACT, ONE BAR. The prepare row is narrator's prep and nothing else:
+     * extract, split, pack. It has no phases to break down — the number
+     * normalization inside it reports its own `prep` sub-bar, which the row
+     * draws separately — and the step module deliberately does NOT forward the
+     * bridge's stage list, because that list describes the whole RENDER and
+     * three of its four bars would sit at 0 % under a row that never reaches
+     * them (`electron/queue-steps/prepare.ts`).
+     *
+     * Listed rather than left to `default`, so the decision is written down
+     * where somebody adding bars would look for it.
+     */
+    case 'prepare':
+      return [];
+
     case 'bilingual-assembly':
       return deriveBilingualAssemblyStages(job);
 

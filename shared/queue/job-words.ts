@@ -33,6 +33,10 @@ import type { JobType } from './engine-types';
  * different things about one run.
  */
 export const JOB_GERUND: Record<JobType, string> = {
+  // The book being packed into generation chunks, on the CPU, before any card
+  // is asked for. NOT "Starting": the bench draws this row as its own occupant
+  // of a `local-work` slot and the word has to say what is spending it.
+  'prepare': 'Preparing',
   'tts-conversion': 'Narrating',
   'translation': 'Translating',
   'rvc-enhancement': 'Enhancing',
@@ -63,6 +67,9 @@ export const JOB_GERUND: Record<JobType, string> = {
 
 /** What a finished job of this type produced — the tray card's kicker. */
 export const JOB_PRODUCT: Record<JobType, string> = {
+  // The chunks, because that is the thing the render reads and the thing that
+  // outlives the row — a packed session on disk, with no audio in it yet.
+  'prepare': 'Packed chunks',
   'tts-conversion': 'Narration',
   'translation': 'Translation',
   'rvc-enhancement': 'Voice enhancement',

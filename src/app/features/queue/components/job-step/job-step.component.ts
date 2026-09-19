@@ -464,6 +464,11 @@ export class JobStepComponent {
         }
         break;
 
+      // The same three facts the render row shows, because they are what the
+      // CHUNKS were packed to: the engine, the voice and its band decide where
+      // one chunk ends. A prepare row that says nothing about them would read
+      // as generic setup work.
+      case 'prepare':
       case 'tts-conversion':
         if (config['ttsEngine']) tags.push(this.capitalizeEngine(config['ttsEngine']));
         if (config['fineTuned']) tags.push(config['fineTuned']);
@@ -519,6 +524,10 @@ export class JobStepComponent {
   private labelForType(type: JobType): string {
     switch (type) {
       case 'translation': return 'Translation';
+      // The CPU row in front of the render: extract, split, pack. One word, and
+      // it is the act rather than "Setup" — a person reading the bench needs to
+      // know what is spending a `local-work` slot for the next four minutes.
+      case 'prepare': return 'Prepare';
       case 'tts-conversion': return 'TTS';
       case 'rvc-enhancement': return 'Voice Enhancement';
       case 'final-denoise': return 'Denoise';

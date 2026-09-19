@@ -846,11 +846,23 @@ async function bridgeSeamChecks() {
     // tools/test-crucible-render-session.js); the resume asks through
     // `decideAndRememberVenue`, which records the answer on a session that
     // already exists.
+    /*
+     * FIVE SINCE 2026-09-19, and the new one is PREP.
+     *
+     * Owen split the prep off into its own CPU row that evening, and the two
+     * halves ask this for two different reasons — which is why both must ask.
+     * `packSessionForNarration` asks it to know whose BAND to pack the chunks
+     * to (`GET /v1/voices`, the rendering machine's `max_chars`, never this
+     * machine's catalog); `startParallelConversion` asks it to know where to
+     * SUBMIT, which may be a different machine by the time the chunks exist.
+     * When the two answers differ, the render refuses by name if the packing
+     * cannot travel (`packingTravelsTo`).
+     */
     const asked = bridge.match(/decideGenerationVenue\(/g) || [];
-    assert.strictEqual(asked.length, 4,
-      `decideGenerationVenue is called ${asked.length} time(s): its own definition, the two fresh `
-      + 'launch points (startParallelConversion, renderRangeHeadless), and decideAndRememberVenue. '
-      + 'A new launch point must ask too.');
+    assert.strictEqual(asked.length, 5,
+      `decideGenerationVenue is called ${asked.length} time(s): its own definition, the prep half `
+      + '(packSessionForNarration), the two fresh launch points (startParallelConversion, '
+      + 'renderRangeHeadless), and decideAndRememberVenue. A new launch point must ask too.');
     const remembered = bridge.match(/decideAndRememberVenue\(/g) || [];
     assert.strictEqual(remembered.length, 2,
       `decideAndRememberVenue is called ${remembered.length} time(s): its own definition plus the `

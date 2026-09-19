@@ -332,7 +332,7 @@ export type ProcessingPassJobConfig = PassJobConfig & {
 export type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 import type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 
-export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | AlignJobConfig | FinalDenoiseJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
+export type JobConfig = ProcessingPassJobConfig | PrepareJobConfig | TtsConversionConfig | TranslationJobConfig | AlignJobConfig | FinalDenoiseJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -554,6 +554,44 @@ export interface AlignJobConfig {
   sessionDir: string;
   processDir: string;
   language: string;
+  /**
+   * 'gpu' or 'cpu' — where the measurement runs. A row composed by a narration
+   * run says 'gpu' (the alignment is a Crucible `align` job and a Crucible has
+   * only the card); absent is 'cpu', which is what every row queued before the
+   * choice existed was.
+   */
+  device?: 'cpu' | 'gpu';
+  /**
+   * The gap the assembly of this session will leave between chapters, so the
+   * transcript is measured on the assembly's own ruler. Absent is not zero —
+   * both sides resolve an unstated gap to the house default.
+   */
+  chapterGap?: number;
+}
+
+/**
+ * PACK THE BOOK INTO GENERATION CHUNKS — the CPU row in front of the render
+ * (Owen, 2026-09-19). See `@shared/queue/narration-run.ts`
+ * (`NarrationPrepareConfig`) for the ruling and the fields' reasons; this is
+ * the same set, named for this window's own union.
+ */
+export interface PrepareJobConfig {
+  type: 'prepare';
+  language: string;
+  ttsEngine: string;
+  fineTuned: string;
+  speed: number;
+  enableTextSplitting: boolean;
+  parallelMode?: 'sentences' | 'chapters';
+  textCleanup: 'required' | 'skipped';
+  startFresh: boolean;
+  sentencePerParagraph?: boolean;
+  skipHeadings?: boolean;
+  testMode?: boolean;
+  testSentences?: number;
+  bfpPath?: string;
+  projectDir?: string;
+  isArticle?: boolean;
 }
 
 /**

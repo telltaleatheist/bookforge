@@ -630,6 +630,17 @@ const SUITES = [
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
   'test-queue-engine',
+  // PREPARE → NARRATE → ALIGN, through the real pump (Owen, 2026-09-19). Three
+  // rows where there was one, and all three of the defects the split fixes are
+  // invisible from the outside: a GPU slot spent extracting an EPUB; a prep
+  // thrown away and paid for again every time a server answered 409; and a
+  // coverage alignment inside the render step that held the card for ten
+  // minutes after it went idle, announced its own failure, and shipped the
+  // book with an estimated transcript nobody was told about. This drives the
+  // scheduler, because every property Owen asked for is an ADMISSION property
+  // — that the prep starts while the server is busy, that the card goes back
+  // at the render's own boundary, that a failed align stops the book.
+  'test-queue-narration-plan',
   // The enable switch must reach the scheduler before the next pump, not in ten seconds.
   'test-queue-routing-freshness',
   // Which project a session-consuming row is about, and the session a narration
