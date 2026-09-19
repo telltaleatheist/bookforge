@@ -24,6 +24,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { ReaderService } from '../services/reader.service';
 import { ServerConfigService } from '../services/server-config.service';
 import { AudioBackend, createAudioBackend } from '../services/audio-backend';
+import type { RenderStatus } from '@shared/audio/render-status';
 
 export type RenderPlaybackState = 'idle' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
@@ -161,8 +162,12 @@ export class RenderPlaybackService {
           this.cfg.url(`/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(this.token())}`),
         );
         if (res.ok) {
-          const s = await res.json();
-          this.rendered.set(s.rendered || 0);
+          // THE SHAPE HAS ONE OWNER (`shared/audio/render-status.ts`), which the
+          // service answers with and the route puts on the wire. This read it as
+          // whatever `res.json()` returned, so a field renamed in the main
+          // process arrived here as a progress bar that stopped moving.
+          const s = await res.json() as RenderStatus;
+          this.rendered.set(s.rendered);
           if (s.total) this.total.set(s.total);
           this.coverage = Array.isArray(s.coverage) ? s.coverage : this.coverage;
           // The render loop aborts (engine failed to start / model failed to load /
@@ -185,9 +190,12 @@ export class RenderPlaybackService {
   }
 
   private isReady(i: number): boolean {
-    // A covered sentence always has a file on disk (the renderer writes even failed
-    // ones as short silence), so coverage is authoritative. Before the first status
-    // poll arrives coverage is empty → treat as not-ready and wait for the poll.
+    // A covered sentence always has a file on disk, so coverage is authoritative.
+    // It used to say "the renderer writes even failed ones as short silence";
+    // there is no silence pad any more (Owen, 2026-09-18: a thrice-failed
+    // sentence keeps its best take, or the book does not ship), so a covered
+    // sentence is a rendered one. Before the first status poll arrives coverage
+    // is empty → treat as not-ready and wait for the poll.
     return this.coverage.length > i && !!this.coverage[i];
   }
 

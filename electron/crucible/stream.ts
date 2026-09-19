@@ -126,7 +126,7 @@ import {
   type CrucibleRowChunk,
 } from '../../shared/listen-client/crucible-rows.js';
 import { CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE, CrucibleRenderRefused, crucibleVoiceFor } from './render';
-import { bandFromVoiceRow, venuePackingCeiling } from './voice-band';
+import { bandFromVoiceRow, venuePackingCeiling, type CrucibleVoiceBand } from './voice-band';
 import { decideWhereGenerationRuns, type VenueHost } from './generation-venue';
 import { recordCrucibleStreamRow, takeChunkGuards } from '../chunk-guard-ledger';
 import { IdleWatch } from '../stream-idle';
@@ -398,6 +398,59 @@ export interface CrucibleStreamingEngineDeps {
   selectedEngine(): StreamEngineName;
   /** A client bound to a registered server (or `local`), named `bookforge`. */
   clientFor(server: string): CrucibleClient | Promise<CrucibleClient>;
+}
+
+/**
+ * THE VOICE'S THREE RATES AS `statedChunkCaps` CARRIES THEM — all three or none,
+ * verbatim off the row the band was built from.
+ *
+ * ALL THREE OR NONE is narrator's own rule for this triple
+ * (`python/narrator/engine/higgs/truncation.py`, `_pace_tracker_for`: the
+ * voice's own pace and band "when the catalog measured them — reads all three or
+ * none", else the engine's default band), and it is what a Crucible enforces on
+ * the manifest a row is built from (`crucible/voices.py` `_check_pace`: the
+ * three are required and must satisfy `min < pace < max`). A PARTIAL triple is
+ * therefore not a voice with less information, it is a band nobody finished
+ * writing, and it is refused here by the name of the rate that is missing.
+ *
+ * Checked at all, given the SDK types all three `VoicePace` fields `number`,
+ * because this is the WIRE: `bandFromVoiceRow` copies them out of the parsed row
+ * without measuring them, so the types are the SDK's promise about the protocol
+ * and not evidence about the bytes that arrived. The consumer this feeds —
+ * `book-render-service.ts`, settling a thrice-failed sentence on `chars ÷ pace`
+ * — would divide by `undefined` and file a take for no reason at all.
+ */
+export function statedRatesFromBand(band: CrucibleVoiceBand): {
+  paceCharsPerSec: number | null;
+  maxCharsPerSec: number | null;
+  minCharsPerSec: number | null;
+} {
+  const rates = {
+    pace_chars_per_sec: band.paceCharsPerSec,
+    max_chars_per_sec: band.maxCharsPerSec,
+    min_chars_per_sec: band.minCharsPerSec,
+  };
+  const missing = Object.entries(rates)
+    .filter(([, v]) => typeof v !== 'number' || !Number.isFinite(v) || v <= 0)
+    .map(([k]) => k);
+  if (missing.length === 3) {
+    return { paceCharsPerSec: null, maxCharsPerSec: null, minCharsPerSec: null };
+  }
+  if (missing.length > 0) {
+    throw new CrucibleStreamRefused(
+      'crucible_voice_states_partial_pace',
+      `crucible "${band.server}" states a pace block for voice "${band.voice}" that is missing `
+      + `${missing.join(', ')} (it states ${JSON.stringify(rates)}). The three rates are one fact: `
+      + 'narrator reads all three or none (truncation.py, `_pace_tracker_for`) and a Crucible '
+      + 'refuses a manifest that states fewer (voices.py, `_check_pace`), so two of them is a band '
+      + 'nobody finished writing rather than a voice this client can measure a take against.',
+    );
+  }
+  return {
+    paceCharsPerSec: band.paceCharsPerSec,
+    maxCharsPerSec: band.maxCharsPerSec,
+    minCharsPerSec: band.minCharsPerSec,
+  };
 }
 
 /**
@@ -789,11 +842,19 @@ export class CrucibleStreamingEngine {
    * because packing to the local catalog after the server said no is how a book
    * gets rendered to a cap nobody measured. `null` means only one thing — this
    * engine has no venue bound yet, which the facade does not allow.
+   *
+   * THE THREE RATES COME OUT WITH THE LENGTHS, verbatim from the row
+   * ({@link statedRatesFromBand}). They were built here and dropped here until
+   * 2026-09-18, which is why the bookshelf render refused to settle a
+   * thrice-failed sentence it already had takes for.
    */
   statedChunkCaps = async (voice: string): Promise<{
     maxChars: number | null;
     safeMinChars: number | null;
     safeMaxChars: number | null;
+    paceCharsPerSec: number | null;
+    maxCharsPerSec: number | null;
+    minCharsPerSec: number | null;
   } | null> => {
     const server = this.server;
     const client = this.client;
@@ -818,6 +879,7 @@ export class CrucibleStreamingEngine {
       // never above the cap. `listenBandFromCaps` takes `safeMaxChars ?? maxChars`
       // and this hands it the already-resolved answer.
       safeMaxChars: venuePackingCeiling(band),
+      ...statedRatesFromBand(band),
     };
   };
 
@@ -1044,13 +1106,33 @@ export function venueRoutedStreamingEngine(deps: VenueRoutedDeps): StreamingEngi
      * taking it twice in two ways is how the pack and the render end up on two
      * different servers.
      *
+     * AND THERE IS NO `null` ON THIS ROUTE. A `null` is not "no answer" to the
+     * surfaces that ask: `reader-stream-bridge.ts` read one as leave-to-pack
+     * from `higgs-models.json` — THIS machine's numbers for a voice another
+     * machine is holding, which is the one thing `voice-band.ts` forbids for a
+     * Crucible render. So both ways a null used to arrive are refused by name
+     * here, exactly as `getMaxConcurrentSentences` above refuses a backend that
+     * states no batch width.
      */
     statedChunkCaps: async (voice) => {
       const engine = backend();
-      if (typeof engine.statedChunkCaps !== 'function') return null;
+      if (typeof engine.statedChunkCaps !== 'function') {
+        throw new Error('the bound streaming backend states no chunk band (statedChunkCaps) — a Listen '
+          + 'that packs to the local catalog instead would be this machine\'s numbers for a voice '
+          + 'another machine is holding');
+      }
       const started = await startSession();
       if (!started.success) throw new Error(started.error ?? 'Listen has nowhere to run');
-      return engine.statedChunkCaps(voice);
+      const stated = await engine.statedChunkCaps(voice);
+      if (stated === null) {
+        // The backend resolves null for one reason and says so in its own
+        // comment: no venue is bound. That cannot be true after the decision
+        // above succeeded, and if it is, it is a routing failure — not leave to
+        // read the catalog.
+        throw new Error(`the streaming backend has no venue bound after Listen was routed, so nothing `
+          + `states a band for voice "${voice}" — the local catalog is not consulted for a Crucible Listen`);
+      }
+      return stated;
     },
   };
 }

@@ -28,6 +28,8 @@
  * read-ahead; only non-active settled blocks are evicted.
  */
 
+import { pcm16WavHeader, WAV_HEADER_BYTES } from './pcm16-wav';
+
 // PCM16 mono @ 24 kHz — the reader engine's output (mirrors reader-protocol.ts).
 const SAMPLE_RATE = 24000;
 const BYTES_PER_SECOND = SAMPLE_RATE * 2;
@@ -139,22 +141,12 @@ export function wav(key: string): Buffer | null {
 }
 
 function buildWav(segments: Buffer[], dataBytes: number, sampleRate: number): Buffer {
-  const header = Buffer.alloc(44);
-  const byteRate = sampleRate * 2; // mono, 16-bit
-  header.write('RIFF', 0, 'ascii');
-  header.writeUInt32LE(36 + dataBytes, 4);
-  header.write('WAVE', 8, 'ascii');
-  header.write('fmt ', 12, 'ascii');
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);          // PCM
-  header.writeUInt16LE(1, 22);          // mono
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(2, 32);          // block align
-  header.writeUInt16LE(16, 34);         // bits/sample
-  header.write('data', 36, 'ascii');
-  header.writeUInt32LE(dataBytes, 40);
-  return Buffer.concat([header, ...segments], 44 + dataBytes);
+  // The header this used to build itself now has ONE owner (./pcm16-wav.ts):
+  // the whole-book render turns the same engine's PCM16 into the same files,
+  // and having only one of the two writers know the shape is why its sentences
+  // shipped with no header at all. The segments are concatenated here rather
+  // than joined first so the block's buffers are copied once.
+  return Buffer.concat([pcm16WavHeader(dataBytes, sampleRate), ...segments], WAV_HEADER_BYTES + dataBytes);
 }
 
 /** Evict oldest SETTLED blocks until under the byte cap. Never drops a block that's

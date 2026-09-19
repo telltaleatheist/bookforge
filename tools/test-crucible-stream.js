@@ -34,6 +34,11 @@
  *     `busyLine` on the busy one, and the local pool is never started instead.
  *  6. **A stale row is cancelled on the server, a live one is not; the session
  *     closes on stop; a session the server drops fails its rows by name.**
+ *  7. **The band the facade passes on is the SERVER's, and there is no other
+ *     answer.** `statedChunkCaps` resolved `null` for a backend that declared
+ *     none and for one with no venue bound — and a `null` here is read by the
+ *     Listen surfaces as "pack from the local catalog", which is the one thing
+ *     `electron/crucible/voice-band.ts` forbids for a Crucible render.
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
@@ -895,6 +900,67 @@ async function refusalChecks() {
 // The refusal reader, on its own
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. The band comes from the VENUE, or nowhere
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function bandChecks() {
+  const fake = await startFakeCrucible();
+  const local = localStub();
+  const engine = engineFor(fake);
+  const facadeOn = (crucible) => streamMod.venueRoutedStreamingEngine({
+    local: () => local, crucible, crucibleEngine: engine, venue: venueHost({}),
+  });
+  try {
+    await checkQuiet('the facade passes the SERVER\'s stated band through, verbatim', async () => {
+      const stated = await facadeOn(engine).statedChunkCaps('mistborn');
+      assert.strictEqual(stated.maxChars, 800, 'the cap is the row\'s max_chars');
+      assert.strictEqual(stated.safeMaxChars, 800);
+      assert.strictEqual(stated.safeMinChars, 400);
+      assert.strictEqual(stated.paceCharsPerSec, 17.28, 'the pace is the row\'s own');
+    });
+
+    await checkQuiet('a backend that declares no statedChunkCaps is refused BY NAME, never resolved null', async () => {
+      // A `null` is not "no answer" to the surfaces that ask: the Listen door
+      // reads it as leave-to-pack-from-the-local-catalog, which is this
+      // machine's numbers for a book another machine will speak — the exact
+      // failure `voice-band.ts` was ruled to end. The facade above refuses a
+      // backend with no `getMaxConcurrentSentences` in as many words; the band
+      // is the same kind of fact.
+      const backend = { ...engine, statedChunkCaps: undefined };
+      await assert.rejects(
+        () => facadeOn(backend).statedChunkCaps('mistborn'),
+        (err) => {
+          assert.match(err.message, /statedChunkCaps/,
+            `the refusal does not name what the backend is missing: ${err.message}`);
+          assert.match(err.message, /catalog/i,
+            `the refusal does not say what must NOT happen instead: ${err.message}`);
+          return true;
+        });
+    });
+
+    await checkQuiet('a backend with no venue bound is refused BY NAME, never resolved null', async () => {
+      // `CrucibleStreamingEngine.statedChunkCaps` resolves null for exactly one
+      // reason, and says so: no server is bound. The facade takes the cold-start
+      // decision before asking, so a null after that means the bind did not
+      // happen — and passing it on turns a routing failure into a silent
+      // catalog read.
+      const backend = { ...engine, statedChunkCaps: async () => null };
+      await assert.rejects(
+        () => facadeOn(backend).statedChunkCaps('mistborn'),
+        (err) => {
+          assert.match(err.message, /venue|bound/i,
+            `the refusal does not name the missing venue: ${err.message}`);
+          assert.match(err.message, /catalog/i,
+            `the refusal does not say what must NOT happen instead: ${err.message}`);
+          return true;
+        });
+    });
+  } finally {
+    await fake.close();
+  }
+}
+
 async function describeChecks() {
   const { CrucibleRefused, CrucibleUnreachable } = require('@crucible/client');
   await checkQuiet('describeCrucibleStreamRefusal keeps the server\'s code in front and returns foreign errors unchanged', () => {
@@ -919,6 +985,7 @@ async function describeChecks() {
   await cancelChecks();
   await attachChecks();
   await refusalChecks();
+  await bandChecks();
   await describeChecks();
   console.log = realLog;
   console.error = realError;

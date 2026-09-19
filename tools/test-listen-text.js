@@ -5,6 +5,14 @@
  * book render service). Owen's ruling of 2026-09-06: Listen is fast, so it is
  * cleaned deterministically to the best of our ability, no model.
  *
+ * AND for the SENTENCE BOUNDARIES next door in segment.ts, which are the other
+ * half of the same claim: what the reader highlights, what the transcript says
+ * and what the voice is handed are one list of strings, so a segmenter that
+ * EDITS the text to find a boundary has changed the book. It did until
+ * 2026-09-18 — `no.` and `est.` were substring-replaced out of *piano.*,
+ * *best.* and every superlative, which deleted the full stop between two
+ * sentences and glued them into one row.
+ *
  *   npx tsc -p tsconfig.electron.json && node tools/test-listen-text.js
  */
 'use strict';
@@ -15,6 +23,7 @@ const DIST = path.join(__dirname, '..', 'dist', 'electron');
 const LISTEN_TEXT = path.join(__dirname, '..', 'dist', 'shared', 'listen-text', 'normalize.js');
 const { speakableListenText, foldCapsRun, stripUnspokenGlyphs } = require(LISTEN_TEXT);
 const { LETTERED_ACRONYMS } = require(LISTEN_TEXT);
+const { splitIntoSentences } = require(path.join(__dirname, '..', 'dist', 'shared', 'listen-text', 'segment.js'));
 const { SPOKEN_AS_WORD } = require(path.join(DIST, 'tts-spoken-forms.js'));
 const fs = require('fs');
 {
@@ -86,6 +95,59 @@ check('a single caps word at the head of a sentence, or a shout mid-sentence, is
   assert.strictEqual(foldCapsRun('WHY did he say that? NEVER again.'), 'WHY did he say that? NEVER again.');
   assert.strictEqual(foldCapsRun('"KELSIER\'S," she said.'), '"KELSIER\'S," she said.');
   assert.strictEqual(foldCapsRun('"WHY NOT," she said.'), '"Why Not," she said.');
+});
+
+console.log('sentence boundaries: the abbreviation list is an EXCEPTION list, never a rewrite');
+check('an ordinary word that ends in an abbreviation keeps its full stop', () => {
+  // The defect this file exists for: `no.` and `est.` fired inside *piano.*,
+  // *best.* and *honest.*, so two sentences arrived as one row with the stop gone.
+  assert.deepStrictEqual(splitIntoSentences('He played the piano. Then he left.'),
+    ['He played the piano.', 'Then he left.']);
+  assert.deepStrictEqual(splitIntoSentences('It was the best. Honest.'),
+    ['It was the best.', 'Honest.']);
+  assert.deepStrictEqual(splitIntoSentences('The forest was honest. The volcano was not.'),
+    ['The forest was honest.', 'The volcano was not.']);
+  // Word-bounded, so a word that merely ENDS in a listed abbreviation is not one.
+  assert.deepStrictEqual(splitIntoSentences('A Dino. Then a cat.'), ['A Dino.', 'Then a cat.']);
+});
+check('a dotted initialism keeps every period and does not end the segment', () => {
+  assert.deepStrictEqual(splitIntoSentences('The U.S. Army marched.'), ['The U.S. Army marched.']);
+  // U.S.S.R. used to come out as "USS.R." — the table rewrote its own prefix first.
+  assert.deepStrictEqual(splitIntoSentences('The U.S.S.R. collapsed in 1991.'),
+    ['The U.S.S.R. collapsed in 1991.']);
+});
+check('a title binds to the name after it, and a real boundary after that still splits', () => {
+  assert.deepStrictEqual(splitIntoSentences('Mr. Smith left. He ran.'), ['Mr. Smith left.', 'He ran.']);
+  assert.deepStrictEqual(splitIntoSentences('Dr. Jones and Mrs. Gale met at St. Paul. They talked.'),
+    ['Dr. Jones and Mrs. Gale met at St. Paul.', 'They talked.']);
+});
+check('an abbreviation that can END a sentence is left to the segmenter', () => {
+  // etc./Inc. are not exceptions: they are the last word of their phrase, so the
+  // capitalised word after one begins a new sentence and the break is REAL.
+  assert.deepStrictEqual(splitIntoSentences('Buy eggs, milk, etc. Then go home.'),
+    ['Buy eggs, milk, etc.', 'Then go home.']);
+  assert.deepStrictEqual(splitIntoSentences('He worked at Acme Inc. Then he quit.'),
+    ['He worked at Acme Inc.', 'Then he quit.']);
+  // And the WORD "no", which the old table's `no.` entry could not tell from the
+  // abbreviation, ends sentences constantly.
+  assert.deepStrictEqual(splitIntoSentences('He said no. Then he left.'),
+    ['He said no.', 'Then he left.']);
+});
+check('a short segment is still a segment — nothing displayed is dropped from the plan', () => {
+  // The other half of "spoken = displayed = aligned", from the far end: a
+  // `.filter(s => s.length > 3 || /^[A-Z]/.test(s))` deleted any segment of
+  // three characters or fewer not starting with an ASCII capital, so a block
+  // reading `42.` or `iv.` was shown by the reader and contributed nothing to
+  // plan.sentences — never highlighted, never spoken, never in the VTT.
+  assert.deepStrictEqual(splitIntoSentences('42.'), ['42.']);
+  assert.deepStrictEqual(splitIntoSentences('iv.'), ['iv.']);
+  assert.deepStrictEqual(splitIntoSentences('ok.'), ['ok.']);
+  assert.deepStrictEqual(splitIntoSentences('No!'), ['No!']);
+  // Non-ASCII capitals were hit hardest of all: the test was /^[A-Z]/.
+  assert.deepStrictEqual(splitIntoSentences('Да.'), ['Да.']);
+  // And a fragment inside a paragraph survives beside its neighbours.
+  assert.deepStrictEqual(splitIntoSentences('The road went on. 42. It ended.'),
+    ['The road went on.', '42.', 'It ended.']);
 });
 
 console.log('the shared footnote-marker predicate the extension strips with');

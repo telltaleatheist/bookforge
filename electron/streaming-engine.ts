@@ -147,11 +147,32 @@ export interface StreamingEngine {
    * configured, so the catalog's band is the engine's own. A backend that HAS an
    * answer and cannot give it yet resolves `null`, and the caller refuses rather
    * than packing to somebody else's numbers.
+   *
+   * THE THREE RATES TRAVEL WITH THE LENGTHS, and they are one fact in three
+   * numbers: ALL THREE OR NONE. That is narrator's own rule for the same triple
+   * (`python/narrator/engine/higgs/truncation.py`, `_pace_tracker_for`: "the
+   * voice's own recorded pace and band when the catalog measured them — reads
+   * all three or none"), and it is how a Crucible states them
+   * (`crucible/voices.py` requires all three of a manifest's `[pace]` or
+   * refuses it). An engine that states two of them has a band nobody finished
+   * writing, so the shape here does not admit one.
+   *
+   * They are here because a LENGTH is not the only thing a client needs from
+   * the machine that will speak: `book-render-service.ts` settles a sentence
+   * that used up every attempt on `chars ÷ pace` — narrator's own accept rule
+   * (`truncation.py`, `_LadderTask._accept`) — and until they were carried out
+   * `electron/crucible/stream.ts` built them from the `GET /v1/voices` row and
+   * dropped them on the way out, so a thrice-failed sentence WITH takes was
+   * refused for want of a number the row had already stated.
    */
   statedChunkCaps?(voice: string): Promise<{
     maxChars: number | null;
     safeMinChars: number | null;
     safeMaxChars: number | null;
+    /** The pace the voice's band is centred on, in characters per second. */
+    paceCharsPerSec: number | null;
+    maxCharsPerSec: number | null;
+    minCharsPerSec: number | null;
   } | null>;
 }
 

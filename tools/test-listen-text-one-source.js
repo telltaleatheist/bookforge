@@ -228,7 +228,11 @@ const PINNED = [
   'splitForTts',
   'capSegment',
   'splitIntoSentences',
-  'normalizeAbbreviations',
+  // RENAMED 2026-09-18, same position in the pipeline. It was
+  // `normalizeAbbreviations`, which REWROTE the text before segmenting it and so
+  // deleted the full stop out of *piano.* and *best.*; the exception list now
+  // closes the false boundary instead of editing the book.
+  'mergeFalseAbbreviationBreaks',
   'packListenChunks',
   'foldCapsRun',
   'stripUnspokenGlyphs',

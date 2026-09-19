@@ -240,14 +240,21 @@ export async function extractArticleBlocks(url: string): Promise<{ title: string
   );
 
   try {
-    const loadTimeout = new Promise<void>((_, reject) =>
-      setTimeout(() => reject(new Error('page load timeout (45s)')), 45000)
-    );
+    // The timer is CLEARED once the race settles. A pending setTimeout holds
+    // the event loop open for the whole 45 s after the page has loaded and the
+    // window has been destroyed, and then rejects a promise nothing is waiting
+    // on any more.
+    let loadTimer: ReturnType<typeof setTimeout> | undefined;
+    const loadTimeout = new Promise<void>((_, reject) => {
+      loadTimer = setTimeout(() => reject(new Error('page load timeout (45s)')), 45000);
+    });
     try {
       await Promise.race([win.loadURL(url), loadTimeout]);
     } catch (err) {
       // Partial content may still be usable (SPA, slow tail) — press on.
       console.warn('[WEB-FETCH] Reader load warning:', (err as Error).message);
+    } finally {
+      clearTimeout(loadTimer);
     }
     // Small settle for late-rendered content.
     await new Promise((r) => setTimeout(r, 2500));
@@ -284,6 +291,50 @@ export async function extractArticleBlocks(url: string): Promise<{ title: string
     if (!win.isDestroyed()) win.destroy();
   }
 }
+
+/**
+ * A CAPTCHA IS A THING IN THE DOM, NOT A WORD IN THE PROSE.
+ *
+ * Until 2026-09-18 the check was `bodyText.slice(0, 1000).includes('challenge')
+ * || … || bodyText.length < 500`, and both halves fired on articles. Any piece
+ * whose opening paragraph says "the challenge of…" was declared blocked: the
+ * hidden window was shown and focused, titled *"Please solve the captcha, then
+ * close this window"*, the user closed it as instructed, the `closed` handler
+ * set `windowClosed`, and the next `isWindowValid()` reported the perfectly
+ * loading article as `Window closed by user`. The length half had a quieter
+ * ending — a short page (a poem, a note) can never reach the loop's
+ * `bodyLength > 1000` exit, so it burned the full 60 s and then filed a
+ * `partial` warning about a challenge page that was never there.
+ *
+ * So the probe asks the only question that has a factual answer: is one of the
+ * challenge vendors' OWN elements in this document? Each selector below is an
+ * id, class or frame source that belongs to the vendor and appears on no
+ * article. It returns the markers it found rather than a boolean, so the log
+ * and the `partial` warning can say WHICH one — and so that the wait loop can
+ * end when the marker is gone, which is what "solved" means. Page length and
+ * page prose are read by nothing here.
+ *
+ * Takes its document as an argument so `tools/test-web-fetch-article.js` can
+ * put one in front of it; in the page it is called with `document`.
+ */
+export const CAPTCHA_PROBE_JS = `(function (doc) {
+  var SELECTORS = [
+    'iframe[src*="captcha-delivery.com"]', '#captcha__element',     /* DataDome */
+    '#challenge-form', '#challenge-running', '#cf-challenge-running',
+    '.cf-turnstile', '#turnstile-wrapper',                          /* Cloudflare */
+    'iframe[src*="google.com/recaptcha"]', '.g-recaptcha',          /* reCAPTCHA */
+    'iframe[src*="hcaptcha.com"]', '.h-captcha',                    /* hCaptcha */
+    '#px-captcha',                                                  /* PerimeterX / HUMAN */
+    '#sec-cpt-if',                                                  /* Akamai */
+    'iframe[src*="_Incapsula_Resource"]',                           /* Imperva */
+    'iframe[src*="arkoselabs.com"]'                                 /* Arkose / FunCaptcha */
+  ];
+  var found = [];
+  for (var i = 0; i < SELECTORS.length; i++) {
+    if (doc.querySelector(SELECTORS[i])) found.push(SELECTORS[i]);
+  }
+  return found;
+})`;
 
 /**
  * Fetch a URL and extract article content using Readability
@@ -379,9 +430,13 @@ export async function fetchUrlToPdf(
     // Use a more robust loading strategy
     const loadPromise = fetchWindow.loadURL(url);
 
-    // Wait for initial load with timeout
+    // Wait for initial load with timeout. The timer is CLEARED once the race
+    // settles — see the same shape in extractArticleBlocks above: a pending
+    // setTimeout holds the event loop open for the rest of its minute and then
+    // rejects a promise nothing is waiting on.
+    let loadTimer: ReturnType<typeof setTimeout> | undefined;
     const loadTimeout = new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error('Initial load timeout (60s)')), 60000);
+      loadTimer = setTimeout(() => reject(new Error('Initial load timeout (60s)')), 60000);
     });
 
     try {
@@ -390,6 +445,8 @@ export async function fetchUrlToPdf(
       // If loadURL itself times out, we might still have partial content
       console.warn('[WEB-FETCH] Load warning:', (err as Error).message);
       partialReasons.push(`the page did not finish loading (${(err as Error).message})`);
+    } finally {
+      clearTimeout(loadTimer);
     }
 
     // Wait for dom-ready (more reliable than did-finish-load for complex sites)
@@ -443,16 +500,12 @@ export async function fetchUrlToPdf(
       return { success: false, error: 'Window closed by user' };
     }
 
-    // Check for captcha - if detected, wait for user to solve it
-    const checkForCaptcha = async (): Promise<boolean> => {
-      if (!isWindowValid()) return false;
-      const pageContent = await safeExecuteJS<string>(`
-        document.body ? document.body.textContent.substring(0, 1000) : ''
-      `);
-      return pageContent.includes('captcha-delivery') ||
-             pageContent.includes('challenge') ||
-             pageContent.includes('verify you are human') ||
-             pageContent.length < 500;
+    // Which challenge vendors' elements are in the page right now — see
+    // CAPTCHA_PROBE_JS. An empty list is a page with no captcha on it, whatever
+    // the page says and however short it is.
+    const captchaMarkers = async (): Promise<string[]> => {
+      if (!isWindowValid()) return [];
+      return safeExecuteJS<string[]>(`(${CAPTCHA_PROBE_JS})(document)`);
     };
 
     // Initial wait
@@ -462,9 +515,9 @@ export async function fetchUrlToPdf(
     }
 
     // Check for captcha and wait if needed
-    let hasCaptcha = await checkForCaptcha();
-    if (hasCaptcha && isWindowValid()) {
-      console.log('[WEB-FETCH] Captcha detected! Showing window for user to solve...');
+    let markers = await captchaMarkers();
+    if (markers.length > 0 && isWindowValid()) {
+      console.log(`[WEB-FETCH] Captcha detected (${markers.join(', ')}) — showing window for user to solve...`);
       fetchWindow.setTitle('Please solve the captcha, then close this window');
       fetchWindow.show();  // Show the hidden window
       fetchWindow.focus();
@@ -474,26 +527,21 @@ export async function fetchUrlToPdf(
       const checkInterval = 2000;
       const startTime = Date.now();
 
-      while (hasCaptcha && isWindowValid() && (Date.now() - startTime) < captchaTimeout) {
+      while (markers.length > 0 && isWindowValid() && (Date.now() - startTime) < captchaTimeout) {
         await new Promise(resolve => setTimeout(resolve, checkInterval));
 
         if (!isWindowValid()) break;
 
-        // Check if content has changed (captcha solved)
-        const bodyLength = await safeExecuteJS<number>(
-          'document.body ? document.body.textContent.length : 0'
-        );
-        console.log('[WEB-FETCH] Checking... body length:', bodyLength);
-
-        if (bodyLength > 1000) {
-          hasCaptcha = false;
-          console.log('[WEB-FETCH] Captcha appears to be solved!');
-        }
+        // SOLVED MEANS THE CHALLENGE IS GONE, which is the same question asked
+        // again. It used to be `body.textContent.length > 1000`: a proxy that
+        // a long challenge page satisfies and a short article never can.
+        markers = await captchaMarkers();
+        if (markers.length === 0) console.log('[WEB-FETCH] The challenge element is gone — proceeding.');
       }
 
-      if (hasCaptcha && isWindowValid()) {
+      if (markers.length > 0 && isWindowValid()) {
         console.log('[WEB-FETCH] Captcha timeout - proceeding anyway');
-        partialReasons.push('a captcha/verification page was still showing when the 60s wait expired — the extracted text may be the challenge page or incomplete');
+        partialReasons.push(`a captcha/verification page was still showing when the 60s wait expired (${markers.join(', ')}) — the extracted text may be the challenge page or incomplete`);
       }
     }
 
@@ -1015,21 +1063,114 @@ const BOILERPLATE_PATTERNS = [
   /^shows?\s+\w+\s+(cost|price|rate|change|trend)/i,
   // Read more / related
   /\b(read more|related articles?|see also|more from)\b:?\s*$/i,
-  // Copyright / legal
-  /\b(all rights reserved|copyright|©)\b/i,
+  // Copyright / legal. A NOTICE, not the word: these are anchored to the shape
+  // a footer line has — it OPENS with the symbol or the word and a year, or it
+  // CLOSES with "All rights reserved". Unanchored, `\b(…|copyright|©)\b` deleted
+  // "The court found that the copyright had expired." and every other short
+  // paragraph of an article whose subject is copyright, with no log line.
+  /^\s*(?:©|\(c\))\s*\d{4}/i,
+  /^\s*copyright\b[^.]{0,40}?\d{4}/i,
+  /\ball rights reserved\.?\s*$/i,
   /\bour standards:?\s*(the\s+)?thomson reuters/i,
 ];
 
 /**
- * Check if text is likely boilerplate content
+ * Whether a paragraph is boilerplate rather than article text.
+ *
+ * SHORT IS NOT BOILERPLATE. A `trimmed.length < 5 → true` line used to head
+ * this function, which deleted a standalone `1914` date heading, a one-word
+ * line and every other real short paragraph — length is evidence about nothing,
+ * and the caller has already dropped the empty ones. What remains is patterns
+ * that test for the SHAPE of a boilerplate block.
+ *
+ * Exported for `tools/test-web-fetch-article.js`; extractTextFromHtml below is
+ * its only other caller.
  */
-function isBoilerplate(text: string): boolean {
+export function isBoilerplate(text: string): boolean {
   const trimmed = text.trim();
-  if (trimmed.length < 5) return true;  // Too short
   if (trimmed.length > 500) return false;  // Long paragraphs are likely content
 
   return BOILERPLATE_PATTERNS.some(pattern => pattern.test(trimmed));
 }
+
+/**
+ * THE ARTICLE'S PARAGRAPHS, IN DOCUMENT ORDER, WITH NOTHING SKIPPED OVER.
+ *
+ * Walks the tree and returns one string per paragraph-shaped run of text. The
+ * shape of the walk is the fix (2026-09-18): the old version asked each block
+ * "do you have block CHILDREN?" and, if so, recursed into `element.children`
+ * and emitted nothing of its own. `element.children` is the ELEMENTS only, so
+ * the element's own text was not skipped over — it was never looked at.
+ *
+ *   <li>Introduction<ul><li>Sub A</li><li>Sub B</li></ul></li>
+ *
+ * — the shape every wiki- and documentation-style article is full of — came out
+ * as "Sub A", "Sub B", and *Introduction* was gone from the audiobook. The same
+ * line lost the direct text of any `<div>` that also held a `<p>`.
+ *
+ * So the walk is over `childNodes` instead: text is accumulated until a
+ * block-bearing child interrupts it, that run is flushed as its own paragraph,
+ * and the child is recursed into. Inline children (a `<span>`, an `<em>`, an
+ * `<a>`) are part of the run, not a recursion — which is how a leaf `<p>` still
+ * comes back as exactly its `textContent`, the one case the old code got right.
+ *
+ * `FIGURE` LEFT SKIP_TAGS at the same time, because the two sets contradicted
+ * each other: `FIGCAPTION` was listed as a block to emit and lives inside a
+ * `<figure>`, which returned at the first line, so the entry could never be
+ * reached for the standard markup. The sibling extractor next door
+ * (`extractArticleBlocks`) has always had `figcaption` in its selector list, so
+ * a caption is content here too. A `<figure>` is not itself a container tag; it
+ * is recursed into because it CONTAINS a block, which is the same rule as every
+ * other wrapper.
+ *
+ * Exported as source so it can be injected into the page AND measured directly
+ * by `tools/test-web-fetch-article.js` — there is one copy of this walk.
+ */
+export const LEAF_PARAGRAPHS_JS = `(function (root) {
+  var BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'FIGCAPTION', 'TD', 'TH']);
+  var CONTAINER_TAGS = new Set(['DIV', 'ARTICLE', 'SECTION', 'MAIN', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD']);
+  var SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'NAV', 'ASIDE', 'IFRAME', 'SVG']);
+  var paragraphs = [];
+
+  /* Whether this element has a block anywhere beneath it, and is therefore a
+     wrapper of paragraphs rather than a run of text. */
+  function containsBlock(element) {
+    for (var i = 0; i < element.children.length; i++) {
+      var child = element.children[i];
+      if (SKIP_TAGS.has(child.tagName)) continue;
+      if (BLOCK_TAGS.has(child.tagName) || CONTAINER_TAGS.has(child.tagName)) return true;
+      if (containsBlock(child)) return true;
+    }
+    return false;
+  }
+
+  function walk(element) {
+    if (!element || SKIP_TAGS.has(element.tagName)) return;
+    var pending = '';
+    function flush() {
+      var text = pending.trim();
+      if (text.length > 0) paragraphs.push(text);
+      pending = '';
+    }
+    var nodes = element.childNodes;
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.nodeType === 3) { pending += node.nodeValue; continue; }
+      if (node.nodeType !== 1) continue;
+      if (SKIP_TAGS.has(node.tagName)) continue;
+      if (BLOCK_TAGS.has(node.tagName) || CONTAINER_TAGS.has(node.tagName) || containsBlock(node)) {
+        flush();
+        walk(node);
+      } else {
+        pending += node.textContent;
+      }
+    }
+    flush();
+  }
+
+  walk(root);
+  return paragraphs;
+})`;
 
 /**
  * Extract clean text from saved HTML file
@@ -1046,9 +1187,27 @@ export async function extractTextFromHtml(
   htmlPath: string,
   deletedSelectors: string[]
 ): Promise<{ success: boolean; text?: string; error?: string }> {
-  const html = await fs.readFile(htmlPath, 'utf-8');
+  // Read BEFORE the window is made, and report the failure in the shape every
+  // caller reads. This read used to sit outside the try below, so an unreadable
+  // saved article THREW out of a function whose whole contract is
+  // `{ success, error }` — the one failure the callers could not see.
+  let html: string;
+  try {
+    html = await fs.readFile(htmlPath, 'utf-8');
+  } catch (error) {
+    const message = `could not read the saved article at ${htmlPath}: ${(error as Error).message}`;
+    console.error('[WEB-FETCH]', message);
+    return { success: false, error: message };
+  }
 
-  // Use Electron's BrowserWindow for proper DOM parsing
+  // Use Electron's BrowserWindow for proper DOM parsing. A HIDDEN WINDOW IS A
+  // RENDERER PROCESS, so the release below is bound to the acquisition with a
+  // `finally` rather than written once per way out: it used to be destroyed on
+  // the success path and again in the catch, which is two copies of one release
+  // — the post-processing under the first copy (`extractedText.split`, which
+  // throws for anything the page hands back that is not a string) then destroyed
+  // the SAME window a second time, and any early return added between them would
+  // have leaked it outright.
   const { BrowserWindow } = require('electron');
 
   const parseWindow = new BrowserWindow({
@@ -1096,69 +1255,17 @@ export async function extractTextFromHtml(
           } catch (e) {}
         });
 
-        // Step 3: Extract text using tree traversal
-        // Only extract from "leaf" block elements (blocks without nested blocks)
-        const BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'FIGCAPTION', 'TD', 'TH']);
-        const CONTAINER_TAGS = new Set(['DIV', 'ARTICLE', 'SECTION', 'MAIN', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD']);
-        const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'NAV', 'ASIDE', 'FIGURE', 'IFRAME', 'SVG']);
-
-        const paragraphs = [];
-
-        // Check if element has any block-level children
-        function hasBlockChildren(element) {
-          for (const child of element.children) {
-            if (BLOCK_TAGS.has(child.tagName) || CONTAINER_TAGS.has(child.tagName)) {
-              return true;
-            }
-          }
-          return false;
-        }
-
-        // Recursively extract text from DOM tree
-        function extractFromElement(element) {
-          if (!element || SKIP_TAGS.has(element.tagName)) return;
-
-          if (BLOCK_TAGS.has(element.tagName)) {
-            // This is a block element - check if it's a leaf (no nested blocks)
-            if (!hasBlockChildren(element)) {
-              const text = element.textContent.trim();
-              if (text.length > 0) {
-                paragraphs.push(text);
-              }
-            } else {
-              // Has block children - recurse into them instead
-              for (const child of element.children) {
-                extractFromElement(child);
-              }
-            }
-          } else if (CONTAINER_TAGS.has(element.tagName)) {
-            // Container element - recurse into children
-            for (const child of element.children) {
-              extractFromElement(child);
-            }
-          } else {
-            // Other elements (spans, etc) - recurse
-            for (const child of element.children) {
-              extractFromElement(child);
-            }
-          }
-        }
-
-        // Start extraction from body
-        if (document.body) {
-          extractFromElement(document.body);
-        }
-
+        // Step 3: Extract text using tree traversal — see LEAF_PARAGRAPHS_JS.
+        //
         // NO body-text fallback here: dumping document.body.textContent as one
         // giant paragraph bypasses the per-paragraph boilerplate filtering and
         // narrates nav/menus/footers as the article. Zero leaf paragraphs is an
         // extraction FAILURE, surfaced by the caller below.
+        const paragraphs = document.body ? (${LEAF_PARAGRAPHS_JS})(document.body) : [];
 
         return paragraphs.join('\\n\\n');
       })();
     `);
-
-    parseWindow.destroy();
 
     // Post-process: normalize whitespace and filter boilerplate
     const paragraphs = extractedText
@@ -1184,15 +1291,13 @@ export async function extractTextFromHtml(
 
     return { success: true, text };
   } catch (error) {
-    parseWindow.destroy();
     console.error('[WEB-FETCH] Failed to extract text:', error);
     return { success: false, error: (error as Error).message };
+  } finally {
+    parseWindow.destroy();
   }
 }
 
-/**
- * Escape special regex characters in a string
- */
-function escapeRegExp(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// `escapeRegExp` stood here until 2026-09-18 with no caller anywhere in the
+// repo (B4's smaller-findings table). Deleted rather than left: a helper nobody
+// calls is read as a helper somebody might.

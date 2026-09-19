@@ -35,6 +35,7 @@ import { normalizeFsPath } from './path-utils';
 // the ones a standalone mirror refuses, so a NAS-hosted server never pulls the
 // engine graph into memory at all. Types are `import type` — erased on emit.
 import type { ReaderStreamBridge } from './reader-stream-bridge';
+import type { RenderStatus } from '../shared/audio/render-status';
 import type { EpubChapter } from './epub-writer';
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
 import { readBinding, resolveSidecars, sidecarPathsFor } from './sidecar-binding';
@@ -2094,7 +2095,12 @@ export class BookshelfServer {
     const projectId = req.query.projectId;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
     const { bookRenderService } = await import('./book-render-service.js');
-    res.json(bookRenderService.status(projectId));
+    // NAMED ON THE WAY OUT, so the route is checked against the shape the reader
+    // reads (`shared/audio/render-status.ts`) rather than against `res.json`'s
+    // `any`. The reader polls this two to three times a second while a book
+    // renders and reads every field of it.
+    const status: RenderStatus = bookRenderService.status(projectId);
+    res.json(status);
   }
 
   /** GET /api/render/sentence?projectId&index — a rendered sentence's WAV bytes. */
