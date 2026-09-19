@@ -32,9 +32,9 @@ import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { serversOnThisMachine } from './crucible/servers';
 import { readRouting } from './crucible/routing';
-import { pingServer } from './crucible/probe';
+import { activityOf, pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
-import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
+import { busyLineFor, WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
 
@@ -110,10 +110,103 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
     },
     async reach(server: string) {
       const pong = await pingServer(server);
-      return pong.outcome === 'ok'
-        ? { reachable: true as const }
-        : { reachable: false as const, detail: pong.message };
+      if (pong.outcome !== 'ok') {
+        return { reachable: false as const, detail: pong.message };
+      }
+      return { reachable: true as const, busy: await busyAt(server) };
     },
+  };
+}
+
+/**
+ * WHAT IS ON THAT MACHINE'S CARD, before anything is submitted to it.
+ *
+ * Owen, 2026-09-19: *"Poll the server to see if it's available. If it isn't, it
+ * just waits in the queue until it's available."* This is that poll, and it
+ * rides the reach sweep the bench already runs — one `GET /v1/activity` per
+ * enabled server per 15 s, beside the ping that is already going.
+ *
+ * ── The question it asks is the door's own question ────────────────────────
+ *
+ * `slots.accelerated.acceptsWork` is exactly what `POST /v1/jobs` will answer
+ * with: false means the lane is held and a submit comes back `409 server_busy`.
+ * Asking anything else here — chats in flight, a resident model, a lease held
+ * by somebody — would park rows over facts that do not refuse a job (a vLLM
+ * engine batches chats and really will take more, and a held LEASE is refused
+ * on the lease door, which is where the reserve meets it).
+ *
+ * ── Null when it cannot say, and the backstop that covers it ───────────────
+ *
+ * `/v1/activity` arrived in Crucible 0.5.0, so an older server has no such
+ * route and answers 404; a machine can also answer `ping` and then drop the
+ * second call. Neither is evidence that the card is free, and neither is
+ * evidence that it is held — so this answers `null`, the row is admitted, and
+ * the `409` backstop does what it has always done. That is not a silent
+ * fallback: it is the documented order with its first step unavailable, and it
+ * is said out loud in the log, once per machine per run of the app.
+ */
+const activityGapReported = new Set<string>();
+
+async function busyAt(server: string): Promise<{ line: string } | null> {
+  const seen = await activityOf(server);
+  if (seen.outcome !== 'ok') {
+    if (!activityGapReported.has(server)) {
+      activityGapReported.add(server);
+      console.warn(
+        `[QUEUE-IPC] crucible "${server}" answers its ping but not /v1/activity, so the queue `
+        + `cannot see whether its card is free before it sends work there — it will learn from a `
+        + `409 instead (${seen.message})`,
+      );
+    }
+    return null;
+  }
+  const { activity } = seen;
+  if (activity.slot.acceptsWork) return null;
+
+  /*
+   * WHO IS IN THE WAY, in the order the server can name them. A job is the
+   * ordinary case; a streaming session holds the engine's exclusive claim and
+   * has NO denominator by contract (`ActivityStreaming.progress`), which is why
+   * the line composer takes a nullable progress rather than printing `0% done`
+   * for a reader who has said nothing yet.
+   */
+  const job = activity.running[0];
+  if (job !== undefined) {
+    return {
+      line: busyLineFor({
+        holder: job.client,
+        what: job.model === null ? job.type : `${job.type} ${job.model}`,
+        progress: job.progress,
+        message: job.message,
+      }),
+    };
+  }
+  const streaming = activity.streaming;
+  if (streaming !== null) {
+    return {
+      line: busyLineFor({
+        holder: streaming.client,
+        what: `a streaming session (${streaming.voice})`,
+        progress: null,
+        message: null,
+      }),
+    };
+  }
+  /*
+   * THE LANE IS SHUT AND THE SERVER NAMED NOBODY — a claim with no session yet,
+   * a model being warmed, a shutdown in progress. The holder is reported as
+   * what it is rather than guessed at, because a bench must never be
+   * confidently wrong about whose render is on the card (PHASE7-LANES §5).
+   */
+  return {
+    line: busyLineFor({
+      holder: activity.claimedBy,
+      what: activity.warming === null
+        ? 'its accelerated slot is not taking work'
+        : `loading ${activity.warming}`,
+      progress: null,
+      message: null,
+    }),
   };
 }
 

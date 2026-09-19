@@ -165,6 +165,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   CrucibleAuthError,
+  CrucibleBusy,
   CrucibleLeased,
   CrucibleProtocolError,
   CrucibleRefused,
@@ -874,6 +875,112 @@ export function crucibleRowLease(row: string): CrucibleLease | null {
 }
 
 /**
+ * A RESERVE THAT WAS REFUSED, carrying the holder's own line.
+ *
+ * The scheduler reads one rule — `busyLineOf` (queue-steps/runtime.ts), which
+ * duck-types on `busyLine` — so a refusal that means WAIT has to spell it that
+ * way. The SDK's two refusals spell it twice: `CrucibleBusy.busyLine` and
+ * `CrucibleLeased.leasedLine`, which is the same sentence about a longer clock
+ * and which `busyLineOf` would otherwise miss entirely, failing a row over a
+ * card that was merely held.
+ */
+class CrucibleReserveRefused extends Error {
+  readonly busyLine: string;
+
+  constructor(message: string, busyLine: string) {
+    super(message);
+    this.name = 'CrucibleReserveRefused';
+    this.busyLine = busyLine;
+  }
+}
+
+/**
+ * TAKE THIS ROW'S LEASE BEFORE ITS STEP STARTS — admission's door.
+ *
+ * ── Why the scheduler reserves (Owen, 2026-09-19) ──────────────────────────
+ *
+ * *"It reserves the lease, THEN it takes the slot and starts real work."* The
+ * lease used to be taken INSIDE the act, minutes into a prep, by whichever
+ * bridge got there first — so a row refused `409 leased` had already written
+ * its venue and spent that prep, and the queue's only knowledge of a held card
+ * arrived after a submit (bug hunt 2026-09-19, A1 and A2).
+ *
+ * ── Which model, and why this has to ask the server ────────────────────────
+ *
+ * A lease is on a MODEL (`POST /v1/models/{id}/lease`), and since phase 15 the
+ * id for an act is the SERVER's answer — `GET /v1/capability`'s `selected` for
+ * the class ({@link crucibleActModel}, the one owner). That is why
+ * `StepModule.leasedModel` answers null for every module and why this door is
+ * async: the scheduler knows the act and the machine, and the machine knows the
+ * model. A table on this side naming "simplify is the 27B" would be a second
+ * owner of a per-host fact (crucible ARCHITECTURE.md R1).
+ *
+ * ── It is the SAME lease the act will use ──────────────────────────────────
+ *
+ * It goes through {@link withRowLease}, so the row map holds it and the step's
+ * own `withCrucibleLease` — same server, same id — finds it and reuses it
+ * rather than taking a second one against itself. Nothing releases it here: the
+ * scheduler owns it from this moment, and `closeCrucibleRowLease` is the one
+ * door that gives it back.
+ */
+export async function reserveCrucibleRowLease(
+  row: string,
+  where: { server: string; act: string },
+): Promise<void> {
+  /*
+   * LAZY, for the reason text-venue.ts imports THIS module lazily: the two
+   * modules need each other — an act resolves its engine and then leases it,
+   * and a reserve leases an engine it has to resolve first — and a static pair
+   * would be a cycle. One of the two edges has to be deferred, and this is the
+   * newer one.
+   */
+  const { crucibleActModel } = await import('./text-venue.js');
+  try {
+    const model = await crucibleActModel({
+      server: where.server,
+      // The act vocabulary is the SERVER's (`require_act_name`), and the caller
+      // reads it off the step module's own `crucibleClass`. Cast rather than
+      // re-narrowed here: a copy of that list on this side could go stale in
+      // the direction that refuses a class Crucible had just learned.
+      act: where.act as Parameters<typeof crucibleActModel>[0]['act'],
+    });
+    await withRowLease(
+      row,
+      { server: where.server, kind: 'model', id: model, act: where.act },
+      async () => undefined,
+    );
+  } catch (err) {
+    throw asReserveRefusal(err, where.server, where.act);
+  }
+}
+
+/**
+ * One refusal, in the shape the scheduler reads.
+ *
+ * A HELD CARD IS A WAIT and travels as `busyLine`; everything else is left
+ * exactly as it arrived, because those refusals already name the
+ * misconfiguration and carry their own repair — the capability record that was
+ * never probed, the model that is not resident, the server that will not
+ * answer. Dressing one of those as a wait would park a row for ever on a thing
+ * that needs a person.
+ */
+function asReserveRefusal(err: unknown, server: string, act: string): unknown {
+  if (err instanceof CrucibleLeased) {
+    return new CrucibleReserveRefused(
+      `crucible "${server}" would not lease the ${act} model: ${err.leasedLine}`,
+      err.leasedLine,
+    );
+  }
+  if (err instanceof CrucibleBusy) {
+    return new CrucibleReserveRefused(
+      `crucible "${server}" would not lease the ${act} model: ${err.busyLine}`,
+      err.busyLine,
+    );
+  }
+  return err;
+}
+
+/**
  * THE THREE CALLS THE SCHEDULER MAKES, composed once.
  *
  * `queue-engine.ts` takes this seam injected rather than imported, to keep its
@@ -888,11 +995,15 @@ export function crucibleRowLease(row: string): CrucibleLease | null {
  */
 export function crucibleLeaseSeam(): {
   withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
+  reserveRow(row: string, where: { server: string; act: string }): Promise<void>;
   closeRow(row: string): Promise<void>;
   leaseSubject(row: string): string | null;
 } {
   return {
     withRowScope: withCrucibleRowScope,
+    // ADMISSION'S DOOR, and the reason the scheduler can promise Owen's order —
+    // the lease, and only then the slot. See {@link reserveCrucibleRowLease}.
+    reserveRow: reserveCrucibleRowLease,
     closeRow: closeCrucibleRowLease,
     // WHAT this run is holding, so the scheduler can compare it to what the
     // next act needs. A lease is per model and a server holds one, so keeping

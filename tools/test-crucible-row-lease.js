@@ -62,6 +62,7 @@ const path = require('path');
 
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, fakeNamer,
+  settingsRoutes, modelLeasedRefusal,
 } = require('./fake-crucible.js');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -825,6 +826,89 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
         await fake.close();
       }
     });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // THE RESERVE — admission takes the lease, and the act REUSES it
+  // ───────────────────────────────────────────────────────────────────────────
+  //
+  // Owen, 2026-09-19: *"It reserves the lease, THEN it takes the slot and
+  // starts real work."* The scheduler's half is pinned in
+  // `tools/test-queue-admission.js`, against a scripted seam; these two are the
+  // WIRE, because the reserve is only worth anything if the act that follows
+  // finds the same lease. A reserve that took a second lease would be this app
+  // refused `409 leased` in its own name, one step after paying for the first.
+
+  await check('a reserved lease is the one the act uses — ONE take on the wire', async () => {
+    const routes = leaseRoutes();
+    // The capability door, because the reserve has to ask the SERVER which
+    // model serves this act (phase 15 §5.3) — that is the whole reason
+    // `StepModule.leasedModel` answers null and this door is async.
+    const door = settingsRoutes({});
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (await door.handle(req, res, ctx)) return true;
+      return routes.handler(req, res, ctx);
+    });
+    const server = nameFake(fake.url);
+    try {
+      const seam = lease.crucibleLeaseSeam();
+      await seam.reserveRow('job_reserve', { server, act: 'clean' });
+      assert.strictEqual(routes.lease.taken.length, 1, 'admission took it');
+      assert.strictEqual(routes.lease.taken[0].model, 'qwen3.5-9b',
+        'on the model the SERVER names for that class, not one this side guessed');
+      assert.strictEqual(seam.leaseSubject('job_reserve'), 'qwen3.5-9b',
+        'and the row is holding it before anything has started');
+
+      // The act, exactly as a step runs it.
+      await lease.withCrucibleRowScope('job_reserve', () => lease.withCrucibleLease(
+        { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
+        async () => undefined,
+      ));
+      assert.strictEqual(routes.lease.taken.length, 1,
+        'the act REUSED the reserved lease — a second take is a 409 we hand ourselves');
+      assert.strictEqual(routes.lease.released.length, 0,
+        'and the act does not release it either: the scheduler owns it now');
+    } finally {
+      await lease.closeCrucibleRowLease('job_reserve');
+      await fake.close();
+    }
+  });
+
+  await check('a reserve refused `409 leased` carries the holder\'s line as `busyLine`', async () => {
+    /*
+     * The scheduler reads ONE rule — `busyLineOf`, which duck-types on
+     * `busyLine` — and the SDK spells this refusal `leasedLine`. Untranslated,
+     * a held card would reach `settleReserve` as an unnamed failure and the row
+     * would park on "something went wrong" instead of on who is holding the
+     * model and until when.
+     */
+    const routes = leaseRoutes({
+      refuseLease: () => modelLeasedRefusal({
+        model: 'qwen3.5-9b', client: 'foundry', act: 'translate', leaseId: 'lease-9',
+        since: '2026-09-19T03:00:00+00:00', expiresAt: '2026-09-19T04:00:00+00:00',
+      }),
+    });
+    const door = settingsRoutes({});
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (await door.handle(req, res, ctx)) return true;
+      return routes.handler(req, res, ctx);
+    });
+    const server = nameFake(fake.url);
+    try {
+      let thrown = null;
+      try {
+        await lease.crucibleLeaseSeam().reserveRow('job_refused', { server, act: 'clean' });
+      } catch (err) { thrown = err; }
+      assert.ok(thrown !== null, 'a refused reserve must not resolve');
+      assert.strictEqual(typeof thrown.busyLine, 'string',
+        'the holder\'s line has to arrive under the name the scheduler reads');
+      assert.match(thrown.busyLine, /^leased: foundry, translate, until /);
+      assert.strictEqual(lease.crucibleLeaseSeam().leaseSubject('job_refused'), null,
+        'and nothing is recorded as held — the take never happened');
+    } finally {
+      await lease.closeCrucibleRowLease('job_refused');
+      await fake.close();
+    }
+  });
 
   engine.clearStepModules();
   engine.setCrucibleLeaseHost(null);

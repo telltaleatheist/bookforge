@@ -222,6 +222,51 @@ function holdUnknownServer(
  */
 
 /**
+ * WHAT IS ON A SERVER'S CARD, as the one line a person reads.
+ *
+ * ── Why this exists beside the SDK's own (2026-09-19) ──────────────────────
+ *
+ * `CrucibleBusy.busyLine` in `@crucible/client` composes exactly this sentence
+ * — *"busy: foundry, tts qwen3, 62% done"* — and it is the spelling the queue
+ * has always shown, because until today the ONLY way this app learnt a card was
+ * held was a `409 server_busy` carrying that error. Admission now learns it
+ * BEFORE it submits anything, by reading `GET /v1/activity` on the reach sweep
+ * (Owen, 2026-09-19: *"poll the server to see if it's available"*) — and an
+ * activity read is not an error, so the getter cannot be called on it.
+ *
+ * Two composers for one sentence would drift, and the drift would be invisible:
+ * the same wait would read one way when it was polled and another way when it
+ * was refused, and nobody would be able to tell the two moments apart. So the
+ * SPELLING lives here, pure, and `tools/test-queue-admission.js` holds it
+ * against a real `CrucibleBusy` — if the SDK ever rewords its line, that keeper
+ * fails rather than the row quietly saying two things.
+ *
+ * `progress` is `null` for a holder with no denominator — a streaming session
+ * says so by contract (`ActivityStreaming.progress`), and a percentage of work
+ * that happens to have arrived is a number that goes DOWN. The clause is then
+ * left out rather than printed as `0% done`, which would be a measurement
+ * nobody made.
+ */
+export interface CrucibleBusyFacts {
+  /** The holder's User-Agent. `null` = it did not say; never a guessed name. */
+  readonly holder: string | null;
+  /** What is on the card — "tts qwen3", "a streaming session". */
+  readonly what: string;
+  /** 0..1, or null when the holder has no denominator. */
+  readonly progress: number | null;
+  /** The holder's latest progress line, or null. */
+  readonly message: string | null;
+}
+
+export function busyLineFor(facts: CrucibleBusyFacts): string {
+  const who = facts.holder === null ? 'an unnamed client' : facts.holder;
+  const head = facts.progress === null
+    ? `busy: ${who}, ${facts.what}`
+    : `busy: ${who}, ${facts.what}, ${Math.round(facts.progress * 100)}% done`;
+  return facts.message === null ? head : `${head} — ${facts.message}`;
+}
+
+/**
  * The 409 sentence, exported because it is said in TWO moments about one fact:
  * when a submit comes back refused, and on every admission pass while the
  * cool-off stands. One owner, so the row does not change its wording halfway

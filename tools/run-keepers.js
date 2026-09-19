@@ -643,6 +643,15 @@ const SUITES = [
   // made, and a 409 read as a failure — each of which looks like a working
   // queue right up until the audio is in the wrong voice or the night is gone.
   'test-queue-wait-for',
+  // A BOOK DOES NOT TAKE A SLOT UNTIL THE SERVER IS AVAILABLE — the admission
+  // ORDER (Owen, 2026-09-19): poll the card, ask the local gates, reserve the
+  // lease, and only then take the slot and write the venue. Every step of it
+  // was silent when it went wrong: a `409` that arrived after a full prep left
+  // the book PINNED to the machine that refused it, with a read-only picker
+  // saying it "was taken by a GPU" — which was false, nothing was taken — and
+  // the row then re-launched into the same refusal every 15 s all night (bug
+  // hunt 2026-09-19, A1 and A2).
+  'test-queue-admission',
   // EVERY STEP MODULE PARKS ON A HELD CARD, and none of them has to remember
   // how. A `409 server_busy` / `409 leased` is a WAIT (crucible
   // `docs/ARCHITECTURE.md` §3); it used to reach the scheduler by a side call
