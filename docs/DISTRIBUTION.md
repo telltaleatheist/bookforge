@@ -754,7 +754,7 @@ process, and the Python that actually calls `huggingface_hub` is:
 
 | Path | Script | Lives in |
 |---|---|---|
-| XTTS voices + XTTS base (`kind: 'tts-model'`) | `python -m bookforge_ext.download_model`, spawned by `fetchTtsModel` (`electron/components/component-manager.ts`) | **the e2a repo**: `C:\Users\tellt\Projects\ebook2audiobook\bookforge_ext\download_model.py` |
+| XTTS voices + XTTS base (`kind: 'tts-model'`) | `python -m bookforge_ext.download_model`, spawned by `fetchTtsModel` (`electron/components/component-manager.ts`) | **the e2a repo**: `C:\Users\<user>\Projects\ebook2audiobook\bookforge_ext\download_model.py` |
 | Stanza language packs | same module, different branch, spawned by `fetchLanguagePack` | same |
 | Whisper STT models | `electron/scripts/whisper_download.py`, spawned by `runWhisperModelDownload` (`electron/whisper-models.ts`) | this repo (runs inside the e2a env) |
 | Orpheus voices | `electron/scripts/orpheus_download.py`, spawned by `runDownload` (`electron/orpheus-hf-catalog.ts`) | this repo |
@@ -768,9 +768,9 @@ is the *only* place BookForge reads Orpheus voice metadata from.
 Two non-HF wrinkles worth knowing. The blocks GGUF is a plain HTTPS `downloadFile`
 in Node (`electron/blocks-models.ts`) — a single GGUF needs no Python at all, and
 Detect should not fail because a TTS env is missing. And `download_model.py`
-carries a `MIRROR_BASE` fallback pointing at `https://owenmorgan.com/bookforge`,
-used only after upstream HF fails; that host now returns HTTP 403 (see Known gaps
-§9.5).
+carries a `MIRROR_BASE` fallback pointing at the project's own (now retired)
+website, used only after upstream HF fails; that host now returns HTTP 403 (see
+Known gaps §9.5).
 
 ### 8.3 Authentication
 
@@ -927,8 +927,9 @@ already-published files.
 
 **9.5 — The e2a download mirror is unreachable.**
 `bookforge_ext/download_model.py` (e2a repo) defines
-`MIRROR_BASE = "https://owenmorgan.com/bookforge"` as the fallback when
-HuggingFace is unreachable for XTTS voices and Stanza packs. As of 2026-08-04 that
+a `MIRROR_BASE` pointing at the project's own website as the fallback when
+HuggingFace is unreachable for XTTS voices and Stanza packs. (The literal URL
+lives in that repo; it is not quoted here, because this repo is public.) As of 2026-08-04 that
 URL returns **HTTP 403**. The fallback therefore converts an upstream outage into
 a second failure rather than a recovery. (This is consistent with the site having
 been retired in favour of the `catalog-data` branch; the code was not updated.)

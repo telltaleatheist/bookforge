@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 // Import the compiled bridge
 const { MutoolBridge } = await import('../dist/electron/mutool-bridge.js');
 
-const TEST_PDF = process.argv[2] || '/Users/telltale/Documents/BookForge/files/Ethnic Cleansing in the USSR, 1937-1949. Pohl, Otto. (1999).pdf';
+const TEST_PDF = process.argv[2] || '/Users/<user>/Documents/BookForge/files/Ethnic Cleansing in the USSR, 1937-1949. Pohl, Otto. (1999).pdf';
 
 async function main() {
   console.log('=== MuTool Bridge Test ===\n');

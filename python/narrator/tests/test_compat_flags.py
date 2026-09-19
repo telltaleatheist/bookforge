@@ -398,7 +398,7 @@ class RoutingTest(unittest.TestCase):
         # this session's stays, and the real engine then refuses the pair
         # ("Orpheus got both model_dir and adapter_dir"). Loud, and e2a's.
         # See render/PORT_NOTES.md.
-        self.assertEqual(config.model_dir, '/home/telltale/orpheus-models/mistborn')
+        self.assertEqual(config.model_dir, '/home/<user>/orpheus-models/mistborn')
 
     def test_a_missing_session_id_is_refused_the_way_e2a_refuses_it(self):
         code, out = self.run_main([

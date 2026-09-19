@@ -1,6 +1,7 @@
 #!/bin/sh
 # Rebuild + restart the bookshelf mirror from a freshly staged context tarball.
-# Run as owenmorgan (docker group) — no root needed once membership exists.
+# Run as the NAS account that is in the docker group — no root needed once
+# membership exists (NAS.md, "Access facts").
 #   1. From the PC: build BookForge (npm run build:electron), tar the context,
 #      scp it to /volume1/System/bookshelf-server/bookshelf-server-context.tgz
 #   2. Here: sh /volume1/System/bookshelf-server/redeploy.sh

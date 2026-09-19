@@ -768,7 +768,7 @@ export async function runEpubAlignOnFiles(
      *
      * The per-chunk door can cross into the guest because the thing it reads —
      * the render's session — is written INSIDE the guest on ext4. This door
-     * reads an m4b and an EPUB out of the LIBRARY, which on this PC is the titan
+     * reads an m4b and an EPUB out of the LIBRARY, which on this PC is the NAS
      * share on Z:, and WSL has no /mnt for a network drive (memory:
      * wsl-cannot-see-network-drives). Spawning it there would hand the guest a
      * path it cannot open, halfway through a 40-minute transcribe.

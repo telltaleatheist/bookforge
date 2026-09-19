@@ -117,9 +117,9 @@ console.log('the connect code on this machine');
   });
 
   await check('a connect code is read and parsed by the SDK parser, with its file named', () => {
-    const line = 'crucible://crucible%40owens-pc@127.0.0.1:7100/#tok-abcdefghij\n';
+    const line = 'crucible://crucible%40example-pc@127.0.0.1:7100/#tok-abcdefghij\n';
     const got = pairingFile.readCruciblePairingFile(hostWith({ readFile: () => line }));
-    assert.strictEqual(got.pairing.name, 'crucible@owens-pc');
+    assert.strictEqual(got.pairing.name, 'crucible@example-pc');
     assert.strictEqual(got.pairing.url, 'http://127.0.0.1:7100');
     assert.strictEqual(got.pairing.token, 'tok-abcdefghij');
     assert.strictEqual(got.file, path.join('/home/t', '.crucible', 'pairing'));
@@ -137,7 +137,7 @@ console.log('the connect code on this machine');
   });
 
   await check('discoverCrucible asks the pairing file FIRST, and does not touch WSL when it answers', () => {
-    const line = 'crucible://crucible%40owens-pc-wsl@127.0.0.1:7100/#tok-abcdefghij\n';
+    const line = 'crucible://crucible%40example-pc-wsl@127.0.0.1:7100/#tok-abcdefghij\n';
     const got = discovery.discoverCrucible({
       platform: 'win32',
       env: {},
@@ -147,7 +147,7 @@ console.log('the connect code on this machine');
       runWsl: () => { throw new Error('the WSL door was opened although a connect code was there'); },
     });
     assert.strictEqual(got.via, 'pairing');
-    assert.strictEqual(got.name, 'crucible@owens-pc-wsl');
+    assert.strictEqual(got.name, 'crucible@example-pc-wsl');
     assert.strictEqual(got.url, 'http://127.0.0.1:7100');
     assert.strictEqual(got.token, 'tok-abcdefghij');
     assert.strictEqual(got.configPath, path.join('C:\\L', 'Crucible', 'pairing'));

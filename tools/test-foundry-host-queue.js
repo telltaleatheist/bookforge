@@ -171,7 +171,7 @@ async function fresh(name) {
   // project, so reusing a path would let one test's teardown read as another's
   // news. Every test calls fresh() first, so every PROJ below is its own.
   projectSeq += 1;
-  PROJ = `Z:\bookforge\foundry\projects\Book-${projectSeq}`;
+  PROJ = `Z:\<library>\foundry\projects\Book-${projectSeq}`;
   engine.clearStepModules();
   const mod = jobModule();
   engine.registerStepModule(mod);
@@ -878,7 +878,7 @@ test('a FINISHED read does not block a fresh press — that is a person asking a
 test('rows() is per project and carries the request\'s own identity', async () => {
   await fresh('rows');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
-  const other = 'Z:\\bookforge\\foundry\\projects\\Other-Book-def456';
+  const other = 'Z:\\<library>\\foundry\\projects\\Other-Book-def456';
 
   host.foundryHostQueue.enqueue(readRequest('a'), null, PROJ);
   host.foundryHostQueue.enqueue(readRequest('b', other), null, other);
@@ -1213,7 +1213,7 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
   engine.setGpuLockProbe(() => null);
   engine.setGpuHolderProbe(() => null);
   projectSeq += 1;
-  PROJ = `Z:\bookforge\foundry\projects\Book-${projectSeq}`;
+  PROJ = `Z:\<library>\foundry\projects\Book-${projectSeq}`;
   const dir = path.join(SCRATCH, 'no-runner');
   fs.mkdirSync(dir, { recursive: true });
   await engine.configure({ stateDir: dir });

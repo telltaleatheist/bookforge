@@ -1,6 +1,6 @@
 /**
  * publish-app.js — upload a built BookForge installer to GitHub under a STABLE name, so
- * owenmorgan.com/tools can use a permanent "latest" URL that never needs editing per release.
+ * a download page can use a permanent "latest" URL that never needs editing per release.
  *
  * BookForge builds with electron-builder (no publish provider), so we upload with the `gh` CLI.
  *

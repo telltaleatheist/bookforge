@@ -1,4 +1,4 @@
-eval-guard — 102 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.sent.units.jsonl
+eval-guard — 102 units from C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.sent.units.jsonl
   generated 2026-08-05T00:25:37-0400 in 52.0s on http://127.0.0.1:8771
   server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
 
@@ -13,7 +13,7 @@ policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  co
   per-run        7.070%     6.206%         7      48.0     912.5      0.00%           96    0.0%
 
   102 units, 29151 gold characters, 0 already correct (0.0%)
-  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+  model C:/Users/<user>/AppData/Local/foundry/models/foundry-4b-f16.gguf
 
   A model only beats "do nothing" by moving CER down without moving degraded
   and falseEdit up. `degraded` counts UNITS — compare it only within one unit
@@ -119,4 +119,4 @@ WORST DAMAGE UNDER per-run (5 of 7) — read these, do not average them
     OUT  "goal were infinite in extent, just as the‘expansionism and extension of aggression to other peoples were. boundless: 'Whereas Stalinism could 'settle down', as it effectively did after Stalin's death, into a static, even conservative, repressive regime, ."
     GOLD "goal were infinite in extent, just as the expansionism and extension of aggression to other peoples were boundless. Whereas Stalinism could ‘settle down’, as it effectively did after Stalin’s death, into a static, even conservative, repressive regime,"
 
-wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.sent.stats.json
+wrote C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.sent.stats.json

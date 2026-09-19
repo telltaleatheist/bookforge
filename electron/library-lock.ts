@@ -3,7 +3,7 @@
  *
  * ── Why this exists ─────────────────────────────────────────────────────────
  *
- * Owen's library is moving onto titan (the NAS), mounted over Samba by BOTH the
+ * Owen's library is moving onto the NAS (the NAS), mounted over Samba by BOTH the
  * PC and the Mac, with both machines' BookForge instances reading and writing
  * it (ruling 2026-08-17: "i just want them to share a library and both to be
  * able to read/write to it"). Artifact writes are safe by nature — new files,

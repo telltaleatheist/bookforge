@@ -64,7 +64,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-retire-'));
 
 /** The Crucible discovery finds on this machine, in the shape door 1 answers. */
 const HERE = {
-  name: 'crucible@owens-pc-wsl',
+  name: 'crucible@example-pc-wsl',
   url: 'http://127.0.0.1:7100',
   token: 'here-secret-JXn0',
   configPath: 'C:\\Users\\t\\AppData\\Local\\Crucible\\pairing',
@@ -84,7 +84,7 @@ function owensRecords(dir) {
   fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify({
     servers: [{
       name: 'mac',
-      url: 'http://owens-mac-studio.hs.owenmorgan.com:7100',
+      url: 'http://mac.example.test:7100',
       token: 'mac-secret-KCK0',
       added: '2026-09-13T01:08:17.845Z',
     }],
@@ -132,12 +132,12 @@ check("Owen's real records: `local` becomes the engine's own name, everywhere at
 
   assert.deepStrictEqual(report.found.sort(),
     ['crucible-routing.json', 'crucible-upstreams.json', 'queue-engine.json']);
-  assert.strictEqual(report.becameName, 'crucible@owens-pc-wsl');
+  assert.strictEqual(report.becameName, 'crucible@example-pc-wsl');
   assert.strictEqual(report.registered, true);
 
   // The registry gained ONE row, with the token discovery holds and nothing else.
   const registry = readJson(dir, 'crucible-servers.json');
-  assert.deepStrictEqual(registry.servers.map((r) => r.name), ['mac', 'crucible@owens-pc-wsl']);
+  assert.deepStrictEqual(registry.servers.map((r) => r.name), ['mac', 'crucible@example-pc-wsl']);
   const added = registry.servers[1];
   assert.strictEqual(added.url, 'http://127.0.0.1:7100');
   assert.strictEqual(added.token, 'here-secret-JXn0');
@@ -147,20 +147,20 @@ check("Owen's real records: `local` becomes the engine's own name, everywhere at
 
   // The rank record keeps its ORDER and its unknown key, with the name swapped.
   const routing = readJson(dir, 'crucible-routing.json');
-  assert.deepStrictEqual(routing.order, ['crucible@owens-pc-wsl', 'mac']);
+  assert.deepStrictEqual(routing.order, ['crucible@example-pc-wsl', 'mac']);
   assert.deepStrictEqual(routing.disabled, []);
   assert.strictEqual(routing.newJobsWaitFor, 'top-ranked');
   assert.strictEqual(routing.legacyLocalRender, false, 'a key this code knows nothing about is carried, not dropped');
 
   // The learned fact moves with the name; the other engine's is untouched.
   assert.deepStrictEqual(readJson(dir, 'crucible-upstreams.json'),
-    { upstreams: { mac: false, 'crucible@owens-pc-wsl': false } });
+    { upstreams: { mac: false, 'crucible@example-pc-wsl': false } });
 
   // The queue: the job's two fields and its step's venue, and nothing else.
   const queue = readJson(dir, 'queue-engine.json');
-  assert.strictEqual(queue.jobs[0].waitFor, 'crucible@owens-pc-wsl');
-  assert.strictEqual(queue.jobs[0].waitForResolved, 'crucible@owens-pc-wsl');
-  assert.strictEqual(queue.jobs[0].steps[0].venue, 'crucible@owens-pc-wsl');
+  assert.strictEqual(queue.jobs[0].waitFor, 'crucible@example-pc-wsl');
+  assert.strictEqual(queue.jobs[0].waitForResolved, 'crucible@example-pc-wsl');
+  assert.strictEqual(queue.jobs[0].steps[0].venue, 'crucible@example-pc-wsl');
   assert.strictEqual(queue.jobs[0].steps[0].status, 'done', 'a finished step keeps everything else');
   assert.deepStrictEqual(queue.jobs[1], {
     id: 'job_other',
@@ -210,18 +210,18 @@ check('a crash between the registry write and the rest is FINISHED by the next r
   const dir = owensRecords(path.join(root, 'crash'));
   const registry = readJson(dir, 'crucible-servers.json');
   registry.servers.push({
-    name: 'crucible@owens-pc-wsl', url: 'http://127.0.0.1:7100', token: 'here-secret-JXn0',
+    name: 'crucible@example-pc-wsl', url: 'http://127.0.0.1:7100', token: 'here-secret-JXn0',
     added: '2026-09-15T20:00:00.000Z',
   });
   fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify(registry, null, 2));
 
   const report = retire.retireReservedLocalName({ userData: dir, discover: () => HERE });
-  assert.strictEqual(report.becameName, 'crucible@owens-pc-wsl');
+  assert.strictEqual(report.becameName, 'crucible@example-pc-wsl');
   assert.strictEqual(report.registered, false, 'it was already registered; no second row');
   assert.deepStrictEqual(readJson(dir, 'crucible-servers.json').servers.map((r) => r.name),
-    ['mac', 'crucible@owens-pc-wsl']);
+    ['mac', 'crucible@example-pc-wsl']);
   assert.deepStrictEqual(readJson(dir, 'crucible-routing.json').order,
-    ['crucible@owens-pc-wsl', 'mac']);
+    ['crucible@example-pc-wsl', 'mac']);
 });
 
 check('an entry that ALREADY has that address wins the name, whatever it is called', () => {
@@ -246,7 +246,7 @@ check('a server GENUINELY called `local` is left entirely alone', () => {
   const dir = owensRecords(path.join(root, 'genuine'));
   const registry = readJson(dir, 'crucible-servers.json');
   registry.servers.push({
-    name: 'local', url: 'http://192.168.68.9:7100', token: 'other-secret-QQQ1',
+    name: 'local', url: 'http://192.0.2.9:7100', token: 'other-secret-QQQ1',
     added: '2026-09-14T00:00:00.000Z',
   });
   fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify(registry, null, 2));
@@ -293,7 +293,7 @@ check('that name is already a DIFFERENT machine: REFUSED BY NAME, nothing writte
   const dir = owensRecords(path.join(root, 'taken'));
   const registry = readJson(dir, 'crucible-servers.json');
   registry.servers.push({
-    name: 'crucible@owens-pc-wsl', url: 'http://192.168.68.9:7100', token: 'other-secret-QQQ1',
+    name: 'crucible@example-pc-wsl', url: 'http://192.0.2.9:7100', token: 'other-secret-QQQ1',
     added: '2026-09-14T00:00:00.000Z',
   });
   fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify(registry, null, 2));
@@ -301,7 +301,7 @@ check('that name is already a DIFFERENT machine: REFUSED BY NAME, nothing writte
 
   const err = refuses(() => retire.retireReservedLocalName({ userData: dir, discover: () => HERE }),
     'reserved_name_taken');
-  assert.ok(err.message.includes('http://192.168.68.9:7100'), err.message);
+  assert.ok(err.message.includes('http://192.0.2.9:7100'), err.message);
   assert.deepStrictEqual(snapshot(dir), before);
 });
 
@@ -332,9 +332,9 @@ check('a row at the SAME ADDRESS in a different case is recognised, not duplicat
    * cannot fail is worse than no test, so this one was re-run against the narrow
    * check until it went red.
    */
-  const discovered = { ...HERE, url: 'http://owens-pc:7100' };
+  const discovered = { ...HERE, url: 'http://example-pc:7100' };
   registry.servers.push({
-    name: 'wsl', url: 'http://OWENS-PC:7100', token: 'stored-secret-ZZ9',
+    name: 'wsl', url: 'http://EXAMPLE-PC:7100', token: 'stored-secret-ZZ9',
     added: '2026-09-14T00:00:00.000Z',
   });
   fs.writeFileSync(path.join(dir, 'crucible-servers.json'), JSON.stringify(registry, null, 2));
@@ -342,7 +342,7 @@ check('a row at the SAME ADDRESS in a different case is recognised, not duplicat
   const report = retire.retireReservedLocalName({ userData: dir, discover: () => discovered });
 
   const after = readJson(dir, 'crucible-servers.json').servers;
-  const atThisAddress = after.filter((row) => /owens-pc:7100/i.test(row.url));
+  const atThisAddress = after.filter((row) => /example-pc:7100/i.test(row.url));
   assert.strictEqual(atThisAddress.length, 1,
     'a second row was written for an address already in the registry — that is two GPU '
     + 'lanes over one card, created at startup, by a trailing slash');
@@ -370,7 +370,7 @@ check('describeRetirement names the records and the new name, and no credential'
   const dir = owensRecords(path.join(root, 'words'));
   const report = retire.retireReservedLocalName({ userData: dir, discover: () => HERE });
   const line = retire.describeRetirement(report);
-  assert.ok(line.includes('crucible@owens-pc-wsl'), line);
+  assert.ok(line.includes('crucible@example-pc-wsl'), line);
   assert.ok(line.includes('queue-engine.json'), line);
   assert.strictEqual(line.includes('here-secret'), false, 'a token must never reach a log');
   assert.strictEqual(line.includes('****'), false, 'and there is no reason to put even a mask there');

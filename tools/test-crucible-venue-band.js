@@ -223,7 +223,7 @@ const LOCAL_900 = {
   label: 'Deathstalker (test copy that believes 900)',
   kind: 'checkpoint',
   engineVersion: 'v3',
-  voice: { checkpoint: { wsl: '/home/telltale/higgs_v3_merged/ds_test_prod' } },
+  voice: { checkpoint: { wsl: '/home/<user>/higgs_v3_merged/ds_test_prod' } },
   backends: {
     served: {
       maxChars: 900,

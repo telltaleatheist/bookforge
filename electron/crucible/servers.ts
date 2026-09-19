@@ -3,7 +3,7 @@
  *
  * ── What Crucible is ────────────────────────────────────────────────────────
  *
- * Crucible (`C:\Users\tellt\Projects\crucible`, `docs/DESIGN.md`) is one
+ * Crucible (`C:\Users\<user>\Projects\crucible`, `docs/DESIGN.md`) is one
  * inference server for all of Owen's apps: it runs models and returns bytes, and
  * it never knows what an audiobook, a cleanup pass or a PDF conversion is. A
  * client speaks HTTP to it even when the server is on localhost — there is no

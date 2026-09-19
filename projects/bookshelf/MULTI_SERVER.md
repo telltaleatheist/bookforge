@@ -14,7 +14,7 @@ Status: **design agreed, implementation in slices** (see the bottom of this doc)
 Today the app is single-server by design: one `baseUrl` in
 `ServerConfigService` drives every fetch, and the reader token, analytics,
 positions, and covers are all scoped to that one server. The user runs BookForge
-on several machines (`owens-pc`, `owens-mac-studio`) whose libraries are synced
+on several machines (`example-pc`, `example-mac`) whose libraries are synced
 by Syncthing, and wants their phone to see **all** their books at once, with one
 combined reading history — regardless of which machine served a given book.
 
@@ -82,8 +82,8 @@ exists on multiple machines, each server's copy renders as its own row.
 ## Identity & analytics
 
 The requirement — "consolidate the analytics from all connected servers so it
-shows the total read" — only works if the app knows that "Owen on `owens-pc`"
-and "Owen on `owens-mac-studio`" are the **same human**. Plex solves this with a
+shows the total read" — only works if the app knows that "Owen on `example-pc`"
+and "Owen on `example-mac`" are the **same human**. Plex solves this with a
 central cloud account (plex.tv). BookForge has **no cloud**, so the **local
 profile on the device is the anchor** — it is the one place that knows every
 server you've claimed a profile on, which makes it the natural aggregator.

@@ -20,7 +20,7 @@ const OUT = path.resolve(__dirname, '..', 'dist', 'electron', 'build-info.json')
 
 function gitSha() {
   // A stage cut with `git archive` has no .git — the deploy recipe passes the
-  // sha it extracted instead (TITAN.md). The override IS the provenance there.
+  // sha it extracted instead (NAS.md). The override IS the provenance there.
   if (process.env.BOOKFORGE_BUILD_SHA) return process.env.BOOKFORGE_BUILD_SHA.trim();
   try {
     return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
@@ -32,7 +32,7 @@ function gitSha() {
     // than ship the lie). No git and no override is a misconfigured build.
     console.error('[stamp-build] No .git here and BOOKFORGE_BUILD_SHA is not set. '
       + 'Refusing to stamp a build nobody can trace — pass the sha this tree was '
-      + 'extracted from (see TITAN.md, "Deploying an update").');
+      + 'extracted from (see NAS.md, "Deploying an update").');
     process.exit(1);
   }
 }

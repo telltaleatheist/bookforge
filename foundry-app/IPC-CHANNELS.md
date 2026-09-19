@@ -103,7 +103,7 @@ this worktree.
   server is this machine's (`pairing-file` — this machine's pairing file, read
   through the SDK, matching a registry entry on BOTH url and token, the name
   deliberately not having to match, since this PC's file says
-  `crucible@owens-pc-wsl` and the same engine is registered as `local`;
+  `crucible@example-pc-wsl` and the same engine is registered as `local`;
   `windows-host` — `%LOCALAPPDATA%\Crucible\host\crucible.cmd` exists, which is
   what "the host is installed" MEANS; `wsl-guest` — win32 with no host pack and a
   Crucible in the distro door 2 names), and what would RUN (`via`, §6.2's three
@@ -1216,6 +1216,6 @@ nothing was added or renamed in this pass.
 Added so a run dialog can DEFAULT to an engine that can do the work, and so a
 refusal can name the engine that can rather than telling somebody to go and
 find it. Owen opened an OCR on an engine that cannot read pages and was told
-*"crucible@owens-mac-studio cannot read pages — choose another engine."*
+*"crucible@example-mac cannot read pages — choose another engine."*
 
 **139 → 140, counted by script, 140 distinct, zero `ipcMain.on`.**

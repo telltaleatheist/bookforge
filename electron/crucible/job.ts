@@ -364,8 +364,8 @@ export type CrucibleJobInputSource = string | Uint8Array;
  * dont need logs to appear there. move it to the console logs."* What he was
  * reading in a slot was
  *
- *     Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 6s elapsed,
- *     896s before give-up — === /home/telltale/.crucible/envs/llm/bin/python -m
+ *     Loading qwen3.5-9b on crucible@example-pc-wsl: vllm loading; 6s elapsed,
+ *     896s before give-up — === /home/<user>/.crucible/envs/llm/bin/python -m
  *     vllm.entrypoints.openai.api_server --model … --gpu-memory-utilization 0.84 …
  *
  * — a whole spawn command line, in a row that is four inches wide.

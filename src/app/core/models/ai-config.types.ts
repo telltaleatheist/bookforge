@@ -32,7 +32,7 @@
  * that had never chosen anything resolved a server named "local" — a name
  * retired months ago (`electron/crucible/retire-reserved-name.ts`) — and the
  * registry refused it: *no crucible server named "local" is registered (known:
- * mac, crucible@owens-pc-wsl)*. Owen hit that twice in one session. Deleting
+ * mac, crucible@example-pc-wsl)*. Owen hit that twice in one session. Deleting
  * the provider is what makes those two messages unreachable rather than handled.
  */
 export type AIProvider = 'crucible';
@@ -140,7 +140,7 @@ export interface CrucibleConfig {
  *
  * Owen hit this on 2026-09-17 with the new AI page open: *"The engine would
  * not answer for its settings: unnamed no crucible server named "local" is
- * registered (known: mac, crucible@owens-pc-wsl)"*.
+ * registered (known: mac, crucible@example-pc-wsl)"*.
  *
  * `local` used to be a RESERVED server name meaning "the engine on this
  * machine". It was retired months ago — a local Crucible is an ordinary
@@ -156,7 +156,7 @@ export interface CrucibleConfig {
  * heard of.
  *
  * THE REPAIR IS TO DROP IT, not to substitute one. Which registry row means
- * "this machine" is not guessable — on this PC it is `crucible@owens-pc-wsl`
+ * "this machine" is not guessable — on this PC it is `crucible@example-pc-wsl`
  * and on another it is whatever that operator typed — and picking one would be
  * this app choosing somebody's inference machine for them. With no server the
  * page says "pick a server", which is a sentence a person can act on.

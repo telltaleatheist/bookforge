@@ -91,7 +91,7 @@ export { CRUCIBLE_HOME_ENV };
  */
 export interface DiscoveredCrucible {
   /**
-   * `[server] name` — what the server calls ITSELF, e.g. `crucible@owens-pc-wsl`.
+   * `[server] name` — what the server calls ITSELF, e.g. `crucible@example-pc-wsl`.
    * Offered as the add form's suggested name and nothing more: the name a server
    * is filed under here is the operator's to choose.
    */

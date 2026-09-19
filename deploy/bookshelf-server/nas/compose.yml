@@ -1,6 +1,6 @@
-# BookForge Bookshelf mirror on titan — adapted from the repo's
+# BookForge Bookshelf mirror on the NAS — adapted from the repo's
 # deploy/bookshelf-server/docker-compose.yml (see that file for the reasoning).
-# Titan facts baked in: library share iO is on VOLUME3; build context is the
+# NAS facts baked in: library share iO is on VOLUME3; build context is the
 # staged tree under /volume1/System (survives UGOS updates, like everything
 # else in System/); state is a bind mount there too, so it is inspectable and
 # survives even a docker prune.
@@ -11,7 +11,7 @@ services:
       dockerfile: deploy/bookshelf-server/Dockerfile
     image: bookforge-bookshelf:latest
     container_name: bookforge-bookshelf
-    hostname: titan
+    hostname: nas
     restart: unless-stopped
     mem_limit: 5g
     ports:

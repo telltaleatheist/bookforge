@@ -13,7 +13,7 @@ policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  co
   per-run        0.327%     0.276%        36      52.9     104.4     13.26%          109   68.3%
 
   284 units, 77565 gold characters, 181 already correct (63.7%)
-  model /Users/telltale/Library/Application Support/foundry/models/foundry-4b-f16.gguf
+  model /Users/<user>/Library/Application Support/foundry/models/foundry-4b-f16.gguf
 
   A model only beats "do nothing" by moving CER down without moving degraded
   and falseEdit up. `degraded` counts UNITS — compare it only within one unit

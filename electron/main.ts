@@ -3029,11 +3029,11 @@ async function sweepDirContents(dir: string): Promise<void> {
    * A RENDER ON THE OTHER MACHINE IS NOT A LEFTOVER EITHER.
    *
    * The scratch dir is `<library>/tmp`, and the library is a share both machines
-   * mount (Z: on Windows, /Volumes/iO on the Mac). "Nothing is converting yet at
+   * mount (Z: on Windows, /Volumes/<share> on the Mac). "Nothing is converting yet at
    * startup" is a fact about THIS computer; it says nothing about the Mac, which
    * may be eight minutes into a book.
    *
-   * MEASURED, 2026-09-05: this sweep deleted `Z:\bookforge\tmp\ebook-83fa5cb8-…`
+   * MEASURED, 2026-09-05: this sweep deleted `Z:\<library>\tmp\ebook-83fa5cb8-…`
    * while the Mac was rendering into it. The FLACs its workers held open survived,
    * `session-state.json` and the ownership sidecar did not — and the render went
    * on to publish a project cache with audio and no text, over a complete one.

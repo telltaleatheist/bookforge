@@ -112,7 +112,7 @@ class HashDerivationTest(unittest.TestCase):
     `text/PORT_NOTES.md` section 5.1."""
 
     def test_path_md5_is_md5_of_the_path_string(self):
-        p = '/home/telltale/ebook2audiobook/tmp/staged-abc.epub'
+        p = '/home/<user>/ebook2audiobook/tmp/staged-abc.epub'
         self.assertEqual(epub_mod.path_md5(p),
                          hashlib.md5(p.encode()).hexdigest())
 
@@ -125,11 +125,11 @@ class HashDerivationTest(unittest.TestCase):
     def test_the_derivation_reproduces_a_real_golden_session(self):
         """kershaw, measured: the process-dir name is md5 of the WSL staging path
         and `epub_content_hash` is md5 of the COPY inside that dir."""
-        staged = ('/home/telltale/ebook2audiobook/tmp/'
+        staged = ('/home/<user>/ebook2audiobook/tmp/'
                   'staged-ccd14111-da29-4fb0-a489-a19a0f126bac.epub')
         self.assertEqual(epub_mod.path_md5(staged),
                          '645fe7068635f759cbda0b8a6d3a348d')
-        internal = ('/home/telltale/ebook2audiobook/tmp/'
+        internal = ('/home/<user>/ebook2audiobook/tmp/'
                     'ebook-ccd14111-da29-4fb0-a489-a19a0f126bac/'
                     '645fe7068635f759cbda0b8a6d3a348d/'
                     'staged-ccd14111-da29-4fb0-a489-a19a0f126bac.epub')

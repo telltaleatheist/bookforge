@@ -158,7 +158,7 @@ export interface AddressedUpstream {
  * and then fail to load.
  *
  * That is not hypothetical on the machine this was written on. Measured against
- * `crucible@owens-pc-wsl` on 2026-09-16: `qwen3.8-27b-4bit` offers
+ * `crucible@example-pc-wsl` on 2026-09-16: `qwen3.8-27b-4bit` offers
  * `memoryBytesEstimate` 21,633,171,456 — 20.15 GiB — and reports `fits: true`
  * against a 24 GB card carrying a 3 GiB desktop allowance, so roughly 21 GiB
  * available. **Under a gigabyte of headroom before any KV cache at all.**

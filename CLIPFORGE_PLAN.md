@@ -142,16 +142,16 @@ actor centroid regardless of how many actors speak over it).
 ### Env setup (dedicated conda env — do NOT touch e2a-env or bookforge-urvc)
 
 ```
-C:\Users\tellt\Miniforge3\Scripts\conda.exe create -n clipforge-speakers python=3.11 -y
-C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe -m pip install resemblyzer soundfile librosa scipy webrtcvad-wheels setuptools<81
+C:\Users\<user>\Miniforge3\Scripts\conda.exe create -n clipforge-speakers python=3.11 -y
+C:\Users\<user>\Miniforge3\envs\clipforge-speakers\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+C:\Users\<user>\Miniforge3\envs\clipforge-speakers\python.exe -m pip install resemblyzer soundfile librosa scipy webrtcvad-wheels setuptools<81
 ```
 
 Notes: torch is the CPU wheel (CPU-only pipeline). `webrtcvad-wheels` (not
 `webrtcvad`, which fails to build on Windows) provides the `webrtcvad` import
 resemblyzer needs; it imports `pkg_resources`, so `setuptools<81` must be present
 (newer setuptools removed it). The CLI hardcodes
-`C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe` as the DEFAULT but
+`C:\Users\<user>\Miniforge3\envs\clipforge-speakers\python.exe` as the DEFAULT but
 FAILS LOUDLY with this install hint if it is missing (no silent fallback) —
 override with `--python <python.exe>`.
 

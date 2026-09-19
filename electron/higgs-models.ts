@@ -287,14 +287,14 @@ export type HiggsCheckpointArm = 'wsl' | 'darwin';
  *
  * THE TWO ENTRIES ARE SHAPED DIFFERENTLY, on purpose:
  *
- *   `wsl`     an ABSOLUTE GUEST PATH (`/home/telltale/higgs_v3_merged/…`). It is
+ *   `wsl`     an ABSOLUTE GUEST PATH (`/home/<user>/higgs_v3_merged/…`). It is
  *             what the launch script receives, the guest has a fixed home, and
  *             the directory is deliberately NOT under /mnt — the 9p mount would
  *             dominate an 8.5 GB load. Refused if it is relative.
  *   `darwin`  a path RELATIVE TO THE APP'S userData DIRECTORY
  *             (`runtime/higgs-models/<dir>`), resolved to an absolute path at
  *             document-write time. A Mac's Application Support path carries the
- *             username, so an absolute `/Users/telltale/…` in a REPO-TRACKED
+ *             username, so an absolute `/Users/<user>/…` in a REPO-TRACKED
  *             catalog is a directory that exists on exactly one machine — which
  *             is the failure this catalog exists to prevent. The app knows its
  *             own userData; the catalog does not. Refused if it is absolute, and
@@ -326,7 +326,7 @@ export interface HiggsVoiceRef {
    * It replaced a single `checkpointDir` string on 2026-09-05 (see
    * `refuseRetiredCheckpointDir`): one string can only be one machine's path,
    * and it was the WSL guest's, so the Mac's voice document carried a
-   * `/home/telltale/…` directory that does not exist there.
+   * `/home/<user>/…` directory that does not exist there.
    */
   checkpoint?: HiggsCheckpointLocations;
   /** v2-only chat role. Present for shape parity; v3 has no scene mechanism. */
@@ -773,7 +773,7 @@ export interface HiggsSglangSpec {
    * a voice's `targetChars` is chosen, and this is the number that bounds it.
    */
   contextTokens: number;
-  /** Measured launch-to-health on owens-pc: ~110 s. */
+  /** Measured launch-to-health on example-pc: ~110 s. */
   coldStartSeconds: number;
 }
 
@@ -800,7 +800,7 @@ export interface HiggsServingSpec {
    * (`HIGGS_GPU_MEM_UTIL`).
    *
    * IT IS A BUDGET ON TOP OF THE WEIGHTS, NOT A CAP ON THE STAGE. The server's
-   * own log at 0.35 (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0,
+   * own log at 0.35 (example-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0,
    * 2026-09-05): "Desired GPU memory utilization is (0.35, 8.4 GiB). Actual
    * usage is 7.72 GiB", "Available KV cache memory: 8.4 GiB", "GPU KV cache
    * size: 61,120 tokens" — so stage 0 holds 7.72 GiB of weights AND 8.4 GiB of
@@ -1342,7 +1342,7 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
  * A CATALOG STILL WRITTEN THE OLD WAY IS REFUSED, NOT READ.
  *
  * `voice.checkpointDir` was one string for one machine, and it held the WSL
- * guest's path — so on the Mac it wrote a `/home/telltale/…` directory into the
+ * guest's path — so on the Mac it wrote a `/home/<user>/…` directory into the
  * voice document and the MLX backend refused it (correctly, and five minutes
  * later than here). A catalog carrying the retired key would silently lose its
  * per-arm staging under `voice.checkpoint`, so it fails loud instead. The same
@@ -1589,7 +1589,7 @@ const BACKEND_FOR_ARM: Record<HiggsCheckpointArm, 'served' | 'mlx'> = {
  * THE SHAPE OF ONE ARM'S PATH, checked whether or not this machine is that arm.
  *
  * Checked on BOTH arms from any machine on purpose: a Windows build is where the
- * catalog is usually edited, and a darwin entry written as `/Users/telltale/…`
+ * catalog is usually edited, and a darwin entry written as `/Users/<user>/…`
  * would otherwise be discovered by the one person who cannot fix it quickly.
  * These are properties of the STRING, so they need no filesystem and no arm.
  */
@@ -1604,7 +1604,7 @@ function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointAr
     );
   }
   if (arm === 'wsl') {
-    // GUEST-RESIDENT, in either form Windows can spell it. `/home/telltale/…` is
+    // GUEST-RESIDENT, in either form Windows can spell it. `/home/<user>/…` is
     // the guest's own name for the directory, and `\\wsl$\<distro>\home\…` is the
     // UNC form the Windows side uses for the same ext4 directory (tool-paths.ts
     // documents it for `orpheusModelsDir`); `windowsToWslPath` folds the second onto
@@ -1630,7 +1630,7 @@ function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointAr
   //
   // A PER-RUN OVERRIDE IS THE ONE ABSOLUTE darwin CHECKPOINT THAT IS LEGAL, and
   // the reason is the mirror of the reason the catalog's is not. The catalog is
-  // REPO-TRACKED and read by two machines, so `/Users/telltale/…` in it names a
+  // REPO-TRACKED and read by two machines, so `/Users/<user>/…` in it names a
   // directory that exists on exactly one of them. An override is typed by the
   // person sitting at THIS machine, for THIS run, and is never written to the
   // catalog — so an absolute path is the only spelling it can have (there is no
@@ -2291,7 +2291,7 @@ function requirePositiveInt(field: string, value: number, voiceId: string): numb
  * where the value comes from: the catalog names the merged directory ONCE PER
  * ARM, and this writes the one belonging to `target.arm`. A voice with no entry
  * for that arm is refused here rather than written with the other arm's path,
- * which on the Mac meant a `/home/telltale/…` directory that does not exist.
+ * which on the Mac meant a `/home/<user>/…` directory that does not exist.
  */
 export interface HiggsDocumentTarget {
   /** The arm the spawn this document is written FOR will take. */

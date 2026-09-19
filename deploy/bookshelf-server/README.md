@@ -1,4 +1,4 @@
-# Bookshelf server, standalone — Docker for titan (UGREEN NAS)
+# Bookshelf server, standalone — Docker on the NAS (UGREEN UGOS)
 
 The library lives **on the NAS**. This runs BookForge's real bookshelf server
 there, headless, so the shelf stays reachable when BookForge is down on both the
@@ -47,7 +47,7 @@ docker compose -f deploy/bookshelf-server/docker-compose.yml up -d
 docker compose -f deploy/bookshelf-server/docker-compose.yml logs -f
 ```
 
-Check it: `curl http://titan:8765/api/health` →
+Check it: `curl http://nas:8765/api/health` →
 
 ```json
 {"status":"ok","name":"...","capabilities":["library","reader","pdf"]}
@@ -58,8 +58,8 @@ Three `capabilities` is the mirror. Eight is the desktop app.
 ### Before the first run — fix the library path
 
 `docker-compose.yml` mounts `/volume1/iO/bookforge:/library` as a **placeholder**
-for titan's real path to the share the PC sees as `Z:\bookforge`
-(`\\TITAN\iO\bookforge`). Confirm it on the NAS (`ls /volume*`) and edit the
+for the NAS's real path to the share the PC sees as `Z:\<library>`
+(`\\NAS\iO\bookforge`). Confirm it on the NAS (`ls /volume*`) and edit the
 mount before bringing the stack up. A wrong path gives an empty shelf, not an
 error, because an empty library is a legitimate library.
 
@@ -103,5 +103,5 @@ workstation and push/load it — nothing has to be reinstalled on the NAS.
 
 ## Not deployed
 
-These files are the deliverable; nothing here has been run on titan. Bring it up
+These files are the deliverable; nothing here has been run on the NAS. Bring it up
 by hand once the library mount path is confirmed.

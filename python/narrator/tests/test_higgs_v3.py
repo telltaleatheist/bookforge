@@ -199,7 +199,7 @@ class FakeV3Handler(BaseHTTPRequestHandler):
 
 
 #: The path a base-weights server reports as its root (measured shape).
-BASE_SNAPSHOT_ROOT = ('/home/telltale/.cache/huggingface/hub/'
+BASE_SNAPSHOT_ROOT = ('/home/<user>/.cache/huggingface/hub/'
                       'models--bosonai--higgs-audio-v3-tts-4b/snapshots/239f63fb')
 
 
@@ -275,7 +275,7 @@ class FakeV3Server:
 
 
 #: THE REAL FILE, byte for byte. Copied 2026-09-05 out of the merged fine-tune
-#: `/home/telltale/higgs_v3_merged/ds_ad4lm` (WSL), whose `merge_manifest.json`
+#: `/home/<user>/higgs_v3_merged/ds_ad4lm` (WSL), whose `merge_manifest.json`
 #: records its provenance as
 #: `"generation_config_source": "OVERRIDE from runs/ds_ad4lm_r32/
 #: generation_config.override.json"` - the values being vllm-omni's own
@@ -796,7 +796,7 @@ class ZeroShotBaseWeightsTest(V3TestCase):
 
         engine_failed: narrator (higgs-v3) refused the request: Higgs v3
         voice 'zeroshot': the merged checkpoint
-        /home/telltale/.crucible/voices/zeroshot/cuda-linux does not carry
+        /home/<user>/.crucible/voices/zeroshot/cuda-linux does not carry
         generation_config.json, which is a REQUIRED ...
 
     - for a file base weights have never carried. The pinned repo
@@ -2179,7 +2179,7 @@ class SentinelReportChannelTest(V3TestCase):
                          path + v3_served.SENTINEL_REPORT_SUFFIX)
         exports = backend._launch_exports()
         self.assertIn(v3_served.SENTINEL_REPORT_ENV + '=', exports)
-        # On this arm (native Linux in CI, Windows on owens-pc) the exported form
+        # On this arm (native Linux in CI, Windows on example-pc) the exported form
         # is the SERVER's view of the same file. What must hold everywhere is
         # that the basename is the one narrator reads - a different name there
         # would leave the server writing a file nothing ever opens.
@@ -2607,7 +2607,7 @@ class WindowsLaunchTest(_LaunchTestBase):
         Without it wsl.exe runs the command line through the distro's default
         shell, which expands `$!` before bash sees the wrapper - so the pid file
         is written EMPTY and `wait $!` becomes a bare `wait`. Measured on
-        owens-pc 2026-09-05 through this argv: bare -> `pid=[]`, `--` ->
+        example-pc 2026-09-05 through this argv: bare -> `pid=[]`, `--` ->
         `pid=[]`, `--exec` -> `pid=[42679]`. `stop()` then has no pid to signal
         inside the distro, which is how a ~14 GB vllm-omni survives its own
         teardown.
@@ -2624,8 +2624,8 @@ class WindowsLaunchTest(_LaunchTestBase):
 
     def test_a_script_inside_the_distro_is_not_mangled(self):
         backend = HiggsV3ServedBackend(
-            serve_script=r'\\wsl$\Ubuntu\home\telltale\serve_v3.sh')
-        self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[-1])
+            serve_script=r'\\wsl$\Ubuntu\home\<user>\serve_v3.sh')
+        self.assertIn('/home/<user>/serve_v3.sh', backend.launch_command()[-1])
 
     def test_stop_signals_the_guest_pid_when_the_server_outlives_wsl_exe(self):
         """Terminating wsl.exe kills the Windows-side relay; the guest process

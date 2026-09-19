@@ -1,6 +1,6 @@
 """blocks-serve — hold the block-category adapter resident and classify pages.
 
-    python blocks-serve.py --adapter /home/telltale/xtts_ft/blocks_v2_lora \
+    python blocks-serve.py --adapter /home/<user>/xtts_ft/blocks_v2_lora \
         [--port 8770] [--batch 4] [--max-seq-length 7168]
 
 The model lives on the training box's GPU and the app runs on a different

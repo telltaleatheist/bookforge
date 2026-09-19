@@ -768,9 +768,9 @@ So, on any such change:
 npx tsc -p tsconfig.electron.json
 node tools/test-text-normalization.js
 node tools/test-narration-reading-law.js
-node C:/Users/tellt/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
+node C:/Users/<user>/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
      --mode bookforge --bookforge <this checkout>
-node C:/Users/tellt/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
+node C:/Users/<user>/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
      --compare --bookforge <this checkout>
 ```
 

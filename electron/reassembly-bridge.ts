@@ -2689,7 +2689,7 @@ export async function startReassembly(
              * replaced was made from sentences that no longer existed. The theory
              * did not know what else lived there: on 2026-08-23 the sweep deleted
              * two professionally read recordings (Shift, Dust) that happened to
-             * sit in output/, and they came back only because titan keeps a
+             * sit in output/, and they came back only because the NAS keeps a
              * recycle bin. Owen's ruling (2026-09-03): the system does not delete
              * audiobooks. A new render is filed BESIDE whatever is there; if the
              * user wants the old one gone, they delete the file themselves.

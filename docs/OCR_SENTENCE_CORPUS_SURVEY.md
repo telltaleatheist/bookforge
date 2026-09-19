@@ -636,7 +636,7 @@ straight re-unitisation of clean line pairs.**
    `sft-line/eval.jsonl`.
 6. `train-line.sh --preflight` — measure token lengths. Expect ~4× the line
    corpus.
-7. Train on owens-pc (GPU lock per landmine 5). Prove the adapter is active
+7. Train on example-pc (GPU lock per landmine 5). Prove the adapter is active
    first (landmine 4) — `adapter-activation-proof.txt` is the template.
 8. Score with `eval-guard.py` under all three policies, against the line model
    on the same books, `degraded` read first.

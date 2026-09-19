@@ -199,7 +199,7 @@ class LocateTest(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state['process_dir'], self.process_dir)
         self.assertEqual(state['session_dir'], self.session_dir)
-        self.assertNotIn('/home/telltale', state['process_dir'])
+        self.assertNotIn('/home/<user>', state['process_dir'])
 
     def test_no_session_anywhere_is_none_not_an_error(self):
         empty = os.path.join(self.root, 'nothing-here')

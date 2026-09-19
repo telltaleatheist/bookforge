@@ -1,4 +1,4 @@
-eval-guard — 479 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.units.jsonl
+eval-guard — 479 units from C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.units.jsonl
   generated 2026-08-05T00:24:45-0400 in 85.7s on http://127.0.0.1:8771
   server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
 
@@ -13,7 +13,7 @@ policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  co
   per-run        6.854%     5.968%        20      97.0     983.6      0.00%          227   10.4%
 
   479 units, 28873 gold characters, 26 already correct (5.4%)
-  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+  model C:/Users/<user>/AppData/Local/foundry/models/foundry-4b-f16.gguf
 
   A model only beats "do nothing" by moving CER down without moving degraded
   and falseEdit up. `degraded` counts UNITS — compare it only within one unit
@@ -144,4 +144,4 @@ WORST DAMAGE UNDER per-run (5 of 20) — read these, do not average them
     OUT  ": both were capable of surviving; it, the 'Hitler myth' was structurally indispensable"
     GOLD "both were capable of surviving it, the ‘Hitler myth’ was structurally indispensable"
 
-wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.stats.json
+wrote C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.stats.json

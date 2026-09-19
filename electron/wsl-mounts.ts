@@ -5,8 +5,8 @@
  * ── The law this exists for ─────────────────────────────────────────────────
  *
  * WSL2 auto-mounts FIXED drives only. In Ubuntu on this machine `ls /mnt` is
- * `c  e  wsl  wslg` — and Owen's library root is `Z:\bookforge`, where `Z:` is
- * `\\TITAN\iO`, the NAS. But `windowsToWslPath()` maps ANY drive letter to
+ * `c  e  wsl  wslg` — and Owen's library root is `Z:\<library>`, where `Z:` is
+ * `\\NAS\iO`, the NAS. But `windowsToWslPath()` maps ANY drive letter to
  * `/mnt/<letter>` with no check, so a library path converts to a guest path
  * that simply does not exist.
  *
@@ -40,8 +40,8 @@
  *    therefore REQUIRED, not a nicety.
  *
  * 3. BACKSLASHES ARE HALVED ON ARGV TO `wsl.exe` — exactly one unescaping pass,
- *    applied BEFORE any bash quoting could protect them (`\\TITAN\iO` arrives as
- *    `\TITAN\iO`). Single-quoting does NOT save it. STDIN IS UNTOUCHED, so the
+ *    applied BEFORE any bash quoting could protect them (`\\NAS\iO` arrives as
+ *    `\NAS\iO`). Single-quoting does NOT save it. STDIN IS UNTOUCHED, so the
  *    script goes in on stdin and the device string crosses verbatim. This is why
  *    the code below looks indirect: it is dodging a documented hazard.
  *

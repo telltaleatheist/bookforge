@@ -919,7 +919,7 @@ export function textServerStatus(): {
  * and its log line can never describe different commands.
  *
  * `wslScriptArgs` (tool-paths.ts) builds it, and its `--exec` is the whole reason
- * it exists: MEASURED on owens-pc 2026-09-05, without `--exec` wsl.exe hands the
+ * it exists: MEASURED on example-pc 2026-09-05, without `--exec` wsl.exe hands the
  * string to the distro's DEFAULT SHELL first, which expands every `$` before bash
  * ever sees it. This command line deliberately contains `"$HOME/<modelDir>"` for
  * the guest's bash to expand, and an outer shell would expand it to nothing and

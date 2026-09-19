@@ -544,7 +544,7 @@ print(pgid)
                 f'{asked}, which is the port it was told to bind and the port '
                 'every render would be sent to. This is what sgl-omni does when '
                 'the port it is given is already busy: it takes a random free '
-                'one and says nothing (measured on owens-pc - told 8200, bound '
+                'one and says nothing (measured on example-pc - told 8200, bound '
                 '57877, then 34529). Waiting is pointless, because the server is '
                 'already up and can never appear on the port that was asked for. '
                 f'Free port {asked} - something else is on it - and start again.')

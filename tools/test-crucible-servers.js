@@ -68,7 +68,7 @@ const fresh = () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CONFIG = [
-  '[server]', 'name = "crucible@owens-pc-wsl"', 'host = "127.0.0.1"', 'port = 7100', '',
+  '[server]', 'name = "crucible@example-pc-wsl"', 'host = "127.0.0.1"', 'port = 7100', '',
   '[auth]', 'token = "abcdefghijklmnop"', '',
   '[backend]', 'kind = "cuda-linux"', '',
   '[jobs]', 'enable_echo = true', 'enable_llm = true', '',
@@ -77,14 +77,14 @@ const CONFIG = [
 
 check('parseCrucibleConfig reads name, host, port and token', () => {
   const got = discovery.parseCrucibleConfig(CONFIG, 'x', 'file');
-  assert.deepStrictEqual(got, { name: 'crucible@owens-pc-wsl', url: 'http://127.0.0.1:7100', token: 'abcdefghijklmnop', configPath: 'x', via: 'file' });
+  assert.deepStrictEqual(got, { name: 'crucible@example-pc-wsl', url: 'http://127.0.0.1:7100', token: 'abcdefghijklmnop', configPath: 'x', via: 'file' });
 });
 
 check('a server bound to 0.0.0.0 is connected to at 127.0.0.1 (bind is not connect)', () => {
   const got = discovery.parseCrucibleConfig(CONFIG.replace('host = "127.0.0.1"', 'host = "0.0.0.0"'), 'x', 'file');
   assert.strictEqual(got.url, 'http://127.0.0.1:7100');
   assert.strictEqual(discovery.connectHost('::'), '127.0.0.1');
-  assert.strictEqual(discovery.connectHost('192.168.68.86'), '192.168.68.86');
+  assert.strictEqual(discovery.connectHost('192.0.2.86'), '192.0.2.86');
 });
 
 check('a missing key is refused by name, exactly as the server refuses it', () => {
@@ -132,14 +132,14 @@ check('on Windows the file is read through wsl.exe -d <distro> --exec, and the s
   const calls = [];
   const host = {
     platform: 'win32', env: {}, homedir: 'C:\\Users\\t', wslDistro: 'Ubuntu', pairing: NO_PAIRING,
-    runWsl: (distro, script) => { calls.push({ distro, script }); return { status: 0, stdout: `/home/telltale/.crucible/config.toml\n${CONFIG}`, stderr: '' }; },
+    runWsl: (distro, script) => { calls.push({ distro, script }); return { status: 0, stdout: `/home/<user>/.crucible/config.toml\n${CONFIG}`, stderr: '' }; },
   };
   const got = discovery.discoverCrucible(host);
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].distro, 'Ubuntu');
   assert.ok(calls[0].script.includes('${CRUCIBLE_HOME:-$HOME/.crucible}/config.toml'), 'the guest resolves CRUCIBLE_HOME, not the host');
   assert.strictEqual(got.via, 'wsl');
-  assert.strictEqual(got.configPath, 'Ubuntu:/home/telltale/.crucible/config.toml');
+  assert.strictEqual(got.configPath, 'Ubuntu:/home/<user>/.crucible/config.toml');
   assert.strictEqual(got.url, 'http://127.0.0.1:7100');
 });
 
@@ -151,8 +151,8 @@ check('on Windows with no distro setting: no_wsl_distro, not a guessed distro', 
 
 check('guest exit 3 is no_local_config; any other non-zero is wsl_read_failed; a spawn error is wsl_read_failed', () => {
   const base = { platform: 'win32', env: {}, homedir: 'C:\\', wslDistro: 'Ubuntu', pairing: NO_PAIRING };
-  const gone = refuses(() => discovery.discoverCrucible({ ...base, runWsl: () => ({ status: 3, stdout: '', stderr: '/home/telltale/.crucible/config.toml\n' }) }), discovery.CrucibleDiscoveryError, 'no_local_config');
-  assert.ok(gone.message.includes('/home/telltale/.crucible/config.toml') && gone.message.includes('Ubuntu'), gone.message);
+  const gone = refuses(() => discovery.discoverCrucible({ ...base, runWsl: () => ({ status: 3, stdout: '', stderr: '/home/<user>/.crucible/config.toml\n' }) }), discovery.CrucibleDiscoveryError, 'no_local_config');
+  assert.ok(gone.message.includes('/home/<user>/.crucible/config.toml') && gone.message.includes('Ubuntu'), gone.message);
   refuses(() => discovery.discoverCrucible({ ...base, runWsl: () => ({ status: 1, stdout: '', stderr: 'bash: boom' }) }), discovery.CrucibleDiscoveryError, 'wsl_read_failed');
   refuses(() => discovery.discoverCrucible({ ...base, runWsl: () => ({ status: null, stdout: '', stderr: '', error: new Error('ENOENT wsl.exe') }) }), discovery.CrucibleDiscoveryError, 'wsl_read_failed');
 });
@@ -161,7 +161,7 @@ check('isLoopbackUrl names exactly the shapes that are this machine', () => {
   for (const u of ['http://127.0.0.1:7100', 'http://localhost:7100', 'http://LOCALHOST', 'http://[::1]:7100', 'http://0.0.0.0:7100', 'http://127.5.5.5', 'http://foo.localhost:1']) {
     assert.strictEqual(discovery.isLoopbackUrl(u), true, u);
   }
-  for (const u of ['http://owens-mac-studio.hs.owenmorgan.com:7100', 'http://192.168.68.86:7100', 'http://10.0.0.1', 'not a url']) {
+  for (const u of ['http://mac.example.test:7100', 'http://192.0.2.86:7100', 'http://192.0.2.1', 'not a url']) {
     assert.strictEqual(discovery.isLoopbackUrl(u), false, u);
   }
 });
@@ -181,13 +181,13 @@ check('A LOOPBACK URL IS ORDINARY — added, listed and resolved like any other'
   const added = reg.add({ name: '3090 Ti', url: 'http://127.0.0.1:7100/', token: 'here-secret-JXn0' });
   assert.strictEqual(added.url, 'http://127.0.0.1:7100', 'trailing slash trimmed');
   assert.strictEqual(added.tokenMasked, '****JXn0');
-  const mac = reg.add({ name: 'mac', url: 'http://owens-mac-studio.hs.owenmorgan.com:7100', token: 'mac-secret-KCK0' });
+  const mac = reg.add({ name: 'mac', url: 'http://mac.example.test:7100', token: 'mac-secret-KCK0' });
   assert.strictEqual(mac.tokenMasked, '****KCK0');
   // ONE list, in the order they were added. No section, no badge, no first row.
   assert.deepStrictEqual(reg.list().map((r) => r.name), ['3090 Ti', 'mac']);
   // The SAME resolve for both: name, url, token, and nothing that says where.
   assert.deepStrictEqual(reg.get('3090 Ti'), { name: '3090 Ti', url: 'http://127.0.0.1:7100', token: 'here-secret-JXn0' });
-  assert.deepStrictEqual(reg.get('mac'), { name: 'mac', url: 'http://owens-mac-studio.hs.owenmorgan.com:7100', token: 'mac-secret-KCK0' });
+  assert.deepStrictEqual(reg.get('mac'), { name: 'mac', url: 'http://mac.example.test:7100', token: 'mac-secret-KCK0' });
   assert.deepStrictEqual(Object.keys(reg.get('mac')).sort(), ['name', 'token', 'url']);
 });
 
@@ -205,7 +205,7 @@ check('serversOnThisMachine is a URL question, not a kind of server', () => {
 });
 
 check('NAMES ARE FREE TEXT: spaces, dots, dashes, @ — the shapes Owen will type', () => {
-  for (const name of ['3090 Ti', 'M1 Ultra', 'mac', 'droplet-1', 'crucible@owens-pc-wsl', 'Mac Studio']) {
+  for (const name of ['3090 Ti', 'M1 Ultra', 'mac', 'droplet-1', 'crucible@example-pc-wsl', 'Mac Studio']) {
     assert.strictEqual(servers.validateServerName(name), name, name);
   }
   assert.strictEqual(servers.validateServerName('  mac  '), 'mac', 'outer whitespace is read, not kept');

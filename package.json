@@ -15,7 +15,7 @@
     "build": "ng build",
     "build:prod": "ng build --configuration production",
     "build:bookshelf": "ng build bookshelf-app --configuration production",
-    "deploy:titan": "sh deploy/bookshelf-server/deploy-titan.sh",
+    "deploy:nas": "sh deploy/bookshelf-server/deploy-nas.sh",
     "build:clipforge": "ng build clipforge-app --configuration production",
     "build:electron": "npx shx rm -rf dist/electron dist/shared dist/src && npx tsc -p tsconfig.electron.json && npx shx cp -r electron/prompts dist/electron/ && npx shx cp -r electron/data dist/electron/ && npm run build:bookshelf && npm run build:clipforge && npx shx mkdir -p dist/electron/scripts && npx shx cp electron/scripts/orpheus_download.py dist/electron/scripts/ && npx shx cp electron/scripts/orpheus_fuse.py dist/electron/scripts/ && npx shx cp electron/scripts/whisper_download.py dist/electron/scripts/ && npx shx cp electron/scripts/transcribe_audiobook.py dist/electron/scripts/ && npx shx cp electron/scripts/align_audiobook.py dist/electron/scripts/ && npx shx cp electron/scripts/run_audio_separator.py dist/electron/scripts/ && npx shx cp electron/scripts/separator_worker.py dist/electron/scripts/ &&npx shx cp electron/scripts/normalize_gaps.py dist/electron/scripts/ && npx shx cp electron/scripts/write_m4b_tags.py dist/electron/scripts/ && npx shx cp -r electron/scripts/vllm dist/electron/scripts/ && npx shx mkdir -p dist/electron/python && npx shx cp electron/python/env_diagnostics.py dist/electron/python/ && npm run build:quire-vendor && node packaging/stamp-build.js",
     "clipforge:electron:dev": "npm run build:electron && concurrently \"ng serve clipforge-app --port 4270\" \"wait-on http://localhost:4270 && electron . --clipforge --max-old-space-size=8192\"",
@@ -108,9 +108,9 @@
     "quire:probe-host": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/probe-quire-host.js",
     "quire:viewer-bench": "npx tsc -p tsconfig.electron.json && npm run build:quire-vendor && node tools/epub-viewer-harness.js",
     "build:quire-vendor": "node -e \"require('fs').cpSync('packages/quire/vendor','dist/packages/quire/vendor',{recursive:true})\"",
-    "temper": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --open",
-    "temper:bg": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --detach --open",
-    "temper:stop": "C:\\Users\\tellt\\Projects\\orpheus-finetune\\temper.cmd serve --stop"
+    "temper": "..\\orpheus-finetune\\temper.cmd serve --open",
+    "temper:bg": "..\\orpheus-finetune\\temper.cmd serve --detach --open",
+    "temper:stop": "..\\orpheus-finetune\\temper.cmd serve --stop"
   },
   "prettier": {
     "printWidth": 100,

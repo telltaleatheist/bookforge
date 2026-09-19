@@ -403,7 +403,7 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
     <ng-template #connectForm>
       <label class="field">
         <span class="flabel">Other computer's IP address or hostname</span>
-        <input type="text" placeholder="192.168.1.20" [(ngModel)]="draftAddress" name="cruPairAddress"
+        <input type="text" placeholder="192.0.2.20" [(ngModel)]="draftAddress" name="cruPairAddress"
           [disabled]="busy() !== null" (keyup.enter)="connectAddress()" />
       </label>
       <div class="actions">
@@ -471,7 +471,7 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
         </label>
         <label class="field">
           <span class="flabel">Address</span>
-          <input type="text" placeholder="http://192.168.68.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
+          <input type="text" placeholder="http://192.0.2.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
         </label>
         <label class="field">
           <span class="flabel">Access key</span>

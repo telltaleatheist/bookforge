@@ -335,8 +335,8 @@ const BUSY = {
   message: 'a lease holds the card',
   details: {
     fact: 'a lease',
-    who: "foundry/owens-pc for 'translate' on qwen3.8-27b-4bit until 03:12",
-    lease_id: 'lease-1', kind: 'llm', client: 'foundry/owens-pc', act: 'translate',
+    who: "foundry/example-pc for 'translate' on qwen3.8-27b-4bit until 03:12",
+    lease_id: 'lease-1', kind: 'llm', client: 'foundry/example-pc', act: 'translate',
     subject: 'qwen3.8-27b-4bit', since: '2026-09-14T03:00:00Z', expires_at: '2026-09-14T03:12:00Z',
   },
 };
@@ -634,7 +634,7 @@ async function main() {
     resolve.forgetResolvedEngine();
     /*
      * The live shape, measured on Owen's machine the same day: `:7101` answers
-     * `role: orchestrator` with zero job types, naming `crucible@owens-pc-wsl`
+     * `role: orchestrator` with zero job types, naming `crucible@example-pc-wsl`
      * at `:7100`, `backend: cuda-linux`, `owner: wsl-unit`; `:7100` answers
      * `role: engine`, `managed_by` the first. Two fakes, the same relation.
      */
@@ -644,7 +644,7 @@ async function main() {
       info: {
         role: 'orchestrator',
         engine: {
-          name: 'crucible@owens-pc-wsl', url: wsl.url,
+          name: 'crucible@example-pc-wsl', url: wsl.url,
           backend: 'cuda-linux', owner: 'wsl-unit',
         },
       },

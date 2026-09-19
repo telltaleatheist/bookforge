@@ -122,6 +122,13 @@ const SUITES = [
    *     whether a process is alive.
    */
   'test-no-e2a-doors',
+  // THE REPO IS PUBLIC (Owen, 2026-09-18: "I don't want anything to make it out
+  // on the internet if it doesn't belong there — passwords, file paths, etc.").
+  // A machine's name or address is a fact owned by that machine's config, never
+  // by source or by a doc a stranger reads, so this greps every tracked text
+  // file for the operator's hostnames, LAN and tailnet addresses, home paths and
+  // credential shapes, and fails by name with file:line.
+  'test-no-machine-addresses',
   // PHASE 15's deletion, pinned the same way. Ollama, Claude and OpenAI left
   // BookForge entirely (Owen: "they dont have ollama fallbacks or cloud anything
   // at all") — an Ollama server, an Anthropic key and an OpenAI key are UPSTREAMS

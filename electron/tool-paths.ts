@@ -1324,7 +1324,7 @@ export function narratorRuntimeDeps(): NarratorRuntimeDep[] {
  * THE ARGV FOR RUNNING A SHELL SCRIPT INSIDE WSL — and the `--exec` is the whole
  * point of this function existing.
  *
- * MEASURED ON owens-pc, 2026-09-05, through the SAME `spawn('wsl.exe', args)`
+ * MEASURED ON example-pc, 2026-09-05, through the SAME `spawn('wsl.exe', args)`
  * the doctor uses:
  *
  *   ['-d','Ubuntu','bash','-c','f=hi; echo f=$f']            -> "f="     WRONG

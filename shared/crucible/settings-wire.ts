@@ -46,7 +46,7 @@ export type CrucibleDiscoveryVia = 'pairing' | 'file' | 'wsl';
 export type DiscoveredCrucibleRow =
   | {
       present: true;
-      /** `[server] name`, or the connect code's name, e.g. `crucible@owens-pc-wsl`. */
+      /** `[server] name`, or the connect code's name, e.g. `crucible@example-pc-wsl`. */
       serverName: string;
       url: string;
       tokenMasked: string;

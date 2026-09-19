@@ -10,7 +10,7 @@
  *
  * WHAT CRUCIBLE IS. One inference server, many client apps: it runs models and
  * returns bytes, and never knows what an audiobook is. The spec is
- * C:\Users\tellt\Projects\crucible\docs\DESIGN.md. In phase 1 the only job type
+ * C:\Users\<user>\Projects\crucible\docs\DESIGN.md. In phase 1 the only job type
  * was `echo`, which hands back the bytes it was given — which is exactly what
  * makes it a handshake: it proves the token, the API version, the queue, the
  * SSE stream, the artifact download and the provenance sidecar without loading

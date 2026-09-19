@@ -410,19 +410,19 @@ test('BOTH halves are the hosted press\'s, out of the one settings file', async 
   fs.mkdirSync(dir, { recursive: true });
 
   fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
-    defaultLlmModel: 'qwen3.8:14b', ollamaUrl: 'http://titan:11434/',
+    defaultLlmModel: 'qwen3.8:14b', ollamaUrl: 'http://nas:11434/',
   }), 'utf8');
   const read = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(read.model, 'qwen3.5:9b-q8_0', 'defaultLlmModel must NOT reach this pass');
   assert.ok(/declared default/.test(read.source), read.source);
   // The trailing slash goes, exactly as `clampOllamaUrl` drops it there, so the
   // two doors send byte-identical `--endpoint` values.
-  assert.strictEqual(read.endpoint, 'http://titan:11434');
+  assert.strictEqual(read.endpoint, 'http://nas:11434');
 
   // The setting itself — what Foundry's Settings → Clean text model writes.
   fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
     defaultLlmModel: 'qwen3.8:14b', cleanTextModel: 'qwen3.5:9b-bf16',
-    ollamaUrl: 'http://titan:11434/',
+    ollamaUrl: 'http://nas:11434/',
   }), 'utf8');
   const stated = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(stated.model, 'qwen3.5:9b-bf16');
@@ -512,7 +512,7 @@ test('an absent llmServer reads the ollamaUrl pair, and the argv names one door'
   const dir = path.join(ROOT, 'settings-ollama-argv');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'app-settings.json'), JSON.stringify({
-    cleanTextModel: 'qwen3.5:9b-bf16', ollamaUrl: 'http://titan:11434',
+    cleanTextModel: 'qwen3.5:9b-bf16', ollamaUrl: 'http://nas:11434',
   }), 'utf8');
   const settings = await door.cleanTextEngineSettingsIn(dir);
   assert.ok(/ollamaUrl\/cleanTextModel chosen by/.test(settings.source), settings.source);
@@ -523,7 +523,7 @@ test('an absent llmServer reads the ollamaUrl pair, and the argv names one door'
    */
   assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', settings), [
     'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
-    '--endpoint', 'http://titan:11434', '--model', 'qwen3.5:9b-bf16',
+    '--endpoint', 'http://nas:11434', '--model', 'qwen3.5:9b-bf16',
   ]);
 });
 

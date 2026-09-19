@@ -81,7 +81,7 @@ const BOTH = { '3090 Ti': [voice('deathstalker'), voice('mistborn')], 'M1 Ultra'
 check('an unreachable server is NOT read as a server without the voice', async () => {
   const inventory = await scripted({
     '3090 Ti': [voice('deathstalker')],
-    'M1 Ultra': unreachable('connect ECONNREFUSED 192.168.68.79:7100'),
+    'M1 Ultra': unreachable('connect ECONNREFUSED 192.0.2.79:7100'),
   });
   const placed = inv.placeVoices(inventory);
   const ds = placed.find((p) => p.id === 'deathstalker');
@@ -109,7 +109,7 @@ check('a down server is described by the INVENTORY, never in the render\'s words
    */
   const inventory = await scripted({
     '3090 Ti': [voice('deathstalker')],
-    'M1 Ultra': unreachable('connect ECONNREFUSED 192.168.68.79:7100'),
+    'M1 Ultra': unreachable('connect ECONNREFUSED 192.0.2.79:7100'),
   });
   const mac = inventory.servers.find((s) => s.server === 'M1 Ultra');
   assert.strictEqual(mac.state, 'unreachable');
@@ -118,7 +118,7 @@ check('a down server is described by the INVENTORY, never in the render\'s words
   assert.ok(!/queue the book again/.test(mac.reason),
     'nor its instruction, which is about a book that has not been queued yet: ' + mac.reason);
   assert.match(mac.reason, /M1 Ultra/, 'it still names the machine');
-  assert.match(mac.reason, /ECONNREFUSED 192\.168\.68\.79:7100/,
+  assert.match(mac.reason, /ECONNREFUSED 192\.0\.2\.79:7100/,
     "and still carries the transport's own detail, which is the only actionable half");
   assert.match(mac.reason, /not answering/, 'and says what is actually true of it');
 });

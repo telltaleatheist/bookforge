@@ -49,8 +49,8 @@ removed (found while deriving the map, 2026-09-12):
 **On Windows, a typed path reaches the adapter AS TYPED** (2026-09-12, the PC
 review of the two commits above). Every operator path (`--project`, `--library`,
 `--input`, `--out`, `--epub`, …) used to go through `Path.resolve()`, which on
-Windows rewrites a mapped network drive to its UNC target: the titan library
-`Z:\bookforge` reached the adapters as `\\TITAN\iO\bookforge` — a spelling the
+Windows rewrites a mapped network drive to its UNC target: the NAS library
+`Z:\<library>` reached the adapters as `\\NAS\iO\bookforge` — a spelling the
 app never uses and one the bridge's WSL mapping (`/mnt/<letter>` only) cannot
 hand to the guest. That was the "CLI resolves a Z: project to UNC" defect of
 2026-09-11. The wrapper's `_user_path` now makes a typed path absolute without
@@ -208,17 +208,17 @@ becomes `<voice>+<basename of dir>`).
 ```bash
 # Mac (MLX reads the checkpoint on this machine, so the path must exist here):
 python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
-    --checkpoint-dir "/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616" \
+    --checkpoint-dir "/Users/<user>/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616" \
     --input chunks.jsonl --as-chunks --out mb616.wav
 
 # PC (the reading happens in the WSL guest, so the path is GUEST-native):
 python cli/bookforge-tts.py --tts --engine higgs --voice mistborn \
-    --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616 \
+    --checkpoint-dir /home/<user>/higgs_v3_merged/mb_v7_616 \
     --input chunks.jsonl --as-chunks --out mb616.wav
 
 # The same checkpoint, as a whole book:
 python cli/bookforge-tts.py --audiobook --project "<dir>" --engine higgs \
-    --voice mistborn --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616
+    --voice mistborn --checkpoint-dir /home/<user>/higgs_v3_merged/mb_v7_616
 ```
 
 On the Mac (and Linux) the directory is resolved against your cwd and **must
@@ -1200,7 +1200,7 @@ python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" --readi
 
 # Read the pages on somebody else's server instead of this machine's route:
 python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" \
-    --vlm-endpoint http://192.168.68.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr
+    --vlm-endpoint http://192.0.2.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr
 
 # Add the reading BESIDE the book this project already has, leaving it untouched:
 python cli/bookforge-tts.py --generate-epub --project "E:/…/Some_Book" --destination new-copy
@@ -1284,7 +1284,7 @@ library-only mirror.
 
 ```
 node cli/serve-bookshelf.js --library /mnt/library/bookforge
-node cli/serve-bookshelf.js --library Z:\bookforge --port 8765 --state-dir /var/lib/bookforge
+node cli/serve-bookshelf.js --library Z:\<library> --port 8765 --state-dir /var/lib/bookforge
 ```
 
 **What it serves:** the shelf and the ebook list, covers and thumbnails, downloads,
@@ -1325,7 +1325,7 @@ Docker files for the NAS live in `deploy/bookshelf-server/`.
 
 ## Crucible — the inference server (`--crucible-*`)
 
-[Crucible](../../crucible/docs/DESIGN.md) (`C:\Users\tellt\Projects\crucible`) is one
+[Crucible](../../crucible/docs/DESIGN.md) (`C:\Users\<user>\Projects\crucible`) is one
 inference server for all of Owen's apps: it runs models and returns bytes, and it never
 knows what an audiobook, a cleanup pass or a PDF conversion is. A client always speaks
 HTTP to it — the PC's WSL2 server, the Mac across the room and a rented droplet are all
@@ -1400,8 +1400,8 @@ token from `crucible token --show` in a file, and:
 
 ```
 $ bookforge-tts --crucible-add --name mac \
-      --url http://owens-mac-studio.hs.owenmorgan.com:7100 --token-file mac-token.txt
-added mac  http://owens-mac-studio.hs.owenmorgan.com:7100  token ****Ebi8
+      --url http://mac.example.test:7100 --token-file mac-token.txt
+added mac  http://mac.example.test:7100  token ****xxxx
 
 $ bookforge-tts --crucible-info --server mac
 server        crucible@mac-studio  v0.1.0  api v1
@@ -1411,7 +1411,7 @@ gpu           apple Apple M1 Ultra  64.0 GiB
 capability    echo  —  no models
 
 $ bookforge-tts --crucible-echo --server mac --file sample.bin --out back.bin
-[crucible] mac http://owens-mac-studio.hs.owenmorgan.com:7100: echo sample.bin (1.00 MiB)
+[crucible] mac http://mac.example.test:7100: echo sample.bin (1.00 MiB)
 [crucible] job dba54941b2914114a35c79e165190a7e
 [crucible] #1 queued {"position":1}
 [crucible] #2 progress {"fraction":0,"message":"started"}
@@ -1466,13 +1466,13 @@ qwen3.5-9b      yes        no        yes                                        
 qwen3.8-27b     no         no        no: no weights at ~/.crucible/models/…       6f265714824f  51.7 GiB
 
 $ bookforge-tts --crucible-load --server mac --model qwen3.5-9b
-[crucible] mac http://owens-mac-studio.hs.owenmorgan.com:7100: load qwen3.5-9b
+[crucible] mac http://mac.example.test:7100: load qwen3.5-9b
 [crucible] job ca0e73888d3b421fb056dd4995874839 (load qwen3.5-9b)
 [crucible] #1 queued {"position":1}
 [crucible] #3 warming {"message":"checking the accelerator for qwen3.5-9b"}
 [crucible] #4 warming {"message":"27.3 GiB of 64.0 GiB unified memory available (…)"}
 [crucible] #6 warming {"message":"starting mlx-lm for qwen3.5-9b on 127.0.0.1:60531 (context 12288)…"}
-[crucible] #8 warming {"message":"mlx-lm is serving '/Users/telltale/.crucible/models/qwen3.5-9b/mlx-darwin'"}
+[crucible] #8 warming {"message":"mlx-lm is serving '/Users/<user>/.crucible/models/qwen3.5-9b/mlx-darwin'"}
 [crucible] #9 warming {"message":"mlx-lm generated its first token; the weights are in memory"}
 [crucible] #12 done {"artifacts":[],"resident":"qwen3.5-9b"}
 resident    qwen3.5-9b  on mac

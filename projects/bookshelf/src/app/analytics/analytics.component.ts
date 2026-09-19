@@ -213,7 +213,7 @@ export class AnalyticsComponent implements OnInit {
    *  answered as, and which server could not be reached. Rendered above the
    *  numbers — including above "No listening yet" — because a stats page that
    *  reports nothing without naming the profile is unreadable. Owen's phone was
-   *  signed into titan as a different reader while the shelf header showed his
+   *  signed into the NAS as a different reader while the shelf header showed his
    *  own name (the header names the ACTIVE server's profile; this page sums
    *  EVERY enabled server's), and an unreachable second server was quietly
    *  dropped, so the page said "no listening at all" for a profile with 80

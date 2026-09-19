@@ -155,7 +155,7 @@ interface EditableServer extends CrucibleServerView {
               </label>
               <button class="ghost" (click)="drop(row.key)">Remove</button>
             </div>
-            <input class="url" type="text" placeholder="http://192.168.1.20:7100"
+            <input class="url" type="text" placeholder="http://192.0.2.20:7100"
                    [ngModel]="row.url" [name]="'url' + row.key"
                    (ngModelChange)="edit(row.key, { url: $event })">
             <!--

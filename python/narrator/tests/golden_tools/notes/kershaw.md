@@ -31,7 +31,7 @@ So the reference here is e2a's own output, regenerated on the local copy.
 
 ## How the reference was produced
 
-- e2a checkout: `C:\Users\tellt\Projects\ebook2audiobook`, branch `bookforge`,
+- e2a checkout: `C:\Users\<user>\Projects\ebook2audiobook`, branch `bookforge`,
   HEAD `9daab0ba9360b4e9e8d538bd6da9b713fed2de21` (read-only; `E2A_TMP_DIR` was
   redirected so the checkout was not written to).
 - Runtime: **1 m 22 s** (CPU only).
@@ -44,7 +44,7 @@ over `default_output_split_hours` into parts that all export to the SAME
 only its tail. This book is 0.73 h and never splits either way.
 
 ```
-cd C:\Users\tellt\Projects\ebook2audiobook
+cd C:\Users\<user>\Projects\ebook2audiobook
 set E2A_TMP_DIR=C:\tmp\narrator-G\e2a-tmp
 set PYTHONIOENCODING=utf-8
 python_env\python.exe app.py --headless --assemble_only --skip_deps --no_split ^

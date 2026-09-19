@@ -270,7 +270,7 @@ voice would REBUILD the engine while another session is streaming on it.
   Tuning fields untouched. Do NOT add to TUNING_KEYS (orpheus-models.ts:385);
   `applyTuning` (436) spread means catalog wins — correct, artifact is a fact about
   the voice.
-- D2 WSL `/home/telltale/orpheus-models/models.json`: `kind: base|voice`
+- D2 WSL `/home/<user>/orpheus-models/models.json`: `kind: base|voice`
   discriminator; layout `_base/orpheus-3b-0.1-ft/` (one copy) + `adapters/<id>/` +
   legacy merged dirs coexisting. Add explicit skip-set for `_base`/`adapters` in the
   reconcile scan (listOrpheusModels 500–511).
@@ -352,7 +352,7 @@ PRIVATE by default).
    enable_lora + LoRARequest at the PINNED checkpoint vs the merged model; greedy
    20-chunk token comparison; then eos_gate battery + rate measure + graph-capture
    timing. Near-identical tokens ⇒ proceed; divergence ⇒ diagnose first.
-   **PASSED 2026-08-03** (artifacts: WSL `/home/telltale/scratch_step0/RESULTS.txt`).
+   **PASSED 2026-08-03** (artifacts: WSL `/home/<user>/scratch_step0/RESULTS.txt`).
    Key findings: free-running greedy token identity is UNACHIEVABLE for this model
    class — the merged model vs ITSELF at a different batch shape also gives 0/20
    exact matches (chosen SNAC codes average only 17.5% probability; ~7.6% of

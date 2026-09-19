@@ -715,18 +715,18 @@ checkAsync('a platform Crucible has no backend for says so, and draws no sequenc
 
 const CONFIG_PRESENT = {
   present: true,
-  serverName: 'crucible@owens-pc-wsl',
+  serverName: 'crucible@example-pc-wsl',
   url: 'http://127.0.0.1:7100',
-  configPath: 'Ubuntu:/home/telltale/.crucible/config.toml',
+  configPath: 'Ubuntu:/home/<user>/.crucible/config.toml',
   via: 'wsl',
 };
 
 checkAsync('DOOR 2 open: the config is here, and the plan says so', async () => {
   const plan = await install.crucibleInstallPlan(host({ discovered: () => CONFIG_PRESENT }));
   assert.strictEqual(plan.host.discovered.present, true);
-  assert.strictEqual(plan.host.discovered.serverName, 'crucible@owens-pc-wsl');
+  assert.strictEqual(plan.host.discovered.serverName, 'crucible@example-pc-wsl');
   assert.ok(
-    plan.machine.includes('crucible@owens-pc-wsl'),
+    plan.machine.includes('crucible@example-pc-wsl'),
     'the one-line description does not mention the server that is already here',
   );
   // The step this app can actually verify is `init`: discovery.ts has already read

@@ -48,9 +48,9 @@ TARGET = ('It was a Saturday morning. I must admit that though I am usually an e
 
 def deathstalker(**kwargs):
     return ClipsVoice(
-        clips=(ReferenceClip('/home/telltale/xtts_ft/ds_ad4s/wavs/cd_cd_00000008.wav',
+        clips=(ReferenceClip('/home/<user>/xtts_ft/ds_ad4s/wavs/cd_cd_00000008.wav',
                              REF1_TEXT, seconds=14.02),
-               ReferenceClip('/home/telltale/xtts_ft/ds_ad4s/wavs/cd_cd_00000035.wav',
+               ReferenceClip('/home/<user>/xtts_ft/ds_ad4s/wavs/cd_cd_00000035.wav',
                              REF2_TEXT, seconds=14.49)),
         name='deathstalker', **kwargs)
 
@@ -73,7 +73,7 @@ class ChatHistoryTest(unittest.TestCase):
                          [{'type': 'text', 'text': REF1_TEXT}])
         self.assertEqual(conversation[3]['content'],
                          [{'type': 'audio',
-                           'url': '/home/telltale/xtts_ft/ds_ad4s/wavs/'
+                           'url': '/home/<user>/xtts_ft/ds_ad4s/wavs/'
                                   'cd_cd_00000008.wav'}])
         self.assertEqual(conversation[4]['content'],
                          [{'type': 'text', 'text': REF2_TEXT}])

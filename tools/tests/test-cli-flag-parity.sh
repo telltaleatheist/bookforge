@@ -15,7 +15,9 @@
 # exit code alone. The first assertion below guards that property itself.
 set -u
 cd "$(dirname "$0")/../.."
-PY="${PYTHON:-C:/Users/tellt/AppData/Local/Programs/Python/Python311/python.exe}"
+# Whatever python is on PATH, or $PYTHON. Not an absolute path under one
+# account: this repo is public, and that path existed on exactly one machine.
+PY="${PYTHON:-python}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

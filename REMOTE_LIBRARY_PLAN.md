@@ -1,11 +1,11 @@
-# Remote Library Plan — BookForge ↔ titan (NAS-hosted library)
+# Remote Library Plan — BookForge ↔ the NAS (NAS-hosted library)
 
 **Status: PLAN ONLY — not yet executed. Worked out 2026-07-18.**
 
 ## Goal
 
-Host the published audiobook library on the NAS (titan, UGREEN UGOS,
-`titan.owenmorgan.com` on the tailnet) so books are always served even when the
+Host the published audiobook library on the NAS (UGREEN UGOS, reachable at
+its own tailnet name — this plan writes it `nas.example.test`) so books are always served even when the
 PC is off or BookForge is mid-refactor. BookForge (PC/Mac) stops being the
 library's only home: it either manages a local library (default, exactly like
 today) or connects to a server. Distribution goal: anyone who downloads
@@ -13,7 +13,7 @@ BookForge can run their own server instance with `bookforge serve`.
 
 ## Settled decisions (from design discussion)
 
-1. **No full BookForge install on titan.** Titan gets a Node-only library
+1. **No full BookForge install on the NAS.** It gets a Node-only library
    service — no conda envs, no Python TTS stack. Generation stays on machines
    with GPUs. Deployment is a **Docker container** (UGOS updates wipe system
    files; the tailscale-in-Docker survival pattern applies). Library data
@@ -42,7 +42,7 @@ BookForge can run their own server instance with `bookforge serve`.
 7. **API version handshake** on day one so an old container and a new app fail
    loudly.
 8. **Out of scope (explicitly):** offline edit queues / conflict resolution;
-   remote job orchestration ("titan asks PC to render"); server-side
+   remote job orchestration ("the NAS asks the PC to render"); server-side
    transcoding; multi-user collaborative libraries. The API-only-writer design
    keeps all of these retrofittable later.
 
@@ -110,7 +110,7 @@ insertion point for "and now enqueue to the outbox."
 The bookshelf web/iOS player (`projects/bookshelf/`) already supports multiple
 servers (`server-config.service.ts`, `MULTI_SERVER.md`): persisted
 `ServerEntry[]`, merged shelves, per-book origin routing, `?accessKey=` auth.
-Titan becomes just another server entry for the players — zero player work for
+The NAS becomes just another server entry for the players — zero player work for
 phase 1.
 
 ### Auth today
@@ -214,7 +214,7 @@ heart of the refactor.
   Electron beyond what the stub provides gets fixed by extending the stub, not
   by forking the module.
 
-### Component 3 — Docker deployment on titan
+### Component 3 — Docker deployment on the NAS
 
 - Image: `node:20-slim` + `ffmpeg` (required for chapters/VTT
   extract/metadata embed). Contents: `dist/electron/` (compiled),
@@ -223,11 +223,11 @@ heart of the refactor.
   have Linux prebuilds).
 - Volumes: `/iO/bookforge` → library root; a small persistent volume for
   userData caches.
-- Network: bind to the tailscale interface (titan = 100.64.0.3;
-  `titan.owenmorgan.com` via headscale split-DNS). Restart policy `unless-
-  stopped` + the existing titan self-heal script pattern (UGOS updates wipe
+- Network: bind to the tailscale interface (the NAS's own tailnet address;
+  `nas.example.test` via headscale split-DNS). Restart policy `unless-
+  stopped` + the existing NAS self-heal script pattern (UGOS updates wipe
   system files; Docker volumes on /iO and /volume1 persist).
-- `serverAccessKey` set in the titan library's `bookshelf.json` (after the
+- `serverAccessKey` set in the NAS library's `bookshelf.json` (after the
   config-collision fix so the app can't clobber it).
 
 ### Component 4 — App server mode (Settings → Library)
@@ -280,14 +280,14 @@ from `main.ts` IPC closures into `manifest-service.ts`/`library-service.ts`
 step, keep it mechanical and reviewed).
 
 **Phase 1 — headless read-only serve + Docker:** `cli/serve.js`, `bookforge
-serve` registry entry, Dockerfile, deploy to titan pointed at a manually
-copied library snapshot in `/iO/bookforge`. Value shipped: phones add titan
+serve` registry entry, Dockerfile, deploy to the NAS pointed at a manually
+copied library snapshot in `/iO/bookforge`. Value shipped: phones add the NAS
 as a server entry; books served even with the PC off. No write API yet.
 
 **Phase 2 — write API:** `/api/library/*` endpoints on BookshelfServer,
 chunked/resumable upload, atomic commit, hash verify, access-key-required
 mutations, `/api/library/info` handshake. Testable against a local headless
-serve instance before titan sees it.
+serve instance before the NAS sees it.
 
 **Phase 3 — app server mode:** settings UI, union library view with `home`
 tagging, remote routing for metadata/cover/delete, offline disabled states.
@@ -295,7 +295,7 @@ tagging, remote routing for metadata/cover/delete, offline disabled states.
 **Phase 4 — outbox:** persisted queue, uploader, verified clear, publish
 records, in-flight-edit reconciliation.
 
-**Phase 5 — titan production:** access key, tailscale-interface binding,
+**Phase 5 — NAS production:** access key, tailscale-interface binding,
 self-heal integration, migrate the real library to `/iO/bookforge`
 (one-time: through the publish API or a supervised rsync-then-verify — NOT
 ongoing sync), decommission any Syncthing coverage of the served library
@@ -305,10 +305,10 @@ ongoing sync), decommission any Syncthing coverage of the served library
 
 - Phases 0/2/3/4 get exercised against `bookforge serve` running **locally**
   (localhost server + second library root) — full publish/edit/delete/offline
-  cycle without touching titan.
+  cycle without touching the NAS.
 - Kill-mid-upload and edit-mid-upload tests for the outbox (resume + verify +
   reconcile paths).
-- Phase 1 smoke on titan: player on phone vs titan entry, PC off.
+- Phase 1 smoke on the NAS: player on phone vs the NAS entry, PC off.
 - Regression: local mode must be byte-identical in behavior after Phase 0 —
   the existing CLI render (`cli/orpheus-audiobook-render.js`) doubles as a
   headless regression harness for the registration chokepoint.
@@ -320,7 +320,7 @@ ongoing sync), decommission any Syncthing coverage of the served library
    assumes: clear output/ only; workspace untouched.)
 2. **External drop-ins:** should the app offer "publish to server" for
    `audiobooks/` external m4bs too (plan says yes, simple endpoint), and
-   should titan's existing human-read collection just be moved into
+   should the NAS's existing human-read collection just be moved into
    `/iO/bookforge/audiobooks/` at Phase 1 (cheapest path to value)?
 3. **Reader state:** in server mode, should the desktop `/listen` player point
    at the server's `.bookshelf/` state (consistent positions with phones)?

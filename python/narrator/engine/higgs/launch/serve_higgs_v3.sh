@@ -20,11 +20,11 @@
 #
 # PROVENANCE. Transcribed from
 #   E:\training\_campaigns\2026-09-01-cod-full-rebuild\higgs\serve_v3.sh
-# (owens-pc, WSL Ubuntu, RTX 3090 Ti, 2026-09-04), which is the script every
+# (example-pc, WSL Ubuntu, RTX 3090 Ti, 2026-09-04), which is the script every
 # measurement in electron/data/higgs-models.json was taken against. What differs
 # from the original, and why each one is a fix rather than drift:
 #   1. The env prefix is a REQUIRED parameter ($HIGGS_ENV) instead of a
-#      hardcoded /home/telltale path, so this ships. It had a default of
+#      hardcoded /home/<user> path, so this ships. It had a default of
 #      `$HOME/anaconda3/envs/higgs3` until 2026-09-13; that is ONE MACHINE'S
 #      CONDA LAYOUT, and a caller that forgot the variable got a server started
 #      out of a directory nobody named - or, on a machine without that env, a
@@ -62,7 +62,7 @@
 #      checkout parses identically as YAML and is no longer the file any cap
 #      certificate was measured against.
 #      THAT PROFILE EXISTS BECAUSE THE SERVED SPEECH ENDPOINT IGNORES A
-#      PER-REQUEST max_tokens. MEASURED 2026-09-05 (owens-pc, vllm-omni 0.28.0):
+#      PER-REQUEST max_tokens. MEASURED 2026-09-05 (example-pc, vllm-omni 0.28.0):
 #      stage 0's `default_sampling_params.max_tokens` is a HARD CEILING on every
 #      render, and the auto-discovered profile sets it to 2048 frames = 81.92 s,
 #      so any chunk needing more audio than that is cut mid-sentence and no
@@ -103,7 +103,7 @@ HIGGS_HOST="${HIGGS_HOST:-127.0.0.1}"
 # leave room for three CUDA contexts.
 #
 # THE TALKER'S FRACTION IS ITS KV CACHE BUDGET ON TOP OF THE WEIGHTS, not a cap
-# on the stage. MEASURED 2026-09-05 (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni
+# on the stage. MEASURED 2026-09-05 (example-pc, RTX 3090 Ti 24.5 GB, vllm-omni
 # 0.28.0) at 0.35, from the server's own log: "Desired GPU memory utilization is
 # (0.35, 8.4 GiB). Actual usage is 7.72 GiB", "Available KV cache memory:
 # 8.4 GiB", "GPU KV cache size: 61,120 tokens" - so stage 0 holds 7.72 GiB of

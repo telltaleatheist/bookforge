@@ -123,8 +123,8 @@ check('a re-rank is the WHOLE list: an omitted server, an unknown name and a rep
   const { store } = fresh();
   const missing = refuses(() => store.setOrder(['mac', 'local'], KNOWN), 'incomplete_order');
   assert.ok(missing.message.includes('droplet'), missing.message);
-  const unknown = refuses(() => store.setOrder(['local', 'mac', 'droplet', 'titan'], KNOWN), 'unknown_server');
-  assert.ok(unknown.message.includes('titan') && unknown.message.includes('known: local, mac, droplet'), unknown.message);
+  const unknown = refuses(() => store.setOrder(['local', 'mac', 'droplet', 'nas'], KNOWN), 'unknown_server');
+  assert.ok(unknown.message.includes('nas') && unknown.message.includes('known: local, mac, droplet'), unknown.message);
   refuses(() => store.setOrder(['local', 'local', 'mac', 'droplet'], KNOWN), 'duplicate_in_order');
   assert.deepStrictEqual(names(store.view(KNOWN)), KNOWN, 'a refused re-rank changed nothing');
 });
@@ -142,8 +142,8 @@ check('the enable switch is standing state about hardware: off, then on again, a
 
 check('enabling a name that is not a server is refused by name, never recorded', () => {
   const { store } = fresh();
-  const err = refuses(() => store.setEnabled('titan', false, KNOWN), 'unknown_server');
-  assert.ok(err.message.includes('titan'), err.message);
+  const err = refuses(() => store.setEnabled('nas', false, KNOWN), 'unknown_server');
+  assert.ok(err.message.includes('nas'), err.message);
 });
 
 // ── "New jobs wait for" ──────────────────────────────────────────────────────

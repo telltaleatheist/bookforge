@@ -1831,7 +1831,7 @@ halves follow from one fact: **the two arms share a voice, and share nothing
 else.**
 
 **THE PATH.** BookForge's catalog held ONE `voice.checkpointDir` per fine-tune,
-and it was the WSL guest's (`/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080`).
+and it was the WSL guest's (`/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080`).
 The voice document is written per spawn, so on the Mac that path went into
 `checkpointDir` verbatim and `require_generation_config` refused it - correctly,
 by name, and only after the environment had been reported ready. narrator was

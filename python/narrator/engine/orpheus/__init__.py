@@ -20,8 +20,8 @@ table, the function -> module map, and the list of dead code left behind.
 
     eng = OrpheusEngine(EngineConfig(
         voice='deathstalker',
-        base_dir='/home/telltale/orpheus-models/_base',
-        adapter_dir='/home/telltale/orpheus-models/deathstalker',
+        base_dir='/home/<user>/orpheus-models/_base',
+        adapter_dir='/home/<user>/orpheus-models/deathstalker',
         sentences_dir=session / 'chapters' / 'sentences',
         process_dir=session,
     ))

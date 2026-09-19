@@ -1,26 +1,33 @@
-# Titan runbook — the NAS bookshelf mirror
+# NAS runbook — the NAS bookshelf mirror
 
-The UGREEN NAS (**titan**, `192.168.68.125`) serves the bookshelf web app and
-audiobook streaming straight off its own disk, so the shelf stays up when
-BookForge is closed on the PC and the Mac. It is the REAL compiled
+The UGREEN NAS serves the bookshelf web app and audiobook streaming straight
+off its own disk, so the shelf stays up when BookForge is closed on the PC and
+the Mac.
+
+**THE NAS'S OWN NAME AND ADDRESS ARE NOT IN THIS REPO** — it is public. This
+runbook writes the ssh alias as `nas`, the tailnet name as `nas.example.test`
+and the address as the RFC 5737 documentation address `192.0.2.125`. The real
+ones live in `deploy/bookshelf-server/.env` (copy `.env.example`) and in your
+`~/.ssh/config`; `deploy-nas.sh` reads them from there and refuses by name if
+they are unset. It is the REAL compiled
 `BookshelfServer` in standalone mode (see `README.md` beside this file), run
 headless by `cli/serve-bookshelf.js` inside Docker.
 
-**URL: `http://192.168.68.125:8766`** — port 8766, not 8765, because UGOS's own
+**URL: `http://192.0.2.125:8766`** — port 8766, not 8765, because UGOS's own
 `fio` file service owns 8765 on the NAS. Over the tailnet it is
-`http://titan.owenmorgan.com:8766` — that hostname resolves ONLY through
+`http://nas.example.test:8766` — that hostname resolves ONLY through
 Tailscale's DNS (public and router DNS say non-existent), so a phone must have
 Tailscale connected to use it; on home wifi use the IP.
 
-## Where everything lives on titan
+## Where everything lives on the NAS
 
 Everything is under **`/volume1/System/bookshelf-server/`** — the area that
 survives UGOS firmware updates:
 
 | Path | What |
 |---|---|
-| `compose.yml` | The compose file actually in use (titan-adapted: port 8766, library on volume3, memory limits, janitor sidecar). **This file is edited in place on titan — it is NOT a copy of the repo's `docker-compose.yml`.** |
-| — | **Mirrored in git** at `deploy/bookshelf-server/titan/` since 2026-08-25, so a wiped NAS does not take them with it. The copies there are a BACKUP, not the source: titan's are still the ones that run, so edit titan's and re-capture, never the reverse (see the gotcha below). |
+| `compose.yml` | The compose file actually in use (nas-adapted: port 8766, library on volume3, memory limits, janitor sidecar). **This file is edited in place on the NAS — it is NOT a copy of the repo's `docker-compose.yml`.** |
+| — | **Mirrored in git** at `deploy/bookshelf-server/nas/` since 2026-08-25, so a wiped NAS does not take them with it. The copies there are a BACKUP, not the source: the NAS's are still the ones that run, so edit the NAS's and re-capture, never the reverse (see the gotcha below). |
 | `context/` | The staged build context (dist + cli + Dockerfile), extracted from the tarball below |
 | `bookshelf-server-context.tgz` | The last context tarball scp'd from the PC |
 | `redeploy.sh` | Re-extract + `docker compose build` + `up -d` (full update) |
@@ -32,7 +39,7 @@ mounted read-write into the container at `/library` — read-write because reade
 positions/bookmarks live under `<library>/.bookshelf/` as per-device files.
 
 Two containers run: `bookforge-bookshelf` (the server) and
-`bookforge-tmp-janitor` (sweeps kernel core dumps out of titan's 3.8 GB `/tmp`
+`bookforge-tmp-janitor` (sweeps kernel core dumps out of the NAS's 3.8 GB `/tmp`
 tmpfs — 196k smbd cores once filled it and took the NAS's daemons down).
 
 ## Deploying an update
@@ -40,25 +47,25 @@ tmpfs — 196k smbd cores once filled it and took the NAS's daemons down).
 **The one command (since 2026-09-18):**
 
 ```sh
-npm run deploy:titan -- <sha|ref>      # e.g. HEAD once pushed, or origin/main
+npm run deploy:nas -- <sha|ref>      # e.g. HEAD once pushed, or origin/main
 ```
 
-`deploy/bookshelf-server/deploy-titan.sh` IS the recipe below, run in order
+`deploy/bookshelf-server/deploy-nas.sh` IS the recipe below, run in order
 with its traps closed: it refuses a ref that is not on `origin/main`, stages
 the commit with `git archive` outside the checkout (wiping ghosts, `npm ci`
 only when the lockfile changed), sets the two stamp-build env vars itself,
 ships the tarball, runs `redeploy.sh`, waits on `/api/health`, and writes
-`DEPLOYED_SHA` beside the tarball on titan so "what is running?" is
-`ssh titan cat /volume1/System/bookshelf-server/DEPLOYED_SHA`. Works from the
-Mac or the PC — both `ssh titan` keyless. The steps that follow are what it
+`DEPLOYED_SHA` beside the tarball on the NAS so "what is running?" is
+`ssh nas cat /volume1/System/bookshelf-server/DEPLOYED_SHA`. Works from the
+Mac or the PC — both `ssh nas` keyless. The steps that follow are what it
 does, kept for when something needs doing by hand.
 
-From the PC or the Mac. The image is never built from source on titan — the PC
-builds, titan just packages and runs.
+From the PC or the Mac. The image is never built from source on the NAS — the PC
+builds, the NAS just packages and runs.
 
 **Build in a STAGING DIR cut from a sha, not in the working checkout.** Two
 reasons, both paid for on 2026-08-25/26: a deploy built from a working tree can
-carry uncommitted bytes (titan served code that existed in no commit for
+carry uncommitted bytes (the NAS served code that existed in no commit for
 hours), and `dist/` is shared — `build:electron` opens with `rm -rf
 dist/electron`, so two agents building out of one checkout can ship or run a
 half-written tree, with no git evidence afterwards because dist/ has no branch
@@ -83,14 +90,14 @@ cd "$STAGE" && BOOKFORGE_BUILD_SHA=$(git -C <repo> rev-parse --short <sha>)   BO
 S=$TMP  # any scratch dir
 tar --force-local -czf "$S/bookshelf-server-context.tgz" \
   package.json package-lock.json vendor cli deploy/bookshelf-server dist/electron dist/shared
-scp "$S/bookshelf-server-context.tgz" titan:/volume1/System/bookshelf-server/
+scp "$S/bookshelf-server-context.tgz" nas:/volume1/System/bookshelf-server/
 
-# 3. Rebuild + restart on titan
-ssh titan "sh /volume1/System/bookshelf-server/redeploy.sh"
+# 3. Rebuild + restart on the NAS
+ssh nas "sh /volume1/System/bookshelf-server/redeploy.sh"
 
 # 4. Verify — and note WHICH sha you deployed
-curl http://192.168.68.125:8766/api/health
-# → {"status":"ok","name":"titan","capabilities":["library","reader","pdf"]}
+curl http://192.0.2.125:8766/api/health
+# → {"status":"ok","name":"nas","capabilities":["library","reader","pdf"]}
 ```
 
 Known edges of the staged flow (measured, 2026-08-26): a re-extract never
@@ -106,22 +113,27 @@ Web clients pick the new UI up on next page load. The **native iOS app bundles
 its own copy of the UI** and only changes when the app itself is rebuilt.
 
 **Gotcha (bitten once):** if you regenerate `compose.yml` locally and scp it
-over, you clobber titan's in-place edits — the port regresses 8766→8765 and the
-container fails to start with "address already in use". Titan's `compose.yml`
+over, you clobber the NAS's in-place edits — the port regresses 8766→8765 and the
+container fails to start with "address already in use". NAS's `compose.yml`
 is the authority; edit it there, or diff before overwriting.
 
-That is also why `deploy/bookshelf-server/titan/` is a mirror and not a source.
-To refresh it after changing something on titan:
+That is also why `deploy/bookshelf-server/nas/` is a mirror and not a source.
+To refresh it after changing something on the NAS:
 
 ```sh
 for f in compose.yml redeploy.sh up.sh; do
-  scp titan:/volume1/System/bookshelf-server/$f deploy/bookshelf-server/titan/$f
+  scp nas:/volume1/System/bookshelf-server/$f deploy/bookshelf-server/nas/$f
 done
-git diff deploy/bookshelf-server/titan/    # read it before committing
+git diff deploy/bookshelf-server/nas/    # read it before committing
 ```
 
+The re-capture brings the NAS's own `hostname:` and its real volume paths back
+with it. This repo is PUBLIC, so those are replaced with placeholders before the
+mirror is committed — `tools/test-no-machine-addresses.js` fails the commit if
+they slip through, which is the point of reading the diff.
+
 **Deploy from a COMMIT, not from a working tree.** On 2026-08-25 the mirror was
-rebuilt several times from uncommitted changes, so for a few hours titan served
+rebuilt several times from uncommitted changes, so for a few hours the NAS served
 code that existed in no commit anywhere and no sha described what was running.
 Stage the context from a clean tree, or note the sha you built.
 
@@ -132,44 +144,44 @@ In escalating order:
 1. **Usually it isn't your job.** `restart: unless-stopped` restarts a crashed
    server, and UGOS auto-starts dockerd after reboots and firmware updates.
    Give it a minute.
-2. **The kick** — either double-click **"Restart Titan Bookshelf.cmd"** on the
+2. **The kick** — either double-click **"Restart NAS Bookshelf.cmd"** on the
    PC desktop, or from any machine (Termius on the phone works):
    ```sh
-   ssh titan "sh /volume1/System/bookshelf-server/up.sh"
+   ssh nas "sh /volume1/System/bookshelf-server/up.sh"
    ```
    Safe to run any time: no-op when healthy, plain start when stopped, forced
    recreate when Docker reports the container unhealthy. Ends by curling the
    health endpoint and saying what it found.
 3. **Look at why:**
    ```sh
-   ssh titan "docker ps -a --filter name=bookforge"
-   ssh titan "docker logs --since 30m bookforge-bookshelf | tail -50"
+   ssh nas "docker ps -a --filter name=bookforge"
+   ssh nas "docker logs --since 30m bookforge-bookshelf | tail -50"
    ```
    Known failure shapes:
    - `FATAL ERROR: ... heap out of memory` — the container has a 4 GB node heap
      inside a 5 GB cap for exactly this; if it recurs, something regressed.
    - `bind: address already in use` — the compose port mapping regressed to
-     8765 (see the gotcha above); fix `ports:` in titan's `compose.yml` to
+     8765 (see the gotcha above); fix `ports:` in the NAS's `compose.yml` to
      `"8766:8765"` and `up -d`.
    - Everything flaky at once, healthchecks failing with `no space left on
-     device` — titan's `/tmp` filled with core dumps again; the janitor should
+     device` — the NAS's `/tmp` filled with core dumps again; the janitor should
      prevent it, but the manual sweep is
-     `ssh titan "sudo find /tmp -maxdepth 1 -name 'core.*' -delete"`
+     `ssh nas "sudo find /tmp -maxdepth 1 -name 'core.*' -delete"`
      (must be `find` — at six figures of files a shell glob overflows argv).
 4. **Full redeploy** (step 3 of "Deploying an update") rebuilds the image from
    the last staged context without needing the PC to rebuild anything.
 
 ## Access facts
 
-- `ssh titan` works keyless from the PC as `owenmorgan`.
-- `owenmorgan` is in the `docker` group (daemon needs no sudo) and has
-  passwordless sudo (`/etc/sudoers.d/owenmorgan`).
+- `ssh nas` works keyless from the PC as the NAS account (`$NAS_USER` below).
+- That account is in the `docker` group (daemon needs no sudo) and has
+  passwordless sudo (`/etc/sudoers.d/$NAS_USER`).
 - **UGOS firmware updates wipe system files.** The containers, their restart
   policies, and everything under `/volume1/System/` survive; the sudoers file
   and docker-group membership may not. If an update takes them, one root
   session restores both:
   ```sh
-  usermod -aG docker owenmorgan
-  echo 'owenmorgan ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/owenmorgan && \
-    chmod 440 /etc/sudoers.d/owenmorgan && visudo -c
+  usermod -aG docker "$NAS_USER"
+  echo "$NAS_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$NAS_USER" && \
+    chmod 440 "/etc/sudoers.d/$NAS_USER" && visudo -c
   ```

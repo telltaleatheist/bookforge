@@ -142,7 +142,7 @@ class PrepRoutingTest(_PrepDoorTest):
 
     def test_the_bridges_own_prep_argv_prepares_a_session(self):
         code, out = self._run(self._bridge_argv(
-            model_dir=r'/home/telltale/orpheus-models/deathstalker'))
+            model_dir=r'/home/<user>/orpheus-models/deathstalker'))
         self.assertEqual(code, 0, out)
         process_dir, state = self._read_state_the_way_the_bridge_does()
 
@@ -170,7 +170,7 @@ class PrepRoutingTest(_PrepDoorTest):
         # The voice flags the bridge passed are what the worker will read back.
         self.assertEqual(state['fine_tuned'], 'deathstalker')
         self.assertEqual(state['orpheus_model_dir'],
-                         r'/home/telltale/orpheus-models/deathstalker')
+                         r'/home/<user>/orpheus-models/deathstalker')
         self.assertIsNone(state['orpheus_adapter_dir'])
         self.assertEqual(state['tts_engine'], 'orpheus')
         self.assertEqual(state['language'], 'eng')

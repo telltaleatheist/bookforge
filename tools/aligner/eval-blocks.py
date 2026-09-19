@@ -1,6 +1,6 @@
 """eval-blocks — score a trained block_categorize adapter on the held-out set.
 
-    python eval-blocks.py --adapter /home/telltale/xtts_ft/blocks_v1_lora \
+    python eval-blocks.py --adapter /home/<user>/xtts_ft/blocks_v1_lora \
         --eval ~/training_data/block_categorize/eval.jsonl \
         --out ~/training_data/block_categorize/eval_report.json [--limit N]
 

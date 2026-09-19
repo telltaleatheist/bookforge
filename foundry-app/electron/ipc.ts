@@ -777,7 +777,7 @@ function serversConnectedBySave(
  * machine left on disk — same spelling, same `parsePairing`, same `{name, url,
  * token}` — so this registers it EXACTLY as a pasted one is registered, through
  * {@link registerPairing}, which is the one writer both doors share. The name is
- * the server's own (`crucible@owens-pc-wsl`, whatever the operator called it),
+ * the server's own (`crucible@example-pc-wsl`, whatever the operator called it),
  * which is the same name a person would see in the preview if they pasted the
  * line by hand.
  *

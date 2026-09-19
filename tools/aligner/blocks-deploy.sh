@@ -33,15 +33,21 @@ set -euo pipefail
 TAG="${1:?usage: blocks-deploy.sh <version-tag> <merged-dir-or-f16-gguf> [quant] [win-host]}"
 SRC="${2:?a merged model dir or an f16 .gguf}"
 QUANT="${3:-Q4_K_M}"
-WIN_HOST="${4:-owens-pc}"
+# The Windows box is NAMED, never defaulted: which machine gets the model is a
+# fact about your setup, and a hostname baked into a tracked script in a public
+# repo both goes stale when the box moves and publishes the network it came from.
+WIN_HOST="${4:-${BLOCKS_WIN_HOST:?name the Windows box: blocks-deploy.sh <tag> <src> [quant] <win-host>, or set BLOCKS_WIN_HOST}}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${BLOCKS_WORK:-$HOME/blocks-export}"
 
 # Mirrors electron/shared-paths.ts. Kept as literals rather than shelling out to
-# the app: this script has to work before a build exists.
+# the app: this script has to work before a build exists. The Windows copy is
+# written as %LOCALAPPDATA% and expanded ON THAT BOX rather than spelled out
+# here: it is the same directory under whoever is logged in there, and no
+# account name from one machine ends up in a public repo.
 MAC_DIR="$HOME/Library/Application Support/OwenMorgan/blocks-models"
-WIN_DIR='C:\Users\tellt\AppData\Local\OwenMorgan\blocks-models'
+WIN_DIR='%LOCALAPPDATA%\OwenMorgan\blocks-models'
 
 # ── 1-5. publish ─────────────────────────────────────────────────────────────
 "$HERE/blocks-publish.sh" "$TAG" "$SRC" "$QUANT"

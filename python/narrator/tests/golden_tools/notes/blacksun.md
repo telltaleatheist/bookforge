@@ -30,7 +30,7 @@ fixture - a parity run must assemble the same 3 chapters.
 
 ## How the reference was produced
 
-- e2a checkout: `C:\Users\tellt\Projects\ebook2audiobook`, branch `bookforge`,
+- e2a checkout: `C:\Users\<user>\Projects\ebook2audiobook`, branch `bookforge`,
   HEAD `9daab0ba9360b4e9e8d538bd6da9b713fed2de21` (read-only; `E2A_TMP_DIR` was
   redirected so the checkout was not written to).
 - Runtime: **3 m 19 s** (CPU only).
@@ -40,7 +40,7 @@ fixture - a parity run must assemble the same 3 chapters.
 2.9 h and would not have split anyway.
 
 ```
-cd C:\Users\tellt\Projects\ebook2audiobook
+cd C:\Users\<user>\Projects\ebook2audiobook
 set E2A_TMP_DIR=C:\tmp\narrator-G\e2a-tmp
 set PYTHONIOENCODING=utf-8
 python_env\python.exe app.py --headless --assemble_only --skip_deps --no_split ^

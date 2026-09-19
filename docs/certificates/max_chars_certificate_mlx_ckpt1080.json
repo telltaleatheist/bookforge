@@ -16,7 +16,7 @@
   "backend": "mlx",
   "mlx_audio": "0.4.8",
   "mlx": "0.32.0",
-  "machine": "owens-mac-studio",
+  "machine": "example-mac",
   "generation_config": {
     "temperature": 1.0,
     "top_p": 0.95,
@@ -28,12 +28,12 @@
     "_provenance_correction": "provenance corrected 2026-09-05T10:35:56: this dir was merged to the path ds_ad4lm_prod and RENAMED to ds_ad4lm_prod_ckpt1080 when ckpt-480 took the ds_ad4lm_prod name. Weights and config VALUES are untouched and still come from runs/ds_ad4lm_prod/ckpt-1080; only the path strings were stale."
   },
   "bound_to": {
-    "checkpoint_dir": "C:/Program Files/Git/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080",
+    "checkpoint_dir": "C:/Program Files/Git/Users/<user>/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080",
     "lora_checkpoint": "runs/ds_ad4lm_prod/ckpt-1080",
     "merge_manifest": {
       "lora": "runs/ds_ad4lm_prod/ckpt-1080",
-      "out": "/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080",
-      "snapshot": "/home/telltale/.cache/huggingface/hub/models--bosonai--higgs-audio-v3-tts-4b/snapshots/239f63fb7b02b1aa085f98d9efae5e35cc5523e8",
+      "out": "/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080",
+      "snapshot": "/home/<user>/.cache/huggingface/hub/models--bosonai--higgs-audio-v3-tts-4b/snapshots/239f63fb7b02b1aa085f98d9efae5e35cc5523e8",
       "generation_config_source": "OVERRIDE from runs/ds_ad4lm_prod/generation_config.override.json",
       "generation_config_override": "runs/ds_ad4lm_prod/generation_config.override.json",
       "sampling": {
@@ -54,7 +54,7 @@
         "tokenizer_config.json"
       ],
       "merged_matrices": 252,
-      "out_original_at_merge_time": "/home/telltale/higgs_v3_merged/ds_ad4lm_prod",
+      "out_original_at_merge_time": "/home/<user>/higgs_v3_merged/ds_ad4lm_prod",
       "provenance_correction": "provenance corrected 2026-09-05T10:35:56: this dir was merged to the path ds_ad4lm_prod and RENAMED to ds_ad4lm_prod_ckpt1080 when ckpt-480 took the ds_ad4lm_prod name. Weights and config VALUES are untouched and still come from runs/ds_ad4lm_prod/ckpt-1080; only the path strings were stale."
     },
     "generation_config": {
@@ -81,12 +81,12 @@
       },
       "sampling_source": "the checkpoint's own generation_config.json, read by HiggsV3MlxConfig.mlx_sampling (mlx-audio does not read it)",
       "frame_cap": "per chunk, v3_served.cap_frames(text) = int(len(text)/15.0*25*2.0)+150 - the engine's own cap",
-      "machine": "owens-mac-studio (Mac13,2, Mac Studio)",
+      "machine": "example-mac (Mac13,2, Mac Studio)",
       "macos": "26.3.1"
     },
     "provenance": {
-      "mac_checkpoint_dir": "/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080",
-      "merge_checkpoint_dir": "/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080 (WSL Ubuntu on owens-pc - the machine that merged it and ran the served certification)",
+      "mac_checkpoint_dir": "/Users/<user>/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080",
+      "merge_checkpoint_dir": "/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080 (WSL Ubuntu on example-pc - the machine that merged it and ran the served certification)",
       "sha256": {
         "model.safetensors": {
           "mac": "218afc558ec1ddb2b7303a9e87a7f5d124e3c8e3c4055f165b0abe3766c8148b",
@@ -124,7 +124,7 @@
       502,
       503
     ],
-    "asr": "faster-whisper base.en, device=cpu, compute_type=int8, beam_size=1, in /home/telltale/anaconda3/envs/whisperx - the same env and the same cached Systran/faster-whisper-base.en weights that scored the served harness",
+    "asr": "faster-whisper base.en, device=cpu, compute_type=int8, beam_size=1, in /home/<user>/anaconda3/envs/whisperx - the same env and the same cached Systran/faster-whisper-base.en weights that scored the served harness",
     "coverage": "difflib.SequenceMatcher(autojunk=False) over re.sub(r'[^a-z0-9 ]',' ',text.lower()).split(); sum(matching block sizes) / len(reference words)",
     "babble": "coverage < 0.05 (babble_probe.BABBLE_COV)",
     "render_path": "narrator.engine.registry.engine_class('higgs-v3') + engine_config(...) exactly as narrator/serve/worker.py builds them on a 'load', then engine.render_audio(text, seed=seed) per row"

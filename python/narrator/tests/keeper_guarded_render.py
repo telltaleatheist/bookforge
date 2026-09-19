@@ -181,7 +181,7 @@ def main() -> int:
     # ONE SERVER PER INVOCATION, and that is not a style choice. Rendering twice
     # in one process means two engines, and `engine.cleanup()` tears the first
     # server down — so the second launches into a port the dying process still
-    # holds. MEASURED on owens-pc 2026-09-13: sgl-omni was passed `--port 8200`,
+    # holds. MEASURED on example-pc 2026-09-13: sgl-omni was passed `--port 8200`,
     # found it busy, and **silently bound a random port** (57877, then 34529)
     # instead of failing. narrator then polls 8200 for as long as anyone lets
     # it. That is a fallback with no failure, and it turns a restart into a
@@ -255,7 +255,7 @@ def main() -> int:
     # TIME order: the served arm renders `BATCH_SIZE` takes concurrently, so one
     # chunk's re-roll is printed between another chunk's take 0 and its accept.
     # The verdicts are grouped BY CHUNK, because a verdict belongs to the chunk
-    # it decided. Measured on owens-pc 2026-09-13 — log order was
+    # it decided. Measured on example-pc 2026-09-13 — log order was
     # 1-short, 3-short, 1-accept, 5-long, 3-reroll, 5-accept while the verdicts
     # read 1,1 then 3,3 then 5,5.
     #
